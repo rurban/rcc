@@ -1,6 +1,6 @@
 #include "rcc.h"
 
-Type *ty_int = &(Type){TY_INT, 8, NULL};
+Type *ty_int = &(Type){TY_INT, 4, NULL};
 Type *ty_char = &(Type){TY_CHAR, 1, NULL};
 
 bool is_integer(Type *ty) {

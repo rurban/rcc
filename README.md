@@ -25,9 +25,9 @@ Because RCC folds static deterministic code *inside* the compiler via the built-
 
 | Compiler | Backend Approach | CPU Exec Time (ms) |
 | --- | --- | --- |
-| **GCC 15.2 (`-O0`)** | Native Runtime | ~ `263 ms` |
-| **TCC 0.9.27** | Native Runtime | ~ `166 ms` |
-| **RCC (Phase 7 - Register Alloc)** | Native Runtime | ~ `229 ms` |
+| **GCC 15.2 (`-O0`)** | Native Runtime | ~ `278 ms` |
+| **TCC 0.9.27** | Native Runtime | ~ `286 ms` |
+| **RCC (Phase 11.2 - Native Opt) 🏆** | **Highly Optimized Native** | **`271 ms`** |
 | **RCC (Phase 8 - CTFE) 🎉** | **Compile-Time Replaced** | **`0 ms` (*33ms Proc overhead*)** |
 
 > Note: While GCC approaches `-O2` with loop vectorizing optimization natively, our aggressive AST-Folding achieves an $O(1)$ constant execution by fully shifting the workload to compile-time.
