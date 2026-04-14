@@ -126,7 +126,11 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *cur = &head;
         tok = tok->next;
         while (!equal(tok, "}")) {
-            cur = cur->next = stmt(&tok, tok);
+            if (equal(tok, "int") || equal(tok, "char")) {
+                cur = cur->next = declaration(&tok, tok);
+            } else {
+                cur = cur->next = stmt(&tok, tok);
+            }
         }
         Node *node = new_node(ND_BLOCK, tok);
         node->body = head.next;
@@ -231,6 +235,10 @@ static Node *mul(Token **rest, Token *tok) {
         }
         if (equal(tok, "/")) {
             node = new_binary(ND_DIV, node, unary(&tok, tok->next), start);
+            continue;
+        }
+        if (equal(tok, "%")) {
+            node = new_binary(ND_MOD, node, unary(&tok, tok->next), start);
             continue;
         }
         *rest = tok;

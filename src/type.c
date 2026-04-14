@@ -83,6 +83,7 @@ static void add_type_internal(Node *node) {
     }
     case ND_MUL:
     case ND_DIV:
+    case ND_MOD:
         node->ty = ty_int;
         return;
     case ND_ASSIGN:

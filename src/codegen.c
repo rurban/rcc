@@ -195,6 +195,12 @@ static int gen(Node *node) {
         printf("  idiv %s\n", reg64[r_rhs]);
         printf("  mov %s, rax\n", reg64[r_lhs]);
         break;
+    case ND_MOD:
+        printf("  mov rax, %s\n", reg64[r_lhs]);
+        printf("  cqo\n");
+        printf("  idiv %s\n", reg64[r_rhs]);
+        printf("  mov %s, rdx\n", reg64[r_lhs]); // remainder is in rdx
+        break;
     case ND_EQ:
         printf("  cmp %s, %s\n", reg64[r_lhs], reg64[r_rhs]);
         printf("  sete al\n");

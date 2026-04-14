@@ -55,6 +55,7 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
     case ND_SUB:
     case ND_MUL:
     case ND_DIV:
+    case ND_MOD:
     case ND_EQ:
     case ND_NE:
     case ND_LT:
@@ -69,6 +70,10 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
         if (node->kind == ND_DIV) {
             if (r == 0) { *success = false; return 0; }
             return l / r;
+        }
+        if (node->kind == ND_MOD) {
+            if (r == 0) { *success = false; return 0; }
+            return l % r;
         }
         if (node->kind == ND_EQ) return l == r;
         if (node->kind == ND_NE) return l != r;
@@ -148,7 +153,7 @@ static Node *optimize_node(Program *prog, Node *node) {
         prev_arg = o;
     }
 
-    if (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV) {
+    if (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV || node->kind == ND_MOD) {
         if (node->lhs && node->lhs->kind == ND_NUM && node->rhs && node->rhs->kind == ND_NUM) {
             Node *fold = arena_alloc(sizeof(Node));
             fold->kind = ND_NUM;
@@ -158,6 +163,10 @@ static Node *optimize_node(Program *prog, Node *node) {
             if (node->kind == ND_DIV) {
                 if (node->rhs->val == 0) return node; // avoid div by zero
                 fold->val = node->lhs->val / node->rhs->val;
+            }
+            if (node->kind == ND_MOD) {
+                if (node->rhs->val == 0) return node;
+                fold->val = node->lhs->val % node->rhs->val;
             }
             fold->ty = node->ty;
             return fold;
