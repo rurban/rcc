@@ -79,4 +79,4 @@ powershell -File bench/run_bench.ps1
 
 ## License
 
-MIT
+LGPL-2.1 — see [LICENSE](LICENSE) file.
