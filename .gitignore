@@ -3,3 +3,17 @@
 *.s
 *.i
 *.tmp
+*.log
+*.zip
+*.txt
+actual.txt
+fred.txt
+err.log
+tmp*.c
+test_comma.c
+test_float.c
+tcc_test_report.md
+tcc_source_temp/
+tinycc_source/
+tinycc_mob.zip
+amazon_bug_bounty/

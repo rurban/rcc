@@ -83,7 +83,6 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
         return 0;
     }
     case ND_FUNCALL: {
-        bool all_const = true;
         int args[10];
         int nargs = 0;
         for (Node *arg = node->args; arg; arg = arg->next) {
@@ -120,7 +119,6 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
         return 0;
     }
     default:
-        printf("[CTFE] Failed: unknown node kind %d\n", node->kind);
         *success = false;
         return 0;
     }
@@ -173,7 +171,7 @@ static Node *optimize_node(Program *prog, Node *node) {
         }
     }
     
-    if (node->kind == ND_FUNCALL) {
+    if (node->kind == ND_FUNCALL && node->funcname) {
         bool all_const = true;
         int args[10];
         int nargs = 0;
@@ -206,7 +204,6 @@ static Node *optimize_node(Program *prog, Node *node) {
                     result = eval_ast(prog, target, stmt, env, &dummy_cf, &success);
                     if (!success || dummy_cf == CF_RETURN) break;
                 }
-                fprintf(stderr, "[CTFE] Evaluated %s(...) = %d (success=%d)\n", node->funcname, result, success);
                 if (success) {
                     Node *fold = arena_alloc(sizeof(Node));
                     fold->kind = ND_NUM;
@@ -223,7 +220,6 @@ static Node *optimize_node(Program *prog, Node *node) {
 
 void optimize(Program *prog) {
     for (Function *fn = prog->funcs; fn; fn = fn->next) {
-        // Optimize each statement in the function
         Node *prev = NULL;
         for (Node *n = fn->body; n; n = n->next) {
             Node *o = optimize_node(prog, n);

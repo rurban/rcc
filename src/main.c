@@ -1,4 +1,5 @@
 #include "rcc.h"
+#include <process.h>
 
 // Returns the contents of a given file.
 static char *read_file(char *path) {
@@ -49,7 +50,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char *asm_path = opt_S ? out_path : "rcc_tmp.s";
+    char *asm_path = opt_S ? out_path : format("rcc_tmp_%d.s", _getpid());
 
     // Tokenize and Parse
     char *contents = read_file(in_path);
@@ -63,8 +64,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    // CTFE Optimizer
-    optimize(prog);
+    // CTFE is still incomplete and has caused miscompiles/crashes on parts
+    // of the TCC suite, so keep the compile path conservative for now.
 
     // Redirect stdout to our assembly file
     if (!freopen(asm_path, "w", stdout)) {
