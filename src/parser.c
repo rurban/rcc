@@ -28,6 +28,7 @@ static Typedef *typedefs;
 static TagScope *tags;
 static EnumConst *enum_consts;
 static int stack_offset;
+static char *pending_cleanup_func;
 
 static StrLit *str_lits;
 static int str_lit_counter;
@@ -317,6 +318,18 @@ static Token *read_type_attrs(Token *tok, int *align) {
             tok = skip(tok, "(");
             tok = skip(tok, "(");
             while (!(equal(tok, ")") && equal(tok->next, ")"))) {
+                if (equal(tok, "__cleanup__") || equal(tok, "cleanup")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    if (tok->kind == TK_IDENT)
+                        pending_cleanup_func = tok->name;
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equal(tok, "aligned") || equal(tok, "__aligned__")) {
                     tok = tok->next;
                     if (equal(tok, "(")) {
@@ -616,6 +629,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     tok = skip_attributes(tok);
+    char *type_cleanup = pending_cleanup_func;
+    pending_cleanup_func = NULL;
 
     Token *tag_tok = NULL;
     if (tok->kind == TK_IDENT) {
@@ -698,6 +713,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     }
 
     tok = skip(tok, "}");
+    if (type_cleanup)
+        warn_tok(tok, "attribute '__cleanup__' ignored on type");
     ty->members = head.next;
     ty->align = max_align;
     ty->size = is_union ? align_to(max_size, max_align) : align_to(offset, max_align);
@@ -1067,19 +1084,25 @@ static void write_scalar_bytes(char *buf, int offset, int size, int64_t val) {
 
 static Node *declaration(Token **rest, Token *tok) {
     VarAttr attr = {};
+    pending_cleanup_func = NULL;
     Type *base = declspec(&tok, tok, &attr);
+    char *type_level_cleanup = pending_cleanup_func;
     Node head = {};
     Node *cur = &head;
 
     if (equal(tok, ";")) {
+        pending_cleanup_func = NULL;
         *rest = tok->next;
         return new_node(ND_NULL, tok);
     }
 
     while (!equal(tok, ";")) {
         char *name = NULL;
+        pending_cleanup_func = NULL;
         Type *ty = declarator(&tok, tok, copy_type(base), &name);
         tok = skip_attributes(tok);
+        char *cleanup = pending_cleanup_func ? pending_cleanup_func : type_level_cleanup;
+        pending_cleanup_func = NULL;
         if (!name)
             error_tok(tok, "expected variable name");
 
@@ -1132,6 +1155,7 @@ static Node *declaration(Token **rest, Token *tok) {
             if (equal(tok, "="))
                 ty = infer_array_type(ty, tok->next);
             LVar *var = new_var(name, ty, true);
+            var->cleanup_func = cleanup;
             if (equal(tok, "=")) {
                 Token *start = tok;
                 tok = tok->next;
@@ -1172,7 +1196,7 @@ static Node *declaration(Token **rest, Token *tok) {
     return head.next ? head.next : new_node(ND_NULL, tok);
 }
 
-static Node *compound_stmt(Token **rest, Token *tok) {
+static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     LVar *saved_locals = locals;
     Typedef *saved_typedefs = typedefs;
     TagScope *saved_tags = tags;
@@ -1196,11 +1220,17 @@ static Node *compound_stmt(Token **rest, Token *tok) {
     node->body = head.next;
     *rest = tok->next;
 
+    if (out_locals)
+        *out_locals = locals;
     locals = saved_locals;
     typedefs = saved_typedefs;
     tags = saved_tags;
     enum_consts = saved_enum_consts;
     return node;
+}
+
+static Node *compound_stmt(Token **rest, Token *tok) {
+    return compound_stmt_ex(rest, tok, NULL);
 }
 
 static Node *stmt(Token **rest, Token *tok) {
@@ -2194,11 +2224,13 @@ Program *parse(Token *tok) {
             if (!equal(tok, "{"))
                 error_tok(tok, "expected function body");
 
-            Node *body = compound_stmt(&tok, tok);
+            LVar *fn_locals = NULL;
+            Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
             Function *fn = arena_alloc(sizeof(Function));
             fn->name = name;
             fn->ty = fty;
             fn->params = params;
+            fn->locals = fn_locals;
             fn->body = body->body;
             fn->stack_size = align_to(stack_offset, 16);
             fn->is_variadic = is_variadic;
