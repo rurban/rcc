@@ -66,6 +66,28 @@ void error_tok(Token *tok, char *fmt, ...) {
     verror_at(tok->loc, tok->len, fmt, ap);
 }
 
+void warn_tok(Token *tok, char *fmt, ...) {
+    // Compute line number
+    char *line = tok->loc;
+    while (current_input < line && line[-1] != '\n')
+        line--;
+    int line_num = 1;
+    for (char *p = current_input; p < line; p++)
+        if (*p == '\n')
+            line_num++;
+    // Use basename of file
+    const char *base = current_filename;
+    for (const char *p = current_filename; *p; p++)
+        if (*p == '/' || *p == '\\')
+            base = p + 1;
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "%s:%d: warning: ", base, line_num);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+}
+
 // Create a new token.
 static Token *new_token(TokenKind kind, char *start, char *end) {
     Token *tok = arena_alloc(sizeof(Token));

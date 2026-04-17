@@ -973,6 +973,9 @@ void codegen(Program *prog) {
     cg_stream = stdout;
     // Assembly header
     printf(".intel_syntax noprefix\n");
+#ifndef _WIN32
+    printf(".section .note.GNU-stack,\"\",@progbits\n");
+#endif
 
     // Emit data section for strings
     if (prog->globals || prog->strs || float_lits) {
@@ -1269,6 +1272,25 @@ void codegen(Program *prog) {
 
         // Emit epilogue
         printf(".L.return.%s:\n", fn->name);
+
+        // Emit __cleanup__ calls (LIFO: locals list is in reverse declaration order)
+        bool has_cleanup = false;
+        for (LVar *var = fn->locals; var; var = var->next)
+            if (var->cleanup_func && var->is_local) { has_cleanup = true; break; }
+        if (has_cleanup)
+            printf("  push rax\n");
+        for (LVar *var = fn->locals; var; var = var->next) {
+            if (var->cleanup_func && var->is_local) {
+#ifdef _WIN32
+                printf("  lea rcx, [rbp-%d]\n", var->offset);
+#else
+                printf("  lea rdi, [rbp-%d]\n", var->offset);
+#endif
+                printf("  call %s\n", var->cleanup_func);
+            }
+        }
+        if (has_cleanup)
+            printf("  pop rax\n");
         printf("  add rsp, %d\n", sub_amount);
         for (int j = 5; j >= 0; j--) {
             if (callee_mask & (1 << j))
