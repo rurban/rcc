@@ -925,6 +925,50 @@ static int gen(Node *node) {
     return -1;
 }
 
+// Helper: map 64-bit register name to 32-bit
+static const char *to32(const char *r64) {
+    if (!strcmp(r64, "rax")) return "eax";
+    if (!strcmp(r64, "rcx")) return "ecx";
+    if (!strcmp(r64, "rdx")) return "edx";
+    if (!strcmp(r64, "r8"))  return "r8d";
+    if (!strcmp(r64, "r9"))  return "r9d";
+    if (!strcmp(r64, "r10")) return "r10d";
+    if (!strcmp(r64, "r11")) return "r11d";
+    if (!strcmp(r64, "rbx")) return "ebx";
+    if (!strcmp(r64, "r12")) return "r12d";
+    if (!strcmp(r64, "r13")) return "r13d";
+    if (!strcmp(r64, "r14")) return "r14d";
+    if (!strcmp(r64, "r15")) return "r15d";
+    if (!strcmp(r64, "rsi")) return "esi";
+    return NULL;
+}
+
+// Helper: check if string is a register name
+static int is_reg(const char *s) {
+    return (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2));
+}
+
+// Check if a physical register is used after line 'after' before being overwritten
+static int reg_live_after(char **lines, int nlines, int after, int pid) {
+    const char *variants[6] = {0};
+    int nv = 0;
+    for (int vi = 0; vi < 8; vi++) {
+        if (phys_reg_id(reg64[vi]) == pid) { variants[nv++] = reg64[vi]; variants[nv++] = reg32[vi]; break; }
+    }
+    if (pid == 0) { variants[nv++] = "rax"; variants[nv++] = "eax"; variants[nv++] = "al"; }
+    else if (pid == 1) { variants[nv++] = "rcx"; variants[nv++] = "ecx"; variants[nv++] = "cl"; }
+    else if (pid == 2) { variants[nv++] = "rdx"; variants[nv++] = "edx"; }
+    else if (pid == 3) { variants[nv++] = "rbx"; variants[nv++] = "ebx"; variants[nv++] = "bl"; }
+    for (int k = after + 1; k < nlines && k < after + 30; k++) {
+        if (!lines[k] || !lines[k][0]) continue;
+        if (lines[k][0] != ' ') return 1;
+        for (int vi = 0; vi < nv && variants[vi]; vi++) {
+            if (strstr(lines[k], variants[vi])) return 1;
+        }
+    }
+    return 0;
+}
+
 void codegen(Program *prog) {
     cg_stream = stdout;
     // Assembly header
@@ -1065,52 +1109,6 @@ void codegen(Program *prog) {
             nlines++;
         }
 
-        // Helper: map 64-bit register name to 32-bit
-        const char *to32(const char *r64) {
-            if (!strcmp(r64, "rax")) return "eax";
-            if (!strcmp(r64, "rcx")) return "ecx";
-            if (!strcmp(r64, "rdx")) return "edx";
-            if (!strcmp(r64, "r8"))  return "r8d";
-            if (!strcmp(r64, "r9"))  return "r9d";
-            if (!strcmp(r64, "r10")) return "r10d";
-            if (!strcmp(r64, "r11")) return "r11d";
-            if (!strcmp(r64, "rbx")) return "ebx";
-            if (!strcmp(r64, "r12")) return "r12d";
-            if (!strcmp(r64, "r13")) return "r13d";
-            if (!strcmp(r64, "r14")) return "r14d";
-            if (!strcmp(r64, "r15")) return "r15d";
-            if (!strcmp(r64, "rsi")) return "esi";
-            return NULL;
-        }
-
-        // Helper: check if string is a register name
-        int is_reg(const char *s) {
-            return (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2));
-        }
-
-        // Check if a physical register is used after line 'after' before being overwritten
-        // Returns 1 if the reg is live (used later), 0 if dead (safe to delete)
-        int reg_live_after(int after, int pid) {
-            // Collect all name variants for this physical register
-            const char *variants[6] = {0};
-            int nv = 0;
-            for (int vi = 0; vi < 8; vi++) {
-                if (phys_reg_id(reg64[vi]) == pid) { variants[nv++] = reg64[vi]; variants[nv++] = reg32[vi]; break; }
-            }
-            if (pid == 0) { variants[nv++] = "rax"; variants[nv++] = "eax"; variants[nv++] = "al"; }
-            else if (pid == 1) { variants[nv++] = "rcx"; variants[nv++] = "ecx"; variants[nv++] = "cl"; }
-            else if (pid == 2) { variants[nv++] = "rdx"; variants[nv++] = "edx"; }
-            else if (pid == 3) { variants[nv++] = "rbx"; variants[nv++] = "ebx"; variants[nv++] = "bl"; }
-            for (int k = after + 1; k < nlines && k < after + 30; k++) {
-                if (!lines[k] || !lines[k][0]) continue;
-                if (lines[k][0] != ' ') return 1; // label = conservative
-                for (int vi = 0; vi < nv && variants[vi]; vi++) {
-                    if (strstr(lines[k], variants[vi])) return 1;
-                }
-            }
-            return 0;
-        }
-
         // Peephole optimization passes
         for (int pass = 0; pass < 4; pass++) {
             for (int li = 0; li < nlines - 1; li++) {
@@ -1130,7 +1128,7 @@ void codegen(Program *prog) {
                     snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
                     lines[lj] = strdup(newline);
                     int pid = phys_reg_id(d1);
-                    if (pid >= 0 && !reg_live_after(lj, pid))
+                    if (pid >= 0 && !reg_live_after(lines, nlines, lj, pid))
                         lines[li] = "";
                     continue;
                 }
@@ -1209,7 +1207,7 @@ void codegen(Program *prog) {
                                 snprintf(newline, sizeof(newline), "  %s %s, %d", op, od, imm_val);
                                 lines[lj] = strdup(newline);
                             }
-                            if (rd_pid >= 0 && !reg_live_after(lj, rd_pid))
+                            if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
                                 lines[li] = "";
                             continue;
                         }
@@ -1219,7 +1217,7 @@ void codegen(Program *prog) {
                             char newline[160];
                             snprintf(newline, sizeof(newline), "  mov byte ptr %s, %d", od, imm_val);
                             lines[lj] = strdup(newline);
-                            if (rd_pid >= 0 && !reg_live_after(lj, rd_pid))
+                            if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
                                 lines[li] = "";
                             continue;
                         }
