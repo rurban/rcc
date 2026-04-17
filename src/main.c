@@ -1,5 +1,10 @@
 #include "rcc.h"
+#ifdef _WIN32
 #include <process.h>
+#else
+#include <unistd.h>
+#define _getpid getpid
+#endif
 
 // Returns the contents of a given file.
 static char *read_file(char *path) {
