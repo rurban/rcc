@@ -20,7 +20,10 @@ endif
 test check: $(TARGET)
 	@$(TEST_RUNNER)
 
+bench: $(TARGET)
+	@./bench/run_bench.sh ./$(TARGET)
+
 clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe
 
-.PHONY: clean test check
+.PHONY: clean test check bench
