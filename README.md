@@ -1,18 +1,18 @@
 # RCC — Regoshi C Compiler
 
-A fast, self-contained C compiler targeting x86-64 Windows. Written from scratch in C11.
+A fast, self-contained C compiler targeting x86-64 Windows and Unix. Written from scratch in C11.
 **RCC generates faster code than TCC** while keeping compilation speed competitive.
 
 ## Benchmark Results
 
 Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×128 matrix multiply, floating-point math loop (500K), and bubble sort (5K).
 
-| Compiler | Execute (ms) | Compile (ms) | Total (ms) |
-|---|---:|---:|---:|
-| **RCC** | **349** | 1042 | **1391** |
-| TCC 0.9.27 | 400 | 1013 | 1413 |
-| GCC -O0 | 298 | 1021 | 1319 |
-| GCC -O2 | 132 | 1020 | 1152 |
+| Compiler   | Execute (ms) | Compile (ms) | Total (ms) |
+|------------|-------------:|-------------:|-----------:|
+| **RCC**    |      **349** |        1042  |    **1391**|
+| TCC 0.9.27 |        400   |        1013  |      1413  |
+| GCC -O0    |        298   |        1021  |      1319  |
+| GCC -O2    |        132   |        1020  |      1152  |
 
 - **RCC vs TCC execution: 0.87× (13% faster)**
 - All outputs verified correct against GCC -O2 reference.
@@ -36,10 +36,13 @@ Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×
 - **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
 - **Floating-point support** — `float`/`double` arithmetic, casts, function calls via SSE2 (xmm0–xmm3).
 - **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
+- **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 
 ## Supported C Features
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers.
+
+Not yet: goto, break, continue, attribute `__cleanup__`, struct returns, long double, float casts.
 
 ## Build
 
@@ -57,25 +60,33 @@ gcc -std=c11 -O2 -o rcc.exe src/main.c src/lexer.c src/parser.c src/type.c src/c
 ./rcc.exe source.c -S -o output.s
 
 # Run benchmark
-powershell -File bench/run_bench.ps1
+make check
 ```
+
+## Options
+ 
+    -Lpath   add linker path
+    -lname   add lib
+    -S       assemble-only
+    -c       compile-only
+    -o file  set output filename
 
 ## Project Structure
 
-| File | Description |
-|---|---|
-| `src/main.c` | Driver: CLI, assembler/linker invocation |
-| `src/lexer.c` | Tokenizer with number/string/char literal support |
-| `src/preprocess.c` | C preprocessor (`#include`, `#define`, `#if`, macros) |
-| `src/parser.c` | Recursive-descent parser → AST |
-| `src/type.c` | Type system (primitives, pointers, arrays, structs, functions) |
-| `src/codegen.c` | x86-64 code generator with register allocator and peephole optimizer |
-| `src/opt.c` | AST-level optimizer and CTFE interpreter |
-| `src/alloc.c` | Arena memory allocator |
-| `src/rcc.h` | Shared data structures and declarations |
-| `include/` | Minimal C standard library headers (`stdio.h`, `math.h`, etc.) |
-| `bench/` | Benchmark suite and runner script |
-| `test/` | Test programs |
+| File             | Description                              |
+|------------------|------------------------------------------|
+| `src/main.c`     | Driver: CLI, assembler/linker invocation |
+| `src/lexer.c`    | Tokenizer with number/string/char literal support |
+| `src/preprocess.c`| C preprocessor (`#include`, `#define`, `#if`, macros) |
+| `src/parser.c`   | Recursive-descent parser → AST           |
+| `src/type.c`     | Type system (primitives, pointers, arrays, structs, functions) |
+| `src/codegen.c`  | x86-64 code generator with register allocator and peephole optimizer |
+| `src/opt.c`      | AST-level optimizer and CTFE interpreter |
+| `src/alloc.c`    | Arena memory allocator                   |
+| `src/rcc.h`      | Shared data structures and declarations  |
+| `include/`       | Minimal C standard library headers (`stdio.h`, `math.h`, etc.) |
+| `bench/`         | Benchmark suite and runner script        |
+| `test/`          | Test programs                            |
 
 ## License
 

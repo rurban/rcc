@@ -34,6 +34,14 @@ int main(int argc, char **argv) {
     char *in_path = NULL;
     bool opt_S = false;
     bool opt_c = false;
+    char libs[512] =
+#ifdef _WIN32
+        ""
+#else
+        " -lm"
+#endif
+        ;
+    int libs_len = strlen(libs);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-S")) {
@@ -46,6 +54,10 @@ int main(int argc, char **argv) {
                 return 1;
             }
             out_path = argv[i];
+        } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2)) {
+            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
+            if (n > 0 && libs_len + n < (int)sizeof(libs))
+                libs_len += n;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
@@ -94,7 +106,7 @@ int main(int argc, char **argv) {
         if (opt_c) {
             snprintf(cmd, sizeof(cmd), GCC " -c %s -o %s", asm_path, out_path);
         } else {
-            snprintf(cmd, sizeof(cmd), GCC " %s -o %s", asm_path, out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -no-pie %s -o %s%s", asm_path, out_path, libs);
         }
         
         int status = system(cmd);

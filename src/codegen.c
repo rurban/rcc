@@ -1280,7 +1280,11 @@ void codegen(Program *prog) {
 
     // Emit float literal constants after all functions
     if (float_lits) {
+#ifdef _WIN32
         printf("\n.section .rdata,\"dr\"\n");
+#else
+        printf("\n.section .rodata\n");
+#endif
         printf("  .balign 8\n");
         for (FloatLit *fl = float_lits; fl; fl = fl->next) {
             printf(".LF%d:\n", fl->id);
