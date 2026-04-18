@@ -87,6 +87,8 @@ struct Member {
     Type *ty;
     char *name;
     int offset;
+    int bit_width;   // 0 = not a bitfield
+    int bit_offset;  // bit position within the storage unit
 };
 
 struct Type {

@@ -564,6 +564,49 @@ static int gen(Node *node) {
             printf("  mov [rbp-%d], %s\n", node->lhs->var->offset, reg(r2, node->lhs->ty->size));
             return r2;
         }
+        // Bitfield assignment: read-modify-write
+        if (node->lhs->kind == ND_MEMBER && node->lhs->member &&
+            node->lhs->member->bit_width > 0) {
+            int r2 = gen(node->rhs);
+            int r1 = gen_addr(node->lhs);
+            int bw = node->lhs->member->bit_width;
+            int bo = node->lhs->member->bit_offset;
+            int unit_sz = node->lhs->member->ty->size;
+            unsigned long long mask = ((1ULL << bw) - 1) << bo;
+            // Load current storage unit
+            emit_load(node->lhs->member->ty, r1, format("[%s]", reg64[r1]));
+            // We used r1 for loading, but we need the address again.
+            // Re-generate address.
+            free_reg(r1);
+            int ra = gen_addr(node->lhs);
+            int rt = alloc_reg();
+            // rt = old value from storage unit
+            emit_load(node->lhs->member->ty, rt, format("[%s]", reg64[ra]));
+            // Clear the bitfield bits in old value
+            printf("  movabs rax, %llu\n", ~mask);
+            printf("  and %s, rax\n", reg64[rt]);
+            // Mask and shift new value into position
+            int rv = alloc_reg();
+            printf("  mov %s, %s\n", reg64[rv], reg64[r2]);
+            printf("  movabs rax, %llu\n", (1ULL << bw) - 1);
+            printf("  and %s, rax\n", reg64[rv]);
+            if (bo > 0)
+                printf("  shl %s, %d\n", reg64[rv], bo);
+            printf("  or %s, %s\n", reg64[rt], reg64[rv]);
+            // Store back
+            if (unit_sz == 1)
+                printf("  mov byte ptr [%s], %s\n", reg64[ra], reg8[rt]);
+            else if (unit_sz == 2)
+                printf("  mov word ptr [%s], %s\n", reg64[ra], reg(rt, 2));
+            else if (unit_sz == 4)
+                printf("  mov dword ptr [%s], %s\n", reg64[ra], reg(rt, 4));
+            else
+                printf("  mov qword ptr [%s], %s\n", reg64[ra], reg64[rt]);
+            free_reg(rv);
+            free_reg(rt);
+            free_reg(ra);
+            return r2;
+        }
         int r1 = gen_addr(node->lhs);
         int r2 = gen(node->rhs);
         printf("  mov [%s], %s\n", reg64[r1], reg(r2, node->lhs->ty->size));
@@ -611,6 +654,26 @@ static int gen(Node *node) {
             return r; // array decays to pointer
         }
         emit_load(node->ty, r, format("[%s]", reg64[r]));
+        // Bitfield: extract the relevant bits
+        if (node->member && node->member->bit_width > 0) {
+            int bw = node->member->bit_width;
+            int bo = node->member->bit_offset;
+            int unit_bits = node->member->ty->size * 8;
+            if (bo > 0)
+                printf("  shr %s, %d\n", reg64[r], bo);
+            if (bw < unit_bits) {
+                if (node->member->ty->is_unsigned) {
+                    unsigned long long mask = (1ULL << bw) - 1;
+                    printf("  movabs rax, %llu\n", mask);
+                    printf("  and %s, rax\n", reg64[r]);
+                } else {
+                    // Sign-extend: shift left then arithmetic shift right
+                    int shift = 64 - bw;
+                    printf("  shl %s, %d\n", reg64[r], shift);
+                    printf("  sar %s, %d\n", reg64[r], shift);
+                }
+            }
+        }
         return r;
     }
     case ND_ADDR:

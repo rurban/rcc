@@ -762,6 +762,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int offset = 0;
     int max_size = 0;
     int max_align = 1;
+    int bit_pos = 0;        // current bit position within the struct (for bitfield packing)
+    int bf_unit_size = 0;   // size of current bitfield storage unit (0 = none active)
 
     while (!equal(tok, "}")) {
         VarAttr attr = {};
@@ -779,24 +781,80 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             char *name = NULL;
             Type *mem_ty = declarator(&tok, tok, copy_type(base), &name);
             tok = skip_attributes(tok);
-            if (!name)
+
+            // Check for bitfield
+            int bit_width = 0;
+            if (equal(tok, ":")) {
+                tok = tok->next;
+                Node *width_node = conditional(&tok, tok);
+                long long w;
+                if (!eval_const_expr(width_node, &w))
+                    error_tok(tok, "bitfield width must be a constant expression");
+                bit_width = (int)w;
+                if (bit_width < 0 || bit_width > mem_ty->size * 8)
+                    error_tok(tok, "bitfield width out of range");
+            }
+
+            if (!name && !bit_width)
                 error_tok(tok, "expected member name");
 
             Member *mem = arena_alloc(sizeof(Member));
             mem->name = name;
-            mem->ty = mem_ty;
-            if (is_union) {
-                mem->offset = 0;
-                if (max_size < mem_ty->size)
-                    max_size = mem_ty->size;
+            mem->bit_width = bit_width;
+
+            if (bit_width > 0) {
+                // Bitfield member: pack within a storage unit of mem_ty->size
+                int unit = mem_ty->size; // storage unit size in bytes
+                int unit_bits = unit * 8;
+
+                // Check if we need to start a new storage unit:
+                // - no current unit, or different unit size, or doesn't fit
+                if (bf_unit_size != unit ||
+                    bit_pos % (unit * 8) + bit_width > unit_bits) {
+                    // Align to start of a new storage unit
+                    if (!is_union) {
+                        offset = align_to(offset, unit);
+                        bit_pos = offset * 8;
+                    }
+                    bf_unit_size = unit;
+                }
+
+                mem->ty = mem_ty;
+                mem->bit_offset = bit_pos % unit_bits;
+                if (is_union) {
+                    mem->offset = 0;
+                    if (max_size < unit)
+                        max_size = unit;
+                } else {
+                    mem->offset = (bit_pos / unit_bits) * unit;
+                    bit_pos += bit_width;
+                    int end_byte = (bit_pos + 7) / 8;
+                    if (end_byte > offset)
+                        offset = end_byte;
+                }
+                if (max_align < unit)
+                    max_align = unit;
             } else {
-                offset = align_to(offset, mem_ty->align);
-                mem->offset = offset;
-                offset += mem_ty->size;
+                // Normal (non-bitfield) member
+                bf_unit_size = 0; // end any bitfield packing run
+                mem->ty = mem_ty;
+                mem->bit_offset = 0;
+                if (is_union) {
+                    mem->offset = 0;
+                    if (max_size < mem_ty->size)
+                        max_size = mem_ty->size;
+                } else {
+                    offset = align_to(offset, mem_ty->align);
+                    bit_pos = offset * 8;
+                    mem->offset = offset;
+                    offset += mem_ty->size;
+                    bit_pos = offset * 8;
+                }
+                if (max_align < mem_ty->align)
+                    max_align = mem_ty->align;
             }
-            if (max_align < mem_ty->align)
-                max_align = mem_ty->align;
-            cur = cur->next = mem;
+            if (name)
+                cur = cur->next = mem;
 
             if (!equal(tok, ","))
                 break;
