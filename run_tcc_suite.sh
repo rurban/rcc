@@ -18,6 +18,9 @@ if [ -z "$RCC" ]; then
     for candidate in "$SCRIPT_DIR/rcc" "$SCRIPT_DIR/rcc.exe"; do
         if [ -x "$candidate" ]; then
             RCC="$candidate"
+            if [ "$RCC" = "$SCRIPT_DIR/rcc.exe" ]; then
+                RCC="$SCRIPT_DIR/mingw-cross.sh"
+            fi
             break
         fi
     done
@@ -59,6 +62,11 @@ test_args() {
 TMPDIR="${TMPDIR:-/tmp}"
 TMP_OUT="$TMPDIR/rcc_test_$$.out"
 TMP_EXE="$TMPDIR/rcc_test_$$"
+if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
+    TMP_EXE="$TMP_EXE.exe"
+    WINEDEBUG=fixme-all
+    export WINEDEBUG
+fi
 trap 'rm -f "$TMP_OUT" "$TMP_EXE"' EXIT INT TERM
 
 # Iterate over all *.c files; skip helper files containing '+' in the name

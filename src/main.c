@@ -5,6 +5,9 @@
 #include <unistd.h>
 #define _getpid getpid
 #endif
+#ifndef GCC
+#define GCC "gcc"
+#endif
 
 // Returns the contents of a given file.
 static char *read_file(char *path) {
@@ -89,9 +92,9 @@ int main(int argc, char **argv) {
     if (!opt_S) {
         char cmd[1024];
         if (opt_c) {
-            snprintf(cmd, sizeof(cmd), "gcc -c %s -o %s", asm_path, out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -c %s -o %s", asm_path, out_path);
         } else {
-            snprintf(cmd, sizeof(cmd), "gcc %s -o %s", asm_path, out_path);
+            snprintf(cmd, sizeof(cmd), GCC " %s -o %s", asm_path, out_path);
         }
         
         int status = system(cmd);

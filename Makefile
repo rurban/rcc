@@ -1,4 +1,4 @@
-CC = gcc
+CC     = gcc
 CFLAGS = -std=c11 -Wall -Wextra -O2 -g
 TARGET = rcc
 
@@ -8,6 +8,8 @@ OBJS = $(SRCS:.c=.o)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
+src/main.o: src/main.c
+	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\"
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
