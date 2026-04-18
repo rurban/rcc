@@ -5,6 +5,8 @@
 // Input string
 static char *current_input;
 static char *current_filename;
+static int current_line_offset = 0;
+static int line_num = 1;
 
 // Reports an error and exit.
 void error(char *fmt, ...) {
@@ -27,13 +29,17 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
     while (*end != '\n' && *end != '\0')
         end++;
 
-    int line_num = 1;
-    for (char *p = current_input; p < line; p++)
-        if (*p == '\n')
-            line_num++;
+    int reported_line = line_num;
+    if (loc < current_input + current_line_offset) {
+        // Error is in original file before #line switch - recalculate
+        reported_line = 1;
+        for (char *p = current_input; p < line; p++)
+            if (*p == '\n')
+                reported_line++;
+    }
 
     // Print filename and line info
-    fprintf(stderr, "\033[1;37m%s:%d: \033[0m", current_filename, line_num);
+    fprintf(stderr, "\033[1;37m%s:%d: \033[0m", current_filename, reported_line);
     fprintf(stderr, "\033[1;31merror:\033[0m ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
@@ -71,10 +77,13 @@ void warn_tok(Token *tok, char *fmt, ...) {
     char *line = tok->loc;
     while (current_input < line && line[-1] != '\n')
         line--;
-    int line_num = 1;
-    for (char *p = current_input; p < line; p++)
-        if (*p == '\n')
-            line_num++;
+    int reported_line = line_num;
+    if (tok->loc < current_input + current_line_offset) {
+        reported_line = 1;
+        for (char *p = current_input; p < line; p++)
+            if (*p == '\n')
+                reported_line++;
+    }
     // Use basename of file
     const char *base = current_filename;
     for (const char *p = current_filename; *p; p++)
@@ -82,7 +91,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
             base = p + 1;
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "%s:%d: warning: ", base, line_num);
+    fprintf(stderr, "%s:%d: warning: ", base, reported_line);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
@@ -207,6 +216,35 @@ Token *tokenize(char *filename, char *p) {
 
         // Skip preprocessor directives naively
         if (*p == '#') {
+            // Check for #line directive: # line_number "filename"
+            char *q = p + 1;
+            while (*q == ' ' || *q == '\t') q++;
+            if (isdigit(*q)) {
+                // Parse line number
+                int n = 0;
+                while (isdigit(*q)) {
+                    n = n * 10 + (*q - '0');
+                    q++;
+                }
+                while (*q == ' ' || *q == '\t') q++;
+                if (*q == '"') {
+                    // Parse filename
+                    q++;
+                    char *fname_start = q;
+                    while (*q && *q != '"') q++;
+                    if (*q == '"') {
+                        // Save current position for line counting
+                        current_input = p;
+                        current_line_offset = q + 1 - current_input;
+                        // Update line number (subtract 1 since we start counting from 1)
+                        line_num = n - 1;
+                        // Skip to end of line
+                        p = q + 1;
+                        while (*p && *p != '\n') p++;
+                        continue;
+                    }
+                }
+            }
             while (*p && *p != '\n')
                 p++;
             continue;

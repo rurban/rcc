@@ -806,8 +806,18 @@ static char *preprocess_file(char *filename, char *input) {
                     char *path = resolve_include(filename, spec);
                     if (path) {
                         char *inc = read_pp_file(path);
-                        if (inc)
+                        if (inc) {
+                            // Count lines in included file for line number tracking
+                            int incl_lines = 0;
+                            for (char *p = inc; *p; p++)
+                                if (*p == '\n') incl_lines++;
+                            // Output #line directive before include to track original file
+                            sb_puts(&out, format("# %d \"%s\"\n", line_no + 1, filename));
                             sb_puts(&out, preprocess_file(path, inc));
+                            // After include, restore line numbers for current file
+                            line_no += incl_lines;
+                            sb_puts(&out, format("# %d \"%s\"\n", line_no + 1, filename));
+                        }
                     }
                 }
             } else if (pp_startswith(s, "ifdef")) {
