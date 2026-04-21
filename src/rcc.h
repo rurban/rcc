@@ -317,4 +317,9 @@ void codegen(Program *prog);
 // Optimizer (CTFE)
 void optimize(Program *prog);
 
+// Unicode identifiers
+uint32_t decode_utf8(char **new_pos, char *p);
+bool is32_ident1(uint32_t c);
+bool is32_ident2(uint32_t c);
+
 #endif // RCC_H

@@ -1625,6 +1625,7 @@ void codegen(Program *prog) {
             if (lines[li] && lines[li][0])
                 fprintf(stdout, "%s\n", lines[li]);
         }
+        // FIXME: this leaks all strdup'ed peep-optimized lines
         free(lines);
         free(body_text);
 

@@ -349,11 +349,30 @@ Token *tokenize(char *filename, char *p) {
         }
 
         // Identifier or keyword
+        if ((unsigned char)*p >= 128) {
+            char *start = p;
+            char *pos;
+            uint32_t c = decode_utf8(&pos, p);
+            if (!is32_ident1(c) || pos == p) // ensure utf-8 progress
+                continue;
+            do {
+                p = pos;
+                c = decode_utf8(&pos, p);
+            } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
+            if (pos != p) {
+                cur = cur->next = new_token(TK_IDENT, start, p);
+                cur->name = str_intern(start, p - start);
+            }
+            continue;
+        }
         if (is_ident1(*p)) {
             char *start = p;
+            char *pos = p + 1;
+            uint32_t c;
             do {
-                p++;
-            } while (is_ident2(*p));
+                p = pos;
+                c = decode_utf8(&pos, p);
+            } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
             cur = cur->next = new_token(TK_IDENT, start, p);
             cur->name = str_intern(start, p - start);
             continue;
