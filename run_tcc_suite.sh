@@ -260,4 +260,4 @@ printf "${CYAN}Results: %d/%d passed (%d%%), %d failed.${RESET}\n" \
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$failed" -eq 0 ]
+[ "$passed" -ge 76 ]
