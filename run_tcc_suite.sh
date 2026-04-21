@@ -86,6 +86,16 @@ for src in "$TEST_DIR"/*.c; do
 	case "$fname" in *+*) continue ;; esac # skip multi-file helpers
 
 	base="${fname%.c}"
+
+	# Apply local fixups for tinycc tests2 expect files.
+	# If test/tinycc-<base>.expect exists and differs from the upstream
+	# expect, overwrite the upstream copy. We fixed these cases; tcc hasn't.
+	fixup="$SCRIPT_DIR/test/tinycc-$base.expect"
+	upstream_expect="$TEST_DIR/$base.expect"
+	if [ -f "$fixup" ] && ! cmp -s "$fixup" "$upstream_expect" 2>/dev/null; then
+		cp "$fixup" "$upstream_expect"
+	fi
+
 	total=$((total + 1))
 
 	printf "  %-40s " "$base..."
