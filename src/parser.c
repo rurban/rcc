@@ -8,6 +8,7 @@ struct VarAttr {
     bool is_typedef;
     bool is_extern;
     bool is_static;
+    bool has_type;
 };
 
 struct TagScope {
@@ -1071,6 +1072,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = is_unsigned ? ty_uint : ty_int;
         } else if (attr_align > 0) {
             ty = ty_int;
+            warn_tok(tok, "type defaults to int");
         }
     }
 
