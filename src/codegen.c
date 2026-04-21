@@ -1372,7 +1372,6 @@ void codegen(Program *prog) {
         int param_xmm_index = 0;
 #endif
         int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) ? 1 : 0;
-        int i = 0;
         for (LVar *var = fn->params; var; var = var->param_next) {
 #ifdef _WIN32
             if (param_index < max_param_regs) {
@@ -1403,7 +1402,6 @@ void codegen(Program *prog) {
                 param_index++;
             }
 #endif
-            i++;
         }
 
         for (Node *n = fn->body; n; n = n->next) {
