@@ -265,7 +265,7 @@ static char *resolve_include(char *curr_file, char *spec) {
     return NULL;
 }
 
-static char *expand_text(char *text, char *filename, int line_no, int depth);
+static char *expand_text(char *text, char *filename, unsigned line_no, int depth);
 
 static int find_param_index(Macro *m, char *name) {
     for (int i = 0; i < m->param_len; i++)
@@ -420,7 +420,7 @@ static int parse_macro_args(char *p, char **args, int max_args, char **end_out) 
     return 0;
 }
 
-static char *expand_text(char *text, char *filename, int line_no, int depth) {
+static char *expand_text(char *text, char *filename, unsigned line_no, int depth) {
     if (depth > 20)
         return text;
 
@@ -455,7 +455,7 @@ static char *expand_text(char *text, char *filename, int line_no, int depth) {
         char *name = pp_strndup(start, p - start);
 
         if (strcmp(name, "__LINE__") == 0) {
-            sb_puts(&sb, format("%d", line_no));
+            sb_puts(&sb, format("%u", line_no));
             continue;
         }
         if (strcmp(name, "__FILE__") == 0) {
@@ -708,7 +708,7 @@ static char *preprocess_file(char *filename, char *input) {
     sb_init(&out, strlen(input) * 16 + 65536);
     CondIncl *conds = NULL;
     bool active = true;
-    int line_no = 1;
+    unsigned line_no = 1;
 
     for (char *p = input; *p;) {
         char *line = p;
@@ -845,10 +845,10 @@ static char *preprocess_file(char *filename, char *input) {
                             int incl_lines = 0;
                             for (char *p = inc; *p; p++)
                                 if (*p == '\n') incl_lines++;
-                            sb_puts(&out, format("# %d \"%s\"\n", line_no + 1, filename));
+                            sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
                             sb_puts(&out, preprocess_file(path, inc));
                             line_no += incl_lines;
-                            sb_puts(&out, format("# %d \"%s\"\n", line_no + 1, filename));
+                            sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, filename));
                         }
                     }
                 }
