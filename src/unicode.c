@@ -1,7 +1,8 @@
 /*
-  from chibicc
+  Parts from chibicc.
   MIT License
-  Copyright (c) 2019 Rui Ueyama
+  Copyright (c) 2019 Rui Ueyama.
+  Optimized by Reini Urban 2026
 */
 #include "rcc.h"
 
@@ -362,15 +363,19 @@ uint32_t decode_utf8(char **new_pos, char *p) {
   return c;
 }
 
+static int compare_range(const void *key, const void *elem) {
+  uint32_t c = *(const uint32_t *)key;
+  const UTF32Range *r = elem;
+  if (c < r->first)
+    return -1;
+  if (c > r->last)
+    return 1;
+  return 0;
+}
+
 static bool in_range(uint32_t c, UTF32Range *range, int len) {
-  for (int i = 0; i < len; i++) {
-    if (c > range[i].last)
-      continue;
-    if (range[i].first <= c)
-      return true;
-    return false;
-  }
-  return false;
+  UTF32Range *result = bsearch(&c, range, len, sizeof(UTF32Range), compare_range);
+  return result != NULL;
 }
 
 bool is32_ident1(uint32_t c) {
