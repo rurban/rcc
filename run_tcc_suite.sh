@@ -138,6 +138,10 @@ for src in "$TEST_DIR"/*.c; do
 
 	# 3. Verify
 	expect_file="$TEST_DIR/$base.expect"
+	fixup_expect="$SCRIPT_DIR/test/tinycc-$base.expect"
+	if [ -f "$fixup_expect" ]; then
+		expect_file="$fixup_expect"
+	fi
 	if [ -f "$expect_file" ]; then
 		# Normalise line endings before diff
 		actual="$(tr -d '\r' <"$TMP_OUT")"
