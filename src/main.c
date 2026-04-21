@@ -35,6 +35,10 @@ static char *read_file(char *path) {
 bool opt_O0 = false;
 
 int main(int argc, char **argv) {
+#ifndef __x86_64__
+    fprintf(stderr, "rcc: unsupported target: only x86_64 is supported\n");
+    return 1;
+#endif
     char *out_path =
 #ifdef _WIN32
         "a.exe"
