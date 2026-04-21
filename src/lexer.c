@@ -30,8 +30,7 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
         end++;
 
     int reported_line = line_num;
-    if (loc < current_input + current_line_offset) {
-        // Error is in original file before #line switch - recalculate
+    if (current_line_offset == 0 || loc < current_input + current_line_offset) {
         reported_line = 1;
         for (char *p = current_input; p < line; p++)
             if (*p == '\n')
@@ -78,7 +77,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
     while (current_input < line && line[-1] != '\n')
         line--;
     int reported_line = line_num;
-    if (tok->loc < current_input + current_line_offset) {
+    if (current_line_offset == 0 || tok->loc < current_input + current_line_offset) {
         reported_line = 1;
         for (char *p = current_input; p < line; p++)
             if (*p == '\n')
@@ -392,12 +391,14 @@ Token *tokenize(char *filename, char *p) {
         if (*p == '\'') {
             char *start = p;
             p++;
-            char c;
-            if (*p == '\\') {
-                p++;
-                c = read_escaped_char(&p, p);
-            } else {
-                c = *p++;
+            char c = 0;
+            while (*p && *p != '\'' && *p != '\n') {
+                if (*p == '\\') {
+                    p++;
+                    c = read_escaped_char(&p, p);
+                } else {
+                    c = *p++;
+                }
             }
             if (*p != '\'') error_at(start, "unclosed character literal");
             p++;
