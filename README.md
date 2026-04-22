@@ -42,7 +42,7 @@ Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers.
 
-Not yet: goto, break, continue, attribute `__cleanup__`, struct returns, long double, float casts.
+Not yet: \_Generic, attribute `__cleanup__`, advanced struct init's and returns, long double, float casts, vla_label, vla_continue, \_\_asm, enum_bitfield, ms bitfields, al_ax_extend, fastcall, inline, float_struct_calling, bound_signal, bound_setjmp, bound_global, missing builtins, alias, vla_reuse, atomics, return_struct_in_reg, ...
 
 ## Build
 
