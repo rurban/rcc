@@ -1235,11 +1235,45 @@ static Token *skip_initializer(Token *tok) {
     return tok;
 }
 
-static int count_array_initializer(Token **rest, Token *tok) {
+static Token *skip_flat_aggregate_init(Token *tok, Type *ty) {
+    if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+        Member *mem = ty->members;
+        while (mem) {
+            if (equal(tok, "}"))
+                break;
+            tok = skip_flat_aggregate_init(tok, mem->ty);
+            mem = mem->next;
+            if (mem && equal(tok, ","))
+                tok = tok->next;
+            if (ty->kind == TY_UNION)
+                break;
+        }
+    } else if (ty->kind == TY_ARRAY) {
+        if (equal(tok, "{") || (ty->base->kind == TY_CHAR && tok->kind == TK_STR)) {
+            tok = skip_initializer(tok);
+        } else {
+            int len = array_len(ty);
+            for (int i = 0; i < len && !equal(tok, "}"); i++) {
+                tok = skip_flat_aggregate_init(tok, ty->base);
+                if (i < len - 1 && equal(tok, ","))
+                    tok = tok->next;
+            }
+        }
+    } else {
+        assign(&tok, tok);
+    }
+    return tok;
+}
+
+static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
     int count = 0;
     tok = skip(tok, "{");
     while (!equal(tok, "}")) {
-        tok = skip_initializer(tok);
+        if (elem_ty && (elem_ty->kind == TY_STRUCT || elem_ty->kind == TY_UNION) && !equal(tok, "{")) {
+            tok = skip_flat_aggregate_init(tok, elem_ty);
+        } else {
+            tok = skip_initializer(tok);
+        }
         count++;
         if (equal(tok, ",")) {
             tok = tok->next;
@@ -1264,7 +1298,7 @@ static Type *infer_array_type(Type *ty, Token *tok) {
     }
     if (equal(tok, "{")) {
         Token *tmp = tok;
-        return array_of(ty->base, count_array_initializer(&tmp, tmp));
+        return array_of(ty->base, count_array_initializer(&tmp, tmp, ty->base));
     }
     return ty;
 }
@@ -1390,6 +1424,21 @@ static void write_scalar_bytes(char *buf, int offset, int size, int64_t val) {
 // Forward declaration
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset);
 
+static Token *global_init_flat_array(Token *tok, LVar *var, Type *ty, int offset) {
+    if (ty->kind == TY_ARRAY) {
+        int len = array_len(ty);
+        Type *base = ty->base;
+        int elem_size = base->size;
+        for (int i = 0; i < len && !equal(tok, "}"); i++) {
+            tok = global_init_flat_array(tok, var, base, offset + i * elem_size);
+            if (i < len - 1 && equal(tok, ","))
+                tok = tok->next;
+        }
+        return tok;
+    }
+    return global_init_one(tok, var, ty, offset);
+}
+
 static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_offset) {
     if (mem->bit_width > 0) {
         Node *node = assign(&tok, tok);
@@ -1428,6 +1477,9 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
             }
         }
         return tok;
+    }
+    if (mem->ty->kind == TY_ARRAY && !equal(tok, "{") && !(mem->ty->base->kind == TY_CHAR && tok->kind == TK_STR)) {
+        return global_init_flat_array(tok, var, mem->ty, base_offset + mem->offset);
     }
     return global_init_one(tok, var, mem->ty, base_offset + mem->offset);
 }
@@ -1579,7 +1631,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             tok = global_init_member(tok, var, mem, offset);
             mem = mem->next;
             if (ty->kind == TY_STRUCT) {
-                while (mem && !equal(tok, "}") && !equal(tok, ",")) {
+                while (mem && !equal(tok, "}")) {
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    if (equal(tok, "}"))
+                        break;
                     tok = global_init_member(tok, var, mem, offset);
                     mem = mem->next;
                 }
@@ -2939,7 +2995,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         int len = array_len(var->ty);
         if (len == 0) {
             Token *tmp = tok;
-            len = count_array_initializer(&tmp, tmp);
+            len = count_array_initializer(&tmp, tmp, var->ty->base);
             var->ty = array_of(var->ty->base, len);
         }
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);

@@ -225,8 +225,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         } else {
             if (argv[i]->ty->size == 1)
                 printf("  movzx %s, %s\n", reg64[r], reg8[r]);
-            else if (argv[i]->ty->size == 4)
-                printf("  mov %s, %s\n", reg32[r], reg32[r]);
+            else if (argv[i]->ty->size == 4) {
+                if (argv[i]->ty->is_unsigned)
+                    printf("  mov %s, %s\n", reg32[r], reg32[r]);
+                else
+                    printf("  movsxd %s, %s\n", reg64[r], reg32[r]);
+            }
             printf("  mov qword ptr [rsp+%d], %s\n", shadow_space + arg_stack_idx[i] * 8, reg64[r]);
         }
         free_reg(r);
@@ -266,7 +270,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         } else if (arg_sizes[i] == 1) {
             printf("  movzx %s, %s\n", argreg64[argi], reg8[arg_regs[i]]);
         } else if (arg_sizes[i] == 4) {
-            printf("  mov %s, %s\n", argreg32[argi], reg(arg_regs[i], 4));
+            if (argv[i]->ty->is_unsigned)
+                printf("  mov %s, %s\n", argreg32[argi], reg(arg_regs[i], 4));
+            else
+                printf("  movsxd %s, %s\n", argreg64[argi], reg(arg_regs[i], 4));
         } else {
             printf("  mov %s, %s\n", argreg64[argi], reg(arg_regs[i], 8));
         }
@@ -281,7 +288,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         } else if (arg_sizes[i] == 1) {
             printf("  movzx %s, %s\n", argreg64[arg_gp_idx[i]], reg8[arg_regs[i]]);
         } else if (arg_sizes[i] == 4) {
-            printf("  mov %s, %s\n", argreg32[arg_gp_idx[i]], reg(arg_regs[i], 4));
+            if (argv[i]->ty->is_unsigned)
+                printf("  mov %s, %s\n", argreg32[arg_gp_idx[i]], reg(arg_regs[i], 4));
+            else
+                printf("  movsxd %s, %s\n", argreg64[arg_gp_idx[i]], reg(arg_regs[i], 4));
         } else {
             printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg(arg_regs[i], 8));
         }
