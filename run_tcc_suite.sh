@@ -81,7 +81,7 @@ fi
 trap 'rm -f "$TMP_OUT" "$TMP_EXE"' EXIT INT TERM
 
 # Iterate over all *.c files; skip helper files containing '+' in the name
-for src in "$TEST_DIR"/*.c; do
+while IFS= read -r src; do
 	fname="$(basename "$src")"
 	case "$fname" in *+*) continue ;; esac # skip multi-file helpers
 
@@ -161,7 +161,9 @@ for src in "$TEST_DIR"/*.c; do
 		passed=$((passed + 1))
 		report_rows="${report_rows}| $base | PASS | Executed successfully (no .expect) |\n"
 	fi
-done
+done <<EOF
+$(printf '%s\n' "$TEST_DIR"/*.c | sort -V)
+EOF
 
 # Run tests in test/ directory
 UNIT_TEST_DIR="$SCRIPT_DIR/test"
@@ -180,7 +182,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		return 1
 	}
 
-	for src in "$UNIT_TEST_DIR"/*.c; do
+	while IFS= read -r src; do
 		fname="$(basename "$src")"
 		base="${fname%.c}"
 
@@ -228,7 +230,9 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		printf "${GREEN}PASS${RESET}\n"
 		passed=$((passed + 1))
 		report_rows="${report_rows}| $base | PASS | Executed successfully |\n"
-	done
+	done <<EOF
+$(printf '%s\n' "$UNIT_TEST_DIR"/*.c | sort -V)
+EOF
 fi
 
 rm -f "$TMP_OUT"

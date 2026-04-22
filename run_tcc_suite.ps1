@@ -24,7 +24,10 @@ if (-not $RCC) {
     exit 1
 }
 
-$TestFiles = Get-ChildItem -Path $TestDir -Filter "*.c" | Sort-Object Name
+$TestFiles = Get-ChildItem -Path $TestDir -Filter "*.c" | Sort-Object {
+    $base = $_.BaseName
+    if ($base -match '^(\d+)') { [int]$Matches[1] } else { [int]::MaxValue }
+}, @{ Expression = 'BaseName'; Ascending = $true }
 $Total = $TestFiles.Count
 $Passed = 0
 $Failed = 0
