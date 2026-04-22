@@ -774,7 +774,17 @@ static int gen(Node *node) {
             return r; // array decays to pointer
         }
         Type *load_ty = (node->member && node->member->bit_width > 0) ? node->member->ty : node->ty;
-        emit_load(load_ty, r, format("[%s]", reg64[r]));
+        if (is_flonum(load_ty)) {
+            if (load_ty->size == 4) {
+                printf("  movss xmm0, dword ptr [%s]\n", reg64[r]);
+                printf("  cvtss2sd xmm0, xmm0\n");
+            } else {
+                printf("  movsd xmm0, qword ptr [%s]\n", reg64[r]);
+            }
+            printf("  movq %s, xmm0\n", reg64[r]);
+        } else {
+            emit_load(load_ty, r, format("[%s]", reg64[r]));
+        }
         // Bitfield: extract the relevant bits
         if (node->member && node->member->bit_width > 0) {
             int bw = node->member->bit_width;
@@ -813,12 +823,12 @@ static int gen(Node *node) {
                 printf("  comisd xmm0, xmm1\n");
                 printf("  jb .L.ucast.%d\n", c);
                 printf("  subsd xmm0, xmm1\n");
-                printf("  cvttsd2siq %s, xmm0\n", reg64[r]);
+                printf("  cvttsd2si %s, xmm0\n", reg64[r]);
                 printf("  mov rcx, 0x8000000000000000\n");
                 printf("  or %s, rcx\n", reg64[r]);
                 printf("  jmp .L.ucast_end.%d\n", c);
                 printf(".L.ucast.%d:\n", c);
-                printf("  cvttsd2siq %s, xmm0\n", reg64[r]);
+                printf("  cvttsd2si %s, xmm0\n", reg64[r]);
                 printf(".L.ucast_end.%d:\n", c);
             } else {
                 printf("  cvttsd2si %s, xmm0\n", to->size == 8 ? reg64[r] : reg32[r]);
@@ -861,7 +871,17 @@ static int gen(Node *node) {
         if (node->ty->kind == TY_FUNC || node->ty->kind == TY_ARRAY)
             return gen(node->lhs);
         int r = gen(node->lhs);
-        emit_load(node->ty, r, format("[%s]", reg64[r]));
+        if (is_flonum(node->ty)) {
+            if (node->ty->size == 4) {
+                printf("  movss xmm0, dword ptr [%s]\n", reg64[r]);
+                printf("  cvtss2sd xmm0, xmm0\n");
+            } else {
+                printf("  movsd xmm0, qword ptr [%s]\n", reg64[r]);
+            }
+            printf("  movq %s, xmm0\n", reg64[r]);
+        } else {
+            emit_load(node->ty, r, format("[%s]", reg64[r]));
+        }
         return r;
     }
     case ND_RETURN: {
