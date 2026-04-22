@@ -2,7 +2,7 @@
 # See https://pre-commit.com/hooks.html for more hooks
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v6.0.0
     hooks:
       # see https://github.com/pre-commit/pre-commit-hooks/
       - id: check-added-large-files # prevents giant files from being committed.
@@ -20,22 +20,21 @@ repos:
       - id: check-symlinks
       - id: destroyed-symlinks
       - id: check-vcs-permalinks
-      - id: detect-aws-credentials
       - id: file-contents-sorter
 
   - repo: https://github.com/pycontribs/mirrors-prettier
-    rev: v3.3.3
+    rev: v3.6.2
     hooks:
       - id: prettier
         types: ["markdown"]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+    rev: v0.11.0.1
     hooks:
       - id: shellcheck
 
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v22.1.1
+    rev: v22.1.4
     hooks:
       - id: clang-format
         entry: ./clang-format.sh

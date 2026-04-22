@@ -65,6 +65,7 @@ run_bench() {
         list_c="$list_c $_label"
 
 	# Compile
+        # shellcheck disable=SC2086
 	_compile_ms=$(time_ms $_compiler $_args 2>/dev/null) || true
 	if [ ! -x "$_exe" ]; then
 		printf "  COMPILE FAILED\n"
@@ -84,6 +85,7 @@ run_bench() {
 		fi
 		_i=$((_i + 1))
 	done
+        # shellcheck disable=SC2086
         if [ $_best = 1000 ]; then
             _best=$_exec_ms
         fi
@@ -130,6 +132,7 @@ for _c in $list_c; do
 	eval "_em=\${${_c}_EXEC:-}"
 	eval "_tm=\${${_c}_TOTAL:-}"
 	[ -z "$_cm" ] && continue
+	# shellcheck disable=SC2154
 	printf "%-25s %8s ms %8s ms %8s ms\n" "$_c" "$_cm" "$_em" "$_tm"
 done
 

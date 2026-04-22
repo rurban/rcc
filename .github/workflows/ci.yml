@@ -24,8 +24,9 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc build-essential
+          sudo apt-get install -y gcc build-essential cppcheck
           cd tinycc && ./configure && make && sudo make install
+          pip install prek
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -48,6 +49,9 @@ jobs:
       - name: Run tests
         if: matrix.os != 'macos-latest'
         run: make check
+
+      - name: Run linter
+        run: make lint
 
       - name: Run benchmarks
         if: matrix.os != 'macos-latest'

@@ -53,6 +53,7 @@ else
 	RESET=''
 fi
 
+# shellcheck disable=SC2059
 printf "${CYAN}Starting TCC Test Suite on RCC...${RESET}\n"
 printf "RCC:      %s\n" "$RCC"
 printf "Test dir: %s\n\n" "$TEST_DIR"
@@ -102,12 +103,14 @@ while IFS= read -r src; do
 
 	# 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
 	if ! "$RCC" "$src" -o "$TMP_EXE" 2>"$TMP_OUT"; then
+		# shellcheck disable=SC2059
 		printf "${RED}COMPILE FAIL${RESET}\n"
 		failed=$((failed + 1))
 		report_rows="${report_rows}| $base | COMPILE_FAIL | rcc returned non-zero |\n"
 		continue
 	fi
 	if [ ! -x "$TMP_EXE" ]; then
+		# shellcheck disable=SC2059
 		printf "${RED}NO EXE PRODUCED${RESET}\n"
 		failed=$((failed + 1))
 		report_rows="${report_rows}| $base | COMPILE_FAIL | executable missing |\n"
@@ -119,6 +122,7 @@ while IFS= read -r src; do
 	if [ -n "$args" ]; then
 		# shellcheck disable=SC2086
 		if ! "$TMP_EXE" $args >>"$TMP_OUT" 2>&1; then
+			# shellcheck disable=SC2059
 			printf "${RED}EXEC FAIL${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | EXEC_FAIL | non-zero exit |\n"
@@ -127,6 +131,7 @@ while IFS= read -r src; do
 		fi
 	else
 		if ! "$TMP_EXE" >>"$TMP_OUT" 2>&1; then
+			# shellcheck disable=SC2059
 			printf "${RED}EXEC FAIL${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | EXEC_FAIL | non-zero exit |\n"
@@ -147,16 +152,19 @@ while IFS= read -r src; do
 		actual="$(tr -d '\r' <"$TMP_OUT")"
 		expected="$(tr -d '\r' <"$expect_file")"
 		if [ "$actual" = "$expected" ]; then
+			# shellcheck disable=SC2059
 			printf "${GREEN}PASS${RESET}\n"
 			passed=$((passed + 1))
 			report_rows="${report_rows}| $base | PASS | Output matches |\n"
 		else
+			# shellcheck disable=SC2059
 			printf "${YELLOW}MISMATCH${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | MISMATCH | Output does not match .expect |\n"
 			cp "$TMP_OUT" "$TEST_DIR/$base.out"
 		fi
 	else
+		# shellcheck disable=SC2059
 		printf "${GRAY}PASS (no expect)${RESET}\n"
 		passed=$((passed + 1))
 		report_rows="${report_rows}| $base | PASS | Executed successfully (no .expect) |\n"
@@ -168,7 +176,7 @@ EOF
 # Run tests in test/ directory
 UNIT_TEST_DIR="$SCRIPT_DIR/test"
 if [ -d "$UNIT_TEST_DIR" ]; then
-	printf "\n${CYAN}Unit tests (test/)...${RESET}\n"
+	printf "\n%sUnit tests (test/)...%s\n", "${CYAN}", "${RESET}"
 
 	# Tests expected to fail compilation (compile error is the correct outcome)
 	expect_compile_fail() {
@@ -193,11 +201,13 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 
 		if expect_compile_fail "$base"; then
 			if "$RCC" "$src" -o "$TMP_EXE" >/dev/null 2>&1; then
+				# shellcheck disable=SC2059
 				printf "${RED}SHOULD FAIL (compiled ok)${RESET}\n"
 				failed=$((failed + 1))
 				report_rows="${report_rows}| $base | FAIL | expected compile error but succeeded |\n"
 				rm -f "$TMP_EXE"
 			else
+				# shellcheck disable=SC2059
 				printf "${GREEN}PASS (expected compile error)${RESET}\n"
 				passed=$((passed + 1))
 				report_rows="${report_rows}| $base | PASS | compile error as expected |\n"
@@ -206,12 +216,14 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fi
 
 		if ! "$RCC" "$src" -o "$TMP_EXE" >/dev/null 2>&1; then
+			# shellcheck disable=SC2059
 			printf "${RED}COMPILE FAIL${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | COMPILE_FAIL | rcc returned non-zero |\n"
 			continue
 		fi
 		if [ ! -x "$TMP_EXE" ]; then
+			# shellcheck disable=SC2059
 			printf "${RED}NO EXE PRODUCED${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | COMPILE_FAIL | executable missing |\n"
@@ -219,6 +231,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fi
 
 		if ! "$TMP_EXE" >"$TMP_OUT" 2>&1; then
+			# shellcheck disable=SC2059
 			printf "${RED}EXEC FAIL${RESET}\n"
 			failed=$((failed + 1))
 			report_rows="${report_rows}| $base | EXEC_FAIL | non-zero exit |\n"
@@ -227,6 +240,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fi
 		rm -f "$TMP_EXE"
 
+		# shellcheck disable=SC2059
 		printf "${GREEN}PASS${RESET}\n"
 		passed=$((passed + 1))
 		report_rows="${report_rows}| $base | PASS | Executed successfully |\n"
@@ -244,6 +258,7 @@ if [ "$total" -gt 0 ]; then
 else
 	pct=0
 fi
+# shellcheck disable=SC2059
 printf "${CYAN}Results: %d/%d passed (%d%%), %d failed.${RESET}\n" \
 	"$passed" "$total" "$pct" "$failed"
 

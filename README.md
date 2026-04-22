@@ -8,11 +8,11 @@ A fast, self-contained C compiler targeting x86-64 Windows and Unix. Written fro
 Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×128 matrix multiply, floating-point math loop (500K), and bubble sort (5K).
 
 | Compiler   | Execute (ms) | Compile (ms) | Total (ms) |
-|------------|-------------:|-------------:|-----------:|
-| **RCC**    |      **349** |        1042  |    **1391**|
-| TCC 0.9.27 |        400   |        1013  |      1413  |
-| GCC -O0    |        298   |        1021  |      1319  |
-| GCC -O2    |        132   |        1020  |      1152  |
+| ---------- | -----------: | -----------: | ---------: |
+| **RCC**    |      **349** |         1042 |   **1391** |
+| TCC 0.9.27 |          400 |         1013 |       1413 |
+| GCC -O0    |          298 |         1021 |       1319 |
+| GCC -O2    |          132 |         1020 |       1152 |
 
 - **RCC vs TCC execution: 0.87× (13% faster)**
 - All outputs verified correct against GCC -O2 reference.
@@ -65,7 +65,7 @@ make bench
 ```
 
 ## Options
- 
+
     -Lpath   add linker path
     -lname   add lib
     -S       assemble-only
@@ -75,20 +75,20 @@ make bench
 
 ## Project Structure
 
-| File             | Description                              |
-|------------------|------------------------------------------|
-| `src/main.c`     | Driver: CLI, assembler/linker invocation |
-| `src/lexer.c`    | Tokenizer with number/string/char literal support |
-| `src/preprocess.c`| C preprocessor (`#include`, `#define`, `#if`, macros) |
-| `src/parser.c`   | Recursive-descent parser → AST           |
-| `src/type.c`     | Type system (primitives, pointers, arrays, structs, functions) |
-| `src/codegen.c`  | x86-64 code generator with register allocator and peephole optimizer |
-| `src/opt.c`      | AST-level optimizer and CTFE interpreter |
-| `src/alloc.c`    | Arena memory allocator                   |
-| `src/rcc.h`      | Shared data structures and declarations  |
-| `include/`       | Minimal C standard library headers (`stdio.h`, `math.h`, etc.) |
-| `bench/`         | Benchmark suite and runner script        |
-| `test/`          | Test programs                            |
+| File               | Description                                                          |
+| ------------------ | -------------------------------------------------------------------- |
+| `src/main.c`       | Driver: CLI, assembler/linker invocation                             |
+| `src/lexer.c`      | Tokenizer with number/string/char literal support                    |
+| `src/preprocess.c` | C preprocessor (`#include`, `#define`, `#if`, macros)                |
+| `src/parser.c`     | Recursive-descent parser → AST                                       |
+| `src/type.c`       | Type system (primitives, pointers, arrays, structs, functions)       |
+| `src/codegen.c`    | x86-64 code generator with register allocator and peephole optimizer |
+| `src/opt.c`        | AST-level optimizer and CTFE interpreter                             |
+| `src/alloc.c`      | Arena memory allocator                                               |
+| `src/rcc.h`        | Shared data structures and declarations                              |
+| `include/`         | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)       |
+| `bench/`           | Benchmark suite and runner script                                    |
+| `test/`            | Test programs                                                        |
 
 ## License
 

@@ -400,4 +400,3 @@ int utf8_len(char *str) {
     }
     return count;
 }
-

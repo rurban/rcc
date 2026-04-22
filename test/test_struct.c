@@ -1,6 +1,9 @@
-int printf(const char*, ...);
+int printf(const char *, ...);
 
-struct point { int x; int y; };
+struct point {
+    int x;
+    int y;
+};
 
 int main() {
     struct point p = {10, 20};

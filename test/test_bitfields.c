@@ -1,6 +1,10 @@
-int printf(const char*, ...);
+int printf(const char *, ...);
 
-struct bf { unsigned x:3; unsigned y:5; unsigned z:8; };
+struct bf {
+    unsigned x : 3;
+    unsigned y : 5;
+    unsigned z : 8;
+};
 
 int main() {
     struct bf b = {1, 2, 3};
@@ -14,11 +18,15 @@ int main() {
     // Test compound assignment - THIS IS THE BUG WE'RE FIXING
     b.x = 3;
     printf("before +=: x=%d\n", b.x);
-    b.x += 1;  // 3 + 1 = 4 (should be 4, but was giving 0)
+    b.x += 1; // 3 + 1 = 4 (should be 4, but was giving 0)
     printf("after +=1: x=%d\n", b.x);
 
     // Test bitfield with different types
-    struct bf2 { char a:4; short b:8; int c:16; } b2 = {1, 2, 3};
+    struct bf2 {
+        char a : 4;
+        short b : 8;
+        int c : 16;
+    } b2 = {1, 2, 3};
     printf("b2: a=%d b=%d c=%d\n", b2.a, b2.b, b2.c);
 
     return 0;

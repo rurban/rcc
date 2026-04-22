@@ -24,6 +24,10 @@ endif
 test check: $(TARGET)
 	@$(TEST_RUNNER)
 
+lint:
+	if command -v prek; then prek run -a; \
+        elif command -v pre-commit; then pre-commit run --all-files; fi
+
 bench: $(TARGET)
 	@$(BENCH_RUNNER)
 

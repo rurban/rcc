@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-// By separating this, optimize() CTFE cannot resolve `max` as a constant 
+// By separating this, optimize() CTFE cannot resolve `max` as a constant
 // inside main(), forcing the benchmark to measure actual native runtime.
 int get_max() {
     return 200000;
@@ -13,7 +13,7 @@ int count_primes(int max) {
         for (int j = 2; j * j <= i; j = j + 1) {
             if (i % j == 0) {
                 is_prime = 0;
-                // No break statement in RCC yet, so it runs fully! 
+                // No break statement in RCC yet, so it runs fully!
                 // This makes it a great heavy CPU benchmark.
             }
         }

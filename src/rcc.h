@@ -20,25 +20,25 @@
 //
 
 typedef enum {
-    TK_IDENT,   // Identifiers
-    TK_PUNCT,   // Punctuators
-    TK_NUM,     // Numeric literals
-    TK_FNUM,    // Floating-point literals
-    TK_STR,     // String literals
-    TK_EOF,     // End of file
+    TK_IDENT, // Identifiers
+    TK_PUNCT, // Punctuators
+    TK_NUM, // Numeric literals
+    TK_FNUM, // Floating-point literals
+    TK_STR, // String literals
+    TK_EOF, // End of file
 } TokenKind;
 
 // Token type
 typedef struct Token Token;
 struct Token {
     TokenKind kind; // Token kind
-    Token *next;    // Next token
-    int64_t val;   // If kind is TK_NUM, its value
-    double fval;   // If kind is TK_FNUM, its value
-    char *name;    // If kind is TK_IDENT, its name
-    char *str;     // If kind is TK_STR, its contents
-    char *loc;     // Token location
-    int len;        // Token length
+    Token *next; // Next token
+    int64_t val; // If kind is TK_NUM, its value
+    double fval; // If kind is TK_FNUM, its value
+    char *name; // If kind is TK_IDENT, its name
+    char *str; // If kind is TK_STR, its contents
+    char *loc; // Token location
+    int len; // Token length
     // For string literals: 0 = regular, 'L' = wide, 'u' = char16_t, 'U' = char32_t
     int string_literal_prefix;
 };
@@ -92,22 +92,22 @@ struct Member {
     Type *ty;
     char *name;
     int offset;
-    int bit_width;   // 0 = not a bitfield
-    int bit_offset;  // bit position within the storage unit
+    int bit_width; // 0 = not a bitfield
+    int bit_offset; // bit position within the storage unit
 };
 
 struct Type {
     TypeKind kind;
-    int size;   // sizeof
-    int align;  // alignment
+    int size; // sizeof
+    int align; // alignment
     bool is_unsigned;
     Type *base; // for pointer/array
     Member *members; // for struct
     Type *return_ty; // for function
     Type *param_types; // linked list of parameter types (for function)
-    Type *param_next;  // next in parameter type list
-    bool is_variadic;  // for function
-    int pack_align;    // #pragma pack(n) alignment, 0 = default
+    Type *param_next; // next in parameter type list
+    bool is_variadic; // for function
+    int pack_align; // #pragma pack(n) alignment, 0 = default
     char *cleanup_func; // __attribute__((__cleanup__(func))) on the type
 };
 
@@ -157,13 +157,13 @@ struct LVar {
     LVar *next;
     LVar *param_next;
     char *name;
-    char *asm_name;    // Assembly-level name (for static locals)
+    char *asm_name; // Assembly-level name (for static locals)
     int offset;
     Type *ty;
     bool is_local;
     bool is_extern;
     bool is_function;
-    bool is_static;    // static local variable
+    bool is_static; // static local variable
     bool has_init;
     int64_t init_val;
     char *init_data;
@@ -176,67 +176,67 @@ typedef struct Node Node;
 void add_type(Node *node);
 
 typedef enum {
-    ND_ADD,       // +
-    ND_SUB,       // -
-    ND_MUL,       // *
-    ND_DIV,       // /
-    ND_MOD,       // %
-    ND_SHL,       // <<
-    ND_SHR,       // >>
-    ND_BITAND,    // &
-    ND_BITXOR,    // ^
-    ND_BITOR,     // |
-    ND_EQ,        // ==
-    ND_NE,        // !=
-    ND_LT,        // <
-    ND_LE,        // <=
-    ND_ASSIGN,    // =
-    ND_POST_INC,  // postfix ++
-    ND_POST_DEC,  // postfix --
-    ND_ADDR,      // &
-    ND_DEREF,     // *
-    ND_CAST,      // cast
-    ND_BITNOT,    // ~
-    ND_FUNCALL,   // Function call
-    ND_LVAR,      // Local variable
-    ND_NUM,       // Integer
-    ND_RETURN,    // "return"
-    ND_IF,        // "if"
-    ND_FOR,       // "for" or "while"
-    ND_DO,        // "do"
-    ND_SWITCH,    // "switch"
-    ND_CASE,      // "case" or "default"
-    ND_BREAK,     // "break"
-    ND_CONTINUE,  // "continue"
-    ND_GOTO,      // "goto"
-    ND_LABEL,     // label:
+    ND_ADD, // +
+    ND_SUB, // -
+    ND_MUL, // *
+    ND_DIV, // /
+    ND_MOD, // %
+    ND_SHL, // <<
+    ND_SHR, // >>
+    ND_BITAND, // &
+    ND_BITXOR, // ^
+    ND_BITOR, // |
+    ND_EQ, // ==
+    ND_NE, // !=
+    ND_LT, // <
+    ND_LE, // <=
+    ND_ASSIGN, // =
+    ND_POST_INC, // postfix ++
+    ND_POST_DEC, // postfix --
+    ND_ADDR, // &
+    ND_DEREF, // *
+    ND_CAST, // cast
+    ND_BITNOT, // ~
+    ND_FUNCALL, // Function call
+    ND_LVAR, // Local variable
+    ND_NUM, // Integer
+    ND_RETURN, // "return"
+    ND_IF, // "if"
+    ND_FOR, // "for" or "while"
+    ND_DO, // "do"
+    ND_SWITCH, // "switch"
+    ND_CASE, // "case" or "default"
+    ND_BREAK, // "break"
+    ND_CONTINUE, // "continue"
+    ND_GOTO, // "goto"
+    ND_LABEL, // label:
     ND_STMT_EXPR, // GNU statement expression
-    ND_BLOCK,     // { ... }
+    ND_BLOCK, // { ... }
     ND_EXPR_STMT, // Expression statement
-    ND_NULL,      // Empty statement
-    ND_STR,       // String literal
-    ND_MEMBER,    // Struct member access
-    ND_LOGAND,    // &&
-    ND_LOGOR,     // ||
-    ND_COND,      // ?:
-    ND_COMMA,     // ,
-    ND_SIZEOF,    // sizeof
-    ND_FNUM,      // Float literal
-    ND_NEG,       // Unary minus
-    ND_NOT,       // Logical not
+    ND_NULL, // Empty statement
+    ND_STR, // String literal
+    ND_MEMBER, // Struct member access
+    ND_LOGAND, // &&
+    ND_LOGOR, // ||
+    ND_COND, // ?:
+    ND_COMMA, // ,
+    ND_SIZEOF, // sizeof
+    ND_FNUM, // Float literal
+    ND_NEG, // Unary minus
+    ND_NOT, // Logical not
 } NodeKind;
 
 typedef struct Node Node;
 
 struct Node {
     NodeKind kind; // Node kind
-    Node *next;    // Next node (for blocks or statements)
+    Node *next; // Next node (for blocks or statements)
 
-    Token *tok;    // Representative token for this node
-    Type *ty;      // AST node type
+    Token *tok; // Representative token for this node
+    Type *ty; // AST node type
 
-    Node *lhs;     // Left-hand side
-    Node *rhs;     // Right-hand side
+    Node *lhs; // Left-hand side
+    Node *rhs; // Right-hand side
 
     // "if" or "for" statement
     Node *cond;
@@ -266,8 +266,8 @@ struct Node {
     LVar *cleanup_end;
     LVar *continue_cleanup_end;
 
-    int64_t val;   // Used if kind == ND_NUM
-    double fval;   // Used if kind == ND_FNUM
+    int64_t val; // Used if kind == ND_NUM
+    double fval; // Used if kind == ND_FNUM
     int array_len; // Used if kind == TY_ARRAY
 
     // Struct member access
@@ -277,7 +277,7 @@ struct Node {
     Node *case_next;
     Node *default_case;
     int64_t case_val;
-    int64_t case_end;  // for case ranges (GNU extension)
+    int64_t case_end; // for case ranges (GNU extension)
     bool is_case_range;
     int label_id;
 };
