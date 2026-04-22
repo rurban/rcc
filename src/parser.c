@@ -1390,6 +1390,48 @@ static void write_scalar_bytes(char *buf, int offset, int size, int64_t val) {
 // Forward declaration
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset);
 
+static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_offset) {
+    if (mem->bit_width > 0) {
+        Node *node = assign(&tok, tok);
+        add_type(node);
+        long long val = 0;
+        if (eval_const_expr(node, &val)) {
+            int off = base_offset + mem->offset;
+            int unit_sz = mem->ty->size;
+            unsigned long long mask;
+            unsigned long long new_val;
+            if (mem->bit_width == 64) {
+                mask = ~0ULL << mem->bit_offset;
+                new_val = val << mem->bit_offset;
+            } else {
+                mask = ((1ULL << mem->bit_width) - 1) << mem->bit_offset;
+                new_val = ((val & ((1ULL << mem->bit_width) - 1)) << mem->bit_offset);
+            }
+            if (unit_sz == 1) {
+                unsigned char old = var->init_data[off];
+                var->init_data[off] = (old & ~mask) | new_val;
+            } else if (unit_sz == 2) {
+                uint16_t old;
+                memcpy(&old, var->init_data + off, 2);
+                old = (old & ~mask) | new_val;
+                memcpy(var->init_data + off, &old, 2);
+            } else if (unit_sz == 4) {
+                uint32_t old;
+                memcpy(&old, var->init_data + off, 4);
+                old = (old & ~mask) | new_val;
+                memcpy(var->init_data + off, &old, 4);
+            } else {
+                uint64_t old;
+                memcpy(&old, var->init_data + off, 8);
+                old = (old & ~mask) | new_val;
+                memcpy(var->init_data + off, &old, 8);
+            }
+        }
+        return tok;
+    }
+    return global_init_one(tok, var, mem->ty, base_offset + mem->offset);
+}
+
 // Initialize one object of type `ty` at `base + offset` in global init data.
 // Handles scalars, arrays, structs, compound literals, and flattened init.
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
@@ -1460,13 +1502,13 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                 while (m && (!m->name || strcmp(m->name, name) != 0))
                     m = m->next;
                 if (m) {
-                    tok = global_init_one(tok, var, m->ty, offset + m->offset);
+                    tok = global_init_member(tok, var, m, offset);
                     mem = m->next;
                 } else {
                     tok = skip_initializer(tok);
                 }
             } else if (mem) {
-                tok = global_init_one(tok, var, mem->ty, offset + mem->offset);
+                tok = global_init_member(tok, var, mem, offset);
                 mem = mem->next;
             } else {
                 tok = skip_initializer(tok);
@@ -1490,7 +1532,7 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             Member *mem = ty->members;
             while (!equal(tok, "}")) {
                 if (mem) {
-                    tok = global_init_one(tok, var, mem->ty, offset + mem->offset);
+                    tok = global_init_member(tok, var, mem, offset);
                     mem = mem->next;
                 } else {
                     tok = skip_initializer(tok);
@@ -1534,11 +1576,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
         Member *mem = ty->members;
         if (mem) {
-            tok = global_init_one(tok, var, mem->ty, offset + mem->offset);
+            tok = global_init_member(tok, var, mem, offset);
             mem = mem->next;
             if (ty->kind == TY_STRUCT) {
                 while (mem && !equal(tok, "}") && !equal(tok, ",")) {
-                    tok = global_init_one(tok, var, mem->ty, offset + mem->offset);
+                    tok = global_init_member(tok, var, mem, offset);
                     mem = mem->next;
                 }
             }
@@ -1572,6 +1614,20 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // Scalar
     Node *node = assign(&tok, tok);
     add_type(node);
+    if (is_flonum(ty)) {
+        double fv = 0;
+        if (eval_double_const_expr(node, &fv)) {
+            if (ty->size == 4) {
+                float f = (float)fv;
+                memcpy(var->init_data + offset, &f, 4);
+            } else {
+                memcpy(var->init_data + offset, &fv, 8);
+            }
+            return tok;
+        }
+        error_tok(tok, "expected constant expression in initializer");
+        return tok;
+    }
     long long val = 0;
     if (eval_const_expr(node, &val)) {
         write_scalar_bytes(var->init_data, offset, ty->size, (int64_t)val);
