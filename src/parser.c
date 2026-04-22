@@ -830,8 +830,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             // Handle anonymous bitfield: "int : N" or "int : 0"
             // These don't create named members but affect layout
             if (!name && bit_width >= 0) {
-                int unit = mem_ty->size;
                 if (!is_union) {
+                    int unit = mem_ty->size;
                     int unit_bits = unit * 8;
                     // :0 always forces a new storage unit
                     if (bit_width == 0 || bf_unit_size != unit ||
@@ -909,7 +909,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     if (struct_pack > 0 && (struct_pack < a || a == 0))
                         a = struct_pack;
                     offset = align_to(offset, a);
-                    bit_pos = offset * 8;
                     mem->offset = offset;
                     offset += mem_ty->size;
                     bit_pos = offset * 8;

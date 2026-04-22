@@ -9,6 +9,7 @@ static int current_line_offset = 0;
 static int line_num = 1;
 
 // Reports an error and exit.
+// cppcheck-suppress va_end_missing
 void error(char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -59,12 +60,16 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
 }
 
 // Reports an error location and exit.
+// cppcheck-suppress va_end_missing
+// cppcheck-suppress uninitvar
 void error_at(char *loc, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     verror_at(loc, 1, fmt, ap);
 }
 
+// cppcheck-suppress va_end_missing
+// cppcheck-suppress uninitvar
 void error_tok(Token *tok, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -474,6 +479,6 @@ Token *tokenize(char *filename, char *p) {
         error_at(p, "invalid token");
     }
 
-    cur = cur->next = new_token(TK_EOF, p, p);
+    cur->next = new_token(TK_EOF, p, p);
     return head.next;
 }

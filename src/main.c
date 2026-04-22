@@ -28,6 +28,7 @@ static char *read_file(char *path) {
     if (size == 0 || buf[size - 1] != '\n') {
         buf[size++] = '\n';
     }
+    fclose(fp);
     buf[size] = '\0';
     return buf;
 }

@@ -1521,13 +1521,14 @@ void codegen(Program *prog) {
                     break;
                 }
             }
-            printf("  mov [rbp-%d], %s\n", retbuf_offset,
+            char *retreg =
 #ifdef _WIN32
-                   "rcx"
+                "rcx"
 #else
-                   "rdi"
+                "rdi"
 #endif
-            );
+                ;
+            printf("  mov [rbp-%d], %s\n", retbuf_offset, retreg);
         }
 
         // Read body into lines, optimize, emit

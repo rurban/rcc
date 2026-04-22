@@ -858,13 +858,13 @@ static char *preprocess_file(char *filename, char *input) {
                     char *arg_str = pp_strndup(inc_arg, inc_end - inc_arg);
                     expanded = expand_text(arg_str, filename, 1, 0);
                     if (expanded) {
-                        char *p = expanded;
-                        while (*p && isspace((unsigned char)*p)) p++;
-                        if (*p == '"' || *p == '<') {
-                            char close = (*p == '"') ? '"' : '>';
-                            char *start = ++p;
-                            while (*p && *p != close) p++;
-                            spec = pp_strndup(start, p - start);
+                        char *ep = expanded;
+                        while (*ep && isspace((unsigned char)*ep)) ep++;
+                        if (*ep == '"' || *ep == '<') {
+                            char close = (*ep == '"') ? '"' : '>';
+                            char *start = ++ep;
+                            while (*ep && *ep != close) ep++;
+                            spec = pp_strndup(start, ep - start);
                         }
                     }
                 }
@@ -874,8 +874,8 @@ static char *preprocess_file(char *filename, char *input) {
                         char *inc = read_pp_file(path);
                         if (inc) {
                             int incl_lines = 0;
-                            for (char *p = inc; *p; p++)
-                                if (*p == '\n') incl_lines++;
+                            for (char *ip = inc; *ip; ip++)
+                                if (*ip == '\n') incl_lines++;
                             sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
                             sb_puts(&out, preprocess_file(path, inc));
                             line_no += incl_lines;
