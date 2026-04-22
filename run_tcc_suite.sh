@@ -176,7 +176,8 @@ EOF
 # Run tests in test/ directory
 UNIT_TEST_DIR="$SCRIPT_DIR/test"
 if [ -d "$UNIT_TEST_DIR" ]; then
-	printf "\n%sUnit tests (test/)...%s\n", "${CYAN}", "${RESET}"
+	# shellcheck disable=SC2059
+	printf "\n${CYAN}Unit tests (test/)...${RESET}\n"
 
 	# Tests expected to fail compilation (compile error is the correct outcome)
 	expect_compile_fail() {
@@ -185,16 +186,9 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 	}
 
 	# Tests to skip (benchmarks, logs)
-	skip_test() {
-		case "$1" in benchmark | primes) return 0 ;; esac
-		return 1
-	}
-
 	while IFS= read -r src; do
 		fname="$(basename "$src")"
 		base="${fname%.c}"
-
-		skip_test "$base" && continue
 
 		total=$((total + 1))
 		printf "  %-40s " "$base..."
@@ -239,7 +233,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		passed=$((passed + 1))
 		report_rows="${report_rows}| $base | PASS | exit=$exit_code |\n"
 	done <<EOF
-$(printf '%s\n' "$UNIT_TEST_DIR"/*.c | sort -V)
+$(printf '%s\n' "$UNIT_TEST_DIR"/test_*.c | sort -V)
 EOF
 fi
 
@@ -273,4 +267,4 @@ printf "${CYAN}Results: %d/%d passed (%d%%), %d failed.${RESET}\n" \
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$passed" -ge 92 ]
+[ "$passed" -ge 103 ]
