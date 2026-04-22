@@ -340,6 +340,20 @@ static char *substitute_macro(Macro *m, char **args, int argc, char *filename, i
     sb_init(&sb, strlen(m->body) * 8 + 256);
 
     for (char *p = m->body; *p;) {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
+            sb_putc(&sb, *p++);
+            while (*p && *p != quote) {
+                if (*p == '\\' && p[1]) {
+                    sb_putc(&sb, *p++);
+                    sb_putc(&sb, *p++);
+                } else {
+                    sb_putc(&sb, *p++);
+                }
+            }
+            if (*p) sb_putc(&sb, *p++);
+            continue;
+        }
         if (p[0] == '#' && p[1] == '#') {
             sb_putc(&sb, '#');
             sb_putc(&sb, '#');

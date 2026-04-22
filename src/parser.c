@@ -1880,7 +1880,17 @@ static Node *primary(Token **rest, Token *tok) {
                 error_tok(tok, "no such member");
             Node *mem_node = new_unary(ND_MEMBER, node, tok);
             mem_node->member = mem;
-            mem_node->ty = mem->ty;
+            if (mem->bit_width > 0) {
+                int bw = mem->bit_width;
+                if (bw < 32 || (bw == 32 && !mem->ty->is_unsigned))
+                    mem_node->ty = ty_int;
+                else if (bw == 32)
+                    mem_node->ty = ty_uint;
+                else
+                    mem_node->ty = mem->ty;
+            } else {
+                mem_node->ty = mem->ty;
+            }
             node = mem_node;
             tok = tok->next;
             continue;
@@ -1898,7 +1908,17 @@ static Node *primary(Token **rest, Token *tok) {
                 error_tok(tok, "no such member");
             Node *mem_node = new_unary(ND_MEMBER, node, tok);
             mem_node->member = mem;
-            mem_node->ty = mem->ty;
+            if (mem->bit_width > 0) {
+                int bw = mem->bit_width;
+                if (bw < 32 || (bw == 32 && !mem->ty->is_unsigned))
+                    mem_node->ty = ty_int;
+                else if (bw == 32)
+                    mem_node->ty = ty_uint;
+                else
+                    mem_node->ty = mem->ty;
+            } else {
+                mem_node->ty = mem->ty;
+            }
             node = mem_node;
             tok = tok->next;
             continue;

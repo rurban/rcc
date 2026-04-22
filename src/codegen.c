@@ -771,7 +771,8 @@ static int gen(Node *node) {
         if (node->ty->kind == TY_ARRAY) {
             return r; // array decays to pointer
         }
-        emit_load(node->ty, r, format("[%s]", reg64[r]));
+        Type *load_ty = (node->member && node->member->bit_width > 0) ? node->member->ty : node->ty;
+        emit_load(load_ty, r, format("[%s]", reg64[r]));
         // Bitfield: extract the relevant bits
         if (node->member && node->member->bit_width > 0) {
             int bw = node->member->bit_width;

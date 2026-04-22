@@ -250,7 +250,18 @@ static void add_type_internal(Node *node) {
         node->ty = pointer_to(ty_char);
         return;
     case ND_MEMBER:
-        node->ty = node->member->ty;
+        if (node->member->bit_width > 0) {
+            int bw = node->member->bit_width;
+            bool bf_unsigned = node->member->ty->is_unsigned;
+            if (bw < 32 || (bw == 32 && !bf_unsigned))
+                node->ty = ty_int;
+            else if (bw == 32)
+                node->ty = ty_uint;
+            else
+                node->ty = node->member->ty;
+        } else {
+            node->ty = node->member->ty;
+        }
         return;
     case ND_STMT_EXPR: {
         if (node->stmt_expr_result) {
