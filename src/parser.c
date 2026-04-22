@@ -1268,6 +1268,11 @@ static Node *local_array_initializer(Token **rest, Token *tok, LVar *var) {
 }
 
 static int64_t read_const_initializer(Token **rest, Token *tok) {
+    // Skip empty nested initializer (e.g., for flexible array members)
+    if (equal(tok, "{")) {
+        *rest = skip_initializer(tok);
+        return 0;
+    }
     Node *node = assign(&tok, tok);
     add_type(node);
     long long val = 0;
@@ -2438,6 +2443,58 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             int val = read_const_initializer(&tok, tok);
             if (idx < len)
                 write_scalar_bytes(var->init_data, idx * elem_size, elem_size, val);
+            idx++;
+            if (equal(tok, ",")) {
+                tok = tok->next;
+                if (equal(tok, "}"))
+                    break;
+                continue;
+            }
+            break;
+        }
+        *rest = skip(tok, "}");
+        return;
+    }
+
+    if (var->ty->kind == TY_ARRAY && (var->ty->base->kind == TY_STRUCT || var->ty->base->kind == TY_UNION) && equal(tok, "{")) {
+        int elem_size = var->ty->base->size;
+        int len = array_len(var->ty);
+        if (len == 0) {
+            Token *tmp = tok;
+            len = count_array_initializer(&tmp, tmp);
+            var->ty = array_of(var->ty->base, len);
+        }
+        var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+        var->init_size = var->ty->size;
+        tok = skip(tok, "{");
+        int idx = 0;
+        while (!equal(tok, "}")) {
+            if (equal(tok, "{")) {
+                tok = skip(tok, "{");
+                Member *mem = var->ty->base->members;
+                while (!equal(tok, "}")) {
+                    if (mem) {
+                        int64_t val = read_const_initializer(&tok, tok);
+                        if (idx < len)
+                            write_scalar_bytes(var->init_data, idx * elem_size + mem->offset, mem->ty->size, val);
+                        mem = mem->next;
+                    } else {
+                        read_const_initializer(&tok, tok);
+                    }
+                    if (equal(tok, ",")) {
+                        tok = tok->next;
+                        if (equal(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
+                }
+                tok = skip(tok, "}");
+            } else {
+                int val = read_const_initializer(&tok, tok);
+                if (idx < len)
+                    write_scalar_bytes(var->init_data, idx * elem_size, elem_size, val);
+            }
             idx++;
             if (equal(tok, ",")) {
                 tok = tok->next;
