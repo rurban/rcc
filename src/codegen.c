@@ -24,7 +24,7 @@ struct FloatLit {
     FloatLit *next;
     int id;
     double val;
-    int size; // 4=float, 8=double
+    int size; // 4=float, 8=double, TODO 12|16=long double
 };
 static FloatLit *float_lits;
 
@@ -366,6 +366,8 @@ static char *var_label(LVar *var) {
 }
 
 static char *reg(int r, int size) {
+    if (r < 0 || r > 7)
+        error("invalid register %d", r);
     if (size == 1) return reg8[r];
     if (size == 2) return reg16[r];
     if (size == 4) return reg32[r];
