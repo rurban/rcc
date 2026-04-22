@@ -2658,6 +2658,19 @@ Program *parse(Token *tok) {
 
             LVar *fn_locals = NULL;
             Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
+            // Implicit return 0 for main if no explicit return
+            if (strcmp(name, "main") == 0) {
+                Node *last = body->body;
+                if (last) {
+                    while (last->next)
+                        last = last->next;
+                    if (last->kind != ND_RETURN) {
+                        Node *ret = new_node(ND_RETURN, tok);
+                        ret->lhs = new_num(0, tok);
+                        last->next = ret;
+                    }
+                }
+            }
             Function *fn = arena_alloc(sizeof(Function));
             fn->name = name;
             fn->asm_name = format(".Lfn.%s", name);
