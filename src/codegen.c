@@ -733,10 +733,13 @@ static int gen(Node *node) {
         int r2 = alloc_reg();
         int sz = node->lhs->ty->size;
         printf("  mov %s, %s [%s]\n", reg(r2, sz), ptr_size(sz), reg64[r]);
-        if (node->kind == ND_POST_INC) 
-            printf("  add %s [%s], 1\n", ptr_size(sz), reg64[r]);
+        int delta = 1;
+        if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
+            delta = node->lhs->ty->base->size;
+        if (node->kind == ND_POST_INC)
+            printf("  add %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
         else
-            printf("  sub %s [%s], 1\n", ptr_size(sz), reg64[r]);
+            printf("  sub %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
         free_reg(r);
         return r2;
     }
@@ -1335,10 +1338,29 @@ void codegen(Program *prog) {
         }
         for (StrLit *s = prog->strs; s; s = s->next) {
             printf(".LC%d:\n", s->id);
-            for (int i = 0; s->str[i]; i++) {
-                printf("  .byte %d\n", s->str[i]);
+            if (s->prefix != 0) {
+                // Wide string: decode UTF-8 and emit wide characters
+                char *p = s->str;
+                while (*p) {
+                    char *next;
+                    uint32_t c = decode_utf8(&next, p);
+                    if (next == p) { p++; continue; } // invalid UTF-8, skip
+                    p = next;
+                    if (s->elem_size == 2)
+                        printf("  .2byte %u\n", c);
+                    else
+                        printf("  .4byte %u\n", c);
+                }
+                if (s->elem_size == 2)
+                    printf("  .2byte 0\n");
+                else
+                    printf("  .4byte 0\n");
+            } else {
+                for (int i = 0; s->str[i]; i++) {
+                    printf("  .byte %d\n", s->str[i]);
+                }
+                printf("  .byte 0\n"); // null terminator
             }
-            printf("  .byte 0\n"); // null terminator
         }
         printf("\n.text\n");
     }

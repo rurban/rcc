@@ -39,6 +39,8 @@ struct Token {
     char *str;     // If kind is TK_STR, its contents
     char *loc;     // Token location
     int len;        // Token length
+    // For string literals: 0 = regular, 'L' = wide, 'u' = char16_t, 'U' = char32_t
+    int string_literal_prefix;
 };
 
 // Error reporting
@@ -57,6 +59,7 @@ char *preprocess(char *filename, char *p);
 void add_define(char *def);
 void add_undef(char *name);
 Token *tokenize(char *filename, char *p);
+void init_builtins(void);
 
 //
 // Parser
@@ -297,6 +300,9 @@ struct StrLit {
     StrLit *next;
     char *str;
     int id;
+    int prefix; // 0 = regular, 'L' = wide, 'u' = char16_t, 'U' = char32_t
+    int elem_size; // size of each character element (1 for regular, 2 or 4 for wide)
+    int wchar_count; // number of Unicode characters (for wide strings)
 };
 
 typedef struct Program Program;
@@ -321,5 +327,6 @@ void optimize(Program *prog);
 uint32_t decode_utf8(char **new_pos, char *p);
 bool is32_ident1(uint32_t c);
 bool is32_ident2(uint32_t c);
+int utf8_len(char *str);
 
 #endif // RCC_H

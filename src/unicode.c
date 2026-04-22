@@ -389,3 +389,15 @@ bool is32_ident2(uint32_t c) {
          in_range(c, math_cont, sizeof(math_cont) / sizeof(UTF32Range));
 }
 
+int utf8_len(char *str) {
+    int count = 0;
+    unsigned char *p = (unsigned char *)str;
+    while (*p) {
+        // Count only lead bytes (not continuation bytes 0x80-0xBF)
+        if ((*p & 0xC0) != 0x80)
+            count++;
+        p++;
+    }
+    return count;
+}
+

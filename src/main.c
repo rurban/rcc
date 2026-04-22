@@ -39,6 +39,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "rcc: unsupported target: only x86_64 is supported\n");
     return 1;
 #endif
+    init_builtins();
     char *out_path =
 #ifdef _WIN32
         "a.exe"

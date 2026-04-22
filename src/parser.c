@@ -254,6 +254,31 @@ static Typedef *find_typedef(Token *tok) {
     return NULL;
 }
 
+void add_typedef(char *name, Type *ty) {
+    Typedef *td = arena_alloc(sizeof(Typedef));
+    td->name = name;
+    td->ty = ty;
+    td->next = typedefs;
+    typedefs = td;
+}
+
+void init_builtins(void) {
+    add_typedef("wchar_t", 
+#ifdef _WIN32
+                ty_ushort
+#else
+                ty_uint
+#endif
+                );
+}
+
+static Type *typedef_find_name(const char *name) {
+    Token tok = {};
+    tok.name = (char *)name;
+    Typedef *td = find_typedef(&tok);
+    return td ? td->ty : NULL;
+}
+
 static EnumConst *find_enum_const(Token *tok) {
     for (EnumConst *ec = enum_consts; ec; ec = ec->next)
         if (equal(tok, ec->name))
@@ -286,10 +311,12 @@ static Member *find_member(Type *ty, Token *tok) {
     return NULL;
 }
 
-static StrLit *new_str_lit(char *str) {
+static StrLit *new_str_lit(char *str, int prefix, int elem_size) {
     StrLit *s = arena_alloc(sizeof(StrLit));
     s->str = str;
     s->id = str_lit_counter++;
+    s->prefix = prefix;
+    s->elem_size = elem_size;
     s->next = str_lits;
     str_lits = s;
     return s;
@@ -1139,7 +1166,7 @@ static void append_reloc(LVar *var, int offset, char *label, int addend) {
 
 static bool read_global_label_initializer(Token **rest, Token *tok, char **label) {
     if (tok->kind == TK_STR) {
-        StrLit *s = new_str_lit(tok->str);
+        StrLit *s = new_str_lit(tok->str, tok->string_literal_prefix, 1);
         *label = format(".LC%d", s->id);
         *rest = tok->next;
         return true;
@@ -1192,19 +1219,15 @@ static int count_array_initializer(Token **rest, Token *tok) {
     return count;
 }
 
-static bool is_wide_string_token(Token *tok) {
-    return tok && tok->kind == TK_IDENT &&
-           (equal(tok, "L") || equal(tok, "u") || equal(tok, "U")) &&
-           tok->next && tok->next->kind == TK_STR;
-}
-
 static Type *infer_array_type(Type *ty, Token *tok) {
     if (!ty || ty->kind != TY_ARRAY || ty->size != 0)
         return ty;
-    if (tok->kind == TK_STR)
-        return array_of(ty->base, (int)strlen(tok->str) + 1);
-    if (is_wide_string_token(tok))
-        return array_of(ty->base, (int)strlen(tok->next->str) + 1);
+    if (tok->kind == TK_STR) {
+        if (tok->string_literal_prefix == 0)
+            return array_of(ty->base, (int)strlen(tok->str) + 1);
+        // For wide strings, count UTF-8 characters (each becomes one wchar)
+        return array_of(ty->base, utf8_len(tok->str) + 1);
+    }
     if (equal(tok, "{")) {
         Token *tmp = tok;
         return array_of(ty->base, count_array_initializer(&tmp, tmp));
@@ -1356,27 +1379,21 @@ static Node *declaration(Token **rest, Token *tok) {
             if (equal(tok, "=")) {
                 Token *start = tok;
                 tok = tok->next;
-                if (var->ty->kind == TY_ARRAY) {
-                    if (equal(tok, "{")) {
-                        cur->next = local_array_initializer(&tok, tok, var);
-                        while (cur->next)
-                            cur = cur->next;
-                    } else if (is_wide_string_token(tok)) {
-                        if (var->ty->base->kind == TY_CHAR) {
-                            Node *lhs = new_var_node(var, start);
-                            Node *rhs = assign(&tok, tok->next);
-                            cur = cur->next = new_unary(ND_EXPR_STMT, new_binary(ND_ASSIGN, lhs, rhs, start), start);
-                        } else {
-                            tok = tok->next->next;
-                        }
-                    } else if (tok->kind == TK_STR && var->ty->base->kind != TY_CHAR) {
-                        tok = tok->next;
-                    } else {
-                        Node *lhs = new_var_node(var, start);
-                        Node *rhs = assign(&tok, tok);
-                        cur = cur->next = new_unary(ND_EXPR_STMT, new_binary(ND_ASSIGN, lhs, rhs, start), start);
-                    }
+            if (var->ty->kind == TY_ARRAY) {
+                if (equal(tok, "{")) {
+                    cur->next = local_array_initializer(&tok, tok, var);
+                    while (cur->next)
+                        cur = cur->next;
+                } else if (tok->kind == TK_STR) {
+                    Node *lhs = new_var_node(var, start);
+                    Node *rhs = assign(&tok, tok);
+                    cur = cur->next = new_unary(ND_EXPR_STMT, new_binary(ND_ASSIGN, lhs, rhs, start), start);
                 } else {
+                    Node *lhs = new_var_node(var, start);
+                    Node *rhs = assign(&tok, tok);
+                    cur = cur->next = new_unary(ND_EXPR_STMT, new_binary(ND_ASSIGN, lhs, rhs, start), start);
+                }
+            } else {
                     // Handle struct/union initializer: { val1, val2, ... }
                     if (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) {
                         Node *lhs = new_var_node(var, start);
@@ -1775,7 +1792,43 @@ static Node *primary(Token **rest, Token *tok) {
     } else if (tok->kind == TK_STR) {
         node = new_node(ND_STR, tok);
         node->str = tok->str;
-        StrLit *s = new_str_lit(tok->str);
+        // Set the type based on the string literal prefix
+        switch (tok->string_literal_prefix) {
+            case 0:  // Regular string
+                node->ty = pointer_to(ty_char);
+                break;
+            case 'L':  // Wide string
+#ifdef _WIN32
+                node->ty = pointer_to(ty_ushort);
+#else
+                node->ty = pointer_to(ty_uint);
+#endif
+                break;
+            case 'u':  // char16_t string
+                {
+                    Type *char16_t_type = typedef_find_name("char16_t");
+                    if (!char16_t_type) {
+                        // Fallback to unsigned short if not defined
+                        char16_t_type = ty_ushort;
+                    }
+                    node->ty = pointer_to(char16_t_type);
+                }
+                break;
+            case 'U':  // char32_t string
+                {
+                    Type *char32_t_type = typedef_find_name("char32_t");
+                    if (!char32_t_type) {
+                        // Fallback to unsigned int if not defined
+                        char32_t_type = ty_uint;
+                    }
+                    node->ty = pointer_to(char32_t_type);
+                }
+                break;
+            default:  // Fallback to regular string
+                node->ty = pointer_to(ty_char);
+                break;
+        }
+        StrLit *s = new_str_lit(tok->str, tok->string_literal_prefix, node->ty->base->size);
         node->str_id = s->id;
         tok = tok->next;
     } else {
@@ -2066,7 +2119,9 @@ static Node *unary(Token **rest, Token *tok) {
             return result;
         }
 
-        Node *node = new_unary(ND_CAST, unary(rest, tok), start);
+        Node *lhs = unary(rest, tok);
+        add_type(lhs);
+        Node *node = new_unary(ND_CAST, lhs, start);
         node->ty = ty;
         return node;
     }

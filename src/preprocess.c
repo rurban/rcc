@@ -977,7 +977,13 @@ char *preprocess(char *filename, char *p) {
     if (!find_macro("__SIZE_TYPE__"))
         define_macro("__SIZE_TYPE__", false, NULL, 0, "unsigned long long");
     if (!find_macro("__WCHAR_TYPE__"))
-        define_macro("__WCHAR_TYPE__", false, NULL, 0, "unsigned short");
+        define_macro("__WCHAR_TYPE__", false, NULL, 0,
+#ifdef _WIN32
+                     "unsigned short"
+#else
+                     "unsigned int"
+#endif
+                     );
     if (!find_macro("_Atomic"))
         define_macro("_Atomic", false, NULL, 0, "");
     if (!find_macro("_WIN32"))
