@@ -599,16 +599,6 @@ static int gen(Node *node) {
             return r2;
         }
         if (node->lhs->kind == ND_LVAR && node->lhs->var->is_local && node->lhs->var->ty->kind != TY_ARRAY) {
-            if (node->rhs->kind == ND_ADD && node->rhs->lhs->kind == ND_LVAR &&
-                node->rhs->lhs->var == node->lhs->var && node->rhs->rhs->kind == ND_NUM &&
-                node->rhs->rhs->val == (int32_t)node->rhs->rhs->val) {
-                printf("  add %s [rbp-%d], %d\n", ptr_size(node->lhs->ty->size), node->lhs->var->offset, (int)node->rhs->rhs->val);
-                return -1;
-            }
-            if (node->rhs->kind == ND_NUM && node->rhs->val == (int32_t)node->rhs->val) {
-                printf("  mov %s [rbp-%d], %d\n", ptr_size(node->lhs->ty->size), node->lhs->var->offset, (int)node->rhs->val);
-                return -1;
-            }
             int r2 = gen(node->rhs);
             printf("  mov [rbp-%d], %s\n", node->lhs->var->offset, reg(r2, node->lhs->ty->size));
             return r2;
