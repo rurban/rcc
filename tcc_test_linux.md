@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     139
- - **Passed**:    113
- - **Failed**:    26
- - **Pass Rate**: 81%
+ - **Passed**:    116
+ - **Failed**:    23
+ - **Pass Rate**: 83%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -67,7 +67,7 @@ Generated: April 2026
 | 61_integers                              | PASS         | Output matches                       |
 | 64_macro_nesting                         | PASS         | Output matches                       |
 | 67_macro_concat                          | PASS         | Output matches                       |
-| 70_floating_point_literals               | MISMATCH     | Output does not match .expect        |
+| 70_floating_point_literals               | PASS         | Output matches                       |
 | 71_macro_empty_arg                       | PASS         | Output matches                       |
 | 72_long_long_constant                    | PASS         | Output matches                       |
 | 75_array_in_struct_init                  | PASS         | Output matches                       |
@@ -87,10 +87,10 @@ Generated: April 2026
 | 89_nocode_wanted                         | PASS         | Output matches                       |
 | 90_struct-init                           | EXEC_FAIL    | non-zero exit                        |
 | 91_ptr_longlong_arith32                  | PASS         | Output matches                       |
-| 92_enum_bitfield                         | MISMATCH     | Output does not match .expect        |
+| 92_enum_bitfield                         | PASS         | Output matches                       |
 | 93_integer_promotion                     | PASS         | Output matches                       |
 | 94_generic                               | COMPILE_FAIL | rcc returned non-zero                |
-| 95_bitfields                             | MISMATCH     | Output does not match .expect        |
+| 95_bitfields                             | PASS         | Output matches                       |
 | 97_utf8_string_literal                   | PASS         | Output matches                       |
 | 98_al_ax_extend                          | COMPILE_FAIL | rcc returned non-zero                |
 | 99_fastcall                              | COMPILE_FAIL | rcc returned non-zero                |
