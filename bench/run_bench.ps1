@@ -1,17 +1,21 @@
 $ErrorActionPreference = "Continue"
-$SRC   = "d:\rcc\bench\bench.c"
-$RCC   = "d:\rcc\rcc.exe"
-$TCC   = "d:\rcc\tinycc\tcc.exe"
-$GCC   = "gcc"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir   = Split-Path -Parent $ScriptDir
+Set-Location $ScriptDir
 
-$RCC_EXE = "d:\rcc\bench\bench_rcc.exe"
-$TCC_EXE = "d:\rcc\bench\bench_tcc.exe"
-$GCC_EXE = "d:\rcc\bench\bench_gcc.exe"
-$GCC_O2  = "d:\rcc\bench\bench_gcc_o2.exe"
+$SRC     = Join-Path $ScriptDir "bench.c"
+$RCC     = Join-Path $RootDir "rcc.exe"
+$TCC     = Join-Path $RootDir "tinycc\tcc.exe"
+$GCC     = "gcc"
+
+$RCC_EXE = Join-Path $ScriptDir "bench_rcc.exe"
+$TCC_EXE = Join-Path $ScriptDir "bench_tcc.exe"
+$GCC_EXE = Join-Path $ScriptDir "bench_gcc.exe"
+$GCC_O2  = Join-Path $ScriptDir "bench_gcc_o2.exe"
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  RCC vs TCC vs GCC  --  Benchmark Battle"    -ForegroundColor Cyan
+Write-Host "  RCC vs TCC vs GCC  --  Benchmark Battle"     -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host ""
 
