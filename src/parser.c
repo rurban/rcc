@@ -684,6 +684,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
             *name = NULL;
         }
 
+        tok = read_type_attrs(tok, &decl_align);
+        tok = skip_type_quals(tok);
+        ty = type_suffix(&tok, tok, ty);
+
         tok = skip(tok, ")");
         if (equal(tok, "(")) {
             int depth = 0;
@@ -2936,6 +2940,25 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 
         if (!name)
             name = format("__param%d", param_index++);
+
+        if (equal(tok, "(")) {
+            tok = tok->next;
+            bool dummy_variadic = false;
+            LVar *nested_params = parse_params(&tok, tok, &dummy_variadic);
+            tok = skip(tok, ")");
+            ty = func_type(ty);
+            Type param_head = {};
+            Type *pcur = &param_head;
+            for (LVar *p = nested_params; p; p = p->param_next) {
+                Type *pt = arena_alloc(sizeof(Type));
+                *pt = *p->ty;
+                pt->param_next = NULL;
+                pcur->param_next = pt;
+                pcur = pt;
+            }
+            ty->param_types = param_head.param_next;
+            ty = pointer_to(ty);
+        }
 
         if (ty->kind == TY_ARRAY)
             ty = pointer_to(ty->base);
