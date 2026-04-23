@@ -441,6 +441,7 @@ Token *tokenize(char *filename, char *p) {
             buf[len] = '\0';
             cur = cur->next = new_token(TK_STR, start, p);
             cur->str = str_intern(buf, len); // intern it
+            cur->len = len;
             cur->string_literal_prefix = prefix;
             continue;
         }

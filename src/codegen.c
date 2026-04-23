@@ -610,6 +610,15 @@ static int gen(Node *node) {
                 src = gen_addr(node->rhs);
             else
                 src = gen(node->rhs);
+
+            // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
+            // store the value directly instead of copying bytes from the address in the register.
+            if (node->rhs->ty && !(node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY) && node->lhs->ty->size <= 8) {
+                printf("  mov [%s], %s\n", reg64[dst], reg(src, node->lhs->ty->size));
+                free_reg(src);
+                return dst;
+            }
+
             printf("  mov rcx, %d\n", node->lhs->ty->size);
             printf(".L.copy.%d:\n", c);
             printf("  cmp rcx, 0\n");
@@ -1449,7 +1458,7 @@ void codegen(Program *prog) {
                 int pos = 0;
                 for (Reloc *rel = var->relocs; rel; rel = rel->next) {
                     for (; pos < rel->offset; pos++)
-                        printf("  .byte %d\n", (unsigned char)var->init_data[pos]);
+                        printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
                     if (rel->addend)
                         printf("  .quad %s%+d\n", rel->label, rel->addend);
                     else
@@ -1457,7 +1466,7 @@ void codegen(Program *prog) {
                     pos += 8;
                 }
                 for (; pos < var->init_size; pos++)
-                    printf("  .byte %d\n", (unsigned char)var->init_data[pos]);
+                    printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
                 if (var->ty->size > var->init_size)
                     printf("  .zero %d\n", var->ty->size - var->init_size);
             } else if (var->has_init) {
@@ -1494,8 +1503,8 @@ void codegen(Program *prog) {
                 else
                     printf("  .4byte 0\n");
             } else {
-                for (int i = 0; s->str[i]; i++) {
-                    printf("  .byte %d\n", s->str[i]);
+                for (int i = 0; i < s->len; i++) {
+                    printf("  .byte %u\n", (unsigned char)s->str[i]);
                 }
                 printf("  .byte 0\n"); // null terminator
             }

@@ -304,6 +304,7 @@ struct StrLit {
     int id;
     int prefix; // 0 = regular, 'L' = wide, 'u' = char16_t, 'U' = char32_t
     int elem_size; // size of each character element (1 for regular, 2 or 4 for wide)
+    int len; // actual byte length of string content (includes embedded NULs)
     int wchar_count; // number of Unicode characters (for wide strings)
 };
 
