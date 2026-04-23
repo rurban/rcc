@@ -1511,9 +1511,9 @@ void codegen(Program *prog) {
         int max_param_regs = 6;
         int max_param_xmm = 8;
         int param_xmm_index = 0;
+        int stack_param_index = 0;
 #endif
         int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) ? 1 : 0;
-        int stack_param_index = 0;
         for (LVar *var = fn->params; var; var = var->param_next) {
 #ifdef _WIN32
             if (param_index < max_param_regs) {
@@ -1578,9 +1578,9 @@ void codegen(Program *prog) {
                     printf(".L.pcopy_end.%d:\n", c);
                 } else {
                     char *tmpreg = var->ty->size == 1 ? "al"
-                        : var->ty->size == 2 ? "ax"
-                        : var->ty->size <= 4 ? "eax"
-                        : "rax";
+                        : var->ty->size == 2          ? "ax"
+                        : var->ty->size <= 4          ? "eax"
+                                                      : "rax";
                     printf("  mov %s, [rbp+%d]\n", tmpreg, 16 + stack_param_index * 8);
                     printf("  mov [rbp-%d], %s\n", var->offset, tmpreg);
                 }
@@ -1657,8 +1657,8 @@ void codegen(Program *prog) {
         body_text[body_len] = '\0';
         fclose(body_file);
 
-        // Process body in chunks to handle functions larger than PEEP_MAX lines.
-        #define PEEP_MAX 65536
+// Process body in chunks to handle functions larger than PEEP_MAX lines.
+#define PEEP_MAX 65536
         char *lines[PEEP_MAX];
         char *chunk = body_text;
         while (*chunk) {

@@ -21,5 +21,8 @@ if [ -z "$output" ]; then
 fi
 outbase="${output%.exe}"
 
+WINEDEBUG=fixme-all
+export WINEDEBUG
+
 wine rcc.exe -S "$input" -o "$outbase.s" &&
 	x86_64-w64-mingw32-gcc "$outbase.s" -o "$output" && rm "$outbase.s"

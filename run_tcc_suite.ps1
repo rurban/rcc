@@ -28,10 +28,10 @@ if (-not $RCC) {
 # (bound-checker, backtrace, btdll, builtins are TCC-runtime-only)
 $SkipTests = @(
     "22_floating_point",
-    "34_array_assignment",
-    "85_asm-outside-function",
-    "98_al_ax_extend",
-    "99_fastcall",
+    "60_errors_and_warnings", # no main; TCC -dt mode
+    "73_arm64",
+    "96_nodata_wanted",       # no main; TCC -dt mode
+    "104_inline",             # needs multi-file 104+_inline.c
     "106_versym",             # requires -pthread
     "112_backtrace",
     "113_btdll",
@@ -39,10 +39,9 @@ $SkipTests = @(
     "115_bound_setjmp",
     "116_bound_setjmp2",
     "117_builtins",
-    "124_atomic_counter",     # requires -pthread
-    "126_bound_global",
-    "127_asm_goto",
-    "132_bound_test"
+    "120_alias",              # needs multi-file 120+_alias.c + GNU alias
+    "122_vla_reuse",          # VLA not supported
+    "126_bound_global"
 )
 
 $TestFiles = Get-ChildItem -Path $TestDir -Filter "*.c" | Sort-Object {
@@ -100,8 +99,13 @@ foreach ($file in $TestFiles) {
     }
 
     # 2. Execution
+    $ExtraArgs = switch ($base) {
+        "31_args" { @("arg1", "arg2", "arg3", "arg4", "arg5") }
+        "46_grep" { @('[^* ]*[:a:d: ]+\:\*-/: $', (Join-Path $TestDir "46_grep.c")) }
+        default   { @() }
+    }
     try {
-        $actualOutput = & $exe 2>&1 | Out-String
+        $actualOutput = & $exe @ExtraArgs 2>&1 | Out-String
         $actualOutput = $actualOutput.Trim()
     } catch {
         Write-Host "EXECUTION FAIL" -ForegroundColor Red

@@ -67,6 +67,7 @@ report_rows=""
 test_args() {
 	case "$1" in
 	31_args) printf '%s' "arg1 arg2 arg3 arg4 arg5" ;;
+	46_grep) printf '%s' '[^* ]*[:a:d: ]+\:\*-/: $'" $TEST_DIR/46_grep.c" ;;
 	*) printf '' ;;
 	esac
 }
@@ -117,24 +118,23 @@ print_change() {
 
 # Tests to skip – mirrors tinycc/tests/tests2/Makefile SKIP, minus TCC-internals
 # (bound-checker, backtrace, btdll, builtins are TCC-runtime-only and omitted here)
+#tcc-extension working: 34_array_assignment
 SKIP_TESTS="
 22_floating_point
-34_array_assignment
-85_asm-outside-function
+60_errors_and_warnings
+96_nodata_wanted
+73_arm64
 95_bitfields_ms
-98_al_ax_extend
-99_fastcall
-106_versym
+104_inline
 112_backtrace
 113_btdll
 114_bound_signal
 115_bound_setjmp
 116_bound_setjmp2
 117_builtins
-124_atomic_counter
+120_alias
+122_vla_reuse
 126_bound_global
-127_asm_goto
-132_bound_test
 "
 
 is_skipped() {
@@ -355,4 +355,4 @@ fi
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$passed" -ge 103 ]
+[ "$passed" -ge 113 ]
