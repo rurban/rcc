@@ -33,6 +33,16 @@ struct CondIncl {
     bool branch_taken;
 };
 
+typedef struct MacroStack MacroStack;
+struct MacroStack {
+    MacroStack *next;
+    char *name;
+    bool is_function;
+    char **params;
+    int param_len;
+    char *body;
+};
+
 typedef struct {
     char *buf;
     int len;
@@ -43,9 +53,11 @@ static Macro *macros;
 static OnceFile *once_files;
 static int pp_counter;
 static Macro *cmdline_macros;
+static MacroStack *macro_stack;
 
 static void clear_macros(void) {
     macros = cmdline_macros;
+    macro_stack = NULL;
 }
 
 int pack_align = 0;
@@ -195,11 +207,110 @@ static char *read_pp_file(char *path) {
     return buf;
 }
 
+// Replace C/C++ comments with spaces. Preserves newlines so line numbers
+// stay intact. Must be called before preprocess_file() so that comments in
+// #define bodies (e.g. #define P //_P) are stripped before the macro is stored.
+static void strip_comments(char *p) {
+    bool in_string = false;
+    while (*p) {
+        if (in_string) {
+            if (*p == '\\' && p[1]) {
+                p += 2;
+            } else if (*p == '"') {
+                in_string = false;
+                p++;
+            } else {
+                p++;
+            }
+        } else {
+            if (*p == '"') {
+                in_string = true;
+                p++;
+            } else if (p[0] == '/' && p[1] == '/') {
+                while (*p && *p != '\n')
+                    *p++ = ' ';
+            } else if (p[0] == '/' && p[1] == '*') {
+                p[0] = ' ';
+                p[1] = ' ';
+                p += 2;
+                while (*p && !(p[0] == '*' && p[1] == '/')) {
+                    if (*p != '\n')
+                        *p = ' ';
+                    p++;
+                }
+                if (*p) {
+                    *p = ' ';
+                    p++;
+                }
+                if (*p) {
+                    *p = ' ';
+                    p++;
+                }
+            } else {
+                p++;
+            }
+        }
+    }
+}
+
 static Macro *find_macro(char *name) {
     for (Macro *m = macros; m; m = m->next)
         if (strcmp(m->name, name) == 0)
             return m;
     return NULL;
+}
+
+static void push_macro(char *name) {
+    MacroStack *ms = arena_alloc(sizeof(MacroStack));
+    ms->name = name;
+    Macro *m = find_macro(name);
+    if (m) {
+        ms->is_function = m->is_function;
+        ms->param_len = m->param_len;
+        ms->params = m->params;
+        ms->body = m->body;
+    } else {
+        ms->is_function = false;
+        ms->param_len = -1;
+        ms->params = NULL;
+        ms->body = NULL;
+    }
+    ms->next = macro_stack;
+    macro_stack = ms;
+}
+
+static void pop_macro(char *name) {
+    MacroStack *ms = NULL;
+    for (MacroStack **p = &macro_stack; *p; p = &(*p)->next) {
+        if (strcmp((*p)->name, name) == 0) {
+            ms = *p;
+            *p = (*p)->next;
+            break;
+        }
+    }
+    if (!ms) return;
+    if (ms->param_len < 0) {
+        Macro **pm = &macros;
+        while (*pm) {
+            if (strcmp((*pm)->name, name) == 0) {
+                *pm = (*pm)->next;
+                break;
+            }
+            pm = &(*pm)->next;
+        }
+    } else {
+        Macro *m = find_macro(name);
+        if (!m) {
+            m = arena_alloc(sizeof(Macro));
+            m->name = name;
+            m->next = macros;
+            macros = m;
+        }
+        m->is_function = ms->is_function;
+        m->param_len = ms->param_len;
+        m->params = ms->params;
+        m->body = ms->body;
+    }
 }
 
 static void define_macro(char *name, bool is_function, char **params, int param_len, char *body) {
@@ -749,6 +860,8 @@ static char *preprocess_file(char *filename, char *input) {
     if (is_once_file(filename))
         return "";
 
+    strip_comments(input);
+
     StrBuf out;
     sb_init(&out, strlen(input) * 16 + 65536);
     CondIncl *conds = NULL;
@@ -800,6 +913,38 @@ static char *preprocess_file(char *filename, char *input) {
                         while (s < end && isspace((unsigned char)*s)) s++;
                         if (*s >= '1' && *s <= '9')
                             pack_align = *s - '0';
+                    }
+                } else if (pp_startswith(s, "push_macro")) {
+                    s += 10;
+                    while (s < end && isspace((unsigned char)*s)) s++;
+                    if (*s == '(') {
+                        s++;
+                        while (s < end && isspace((unsigned char)*s)) s++;
+                        char *name_start = s;
+                        if (*s == '"') {
+                            name_start = ++s;
+                            while (s < end && *s != '"') s++;
+                        } else {
+                            while (s < end && pp_is_ident2(*s)) s++;
+                        }
+                        char *name = pp_strndup(name_start, s - name_start);
+                        push_macro(name);
+                    }
+                } else if (pp_startswith(s, "pop_macro")) {
+                    s += 9;
+                    while (s < end && isspace((unsigned char)*s)) s++;
+                    if (*s == '(') {
+                        s++;
+                        while (s < end && isspace((unsigned char)*s)) s++;
+                        char *name_start = s;
+                        if (*s == '"') {
+                            name_start = ++s;
+                            while (s < end && *s != '"') s++;
+                        } else {
+                            while (s < end && pp_is_ident2(*s)) s++;
+                        }
+                        char *name = pp_strndup(name_start, s - name_start);
+                        pop_macro(name);
                     }
                 }
             } else if (pp_startswith(s, "define") && active) {
