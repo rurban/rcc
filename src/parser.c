@@ -197,6 +197,7 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
 static Node *new_var_node(LVar *var, Token *tok) {
     Node *node = new_node(ND_LVAR, tok);
     node->var = var;
+    node->ty = var->ty;
     return node;
 }
 
@@ -2776,13 +2777,13 @@ static Node *unary(Token **rest, Token *tok) {
                             member_access->lhs = var_node;
                             member_access->member = mem;
                             member_access->ty = mem->ty;
-                            Node *member_addr = new_unary(ND_ADDR, member_access, start);
                             Node *offset = new_num(idx, start);
-                            Node *elem_ptr = new_binary(ND_ADD, member_addr, offset, start);
+                            Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
                             Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
                             Node *val = assign(&tok, tok);
                             add_type(val);
                             Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
+                            add_type(asgn);
                             result = new_binary(ND_COMMA, result, asgn, start);
                             result->ty = ty;
                             idx++;
