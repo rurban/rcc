@@ -1634,175 +1634,168 @@ void codegen(Program *prog) {
         body_text[body_len] = '\0';
         fclose(body_file);
 
-        // Split into lines
-        int line_cap = 1;
-        for (char *q = body_text; *q; q++)
-            if (*q == '\n')
-                line_cap++;
-        char **lines = malloc(sizeof(char *) * line_cap);
-        int nlines = 0;
-        char *p = body_text;
-        while (*p) {
-            lines[nlines] = p;
-            char *nl = strchr(p, '\n');
-            if (nl) {
-                *nl = '\0';
-                p = nl + 1;
-            } else
-                p += strlen(p);
-            nlines++;
-        }
+        // Process body in chunks to handle functions larger than PEEP_MAX lines.
+        #define PEEP_MAX 65536
+        char *lines[PEEP_MAX];
+        char *chunk = body_text;
+        while (*chunk) {
+            int nlines = 0;
+            char *p = chunk;
+            while (*p && nlines < PEEP_MAX) {
+                lines[nlines] = p;
+                char *nl = strchr(p, '\n');
+                if (nl) {
+                    *nl = '\0';
+                    p = nl + 1;
+                } else
+                    p += strlen(p);
+                nlines++;
+            }
+            chunk = p; // next chunk starts here
 
-        // Skip peephole on very large functions to avoid truncation/pathological compile behavior.
-        if (opt_O0) goto skip_peep;
-        if (nlines < 50000)
-            for (int pass = 0; pass < 4; pass++) {
-                for (int li = 0; li < nlines - 1; li++) {
-                    if (!lines[li] || !lines[li][0]) continue;
-                    int lj = li + 1;
-                    while (lj < nlines && (!lines[lj] || !lines[lj][0])) lj++;
-                    if (lj >= nlines) break;
+            // Run peephole on this chunk
+            if (!opt_O0 && nlines < 50000) {
+                for (int pass = 0; pass < 4; pass++) {
+                    for (int li = 0; li < nlines - 1; li++) {
+                        if (!lines[li] || !lines[li][0]) continue;
+                        int lj = li + 1;
+                        while (lj < nlines && (!lines[lj] || !lines[lj][0])) lj++;
+                        if (lj >= nlines) break;
 
-                    char d1[80], s1[80], d2[80], s2[80];
+                        char d1[80], s1[80], d2[80], s2[80];
 
-                    // Pattern 1: mov REG, SRC; mov DEST, REG → mov DEST, SRC
-                    // (copy propagation: eliminate temp register moves)
-                    if (sscanf(lines[li], "  mov %[^,], %s", d1, s1) == 2 &&
-                        sscanf(lines[lj], "  mov %[^,], %s", d2, s2) == 2 &&
-                        strcmp(s2, d1) == 0 && is_reg(d1) && is_reg(s1)) {
-                        char newline[200];
-                        snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
-                        lines[lj] = strdup(newline);
-                        int pid = phys_reg_id(d1);
-                        if (pid >= 0 && !reg_live_after(lines, nlines, lj, pid))
-                            lines[li] = "";
-                        continue;
-                    }
+                        // Pattern 1: mov REG, SRC; mov DEST, REG → mov DEST, SRC
+                        if (sscanf(lines[li], "  mov %[^,], %s", d1, s1) == 2 &&
+                            sscanf(lines[lj], "  mov %[^,], %s", d2, s2) == 2 &&
+                            strcmp(s2, d1) == 0 && is_reg(d1) && is_reg(s1)) {
+                            char newline[200];
+                            snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
+                            lines[lj] = strdup(newline);
+                            int pid = phys_reg_id(d1);
+                            if (pid >= 0 && !reg_live_after(lines, nlines, lj, pid))
+                                lines[li] = "";
+                            continue;
+                        }
 
-                    // Pattern 2: mov [rbp-N], REG; mov REGx, {dword,qword} ptr [rbp-N]
-                    // (store-load forwarding)
-                    {
-                        int off1, off2;
-                        char sr[32], dr[32];
-                        if (sscanf(lines[li], "  mov [rbp-%d], %s", &off1, sr) == 2) {
-                            if (sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
-                                off1 == off2) {
-                                const char *r32 = to32(sr);
-                                if (r32) {
+                        // Pattern 2: mov [rbp-N], REG; mov REGx, {dword,qword} ptr [rbp-N]
+                        {
+                            int off1, off2;
+                            char sr[32], dr[32];
+                            if (sscanf(lines[li], "  mov [rbp-%d], %s", &off1, sr) == 2) {
+                                if (sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
+                                    off1 == off2) {
+                                    const char *r32 = to32(sr);
+                                    if (r32) {
+                                        char newline[160];
+                                        snprintf(newline, sizeof(newline), "  mov %s, %s", dr, r32);
+                                        lines[lj] = strdup(newline);
+                                        continue;
+                                    }
+                                }
+                                if (sscanf(lines[lj], "  mov %[^,], qword ptr [rbp-%d]", dr, &off2) == 2 &&
+                                    off1 == off2) {
                                     char newline[160];
-                                    snprintf(newline, sizeof(newline), "  mov %s, %s", dr, r32);
+                                    snprintf(newline, sizeof(newline), "  mov %s, %s", dr, sr);
                                     lines[lj] = strdup(newline);
                                     continue;
                                 }
                             }
-                            if (sscanf(lines[lj], "  mov %[^,], qword ptr [rbp-%d]", dr, &off2) == 2 &&
+                        }
+
+                        // Pattern 2b: mov dword ptr [rbp-N], VAL; mov REGx, dword ptr [rbp-N]
+                        {
+                            int off1, off2, val;
+                            char dr[32];
+                            if (sscanf(lines[li], "  mov dword ptr [rbp-%d], %d", &off1, &val) == 2 &&
+                                sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
                                 off1 == off2) {
                                 char newline[160];
-                                snprintf(newline, sizeof(newline), "  mov %s, %s", dr, sr);
+                                snprintf(newline, sizeof(newline), "  mov %s, %d", dr, val);
                                 lines[lj] = strdup(newline);
                                 continue;
                             }
                         }
-                    }
 
-                    // Pattern 2b: mov dword ptr [rbp-N], VAL; mov REGx, dword ptr [rbp-N]
-                    {
-                        int off1, off2, val;
-                        char dr[32];
-                        if (sscanf(lines[li], "  mov dword ptr [rbp-%d], %d", &off1, &val) == 2 &&
-                            sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
-                            off1 == off2) {
-                            char newline[160];
-                            snprintf(newline, sizeof(newline), "  mov %s, %d", dr, val);
-                            lines[lj] = strdup(newline);
-                            continue;
-                        }
-                    }
-
-                    // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
-                    {
-                        char lbl1[80], lbl2[80];
-                        if (sscanf(lines[li], "  jmp %s", lbl1) == 1 &&
-                            sscanf(lines[lj], "%[^:]:", lbl2) == 1) {
-                            char *t = lbl2;
-                            while (*t == ' ') t++;
-                            if (strcmp(lbl1, t) == 0) {
-                                lines[li] = "";
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
-                    // (fold immediate into cmp/add/sub/and/or/xor)
-                    {
-                        char rd[32];
-                        int imm_val;
-                        char op[16], od[64], os[32];
-                        if (sscanf(lines[li], "  mov %[^,], %d", rd, &imm_val) == 2 && is_reg(rd)) {
-                            // Skip hex values: sscanf %d parses only leading '0' of 0x...
-                            char *comma = strchr(lines[li], ',');
-                            if (comma) {
-                                char *val = comma + 1;
-                                while (*val == ' ' || *val == '\t') val++;
-                                if (val[0] == '0' && (val[1] == 'x' || val[1] == 'X'))
-                                    continue;
-                            }
-                            int rd_pid = phys_reg_id(rd);
-                            if (sscanf(lines[lj], "  %s %[^,], %s", op, od, os) == 3 &&
-                                same_phys(os, rd) &&
-                                (!strcmp(op, "cmp") || !strcmp(op, "add") || !strcmp(op, "sub") ||
-                                 !strcmp(op, "and") || !strcmp(op, "or") || !strcmp(op, "xor") ||
-                                 !strcmp(op, "imul"))) {
-                                // Fold and eliminate identity ops
-                                if (((!strcmp(op, "add") || !strcmp(op, "sub") || !strcmp(op, "or") || !strcmp(op, "xor")) && imm_val == 0) ||
-                                    (!strcmp(op, "imul") && imm_val == 1)) {
-                                    lines[lj] = "";
-                                } else {
-                                    char newline[160];
-                                    snprintf(newline, sizeof(newline), "  %s %s, %d", op, od, imm_val);
-                                    lines[lj] = strdup(newline);
-                                }
-                                if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
+                        // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
+                        {
+                            char lbl1[80], lbl2[80];
+                            if (sscanf(lines[li], "  jmp %s", lbl1) == 1 &&
+                                sscanf(lines[lj], "%[^:]:", lbl2) == 1) {
+                                char *t = lbl2;
+                                while (*t == ' ') t++;
+                                if (strcmp(lbl1, t) == 0) {
                                     lines[li] = "";
-                                continue;
+                                    continue;
+                                }
                             }
                         }
-                    }
 
-                    // Pattern 5: 3-line chain: mov R, [mem]; OP R, IMM; mov dst, R → mov dst, [mem]; OP dst, IMM
-                    {
-                        int lk = lj + 1;
-                        while (lk < nlines && (!lines[lk] || !lines[lk][0])) lk++;
-                        if (lk < nlines) {
-                            char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
-                            if (sscanf(lines[li], "  mov %[^,], %[^\n]", r1, mem1) == 2 &&
-                                sscanf(lines[lj], "  %s %[^,], %s", op2, r2, imm2) == 3 &&
-                                sscanf(lines[lk], "  mov %[^,], %s", d3, r3) == 2 &&
-                                strcmp(r1, r2) == 0 && strcmp(r2, r3) == 0 &&
-                                is_reg(d3) && !is_reg(mem1) &&
-                                (!strcmp(op2, "add") || !strcmp(op2, "sub"))) {
-                                char nl1[200], nl2[100];
-                                snprintf(nl1, sizeof(nl1), "  mov %s, %s", d3, mem1);
-                                snprintf(nl2, sizeof(nl2), "  %s %s, %s", op2, d3, imm2);
-                                lines[li] = strdup(nl1);
-                                lines[lj] = strdup(nl2);
-                                lines[lk] = "";
-                                continue;
+                        // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
+                        {
+                            char rd[32];
+                            int imm_val;
+                            char op[16], od[64], os[32];
+                            if (sscanf(lines[li], "  mov %[^,], %d", rd, &imm_val) == 2 && is_reg(rd)) {
+                                char *comma = strchr(lines[li], ',');
+                                if (comma) {
+                                    char *val = comma + 1;
+                                    while (*val == ' ' || *val == '\t') val++;
+                                    if (val[0] == '0' && (val[1] == 'x' || val[1] == 'X'))
+                                        continue;
+                                }
+                                int rd_pid = phys_reg_id(rd);
+                                if (sscanf(lines[lj], "  %s %[^,], %s", op, od, os) == 3 &&
+                                    same_phys(os, rd) &&
+                                    (!strcmp(op, "cmp") || !strcmp(op, "add") || !strcmp(op, "sub") ||
+                                     !strcmp(op, "and") || !strcmp(op, "or") || !strcmp(op, "xor") ||
+                                     !strcmp(op, "imul"))) {
+                                    if (((!strcmp(op, "add") || !strcmp(op, "sub") || !strcmp(op, "or") || !strcmp(op, "xor")) && imm_val == 0) ||
+                                        (!strcmp(op, "imul") && imm_val == 1)) {
+                                        lines[lj] = "";
+                                    } else {
+                                        char newline[160];
+                                        snprintf(newline, sizeof(newline), "  %s %s, %d", op, od, imm_val);
+                                        lines[lj] = strdup(newline);
+                                    }
+                                    if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
+                                        lines[li] = "";
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Pattern 5: 3-line chain: mov R, [mem]; OP R, IMM; mov dst, R → mov dst, [mem]; OP dst, IMM
+                        {
+                            int lk = lj + 1;
+                            while (lk < nlines && (!lines[lk] || !lines[lk][0])) lk++;
+                            if (lk < nlines) {
+                                char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
+                                if (sscanf(lines[li], "  mov %[^,], %[^\n]", r1, mem1) == 2 &&
+                                    sscanf(lines[lj], "  %s %[^,], %s", op2, r2, imm2) == 3 &&
+                                    sscanf(lines[lk], "  mov %[^,], %s", d3, r3) == 2 &&
+                                    strcmp(r1, r2) == 0 && strcmp(r2, r3) == 0 &&
+                                    is_reg(d3) && !is_reg(mem1) &&
+                                    (!strcmp(op2, "add") || !strcmp(op2, "sub"))) {
+                                    char nl1[200], nl2[100];
+                                    snprintf(nl1, sizeof(nl1), "  mov %s, %s", d3, mem1);
+                                    snprintf(nl2, sizeof(nl2), "  %s %s, %s", op2, d3, imm2);
+                                    lines[li] = strdup(nl1);
+                                    lines[lj] = strdup(nl2);
+                                    lines[lk] = "";
+                                    continue;
+                                }
                             }
                         }
                     }
                 }
             }
 
-    skip_peep:
-        // Emit optimized lines
-        for (int li = 0; li < nlines; li++) {
-            if (lines[li] && lines[li][0])
-                fprintf(stdout, "%s\n", lines[li]);
+            // Emit chunk
+            for (int li = 0; li < nlines; li++) {
+                if (lines[li] && lines[li][0])
+                    fprintf(stdout, "%s\n", lines[li]);
+            }
         }
-        // FIXME: this leaks all strdup'ed peep-optimized lines
-        free(lines);
         free(body_text);
 
         // Emit epilogue
