@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/23/2026 11:20:35
+Generated on: 04/24/2026 09:12:07
 
 ## Summary
 - **Total Tests**: 129
-- **Passed**: 77
-- **Failed**: 37
-- **Pass Rate**: 59.69%
+- **Passed**: 79
+- **Failed**: 35
+- **Pass Rate**: 61.24%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -85,9 +85,9 @@ Generated on: 04/23/2026 11:20:35
 | 87_dead_code | PASS | Output matches |
 | 88_codeopt | PASS | Output matches |
 | 89_nocode_wanted | PASS | Output matches |
-| 90_struct-init | COMPILE_FAIL | rcc exited with -1073741819 |
+| 90_struct-init | PASS | Output matches |
 | 91_ptr_longlong_arith32 | PASS | Output matches |
-| 92_enum_bitfield | MISMATCH | Output does not match .expect |
+| 92_enum_bitfield | PASS | Output matches |
 | 93_integer_promotion | PASS | Output matches |
 | 94_generic | COMPILE_FAIL | rcc exited with 1 |
 | 95_bitfields | MISMATCH | Output does not match .expect |
@@ -107,7 +107,7 @@ Generated on: 04/23/2026 11:20:35
 | 110_average | PASS | Output matches |
 | 111_conversion | PASS | Output matches |
 | 118_switch | PASS | Output matches |
-| 119_random_stuff | COMPILE_FAIL | rcc exited with -1073741819 |
+| 119_random_stuff | COMPILE_FAIL | rcc exited with 1 |
 | 120+_alias | COMPILE_FAIL | rcc exited with 1 |
 | 121_struct_return | PASS | Output matches |
 | 123_vla_bug | COMPILE_FAIL | rcc exited with 1 |
@@ -115,7 +115,7 @@ Generated on: 04/23/2026 11:20:35
 | 125_atomic_misc | COMPILE_FAIL | rcc exited with 1 |
 | 127_asm_goto | COMPILE_FAIL | rcc exited with 1 |
 | 128_run_atexit | COMPILE_FAIL | rcc exited with 1 |
-| 129_scopes | COMPILE_FAIL | rcc exited with 1 |
+| 129_scopes | MISMATCH | Output does not match .expect |
 | 130_large_argument | MISMATCH | Output does not match .expect |
 | 131_return_struct_in_reg | PASS | Output matches |
 | 132_bound_test | COMPILE_FAIL | rcc exited with 1 |
