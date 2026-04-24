@@ -3,8 +3,8 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     139
- - **Passed**:    117
- - **Failed**:    22
+ - **Passed**:    118
+ - **Failed**:    21
  - **Pass Rate**: 84%
 
 ## Detailed Results
@@ -77,7 +77,7 @@ Generated: April 2026
 | 79_vla_continue                          | COMPILE_FAIL | rcc returned non-zero                |
 | 80_flexarray                             | PASS         | Output matches                       |
 | 81_types                                 | PASS         | Output matches                       |
-| 82_attribs_position                      | COMPILE_FAIL | rcc returned non-zero                |
+| 82_attribs_position                      | PASS         | Output matches                       |
 | 83_utf8_in_identifiers                   | PASS         | Output matches                       |
 | 84_hex-float                             | PASS         | Output matches                       |
 | 85_asm-outside-function                  | COMPILE_FAIL | rcc returned non-zero                |

@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/24/2026 20:13:41
+Generated on: 04/24/2026 20:44:41
 
 ## Summary
 - **Total Tests**: 129
-- **Passed**: 79
-- **Failed**: 35
-- **Pass Rate**: 61.24%
+- **Passed**: 81
+- **Failed**: 33
+- **Pass Rate**: 62.79%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -76,8 +76,8 @@ Generated on: 04/24/2026 20:13:41
 | 78_vla_label | COMPILE_FAIL | rcc exited with 1 |
 | 79_vla_continue | COMPILE_FAIL | rcc exited with 1 |
 | 80_flexarray | PASS | Output matches |
-| 81_types | COMPILE_FAIL | rcc exited with 1 |
-| 82_attribs_position | COMPILE_FAIL | rcc exited with 1 |
+| 81_types | PASS | Output matches |
+| 82_attribs_position | PASS | Output matches |
 | 83_utf8_in_identifiers | MISMATCH | Output does not match .expect |
 | 84_hex-float | PASS | Output matches |
 | 85_asm-outside-function | COMPILE_FAIL | rcc exited with 1 |

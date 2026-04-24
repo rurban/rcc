@@ -701,7 +701,8 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         tok = skip_type_quals(tok);
     }
 
-    if (equal(tok, "(") && (equal(tok->next, "*") || equal(tok->next, "["))) {
+    Token *inner = skip_attributes(tok->next);
+    if (equal(tok, "(") && (equal(inner, "*") || equal(inner, "["))) {
         Token *start = tok->next;
         Type dummy = {};
         char *dummy_name = NULL;
