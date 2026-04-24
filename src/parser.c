@@ -2899,6 +2899,9 @@ static Node *unary(Token **rest, Token *tok) {
                 Node *final_var = new_var_node(var, start);
                 result = new_binary(ND_COMMA, result, final_var, start);
                 add_type(result);
+                // Compound literals are lvalues; preserve the array type
+                // so sizeof and other operations see the correct size.
+                result->ty = var->ty;
             } else if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
                 // Struct compound literal: assign each member
                 Member *mem = ty->members;
