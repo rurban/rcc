@@ -101,6 +101,7 @@ struct Type {
     int size; // sizeof
     int align; // alignment
     bool is_unsigned;
+    bool is_enum; // enum type — treated as unsigned for bitfield extraction
     Type *base; // for pointer/array
     Member *members; // for struct
     Type *return_ty; // for function

@@ -765,7 +765,10 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 
     if (!equal(tok, "{")) {
         *rest = tok;
-        return ty_int;
+        Type *ety = arena_alloc(sizeof(Type));
+        *ety = *ty_int;
+        ety->is_enum = true;
+        return ety;
     }
 
     tok = tok->next;
@@ -797,7 +800,10 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     }
 
     *rest = tok->next;
-    return ty_int;
+    Type *ety = arena_alloc(sizeof(Type));
+    *ety = *ty_int;
+    ety->is_enum = true;
+    return ety;
 }
 
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {

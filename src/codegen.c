@@ -900,7 +900,7 @@ static int gen(Node *node) {
             if (bo > 0)
                 printf("  shr %s, %d\n", reg64[r], bo);
             if (bw < unit_bits) {
-                if (node->member->ty->is_unsigned) {
+                if (node->member->ty->is_unsigned || node->member->ty->is_enum) {
                     unsigned long long mask = (1ULL << bw) - 1;
                     printf("  movabs rax, %llu\n", mask);
                     printf("  and %s, rax\n", reg64[r]);
