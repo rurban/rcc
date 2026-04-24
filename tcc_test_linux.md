@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     139
- - **Passed**:    115
- - **Failed**:    24
- - **Pass Rate**: 82%
+ - **Passed**:    117
+ - **Failed**:    22
+ - **Pass Rate**: 84%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -87,11 +87,11 @@ Generated: April 2026
 | 89_nocode_wanted                         | PASS         | Output matches                       |
 | 90_struct-init                           | PASS         | Output matches                       |
 | 91_ptr_longlong_arith32                  | PASS         | Output matches                       |
-| 92_enum_bitfield                         | COMPILE_FAIL | rcc returned non-zero                |
+| 92_enum_bitfield                         | PASS         | Output matches                       |
 | 93_integer_promotion                     | PASS         | Output matches                       |
 | 94_generic                               | COMPILE_FAIL | rcc returned non-zero                |
 | 95_bitfields                             | PASS         | Output matches                       |
-| 97_utf8_string_literal                   | MISMATCH     | Output does not match .expect        |
+| 97_utf8_string_literal                   | PASS         | Output matches                       |
 | 98_al_ax_extend                          | COMPILE_FAIL | rcc returned non-zero                |
 | 99_fastcall                              | COMPILE_FAIL | rcc returned non-zero                |
 | 100_c99array-decls                       | PASS         | Output matches                       |

@@ -609,10 +609,30 @@ static int gen(Node *node) {
             }
             // String literal → char array: limit copy to actual string size, zero-fill rest
             if (node->rhs->kind == ND_STR && node->lhs->ty->kind == TY_ARRAY) {
-                src = gen(node->rhs);  // loads address of string
+                src = gen(node->rhs); // loads address of string
                 int str_len = 0;
-                for (StrLit *s = all_strs; s; s = s->next)
-                    if (s->id == node->rhs->str_id) { str_len = s->len + s->elem_size; break; }
+                for (StrLit *s = all_strs; s; s = s->next) {
+                    if (s->id != node->rhs->str_id) continue;
+                    if (s->prefix != 0) {
+                        // Wide string: count Unicode chars and multiply by elem_size
+                        int count = 0;
+                        char *p = s->str;
+                        while (*p) {
+                            char *next;
+                            decode_utf8(&next, p);
+                            if (next == p) {
+                                p++;
+                                continue;
+                            }
+                            p = next;
+                            count++;
+                        }
+                        str_len = (count + 1) * s->elem_size;
+                    } else {
+                        str_len = s->len + s->elem_size;
+                    }
+                    break;
+                }
                 int lhs_size = node->lhs->ty->size;
                 int copy_len = str_len < lhs_size ? str_len : lhs_size;
                 if (copy_len > 0) {

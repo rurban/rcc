@@ -817,8 +817,14 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     if (tag_tok) {
         TagScope *tag = find_tag(tag_tok);
         if (tag && !equal(tok, "{")) {
+            // Forward-reference use: return existing type
+            ty = tag->ty;
+        } else if (tag && equal(tok, "{") && tag->ty->size == 0 && !tag->ty->members) {
+            // Completing a forward-declared (incomplete) type: reuse existing Type object
+            // so all pointers to it (typedefs, etc.) see the completed definition.
             ty = tag->ty;
         } else {
+            // New definition (possibly shadowing an outer-scope tag)
             ty = arena_alloc(sizeof(Type));
             ty->kind = is_union ? TY_UNION : TY_STRUCT;
             ty->size = 0;
@@ -1829,8 +1835,9 @@ static Token *local_init_member(Token *tok, Node *lhs, Member *mem, Node **cur) 
 }
 
 static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
-    // String literal for char array
-    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR) {
+    // String literal for char or wide-char array
+    if (ty->kind == TY_ARRAY && tok->kind == TK_STR &&
+        (ty->base->kind == TY_CHAR || tok->string_literal_prefix != 0)) {
         Node *rhs = assign(&tok, tok);
         Node *assign_node = new_binary(ND_ASSIGN, lhs, rhs, tok);
         add_type(assign_node);
@@ -1877,7 +1884,7 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     if (len == 0 || i < len) {
                         Node *elem_lhs = new_array_elem_lvalue_node(lhs, i, tok);
                         Node *assign_node = new_binary(ND_ASSIGN, elem_lhs,
-                                                        new_var_node(tmp, tok), tok);
+                                                       new_var_node(tmp, tok), tok);
                         add_type(assign_node);
                         *cur = (*cur)->next = new_unary(ND_EXPR_STMT, assign_node, tok);
                     }
@@ -2111,7 +2118,8 @@ static Node *declaration(Token **rest, Token *tok) {
                 // Zero-initialize aggregate locals before specific initializers
                 // so unspecified elements are 0 as required by C.
                 if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION ||
-                     var->ty->kind == TY_ARRAY) && var->ty->size > 0) {
+                     var->ty->kind == TY_ARRAY) &&
+                    var->ty->size > 0) {
                     Node *zinit = new_node(ND_ZERO_INIT, start);
                     zinit->lhs = new_var_node(var, start);
                     cur = cur->next = new_unary(ND_EXPR_STMT, zinit, start);
@@ -2420,7 +2428,7 @@ static Node *primary(Token **rest, Token *tok) {
             const char *fn = parser_current_fn ? parser_current_fn : "";
             node = new_node(ND_STR, tok);
             node->ty = array_of(ty_char, strlen(fn) + 1);
-            StrLit *s = new_str_lit((char*)fn, strlen(fn), 0, 1);
+            StrLit *s = new_str_lit((char *)fn, strlen(fn), 0, 1);
             node->str_id = s->id;
             *rest = tok->next;
             return node;
