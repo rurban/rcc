@@ -181,15 +181,88 @@ static bool file_exists(char *path) {
 }
 
 static char *canonical_path(char *path) {
-    char full[4096];
+    if (!path || !*path)
+        return str_intern(path, strlen(path));
+
+    char buf[4096];
+    int len = strlen(path);
+    if (len >= (int)sizeof(buf))
+        return str_intern(path, strlen(path));
+    memcpy(buf, path, len + 1);
+
 #ifdef _WIN32
-    if (_fullpath(full, path, sizeof(full)))
-        return str_intern(full, strlen(full));
-#else
-    if (realpath(path, full))
-        return str_intern(full, strlen(full));
+    for (int i = 0; i < len; i++)
+        if (buf[i] == '\\')
+            buf[i] = '/';
 #endif
-    return str_intern(path, strlen(path));
+
+    char *comps[256];
+    int comp_lens[256];
+    int ncomp = 0;
+
+    char *p = buf;
+#ifdef _WIN32
+    bool absolute = false;
+    if (len >= 2 && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':') {
+        absolute = true;
+        p += 2;
+    }
+    while (*p == '/')
+        p++;
+#else
+    bool absolute = (*p == '/');
+    if (absolute)
+        p++;
+#endif
+
+    while (*p) {
+        char *start = p;
+        while (*p && *p != '/')
+            p++;
+        int clen = p - start;
+        while (*p == '/')
+            p++;
+
+        if (clen == 1 && start[0] == '.') {
+            continue;
+        } else if (clen == 2 && start[0] == '.' && start[1] == '.') {
+            if (ncomp > 0 && !(comp_lens[ncomp - 1] == 2 && comps[ncomp - 1][0] == '.' && comps[ncomp - 1][1] == '.')) {
+                ncomp--;
+            } else if (!absolute) {
+                comps[ncomp] = start;
+                comp_lens[ncomp] = clen;
+                ncomp++;
+            }
+        } else {
+            comps[ncomp] = start;
+            comp_lens[ncomp] = clen;
+            ncomp++;
+        }
+    }
+
+    char out[4096];
+    int dst = 0;
+#ifdef _WIN32
+    if (absolute) {
+        out[dst++] = buf[0];
+        out[dst++] = ':';
+    }
+#endif
+    if (absolute)
+        out[dst++] = '/';
+
+    for (int i = 0; i < ncomp; i++) {
+        if (i > 0)
+            out[dst++] = '/';
+        memcpy(out + dst, comps[i], comp_lens[i]);
+        dst += comp_lens[i];
+    }
+
+    if (dst == 0)
+        out[dst++] = '.';
+    out[dst] = '\0';
+
+    return str_intern(out, dst);
 }
 
 static char *read_pp_file(char *path) {

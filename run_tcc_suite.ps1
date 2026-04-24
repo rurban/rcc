@@ -71,10 +71,27 @@ foreach ($file in $TestFiles) {
 
     Write-Host "Running $base... " -NoNewline
 
+    # 129_scopes needs to be compiled from the test directory so __FILE__ is just the basename
+    $inScopesDir = $false
+    if ($base -eq "129_scopes") {
+        $origRCC = $RCC
+        $origSrc = $src
+        $RCC = (Resolve-Path $RCC).Path
+        Push-Location $TestDir
+        $src = "129_scopes.c"
+        $inScopesDir = $true
+    }
+
     # 1. Compilation
     $compileStart = Get-Date
     $process = Start-Process -FilePath $RCC -ArgumentList $src, "-o", $exe -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
     $compileEnd = Get-Date
+
+    if ($inScopesDir) {
+        Pop-Location
+        $src = $origSrc
+        $RCC = $origRCC
+    }
 
     if ($process.ExitCode -ne 0) {
         Write-Host "COMPILE FAIL" -ForegroundColor Red
