@@ -118,21 +118,40 @@ static void sb_puts(StrBuf *sb, char *s) {
     sb->buf[sb->len] = '\0';
 }
 
-static char *splice_lines(char *input) {
+typedef struct {
+    char *text;
+    int *line_counts;
+} SplicedInput;
+
+static SplicedInput splice_lines_with_counts(char *input) {
     int len = strlen(input);
     char *buf = arena_alloc(len + 1);
+    int *counts = arena_alloc(sizeof(int) * (len + 1));
     int j = 0;
+    int line_idx = 0;
+    int count = 1;
 
     for (int i = 0; i < len; i++) {
         if (input[i] == '\\' && input[i + 1] == '\n') {
             i++;
-            continue;
+            count++;
+        } else {
+            buf[j++] = input[i];
+            if (input[i] == '\n') {
+                counts[line_idx++] = count;
+                count = 1;
+            }
         }
-        buf[j++] = input[i];
     }
-
+    if (count > 1 || j == 0 || buf[j - 1] != '\n') {
+        counts[line_idx++] = count;
+    }
     buf[j] = '\0';
-    return buf;
+
+    SplicedInput result;
+    result.text = buf;
+    result.line_counts = counts;
+    return result;
 }
 
 static char *path_dirname(char *path) {
@@ -931,7 +950,7 @@ static long eval_condition(char *expr, char *filename) {
     return eval_pp_expr(&rest, expr, filename);
 }
 
-static char *preprocess_file(char *filename, char *input) {
+static char *preprocess_file(char *filename, char *input, int *line_counts) {
     if (is_once_file(filename))
         return "";
 
@@ -942,6 +961,7 @@ static char *preprocess_file(char *filename, char *input) {
     CondIncl *conds = NULL;
     bool active = true;
     unsigned line_no = 1;
+    int line_idx = 0;
 
     for (char *p = input; *p;) {
         char *line = p;
@@ -1111,7 +1131,8 @@ static char *preprocess_file(char *filename, char *input) {
                             for (char *ip = inc; *ip; ip++)
                                 if (*ip == '\n') incl_lines++;
                             sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
-                            sb_puts(&out, preprocess_file(path, inc));
+                            SplicedInput spliced_inc = splice_lines_with_counts(inc);
+                            sb_puts(&out, preprocess_file(path, spliced_inc.text, spliced_inc.line_counts));
                             line_no += incl_lines;
                             sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, filename));
                         }
@@ -1205,7 +1226,10 @@ static char *preprocess_file(char *filename, char *input) {
             sb_putc(&out, '\n');
         }
 
-        line_no++;
+        if (line_counts)
+            line_no += line_counts[line_idx++];
+        else
+            line_no++;
     }
 
     return out.buf;
@@ -1322,6 +1346,7 @@ char *preprocess(char *filename, char *p) {
     if (!find_macro("__SIZEOF_DOUBLE__"))
         define_macro("__SIZEOF_DOUBLE__", false, NULL, 0, "8");
 
-    char *result = preprocess_file(canonical_path(filename), splice_lines(p));
+    SplicedInput spliced = splice_lines_with_counts(p);
+    char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts);
     return result;
 }
