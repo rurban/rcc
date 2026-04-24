@@ -235,11 +235,54 @@ static void add_type_internal(Node *node) {
     case ND_POST_DEC:
         node->ty = node->lhs->ty;
         return;
-    case ND_COND:
-        node->ty = node->then->ty ? node->then->ty : node->els->ty;
+    case ND_COND: {
+        Type *tty = node->then->ty;
+        Type *ety = node->els->ty;
+        // If either operand is void, the result is void
+        if ((tty && tty->kind == TY_VOID) || (ety && ety->kind == TY_VOID)) {
+            node->ty = ty_void;
+            return;
+        }
+        // Null pointer constant with pointer: result is pointer type
+        bool then_null = tty && is_integer(tty) && node->then->kind == ND_NUM && node->then->val == 0;
+        bool els_null = ety && is_integer(ety) && node->els->kind == ND_NUM && node->els->val == 0;
+        if (then_null && ety && (ety->kind == TY_PTR || ety->kind == TY_ARRAY)) {
+            node->ty = ety->kind == TY_ARRAY ? pointer_to(ety->base) : ety;
+            return;
+        }
+        if (els_null && tty && (tty->kind == TY_PTR || tty->kind == TY_ARRAY)) {
+            node->ty = tty->kind == TY_ARRAY ? pointer_to(tty->base) : tty;
+            return;
+        }
+        // Both pointers: try to find common type
+        if (tty && ety && (tty->kind == TY_PTR || tty->kind == TY_ARRAY) &&
+            (ety->kind == TY_PTR || ety->kind == TY_ARRAY)) {
+            Type *tbase = tty->kind == TY_ARRAY ? tty->base : tty->base;
+            Type *ebase = ety->kind == TY_ARRAY ? ety->base : ety->base;
+            // void* combines with any pointer: prefer the concrete type
+            if (tbase->kind == TY_VOID && ebase->kind != TY_VOID)
+                node->ty = ety->kind == TY_ARRAY ? pointer_to(ety->base) : ety;
+            else if (ebase->kind == TY_VOID && tbase->kind != TY_VOID)
+                node->ty = tty->kind == TY_ARRAY ? pointer_to(tty->base) : tty;
+            else
+                node->ty = tty->kind == TY_ARRAY ? pointer_to(tty->base) : tty;
+            return;
+        }
+        // Both arithmetic: usual arithmetic conversions
+        if (tty && ety && is_number(tty) && is_number(ety)) {
+            node->ty = usual_arith_type(tty, ety);
+            return;
+        }
+        node->ty = tty ? tty : ety;
         return;
+    }
     case ND_COMMA:
         node->ty = node->rhs->ty;
+        // Comma expressions are never lvalues; apply array/function decay
+        if (node->ty->kind == TY_ARRAY)
+            node->ty = pointer_to(node->ty->base);
+        else if (node->ty->kind == TY_FUNC)
+            node->ty = pointer_to(node->ty);
         return;
     case ND_NUM:
         node->ty = ty_int;

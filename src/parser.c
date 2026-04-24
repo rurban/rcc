@@ -2410,10 +2410,93 @@ static Node *stmt(Token **rest, Token *tok) {
     return node;
 }
 
+static bool type_equal(Type *a, Type *b) {
+    if (a == b)
+        return true;
+    if (!a || !b)
+        return false;
+    if (a->kind != b->kind)
+        return false;
+    if (a->is_unsigned != b->is_unsigned)
+        return false;
+    if (a->is_variadic != b->is_variadic)
+        return false;
+
+    switch (a->kind) {
+    case TY_PTR:
+        return type_equal(a->base, b->base);
+    case TY_ARRAY:
+        if (a->size != b->size)
+            return false;
+        return type_equal(a->base, b->base);
+    case TY_FUNC:
+        if (!type_equal(a->return_ty, b->return_ty))
+            return false;
+        {
+            Type *pa = a->param_types;
+            Type *pb = b->param_types;
+            // If either side lacks parameter info (common for typedefs/fwd-decls),
+            // consider them compatible as long as return types match.
+            if (!pa || !pb)
+                return true;
+            while (pa && pb) {
+                if (!type_equal(pa, pb))
+                    return false;
+                pa = pa->param_next;
+                pb = pb->param_next;
+            }
+            return !pa && !pb;
+        }
+    case TY_STRUCT:
+    case TY_UNION:
+        return a == b;
+    default:
+        return true;
+    }
+}
+
 static Node *primary(Token **rest, Token *tok) {
     Node *node = NULL;
 
-    if (equal(tok, "(")) {
+    if (equal(tok, "_Generic")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *ctrl = assign(&tok, tok);
+        add_type(ctrl);
+        Type *ctrl_ty = ctrl->ty;
+        // Apply lvalue/array/function decay
+        if (ctrl_ty->kind == TY_ARRAY)
+            ctrl_ty = pointer_to(ctrl_ty->base);
+        else if (ctrl_ty->kind == TY_FUNC)
+            ctrl_ty = pointer_to(ctrl_ty);
+
+        tok = skip(tok, ",");
+
+        Node *selected = NULL;
+        Node *default_expr = NULL;
+        while (!equal(tok, ")")) {
+            if (equal(tok, "default")) {
+                tok = skip(tok->next, ":");
+                default_expr = assign(&tok, tok);
+            } else {
+                Type *ty = type_name(&tok, tok);
+                tok = skip(tok, ":");
+                Node *expr = assign(&tok, tok);
+                if (type_equal(ctrl_ty, ty))
+                    selected = expr;
+            }
+            if (equal(tok, ","))
+                tok = tok->next;
+        }
+
+        if (!selected && default_expr)
+            selected = default_expr;
+        if (!selected)
+            error_tok(start, "_Generic: no matching association");
+
+        tok = skip(tok, ")");
+        node = selected;
+    } else if (equal(tok, "(")) {
         if (equal(tok->next, "{")) {
             node = new_node(ND_STMT_EXPR, tok);
             Node *block = compound_stmt(&tok, tok->next);
@@ -2633,6 +2716,7 @@ static Node *primary(Token **rest, Token *tok) {
     *rest = tok;
     return node;
 }
+
 
 static Node *unary(Token **rest, Token *tok) {
     if (equal(tok, "__builtin_offsetof")) {
