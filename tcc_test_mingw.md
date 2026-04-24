@@ -1,5 +1,5 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/24/2026 09:12:07
+Generated on: 04/24/2026 18:42:48
 
 ## Summary
 - **Total Tests**: 129
@@ -91,7 +91,7 @@ Generated on: 04/24/2026 09:12:07
 | 93_integer_promotion | PASS | Output matches |
 | 94_generic | COMPILE_FAIL | rcc exited with 1 |
 | 95_bitfields | MISMATCH | Output does not match .expect |
-| 95_bitfields_ms | COMPILE_FAIL | rcc exited with 1 |
+| 95_bitfields_ms | MISMATCH | Output does not match .expect |
 | 97_utf8_string_literal | PASS | Output matches |
 | 98_al_ax_extend | COMPILE_FAIL | rcc exited with 1 |
 | 99_fastcall | COMPILE_FAIL | rcc exited with 1 |

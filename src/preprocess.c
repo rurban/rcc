@@ -1263,9 +1263,28 @@ char *preprocess(char *filename, char *p) {
         define_macro("_WIN32", false, NULL, 0, "1");
     if (!find_macro("__LLP64__"))
         define_macro("__LLP64__", false, NULL, 0, "1");
-#else
+#elif defined(__linux__)
     if (!find_macro("__linux__"))
         define_macro("__linux__", false, NULL, 0, "1");
+#elif defined(__APPLE__)
+    if (!find_macro("__APPLE__"))
+        define_macro("__APPLE__", false, NULL, 0, "1");
+    if (!find_macro("__MACH__"))
+        define_macro("__MACH__", false, NULL, 0, "1");
+#elif defined(__FreeBSD__)
+    if (!find_macro("__FreeBSD__"))
+        define_macro("__FreeBSD__", false, NULL, 0, "1");
+#elif defined(__NetBSD__)
+    if (!find_macro("__NetBSD__"))
+        define_macro("__NetBSD__", false, NULL, 0, "1");
+#elif defined(__OpenBSD__)
+    if (!find_macro("__OpenBSD__"))
+        define_macro("__OpenBSD__", false, NULL, 0, "1");
+#elif defined(__DragonFly__)
+    if (!find_macro("__DragonFly__"))
+        define_macro("__DragonFly__", false, NULL, 0, "1");
+#endif
+#if !defined(_WIN32)
     if (!find_macro("__LP64__"))
         define_macro("__LP64__", false, NULL, 0, "1");
 #endif
