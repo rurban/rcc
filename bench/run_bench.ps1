@@ -179,5 +179,7 @@ if ($ref) {
     }
 }
 $reportLines += ""
-$reportLines | Out-File $ReportFile -Encoding utf8
+$report = ($reportLines | Out-String) -replace "`r`n", "`n" -replace "`r", "`n"
+if (-not $report.EndsWith("`n")) { $report += "`n" }
+[System.IO.File]::WriteAllText($ReportFile, $report, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Report saved to $ReportFile" -ForegroundColor Cyan

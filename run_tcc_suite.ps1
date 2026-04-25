@@ -205,7 +205,10 @@ $( $Results | ForEach-Object { "| $($_.Test) | $($_.Status) | $($_.Message) |" }
 
 "@
 
-$report | Out-File $ReportFile -Encoding utf8
+# Normalize to LF line endings and ensure single trailing newline
+$report = $report -replace "`r`n", "`n" -replace "`r", "`n"
+if (-not $report.EndsWith("`n")) { $report += "`n" }
+[System.IO.File]::WriteAllText($ReportFile, $report, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
