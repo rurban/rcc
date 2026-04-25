@@ -23,7 +23,8 @@ fi
 outbase="${output%.exe}"
 
 WINEDEBUG=fixme-all
-export WINEDEBUG
+WINEDLLOVERRIDES="winedbg=d"
+export WINEDEBUG WINEDLLOVERRIDES
 
 wine "$scriptdir/rcc.exe" -S "$input" -o "$outbase.s" &&
 	x86_64-w64-mingw32-gcc "$outbase.s" -o "$output" && rm "$outbase.s"

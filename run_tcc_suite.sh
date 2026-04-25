@@ -20,7 +20,7 @@ if [ -z "$RCC" ]; then
 			RCC="$candidate"
 			if [ "$RCC" = "$SCRIPT_DIR/rcc.exe" ]; then
 				RCC="$SCRIPT_DIR/mingw-cross.sh"
-                                REPORT_FILE="$SCRIPT_DIR/tcc_test_mingw.md"
+                                REPORT_FILE="$SCRIPT_DIR/tcc_test_mingw_cross.md"
 			fi
 			break
 		fi
@@ -90,7 +90,8 @@ TMP_EXE="$TMPDIR/rcc_test_$$"
 if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
 	TMP_EXE="$TMP_EXE.exe"
 	WINEDEBUG=fixme-all
-	export WINEDEBUG
+	WINEDLLOVERRIDES="winedbg=d"
+	export WINEDEBUG WINEDLLOVERRIDES
 fi
 trap 'rm -f "$TMP_OUT" "$TMP_EXE"' EXIT INT TERM
 
@@ -389,8 +390,8 @@ fi
 	printf '| %-40s | %-12s | %-36s |\n' "Test" "Status" "Message"
 	printf '|:-----------------------------------------|:-------------|:-------------------------------------|\n'
 	printf '%b' "$report_rows"
-} >"$REPORT_FILE"
+} >"$SCRIPT_DIR/$REPORT_FILE"
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$passed" -ge 123 ]
+[ "$passed" -ge 124 ]

@@ -1,4 +1,4 @@
-﻿# TCC Test Suite Report for RCC
+# TCC Test Suite Report for RCC
 Generated on: 04/25/2026 14:59:16
 
 ## Summary
@@ -124,5 +124,3 @@ Generated on: 04/25/2026 14:59:16
 | 135_func_arg_struct_compare | PASS | Output matches |
 | 136_atomic_gcc_style | COMPILE_FAIL | rcc exited with 1 |
 | 137_funcall_struct_args | MISMATCH | Output does not match .expect |
-
-
