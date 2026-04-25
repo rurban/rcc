@@ -1545,6 +1545,157 @@ static const char *to32(const char *r64) {
     return NULL;
 }
 
+// Fast peephole parsing helpers (avoid sscanf in hot loop)
+static int peep_mov_reg_reg(char *line, char *dst, int dst_sz, char *src, int src_sz) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int dlen = comma - p;
+    if (dlen >= dst_sz) return 0;
+    memcpy(dst, p, dlen);
+    dst[dlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int slen = strlen(p);
+    if (slen >= src_sz) return 0;
+    memcpy(src, p, slen + 1);
+    return 1;
+}
+static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
+    if (strncmp(line, "  mov [rbp-", 11) != 0) return 0;
+    char *p = line + 11;
+    char *end = strchr(p, ']');
+    if (!end) return 0;
+    *end = '\0';
+    *off = atoi(p);
+    *end = ']';
+    p = end + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ',') return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    int len = strlen(p);
+    if (len >= reg_sz) return 0;
+    memcpy(reg, p, len + 1);
+    return 1;
+}
+static int peep_mov_reg_rbp(char *line, char *dst, int dst_sz, char *szword, int *off) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int dlen = comma - p;
+    if (dlen >= dst_sz) return 0;
+    memcpy(dst, p, dlen);
+    dst[dlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "dword ptr [rbp-", 15) == 0) {
+        if (szword) strcpy(szword, "dword");
+        p += 15;
+    } else if (strncmp(p, "qword ptr [rbp-", 15) == 0) {
+        if (szword) strcpy(szword, "qword");
+        p += 15;
+    } else
+        return 0;
+    char *end = strchr(p, ']');
+    if (!end) return 0;
+    *end = '\0';
+    *off = atoi(p);
+    *end = ']';
+    return 1;
+}
+static int peep_mov_rbp_imm(char *line, int *off, int *val) {
+    if (strncmp(line, "  mov dword ptr [rbp-", 21) != 0) return 0;
+    char *p = line + 21;
+    char *end = strchr(p, ']');
+    if (!end) return 0;
+    *end = '\0';
+    *off = atoi(p);
+    *end = ']';
+    p = end + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ',') return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    *val = atoi(p);
+    return 1;
+}
+static int peep_jmp(char *line, char *lbl, int lbl_sz) {
+    if (strncmp(line, "  jmp ", 6) != 0) return 0;
+    char *p = line + 6;
+    int len = strlen(p);
+    if (len >= lbl_sz) return 0;
+    memcpy(lbl, p, len + 1);
+    return 1;
+}
+static int peep_label(char *line, char *lbl, int lbl_sz) {
+    char *col = strchr(line, ':');
+    if (!col || col == line) return 0;
+    int len = col - line;
+    if (len >= lbl_sz) return 0;
+    memcpy(lbl, line, len);
+    lbl[len] = '\0';
+    return 1;
+}
+static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, int *imm) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    char *endp;
+    long v = strtol(p, &endp, 0);
+    if (endp == p) return 0;
+    *imm = (int)v;
+    return 1;
+}
+static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_sz, char *src, int src_sz) {
+    if (line[0] != ' ' || line[1] != ' ') return 0;
+    char *p = line + 2;
+    char *sp = strchr(p, ' ');
+    if (!sp) return 0;
+    int olen = sp - p;
+    if (olen >= op_sz) return 0;
+    memcpy(op, p, olen);
+    op[olen] = '\0';
+    p = sp + 1;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int dlen = comma - p;
+    if (dlen >= dst_sz) return 0;
+    memcpy(dst, p, dlen);
+    dst[dlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int slen = strlen(p);
+    if (slen >= src_sz) return 0;
+    memcpy(src, p, slen + 1);
+    return 1;
+}
+static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int mem_sz) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int mlen = strlen(p);
+    if (mlen >= mem_sz) return 0;
+    memcpy(mem, p, mlen + 1);
+    return 1;
+}
+
 // Helper: check if string is a register name
 static int is_reg(const char *s) {
     return (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2));
@@ -1875,8 +2026,8 @@ void codegen(Program *prog) {
                         char d1[80], s1[80], d2[80], s2[80];
 
                         // Pattern 1: mov REG, SRC; mov DEST, REG → mov DEST, SRC
-                        if (sscanf(lines[li], "  mov %[^,], %s", d1, s1) == 2 &&
-                            sscanf(lines[lj], "  mov %[^,], %s", d2, s2) == 2 &&
+                        if (peep_mov_reg_reg(lines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
+                            peep_mov_reg_reg(lines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
                             strcmp(s2, d1) == 0 && is_reg(d1) && is_reg(s1)) {
                             char newline[200];
                             snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
@@ -1890,10 +2041,10 @@ void codegen(Program *prog) {
                         // Pattern 2: mov [rbp-N], REG; mov REGx, {dword,qword} ptr [rbp-N]
                         {
                             int off1, off2;
-                            char sr[32], dr[32];
-                            if (sscanf(lines[li], "  mov [rbp-%d], %s", &off1, sr) == 2) {
-                                if (sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
-                                    off1 == off2) {
+                            char sr[32], dr[32], szword[16];
+                            if (peep_mov_rbp_reg(lines[li], &off1, sr, sizeof(sr))) {
+                                if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), szword, &off2) &&
+                                    off1 == off2 && strcmp(szword, "dword") == 0) {
                                     const char *r32 = to32(sr);
                                     if (r32) {
                                         char newline[160];
@@ -1902,8 +2053,8 @@ void codegen(Program *prog) {
                                         continue;
                                     }
                                 }
-                                if (sscanf(lines[lj], "  mov %[^,], qword ptr [rbp-%d]", dr, &off2) == 2 &&
-                                    off1 == off2) {
+                                if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), szword, &off2) &&
+                                    off1 == off2 && strcmp(szword, "qword") == 0) {
                                     char newline[160];
                                     snprintf(newline, sizeof(newline), "  mov %s, %s", dr, sr);
                                     lines[lj] = strdup(newline);
@@ -1915,10 +2066,10 @@ void codegen(Program *prog) {
                         // Pattern 2b: mov dword ptr [rbp-N], VAL; mov REGx, dword ptr [rbp-N]
                         {
                             int off1, off2, val;
-                            char dr[32];
-                            if (sscanf(lines[li], "  mov dword ptr [rbp-%d], %d", &off1, &val) == 2 &&
-                                sscanf(lines[lj], "  mov %[^,], dword ptr [rbp-%d]", dr, &off2) == 2 &&
-                                off1 == off2) {
+                            char dr[32], szword[16];
+                            if (peep_mov_rbp_imm(lines[li], &off1, &val) &&
+                                peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), szword, &off2) &&
+                                off1 == off2 && strcmp(szword, "dword") == 0) {
                                 char newline[160];
                                 snprintf(newline, sizeof(newline), "  mov %s, %d", dr, val);
                                 lines[lj] = strdup(newline);
@@ -1929,8 +2080,8 @@ void codegen(Program *prog) {
                         // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
                         {
                             char lbl1[80], lbl2[80];
-                            if (sscanf(lines[li], "  jmp %s", lbl1) == 1 &&
-                                sscanf(lines[lj], "%[^:]:", lbl2) == 1) {
+                            if (peep_jmp(lines[li], lbl1, sizeof(lbl1)) &&
+                                peep_label(lines[lj], lbl2, sizeof(lbl2))) {
                                 char *t = lbl2;
                                 while (*t == ' ') t++;
                                 if (strcmp(lbl1, t) == 0) {
@@ -1945,7 +2096,7 @@ void codegen(Program *prog) {
                             char rd[32];
                             int imm_val;
                             char op[16], od[64], os[32];
-                            if (sscanf(lines[li], "  mov %[^,], %d", rd, &imm_val) == 2 && is_reg(rd)) {
+                            if (peep_mov_reg_imm(lines[li], rd, sizeof(rd), &imm_val) && is_reg(rd)) {
                                 char *comma = strchr(lines[li], ',');
                                 if (comma) {
                                     char *val = comma + 1;
@@ -1954,7 +2105,7 @@ void codegen(Program *prog) {
                                         continue;
                                 }
                                 int rd_pid = phys_reg_id(rd);
-                                if (sscanf(lines[lj], "  %s %[^,], %s", op, od, os) == 3 &&
+                                if (peep_op_reg_reg(lines[lj], op, sizeof(op), od, sizeof(od), os, sizeof(os)) &&
                                     same_phys(os, rd) &&
                                     (!strcmp(op, "cmp") || !strcmp(op, "add") || !strcmp(op, "sub") ||
                                      !strcmp(op, "and") || !strcmp(op, "or") || !strcmp(op, "xor") ||
@@ -1980,9 +2131,9 @@ void codegen(Program *prog) {
                             while (lk < nlines && (!lines[lk] || !lines[lk][0])) lk++;
                             if (lk < nlines) {
                                 char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
-                                if (sscanf(lines[li], "  mov %[^,], %[^\n]", r1, mem1) == 2 &&
-                                    sscanf(lines[lj], "  %s %[^,], %s", op2, r2, imm2) == 3 &&
-                                    sscanf(lines[lk], "  mov %[^,], %s", d3, r3) == 2 &&
+                                if (peep_mov_reg_mem(lines[li], r1, sizeof(r1), mem1, sizeof(mem1)) &&
+                                    peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
+                                    peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
                                     strcmp(r1, r2) == 0 && strcmp(r2, r3) == 0 &&
                                     is_reg(d3) && !is_reg(mem1) &&
                                     (!strcmp(op2, "add") || !strcmp(op2, "sub"))) {

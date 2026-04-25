@@ -11,26 +11,26 @@ Windows:
 
 | Compiler   | Execute (ms) | Compile (ms) | Total (ms) |
 | ---------- | -----------: | -----------: | ---------: |
-| RCC        |         1009 |         514 |       1523  |
-| TCC 0.9.27 |         1005 |         431 |       1436  |
-| GCC -O0    |         3012 |         417 |       3429  |
-| GCC -O2    |         1002 |         115 |       1117  |
+| RCC        |         1009 |          514 |       1523 |
+| TCC 0.9.27 |         1005 |          431 |       1436 |
+| GCC -O0    |         3012 |          417 |       3429 |
+| GCC -O2    |         1002 |          115 |       1117 |
 
 Linux:
 
 | Compiler | Compile (ms) | Execute (ms) | Total (ms) |
 | :------- | -----------: | -----------: | ---------: |
-| RCC      |           74 |          783 |        857 |
-| TCC      |       **16** |          609 |        625 |
-| SLIMCC   |           56 |          653 |        709 |
-| KEFIR    |          271 |          804 |       1075 |
-| GCC0     |           80 |          613 |        693 |
-| GCCO2    |          183 |      **227** |    **410** |
-| CLANG0   |          135 |          617 |        752 |
-| CLANGO2  |          201 |          239 |        440 |
+| RCC      |           74 |          596 |        670 |
+| TCC      |        **7** |          598 |        605 |
+| SLIMCC   |           50 |          649 |        699 |
+| KEFIR    |          215 |          774 |        989 |
+| GCC0     |           76 |          592 |        668 |
+| GCCO2    |          227 |      **227** |        454 |
+| CLANG0   |          123 |          673 |        796 |
+| CLANGO2  |          159 |          239 |    **398** |
 
-- RCC vs TCC vs GCC -O2 execution: same speed on windows, much slower on linux.
-- All outputs verified correct against TCC and GCC -O2 and CLANG -O2 references.
+- RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
+- All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
 
 ## Key Features
 
@@ -57,7 +57,7 @@ Linux:
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`.
 
-Not yet: constructor/destructor, vla\_label, vla\_continue, \_\_asm, enum_bitfield, ms bitfields, al_ax_extend, fastcall, inline, alias, vla\_reuse, atomics.
+Not yet: constructor/destructor, vla_label, vla_continue, \_\_asm, enum_bitfield, ms bitfields, al_ax_extend, fastcall, inline, alias, vla_reuse, atomics.
 
 ## Build
 
