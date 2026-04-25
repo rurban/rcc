@@ -1,6 +1,6 @@
-$TestDir = "d:\rcc\tcc_tests"
-$RCC = if (Test-Path "d:\rcc\rcc.exe") { "d:\rcc\rcc.exe" } elseif (Test-Path "d:\rcc\rcc_new.exe") { "d:\rcc\rcc_new.exe" } else { "d:\rcc\rcc.exe" }
-$ReportFile = "d:\rcc\tcc_test_report.md"
+$TestDir = Join-Path $PSScriptRoot "tcc_tests"
+$RCC = Join-Path $PSScriptRoot "rcc.exe"
+$ReportFile = Join-Path $PSScriptRoot "tcc_test_report.md"
 
 if (-not (Test-Path $RCC)) {
     Write-Error "rcc.exe not found at $RCC. Please build it first."
@@ -22,14 +22,14 @@ foreach ($file in $TestFiles) {
     $exe = Join-Path $TestDir "$base.exe"
     $expectFile = Join-Path $TestDir "$base.expect"
     $outputFile = Join-Path $TestDir "$base.out"
-    
+
     Write-Host "Running $base... " -NoNewline
-    
+
     # 1. Compilation
     $compileStart = Get-Date
     $process = Start-Process -FilePath $RCC -ArgumentList $src, "-o", $exe -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
     $compileEnd = Get-Date
-    
+
     if ($process.ExitCode -ne 0) {
         Write-Host "COMPILE FAIL" -ForegroundColor Red
         $Results += [PSCustomObject]@{
@@ -40,7 +40,7 @@ foreach ($file in $TestFiles) {
         $Failed++
         continue
     }
-    
+
     if (-not (Test-Path $exe)) {
         Write-Host "NO EXE PRODUCED" -ForegroundColor Red
         $Results += [PSCustomObject]@{
@@ -72,7 +72,7 @@ foreach ($file in $TestFiles) {
     if (Test-Path $expectFile) {
         $expectedRaw = Get-Content $expectFile -Raw
         $expectedOutput = if ($null -eq $expectedRaw) { "" } else { $expectedRaw.Trim() }
-        
+
         # Normalize line endings and spaces for comparison
         $normActual = $actualOutput -replace "\r\n", "`n"
         $normExpected = $expectedOutput -replace "\r\n", "`n"
@@ -105,7 +105,7 @@ foreach ($file in $TestFiles) {
         }
         $Passed++
     }
-    
+
     if (Test-Path $exe) { Remove-Item $exe -Force -ErrorAction SilentlyContinue }
 }
 

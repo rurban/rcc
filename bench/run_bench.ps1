@@ -1,17 +1,21 @@
 $ErrorActionPreference = "Continue"
-$SRC   = "d:\rcc\bench\bench.c"
-$RCC   = "d:\rcc\rcc.exe"
-$TCC   = "d:\rcc\tcc_bin\tcc\tcc.exe"
-$GCC   = "gcc"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir   = Split-Path -Parent $ScriptDir
+Set-Location $ScriptDir
 
-$RCC_EXE = "d:\rcc\bench\bench_rcc.exe"
-$TCC_EXE = "d:\rcc\bench\bench_tcc.exe"
-$GCC_EXE = "d:\rcc\bench\bench_gcc.exe"
-$GCC_O2  = "d:\rcc\bench\bench_gcc_o2.exe"
+$SRC     = Join-Path $ScriptDir "bench.c"
+$RCC     = Join-Path $RootDir "rcc.exe"
+$TCC     = "C:/Program Files/tcc/tcc.exe"
+$GCC     = "gcc"
+
+$RCC_EXE = Join-Path $ScriptDir "bench_rcc.exe"
+$TCC_EXE = Join-Path $ScriptDir "bench_tcc.exe"
+$GCC_EXE = Join-Path $ScriptDir "bench_gcc.exe"
+$GCC_O2  = Join-Path $ScriptDir "bench_gcc_o2.exe"
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "  RCC vs TCC vs GCC  --  Benchmark Battle"    -ForegroundColor Cyan
+Write-Host "  RCC vs TCC vs GCC  --  Benchmark Battle"     -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -126,3 +130,36 @@ if ($ref) {
     }
 }
 Write-Host ""
+
+# --- Report ---
+$ReportFile = Join-Path $ScriptDir "bench_report.md"
+$reportLines = @()
+$reportLines += "# RCC Benchmark Results"
+$reportLines += ""
+$reportLines += "_Generated: $(Get-Date)_"
+$reportLines += ""
+$reportLines += "| Compiler | Compile (ms) | Execute (ms) | Total (ms) |"
+$reportLines += "| :------- | -----------: | -----------: | ---------: |"
+foreach ($r in $results) {
+    $reportLines += "| $($r.Label) | $($r.Compile) | $($r.Execute) | $($r.Total) |"
+}
+$reportLines += ""
+if ($rcc_r -and $tcc_r) {
+    $reportLines += "## RCC vs TCC Head-to-Head"
+    $reportLines += ""
+    $reportLines += "- Compile speed : RCC/TCC = ${compile_ratio}x"
+    $reportLines += "- Execute speed : RCC/TCC = ${exec_ratio}x"
+    $reportLines += "- Total         : RCC/TCC = ${total_ratio}x"
+    $reportLines += ""
+}
+$reportLines += "## Output Correctness"
+$reportLines += ""
+if ($ref) {
+    foreach ($r in $results) {
+        $status = if ($r.Output -eq $ref.Output) { "OK" } else { "OUTPUT DIFFERS" }
+        $reportLines += "- $($r.Label): $status"
+    }
+}
+$reportLines += ""
+$reportLines | Out-File $ReportFile -Encoding utf8
+Write-Host "Report saved to $ReportFile" -ForegroundColor Cyan

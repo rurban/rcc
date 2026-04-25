@@ -1,0 +1,52 @@
+name: CI
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-bench:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Windows)
+        uses: msys2/setup-msys2@e9898307ac31d1a803454791be09ab9973336e1c # v2.31.1
+        with:
+          msystem: MINGW64
+          update: true
+          install: |
+            mingw-w64-x86_64-gcc
+            make
+
+      - name: Build and install TinyCC
+        shell: msys2 {0}
+        run: |
+          cd tinycc
+          ./configure
+          make
+          make install
+
+      - name: Build RCC
+        shell: msys2 {0}
+        run: make
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          .\run_tcc_suite.ps1
+
+      - name: Run bench
+        shell: pwsh
+        run: |
+          .\bench\run_bench.ps1
+
+      - name: Upload Windows reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: old-windows-reports
+          path: |
+            bench/bench_report.md
+            tcc_test_report.md
