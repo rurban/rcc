@@ -102,6 +102,16 @@ int main(int argc, char **argv) {
                 name = argv[i];
             }
             add_undef(name);
+        } else if (!strncmp(argv[i], "-I", 2)) {
+            char *path = argv[i] + 2;
+            if (*path == '\0') {
+                if (++i >= argc) {
+                    fprintf(stderr, "error: missing argument for -I\n");
+                    return 1;
+                }
+                path = argv[i];
+            }
+            add_include_path(path);
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {

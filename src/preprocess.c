@@ -55,6 +55,14 @@ static int pp_counter;
 static Macro *cmdline_macros;
 static MacroStack *macro_stack;
 
+static const char *user_include_paths[64];
+static int nb_user_include_paths;
+
+void add_include_path(const char *path) {
+    if (nb_user_include_paths < 64)
+        user_include_paths[nb_user_include_paths++] = str_intern(path, strlen(path));
+}
+
 static void clear_macros(void) {
     macros = cmdline_macros;
     macro_stack = NULL;
@@ -180,7 +188,7 @@ static char *path_basename(char *path) {
     return last;
 }
 
-static char *path_join(char *dir, char *file) {
+static char *path_join(const char *dir, const char *file) {
     if (!*dir)
         return str_intern(file, strlen(file));
 #ifdef _WIN32
@@ -190,7 +198,7 @@ static char *path_join(char *dir, char *file) {
 #endif
 }
 
-static bool file_exists(char *path) {
+static bool file_exists(const char *path) {
     FILE *fp = fopen(path, "r");
     if (fp) {
         fclose(fp);
@@ -466,6 +474,8 @@ static void mark_once_file(char *path) {
     once_files = f;
 }
 
+#include "sysinc_paths.h"
+
 static char *resolve_include(char *curr_file, char *spec) {
     char *dir = path_dirname(curr_file);
     char *path = path_join(dir, spec);
@@ -480,6 +490,18 @@ static char *resolve_include(char *curr_file, char *spec) {
     path = path_join("include", spec);
     if (file_exists(path))
         return canonical_path(path);
+
+    for (int i = 0; i < nb_user_include_paths; i++) {
+        path = path_join(user_include_paths[i], spec);
+        if (file_exists(path))
+            return canonical_path(path);
+    }
+
+    for (int i = 0; sys_include_paths[i]; i++) {
+        path = path_join(sys_include_paths[i], spec);
+        if (file_exists(path))
+            return canonical_path(path);
+    }
 
     if (file_exists(spec))
         return canonical_path(spec);

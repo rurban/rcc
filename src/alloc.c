@@ -51,7 +51,7 @@ char *format(char *fmt, ...) {
 //
 
 // FNV-1a Hash function
-static uint32_t hash_str(char *s, int len) {
+static uint32_t hash_str(const char *s, int len) {
     uint32_t hash = 2166136261u;
     for (int i = 0; i < len; i++) {
         hash ^= (uint8_t)s[i];
@@ -70,7 +70,7 @@ struct InternedStr {
 #define HASH_SIZE 4096
 static InternedStr *strings[HASH_SIZE];
 
-char *str_intern(char *start, int len) {
+char *str_intern(const char *start, int len) {
     uint32_t h = hash_str(start, len) % HASH_SIZE;
 
     for (InternedStr *s = strings[h]; s; s = s->next) {

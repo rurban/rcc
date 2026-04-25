@@ -52,12 +52,13 @@ void warn_tok(Token *tok, char *fmt, ...);
 // Allocator / Utils
 void *arena_alloc(size_t size);
 char *format(char *fmt, ...);
-char *str_intern(char *start, int len);
+char *str_intern(const char *start, int len);
 
 // Lexer entry point
 char *preprocess(char *filename, char *p);
 void add_define(char *def);
 void add_undef(char *name);
+void add_include_path(const char *path);
 Token *tokenize(char *filename, char *p);
 void init_builtins(void);
 

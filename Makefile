@@ -8,8 +8,13 @@ OBJS = $(SRCS:.c=.o)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-src/main.o: src/main.c
+src/sysinc_paths.h:
+	./tools/get-sysinc-paths.sh $(CC) > $@
+
+src/main.o: src/main.c src/sysinc_paths.h
 	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\"
+src/preprocess.o: src/preprocess.c src/sysinc_paths.h
+	$(CC) $(CFLAGS) -c $< -o $@
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
