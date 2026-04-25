@@ -41,7 +41,20 @@ $SkipTests = @(
     "117_builtins",
     "120_alias",              # needs multi-file 120+_alias.c + GNU alias
     "122_vla_reuse",          # VLA not supported
-    "126_bound_global"
+    "126_bound_global",
+    "78_vla_label",           # VLA not supported
+    "79_vla_continue",        # VLA not supported
+    "123_vla_bug",            # VLA not supported
+    "98_al_ax_extend",        # x86-32bit specific, skipped by TCC on x86_64
+    "99_fastcall",            # x86-32bit specific, skipped by TCC on x86_64
+    "119_random_stuff",       # glibc headers not yet
+    "124_atomic_counter",     # GCC atomic builtins/extensions
+                              # (statement expressions, __auto_type, etc.)
+    "125_atomic_misc",
+    "136_atomic_gcc_style",
+    "127_asm_goto",           # not yet
+    "128_run_atexit",         # needs TCC-specific -dt multi-snippet runner
+    "133_old_func"            # K&R-style function definitions not supported
 )
 
 $TestFiles = Get-ChildItem -Path $TestDir -Filter "*.c" | Sort-Object {

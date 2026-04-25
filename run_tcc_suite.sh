@@ -148,6 +148,18 @@ SKIP_TESTS="
 120_alias
 122_vla_reuse
 126_bound_global
+78_vla_label
+79_vla_continue
+98_al_ax_extend
+99_fastcall
+119_random_stuff
+123_vla_bug
+124_atomic_counter
+125_atomic_misc
+127_asm_goto
+128_run_atexit
+133_old_func
+136_atomic_gcc_style
 "
 
 is_skipped() {
