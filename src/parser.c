@@ -31,6 +31,8 @@ static EnumConst *enum_consts;
 static int stack_offset;
 static char *pending_cleanup_func;
 static Token *pending_cleanup_tok;
+static bool pending_constructor;
+static bool pending_destructor;
 
 static StrLit *str_lits;
 static int str_lit_counter;
@@ -555,6 +557,26 @@ static Token *read_type_attrs(Token *tok, int *align) {
                     continue;
                 }
 
+                if (equal(tok, "constructor") || equal(tok, "__constructor__")) {
+                    pending_constructor = true;
+                    tok = tok->next;
+                    if (equal(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equal(tok, "destructor") || equal(tok, "__destructor__")) {
+                    pending_destructor = true;
+                    tok = tok->next;
+                    if (equal(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equal(tok, "(")) {
                     tok = skip_balanced(tok);
                 } else {
@@ -922,6 +944,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
 
     while (!equal(tok, "}")) {
         VarAttr attr = {};
+        pending_constructor = false;
+        pending_destructor = false;
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)
             error_tok(tok, "invalid storage class in member declaration");
@@ -2135,6 +2159,8 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
 static Node *declaration(Token **rest, Token *tok) {
     VarAttr attr = {};
     pending_cleanup_func = NULL;
+    pending_constructor = false;
+    pending_destructor = false;
     Type *base = declspec(&tok, tok, &attr);
     char *type_level_cleanup = pending_cleanup_func;
     Node head = {};
@@ -3595,6 +3621,10 @@ Program *parse(Token *tok) {
             fn->body = body->body;
             fn->stack_size = align_to(stack_offset, 16);
             fn->is_variadic = is_variadic;
+            fn->is_constructor = pending_constructor;
+            fn->is_destructor = pending_destructor;
+            pending_constructor = false;
+            pending_destructor = false;
             TLItem *item = arena_alloc(sizeof(TLItem));
             item->kind = TL_FUNC;
             item->fn = fn;

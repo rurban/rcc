@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/25/2026 19:24:32
+Generated on: 04/26/2026 05:00:15
 
 ## Summary
-- **Total Tests**: 112
+- **Total Tests**: 100
 - **Passed**: 83
-- **Failed**: 29
-- **Pass Rate**: 74.11%
+- **Failed**: 17
+- **Pass Rate**: 83%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -73,8 +73,6 @@ Generated on: 04/25/2026 19:24:32
 | 75_array_in_struct_init | PASS | Output matches |
 | 76_dollars_in_identifiers | PASS | Output matches |
 | 77_push_pop_macro | PASS | Output matches |
-| 78_vla_label | COMPILE_FAIL | rcc exited with 1 |
-| 79_vla_continue | COMPILE_FAIL | rcc exited with 1 |
 | 80_flexarray | PASS | Output matches |
 | 81_types | PASS | Output matches |
 | 82_attribs_position | PASS | Output matches |
@@ -93,32 +91,22 @@ Generated on: 04/25/2026 19:24:32
 | 95_bitfields | MISMATCH | Output does not match .expect |
 | 95_bitfields_ms | MISMATCH | Output does not match .expect |
 | 97_utf8_string_literal | PASS | Output matches |
-| 98_al_ax_extend | COMPILE_FAIL | rcc exited with 1 |
-| 99_fastcall | COMPILE_FAIL | rcc exited with 1 |
 | 100_c99array-decls | PASS | Output matches |
 | 101_cleanup | MISMATCH | Output does not match .expect |
 | 102_alignas | MISMATCH | Output does not match .expect |
 | 103_implicit_memmove | PASS | Output matches |
 | 105_local_extern | PASS | Output matches |
 | 107_stack_safe | PASS | Output matches |
-| 108_constructor | MISMATCH | Output does not match .expect |
+| 108_constructor | COMPILE_FAIL | rcc exited with 1 |
 | 109_float_struct_calling | MISMATCH | Output does not match .expect |
 | 110_average | PASS | Output matches |
 | 111_conversion | PASS | Output matches |
 | 118_switch | PASS | Output matches |
-| 119_random_stuff | COMPILE_FAIL | rcc exited with 1 |
 | 121_struct_return | PASS | Output matches |
-| 123_vla_bug | COMPILE_FAIL | rcc exited with 1 |
-| 124_atomic_counter | COMPILE_FAIL | rcc exited with 1 |
-| 125_atomic_misc | COMPILE_FAIL | rcc exited with 1 |
-| 127_asm_goto | COMPILE_FAIL | rcc exited with 1 |
-| 128_run_atexit | COMPILE_FAIL | rcc exited with 1 |
 | 129_scopes | MISMATCH | Output does not match .expect |
 | 130_large_argument | MISMATCH | Output does not match .expect |
 | 131_return_struct_in_reg | PASS | Output matches |
 | 132_bound_test | PASS | Output matches |
-| 133_old_func | COMPILE_FAIL | rcc exited with 1 |
 | 134_double_to_signed | PASS | Output matches |
 | 135_func_arg_struct_compare | PASS | Output matches |
-| 136_atomic_gcc_style | COMPILE_FAIL | rcc exited with 1 |
 | 137_funcall_struct_args | PASS | Output matches |

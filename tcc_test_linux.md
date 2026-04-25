@@ -2,10 +2,10 @@
 Generated: April 2026
 
 ## Summary
- - **Total**:     140
- - **Passed**:    125
- - **Failed**:    15
- - **Pass Rate**: 89%
+ - **Total**:     128
+ - **Passed**:    126
+ - **Failed**:    2
+ - **Pass Rate**: 98%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -73,8 +73,6 @@ Generated: April 2026
 | 75_array_in_struct_init                  | PASS         | Output matches                       |
 | 76_dollars_in_identifiers                | PASS         | Output matches                       |
 | 77_push_pop_macro                        | PASS         | Output matches                       |
-| 78_vla_label                             | COMPILE_FAIL | rcc returned non-zero                |
-| 79_vla_continue                          | COMPILE_FAIL | rcc returned non-zero                |
 | 80_flexarray                             | PASS         | Output matches                       |
 | 81_types                                 | PASS         | Output matches                       |
 | 82_attribs_position                      | PASS         | Output matches                       |
@@ -92,8 +90,6 @@ Generated: April 2026
 | 94_generic                               | PASS         | Output matches                       |
 | 95_bitfields                             | MISMATCH     | Output does not match .expect        |
 | 97_utf8_string_literal                   | PASS         | Output matches                       |
-| 98_al_ax_extend                          | COMPILE_FAIL | rcc returned non-zero                |
-| 99_fastcall                              | COMPILE_FAIL | rcc returned non-zero                |
 | 100_c99array-decls                       | PASS         | Output matches                       |
 | 101_cleanup                              | PASS         | Output matches                       |
 | 102_alignas                              | PASS         | Output matches                       |
@@ -101,26 +97,18 @@ Generated: April 2026
 | 105_local_extern                         | PASS         | Output matches                       |
 | 106_versym                               | PASS         | Output matches                       |
 | 107_stack_safe                           | PASS         | Output matches                       |
-| 108_constructor                          | MISMATCH     | Output does not match .expect        |
+| 108_constructor                          | PASS         | Output matches                       |
 | 109_float_struct_calling                 | PASS         | Output matches                       |
 | 110_average                              | PASS         | Output matches                       |
 | 111_conversion                           | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
-| 119_random_stuff                         | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | PASS         | Output matches                       |
-| 123_vla_bug                              | COMPILE_FAIL | rcc returned non-zero                |
-| 124_atomic_counter                       | COMPILE_FAIL | rcc returned non-zero                |
-| 125_atomic_misc                          | COMPILE_FAIL | rcc returned non-zero                |
-| 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
-| 128_run_atexit                           | COMPILE_FAIL | executable missing                   |
 | 129_scopes                               | MISMATCH     | Output does not match .expect        |
 | 130_large_argument                       | PASS         | Output matches                       |
 | 131_return_struct_in_reg                 | PASS         | Output matches                       |
 | 132_bound_test                           | PASS         | Output matches                       |
-| 133_old_func                             | COMPILE_FAIL | rcc returned non-zero                |
 | 134_double_to_signed                     | PASS         | Output matches                       |
 | 135_func_arg_struct_compare              | PASS         | Output matches                       |
-| 136_atomic_gcc_style                     | COMPILE_FAIL | rcc returned non-zero                |
 | 137_funcall_struct_args                  | PASS         | Output matches                       |
 | test_bitfields                           | PASS         | exit=0                               |
 | test_elif2                               | PASS         | exit=0                               |

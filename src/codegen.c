@@ -2211,6 +2211,29 @@ void codegen(Program *prog) {
         printf("  ret\n");
     }
 
+    // Emit constructor/destructor entries
+    bool has_ctor = false, has_dtor = false;
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind == TL_FUNC) {
+            if (item->fn->is_constructor) has_ctor = true;
+            if (item->fn->is_destructor) has_dtor = true;
+        }
+    }
+    if (has_ctor) {
+        printf("\n.section .init_array,\"aw\",@init_array\n");
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_constructor)
+                printf("  .quad %s\n", item->fn->name);
+        }
+    }
+    if (has_dtor) {
+        printf("\n.section .fini_array,\"aw\",@fini_array\n");
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor)
+                printf("  .quad %s\n", item->fn->name);
+        }
+    }
+
     // Emit float literal constants after all functions
     if (float_lits) {
 #ifdef _WIN32

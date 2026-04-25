@@ -308,6 +308,8 @@ struct Function {
     Node *body;
     int stack_size;
     bool is_variadic;
+    bool is_constructor;
+    bool is_destructor;
 };
 
 typedef struct StrLit StrLit;
