@@ -63,5 +63,5 @@ jobs:
         with:
           name: windows-reports
           path: |
-            bench/bench_report.md
+            bench/bench_report_mingw.md
             tcc_test_mingw.md

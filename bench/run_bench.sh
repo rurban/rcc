@@ -139,7 +139,7 @@ done
 
 # Write markdown report
 {
-	printf "# RCC Benchmark Results\n\n"
+	printf "# Linux RCC Benchmark Results\n\n"
 	printf "_Generated: %s_\n\n" "$(date '+%B %Y')"
 	printf "| %-8s | %12s | %12s | %10s |\n" \
 		"Compiler" "Compile (ms)" "Execute (ms)" "Total (ms)"

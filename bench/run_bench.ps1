@@ -130,3 +130,36 @@ if ($ref) {
     }
 }
 Write-Host ""
+
+# --- Report ---
+$ReportFile = Join-Path $ScriptDir "bench_report_mingw.md"
+$reportLines = @()
+$reportLines += "# Windows RCC Benchmark Results"
+$reportLines += ""
+$reportLines += "_Generated: $(Get-Date)_"
+$reportLines += ""
+$reportLines += "| Compiler | Compile (ms) | Execute (ms) | Total (ms) |"
+$reportLines += "| :------- | -----------: | -----------: | ---------: |"
+foreach ($r in $results) {
+    $reportLines += "| $($r.Label) | $($r.Compile) | $($r.Execute) | $($r.Total) |"
+}
+$reportLines += ""
+if ($rcc_r -and $tcc_r) {
+    $reportLines += "## Windows RCC vs TCC Head-to-Head"
+    $reportLines += ""
+    $reportLines += "- Compile speed : RCC/TCC = ${compile_ratio}x"
+    $reportLines += "- Execute speed : RCC/TCC = ${exec_ratio}x"
+    $reportLines += "- Total         : RCC/TCC = ${total_ratio}x"
+    $reportLines += ""
+}
+$reportLines += "## Output Correctness"
+$reportLines += ""
+if ($ref) {
+    foreach ($r in $results) {
+        $status = if ($r.Output -eq $ref.Output) { "OK" } else { "OUTPUT DIFFERS" }
+        $reportLines += "- $($r.Label): $status"
+    }
+}
+$reportLines += ""
+$reportLines | Out-File $ReportFile -Encoding utf8
+Write-Host "Report saved to $ReportFile" -ForegroundColor Cyan
