@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/25/2026 17:24:51
+Generated on: 04/25/2026 19:24:32
 
 ## Summary
 - **Total Tests**: 112
-- **Passed**: 86
-- **Failed**: 26
-- **Pass Rate**: 76.79%
+- **Passed**: 83
+- **Failed**: 29
+- **Pass Rate**: 74.11%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -33,7 +33,7 @@ Generated on: 04/25/2026 17:24:51
 | 20_pointer_comparison | PASS | Output matches |
 | 21_char_array | PASS | Output matches |
 | 23_type_coercion | PASS | Output matches |
-| 24_math_library | PASS | Output matches |
+| 24_math_library | MISMATCH | Output does not match .expect |
 | 25_quicksort | PASS | Output matches |
 | 26_character_constants | PASS | Output matches |
 | 27_sizeof | PASS | Output matches |
@@ -42,20 +42,20 @@ Generated on: 04/25/2026 17:24:51
 | 30_hanoi | PASS | Output matches |
 | 31_args | PASS | Output matches |
 | 32_led | PASS | Output matches |
-| 33_ternary_op | MISMATCH | Output does not match .expect |
+| 33_ternary_op | COMPILE_FAIL | rcc exited with 1 |
 | 34_array_assignment | PASS | Output matches |
 | 35_sizeof | PASS | Output matches |
 | 36_array_initialisers | PASS | Output matches |
 | 37_sprintf | PASS | Output matches |
 | 38_multiple_array_index | MISMATCH | Output does not match .expect |
 | 39_typedef | PASS | Output matches |
-| 40_stdio | PASS | Output matches |
+| 40_stdio | COMPILE_FAIL | rcc exited with 1 |
 | 41_hashif | PASS | Output matches |
-| 42_function_pointer | PASS | Output matches |
+| 42_function_pointer | COMPILE_FAIL | rcc exited with 1 |
 | 43_void_param | PASS | Output matches |
 | 44_scoped_declarations | PASS | Output matches |
 | 45_empty_for | PASS | Output matches |
-| 46_grep | MISMATCH | Output does not match .expect |
+| 46_grep | COMPILE_FAIL | rcc exited with 1 |
 | 47_switch_return | PASS | Output matches |
 | 48_nested_break | PASS | Output matches |
 | 49_bracket_evaluation | PASS | Output matches |

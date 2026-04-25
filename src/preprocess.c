@@ -487,7 +487,10 @@ static char *resolve_include(char *curr_file, char *spec) {
     if (file_exists(path))
         return canonical_path(path);
 
-    path = path_join("include", spec);
+#ifndef RCC_INCDIR
+#define RCC_INCDIR "include"
+#endif
+    path = path_join(RCC_INCDIR, spec);
     if (file_exists(path))
         return canonical_path(path);
 

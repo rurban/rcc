@@ -5,6 +5,19 @@ TARGET = rcc
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c
 OBJS = $(SRCS:.c=.o)
 
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/bin
+INCDIR = $(PREFIX)/include/rcc
+
+# Build-time include directory: absolute path to the source include/ dir.
+# Override this when installing to a different prefix.
+# On native Windows builds, default to the standard install location.
+ifeq ($(OS),Windows_NT)
+RCC_INCDIR ?= C:/Program Files/rcc/include
+else
+RCC_INCDIR ?= $(shell cd include && pwd)
+endif
+
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
@@ -12,9 +25,9 @@ src/sysinc_paths.h:
 	./tools/get-sysinc-paths.sh $(CC) > $@
 
 src/main.o: src/main.c src/sysinc_paths.h
-	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\"
+	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\" '-DRCC_INCDIR="$(RCC_INCDIR)"'
 src/preprocess.o: src/preprocess.c src/sysinc_paths.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@ '-DRCC_INCDIR="$(RCC_INCDIR)"'
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -36,7 +49,16 @@ lint:
 bench: $(TARGET)
 	@$(BENCH_RUNNER)
 
+install: $(TARGET)
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(INCDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/
+	install -m 644 include/* $(DESTDIR)$(INCDIR)/
+	# Rebuild with the installed include path so rcc finds its headers
+	# without needing -I after installation.
+	$(MAKE) clean
+	$(MAKE) RCC_INCDIR=$(DESTDIR)$(INCDIR)
+
 clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe
 
-.PHONY: clean test check bench
+.PHONY: clean test check bench install

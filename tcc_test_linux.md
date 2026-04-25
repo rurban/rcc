@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     140
- - **Passed**:    124
- - **Failed**:    16
- - **Pass Rate**: 88%
+ - **Passed**:    125
+ - **Failed**:    15
+ - **Pass Rate**: 89%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -99,7 +99,7 @@ Generated: April 2026
 | 102_alignas                              | PASS         | Output matches                       |
 | 103_implicit_memmove                     | PASS         | Output matches                       |
 | 105_local_extern                         | PASS         | Output matches                       |
-| 106_versym                               | COMPILE_FAIL | rcc returned non-zero                |
+| 106_versym                               | PASS         | Output matches                       |
 | 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | MISMATCH     | Output does not match .expect        |
 | 109_float_struct_calling                 | PASS         | Output matches                       |
@@ -110,7 +110,7 @@ Generated: April 2026
 | 121_struct_return                        | PASS         | Output matches                       |
 | 123_vla_bug                              | COMPILE_FAIL | rcc returned non-zero                |
 | 124_atomic_counter                       | COMPILE_FAIL | rcc returned non-zero                |
-| 125_atomic_misc                          | COMPILE_FAIL | executable missing                   |
+| 125_atomic_misc                          | COMPILE_FAIL | rcc returned non-zero                |
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
 | 128_run_atexit                           | COMPILE_FAIL | executable missing                   |
 | 129_scopes                               | MISMATCH     | Output does not match .expect        |
