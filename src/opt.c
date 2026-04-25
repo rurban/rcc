@@ -100,9 +100,9 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
             }
         }
         Function *target = NULL;
-        for (Function *f = prog->funcs; f; f = f->next) {
-            if (strcmp(f->name, node->funcname) == 0) {
-                target = f;
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && strcmp(item->fn->name, node->funcname) == 0) {
+                target = item->fn;
                 break;
             }
         }
@@ -210,9 +210,9 @@ static Node *optimize_node(Program *prog, Node *node) {
         }
         if (all_const && !has_addr_arg(node) && strcmp(node->funcname, "printf") != 0) {
             Function *target = NULL;
-            for (Function *fn = prog->funcs; fn; fn = fn->next) {
-                if (strcmp(fn->name, node->funcname) == 0) {
-                    target = fn;
+            for (TLItem *item = prog->items; item; item = item->next) {
+                if (item->kind == TL_FUNC && strcmp(item->fn->name, node->funcname) == 0) {
+                    target = item->fn;
                     break;
                 }
             }
@@ -247,7 +247,10 @@ static Node *optimize_node(Program *prog, Node *node) {
 }
 
 void optimize(Program *prog) {
-    for (Function *fn = prog->funcs; fn; fn = fn->next) {
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind != TL_FUNC)
+            continue;
+        Function *fn = item->fn;
         Node *prev = NULL;
         for (Node *n = fn->body; n; n = n->next) {
             Node *o = optimize_node(prog, n);

@@ -320,9 +320,18 @@ struct StrLit {
     int wchar_count; // number of Unicode characters (for wide strings)
 };
 
+typedef struct TLItem TLItem;
+struct TLItem {
+    enum { TL_FUNC,
+           TL_ASM } kind;
+    Function *fn; // valid if kind == TL_FUNC
+    char *asm_str; // valid if kind == TL_ASM
+    TLItem *next;
+};
+
 typedef struct Program Program;
 struct Program {
-    Function *funcs;
+    TLItem *items;
     LVar *globals;
     StrLit *strs;
 };

@@ -3438,11 +3438,47 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     }
 }
 
+static char *parse_toplevel_asm(Token **rest, Token *tok) {
+    tok = skip(tok, "(");
+    if (tok->kind != TK_STR)
+        error_tok(tok, "expected string literal in asm");
+
+    int total_len = 0;
+    Token *t = tok;
+    while (t->kind == TK_STR) {
+        total_len += t->len;
+        t = t->next;
+    }
+
+    char *buf = arena_alloc(total_len + 1);
+    int pos = 0;
+    while (tok->kind == TK_STR) {
+        memcpy(buf + pos, tok->str, tok->len);
+        pos += tok->len;
+        tok = tok->next;
+    }
+    buf[pos] = '\0';
+    tok = skip(tok, ")");
+    *rest = tok;
+    return buf;
+}
+
 Program *parse(Token *tok) {
-    Function head = {};
-    Function *fn_cur = &head;
+    TLItem item_head = {};
+    TLItem *item_cur = &item_head;
 
     while (tok->kind != TK_EOF) {
+        if (equal(tok, "__asm__") || equal(tok, "__asm")) {
+            tok = tok->next;
+            char *str = parse_toplevel_asm(&tok, tok);
+            TLItem *item = arena_alloc(sizeof(TLItem));
+            item->kind = TL_ASM;
+            item->asm_str = str;
+            item_cur = item_cur->next = item;
+            tok = skip(tok, ";");
+            continue;
+        }
+
         VarAttr attr = {};
         Type *base = declspec(&tok, tok, &attr);
 
@@ -3549,7 +3585,10 @@ Program *parse(Token *tok) {
             fn->body = body->body;
             fn->stack_size = align_to(stack_offset, 16);
             fn->is_variadic = is_variadic;
-            fn_cur = fn_cur->next = fn;
+            TLItem *item = arena_alloc(sizeof(TLItem));
+            item->kind = TL_FUNC;
+            item->fn = fn;
+            item_cur = item_cur->next = item;
             current_fn_scope_locals = NULL;
             current_block_depth = 0;
             suppress_fn_scope_update = false;
@@ -3592,7 +3631,7 @@ Program *parse(Token *tok) {
     }
 
     Program *prog = arena_alloc(sizeof(Program));
-    prog->funcs = head.next;
+    prog->items = item_head.next;
     prog->globals = globals;
     prog->strs = str_lits;
     return prog;

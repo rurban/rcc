@@ -133,8 +133,10 @@ int main(int argc, char **argv) {
     Program *prog = parse(tok);
 
     // Type system / Semantic checks
-    for (Function *fn = prog->funcs; fn; fn = fn->next) {
-        for (Node *n = fn->body; n; n = n->next) {
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind != TL_FUNC)
+            continue;
+        for (Node *n = item->fn->body; n; n = n->next) {
             add_type(n);
         }
     }

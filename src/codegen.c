@@ -3,7 +3,7 @@
 
 static FILE *cg_stream;
 static Function *current_fn_def;
-static Function *all_funcs;
+static TLItem *all_items;
 static StrLit *all_strs;
 static void cg_emit(const char *fmt, ...) {
     va_list ap;
@@ -47,9 +47,9 @@ static int gen(Node *node);
 static int gen_addr(Node *node);
 
 static char *func_asm_name(char *name) {
-    for (Function *fn = all_funcs; fn; fn = fn->next) {
-        if (fn->name == name)
-            return fn->asm_name ? fn->asm_name : fn->name;
+    for (TLItem *item = all_items; item; item = item->next) {
+        if (item->kind == TL_FUNC && item->fn->name == name)
+            return item->fn->asm_name ? item->fn->asm_name : item->fn->name;
     }
     return name;
 }
@@ -1753,7 +1753,7 @@ static int reg_live_after(char **lines, int nlines, int after, int pid) {
 
 void codegen(Program *prog) {
     cg_stream = stdout;
-    all_funcs = prog->funcs;
+    all_items = prog->items;
     all_strs = prog->strs;
     // Assembly header
     printf(".intel_syntax noprefix\n");
@@ -1837,7 +1837,12 @@ void codegen(Program *prog) {
         printf("\n.text\n");
     }
 
-    for (Function *fn = prog->funcs; fn; fn = fn->next) {
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind == TL_ASM) {
+            printf("%s\n", item->asm_str);
+            continue;
+        }
+        Function *fn = item->fn;
         current_fn = fn->name;
         current_fn_def = fn;
 
