@@ -42,6 +42,16 @@ jobs:
           update: true
           install: |
             mingw-w64-x86_64-gcc
+            make
+
+      - name: Build and install TinyCC (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          cd tinycc
+          ./configure
+          make
+          make install
 
       - name: Build
         run: make
