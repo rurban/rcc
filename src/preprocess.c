@@ -1270,10 +1270,11 @@ char *preprocess(char *filename, char *p) {
         define_macro("__has_include", false, NULL, 0, "1");
     if (!find_macro("__has_include_next"))
         define_macro("__has_include_next", false, NULL, 0, "1");
+    // GCC builtin type macros (required for <stdatomic.h> and other system headers)
     if (!find_macro("__SIZE_TYPE__"))
-        define_macro("__SIZE_TYPE__", false, NULL, 0, "unsigned long long");
+        define_macro("__SIZE_TYPE__", false, NULL, 0, "long unsigned int");
     if (!find_macro("__PTRDIFF_TYPE__"))
-        define_macro("__PTRDIFF_TYPE__", false, NULL, 0, "long long");
+        define_macro("__PTRDIFF_TYPE__", false, NULL, 0, "long int");
     if (!find_macro("__WCHAR_TYPE__"))
         define_macro("__WCHAR_TYPE__", false, NULL, 0,
 #ifdef _WIN32
@@ -1282,6 +1283,86 @@ char *preprocess(char *filename, char *p) {
                      "unsigned int"
 #endif
         );
+    if (!find_macro("__WINT_TYPE__"))
+        define_macro("__WINT_TYPE__", false, NULL, 0, "unsigned int");
+    // GCC atomic memory order builtins (required for <stdatomic.h>)
+    if (!find_macro("__ATOMIC_RELAXED"))
+        define_macro("__ATOMIC_RELAXED", false, NULL, 0, "0");
+    if (!find_macro("__ATOMIC_CONSUME"))
+        define_macro("__ATOMIC_CONSUME", false, NULL, 0, "1");
+    if (!find_macro("__ATOMIC_ACQUIRE"))
+        define_macro("__ATOMIC_ACQUIRE", false, NULL, 0, "2");
+    if (!find_macro("__ATOMIC_RELEASE"))
+        define_macro("__ATOMIC_RELEASE", false, NULL, 0, "3");
+    if (!find_macro("__ATOMIC_ACQ_REL"))
+        define_macro("__ATOMIC_ACQ_REL", false, NULL, 0, "4");
+    if (!find_macro("__ATOMIC_SEQ_CST"))
+        define_macro("__ATOMIC_SEQ_CST", false, NULL, 0, "5");
+    // Integer type width macros
+    if (!find_macro("__INT8_TYPE__"))
+        define_macro("__INT8_TYPE__", false, NULL, 0, "signed char");
+    if (!find_macro("__INT16_TYPE__"))
+        define_macro("__INT16_TYPE__", false, NULL, 0, "short int");
+    if (!find_macro("__INT32_TYPE__"))
+        define_macro("__INT32_TYPE__", false, NULL, 0, "int");
+    if (!find_macro("__INT64_TYPE__"))
+        define_macro("__INT64_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__UINT8_TYPE__"))
+        define_macro("__UINT8_TYPE__", false, NULL, 0, "unsigned char");
+    if (!find_macro("__UINT16_TYPE__"))
+        define_macro("__UINT16_TYPE__", false, NULL, 0, "short unsigned int");
+    if (!find_macro("__UINT32_TYPE__"))
+        define_macro("__UINT32_TYPE__", false, NULL, 0, "unsigned int");
+    if (!find_macro("__UINT64_TYPE__"))
+        define_macro("__UINT64_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__CHAR8_TYPE__"))
+        define_macro("__CHAR8_TYPE__", false, NULL, 0, "unsigned char");
+    if (!find_macro("__CHAR16_TYPE__"))
+        define_macro("__CHAR16_TYPE__", false, NULL, 0, "short unsigned int");
+    if (!find_macro("__CHAR32_TYPE__"))
+        define_macro("__CHAR32_TYPE__", false, NULL, 0, "unsigned int");
+    if (!find_macro("__INTMAX_TYPE__"))
+        define_macro("__INTMAX_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__UINTMAX_TYPE__"))
+        define_macro("__UINTMAX_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__INTPTR_TYPE__"))
+        define_macro("__INTPTR_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__UINTPTR_TYPE__"))
+        define_macro("__UINTPTR_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__INT_LEAST8_TYPE__"))
+        define_macro("__INT_LEAST8_TYPE__", false, NULL, 0, "signed char");
+    if (!find_macro("__INT_LEAST16_TYPE__"))
+        define_macro("__INT_LEAST16_TYPE__", false, NULL, 0, "short int");
+    if (!find_macro("__INT_LEAST32_TYPE__"))
+        define_macro("__INT_LEAST32_TYPE__", false, NULL, 0, "int");
+    if (!find_macro("__INT_LEAST64_TYPE__"))
+        define_macro("__INT_LEAST64_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__UINT_LEAST8_TYPE__"))
+        define_macro("__UINT_LEAST8_TYPE__", false, NULL, 0, "unsigned char");
+    if (!find_macro("__UINT_LEAST16_TYPE__"))
+        define_macro("__UINT_LEAST16_TYPE__", false, NULL, 0, "short unsigned int");
+    if (!find_macro("__UINT_LEAST32_TYPE__"))
+        define_macro("__UINT_LEAST32_TYPE__", false, NULL, 0, "unsigned int");
+    if (!find_macro("__UINT_LEAST64_TYPE__"))
+        define_macro("__UINT_LEAST64_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__INT_FAST8_TYPE__"))
+        define_macro("__INT_FAST8_TYPE__", false, NULL, 0, "signed char");
+    if (!find_macro("__INT_FAST16_TYPE__"))
+        define_macro("__INT_FAST16_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__INT_FAST32_TYPE__"))
+        define_macro("__INT_FAST32_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__INT_FAST64_TYPE__"))
+        define_macro("__INT_FAST64_TYPE__", false, NULL, 0, "long int");
+    if (!find_macro("__UINT_FAST8_TYPE__"))
+        define_macro("__UINT_FAST8_TYPE__", false, NULL, 0, "unsigned char");
+    if (!find_macro("__UINT_FAST16_TYPE__"))
+        define_macro("__UINT_FAST16_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__UINT_FAST32_TYPE__"))
+        define_macro("__UINT_FAST32_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__UINT_FAST64_TYPE__"))
+        define_macro("__UINT_FAST64_TYPE__", false, NULL, 0, "long unsigned int");
+    if (!find_macro("__SIG_ATOMIC_TYPE__"))
+        define_macro("__SIG_ATOMIC_TYPE__", false, NULL, 0, "int");
     if (!find_macro("_Atomic"))
         define_macro("_Atomic", false, NULL, 0, "");
 #ifdef _WIN32
