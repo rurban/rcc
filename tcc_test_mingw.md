@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/25/2026 15:51:49
+Generated on: 04/25/2026 17:24:51
 
 ## Summary
 - **Total Tests**: 112
-- **Passed**: 84
-- **Failed**: 28
-- **Pass Rate**: 75%
+- **Passed**: 86
+- **Failed**: 26
+- **Pass Rate**: 76.79%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -32,7 +32,7 @@ Generated on: 04/25/2026 15:51:49
 | 19_pointer_arithmetic | PASS | Output matches |
 | 20_pointer_comparison | PASS | Output matches |
 | 21_char_array | PASS | Output matches |
-| 23_type_coercion | MISMATCH | Output does not match .expect |
+| 23_type_coercion | PASS | Output matches |
 | 24_math_library | PASS | Output matches |
 | 25_quicksort | PASS | Output matches |
 | 26_character_constants | PASS | Output matches |
@@ -121,4 +121,4 @@ Generated on: 04/25/2026 15:51:49
 | 134_double_to_signed | PASS | Output matches |
 | 135_func_arg_struct_compare | PASS | Output matches |
 | 136_atomic_gcc_style | COMPILE_FAIL | rcc exited with 1 |
-| 137_funcall_struct_args | MISMATCH | Output does not match .expect |
+| 137_funcall_struct_args | PASS | Output matches |

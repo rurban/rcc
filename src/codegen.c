@@ -276,12 +276,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     for (int i = 0; i < reg_nargs; i++) {
         int argi = i + (has_hidden_retbuf ? 1 : 0);
         if (arg_is_float[i]) {
-#ifdef _WIN32
             printf("  movq %s, %s\n", argxmm[argi], reg64[arg_regs[i]]);
             printf("  mov %s, %s\n", argreg64[argi], reg64[arg_regs[i]]);
-#else
-            printf("  movq %s, %s\n", argxmm[argi], reg64[arg_regs[i]]);
-#endif
         } else if (arg_sizes[i] == 1) {
             printf("  movzx %s, %s\n", argreg64[argi], reg8[arg_regs[i]]);
         } else if (arg_sizes[i] == 4) {
@@ -314,9 +310,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     }
 #endif
 
-#ifndef _WIN32
     printf("  mov eax, %d\n", xmm_args);
-#endif
     if (call_target) {
         emit_direct_call(call_target);
     } else {
@@ -1859,6 +1853,7 @@ void codegen(Program *prog) {
         char *param_regs32[] = {"ecx", "edx", "r8d", "r9d"};
         char *param_regs16[] = {"cx", "dx", "r8w", "r9w"};
         char *param_regs8[] = {"cl", "dl", "r8b", "r9b"};
+        char *param_xmm[] = {"xmm0", "xmm1", "xmm2", "xmm3"};
         int max_param_regs = 4;
 #else
         char *param_regs64[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
@@ -1874,7 +1869,17 @@ void codegen(Program *prog) {
         int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) ? 1 : 0;
         for (LVar *var = fn->params; var; var = var->param_next) {
 #ifdef _WIN32
-            if (param_index < max_param_regs) {
+            if (is_flonum(var->ty)) {
+                if (param_index < max_param_regs) {
+                    if (var->ty->size == 4) {
+                        printf("  cvtsd2ss xmm0, %s\n", param_xmm[param_index]);
+                        printf("  movss dword ptr [rbp-%d], xmm0\n", var->offset);
+                    } else {
+                        printf("  movsd qword ptr [rbp-%d], %s\n", var->offset, param_xmm[param_index]);
+                    }
+                    param_index++;
+                }
+            } else if (param_index < max_param_regs) {
                 char *preg = var->ty->size == 1 ? param_regs8[param_index]
                     : var->ty->size == 2        ? param_regs16[param_index]
                     : var->ty->size <= 4        ? param_regs32[param_index]

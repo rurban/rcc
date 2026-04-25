@@ -18,13 +18,14 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$output" ]; then
-	output="$base.exe"
+	output="$(basename "$base.exe")"
 fi
-outbase="${output%.exe}"
+# Use a temp directory for the intermediate .s file to avoid Wine path issues
+TMP_S="$(mktemp -u /tmp/mingw_cross_XXXXXX.s)"
 
 WINEDEBUG=fixme-all
 WINEDLLOVERRIDES="winedbg=d"
 export WINEDEBUG WINEDLLOVERRIDES
 
-wine "$scriptdir/rcc.exe" -S "$input" -o "$outbase.s" &&
-	x86_64-w64-mingw32-gcc "$outbase.s" -o "$output" && rm "$outbase.s"
+wine "$scriptdir/rcc.exe" -S "$input" -o "$TMP_S" &&
+	x86_64-w64-mingw32-gcc "$TMP_S" -o "$output" && rm "$TMP_S"
