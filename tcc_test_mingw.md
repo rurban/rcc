@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/24/2026 20:44:41
+Generated on: 04/25/2026 06:02:24
 
 ## Summary
 - **Total Tests**: 129
-- **Passed**: 81
-- **Failed**: 33
-- **Pass Rate**: 62.79%
+- **Passed**: 82
+- **Failed**: 32
+- **Pass Rate**: 63.57%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -42,7 +42,7 @@ Generated on: 04/24/2026 20:44:41
 | 30_hanoi | PASS | Output matches |
 | 31_args | PASS | Output matches |
 | 32_led | PASS | Output matches |
-| 33_ternary_op | COMPILE_FAIL | rcc exited with 1 |
+| 33_ternary_op | MISMATCH | Output does not match .expect |
 | 34_array_assignment | PASS | Output matches |
 | 35_sizeof | PASS | Output matches |
 | 36_array_initialisers | PASS | Output matches |
@@ -89,7 +89,7 @@ Generated on: 04/24/2026 20:44:41
 | 91_ptr_longlong_arith32 | PASS | Output matches |
 | 92_enum_bitfield | PASS | Output matches |
 | 93_integer_promotion | PASS | Output matches |
-| 94_generic | COMPILE_FAIL | rcc exited with 1 |
+| 94_generic | PASS | Output matches |
 | 95_bitfields | MISMATCH | Output does not match .expect |
 | 95_bitfields_ms | MISMATCH | Output does not match .expect |
 | 97_utf8_string_literal | PASS | Output matches |

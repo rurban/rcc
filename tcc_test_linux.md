@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     139
- - **Passed**:    119
- - **Failed**:    20
- - **Pass Rate**: 85%
+ - **Passed**:    120
+ - **Failed**:    19
+ - **Pass Rate**: 86%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -42,7 +42,7 @@ Generated: April 2026
 | 30_hanoi                                 | PASS         | Output matches                       |
 | 31_args                                  | PASS         | Output matches                       |
 | 32_led                                   | PASS         | Output matches                       |
-| 33_ternary_op                            | COMPILE_FAIL | rcc returned non-zero                |
+| 33_ternary_op                            | PASS         | Output matches                       |
 | 34_array_assignment                      | PASS         | Output matches                       |
 | 35_sizeof                                | PASS         | Output matches                       |
 | 36_array_initialisers                    | PASS         | Output matches                       |

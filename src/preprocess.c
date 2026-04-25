@@ -1130,11 +1130,12 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                             int incl_lines = 0;
                             for (char *ip = inc; *ip; ip++)
                                 if (*ip == '\n') incl_lines++;
+                            unsigned src_resume = line_no + 1; // source line after #include
                             sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
                             SplicedInput spliced_inc = splice_lines_with_counts(inc);
                             sb_puts(&out, preprocess_file(path, spliced_inc.text, spliced_inc.line_counts));
                             line_no += incl_lines;
-                            sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, filename));
+                            sb_puts(&out, format("# %u \"%s\"\n", src_resume, filename));
                         }
                     }
                 }

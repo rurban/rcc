@@ -3208,11 +3208,12 @@ static Node *logor(Token **rest, Token *tok) {
 static Node *conditional(Token **rest, Token *tok) {
     Node *node = logor(&tok, tok);
     if (equal(tok, "?")) {
+        Token *qtok = tok;
         Node *cond = node;
         Node *then = expr(&tok, tok->next);
         tok = skip(tok, ":");
         Node *els = conditional(&tok, tok);
-        node = new_node(ND_COND, cond->tok);
+        node = new_node(ND_COND, qtok);
         node->cond = cond;
         node->then = then;
         node->els = els;

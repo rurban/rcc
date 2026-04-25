@@ -36,6 +36,10 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
         for (char *p = current_input; p < line; p++)
             if (*p == '\n')
                 reported_line++;
+    } else {
+        for (char *p = current_input + current_line_offset; p < line; p++)
+            if (*p == '\n')
+                reported_line++;
     }
 
     // Print filename and line info
@@ -85,6 +89,10 @@ void warn_tok(Token *tok, char *fmt, ...) {
     if (current_line_offset == 0 || tok->loc < current_input + current_line_offset) {
         reported_line = 1;
         for (char *p = current_input; p < line; p++)
+            if (*p == '\n')
+                reported_line++;
+    } else {
+        for (char *p = current_input + current_line_offset; p < line; p++)
             if (*p == '\n')
                 reported_line++;
     }

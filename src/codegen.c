@@ -487,6 +487,25 @@ static int gen_addr(Node *node) {
         printf("  add %s, %d\n", reg64[r], node->member->offset);
         return r;
     }
+    case ND_COND: {
+        // Struct/union ternary lvalue: (cond ? a : b).member
+        int c = ++rcc_label_count;
+        int r = alloc_reg();
+        int cond = gen(node->cond);
+        printf("  cmp %s, 0\n", reg(cond, node->cond->ty->size));
+        printf("  je .L.else.%d\n", c);
+        free_reg(cond);
+        int then_r = gen_addr(node->then);
+        printf("  mov %s, %s\n", reg64[r], reg64[then_r]);
+        free_reg(then_r);
+        printf("  jmp .L.end.%d\n", c);
+        printf(".L.else.%d:\n", c);
+        int else_r = gen_addr(node->els);
+        printf("  mov %s, %s\n", reg64[r], reg64[else_r]);
+        free_reg(else_r);
+        printf(".L.end.%d:\n", c);
+        return r;
+    }
     case ND_CAST:
         // Struct/union cast: treat as address of the inner expression
         if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_ARRAY))
