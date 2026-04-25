@@ -1048,6 +1048,19 @@ static int gen(Node *node) {
             printf("  movsx %s, %s\n", reg32[r], reg16[r]);
         } else if (to->size == 4 && from->size == 8) {
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
+        } else if (to->size == 8 && from->size < 8) {
+            if (from->size == 4) {
+                if (from->is_unsigned)
+                    printf("  mov %s, %s\n", reg32[r], reg32[r]);
+                else
+                    printf("  movsxd %s, %s\n", reg64[r], reg32[r]);
+            } else {
+                // 8-bit or 16-bit -> 64-bit
+                if (from->is_unsigned)
+                    printf("  movzx %s, %s\n", reg64[r], reg(r, from->size));
+                else
+                    printf("  movsx %s, %s\n", reg64[r], reg(r, from->size));
+            }
         }
         return r;
     }

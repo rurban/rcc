@@ -2,9 +2,9 @@
 Generated: April 2026
 
 ## Summary
- - **Total**:     139
- - **Passed**:    121
- - **Failed**:    18
+ - **Total**:     140
+ - **Passed**:    123
+ - **Failed**:    17
  - **Pass Rate**: 87%
 
 ## Detailed Results
@@ -55,7 +55,7 @@ Generated: April 2026
 | 43_void_param                            | PASS         | Output matches                       |
 | 44_scoped_declarations                   | PASS         | Output matches                       |
 | 45_empty_for                             | PASS         | Output matches                       |
-| 46_grep                                  | EXEC_FAIL    | non-zero exit                        |
+| 46_grep                                  | PASS         | Output matches                       |
 | 47_switch_return                         | PASS         | Output matches                       |
 | 48_nested_break                          | PASS         | Output matches                       |
 | 49_bracket_evaluation                    | PASS         | Output matches                       |
@@ -144,6 +144,7 @@ Generated: April 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
+| test_signextend                          | PASS         | exit=0                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

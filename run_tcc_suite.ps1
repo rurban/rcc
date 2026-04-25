@@ -118,13 +118,21 @@ foreach ($file in $TestFiles) {
     # 2. Execution
     $ExtraArgs = switch ($base) {
         "31_args" { @("arg1", "arg2", "arg3", "arg4", "arg5") }
-        "46_grep" { @('[^* ]*[:a:d: ]+\:\*-/: $', (Join-Path $TestDir "46_grep.c")) }
+        "46_grep" { @('[^* ]*[:a:d: ]+\:\*-/: $', "46_grep.c") }
         default   { @() }
     }
+
+    $inGrepDir = $false
+    if ($base -eq "46_grep") {
+        Push-Location $TestDir
+        $inGrepDir = $true
+    }
+
     try {
         $actualOutput = & $exe @ExtraArgs 2>&1 | Out-String
         $actualOutput = $actualOutput.Trim()
     } catch {
+        if ($inGrepDir) { Pop-Location }
         Write-Host "EXECUTION FAIL" -ForegroundColor Red
         $Results += [PSCustomObject]@{
             Test = $base
@@ -135,6 +143,8 @@ foreach ($file in $TestFiles) {
         if (Test-Path $exe) { Remove-Item $exe -Force }
         continue
     }
+
+    if ($inGrepDir) { Pop-Location }
 
     # 3. Verification
     if (Test-Path $expectFile) {
@@ -200,7 +210,7 @@ $report | Out-File $ReportFile -Encoding utf8
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
 
-if ($Passed -ge 82) {
+if ($Passed -ge 83) {
     exit 0
 } else {
     exit 1

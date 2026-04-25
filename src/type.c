@@ -161,11 +161,24 @@ static void add_type_internal(Node *node) {
                     insert_arith_cast(&node->lhs, node->ty);
                 if (is_integer(rty))
                     insert_arith_cast(&node->rhs, node->ty);
+            } else if (is_integer(node->ty)) {
+                if (node->ty->size > lty->size)
+                    insert_arith_cast(&node->lhs, node->ty);
+                if (node->ty->size > rty->size)
+                    insert_arith_cast(&node->rhs, node->ty);
             }
             return;
         }
         if (lty->base && is_integer(rty)) {
             node->rhs = new_scale_mul(node->rhs, lty->base->size);
+            if (node->rhs->ty->size < 8) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->rhs->ty->is_unsigned ? ty_ulong : ty_long;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
+            }
             node->ty = (lty->kind == TY_ARRAY) ? pointer_to(lty->base) : lty;
             return;
         }
@@ -180,6 +193,14 @@ static void add_type_internal(Node *node) {
             node->lhs = node->rhs;
             node->rhs = tmp;
             node->rhs = new_scale_mul(node->rhs, rty->base->size);
+            if (node->rhs->ty->size < 8) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->rhs->ty->is_unsigned ? ty_ulong : ty_long;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
+            }
             node->ty = (rty->kind == TY_ARRAY) ? pointer_to(rty->base) : rty;
             return;
         }
@@ -203,6 +224,11 @@ static void add_type_internal(Node *node) {
             if (is_integer(node->lhs->ty))
                 insert_arith_cast(&node->lhs, node->ty);
             if (is_integer(node->rhs->ty))
+                insert_arith_cast(&node->rhs, node->ty);
+        } else if (is_integer(node->ty)) {
+            if (node->ty->size > node->lhs->ty->size)
+                insert_arith_cast(&node->lhs, node->ty);
+            if (node->ty->size > node->rhs->ty->size)
                 insert_arith_cast(&node->rhs, node->ty);
         }
         return;
@@ -234,6 +260,14 @@ static void add_type_internal(Node *node) {
                 cast->ty = node->lhs->ty;
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
+            } else if (!lf && !rf && is_integer(node->lhs->ty) && is_integer(node->rhs->ty) &&
+                       node->lhs->ty->size > node->rhs->ty->size) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
             }
         }
         node->ty = node->lhs->ty;
@@ -241,7 +275,26 @@ static void add_type_internal(Node *node) {
     case ND_EQ:
     case ND_NE:
     case ND_LT:
-    case ND_LE:
+    case ND_LE: {
+        Type *lty = node->lhs->ty;
+        Type *rty = node->rhs->ty;
+        if (is_number(lty) && is_number(rty)) {
+            Type *cmp_ty = usual_arith_type(lty, rty);
+            if (is_flonum(cmp_ty)) {
+                if (is_integer(lty))
+                    insert_arith_cast(&node->lhs, cmp_ty);
+                if (is_integer(rty))
+                    insert_arith_cast(&node->rhs, cmp_ty);
+            } else if (is_integer(cmp_ty)) {
+                if (cmp_ty->size > lty->size)
+                    insert_arith_cast(&node->lhs, cmp_ty);
+                if (cmp_ty->size > rty->size)
+                    insert_arith_cast(&node->rhs, cmp_ty);
+            }
+        }
+        node->ty = ty_int;
+        return;
+    }
     case ND_SIZEOF:
         node->ty = ty_int;
         return;

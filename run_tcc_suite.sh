@@ -183,13 +183,13 @@ while IFS= read -r src; do
 
 	printf "  %-40s " "$base..."
 
-        if [ "$src" = "$TEST_DIR/129_scopes.c" ]; then
-            orig_RCC="$RCC"
-            RCC="$(realpath "$RCC")"
-            cd "$TEST_DIR" || exit
-            src=129_scopes.c
+	if [ "$src" = "$TEST_DIR/129_scopes.c" ]; then
+		orig_RCC="$RCC"
+		RCC="$(realpath "$RCC")"
+		cd "$TEST_DIR" || exit
+		src=129_scopes.c
         fi
-	# 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
+        # 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
 	if ! "$RCC" "$src" -o "$TMP_EXE" 2>"$TMP_OUT"; then
 		# shellcheck disable=SC2059
 		printf "${RED}COMPILE FAIL${RESET}\n"
@@ -206,18 +206,23 @@ while IFS= read -r src; do
 		print_change "$base" "COMPILE_FAIL"
 		continue
 	fi
-        if [ "$src" = "129_scopes.c" ]; then
-            cd - || exit
-            src="$TEST_DIR/129_scopes.c"
-            RCC="$orig_RCC"
+	if [ "$src" = "129_scopes.c" ]; then
+		cd - || exit
+		src="$TEST_DIR/129_scopes.c"
+		RCC="$orig_RCC"
         fi
 
 	# 2. Execute (append runtime output after compile warnings)
 	args="$(test_args "$base")"
 	expected_exit="$(test_expected_exit "$base")"
 	if [ -n "$args" ]; then
-		# shellcheck disable=SC2086
-		"$TMP_EXE" $args >>"$TMP_OUT" 2>&1; actual_exit=$?
+		if [ "$base" = "46_grep" ]; then
+			# 46_grep pattern contains spaces; run from TEST_DIR with local filename
+			(cd "$TEST_DIR" && "$TMP_EXE" '[^* ]*[:a:d: ]+\:\*-/: $' 46_grep.c) >>"$TMP_OUT" 2>&1; actual_exit=$?
+		else
+			# shellcheck disable=SC2086
+			"$TMP_EXE" $args >>"$TMP_OUT" 2>&1; actual_exit=$?
+		fi
 	else
 		"$TMP_EXE" >>"$TMP_OUT" 2>&1; actual_exit=$?
 	fi
@@ -377,4 +382,4 @@ fi
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$passed" -ge 121 ]
+[ "$passed" -ge 123 ]
