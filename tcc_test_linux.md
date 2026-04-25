@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     139
- - **Passed**:    120
- - **Failed**:    19
- - **Pass Rate**: 86%
+ - **Passed**:    121
+ - **Failed**:    18
+ - **Pass Rate**: 87%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -95,7 +95,7 @@ Generated: April 2026
 | 98_al_ax_extend                          | COMPILE_FAIL | rcc returned non-zero                |
 | 99_fastcall                              | COMPILE_FAIL | rcc returned non-zero                |
 | 100_c99array-decls                       | PASS         | Output matches                       |
-| 101_cleanup                              | EXEC_FAIL    | non-zero exit                        |
+| 101_cleanup                              | PASS         | Output matches                       |
 | 102_alignas                              | PASS         | Output matches                       |
 | 103_implicit_memmove                     | PASS         | Output matches                       |
 | 105_local_extern                         | PASS         | Output matches                       |

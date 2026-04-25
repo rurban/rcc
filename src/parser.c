@@ -381,6 +381,19 @@ static Node *make_cleanup_stmt(LVar *var, Token *tok) {
     return stmt;
 }
 
+// Append cleanup stmts to a node list in-place; returns the (possibly new) list head.
+static Node *append_cleanup_flat(Node *body, LVar *begin, LVar *end, Token *tok) {
+    Node head = {};
+    Node *cur = &head;
+    head.next = body;
+    while (cur->next)
+        cur = cur->next;
+    for (LVar *var = begin; var && var != end; var = var->next)
+        if (var->is_local && var->cleanup_func)
+            cur = cur->next = make_cleanup_stmt(var, tok);
+    return head.next;
+}
+
 static Node *append_cleanup_range(Node *body, LVar *begin, LVar *end, Token *tok) {
     Node head = {};
     Node *cur = &head;
@@ -2584,13 +2597,17 @@ static Node *primary(Token **rest, Token *tok) {
     } else if (equal(tok, "(")) {
         if (equal(tok->next, "{")) {
             node = new_node(ND_STMT_EXPR, tok);
-            Node *block = compound_stmt(&tok, tok->next);
+            LVar *block_locals = NULL;
+            Node *block = compound_stmt_ex(&tok, tok->next, &block_locals);
             node->body = block->body;
+            // Find result BEFORE cleanup nodes are appended
             Node *last = node->body;
             while (last && last->next)
                 last = last->next;
             if (last && last->kind == ND_EXPR_STMT && last->lhs)
                 node->stmt_expr_result = last->lhs;
+            // Append cleanups as a flat list (block_locals → locals = saved after block)
+            node->body = append_cleanup_flat(node->body, block_locals, locals, tok);
             tok = skip(tok, ")");
         } else {
             node = expr(&tok, tok->next);

@@ -149,10 +149,16 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_stack_idx[i] = -1;
 
         if (arg_is_float[i]) {
-            if (fp_reg_args < max_fp_args)
+            if (argv[i]->ty->kind == TY_LDOUBLE) {
+                // long double always on stack as 16 bytes (x87 80-bit + padding)
+                if (stack_args & 1) stack_args++; // 16-byte align
+                arg_stack_idx[i] = stack_args;
+                stack_args += 2;
+            } else if (fp_reg_args < max_fp_args) {
                 arg_fp_idx[i] = fp_reg_args++;
-            else
+            } else {
                 arg_stack_idx[i] = stack_args++;
+            }
             continue;
         }
 
@@ -216,6 +222,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     for (int i = nargs - 1; i >= 0; i--) {
         if (arg_stack_idx[i] < 0)
             continue;
+        // x87: long double args go on stack as 80-bit extended precision
+        if (argv[i]->ty->kind == TY_LDOUBLE) {
+            int r = gen_addr(argv[i]);
+            printf("  fld tbyte ptr [%s]\n", reg64[r]);
+            printf("  fstp tbyte ptr [rsp+%d]\n", shadow_space + arg_stack_idx[i] * 8);
+            free_reg(r);
+            continue;
+        }
         int r;
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
@@ -592,22 +606,37 @@ static int gen(Node *node) {
         } else if (!node->var->is_local && node->var->is_function) {
             printf("  lea %s, [rip + %s]\n", reg64[r], label);
         } else if (is_flonum(node->var->ty)) {
-            if (node->var->is_local) {
-                if (node->var->ty->size == 4) {
-                    printf("  movss xmm0, dword ptr [rbp-%d]\n", node->var->offset);
-                    printf("  cvtss2sd xmm0, xmm0\n");
+#ifndef _WIN32
+            if (node->var->ty->kind == TY_LDOUBLE) {
+                if (node->var->is_local)
+                    printf("  fld tbyte ptr [rbp-%d]\n", node->var->offset);
+                else
+                    printf("  fld tbyte ptr [rip + %s]\n", label);
+                printf("  sub rsp, 8\n");
+                printf("  fstp qword ptr [rsp]\n");
+                printf("  movsd xmm0, qword ptr [rsp]\n");
+                printf("  add rsp, 8\n");
+                printf("  movq %s, xmm0\n", reg64[r]);
+            } else
+#endif
+            {
+                if (node->var->is_local) {
+                    if (node->var->ty->size == 4) {
+                        printf("  movss xmm0, dword ptr [rbp-%d]\n", node->var->offset);
+                        printf("  cvtss2sd xmm0, xmm0\n");
+                    } else {
+                        printf("  movsd xmm0, qword ptr [rbp-%d]\n", node->var->offset);
+                    }
                 } else {
-                    printf("  movsd xmm0, qword ptr [rbp-%d]\n", node->var->offset);
+                    if (node->var->ty->size == 4) {
+                        printf("  movss xmm0, dword ptr [rip + %s]\n", label);
+                        printf("  cvtss2sd xmm0, xmm0\n");
+                    } else {
+                        printf("  movsd xmm0, qword ptr [rip + %s]\n", label);
+                    }
                 }
-            } else {
-                if (node->var->ty->size == 4) {
-                    printf("  movss xmm0, dword ptr [rip + %s]\n", label);
-                    printf("  cvtss2sd xmm0, xmm0\n");
-                } else {
-                    printf("  movsd xmm0, qword ptr [rip + %s]\n", label);
-                }
+                printf("  movq %s, xmm0\n", reg64[r]);
             }
-            printf("  movq %s, xmm0\n", reg64[r]);
         } else {
             if (node->var->is_local)
                 emit_load(node->ty, r, format("[rbp-%d]", node->var->offset));
@@ -707,6 +736,33 @@ static int gen(Node *node) {
             return dst;
         }
         if (is_flonum(node->lhs->ty)) {
+#ifndef _WIN32
+            if (node->lhs->ty->kind == TY_LDOUBLE) {
+                int r1 = gen_addr(node->lhs);
+                // Determine whether rhs is already a long double in memory
+                Node *src = node->rhs;
+                while (src->kind == ND_CAST) src = src->lhs;
+                if (src->ty && src->ty->kind == TY_LDOUBLE &&
+                    (src->kind == ND_LVAR || src->kind == ND_MEMBER || src->kind == ND_DEREF)) {
+                    int r2 = gen_addr(src);
+                    printf("  fld tbyte ptr [%s]\n", reg64[r2]);
+                    free_reg(r2);
+                } else {
+                    // double/int rhs: generate value, push to temp, fldl
+                    int r2 = gen(node->rhs);
+                    printf("  sub rsp, 8\n");
+                    printf("  mov [rsp], %s\n", reg64[r2]);
+                    printf("  fld qword ptr [rsp]\n");
+                    printf("  add rsp, 8\n");
+                    free_reg(r2);
+                }
+                printf("  fstp tbyte ptr [%s]\n", reg64[r1]);
+                free_reg(r1);
+                int dummy = alloc_reg();
+                printf("  mov %s, 0\n", reg64[dummy]);
+                return dummy;
+            }
+#endif
             int r2 = gen(node->rhs);
             int r1 = gen_addr(node->lhs);
             printf("  movq xmm0, %s\n", reg64[r2]);
@@ -901,13 +957,25 @@ static int gen(Node *node) {
         }
         Type *load_ty = (node->member && node->member->bit_width > 0) ? node->member->ty : node->ty;
         if (is_flonum(load_ty)) {
-            if (load_ty->size == 4) {
+#ifndef _WIN32
+            if (load_ty->kind == TY_LDOUBLE) {
+                // x87: load 80-bit extended, convert to double for register use
+                printf("  fld tbyte ptr [%s]\n", reg64[r]);
+                printf("  sub rsp, 8\n");
+                printf("  fstp qword ptr [rsp]\n");
+                printf("  movsd xmm0, qword ptr [rsp]\n");
+                printf("  add rsp, 8\n");
+                printf("  movq %s, xmm0\n", reg64[r]);
+            } else
+#endif
+                if (load_ty->size == 4) {
                 printf("  movss xmm0, dword ptr [%s]\n", reg64[r]);
                 printf("  cvtss2sd xmm0, xmm0\n");
+                printf("  movq %s, xmm0\n", reg64[r]);
             } else {
                 printf("  movsd xmm0, qword ptr [%s]\n", reg64[r]);
+                printf("  movq %s, xmm0\n", reg64[r]);
             }
-            printf("  movq %s, xmm0\n", reg64[r]);
         } else {
             emit_load(load_ty, r, format("[%s]", reg64[r]));
         }

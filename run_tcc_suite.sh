@@ -76,6 +76,13 @@ test_args() {
 	esac
 }
 
+test_expected_exit() {
+	case "$1" in
+	101_cleanup) echo 105 ;;
+	*) echo 0 ;;
+	esac
+}
+
 TMPDIR="${TMPDIR:-/tmp}"
 TMP_OUT="$TMPDIR/rcc_test_$$.out"
 TMP_EXE="$TMPDIR/rcc_test_$$"
@@ -207,27 +214,21 @@ while IFS= read -r src; do
 
 	# 2. Execute (append runtime output after compile warnings)
 	args="$(test_args "$base")"
+	expected_exit="$(test_expected_exit "$base")"
 	if [ -n "$args" ]; then
 		# shellcheck disable=SC2086
-		if ! "$TMP_EXE" $args >>"$TMP_OUT" 2>&1; then
-			# shellcheck disable=SC2059
-			printf "${RED}EXEC FAIL${RESET}\n"
-			failed=$((failed + 1))
-			add_row "$base" "EXEC_FAIL" "non-zero exit"
-			print_change "$base" "EXEC_FAIL"
-			rm -f "$TMP_EXE"
-			continue
-		fi
+		"$TMP_EXE" $args >>"$TMP_OUT" 2>&1; actual_exit=$?
 	else
-		if ! "$TMP_EXE" >>"$TMP_OUT" 2>&1; then
-			# shellcheck disable=SC2059
-			printf "${RED}EXEC FAIL${RESET}\n"
-			failed=$((failed + 1))
-			add_row "$base" "EXEC_FAIL" "non-zero exit"
-			print_change "$base" "EXEC_FAIL"
-			rm -f "$TMP_EXE"
-			continue
-		fi
+		"$TMP_EXE" >>"$TMP_OUT" 2>&1; actual_exit=$?
+	fi
+	if [ "$actual_exit" != "$expected_exit" ]; then
+		# shellcheck disable=SC2059
+		printf "${RED}EXEC FAIL${RESET}\n"
+		failed=$((failed + 1))
+		add_row "$base" "EXEC_FAIL" "non-zero exit"
+		print_change "$base" "EXEC_FAIL"
+		rm -f "$TMP_EXE"
+		continue
 	fi
 	rm -f "$TMP_EXE"
 
@@ -376,4 +377,4 @@ fi
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-[ "$passed" -ge 120 ]
+[ "$passed" -ge 121 ]
