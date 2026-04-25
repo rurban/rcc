@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     140
- - **Passed**:    123
- - **Failed**:    17
- - **Pass Rate**: 87%
+ - **Passed**:    124
+ - **Failed**:    16
+ - **Pass Rate**: 88%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -80,7 +80,7 @@ Generated: April 2026
 | 82_attribs_position                      | PASS         | Output matches                       |
 | 83_utf8_in_identifiers                   | PASS         | Output matches                       |
 | 84_hex-float                             | PASS         | Output matches                       |
-| 85_asm-outside-function                  | COMPILE_FAIL | rcc returned non-zero                |
+| 85_asm-outside-function                  | PASS         | Output matches                       |
 | 86_memory-model                          | PASS         | Output matches                       |
 | 87_dead_code                             | PASS         | Output matches                       |
 | 88_codeopt                               | PASS         | Output matches                       |
