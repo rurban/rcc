@@ -1,20 +1,20 @@
 # RCC — Rising C Compiler
 
 A fast, self-contained C compiler targeting x86-64 Windows. Written from scratch in C11.
-**RCC generates faster code than TCC** while keeping compilation speed competitive.
+**RCC equally fast code as TCC** while keeping compilation speed competitive.
 
 ## Benchmark Results
 
 Six workloads: Fibonacci(38), Ackermann(3,10), Sieve of Eratosthenes (1M), 128×128 matrix multiply, floating-point math loop (500K), and bubble sort (5K).
 
-| Compiler | Execute (ms) | Compile (ms) | Total (ms) |
-|---|---:|---:|---:|
-| **RCC** | **349** | 1042 | **1391** |
-| TCC 0.9.27 | 400 | 1013 | 1413 |
-| GCC -O0 | 298 | 1021 | 1319 |
-| GCC -O2 | 132 | 1020 | 1152 |
+| Compiler| Execute (ms) | Compile (ms) | Total (ms) |
+|---------|-------------:|-------------:|-----------:|
+| **RCC** |    1009      |     514      |     1523   |
+| TCC     |  **1005**    |   **431**    |     1436   |
+| GCC -O0 |    3012      |     417      |     3429   |
+| GCC -O2 |    1002      |     115      |     1117   |
 
-- **RCC vs TCC execution: 0.87× (13% faster)**
+- **RCC vs TCC vs GCC -O2 execution: same speed**
 - All outputs verified correct against GCC -O2 reference.
 
 ## Key Features
