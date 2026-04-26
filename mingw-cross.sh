@@ -27,5 +27,5 @@ WINEDEBUG=fixme-all
 WINEDLLOVERRIDES="winedbg=d"
 export WINEDEBUG WINEDLLOVERRIDES
 
-wine "$scriptdir/rcc.exe" -S "$input" -o "$TMP_S" &&
-	x86_64-w64-mingw32-gcc "$TMP_S" -o "$output" && rm "$TMP_S"
+wine "$scriptdir/rcc.exe" -S -o "$TMP_S" "$input" &&
+	x86_64-w64-mingw32-gcc -o "$output" "$TMP_S" && rm "$TMP_S"

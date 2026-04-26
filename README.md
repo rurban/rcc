@@ -73,10 +73,10 @@ gcc -std=c11 -O2 -o rcc src/main.c src/lexer.c src/parser.c src/type.c src/codeg
 
 ```bash
 # Compile to executable
-./rcc.exe source.c -o output.exe
+./rcc.exe -o output.exe source.c
 
 # Output assembly
-./rcc.exe source.c -S -o output.S
+./rcc.exe -S -o output.S source.c
 
 # Run tests and benchmark
 make check
