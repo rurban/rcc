@@ -61,4 +61,7 @@ install: $(TARGET)
 clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe
 
+TAGS:
+	etags -a --language=c src/*.c src/*.h
+
 .PHONY: clean test check bench install
