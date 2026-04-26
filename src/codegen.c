@@ -28,6 +28,10 @@ struct FloatLit {
     int size; // 4=float, 8=double, TODO 12|16=long double
 };
 static FloatLit *float_lits;
+#ifdef _WIN32
+static bool win32_alloca_needed;
+static bool fn_uses_alloca;
+#endif
 
 static char *reg64[] = {"r10", "r11", "rbx", "r12", "r13", "r14", "r15", "rsi"};
 static char *reg32[] = {"r10d", "r11d", "ebx", "r12d", "r13d", "r14d", "r15d", "esi"};
@@ -95,6 +99,33 @@ static void emit_cleanup_range(LVar *begin, LVar *end) {
             emit_cleanup_var(var);
     }
 }
+
+#ifdef _WIN32
+/* Other platforms still have it. windows deprecated it.
+   Use a unique name to avoid conflicts with CRT import stubs. */
+static void emit_win32_alloca(void) {
+    printf("\n"
+           "__rcc_alloca:\n"
+           "  pop rdx\n"
+           "  mov rax, rcx\n"
+           "  add rax, 15\n"
+           "  and rax, -16\n"
+           "  jz .Lalloca3\n"
+           ".Lalloca1:\n"
+           "  cmp rax, 4096\n"
+           "  jb .Lalloca2\n"
+           "  test [rsp-4096], rax\n"
+           "  sub rsp, 4096\n"
+           "  sub rax, 4096\n"
+           "  jmp .Lalloca1\n"
+           ".Lalloca2:\n"
+           "  sub rsp, rax\n"
+           "  mov rax, rsp\n"
+           ".Lalloca3:\n"
+           "  push rdx\n"
+           "  ret\n");
+}
+#endif
 
 static int gen_funcall(Node *node, int hidden_ret_reg) {
     Node *argv[64];
@@ -312,7 +343,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
     printf("  mov eax, %d\n", xmm_args);
     if (call_target) {
-        emit_direct_call(call_target);
+#ifdef _WIN32
+        if (strcmp(call_target, "alloca") == 0) {
+            win32_alloca_needed = true;
+            fn_uses_alloca = true;
+            emit_direct_call("__rcc_alloca");
+        } else
+#endif
+            emit_direct_call(call_target);
     } else {
         int callee = gen(node->lhs);
         printf("  call %s\n", reg64[callee]);
@@ -1749,6 +1787,9 @@ void codegen(Program *prog) {
     cg_stream = stdout;
     all_items = prog->items;
     all_strs = prog->strs;
+#ifdef _WIN32
+    win32_alloca_needed = false;
+#endif
     // Assembly header
     printf(".intel_syntax noprefix\n");
 #ifndef _WIN32
@@ -1846,6 +1887,9 @@ void codegen(Program *prog) {
         used_regs = 0;
         ever_used_regs = 0;
         ctrl_depth = 0;
+#ifdef _WIN32
+        fn_uses_alloca = false;
+#endif
 
         // Save params to locals (emitted to body buffer, will be after prologue)
 #ifdef _WIN32
@@ -2206,7 +2250,12 @@ void codegen(Program *prog) {
         }
         if (has_cleanup)
             printf("  mov rax, [rbp-%d]\n", SPILL_R10);
-        printf("  add rsp, %d\n", sub_amount);
+#ifdef _WIN32
+        if (fn_uses_alloca)
+            printf("  lea rsp, [rbp-%d]\n", n_pushes * 8);
+        else
+#endif
+            printf("  add rsp, %d\n", sub_amount);
         for (int j = 5; j >= 0; j--) {
             if (callee_mask & (1 << j))
                 printf("  pop %s\n", reg64[j + 2]);
@@ -2237,6 +2286,11 @@ void codegen(Program *prog) {
                 printf("  .quad %s\n", item->fn->name);
         }
     }
+
+#ifdef _WIN32
+    if (win32_alloca_needed)
+        emit_win32_alloca();
+#endif
 
     // Emit float literal constants after all functions
     if (float_lits) {
