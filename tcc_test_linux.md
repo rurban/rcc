@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     134
- - **Passed**:    127
- - **Failed**:    7
- - **Pass Rate**: 94%
+ - **Passed**:    128
+ - **Failed**:    6
+ - **Pass Rate**: 95%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -107,7 +107,7 @@ Generated: April 2026
 | 119_random_stuff                         | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | PASS         | Output matches                       |
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
-| 128_run_atexit                           | MISMATCH     | Output does not match .expect        |
+| 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | PASS         | Output matches                       |
 | 130_large_argument                       | PASS         | Output matches                       |
 | 131_return_struct_in_reg                 | PASS         | Output matches                       |
