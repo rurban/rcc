@@ -24,7 +24,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc build-essential cppcheck
+          sudo apt-get install -y gcc build-essential libc6-dev cppcheck
           cd tinycc && ./configure && make && sudo make install
           pip install prek
 

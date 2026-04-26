@@ -522,6 +522,7 @@ static char *resolve_include(char *curr_file, char *spec) {
     //fprintf(stderr, "resolve_include: %s\n", spec);
     if (file_exists(spec))
         return canonical_path(spec);
+    //fprintf(stderr, "resolve_include: spec=%s not found\n", spec);
     return NULL;
 }
 

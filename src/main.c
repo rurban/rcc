@@ -219,9 +219,9 @@ int main(int argc, char **argv) {
             snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
         } else {
 #if defined(__APPLE__)
-            snprintf(cmd, sizeof(cmd), GCC " -Wl,-e,main -o %s%s", out_path, libs);
+            snprintf(cmd, sizeof(cmd), GCC " -Wl,-e,main -o %s", out_path);
 #else
-            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s%s", out_path, libs);
+            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
 #endif
         }
         out_paths = reverse(out_paths);
@@ -229,6 +229,8 @@ int main(int argc, char **argv) {
             strncat(cmd, " ", sizeof(cmd) - strlen(cmd));
             strncat(cmd, p->path, sizeof(cmd) - strlen(cmd));
         }
+        if (libs_len)
+            strncat(cmd, libs, sizeof(cmd) - strlen(cmd));
         int status = system(cmd);
         if (status != 0) {
             fprintf(stderr, "rcc: error: backend %s failed with code %d\n", cmd, status);

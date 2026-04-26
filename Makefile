@@ -63,7 +63,7 @@ install: $(TARGET)
 	$(MAKE) RCC_INCDIR=$(DESTDIR)$(INCDIR)
 
 clean:
-	rm -f $(OBJS) $(TARGET) $(TARGET).exe
+	rm -f $(OBJS) $(TARGET) $(TARGET).exe src/sysinc_paths.h
 
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h

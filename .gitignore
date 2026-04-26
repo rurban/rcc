@@ -1,3 +1,4 @@
+src/sysinc_paths.h
 TAGS
 .gdbinit
 *.exe
