@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     134
- - **Passed**:    129
- - **Failed**:    5
- - **Pass Rate**: 96%
+ - **Passed**:    130
+ - **Failed**:    4
+ - **Pass Rate**: 97%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -102,7 +102,7 @@ Generated: April 2026
 | 109_float_struct_calling                 | PASS         | Output matches                       |
 | 110_average                              | PASS         | Output matches                       |
 | 111_conversion                           | PASS         | Output matches                       |
-| 117_builtins                             | COMPILE_FAIL | executable missing                   |
+| 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | PASS         | Output matches                       |
