@@ -116,7 +116,7 @@ make bench
 ## Unix fork
 
 The original windows repo is at https://github.com/DocDamage/realtime-c-compiler with
-[those](tcc_test_report_mingw1.1.md) test results (61/139 passed tcc tests), and [those](bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
+[those](tcc_test_report_mingw1.1.md) test results (61/139 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
 This fork passes now [126/128 tests](tcc_test_linux.md) on linux and [83/100 tests](tcc_test_mingw.md) on windows. macOS linking still in work.
 
