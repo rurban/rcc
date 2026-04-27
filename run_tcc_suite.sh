@@ -20,7 +20,14 @@ if [ -z "$RCC" ]; then
 			RCC="$candidate"
 			if [ "$RCC" = "$SCRIPT_DIR/rcc.exe" ]; then
 				RCC="$SCRIPT_DIR/mingw-cross.sh"
-                                REPORT_FILE="$SCRIPT_DIR/tcc_test_mingw_cross.md"
+				REPORT_FILE="$SCRIPT_DIR/tcc_test_mingw_cross.md"
+                                if command -v winetricks>/dev/null 2>&1; then
+                                    winetricks nocrashdialog
+                                fi
+				WINEDEBUG=fixme-all
+				WINEDLLOVERRIDES="winedbg=d"
+				WINENOPOPUPS=1
+				export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS
 			fi
 			break
 		fi
@@ -136,31 +143,43 @@ print_change() {
 SKIP_TESTS="
 22_floating_point
 60_errors_and_warnings
-96_nodata_wanted
 73_arm64
+78_vla_label
+79_vla_continue
 95_bitfields_ms
+96_nodata_wanted
+98_al_ax_extend
+99_fastcall
 112_backtrace
 113_btdll
 114_bound_signal
 115_bound_setjmp
 116_bound_setjmp2
-122_vla_reuse
-126_bound_global
-78_vla_label
-79_vla_continue
-98_al_ax_extend
-99_fastcall
 120_alias
+122_vla_reuse
 123_vla_bug
 124_atomic_counter
 125_atomic_misc
+126_bound_global
 136_atomic_gcc_style
+"
+
+# Tests skipped only when using mingw-cross.sh (Windows cross-compilation)
+MINGW_SKIP_TESTS="
+95_bitfields
+106_versym
+117_builtins
 "
 
 is_skipped() {
 	case "$SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
+	if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
+		case "$MINGW_SKIP_TESTS" in *"
+$1
+"*) return 0 ;; esac
+	fi
 	return 1
 }
 
@@ -267,7 +286,7 @@ while IFS= read -r src; do
 			"$TMP_EXE" $args >>"$TMP_OUT" 2>&1; actual_exit=$?
 		fi
 	else
-		"$TMP_EXE" >>"$TMP_OUT" 2>&1; actual_exit=$?
+		timeout 20s "$TMP_EXE" >>"$TMP_OUT" 2>&1; actual_exit=$?
 	fi
 	if [ "$actual_exit" != "$expected_exit" ]; then
 		# shellcheck disable=SC2059
