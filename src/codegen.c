@@ -535,8 +535,11 @@ static int gen_addr(Node *node) {
         int r = alloc_reg();
         if (node->var->is_local)
             printf("  lea %s, [rbp-%d]\n", reg64[r], node->var->offset);
-        else
+        else {
+            if (node->var->is_weak)
+                printf(".weak %s\n", var_label(node->var));
             printf("  lea %s, [rip + %s]\n", reg64[r], var_label(node->var));
+        }
         return r;
     }
     case ND_DEREF:
@@ -657,6 +660,8 @@ static int gen(Node *node) {
             else
                 printf("  lea %s, [rip + %s]\n", reg64[r], label);
         } else if (!node->var->is_local && node->var->is_function) {
+            if (node->var->is_weak)
+                printf(".weak %s\n", label);
             printf("  lea %s, [rip + %s]\n", reg64[r], label);
         } else if (is_flonum(node->var->ty)) {
 #ifndef _WIN32
@@ -1910,6 +1915,10 @@ void codegen(Program *prog) {
         for (LVar *var = prog->globals; var; var = var->next) {
             if (var->is_extern)
                 continue;
+            // Skip function symbols - they're emitted as code in the text section
+            // (or not at all for inline functions without body)
+            if (var->is_function)
+                continue;
             char *label = var->asm_name ? var->asm_name : var->name;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
@@ -2129,13 +2138,19 @@ void codegen(Program *prog) {
         // Fix 16-byte alignment
         if ((push_bytes + sub_amount) % 16 != 0) sub_amount += 8;
 
-        // Emit prologue - handle is_weak for __attribute__((weak)) and inline
+        // Emit prologue - handle is_weak, inline, and static linkage.
+        // Pure inline (no extern) functions are not exported.
+        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern);
         if (fn->is_weak) {
             printf(".weak %s\n", fn->name);
-        } else if (!fn->is_static) {
+        } else if (fn_exported) {
             printf(".globl %s\n", fn->name);
         }
-        printf("%s = %s\n", fn->name, fn->asm_name ? fn->asm_name : fn->name);
+        // Only emit the public-name alias when the function is exported or weak.
+        // Pure-inline/static functions must not expose a visible symbol so that
+        // weak references to them from other TUs resolve to NULL.
+        if (fn->asm_name && (fn_exported || fn->is_weak))
+            printf("%s = %s\n", fn->name, fn->asm_name);
         printf("%s:\n", fn->asm_name ? fn->asm_name : fn->name);
         printf("  push rbp\n");
         printf("  mov rbp, rsp\n");

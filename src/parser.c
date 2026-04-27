@@ -2218,6 +2218,10 @@ static Node *declaration(Token **rest, Token *tok) {
                 fn_sym = new_var(name, pointer_to(fty), false);
                 fn_sym->is_extern = true;
                 fn_sym->is_function = true;
+                fn_sym->is_weak = attr.is_weak;
+            } else {
+                if (attr.is_weak)
+                    fn_sym->is_weak = true;
             }
             // Create local entry so this function declaration shadows any local variable
             LVar *lvar = arena_alloc(sizeof(LVar));
@@ -2226,6 +2230,7 @@ static Node *declaration(Token **rest, Token *tok) {
             lvar->is_local = false;
             lvar->is_extern = true;
             lvar->is_function = true;
+            lvar->is_weak = attr.is_weak;
             if (pending_asm_name)
                 lvar->asm_name = pending_asm_name;
             lvar->next = locals;
@@ -3784,10 +3789,15 @@ Program *parse(Token *tok) {
             LVar *existing = find_global_name(name);
             if (!existing) {
                 LVar *fn_sym = new_var(name, fn_symbol_ty, false);
-                fn_sym->is_extern = true;
+                fn_sym->is_extern = attr.is_extern || (!attr.is_inline && !attr.is_static);
                 fn_sym->is_function = true;
                 fn_sym->is_inline = attr.is_inline;
                 fn_sym->is_weak = attr.is_weak;
+                fn_sym->is_static = attr.is_static;
+                // A declaration without inline (and without static) makes the
+                // function an external symbol even if a prior inline def exists.
+                if (!attr.is_inline && !attr.is_static)
+                    fn_sym->has_init = true; // reuse has_init as "has non-inline decl"
             } else {
                 existing->ty = fn_symbol_ty;
                 // Update flags on redeclaration
@@ -3795,6 +3805,12 @@ Program *parse(Token *tok) {
                     existing->is_inline = true;
                 if (attr.is_weak)
                     existing->is_weak = true;
+                if (attr.is_static)
+                    existing->is_static = true;
+                if (attr.is_extern)
+                    existing->is_extern = true;
+                if (!attr.is_inline && !attr.is_static)
+                    existing->has_init = true; // non-inline extern decl seen
             }
 
             if (equal(tok, ";")) {
@@ -3830,10 +3846,15 @@ Program *parse(Token *tok) {
             fn->is_variadic = is_variadic;
             fn->is_constructor = pending_constructor;
             fn->is_destructor = pending_destructor;
+            LVar *fn_sym2 = find_global_name(name);
             fn->is_inline = attr.is_inline;
-            fn->is_static = attr.is_static;
-            fn->is_extern = attr.is_extern;
-            fn->is_weak = attr.is_weak;
+            // is_static is sticky: if any decl was static the fn is static
+            fn->is_static = attr.is_static || (fn_sym2 && fn_sym2->is_static);
+            // is_extern: explicit extern on this def, OR any non-inline extern
+            // declaration seen (has_init flag). Note: prior extern-inline decl
+            // does NOT make this function exported - only explicit extern does.
+            fn->is_extern = attr.is_extern || (fn_sym2 && fn_sym2->has_init);
+            fn->is_weak = attr.is_weak || (fn_sym2 && fn_sym2->is_weak);
             pending_constructor = false;
             pending_destructor = false;
             pending_asm_name = NULL;
