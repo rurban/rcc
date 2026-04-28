@@ -2,8 +2,8 @@
 Generated: April 2026
 
 ## Summary
- - **Total**:     135
- - **Passed**:    135
+ - **Total**:     136
+ - **Passed**:    136
  - **Failed**:    0
  - **Pass Rate**: 100%
 
@@ -94,7 +94,7 @@ Generated: April 2026
 | 93_integer_promotion                     | PASS         | Output matches                       |
 | 94_generic                               | PASS         | Output matches                       |
 | 95_bitfields                             | PASS         | Output matches                       |
-| 95_bitfields_ms                          | SKIP         | Skipped                              |
+| 95_bitfields_ms                          | PASS         | Output matches                       |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
 | 97_utf8_string_literal                   | PASS         | Output matches                       |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |

@@ -145,7 +145,6 @@ SKIP_TESTS="
 73_arm64
 78_vla_label
 79_vla_continue
-95_bitfields_ms
 96_nodata_wanted
 98_al_ax_extend
 99_fastcall
@@ -165,14 +164,13 @@ SKIP_TESTS="
 
 # Tests skipped only when using mingw-cross.sh (Windows cross-compilation)
 MINGW_SKIP_TESTS="
-95_bitfields
 "
 
 is_skipped() {
 	# 95_bitfields_ms works on mingw-cross but not on native Linux
-	if [ "$1" = "95_bitfields_ms" ] && [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-		return 1
-	fi
+	#if [ "$1" = "95_bitfields_ms" ] && [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
+	#	return 1
+	#fi
 	case "$SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
@@ -192,6 +190,14 @@ while IFS= read -r src; do
             *+*) p_src="$src" # use as first src arg
                  continue
                  ;;
+            95_bitfields_ms.c)
+                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] || \
+                p_src="-mms-bitfields"
+                ;;
+            95_bitfields.c)
+                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] && \
+                p_src="-mno-ms-bitfields"
+                ;;
         esac
 
 	base="${fname%.c}"
@@ -451,7 +457,7 @@ fi
 printf "Report saved to %s\n" "$REPORT_FILE"
 
 if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 134 ]
+    [ "$passed" -ge 136 ]
 else
-    [ "$passed" -ge 135 ]
+    [ "$passed" -ge 136 ]
 fi

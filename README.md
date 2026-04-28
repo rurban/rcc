@@ -55,13 +55,14 @@ Linux:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, enum bitfields, old K&R function definitions.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions.
 
-Not yet: VLA's, ms bitfields, GNU alias, atomics.
+Not yet: VLA's, GNU alias, atomics.
 
 Top-level `__asm__("...")` statements are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
-The tcc suite has 135/135 test passed (100%).
+The tcc suite has 136/136 test passed (100%) on linux and mingw-cross.
+Three tcc bugs have been detected.
 
 ## Build
 
@@ -85,16 +86,18 @@ make bench
 
 ## Options
 
-    -I path       add include path
-    -Lpath        add linker path
-    -lname        add lib
-    -E            preprocessor-only
-    -S            assemble-only
-    -c            compile-only
-    -o file       set output filename
-    -O0           skip peephole optimizer
-    -Dname[=val]  define a macro value
-    -Uname        undefine a macro value
+    -I path            add include path
+    -Lpath             add linker path
+    -lname             add lib
+    -E                 preprocessor-only
+    -S                 assemble-only
+    -c                 compile-only
+    -o file            set output filename
+    -O0                skip peephole optimizer
+    -mms-bitfields     use MSVC bitfields (default on Windows)
+    -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
+    -Dname[=val]       define a macro value
+    -Uname             undefine a macro value
 
 ## Project Structure
 
@@ -118,7 +121,7 @@ make bench
 The original windows repo is at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/139 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes now [135/135 tests](tcc_test_linux.md) on linux, [134/135 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [100/104 tests](tcc_test_mingw.md) on windows native. macOS linking still in work, but no arm64 port planned yet.
+This fork passes now [136/136 tests](tcc_test_linux.md) on linux, [136/136 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [100/104 tests](tcc_test_mingw.md) on windows native. macOS linking still in work, but no arm64 port planned yet.
 
 ## License
 

@@ -66,11 +66,20 @@ void help(void) {
            "-c            compile-only\n"
            "-o file       set output filename\n"
            "-O0           skip peephole optimizer\n"
+           "-mms-bitfields     use MSVC bitfield layout by default\n"
+           "-mno-ms-bitfields  use GCC bitfield layout by default\n"
            "-Dname[=val]  define a macro value\n"
            "-Uname        undefine a macro value\n");
 }
 
 bool opt_O0 = false;
+bool opt_ms_bitfields =
+#ifdef _WIN32
+    true;
+#else
+    false;
+#endif
+;
 
 int main(int argc, char **argv) {
 #ifndef __x86_64__
@@ -113,6 +122,10 @@ int main(int argc, char **argv) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
             opt_O0 = true;
+        } else if (!strcmp(argv[i], "-mms-bitfields")) {
+            opt_ms_bitfields = true;
+        } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
+            opt_ms_bitfields = false;
         } else if (!strcmp(argv[i], "-o")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -o\n");

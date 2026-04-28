@@ -1290,7 +1290,8 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                 if (conds) {
                     // If no branch taken yet, evaluate the condition
                     if (!conds->branch_taken) {
-                        conds->active = eval_condition(trim_copy(s, end - s), filename);
+                        conds->active = conds->parent_active &&
+                            eval_condition(trim_copy(s, end - s), filename);
                         if (conds->active)
                             conds->branch_taken = true;
                     } else {

@@ -11,6 +11,7 @@ struct VarAttr {
     bool is_inline;
     bool is_weak;
     bool has_type;
+    unsigned char bitfield_mode;
 };
 
 struct TagScope {
@@ -596,6 +597,28 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equal(tok, "ms_struct")) {
+                    if (attr)
+                        attr->bitfield_mode = BF_MODE_MS;
+                    tok = tok->next;
+                    if (equal(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equal(tok, "gcc_struct")) {
+                    if (attr)
+                        attr->bitfield_mode = BF_MODE_GCC;
+                    tok = tok->next;
+                    if (equal(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equal(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equal(tok, "constructor") || equal(tok, "__constructor__")) {
                     pending_constructor = true;
                     tok = tok->next;
@@ -967,7 +990,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     int struct_attr_align = 0;
-    tok = read_type_attrs(tok, &struct_attr_align, NULL);
+    VarAttr struct_attr = {};
+    tok = read_type_attrs(tok, &struct_attr_align, &struct_attr);
     char *type_cleanup = pending_cleanup_func;
     pending_cleanup_func = NULL;
     pending_cleanup_tok = NULL;
@@ -994,6 +1018,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             ty->kind = is_union ? TY_UNION : TY_STRUCT;
             ty->size = 0;
             ty->align = 1;
+            ty->bitfield_mode = struct_attr.bitfield_mode;
             push_tag(tag_tok->name, ty);
         }
     } else {
@@ -1001,7 +1026,11 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         ty->kind = is_union ? TY_UNION : TY_STRUCT;
         ty->size = 0;
         ty->align = 1;
+        ty->bitfield_mode = struct_attr.bitfield_mode;
     }
+
+    if (struct_attr.bitfield_mode)
+        ty->bitfield_mode = struct_attr.bitfield_mode;
 
     if (!equal(tok, "{")) {
         *rest = tok;
@@ -1015,9 +1044,19 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int max_size = 0;
     int max_align = 1;
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
-    // int bf_unit_size = 0; // size of current bitfield storage unit (0 = none active)
-    // int bf_unit_offset = 0; // byte offset of current bitfield storage unit
     int struct_pack = pack_align; // capture #pragma pack value at struct start
+    bool use_ms_bitfields = false;
+    if (!is_union) {
+        if (ty->bitfield_mode == BF_MODE_MS)
+            use_ms_bitfields = true;
+        else if (ty->bitfield_mode == BF_MODE_GCC)
+            use_ms_bitfields = false;
+        else
+            use_ms_bitfields = opt_ms_bitfields;
+    }
+    int ms_run_base = 0;
+    TypeKind ms_prev_kind = TY_FUNC;
+    int ms_prev_bit_width = 0;
 
     while (!equal(tok, "}")) {
         VarAttr attr = {};
@@ -1107,7 +1146,26 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                 if (!is_union) {
                     int unit = mem_ty->size;
                     int unit_bits = unit * 8;
-                    if (bit_width == 0) {
+                    int align = mem_ty->align;
+                    if (struct_pack > 0 && struct_pack < align)
+                        align = struct_pack;
+                    if (use_ms_bitfields) {
+                        TypeKind kind = mem_ty->kind;
+                        bool new_run = bit_pos + bit_width > unit_bits ||
+                            ((bit_width > 0) == (kind != ms_prev_kind));
+                        if (new_run) {
+                            offset = align_to(offset, align);
+                            ms_run_base = offset;
+                            bit_pos = 0;
+                            if (bit_width > 0 || ms_prev_bit_width > 0)
+                                offset += unit;
+                        }
+                        ms_prev_kind = kind;
+                        ms_prev_bit_width = bit_width;
+                        bit_pos += bit_width;
+                        if (bit_width > 0 && align > max_align)
+                            max_align = align;
+                    } else if (bit_width == 0) {
                         // :0 always advances to the next T-aligned boundary
                         // (uses declared type size regardless of struct_pack)
                         int unit_base = (bit_pos / unit_bits) * unit;
@@ -1153,15 +1211,34 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (bit_width > 0) {
                 int unit = mem_ty->size; // storage unit size in bytes
                 int unit_bits = unit * 8;
+                int align = mem_ty->align;
+                if (struct_pack > 0 && struct_pack < align)
+                    align = struct_pack;
 
                 mem->ty = mem_ty;
 
                 if (is_union) {
                     mem->offset = 0;
                     mem->bit_offset = 0;
-                    // bf_unit_size = unit;
-                    // bf_unit_offset = 0;
                     if (max_size < unit) max_size = unit;
+                } else if (use_ms_bitfields) {
+                    TypeKind kind = mem_ty->kind;
+                    bool new_run = bit_pos + bit_width > unit_bits ||
+                        ((bit_width > 0) == (kind != ms_prev_kind));
+                    if (new_run) {
+                        offset = align_to(offset, align);
+                        ms_run_base = offset;
+                        bit_pos = 0;
+                        if (bit_width > 0 || ms_prev_bit_width > 0)
+                            offset += unit;
+                    }
+                    mem->offset = ms_run_base;
+                    mem->bit_offset = bit_pos;
+                    ms_prev_kind = kind;
+                    ms_prev_bit_width = bit_width;
+                    bit_pos += bit_width;
+                    if (align > max_align)
+                        max_align = align;
                 } else if (struct_pack > 0) {
                     // Dense packing (#pragma pack): place at current bit cursor,
                     // but if the member has an explicit alignment attribute
@@ -1178,8 +1255,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     int bit_off = bit_pos % 8;
                     mem->offset = byte_pos;
                     mem->bit_offset = bit_off;
-                    // bf_unit_size = unit;
-                    // bf_unit_offset = byte_pos;
                     // If field crosses its declared type boundary, record larger load size
                     int needed = (bit_off + bit_width + 7) / 8;
                     if (needed > unit) {
@@ -1225,7 +1300,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     max_align = unit;
             } else {
                 // Normal (non-bitfield) member
-                // bf_unit_size = 0; // end any bitfield packing run
                 mem->ty = mem_ty;
                 mem->bit_offset = 0;
                 if (is_union) {
@@ -1240,6 +1314,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     mem->offset = offset;
                     offset += mem_ty->size;
                     bit_pos = offset * 8;
+                    ms_prev_kind = TY_FUNC;
+                    ms_prev_bit_width = 0;
                     if (max_align < a)
                         max_align = a;
                 }
