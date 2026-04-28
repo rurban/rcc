@@ -124,9 +124,12 @@ foreach ($file in $TestFiles) {
         $extraFlags = "-D__TINYC__"
     }
 
-    # 1. Compilation
+    # 1. Compilation - capture stderr (warnings) to mirror Linux runner behaviour
     $compileStart = Get-Date
-    $process = Start-Process -FilePath $RCC -ArgumentList "$extraFlags $src", "-o", $exe -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+    $tmpErr = [System.IO.Path]::GetTempFileName()
+    $process = Start-Process -FilePath $RCC -ArgumentList "$extraFlags $src", "-o", $exe -PassThru -Wait -RedirectStandardError $tmpErr -ErrorAction SilentlyContinue
+    $compileStdErr = if (Test-Path $tmpErr) { Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue } else { $null }
+    Remove-Item $tmpErr -Force -ErrorAction SilentlyContinue
     $compileEnd = Get-Date
 
     if ($inScopesDir) {
@@ -172,6 +175,8 @@ foreach ($file in $TestFiles) {
 
     try {
         $actualOutput = & $exe @ExtraArgs 2>&1 | Out-String
+        # Prepend compile-time warnings (stderr) so output matches Linux runner format
+        if ($compileStdErr) { $actualOutput = $compileStdErr + $actualOutput }
         $actualOutput = $actualOutput.Trim()
     } catch {
         if ($inGrepDir) { Pop-Location }
@@ -273,7 +278,7 @@ if (-not $report.EndsWith("`n")) { $report += "`n" }
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
 
-if ($Passed -ge 97) {
+if ($Passed -ge 99) {
     exit 0
 } else {
     exit 1

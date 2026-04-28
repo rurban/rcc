@@ -451,7 +451,7 @@ fi
 printf "Report saved to %s\n" "$REPORT_FILE"
 
 if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 133 ]
+    [ "$passed" -ge 134 ]
 else
     [ "$passed" -ge 135 ]
 fi
