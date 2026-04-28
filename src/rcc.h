@@ -158,6 +158,7 @@ extern Type *ty_ldouble;
 extern bool opt_O0;
 extern bool opt_ms_bitfields;
 extern int pack_align;
+extern bool sse42_available;
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);

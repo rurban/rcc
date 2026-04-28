@@ -2,8 +2,8 @@
 Generated: April 2026
 
 ## Summary
- - **Total**:     136
- - **Passed**:    136
+ - **Total**:     137
+ - **Passed**:    137
  - **Failed**:    0
  - **Pass Rate**: 100%
 
@@ -138,6 +138,7 @@ Generated: April 2026
 | 136_atomic_gcc_style                     | SKIP         | Skipped                              |
 | 137_funcall_struct_args                  | PASS         | Output matches                       |
 | test_bitfields                           | PASS         | exit=0                               |
+| test_builtins                            | PASS         | exit=0                               |
 | test_elif2                               | PASS         | exit=0                               |
 | test_elif_simple                         | PASS         | exit=0                               |
 | test_err                                 | PASS         | compile error as expected            |

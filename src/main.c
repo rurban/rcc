@@ -81,11 +81,17 @@ bool opt_ms_bitfields =
 #endif
 ;
 
+bool sse42_available = false;
+
 int main(int argc, char **argv) {
 #ifndef __x86_64__
     fprintf(stderr, "rcc: unsupported target: only x86_64 is supported\n");
     return 1;
 #endif
+
+    // SSE4.2 runtime detection
+    sse42_available = __builtin_cpu_supports("sse4.2");
+
     init_builtins();
     char *out_path =
 #ifdef _WIN32
@@ -242,8 +248,8 @@ int main(int argc, char **argv) {
         }
         out_paths = reverse(out_paths);
         for (OutPath *p = out_paths; p; p = p->next) {
-            strncat(cmd, " ", sizeof(cmd) - strlen(cmd));
-            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd));
+            strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
+            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
         }
 
 #if defined(_WIN32) || defined(__MINGW32__)
@@ -260,7 +266,7 @@ int main(int argc, char **argv) {
             snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.o");
 #endif
         if (libs_len)
-            strncat(cmd, libs, sizeof(cmd) - strlen(cmd));
+            strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
 
         int status = system(cmd);
         if (status != 0) {

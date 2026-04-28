@@ -156,6 +156,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
         node->lhs->var && node->lhs->var->is_function)
         call_target = var_label(node->lhs->var);
+
 #ifdef _WIN32
     char *argreg32[] = {"ecx", "edx", "r8d", "r9d"};
     char *argreg64[] = {"rcx", "rdx", "r8", "r9"};
@@ -172,6 +173,197 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #endif
 
     bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION);
+
+    // Inline expansion for common libc builtins
+    if (call_target && !has_hidden_retbuf) {
+        bool is_memset = strcmp(call_target, "memset") == 0 ||
+            strcmp(call_target, "__builtin_memset") == 0;
+        bool is_memcpy = strcmp(call_target, "memcpy") == 0 ||
+            strcmp(call_target, "__builtin_memcpy") == 0;
+        bool is_memcmp = strcmp(call_target, "memcmp") == 0 ||
+            strcmp(call_target, "__builtin_memcmp") == 0;
+        bool is_strlen = strcmp(call_target, "strlen") == 0 ||
+            strcmp(call_target, "__builtin_strlen") == 0;
+        bool is_strcmp = strcmp(call_target, "strcmp") == 0 ||
+            strcmp(call_target, "__builtin_strcmp") == 0;
+        bool is_strchr = strcmp(call_target, "strchr") == 0 ||
+            strcmp(call_target, "__builtin_strchr") == 0;
+
+        if (is_memset || is_memcpy) {
+            Node *dst = node->args;
+            Node *v2 = dst ? dst->next : NULL;
+            Node *len = v2 ? v2->next : NULL;
+            if (dst && v2 && len && !len->next) {
+                int r = alloc_reg();
+                int dst_r = gen(dst);
+                int v2_r = gen(v2);
+                int len_r = gen(len);
+                printf("  mov %s, %s\n", reg64[r], reg64[dst_r]);
+
+                printf("  cld\n");
+                printf("  push rdi\n");
+                if (is_memcpy) printf("  push rsi\n");
+                printf("  push rcx\n");
+                printf("  mov rdi, %s\n", reg64[dst_r]);
+                printf("  mov rcx, %s\n", reg64[len_r]);
+                if (is_memset) {
+                    printf("  movzx eax, %s\n", reg8[v2_r]);
+                    printf("  rep stosb\n");
+                } else {
+                    printf("  mov rsi, %s\n", reg64[v2_r]);
+                    printf("  rep movsb\n");
+                }
+                printf("  pop rcx\n");
+                if (is_memcpy) printf("  pop rsi\n");
+                printf("  pop rdi\n");
+
+                free_reg(dst_r);
+                free_reg(v2_r);
+                free_reg(len_r);
+
+                return r;
+            }
+        }
+
+        if (is_memcmp) {
+            Node *src1 = node->args;
+            Node *src2 = src1 ? src1->next : NULL;
+            Node *len = src2 ? src2->next : NULL;
+            if (src1 && src2 && len && !len->next) {
+                int s1_r = gen(src1);
+                int s2_r = gen(src2);
+                int len_r = gen(len);
+
+                printf("  cld\n");
+                printf("  push rdi\n");
+                printf("  push rsi\n");
+                printf("  push rcx\n");
+                printf("  mov rdi, %s\n", reg64[s1_r]);
+                printf("  mov rsi, %s\n", reg64[s2_r]);
+                printf("  mov rcx, %s\n", reg64[len_r]);
+                printf("  repe cmpsb\n");
+                printf("  jne .L.memcmp_diff.%d\n", ++rcc_label_count);
+                printf("  xor eax, eax\n");
+                printf("  jmp .L.memcmp_end.%d\n", rcc_label_count);
+                printf(".L.memcmp_diff.%d:\n", rcc_label_count);
+                printf("  movsx eax, byte ptr [rdi-1]\n");
+                printf("  movsx ecx, byte ptr [rsi-1]\n");
+                printf("  sub eax, ecx\n");
+                printf(".L.memcmp_end.%d:\n", rcc_label_count);
+                printf("  pop rcx\n");
+                printf("  pop rsi\n");
+                printf("  pop rdi\n");
+
+                free_reg(s1_r);
+                free_reg(s2_r);
+                free_reg(len_r);
+
+                int r = alloc_reg();
+                printf("  mov %s, eax\n", reg32[r]);
+                return r;
+            }
+        }
+
+        if (is_strlen) {
+            Node *str = node->args;
+            if (str && !str->next) {
+                int str_r = gen(str);
+
+                printf("  cld\n");
+                printf("  push rdi\n");
+                printf("  push rcx\n");
+                printf("  mov rdi, %s\n", reg64[str_r]);
+                printf("  xor al, al\n");
+                printf("  mov rcx, -1\n");
+                printf("  repne scasb\n");
+                printf("  not rcx\n");
+                printf("  dec rcx\n");
+                printf("  mov rax, rcx\n");
+                printf("  pop rcx\n");
+                printf("  pop rdi\n");
+
+                free_reg(str_r);
+
+                int r = alloc_reg();
+                printf("  mov %s, rax\n", reg64[r]);
+                return r;
+            }
+        }
+
+        if (is_strcmp) {
+            Node *s1 = node->args;
+            Node *s2 = s1 ? s1->next : NULL;
+            if (s1 && s2 && !s2->next) {
+                int r = gen(s1);
+                int r2 = gen(s2);
+                int cl = ++rcc_label_count;
+                printf("  push rdi\n");
+                printf("  push rsi\n");
+                printf("  mov rdi, %s\n", reg64[r]);
+                printf("  mov rsi, %s\n", reg64[r2]);
+                printf(".L.strcmp_loop.%d:\n", cl);
+                printf("  mov al, byte ptr [rdi]\n");
+                printf("  cmp al, byte ptr [rsi]\n");
+                printf("  jne .L.strcmp_diff.%d\n", cl);
+                printf("  test al, al\n");
+                printf("  jz .L.strcmp_eq.%d\n", cl);
+                printf("  inc rdi\n");
+                printf("  inc rsi\n");
+                printf("  jmp .L.strcmp_loop.%d\n", cl);
+                printf(".L.strcmp_diff.%d:\n", cl);
+                printf("  movzx eax, al\n");
+                printf("  movzx ecx, byte ptr [rsi]\n");
+                printf("  sub eax, ecx\n");
+                printf("  jmp .L.strcmp_end.%d\n", cl);
+                printf(".L.strcmp_eq.%d:\n", cl);
+                printf("  xor eax, eax\n");
+                printf(".L.strcmp_end.%d:\n", cl);
+                printf(".L.strcmp_end.%d:\n", cl);
+                printf("  pop rsi\n");
+                printf("  pop rdi\n");
+                free_reg(r);
+                free_reg(r2);
+                int ret = alloc_reg();
+                printf("  mov %s, eax\n", reg32[ret]);
+                return ret;
+            }
+        }
+
+        if (is_strchr) {
+            Node *s = node->args;
+            Node *c = s ? s->next : NULL;
+            if (s && c && !c->next) {
+                int sr = gen(s);
+                int cr = gen(c);
+                int cl = ++rcc_label_count;
+                printf("  push rdi\n");
+                printf("  push rcx\n");
+                printf("  mov rdi, %s\n", reg64[sr]);
+                printf("  movzx eax, %s\n", reg8[cr]);
+                printf(".L.strchr_loop.%d:\n", cl);
+                printf("  cmp byte ptr [rdi], al\n");
+                printf("  je .L.strchr_found.%d\n", cl);
+                printf("  cmp byte ptr [rdi], 0\n");
+                printf("  je .L.strchr_null.%d\n", cl);
+                printf("  inc rdi\n");
+                printf("  jmp .L.strchr_loop.%d\n", cl);
+                printf(".L.strchr_found.%d:\n", cl);
+                printf("  mov rax, rdi\n");
+                printf("  jmp .L.strchr_end.%d\n", cl);
+                printf(".L.strchr_null.%d:\n", cl);
+                printf("  xor eax, eax\n");
+                printf(".L.strchr_end.%d:\n", cl);
+                printf("  pop rcx\n");
+                printf("  pop rdi\n");
+                free_reg(sr);
+                free_reg(cr);
+                int ret = alloc_reg();
+                printf("  mov %s, rax\n", reg64[ret]);
+                return ret;
+            }
+        }
+    }
+
 #ifdef _WIN32
     int fixed_reg_args = nargs + (has_hidden_retbuf ? 1 : 0);
     int stack_args = fixed_reg_args > max_reg_args ? fixed_reg_args - max_reg_args : 0;
