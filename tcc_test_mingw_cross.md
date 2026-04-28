@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     135
- - **Passed**:    128
- - **Failed**:    7
- - **Pass Rate**: 94%
+ - **Passed**:    130
+ - **Failed**:    5
+ - **Pass Rate**: 96%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -105,10 +105,10 @@ Generated: April 2026
 | 103_implicit_memmove                     | PASS         | Output matches                       |
 | 104_inline                               | PASS         | Output matches                       |
 | 105_local_extern                         | PASS         | Output matches                       |
-| 106_versym                               | COMPILE_FAIL | rcc returned non-zero                |
+| 106_versym                               | EXEC_FAIL    | non-zero exit                        |
 | 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | PASS         | Output matches                       |
-| 109_float_struct_calling                 | MISMATCH     | Output does not match .expect        |
+| 109_float_struct_calling                 | PASS         | Output matches                       |
 | 110_average                              | PASS         | Output matches                       |
 | 111_conversion                           | PASS         | Output matches                       |
 | 112_backtrace                            | SKIP         | Skipped                              |
@@ -129,7 +129,7 @@ Generated: April 2026
 | 127_asm_goto                             | PASS         | Output matches                       |
 | 128_run_atexit                           | COMPILE_FAIL | executable missing                   |
 | 129_scopes                               | COMPILE_FAIL | rcc returned non-zero                |
-| 130_large_argument                       | MISMATCH     | Output does not match .expect        |
+| 130_large_argument                       | PASS         | Output matches                       |
 | 131_return_struct_in_reg                 | PASS         | Output matches                       |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | PASS         | Output matches                       |

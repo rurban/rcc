@@ -227,7 +227,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #ifdef _WIN32
     int reg_nargs = nargs < max_reg_args - (has_hidden_retbuf ? 1 : 0) ? nargs : max_reg_args - (has_hidden_retbuf ? 1 : 0);
     for (int i = 0; i < reg_nargs; i++) {
-        arg_regs[i] = gen(argv[i]);
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+            arg_regs[i] = gen_addr(argv[i]);
+        else
+            arg_regs[i] = gen(argv[i]);
         arg_sizes[i] = argv[i]->ty->size;
         arg_is_float[i] = is_flonum(argv[i]->ty);
     }
@@ -2092,6 +2095,7 @@ void codegen(Program *prog) {
         char *param_regs8[] = {"cl", "dl", "r8b", "r9b"};
         char *param_xmm[] = {"xmm0", "xmm1", "xmm2", "xmm3"};
         int max_param_regs = 4;
+        int stack_param_index = 0;
 #else
         char *param_regs64[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
         char *param_regs32[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
@@ -2121,8 +2125,43 @@ void codegen(Program *prog) {
                     : var->ty->size == 2        ? param_regs16[param_index]
                     : var->ty->size <= 4        ? param_regs32[param_index]
                                                 : param_regs64[param_index];
-                printf("  mov [rbp-%d], %s\n", var->offset, preg);
+                // Structs > 8 bytes are passed by pointer; copy to local stack
+                if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
+                    int c = ++rcc_label_count;
+                    printf("  mov r11, %s\n", preg);
+                    printf("  mov rcx, %d\n", var->ty->size);
+                    printf(".L.pcopy.%d:\n", c);
+                    printf("  cmp rcx, 0\n");
+                    printf("  je .L.pcopy_end.%d\n", c);
+                    printf("  mov al, byte ptr [r11 + rcx - 1]\n");
+                    printf("  mov byte ptr [rbp-%d + rcx - 1], al\n", var->offset);
+                    printf("  sub rcx, 1\n");
+                    printf("  jmp .L.pcopy.%d\n", c);
+                    printf(".L.pcopy_end.%d:\n", c);
+                } else {
+                    printf("  mov [rbp-%d], %s\n", var->offset, preg);
+                }
                 param_index++;
+            } else {
+                // Stack argument on Windows (shadow space = 32 bytes)
+                int stack_off = 48 + stack_param_index * 8;
+                if (is_flonum(var->ty)) {
+                    if (var->ty->size == 4) {
+                        printf("  movss xmm0, dword ptr [rbp+%d]\n", stack_off);
+                        printf("  movss dword ptr [rbp-%d], xmm0\n", var->offset);
+                    } else {
+                        printf("  movsd xmm0, qword ptr [rbp+%d]\n", stack_off);
+                        printf("  movsd qword ptr [rbp-%d], xmm0\n", var->offset);
+                    }
+                } else {
+                    char *tmpreg = var->ty->size == 1 ? "al"
+                        : var->ty->size == 2          ? "ax"
+                        : var->ty->size <= 4          ? "eax"
+                                                      : "rax";
+                    printf("  mov %s, [rbp+%d]\n", tmpreg, stack_off);
+                    printf("  mov [rbp-%d], %s\n", var->offset, tmpreg);
+                }
+                stack_param_index++;
             }
 #else
             if (is_flonum(var->ty)) {

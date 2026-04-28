@@ -38,6 +38,10 @@ src/preprocess.o: src/preprocess.c src/sysinc_paths.h
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+compile_commands.json: $(SRCS)
+	make clean
+	bear -- make
+
 ifeq ($(OS),Windows_NT)
 TEST_RUNNER = powershell -ExecutionPolicy Bypass -File run_tcc_suite.ps1
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
