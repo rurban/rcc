@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 04/28/2026 11:18:19
+Generated on: 04/28/2026 11:42:37
 
 ## Summary
 - **Total Tests**: 104
-- **Passed**: 93
-- **Failed**: 11
-- **Pass Rate**: 89.42%
+- **Passed**: 96
+- **Failed**: 8
+- **Pass Rate**: 92.31%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -13,7 +13,7 @@ Generated on: 04/28/2026 11:18:19
 | 00_assignment | PASS | Output matches |
 | 01_comment | PASS | Output matches |
 | 02_printf | PASS | Output matches |
-| 03_struct | MISMATCH | Output does not match .expect |
+| 03_struct | PASS | Output matches |
 | 04_for | PASS | Output matches |
 | 05_array | PASS | Output matches |
 | 06_case | PASS | Output matches |
@@ -69,7 +69,7 @@ Generated on: 04/28/2026 11:18:19
 | 61_integers | PASS | Output matches |
 | 64_macro_nesting | PASS | Output matches |
 | 67_macro_concat | PASS | Output matches |
-| 70_floating_point_literals | MISMATCH | Output does not match .expect |
+| 70_floating_point_literals | PASS | Output matches |
 | 71_macro_empty_arg | PASS | Output matches |
 | 72_long_long_constant | PASS | Output matches |
 | 73_arm64 | SKIP | Skipped |
@@ -116,7 +116,7 @@ Generated on: 04/28/2026 11:18:19
 | 114_bound_signal | SKIP | Skipped |
 | 115_bound_setjmp | SKIP | Skipped |
 | 116_bound_setjmp2 | SKIP | Skipped |
-| 117_builtins | MISMATCH | Output does not match .expect |
+| 117_builtins | PASS | Output matches |
 | 118_switch | PASS | Output matches |
 | 119_random_stuff | MISMATCH | Output does not match .expect |
 | 120_alias | SKIP | Skipped |

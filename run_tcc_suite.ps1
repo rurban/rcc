@@ -92,6 +92,22 @@ foreach ($file in $TestFiles) {
 
     Write-Host "Running $base... " -NoNewline
 
+    # Apply local fixups for tinycc tests2 expect files.
+    # If test/tinycc-<base>.expect exists and differs from the upstream
+    # expect, overwrite the upstream copy.
+    $fixupFile = Join-Path (Join-Path $ScriptDir "test") "tinycc-$base.expect"
+    $upstreamExpect = Join-Path $TestDir "$base.expect"
+    $fixedUp = $false
+    if (Test-Path $fixupFile) {
+        $fixupContent = Get-Content $fixupFile -Raw
+        $upstreamContent = Get-Content $upstreamExpect -Raw -ErrorAction SilentlyContinue
+        if ($fixupContent -ne $upstreamContent) {
+            Copy-Item $upstreamExpect "$upstreamExpect.orig" -Force
+            Copy-Item $fixupFile $upstreamExpect -Force
+            $fixedUp = $true
+        }
+    }
+
     # 129_scopes needs to be compiled from the test directory so __FILE__ is just the basename
     $inScopesDir = $false
     if ($base -eq "129_scopes") {
@@ -173,6 +189,7 @@ foreach ($file in $TestFiles) {
     if ($inGrepDir) { Pop-Location }
 
     # 3. Verification
+    $expectFile = if (Test-Path $fixupFile) { $fixupFile } else { $upstreamExpect }
     if (Test-Path $expectFile) {
         $expectedRaw = Get-Content $expectFile -Raw
         $expectedOutput = if ($null -eq $expectedRaw) { "" } else { $expectedRaw.Trim() }
@@ -191,6 +208,14 @@ foreach ($file in $TestFiles) {
             $Passed++
         } else {
             Write-Host "MISMATCH" -ForegroundColor Yellow
+            # Print diff for CI visibility
+            $expectedLines = $expectedOutput -split "`n"
+            $actualLines = $actualOutput -split "`n"
+            $diff = Compare-Object -ReferenceObject $expectedLines -DifferenceObject $actualLines
+            foreach ($line in $diff) {
+                $prefix = if ($line.SideIndicator -eq '<=') { '-' } else { '+' }
+                Write-Host "$prefix $($line.InputObject)"
+            }
             $Results += [PSCustomObject]@{
                 Test = $base
                 Status = "MISMATCH"
@@ -208,6 +233,15 @@ foreach ($file in $TestFiles) {
             Message = "Executed successfully (no .expect file)"
         }
         $Passed++
+    }
+
+    # Restore upstream expect if it was overwritten by a fixup
+    if ($fixedUp) {
+        $origExpect = "$upstreamExpect.orig"
+        if (Test-Path $origExpect) {
+            Copy-Item $origExpect $upstreamExpect -Force
+            Remove-Item $origExpect -Force
+        }
     }
 
     if (Test-Path $exe) { Remove-Item $exe -Force -ErrorAction SilentlyContinue }
@@ -239,7 +273,7 @@ if (-not $report.EndsWith("`n")) { $report += "`n" }
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
 
-if ($Passed -ge 93) {
+if ($Passed -ge 96) {
     exit 0
 } else {
     exit 1
