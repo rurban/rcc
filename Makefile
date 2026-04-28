@@ -1,6 +1,7 @@
 CC     = gcc
 CFLAGS = -std=c11 -Wall -Wextra -O2 -g
 TARGET = rcc
+MINGW_O =
 
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c
 OBJS = $(SRCS:.c=.o)
@@ -16,21 +17,22 @@ ifeq ($(OS),Windows_NT)
 RCC_INCDIR ?= C:/Program Files/rcc/include
 DEF_INCDIR='-DRCC_INCDIR="$(RCC_INCDIR)"'
 TARGET = rcc.exe
+MINGW_O = lib/mingw.o
 else
 ifeq ($(CC),x86_64-w64-mingw32-gcc)
 TARGET = rcc.exe
-else
-RCC_INCDIR ?= $(shell cd include && pwd)
-DEF_INCDIR='-DRCC_INCDIR="$(RCC_INCDIR)"'
+MINGW_O = lib/mingw.o
 endif
 endif
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(MINGW_O)
 	$(CC) $(CFLAGS) -o $@ $^
 
 src/sysinc_paths.h:
 	./tools/get-sysinc-paths.sh $(CC) > $@
 
+$(MINGW_O): lib/mingw.c
+	$(CC) $(CFLAGS) -c $< -o $@
 src/main.o: src/main.c src/sysinc_paths.h
 	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\" $(DEF_INCDIR)
 src/preprocess.o: src/preprocess.c src/sysinc_paths.h
@@ -64,6 +66,7 @@ install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(INCDIR)
 	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/
 	install -m 644 include/* $(DESTDIR)$(INCDIR)/
+	test -n "$(MINGW_O)" && install -m 644 $(MINGW_O) $(DESTDIR)$(LIBDIR)/
 	# Rebuild with the installed include path so rcc finds its headers
 	# without needing -I after installation.
 	$(MAKE) clean

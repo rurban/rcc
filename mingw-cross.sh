@@ -76,4 +76,4 @@ for input in $inputs; do
 done
 
 # shellcheck disable=SC2086
-x86_64-w64-mingw32-gcc -o "$output" $s_files && rm -f $s_files
+x86_64-w64-mingw32-gcc -o "$output" $s_files "$scriptdir/lib/mingw.o" && rm -f $s_files
