@@ -1501,6 +1501,14 @@ char *preprocess(char *filename, char *p) {
         define_macro("__builtin_alloca", false, NULL, 0, "alloca");
     if (!find_macro("__builtin_unreachable"))
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
+    if (!find_macro("__builtin_va_start"))
+        define_macro("__builtin_va_start", true, (char *[]){"v", "l"}, 2, "");
+    if (!find_macro("__builtin_va_end"))
+        define_macro("__builtin_va_end", true, (char *[]){"v"}, 1, "");
+    if (!find_macro("__builtin_va_arg"))
+        define_macro("__builtin_va_arg", true, (char *[]){"v", "t"}, 2, "0");
+    if (!find_macro("__builtin_va_copy"))
+        define_macro("__builtin_va_copy", true, (char *[]){"d", "s"}, 2, "");
     if (!find_macro("__GNUC__"))
         define_macro("__GNUC__", false, NULL, 0, "4");
     if (!find_macro("__GNUC_MINOR__"))

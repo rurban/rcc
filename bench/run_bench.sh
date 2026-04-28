@@ -1,21 +1,33 @@
 #!/bin/sh
 # RCC vs TCC vs all compilers benchmark (Unix version of run_bench.ps1)
+# Usage: ./bench/run_bench.sh [rcc-binary]
+
+set -e
 
 BENCHDIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$BENCHDIR/bench.c"
 RCC="${1:-./rcc}"
 TCC="${TCC:-tcc}"
 GCC="${GCC:-gcc}"
-CLANG="$(which clang)"
-KEFIR="$(which kefir)"
+CLANG="$(which clang 2>/dev/null || true)"
+KEFIR="$(which kefir 2>/dev/null || true)"
 if [ -z "$KEFIR" ] && [ -e "/opt/kefir/bin/kefir" ]; then
    KEFIR="/opt/kefir/bin/kefir"
 fi
-SLIMCC="$(which slimcc)"
+SLIMCC="$(which slimcc 2>/dev/null || true)"
 if [ -z "$SLIMCC" ] && [ -e "$BENCHDIR/../../slimcc/slimcc" ]; then
    SLIMCC="$BENCHDIR/../../slimcc/slimcc"
 fi
-set -e
+
+# Check rcc and tcc exist
+if [ ! -x "$RCC" ]; then
+    echo "ERROR: rcc not found at '$RCC'. Build it first." >&2
+    exit 1
+fi
+if ! command -v "$TCC" >/dev/null 2>&1; then
+    echo "WARNING: tcc not found — skipping TCC benchmark" >&2
+    TCC=""
+fi
 
 RCC_EXE="$BENCHDIR/bench_rcc"
 TCC_EXE="$BENCHDIR/bench_tcc"
@@ -102,13 +114,17 @@ run_bench() {
 	return 0
 }
 
+list_c=""
+
 echo ""
 echo "============================================"
 echo "  RCC vs TCC vs others  --  Benchmark Battle"
 echo "============================================"
 
-run_bench "RCC" "$RCC" "$SRC -o $RCC_EXE" "$RCC_EXE" || true
-run_bench "TCC" "$TCC" "$SRC -o $TCC_EXE" "$TCC_EXE" || true
+run_bench "RCC" "$RCC" "$SRC -o $RCC_EXE" "$RCC_EXE"
+if [ -n "$TCC" ]; then
+    run_bench "TCC" "$TCC" "$SRC -o $TCC_EXE" "$TCC_EXE" || true
+fi
 if [ -n "$SLIMCC" ]; then
    run_bench "SLIMCC" "$SLIMCC" "$SRC -o $SLIMCC_EXE" "$SLIMCC_EXE" || true
 fi
