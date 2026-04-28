@@ -2243,10 +2243,17 @@ void codegen(Program *prog) {
         // Pass 2: Emit optimized prologue, body, epilogue to stdout
         cg_stream = stdout;
 
-        // Determine which callee-saved regs need saving (indices 2-7)
-        int callee_mask = ever_used_regs >> 2; // bits 0-5 = rbx,r12,r13,r14,r15,rsi
+        // Determine which callee-saved regs need saving.
+        // Windows: rbx,r12,r13,r14,r15,rsi (indices 2-7)
+        // Linux SysV: rbx,r12,r13,r14,r15 only (rsi is caller-saved)
+#ifdef _WIN32
+        int callee_count = 6;
+#else
+        int callee_count = 5;
+#endif
+        int callee_mask = (ever_used_regs >> 2) & ((1 << callee_count) - 1);
         int n_pushes = 0;
-        for (int j = 0; j < 6; j++)
+        for (int j = 0; j < callee_count; j++)
             if (callee_mask & (1 << j)) n_pushes++;
 
         // Calculate stack frame size
@@ -2297,7 +2304,7 @@ void codegen(Program *prog) {
         printf("  mov rbp, rsp\n");
 
         // Only push callee-saved registers that were actually used
-        for (int j = 0; j < 6; j++) {
+        for (int j = 0; j < callee_count; j++) {
             if (callee_mask & (1 << j))
                 printf("  push %s\n", reg64[j + 2]);
         }
@@ -2522,7 +2529,7 @@ void codegen(Program *prog) {
             printf("  lea rsp, [rbp-%d]\n", n_pushes * 8);
         else
             printf("  add rsp, %d\n", sub_amount);
-        for (int j = 5; j >= 0; j--) {
+        for (int j = callee_count - 1; j >= 0; j--) {
             if (callee_mask & (1 << j))
                 printf("  pop %s\n", reg64[j + 2]);
         }
