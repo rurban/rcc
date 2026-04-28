@@ -31,25 +31,26 @@ Linux:
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
+- **Compile-time performance**: RCC emits assembly to stdout then invokes GCC (`system()`) to assemble and link, which is ~2× slower than TCC's native internal assembler/linker. The peephole optimizer also reparses assembly lines as text strings (4 passes over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Generated code quality is on par with TCC.
 
 ## Key Features
 
-- **Register-machine codegen** — 8-register allocator (r10, r11, rbx, r12–r15, rsi) with dynamic allocation, no stack machine overhead.
+- **Register-machine codegen** — 8-register allocator (r10, r11, rbx, r12–r15, rsi) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the two predefined spill slots. If all 8 registers are in use, it calls `error("Register exhaustion")` — a hard abort, not graceful spilling. It's dynamic but not a full graph-coloring allocator
 - **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
 - **Peephole optimizer** — Multi-pass assembly optimizer with:
   - Copy propagation (`mov r10, rax; mov [mem], r10` → `mov [mem], rax`)
   - Store-load forwarding (`mov [rbp-N], rcx; mov r10d, [rbp-N]` → `mov r10d, ecx`)
   - Immediate folding (`mov r11d, 1; cmp r10d, r11d` → `cmp r10d, 1`)
   - Identity elimination (`imul r10d, 1` → deleted, `add r10, 0` → deleted)
-  - Strength reduction (multiply by power-of-2 → shift)
+  - Strength reduction (multiply by power-of-2 → shift) in codegen already.
   - 3-instruction chain folding (`load; op; mov dst` → `load dst; op dst`)
   - Dead jump elimination (`jmp .L; .L:` → `.L:`)
   - Liveness-aware dead code removal
 - **Direct function calls** — `call funcname` instead of `lea reg, [rip+func]; call reg`.
-- **Pre-allocated shadow space** — 32-byte shadow space in stack frame; no `sub rsp`/`add rsp` per call for ≤4 args.
+- **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp` per call for ≤4 args.
 - **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time.
 - **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
-- **Floating-point support** — `float`/`double` arithmetic, casts, function calls via SSE2 (xmm0–xmm3).
+- **Floating-point support** — `float`/`double/long double` arithmetic, casts, function calls via SSE2 (xmm0–xmm7). 80-bit long double x87 via `fld`/`fstp`, though truncated to 64 bits on store. Float args properly classified as SSE class with separate GP/FP argument counters.
 - **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
 - **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 
