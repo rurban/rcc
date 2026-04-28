@@ -141,7 +141,6 @@ print_change() {
 # (bound-checker, backtrace, btdll, builtins are TCC-runtime-only and omitted here)
 #tcc-extension working: 34_array_assignment
 SKIP_TESTS="
-22_floating_point
 60_errors_and_warnings
 73_arm64
 78_vla_label
