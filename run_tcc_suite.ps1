@@ -278,7 +278,7 @@ if (-not $report.EndsWith("`n")) { $report += "`n" }
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
 
-if ($Passed -ge 100) {
+if ($Passed -ge 101) {
     exit 0
 } else {
     exit 1
