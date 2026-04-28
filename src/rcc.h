@@ -93,6 +93,12 @@ typedef enum {
 typedef struct Type Type;
 typedef struct Member Member;
 
+enum {
+    BF_MODE_DEFAULT,
+    BF_MODE_GCC,
+    BF_MODE_MS,
+};
+
 struct Member {
     Member *next;
     Type *ty;
@@ -118,6 +124,7 @@ struct Type {
     Type *param_next; // next in parameter type list
     bool is_variadic; // for function
     int pack_align; // #pragma pack(n) alignment, 0 = default
+    unsigned char bitfield_mode;
     char *cleanup_func; // __attribute__((__cleanup__(func))) on the type
 };
 
@@ -149,6 +156,7 @@ extern Type *ty_double;
 extern Type *ty_ldouble;
 
 extern bool opt_O0;
+extern bool opt_ms_bitfields;
 extern int pack_align;
 
 bool is_integer(Type *ty);

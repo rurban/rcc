@@ -440,7 +440,11 @@ static void add_type_internal(Node *node) {
         if (node->member->bit_width > 0) {
             int bw = node->member->bit_width;
             bool bf_unsigned = node->member->ty->is_unsigned;
-            if (bw < 32 || (bw == 32 && !bf_unsigned))
+            // 64-bit declared type (long long / unsigned long long): keep as-is
+            // so that sizeof(s->field + 0) == 8 and %016llx format is selected
+            if (node->member->ty->size >= 8)
+                node->ty = node->member->ty;
+            else if (bw < 32 || (bw == 32 && !bf_unsigned))
                 node->ty = ty_int;
             else if (bw == 32)
                 node->ty = ty_uint;

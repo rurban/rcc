@@ -85,16 +85,18 @@ make bench
 
 ## Options
 
-    -I path       add include path
-    -Lpath        add linker path
-    -lname        add lib
-    -E            preprocessor-only
-    -S            assemble-only
-    -c            compile-only
-    -o file       set output filename
-    -O0           skip peephole optimizer
-    -Dname[=val]  define a macro value
-    -Uname        undefine a macro value
+    -I path            add include path
+    -Lpath             add linker path
+    -lname             add lib
+    -E                 preprocessor-only
+    -S                 assemble-only
+    -c                 compile-only
+    -o file            set output filename
+    -O0                skip peephole optimizer
+    -mms-bitfields     use MSVC bitfields (default on Windows)
+    -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
+    -Dname[=val]       define a macro value
+    -Uname             undefine a macro value
 
 ## Project Structure
 
