@@ -3,8 +3,8 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     135
- - **Passed**:    131
- - **Failed**:    4
+ - **Passed**:    132
+ - **Failed**:    3
  - **Pass Rate**: 97%
 
 ## Detailed Results
@@ -105,7 +105,7 @@ Generated: April 2026
 | 103_implicit_memmove                     | PASS         | Output matches                       |
 | 104_inline                               | PASS         | Output matches                       |
 | 105_local_extern                         | PASS         | Output matches                       |
-| 106_versym                               | EXEC_FAIL    | non-zero exit                        |
+| 106_versym                               | PASS         | Output matches                       |
 | 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | PASS         | Output matches                       |
 | 109_float_struct_calling                 | PASS         | Output matches                       |

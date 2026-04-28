@@ -58,6 +58,12 @@ WINEDLLOVERRIDES="winedbg=d"
 WINENOPOPUPS=1
 export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS
 
+# Ensure libwinpthread-1.dll is available for Wine (needed by mingw-w64 CRT)
+if [ ! -f "$HOME/.wine/drive_c/windows/system32/libwinpthread-1.dll" ]; then
+    cp /usr/x86_64-w64-mingw32/sys-root/mingw/bin/libwinpthread-1.dll \
+       "$HOME/.wine/drive_c/windows/system32/" 2>/dev/null || true
+fi
+
 s_files=""
 for input in $inputs; do
 	TMP_S="$(mktemp -u /tmp/mingw_cross_XXXXXX.s)"
