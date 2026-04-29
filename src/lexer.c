@@ -421,44 +421,58 @@ Token *tokenize(char *filename, char *p) {
             p++;
             char *buf = arena_alloc(2048); // Pre-allocate scratch buffer
             int len = 0;
-            while (*p && *p != '"') {
-                if (*p == '\\') {
-                    p++;
-                    if (*p == 'u' || *p == 'U') {
-                        int n_digits = (*p == 'u') ? 4 : 8;
+
+            for (;;) {
+                while (*p && *p != '"' && *p != '\n') {
+                    if (*p == '\\') {
                         p++;
-                        uint32_t val = 0;
-                        for (int i = 0; i < n_digits; i++) {
-                            int digit = from_hex(*p);
-                            if (digit < 0) error_at(p, "invalid unicode escape");
-                            val = val * 16 + digit;
+                        if (*p == 'u' || *p == 'U') {
+                            int n_digits = (*p == 'u') ? 4 : 8;
                             p++;
-                        }
-                        // Encode as UTF-8
-                        if (val < 0x80) {
-                            buf[len++] = (char)val;
-                        } else if (val < 0x800) {
-                            buf[len++] = 0xC0 | (val >> 6);
-                            buf[len++] = 0x80 | (val & 0x3F);
-                        } else if (val < 0x10000) {
-                            buf[len++] = 0xE0 | (val >> 12);
-                            buf[len++] = 0x80 | ((val >> 6) & 0x3F);
-                            buf[len++] = 0x80 | (val & 0x3F);
+                            uint32_t val = 0;
+                            for (int i = 0; i < n_digits; i++) {
+                                int digit = from_hex(*p);
+                                if (digit < 0) error_at(p, "invalid unicode escape");
+                                val = val * 16 + digit;
+                                p++;
+                            }
+                            // Encode as UTF-8
+                            if (val < 0x80) {
+                                buf[len++] = (char)val;
+                            } else if (val < 0x800) {
+                                buf[len++] = 0xC0 | (val >> 6);
+                                buf[len++] = 0x80 | (val & 0x3F);
+                            } else if (val < 0x10000) {
+                                buf[len++] = 0xE0 | (val >> 12);
+                                buf[len++] = 0x80 | ((val >> 6) & 0x3F);
+                                buf[len++] = 0x80 | (val & 0x3F);
+                            } else {
+                                buf[len++] = 0xF0 | (val >> 18);
+                                buf[len++] = 0x80 | ((val >> 12) & 0x3F);
+                                buf[len++] = 0x80 | ((val >> 6) & 0x3F);
+                                buf[len++] = 0x80 | (val & 0x3F);
+                            }
                         } else {
-                            buf[len++] = 0xF0 | (val >> 18);
-                            buf[len++] = 0x80 | ((val >> 12) & 0x3F);
-                            buf[len++] = 0x80 | ((val >> 6) & 0x3F);
-                            buf[len++] = 0x80 | (val & 0x3F);
+                            buf[len++] = read_escaped_char(&p, p);
                         }
                     } else {
-                        buf[len++] = read_escaped_char(&p, p);
+                        buf[len++] = *p++;
                     }
-                } else {
-                    buf[len++] = *p++;
                 }
+                if (*p != '"') error_at(start, "unclosed string literal");
+                p++;
+
+                // String concatenation: merge adjacent string literals
+                char *q = p;
+                while (isspace(*q))
+                    q++;
+                if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '"')
+                    q++;
+                if (*q != '"')
+                    break;
+                p = q + 1;
             }
-            if (!*p) error_at(start, "unclosed string literal");
-            p++;
+
             buf[len] = '\0';
             cur = cur->next = new_token(TK_STR, start, p);
             cur->str = str_intern(buf, len); // intern it
