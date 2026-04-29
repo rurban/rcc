@@ -65,7 +65,8 @@ void help(void) {
            "-S            assemble-only\n"
            "-c            compile-only\n"
            "-o file       set output filename\n"
-           "-O0           skip peephole optimizer\n"
+           "-O0           disable peephole optimizer\n"
+           "-O1           enable peephole + CTFE optimizations\n"
            "-mms-bitfields     use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields  use GCC bitfield layout by default\n"
            "-Dname[=val]  define a macro value\n"
@@ -75,6 +76,7 @@ void help(void) {
 }
 
 bool opt_O0 = false;
+bool opt_O1 = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -134,6 +136,8 @@ int main(int argc, char **argv) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
             opt_O0 = true;
+        } else if (!strcmp(argv[i], "-O1")) {
+            opt_O1 = true;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
@@ -211,8 +215,9 @@ int main(int argc, char **argv) {
                 }
             }
 
-            // CTFE is still incomplete and has caused miscompiles/crashes on parts
-            // of the TCC suite, so keep the compile path conservative for now.
+            // CTFE runs only with -O1; peephole skipped with -O0.
+            if (opt_O1)
+                optimize(prog);
 
             // Redirect stdout to our assembly file (append for multi-file)
             if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
