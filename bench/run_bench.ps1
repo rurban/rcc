@@ -21,8 +21,9 @@ if (Test-Path $TCC_INSTALL) {
     $TCC_ARGS = "-I `"$win32inc`" -I `"$tccinc`""
 }
 
-$RCC_EXE = Join-Path $ScriptDir "bench_rcc.exe"
-$TCC_EXE = Join-Path $ScriptDir "bench_tcc.exe"
+$RCC_EXE    = Join-Path $ScriptDir "bench_rcc.exe"
+$RCC_O1_EXE = Join-Path $ScriptDir "bench_rcc_o1.exe"
+$TCC_EXE    = Join-Path $ScriptDir "bench_tcc.exe"
 $GCC_EXE = Join-Path $ScriptDir "bench_gcc.exe"
 $GCC_O2  = Join-Path $ScriptDir "bench_gcc_o2.exe"
 
@@ -80,6 +81,10 @@ function Run-Bench {
 $results = @()
 
 $r = Run-Bench "RCC (your compiler)" $RCC "$SRC -o $RCC_EXE" $RCC_EXE "Yellow"
+if ($r) { $results += $r }
+Write-Host ""
+
+$r = Run-Bench "RCC -O1 (optimized)" $RCC "-O1 $SRC -o $RCC_O1_EXE" $RCC_O1_EXE "Yellow"
 if ($r) { $results += $r }
 Write-Host ""
 
