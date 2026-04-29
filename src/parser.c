@@ -3451,30 +3451,113 @@ static Node *unary(Token **rest, Token *tok) {
                         int idx = 0;
                         bool arr_brace = equal(tok, "{");
                         if (arr_brace) tok = tok->next;
-                        while (idx < len && !equal(tok, "}") && !equal(tok, ",")) {
-                            Node *var_node = new_var_node(var, start);
-                            Node *member_access = new_node(ND_MEMBER, start);
-                            member_access->lhs = var_node;
-                            member_access->member = mem;
-                            member_access->ty = mem->ty;
-                            Node *offset = new_num(idx, start);
-                            Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
-                            Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
-                            Node *val = assign(&tok, tok);
-                            add_type(val);
-                            Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
-                            add_type(asgn);
-                            result = new_binary(ND_COMMA, result, asgn, start);
-                            result->ty = ty;
-                            idx++;
+                        while (idx < len && !equal(tok, "}")) {
+                            int sidx = idx, eidx = idx;
+                            // Designated initializer: [N] = val or [N ... M] = val
+                            if (equal(tok, "[")) {
+                                tok = tok->next;
+                                Node *n = assign(&tok, tok);
+                                long long sv = 0;
+                                eval_const_expr(n, &sv);
+                                sidx = (int)sv;
+                                eidx = sidx;
+                                if (equal(tok, "...")) {
+                                    tok = tok->next;
+                                    Node *n2 = assign(&tok, tok);
+                                    long long ev = sidx;
+                                    eval_const_expr(n2, &ev);
+                                    eidx = (int)ev;
+                                }
+                                tok = skip(tok, "]");
+                                tok = skip(tok, "=");
+                                idx = sidx;
+                            }
+                            for (int i = sidx; i <= eidx; i++) {
+                                if (len == 0 || i < len) {
+                                    Node *var_node = new_var_node(var, start);
+                                    Node *member_access = new_node(ND_MEMBER, start);
+                                    member_access->lhs = var_node;
+                                    member_access->member = mem;
+                                    member_access->ty = mem->ty;
+                                    Node *offset = new_num(i, start);
+                                    Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
+                                    Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                                    Token *val_start = tok;
+                                    Node *val = assign(&tok, tok);
+                                    add_type(val);
+                                    Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
+                                    add_type(asgn);
+                                    result = new_binary(ND_COMMA, result, asgn, start);
+                                    result->ty = ty;
+                                    // Reset tok for ranged initializer re-evaluation
+                                    if (i < eidx)
+                                        tok = val_start;
+                                }
+                            }
+                            idx = eidx + 1;
                             if (equal(tok, ",")) {
                                 tok = tok->next;
-                                if (equal(tok, "}")) break;
+                                if (equal(tok, "}"))
+                                    break;
                                 continue;
                             }
                             break;
                         }
                         if (arr_brace) tok = skip(tok, "}");
+                    } else if ((mem->ty->kind == TY_STRUCT || mem->ty->kind == TY_UNION) && equal(tok, "{")) {
+                        // Struct/union member with brace-enclosed initializer
+                        tok = skip(tok, "{");
+                        Member *sub = mem->ty->members;
+                        while (!equal(tok, "}")) {
+                            Node *var_node = new_var_node(var, start);
+                            Node *member_access = new_node(ND_MEMBER, start);
+                            member_access->lhs = var_node;
+                            member_access->member = mem;
+                            member_access->ty = mem->ty;
+                            // Designated initializer: .name = value
+                            if (equal(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                                char *name = tok->next->name;
+                                tok = tok->next->next;
+                                tok = skip(tok, "=");
+                                Member *m = find_member_by_name(mem->ty, name);
+                                if (m) {
+                                    Node *inner_access = new_node(ND_MEMBER, start);
+                                    inner_access->lhs = member_access;
+                                    inner_access->member = m;
+                                    inner_access->ty = m->ty;
+                                    Node *val = assign(&tok, tok);
+                                    add_type(val);
+                                    Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
+                                    asgn->ty = m->ty;
+                                    result = new_binary(ND_COMMA, result, asgn, start);
+                                    result->ty = ty;
+                                } else {
+                                    tok = skip_initializer(tok);
+                                }
+                            } else if (sub) {
+                                Node *inner_access = new_node(ND_MEMBER, start);
+                                inner_access->lhs = member_access;
+                                inner_access->member = sub;
+                                inner_access->ty = sub->ty;
+                                Node *val = assign(&tok, tok);
+                                add_type(val);
+                                Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
+                                asgn->ty = sub->ty;
+                                result = new_binary(ND_COMMA, result, asgn, start);
+                                result->ty = ty;
+                                sub = sub->next;
+                            } else {
+                                tok = skip_initializer(tok);
+                            }
+                            if (equal(tok, ",")) {
+                                tok = tok->next;
+                                if (equal(tok, "}"))
+                                    break;
+                                continue;
+                            }
+                            break;
+                        }
+                        tok = skip(tok, "}");
                     } else {
                         Node *var_node = new_var_node(var, start);
                         Node *member_access = new_node(ND_MEMBER, start);
@@ -3808,6 +3891,29 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
             append_reloc(var, 0, label, 0);
+            *rest = tok;
+            return;
+        }
+        // Pointer initialized with &(compound literal): &(struct T){...}
+        if (equal(tok, "&") && find_compound_literal_start(tok->next)) {
+            tok = tok->next; // skip &
+            Token *compound_start = find_compound_literal_start(tok);
+            Token *t = tok;
+            while (equal(t, "(")) t = t->next;
+            Type *compound_ty = type_name(&t, t);
+            while (equal(t, ")")) t = t->next;
+            static int anon_count;
+            char *name = format(".Lanon.%d", anon_count++);
+            LVar *anon_var = new_var(name, compound_ty, false);
+            global_initializer(rest, compound_start, anon_var);
+            tok = *rest;
+            if (equal(tok, "}"))
+                tok = tok->next;
+            while (equal(tok, ")"))
+                tok = tok->next;
+            var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+            var->init_size = var->ty->size;
+            append_reloc(var, 0, name, 0);
             *rest = tok;
             return;
         }
