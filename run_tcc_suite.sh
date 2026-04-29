@@ -182,6 +182,13 @@ $1
 	return 1
 }
 
+extra_ldflags() {
+	case "$1" in
+	22_floating_point|24_math_library) printf '%s' " -lm" ;;
+	*) printf '' ;;
+	esac
+}
+
 # Iterate over all *.c files; for helper files containing '+' prepend them to the ones without
 p_src=
 while IFS= read -r src; do
@@ -208,6 +215,7 @@ while IFS= read -r src; do
 		p_src=
 		continue
 	fi
+        ldflags="$(extra_ldflags "$base")"
 
 	fixed_up=
 	# Apply local fixups for tinycc tests2 expect files.
@@ -239,18 +247,18 @@ while IFS= read -r src; do
         # shellcheck disable=SC2086,SC2129
 	if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
             echo "[test_128_return]" >"$TMP_OUT"
-	    "$RCC" -Dtest_128_return "$src" -o "$TMP_EXE"
+	    "$RCC" -Dtest_128_return -o "$TMP_EXE" "$src"
             "$TMP_EXE" >>"$TMP_OUT"
             run_atexit="$?"
             echo "[returns $run_atexit]" >>"$TMP_OUT"
             echo "" >>"$TMP_OUT"
             echo "[test_128_exit]" >>"$TMP_OUT"
-	    "$RCC" -Dtest_128_exit "$src" -o "$TMP_EXE"
+	    "$RCC" -Dtest_128_exit -o "$TMP_EXE" "$src"
             "$TMP_EXE" >>"$TMP_OUT"
             xx="$?"
             run_atexit="$run_atexit $xx"
             echo "[returns $xx]" >>"$TMP_OUT"
-        elif ! "$RCC" $p_src "$src" -o "$TMP_EXE" 2>"$TMP_OUT"; then
+        elif ! "$RCC" -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
 		# shellcheck disable=SC2059
 		printf "${RED}COMPILE FAIL${RESET}\n"
 		failed=$((failed + 1))
@@ -363,11 +371,11 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fname="$(basename "$src")"
 		base="${fname%.c}"
 
-		total=$((total + 1))
+	total=$((total + 1))
 		printf "  %-40s " "$base..."
 
 		if expect_compile_fail "$base"; then
-			if "$RCC" "$src" -o "$TMP_EXE" >/dev/null 2>&1; then
+			if "$RCC" -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 				# shellcheck disable=SC2059
 				printf "${RED}SHOULD FAIL (compiled ok)${RESET}\n"
 				failed=$((failed + 1))
@@ -384,7 +392,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			continue
 		fi
 
-		if ! "$RCC" "$src" -o "$TMP_EXE" >/dev/null 2>&1; then
+		if ! "$RCC" -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 			# shellcheck disable=SC2059
 			printf "${RED}COMPILE FAIL${RESET}\n"
 			failed=$((failed + 1))

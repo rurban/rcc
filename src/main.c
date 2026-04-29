@@ -110,9 +110,9 @@ int main(int argc, char **argv) {
     bool opt_o = false;
     char libs[512] =
 #ifdef _WIN32
-        ""
-#else
         " -lm"
+#else
+        ""
 #endif
         ;
     int libs_len = strlen(libs);
