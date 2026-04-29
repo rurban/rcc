@@ -2,3 +2,6 @@
 	path = tinycc
 	url = https://github.com/TinyCC/tinycc.git
 	branch = mob
+[submodule "c-testsuite"]
+	path = c-testsuite
+	url = https://git.sr.ht/~jprotopopov/c-testsuite

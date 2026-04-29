@@ -29,3 +29,4 @@ test/*.out
 /kimi-export*.md
 rcc-*-src/
 rcc-*.tar.*
+c-testsuite.tap.txt
