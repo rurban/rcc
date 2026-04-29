@@ -35,7 +35,7 @@ Linux:
 
 ## Key Features
 
-- **Register-machine codegen** — 8-register allocator (r10, r11, rbx, r12–r15, rsi) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the two predefined spill slots. If all 8 registers are in use, it calls `error("Register exhaustion")` — a hard abort, not graceful spilling. It's dynamic but not a full graph-coloring allocator
+- **Register-machine codegen** — 8-register allocator (r10, r11, rbx, r12–r15, rsi) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the two predefined spill slots. If all 8 registers are in use, it spills the additional registers on the stack. Currently with a spill warning.
 - **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
 - **Peephole optimizer** — Multi-pass assembly optimizer with:
   - Copy propagation (`mov r10, rax; mov [mem], r10` → `mov [mem], rax`)

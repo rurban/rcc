@@ -41,9 +41,25 @@ static char *reg8[] = {"r10b", "r11b", "bl", "r12b", "r13b", "r14b", "r15b", "si
 static int used_regs = 0;
 static int ever_used_regs = 0;
 
-// Spill slot offsets from rbp for scratch register saves across calls
+// Spill slot offsets from rbp for register spilling
 #define SPILL_R10 56
 #define SPILL_R11 64
+#define SPILL_RBX 72
+#define SPILL_R12 80
+#define SPILL_R13 88
+#define SPILL_R14 96
+#define SPILL_R15 104
+#define SPILL_RSI 112
+
+static int spill_offset(int r) {
+    static int offsets[] = {SPILL_R10, SPILL_R11, SPILL_RBX,
+                            SPILL_R12, SPILL_R13, SPILL_R14,
+                            SPILL_R15, SPILL_RSI};
+    return offsets[r];
+}
+
+static int spilled_regs = 0;
+static int spill_count = 0;
 
 static char *reg(int r, int size);
 static int alloc_reg(void);
@@ -763,11 +779,29 @@ static int alloc_reg(void) {
             return i;
         }
     }
+    // All 8 registers are in use. Spill the register with the highest index
+    // (least likely to be referenced by outer callers right now).
+    for (int i = 7; i >= 0; i--) {
+        if (used_regs & (1 << i)) {
+            fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            printf("  mov [rbp-%d], %s\n", spill_offset(i), reg64[i]);
+            spilled_regs |= (1 << i);
+            spill_count++;
+            used_regs &= ~(1 << i);
+            used_regs |= (1 << i); // reclaim for new value
+            ever_used_regs |= (1 << i);
+            return i;
+        }
+    }
     error("Register exhaustion");
     return 0;
 }
 
 static void free_reg(int i) {
+    if (spilled_regs & (1 << i)) {
+        printf("  mov %s, [rbp-%d]\n", reg64[i], spill_offset(i));
+        spilled_regs &= ~(1 << i);
+    }
     used_regs &= ~(1 << i);
 }
 
@@ -2282,6 +2316,8 @@ void codegen(Program *prog) {
         cg_stream = body_file;
         used_regs = 0;
         ever_used_regs = 0;
+        spilled_regs = 0;
+        spill_count = 0;
         ctrl_depth = 0;
         fn_uses_alloca = false;
 
@@ -2451,6 +2487,9 @@ void codegen(Program *prog) {
         // Calculate stack frame size
         // Total space below rbp must cover: locals + spills + shadow (32)
         int need = fn->stack_size + fn_struct_ret_total + 32;
+        // Reserve space for register spill slots (deepest at rbp-120)
+        if (spill_count > 0 && need < 120)
+            need = 120;
         int push_bytes = n_pushes * 8;
         int sub_amount = need - push_bytes;
         if (sub_amount < 32) sub_amount = 32;
