@@ -1038,6 +1038,33 @@ static long eval_condition(char *expr, char *filename) {
     return eval_pp_expr(&rest, expr, filename);
 }
 
+static int count_unmatched_parens(char *start, char *end) {
+    int open = 0;
+    int close = 0;
+
+    while (start < end) {
+        if (*start == '"' || *start == '\'') {
+            char quote = *start++;
+            while (start < end && *start != quote) {
+                if (*start == '\\' && start + 1 < end)
+                    start += 2;
+                else
+                    start++;
+            }
+            if (start < end)
+                start++;
+            continue;
+        }
+        if (*start == '(')
+            open++;
+        else if (*start == ')')
+            close++;
+        start++;
+    }
+
+    return open - close;
+}
+
 static char *preprocess_file(char *filename, char *input, int *line_counts) {
     char *fpath = full_path(filename);
     if (is_once_file(fpath))
@@ -1052,6 +1079,11 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
     unsigned line_no = 1;
     int line_idx = 0;
 
+    StrBuf acc;
+    sb_init(&acc, 4096);
+    unsigned acc_line_no = 0;
+    int acc_line_count = 0;
+
     for (char *p = input; *p;) {
         char *line = p;
         while (*p && *p != '\n')
@@ -1065,6 +1097,14 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
             s++;
 
         if (s < end && *s == '#') {
+            if (acc.len > 0) {
+                char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                sb_puts(&out, expanded);
+                sb_putc(&out, '\n');
+                acc.len = 0;
+                acc.buf[0] = '\0';
+                acc_line_count = 0;
+            }
             s++;
             while (s < end && isspace((unsigned char)*s))
                 s++;
@@ -1347,10 +1387,45 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                 }
             }
         } else if (active) {
-            char *expanded = expand_text(pp_strndup(line, end - line), filename, line_no, 0);
-            sb_puts(&out, expanded);
-            sb_putc(&out, '\n');
+            if (acc.len > 0 || count_unmatched_parens(line, end) > 0) {
+                if (acc.len == 0) {
+                    acc_line_no = line_no;
+                }
+                if (acc.len > 0)
+                    sb_putc(&acc, ' ');
+                sb_reserve(&acc, acc.len + (end - line) + 1);
+                memcpy(acc.buf + acc.len, line, end - line);
+                acc.len += end - line;
+                acc.buf[acc.len] = '\0';
+                acc_line_count++;
+                if (count_unmatched_parens(acc.buf, acc.buf + acc.len) <= 0) {
+                    char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                    sb_puts(&out, expanded);
+                    sb_putc(&out, '\n');
+                    /* output empty lines for accumulated lines beyond the first */
+                    for (int i = 1; i < acc_line_count; i++)
+                        sb_putc(&out, '\n');
+                    acc.len = 0;
+                    acc.buf[0] = '\0';
+                    acc_line_count = 0;
+                }
+            } else {
+                char *expanded = expand_text(pp_strndup(line, end - line), filename, line_no, 0);
+                sb_puts(&out, expanded);
+                sb_putc(&out, '\n');
+            }
         } else {
+            if (acc.len > 0) {
+                /* flush accumulator before inactive section */
+                char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                sb_puts(&out, expanded);
+                sb_putc(&out, '\n');
+                for (int i = 1; i < acc_line_count; i++)
+                    sb_putc(&out, '\n');
+                acc.len = 0;
+                acc.buf[0] = '\0';
+                acc_line_count = 0;
+            }
             sb_putc(&out, '\n');
         }
 
@@ -1358,6 +1433,12 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
             line_no += line_counts[line_idx++];
         else
             line_no++;
+    }
+
+    if (acc.len > 0) {
+        char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+        sb_puts(&out, expanded);
+        sb_putc(&out, '\n');
     }
 
     return out.buf;
