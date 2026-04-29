@@ -1,6 +1,6 @@
 # RCC — Regoshi C Compiler
 
-A fast, self-contained C compiler targeting x86-64 Windows and Unix. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux and fixed the rest by Reini Urban.
+A fast, self-contained C compiler targeting x86-64 Windows and Unix, with experimental AArch64 (ARM64) support. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux and fixed the rest by Reini Urban.
 **RCC equally fast code as TCC** while keeping compilation speed competitive.
 
 ## Benchmark Results
@@ -111,20 +111,20 @@ make bench
 
 ## Project Structure
 
-| File               | Description                                                          |
-| ------------------ | -------------------------------------------------------------------- |
-| `src/main.c`       | Driver: CLI, assembler/linker invocation                             |
-| `src/lexer.c`      | Tokenizer with number/string/char literal support                    |
-| `src/preprocess.c` | C preprocessor (`#include`, `#define`, `#if`, macros)                |
-| `src/parser.c`     | Recursive-descent parser → AST                                       |
-| `src/type.c`       | Type system (primitives, pointers, arrays, structs, functions)       |
-| `src/codegen.c`    | x86-64 code generator with register allocator and peephole optimizer |
-| `src/opt.c`        | AST-level optimizer and CTFE interpreter                             |
-| `src/alloc.c`      | Arena memory allocator                                               |
-| `src/rcc.h`        | Shared data structures and declarations                              |
-| `include/`         | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)       |
-| `bench/`           | Benchmark suite and runner script                                    |
-| `test/`            | Test programs                                                        |
+| File               | Description                                                                  |
+| ------------------ | ---------------------------------------------------------------------------- |
+| `src/main.c`       | Driver: CLI, assembler/linker invocation                                     |
+| `src/lexer.c`      | Tokenizer with number/string/char literal support                            |
+| `src/preprocess.c` | C preprocessor (`#include`, `#define`, `#if`, macros)                        |
+| `src/parser.c`     | Recursive-descent parser → AST                                               |
+| `src/type.c`       | Type system (primitives, pointers, arrays, structs, functions)               |
+| `src/codegen.c`    | x86-64 / ARM64 code generator with register allocator and peephole optimizer |
+| `src/opt.c`        | AST-level optimizer and CTFE interpreter                                     |
+| `src/alloc.c`      | Arena memory allocator                                                       |
+| `src/rcc.h`        | Shared data structures and declarations                                      |
+| `include/`         | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)               |
+| `bench/`           | Benchmark suite and runner script                                            |
+| `test/`            | Test programs                                                                |
 
 ## Unix fork
 

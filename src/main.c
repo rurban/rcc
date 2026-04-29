@@ -100,13 +100,15 @@ bool opt_ms_bitfields =
 bool sse42_available = false;
 
 int main(int argc, char **argv) {
-#ifndef __x86_64__
-    fprintf(stderr, "rcc: unsupported target: only x86_64 is supported\n");
+#ifdef __x86_64__
+    // SSE4.2 runtime detection (x86_64 only)
+    sse42_available = __builtin_cpu_supports("sse4.2");
+#elif defined(__aarch64__)
+    // ARM64 host — no SSE4.2, native ARM64 target is implicit
+#elif !defined(ARCH_ARM64)
+    fprintf(stderr, "rcc: unsupported host architecture\n");
     return 1;
 #endif
-
-    // SSE4.2 runtime detection
-    sse42_available = __builtin_cpu_supports("sse4.2");
 
     init_builtins();
     char *out_path =
@@ -275,11 +277,7 @@ int main(int argc, char **argv) {
         if (opt_c) {
             snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
         } else {
-#if defined(__APPLE__)
-            snprintf(cmd, sizeof(cmd), GCC " -Wl,-e,main -o %s", out_path);
-#else
             snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
-#endif
         }
         if (!opt_dryrun) {
             out_paths = reverse(out_paths);

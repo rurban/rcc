@@ -3,6 +3,11 @@
 #ifndef RCC_H
 #define RCC_H
 
+// Auto-detect target architecture from host
+#if defined(__aarch64__) && !defined(ARCH_ARM64)
+#define ARCH_ARM64
+#endif
+
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
