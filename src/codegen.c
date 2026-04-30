@@ -491,7 +491,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int gp_reg_args = 0;
     int fp_reg_args = 0;
     int stack_args = 0;
-    bool is_variadic = node->ty && node->ty->is_variadic;
+    Type *fn_type = (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_PTR)
+        ? node->lhs->ty->base
+        : NULL;
+    bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = argv[i]->ty->size;
@@ -502,6 +505,9 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_is_float[i]) {
             if (!is_variadic && fp_reg_args < max_fp_args) {
                 arg_fp_idx[i] = fp_reg_args++;
+            } else if (is_variadic && arg_sizes[i] > 8) {
+                // long double (16 bytes) on ARM64 doesn't fit in GP regs
+                arg_stack_idx[i] = stack_args++;
             } else if (gp_reg_args < max_gp_args) {
                 // variadic or no FP regs: pass float in GP reg
                 arg_gp_idx[i] = gp_reg_args++;

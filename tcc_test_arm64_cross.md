@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     138
- - **Passed**:    109
- - **Failed**:    29
- - **Pass Rate**: 78%
+ - **Passed**:    106
+ - **Failed**:    32
+ - **Pass Rate**: 76%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -59,7 +59,7 @@ Generated: April 2026
 | 46_grep                                  | EXEC_FAIL    | non-zero exit                        |
 | 47_switch_return                         | PASS         | Output matches                       |
 | 48_nested_break                          | PASS         | Output matches                       |
-| 49_bracket_evaluation                    | PASS         | Output matches                       |
+| 49_bracket_evaluation                    | MISMATCH     | Output does not match .expect        |
 | 50_logical_second_arg                    | PASS         | Output matches                       |
 | 51_static                                | PASS         | Output matches                       |
 | 52_unnamed_enum                          | PASS         | Output matches                       |
@@ -69,7 +69,7 @@ Generated: April 2026
 | 61_integers                              | MISMATCH     | Output does not match .expect        |
 | 64_macro_nesting                         | PASS         | Output matches                       |
 | 67_macro_concat                          | PASS         | Output matches                       |
-| 70_floating_point_literals               | PASS         | Output matches                       |
+| 70_floating_point_literals               | MISMATCH     | Output does not match .expect        |
 | 71_macro_empty_arg                       | PASS         | Output matches                       |
 | 72_long_long_constant                    | PASS         | Output matches                       |
 | 73_arm64                                 | EXEC_FAIL    | non-zero exit                        |
@@ -109,7 +109,7 @@ Generated: April 2026
 | 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | PASS         | Output matches                       |
 | 109_float_struct_calling                 | EXEC_FAIL    | non-zero exit                        |
-| 110_average                              | PASS         | Output matches                       |
+| 110_average                              | MISMATCH     | Output does not match .expect        |
 | 111_conversion                           | PASS         | Output matches                       |
 | 112_backtrace                            | SKIP         | Skipped                              |
 | 113_btdll                                | SKIP         | Skipped                              |
@@ -130,7 +130,7 @@ Generated: April 2026
 | 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | MISMATCH     | Output does not match .expect        |
 | 130_large_argument                       | EXEC_FAIL    | non-zero exit                        |
-| 131_return_struct_in_reg                 | MISMATCH     | Output does not match .expect        |
+| 131_return_struct_in_reg                 | EXEC_FAIL    | non-zero exit                        |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | MISMATCH     | Output does not match .expect        |
 | 134_double_to_signed                     | MISMATCH     | Output does not match .expect        |
