@@ -3788,7 +3788,12 @@ void codegen(Program *prog) {
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         printf("  stp %s, %s, [%s, #-16]!\n", FRAME_PTR, LINK_REG, STACK_REG);
         printf("  mov %s, %s\n", FRAME_PTR, STACK_REG);
-        printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, frame_size);
+        if (frame_size <= 4095)
+            printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, frame_size);
+        else {
+            printf("  mov x16, #%d\n", frame_size);
+            printf("  sub %s, %s, x16\n", STACK_REG, STACK_REG);
+        }
 
         // Save callee-saved regs
         int cs_off = 16;
@@ -3894,7 +3899,12 @@ void codegen(Program *prog) {
             }
         }
 
-        printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, frame_size);
+        if (frame_size <= 4095)
+            printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, frame_size);
+        else {
+            printf("  mov x16, #%d\n", frame_size);
+            printf("  add %s, %s, x16\n", STACK_REG, STACK_REG);
+        }
         printf("  ldp %s, %s, [%s], #16\n", FRAME_PTR, LINK_REG, STACK_REG);
         printf("  ret\n");
 

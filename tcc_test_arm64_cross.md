@@ -129,7 +129,7 @@ Generated: April 2026
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
 | 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | MISMATCH     | Output does not match .expect        |
-| 130_large_argument                       | COMPILE_FAIL | rcc returned non-zero                |
+| 130_large_argument                       | EXEC_FAIL    | non-zero exit                        |
 | 131_return_struct_in_reg                 | MISMATCH     | Output does not match .expect        |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | MISMATCH     | Output does not match .expect        |
