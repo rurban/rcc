@@ -69,6 +69,8 @@ void help(void) {
            "-O1           enable peephole + CTFE optimizations\n"
            "-mms-bitfields     use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields  use GCC bitfield layout by default\n"
+           "-###          dry-run (print commands, don't execute)\n"
+           "-v            show version\n"
            "-Dname[=val]  define a macro value\n"
            "-Uname        undefine a macro value\n"
            "--help\n"
@@ -77,6 +79,7 @@ void help(void) {
 
 bool opt_O0 = false;
 bool opt_O1 = false;
+bool opt_dryrun = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -138,6 +141,8 @@ int main(int argc, char **argv) {
             opt_O0 = true;
         } else if (!strcmp(argv[i], "-O1")) {
             opt_O1 = true;
+        } else if (!strcmp(argv[i], "-###")) {
+            opt_dryrun = true;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
@@ -219,19 +224,23 @@ int main(int argc, char **argv) {
             if (opt_O1)
                 optimize(prog);
 
-            // Redirect stdout to our assembly file (append for multi-file)
-            if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
-                fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
-                return 1;
+            if (!opt_dryrun) {
+                // Redirect stdout to our assembly file (append for multi-file)
+                if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
+                    fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
+                    return 1;
+                }
+                first_input = false;
+                // Code generation (prints assembly to stdout, which is now asm_path)
+                codegen(prog);
+                fflush(stdout);
+                // Restore stdout to console if we want to print further, but we are done.
+                fclose(stdout);
+            } else {
+                first_input = false;
             }
-            first_input = false;
-            // Code generation (prints assembly to stdout, which is now asm_path)
-            codegen(prog);
-            fflush(stdout);
-            // Restore stdout to console if we want to print further, but we are done.
-            fclose(stdout);
 
-            if (!opt_S) {
+            if (!opt_S && !opt_dryrun) {
                 OutPath *p = arena_alloc(sizeof(OutPath));
                 p->path = asm_path;
                 p->next = out_paths;
@@ -257,11 +266,14 @@ int main(int argc, char **argv) {
             snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
 #endif
         }
-        out_paths = reverse(out_paths);
-        for (OutPath *p = out_paths; p; p = p->next) {
-            strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+        if (!opt_dryrun) {
+            out_paths = reverse(out_paths);
+            for (OutPath *p = out_paths; p; p = p->next) {
+                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
+                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+            }
         }
+
 
 #if defined(_WIN32) || defined(__MINGW32__)
         // Link mingw runtime lib (provides on_exit etc.)
@@ -278,6 +290,11 @@ int main(int argc, char **argv) {
 #endif
         if (libs_len)
             strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
+
+        if (opt_dryrun) {
+            printf("%s\n", cmd);
+            return 0;
+        }
 
         int status = system(cmd);
         if (status != 0) {
