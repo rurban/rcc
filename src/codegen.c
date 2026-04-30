@@ -1072,12 +1072,12 @@ static void emit_load(Type *ty, int r, char *addr) {
 #ifdef ARCH_ARM64
     // ARM64 narrow loads always write to w register (32-bit), zero-extending
     // Handle negative offsets with large magnitude (ARM64 ldr/str 9-bit signed limit)
-    int off;
+    int off = 0;
     char base[32];
     char load_op[16];
     char *dst_reg;
     bool needs_split = false;
-    if (sscanf(addr, "[%31[^,], #%d]", base, &off) >= 1 && off < -255) {
+    if (sscanf(addr, "[%31[^,], #%d]", base, &off) == 2 && off < -255) {
         needs_split = true;
         int tr = alloc_reg();
         if (-off <= 4095)
