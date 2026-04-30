@@ -26,9 +26,9 @@ for cc in "${ARM64_CC:-aarch64-linux-gnu-gcc}" aarch64-redhat-linux-gcc aarch64-
 done
 ARM64_QEMU="${ARM64_QEMU:-qemu-aarch64}"
 ARM64_SYSROOT="${ARM64_SYSROOT:-$("$ARM64_CC" -print-sysroot 2>/dev/null)}"
-if [ -z "$ARM64_SYSROOT" ] || [ ! -d "$ARM64_SYSROOT/usr/include" ]; then
-    for p in /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root; do
-        if [ -d "$p/usr/include" ]; then ARM64_SYSROOT="$p"; break; fi
+if [ -z "$ARM64_SYSROOT" ] || [ "$ARM64_SYSROOT" = "/" ] || { [ ! -d "$ARM64_SYSROOT/usr/include" ] && [ ! -f "$ARM64_SYSROOT/lib/ld-linux-aarch64.so.1" ]; }; then
+    for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root /usr/aarch64-linux-gnu; do
+        if [ -d "$p/usr/include" ] || [ -f "$p/lib/ld-linux-aarch64.so.1" ]; then ARM64_SYSROOT="$p"; break; fi
     done
 fi
 
@@ -91,7 +91,7 @@ for input in $inputs; do
 done
 
 # shellcheck disable=SC2086
-if [ -n "$ARM64_SYSROOT" ] && [ -d "$ARM64_SYSROOT" ]; then
+if [ -n "$ARM64_SYSROOT" ] && [ -d "$ARM64_SYSROOT/usr/include" ]; then
     "$ARM64_CC" --sysroot="$ARM64_SYSROOT" -no-pie -o "$output" $s_files $ld_flags && rm -f $s_files
 else
     "$ARM64_CC" -no-pie -o "$output" $s_files $ld_flags && rm -f $s_files

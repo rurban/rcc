@@ -111,7 +111,14 @@ TMP_OUT="$TMPDIR/rcc_test_$$.out"
 TMP_EXE="$TMPDIR/rcc_test_$$"
 is_arm64=''
 RUN_PREFIX=''
-ARM64_SYSROOT="${ARM64_SYSROOT:-/usr/aarch64-redhat-linux/sys-root/fc43}"
+if [ -z "${ARM64_SYSROOT+x}" ]; then
+    for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root /usr/aarch64-linux-gnu; do
+        if [ -f "$p/lib/ld-linux-aarch64.so.1" ] || [ -d "$p/usr/include" ]; then
+            ARM64_SYSROOT="$p"
+            break
+        fi
+    done
+fi
 if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
 	TMP_EXE="$TMP_EXE.exe"
 	WINEDEBUG=fixme-all

@@ -40,10 +40,12 @@ TARGET = rcc-arm64
 OBJ_EXT = .arm64.o
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
+ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
 ARM64_SYSROOT := /usr/aarch64-redhat-linux/sys-root/fc43
 endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
+endif
 endif
 endif
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
