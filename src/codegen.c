@@ -1853,16 +1853,18 @@ static int gen(Node *node) {
                 if (bo > 0) printf("  lsr %s, %s, #%d\n", reg64[rt], reg64[rt], bo);
                 if (bw < unit_sz * 8) {
                     unsigned long long m = (1ULL << bw) - 1;
-                    printf("  mov %s, #%llu\n", reg64[rt], m);
-                    printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rt]);
+                    int t2 = alloc_reg();
+                    emit_mov_imm64(reg64[t2], m);
+                    printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[t2]);
+                    free_reg(t2);
                 }
                 BF_LOAD(unit_sz, ra, rt);
                 int tmp = alloc_reg();
-                printf("  mov %s, #%llu\n", reg64[tmp], ~mask);
+                emit_mov_imm64(reg64[tmp], ~mask);
                 printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[tmp]);
                 int rv = alloc_reg();
                 printf("  mov %s, %s\n", reg64[rv], reg64[r2]);
-                printf("  mov %s, #%llu\n", reg64[tmp], (1ULL << bw) - 1);
+                emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
                 printf("  and %s, %s, %s\n", reg64[rv], reg64[rv], reg64[tmp]);
                 if (bo > 0) printf("  lsl %s, %s, #%d\n", reg64[rv], reg64[rv], bo);
                 printf("  orr %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rv]);
@@ -1881,11 +1883,11 @@ static int gen(Node *node) {
             int eff_sz = unit_sz > 8 ? 8 : unit_sz;
             BF_LOAD(eff_sz, ra, rt);
             int tmp = alloc_reg();
-            printf("  mov %s, #%llu\n", reg64[tmp], ~mask);
+            emit_mov_imm64(reg64[tmp], ~mask);
             printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[tmp]);
             int rv = alloc_reg();
             printf("  mov %s, %s\n", reg64[rv], reg64[r2]);
-            printf("  mov %s, #%llu\n", reg64[tmp], (1ULL << bw) - 1);
+            emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
             printf("  and %s, %s, %s\n", reg64[rv], reg64[rv], reg64[tmp]);
             if (bo > 0) printf("  lsl %s, %s, #%d\n", reg64[rv], reg64[rv], bo);
             printf("  orr %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rv]);
@@ -2128,8 +2130,10 @@ static int gen(Node *node) {
             if (bw < load_bits) {
                 if (node->member->ty->is_unsigned || node->member->ty->is_enum) {
                     unsigned long long mask = (1ULL << bw) - 1;
-                    printf("  mov %s, #%llu\n", reg64[r], mask);
-                    printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[r]);
+                    int tmp2 = alloc_reg();
+                    emit_mov_imm64(reg64[tmp2], mask);
+                    printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[tmp2]);
+                    free_reg(tmp2);
                 } else {
                     int shift = 64 - bw;
                     printf("  lsl %s, %s, #%d\n", reg64[r], reg64[r], shift);
@@ -2188,8 +2192,10 @@ static int gen(Node *node) {
             if (bw < load_bits) {
                 if (node->member->ty->is_unsigned || node->member->ty->is_enum) {
                     unsigned long long mask = (1ULL << bw) - 1;
-                    printf("  mov %s, #%llu\n", reg64[r], mask);
-                    printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[r]);
+                    int t = alloc_reg();
+                    emit_mov_imm64(reg64[t], mask);
+                    printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[t]);
+                    free_reg(t);
                 } else {
                     int shift = 64 - bw;
                     printf("  lsl %s, %s, #%d\n", reg64[r], reg64[r], shift);
@@ -2224,7 +2230,7 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
             printf("  fmov d0, %s\n", reg64[r]);
             if (to->is_unsigned) {
-                printf("  fcvtzs %s, d0\n", reg64[r]);
+                printf("  fcvtzu %s, d0\n", reg64[r]);
             } else {
                 printf("  fcvtzs %s, d0\n", reg64[r]);
             }
@@ -2314,10 +2320,17 @@ static int gen(Node *node) {
                 else
                     printf("  sxtw %s, %s\n", reg64[r], reg32[r]);
             } else {
-                if (from->is_unsigned)
-                    printf("  uxtb %s, %s\n", reg64[r], reg32[r]);
-                else
-                    printf("  sxtb %s, %s\n", reg64[r], reg32[r]);
+                if (from->size == 1) {
+                    if (from->is_unsigned)
+                        printf("  uxtb %s, %s\n", reg64[r], reg32[r]);
+                    else
+                        printf("  sxtb %s, %s\n", reg64[r], reg32[r]);
+                } else {
+                    if (from->is_unsigned)
+                        printf("  uxth %s, %s\n", reg64[r], reg32[r]);
+                    else
+                        printf("  sxth %s, %s\n", reg64[r], reg32[r]);
+                }
             }
 #else
             if (from->size == 4) {
@@ -3990,19 +4003,29 @@ void codegen(Program *prog) {
                 } else if (gp_param < 8) {
                     char *preg = var->ty->size <= 4 ? wpreg[gp_param] : gpreg[gp_param];
                     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
-                        // Large struct passed by pointer — copy from register to stack
                         int c = ++rcc_label_count;
                         printf("  mov x11, %s\n", preg);
+                        if (var->offset <= 4095)
+                            printf("  sub x13, %s, #%d\n", FRAME_PTR, var->offset);
+                        else {
+                            int v = var->offset;
+                            printf("  mov x13, #%d\n", v & 0xffff);
+                            v >>= 16;
+                            int s = 16;
+                            while (v) {
+                                printf("  movk x13, #%d, lsl #%d\n", v & 0xffff, s);
+                                v >>= 16;
+                                s += 16;
+                            }
+                            printf("  sub x13, %s, x13\n", FRAME_PTR);
+                        }
                         printf("  mov x12, #%d\n", var->ty->size);
                         printf(".L.pcopy.%d:\n", c);
                         printf("  cmp x12, #0\n");
                         printf("  b.eq .L.pcopy_end.%d\n", c);
                         printf("  sub x12, x12, #1\n");
-                        printf("  ldrb w13, [x11, x12]\n");
-                        printf("  strb w13, [%s, #-%d]\n", FRAME_PTR, var->offset - var->ty->size);
-                        printf("  add %s, %s, x12\n", FRAME_PTR, FRAME_PTR); // temporary — wrong
-                        // FIXME: proper struct copy loop
-                        printf("  sub x12, x12, #1\n");
+                        printf("  ldrb w14, [x11, x12]\n");
+                        printf("  strb w14, [x13, x12]\n");
                         printf("  b .L.pcopy.%d\n", c);
                         printf(".L.pcopy_end.%d:\n", c);
                     } else {
