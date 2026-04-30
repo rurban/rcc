@@ -567,8 +567,20 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             arg_regs[i] = gen(argv[i]);
     }
 
+    // Save any live caller-saved registers (indices 0-5: x10-x15) before stack reserve
+    int arm64_saved_mask = used_regs & 63;
+
     if (stack_reserve > 0)
         printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, stack_reserve);
+
+    // Save caller-saved regs to [sp] area (on or after sub sp)
+    int sv_off = 0;
+    for (int i = 0; i < 6; i++) {
+        if (arm64_saved_mask & (1 << i)) {
+            printf("  str %s, [%s, #%d]\n", reg64[i], STACK_REG, sv_off * 8);
+            sv_off++;
+        }
+    }
 
     // Push stack args (reverse order)
     for (int i = nargs - 1; i >= 0; i--) {
@@ -639,6 +651,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
     if (stack_reserve > 0)
         printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, stack_reserve);
+
+    // Restore caller-saved registers (saved in sub sp area)
+    if (arm64_saved_mask) {
+        int sv = 0;
+        for (int i = 0; i < 6; i++) {
+            if (arm64_saved_mask & (1 << i)) {
+                printf("  ldr %s, [%s, #%d]\n", reg64[i], STACK_REG, sv * 8);
+                sv++;
+            }
+        }
+    }
 
     if (has_hidden_retbuf) {
         if (temp_ret_reg != -1)
