@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated: April 2026
+Generated: May 2026
 
 ## Summary
  - **Total**:     138
- - **Passed**:    113
- - **Failed**:    25
- - **Pass Rate**: 81%
+ - **Passed**:    114
+ - **Failed**:    24
+ - **Pass Rate**: 82%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -91,7 +91,7 @@ Generated: April 2026
 | 90_struct-init                           | EXEC_FAIL    | non-zero exit                        |
 | 91_ptr_longlong_arith32                  | PASS         | Output matches                       |
 | 92_enum_bitfield                         | PASS         | Output matches                       |
-| 93_integer_promotion                     | MISMATCH     | Output does not match .expect        |
+| 93_integer_promotion                     | PASS         | Output matches                       |
 | 94_generic                               | PASS         | Output matches                       |
 | 95_bitfields                             | MISMATCH     | Output does not match .expect        |
 | 95_bitfields_ms                          | MISMATCH     | Output does not match .expect        |
