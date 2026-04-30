@@ -6,6 +6,7 @@ Set-Location $ScriptDir
 $SRC     = Join-Path $ScriptDir "bench.c"
 $RCC     = Join-Path $RootDir "rcc.exe"
 $GCC     = "gcc"
+$CLANG   = "clang"
 
 # Discover TCC: prefer installed copy, else submodule with include paths
 $TCC_INSTALL = "C:/Program Files/tcc/tcc.exe"
@@ -24,8 +25,10 @@ if (Test-Path $TCC_INSTALL) {
 $RCC_EXE    = Join-Path $ScriptDir "bench_rcc.exe"
 $RCC_O1_EXE = Join-Path $ScriptDir "bench_rcc_o1.exe"
 $TCC_EXE    = Join-Path $ScriptDir "bench_tcc.exe"
-$GCC_EXE = Join-Path $ScriptDir "bench_gcc.exe"
-$GCC_O2  = Join-Path $ScriptDir "bench_gcc_o2.exe"
+$GCC_EXE    = Join-Path $ScriptDir "bench_gcc.exe"
+$GCC_O2     = Join-Path $ScriptDir "bench_gcc_o2.exe"
+$CLANG_EXE  = Join-Path $ScriptDir "bench_clang.exe"
+$CLANG_O2   = Join-Path $ScriptDir "bench_clang_o2.exe"
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Cyan
@@ -109,6 +112,14 @@ if ($r) { $results += $r }
 Write-Host ""
 
 $r = Run-Bench "GCC -O2 (optimized)" $GCC "-O2 $SRC -o $GCC_O2 -lm" $GCC_O2 "Magenta"
+if ($r) { $results += $r }
+Write-Host ""
+
+$r = Run-Bench "CLANG -O0 (no opt)" $CLANG "-O0 $SRC -o $CLANG_EXE" $CLANG_EXE "Magenta"
+if ($r) { $results += $r }
+Write-Host ""
+
+$r = Run-Bench "CLANG -O2 (optimized)" $CLANG "-O2 $SRC -o $CLANG_O2" $CLANG_O2 "Magenta"
 if ($r) { $results += $r }
 Write-Host ""
 

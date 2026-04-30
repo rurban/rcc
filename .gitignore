@@ -14,6 +14,7 @@ a.out
 .*.sh
 .clang-tidy
 rcc
+rcc-arm64
 actual.txt
 fred.txt
 err.log

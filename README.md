@@ -18,16 +18,18 @@ Windows:
 
 Linux:
 
-| Compiler | Compile (ms) | Execute (ms) | Total (ms) |
-| :------- | -----------: | -----------: | ---------: |
-| RCC      |           74 |          596 |        670 |
-| TCC      |        **7** |          598 |        605 |
-| SLIMCC   |           50 |          649 |        699 |
-| KEFIR    |          215 |          774 |        989 |
-| GCC0     |           76 |          592 |        668 |
-| GCCO2    |          227 |      **227** |        454 |
-| CLANG0   |          123 |          673 |        796 |
-| CLANGO2  |          159 |          239 |    **398** |
+| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
+| :-------- | -----------: | -----------: | ---------: |
+| RCC       |           50 |          598 |        648 |
+| RCC -O1   |           43 |          602 |        645 |
+| TCC       |       **19** |          510 |        529 |
+| SLIMCC    |           54 |          521 |        575 |
+| KEFIR     |          240 |          602 |        842 |
+| KEFIR -O1 |          188 |          600 |        788 |
+| GCC -O0   |           61 |          499 |        560 |
+| GCC -O2   |          153 |          188 |    **341** |
+| Clang -O0 |          351 |          473 |        824 |
+| Clang -O2 |          250 |      **183** |        433 |
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
@@ -48,7 +50,7 @@ Linux:
   - Liveness-aware dead code removal
 - **Direct function calls** — `call funcname` instead of `lea reg, [rip+func]; call reg`.
 - **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp` per call for ≤4 args.
-- **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time.
+- **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time with -O1.
 - **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
 - **Floating-point support** — `float`/`double/long double` arithmetic, casts, function calls via SSE2 (xmm0–xmm7). 80-bit long double x87 via `fld`/`fstp`, though truncated to 64 bits on store. Float args properly classified as SSE class with separate GP/FP argument counters.
 - **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
@@ -63,8 +65,8 @@ Not yet: VLA's, GNU alias, atomics.
 
 Top-level `__asm__("...")` statements are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
-The tcc suite has 136/136 test passed (100%) on linux and mingw-cross.
-Three tcc bugs have been detected.
+The tcc suite has 137/137 test passed (100%) on linux and mingw-cross, 101/104 on windows native.
+Three tcc bugs have been detected so far.
 
 ## Build
 
@@ -123,9 +125,9 @@ make bench
 ## Unix fork
 
 The original windows repo is at https://github.com/DocDamage/realtime-c-compiler with
-[those](tcc_test_report_mingw1.1.md) test results (61/139 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
+[those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes now [136/136 tests](tcc_test_linux.md) on linux, [136/136 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [101/104 tests](tcc_test_mingw.md) on windows native. macOS linking still in work, but no arm64 port planned yet.
+This fork passes now [137/137 tests](tcc_test_linux.md) on linux, [137/137 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [101/104 tests](tcc_test_mingw.md) on windows native. macOS linking and arm64 port still in work (109/138 tests pass on arm64-elf).
 
 ## License
 
