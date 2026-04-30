@@ -783,7 +783,8 @@ static int alloc_reg(void) {
     // (least likely to be referenced by outer callers right now).
     for (int i = 7; i >= 0; i--) {
         if (used_regs & (1 << i)) {
-            fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            if (opt_W)
+                fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
             printf("  mov [rbp-%d], %s\n", spill_offset(i), reg64[i]);
             spilled_regs |= (1 << i);
             spill_count++;

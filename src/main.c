@@ -55,7 +55,7 @@ static char *read_file(char *path) {
 }
 
 void help(void) {
-    printf("rcc v1.2-dev - Copyright 2026 Hosokawa-t and Reini Urban\n");
+    printf("rcc %s - Copyright 2026 Hosokawa-t and Reini Urban\n", VERSION);
     printf("rcc [options...] [-o outfile] [-c] infile(s)...\n");
     printf("Options:\n"
            "-I path       add include path\n"
@@ -67,6 +67,7 @@ void help(void) {
            "-o file       set output filename\n"
            "-O0           disable peephole optimizer\n"
            "-O1           enable peephole + CTFE optimizations\n"
+           "-W            enable more compiler warnings\n"
            "-mms-bitfields     use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields  use GCC bitfield layout by default\n"
            "-###          dry-run (print commands, don't execute)\n"
@@ -79,6 +80,7 @@ void help(void) {
 
 bool opt_O0 = false;
 bool opt_O1 = false;
+bool opt_W = false;
 bool opt_dryrun = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
@@ -141,6 +143,8 @@ int main(int argc, char **argv) {
             opt_O0 = true;
         } else if (!strcmp(argv[i], "-O1")) {
             opt_O1 = true;
+        } else if (!strcmp(argv[i], "-W")) {
+            opt_W = true;
         } else if (!strcmp(argv[i], "-###")) {
             opt_dryrun = true;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {

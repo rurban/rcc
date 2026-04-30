@@ -160,6 +160,7 @@ extern Type *ty_double;
 extern Type *ty_ldouble;
 
 extern bool opt_O0;
+extern bool opt_W;
 extern bool opt_ms_bitfields;
 extern int pack_align;
 extern bool sse42_available;

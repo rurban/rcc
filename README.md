@@ -97,11 +97,14 @@ make bench
     -S                 assemble-only
     -c                 compile-only
     -o file            set output filename
-    -O0                skip peephole optimizer
+    -O0                disable peephole optimizer
+    -O1                enable peephole + CTFE optimizations
     -mms-bitfields     use MSVC bitfields (default on Windows)
     -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
     -Dname[=val]       define a macro value
     -Uname             undefine a macro value
+    -W                 print diagnostic warnings (stack spilling)
+    -###               dry-run (print commands, don't execute)
     --help
     --version
 
