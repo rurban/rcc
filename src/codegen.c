@@ -1416,12 +1416,17 @@ static int gen(Node *node) {
 #else
                 emit_load(node->ty, r, format("[rbp-%d]", node->var->offset));
 #endif
-            else
+            else {
 #ifdef ARCH_ARM64
-                emit_load(node->ty, r, format("[%s, #-%d]", FRAME_PTR, node->var->offset));
+                // Global variable: load address via ADRP+ADD, then deref
+                int ta = alloc_reg();
+                printf("  adrp %s, %s\n  add %s, %s, :lo12:%s\n", reg64[ta], label, reg64[ta], reg64[ta], label);
+                emit_load(node->ty, r, format("[%s]", reg64[ta]));
+                free_reg(ta);
 #else
                 emit_load(node->ty, r, format("[rip + %s]", label));
 #endif
+            }
         }
         return r;
     }
