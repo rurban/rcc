@@ -2815,7 +2815,12 @@ static int gen(Node *node) {
     }
     case ND_LABEL_VAL: {
         int r = alloc_reg();
+#ifdef ARCH_ARM64
+        printf("  adrp %s, .L.label.%s.%s\n  add %s, %s, :lo12:.L.label.%s.%s\n",
+               reg64[r], current_fn, node->label_name, reg64[r], reg64[r], current_fn, node->label_name);
+#else
         printf("  lea %s, [rip + .L.label.%s.%s]\n", reg64[r], current_fn, node->label_name);
+#endif
         return r;
     }
     case ND_ASM: {
@@ -3112,7 +3117,12 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         const char *shift_op = node->kind == ND_SHL ? "lsl" : (use_unsigned(node->ty) ? "lsr" : "asr");
         if (node->rhs->kind == ND_NUM) {
-            printf("  %s %s, %s, #%d\n", shift_op, reg(r_lhs, sz), reg(r_lhs, sz), (int)node->rhs->val);
+            int s = (int)node->rhs->val;
+            if (s >= sz * 8) {
+                printf("  mov %s, #0\n", reg(r_lhs, sz));
+            } else {
+                printf("  %s %s, %s, #%d\n", shift_op, reg(r_lhs, sz), reg(r_lhs, sz), s);
+            }
         } else {
             int r_rhs = gen(node->rhs);
             printf("  %s %s, %s, %s\n", shift_op, reg(r_lhs, sz), reg(r_lhs, sz), reg(r_rhs, sz));
@@ -3901,7 +3911,21 @@ void codegen(Program *prog) {
                     break;
                 }
             }
-            printf("  str x8, [%s, #-%d]\n", FRAME_PTR, retbuf_offset);
+            if (retbuf_offset <= 4095)
+                printf("  str x8, [%s, #-%d]\n", FRAME_PTR, retbuf_offset);
+            else {
+                int v = retbuf_offset;
+                printf("  mov x16, #%d\n", v & 0xffff);
+                v >>= 16;
+                int s = 16;
+                while (v) {
+                    printf("  movk x16, #%d, lsl #%d\n", v & 0xffff, s);
+                    v >>= 16;
+                    s += 16;
+                }
+                printf("  sub x16, %s, x16\n", FRAME_PTR);
+                printf("  str x8, [x16]\n");
+            }
         }
 
         // Save incoming params to stack slots
