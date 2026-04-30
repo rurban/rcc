@@ -487,9 +487,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int stack_reserve = stack_args > 0 ? shadow_space + stack_args * 8 + stack_pad : 0;
 #elif defined(ARCH_ARM64)
     // AAPCS64: 8 GP + 8 FP arg registers
+    // Variadic functions put all args (including floats) in GP regs or stack
     int gp_reg_args = 0;
     int fp_reg_args = 0;
     int stack_args = 0;
+    bool is_variadic = node->ty && node->ty->is_variadic;
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = argv[i]->ty->size;
@@ -498,8 +500,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
         if (arg_is_float[i]) {
-            if (fp_reg_args < max_fp_args) {
+            if (!is_variadic && fp_reg_args < max_fp_args) {
                 arg_fp_idx[i] = fp_reg_args++;
+            } else if (gp_reg_args < max_gp_args) {
+                // variadic or no FP regs: pass float in GP reg
+                arg_gp_idx[i] = gp_reg_args++;
             } else {
                 arg_stack_idx[i] = stack_args++;
             }
@@ -619,8 +624,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
-        if (arg_is_float[i]) {
+        if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
             printf("  fmov %s, %s\n", argxmm[arg_fp_idx[i]], reg64[arg_regs[i]]);
+        } else if (arg_is_float[i] && arg_gp_idx[i] >= 0) {
+            // Variadic: float value (double bit pattern in GP reg) to GP arg reg
+            printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
         } else if (arg_sizes[i] == 1 || arg_sizes[i] == 2) {
             // For small types, use 64-bit move (caller extends)
             printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
