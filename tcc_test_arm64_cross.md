@@ -3,9 +3,9 @@ Generated: April 2026
 
 ## Summary
  - **Total**:     138
- - **Passed**:    96
- - **Failed**:    42
- - **Pass Rate**: 69%
+ - **Passed**:    104
+ - **Failed**:    34
+ - **Pass Rate**: 75%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -15,7 +15,7 @@ Generated: April 2026
 | 02_printf                                | PASS         | Output matches                       |
 | 03_struct                                | PASS         | Output matches                       |
 | 04_for                                   | PASS         | Output matches                       |
-| 05_array                                 | MISMATCH     | Output does not match .expect        |
+| 05_array                                 | PASS         | Output matches                       |
 | 06_case                                  | PASS         | Output matches                       |
 | 07_function                              | PASS         | Output matches                       |
 | 08_while                                 | PASS         | Output matches                       |
@@ -25,7 +25,7 @@ Generated: April 2026
 | 12_hashdefine                            | PASS         | Output matches                       |
 | 13_integer_literals                      | PASS         | Output matches                       |
 | 14_if                                    | PASS         | Output matches                       |
-| 15_recursion                             | EXEC_FAIL    | non-zero exit                        |
+| 15_recursion                             | PASS         | Output matches                       |
 | 16_nesting                               | PASS         | Output matches                       |
 | 17_enum                                  | PASS         | Output matches                       |
 | 18_include                               | PASS         | Output matches                       |
@@ -35,12 +35,12 @@ Generated: April 2026
 | 22_floating_point                        | MISMATCH     | Output does not match .expect        |
 | 23_type_coercion                         | MISMATCH     | Output does not match .expect        |
 | 24_math_library                          | MISMATCH     | Output does not match .expect        |
-| 25_quicksort                             | EXEC_FAIL    | non-zero exit                        |
+| 25_quicksort                             | PASS         | Output matches                       |
 | 26_character_constants                   | PASS         | Output matches                       |
 | 27_sizeof                                | PASS         | Output matches                       |
 | 28_strings                               | PASS         | Output matches                       |
 | 29_array_address                         | PASS         | Output matches                       |
-| 30_hanoi                                 | EXEC_FAIL    | non-zero exit                        |
+| 30_hanoi                                 | PASS         | Output matches                       |
 | 31_args                                  | PASS         | Output matches                       |
 | 32_led                                   | EXEC_FAIL    | non-zero exit                        |
 | 33_ternary_op                            | PASS         | Output matches                       |
@@ -68,11 +68,11 @@ Generated: April 2026
 | 60_errors_and_warnings                   | SKIP         | Skipped                              |
 | 61_integers                              | MISMATCH     | Output does not match .expect        |
 | 64_macro_nesting                         | PASS         | Output matches                       |
-| 67_macro_concat                          | MISMATCH     | Output does not match .expect        |
+| 67_macro_concat                          | PASS         | Output matches                       |
 | 70_floating_point_literals               | PASS         | Output matches                       |
-| 71_macro_empty_arg                       | MISMATCH     | Output does not match .expect        |
+| 71_macro_empty_arg                       | PASS         | Output matches                       |
 | 72_long_long_constant                    | PASS         | Output matches                       |
-| 73_arm64                                 | EXEC_FAIL    | non-zero exit                        |
+| 73_arm64                                 | COMPILE_FAIL | rcc returned non-zero                |
 | 75_array_in_struct_init                  | PASS         | Output matches                       |
 | 76_dollars_in_identifiers                | PASS         | Output matches                       |
 | 77_push_pop_macro                        | PASS         | Output matches                       |
@@ -82,7 +82,7 @@ Generated: April 2026
 | 81_types                                 | PASS         | Output matches                       |
 | 82_attribs_position                      | PASS         | Output matches                       |
 | 83_utf8_in_identifiers                   | PASS         | Output matches                       |
-| 84_hex-float                             | MISMATCH     | Output does not match .expect        |
+| 84_hex-float                             | PASS         | Output matches                       |
 | 85_asm-outside-function                  | PASS         | Output matches                       |
 | 86_memory-model                          | PASS         | Output matches                       |
 | 87_dead_code                             | EXEC_FAIL    | non-zero exit                        |
@@ -93,8 +93,8 @@ Generated: April 2026
 | 92_enum_bitfield                         | MISMATCH     | Output does not match .expect        |
 | 93_integer_promotion                     | MISMATCH     | Output does not match .expect        |
 | 94_generic                               | PASS         | Output matches                       |
-| 95_bitfields                             | EXEC_FAIL    | non-zero exit                        |
-| 95_bitfields_ms                          | EXEC_FAIL    | non-zero exit                        |
+| 95_bitfields                             | MISMATCH     | Output does not match .expect        |
+| 95_bitfields_ms                          | MISMATCH     | Output does not match .expect        |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
 | 97_utf8_string_literal                   | MISMATCH     | Output does not match .expect        |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |
@@ -109,7 +109,7 @@ Generated: April 2026
 | 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | PASS         | Output matches                       |
 | 109_float_struct_calling                 | EXEC_FAIL    | non-zero exit                        |
-| 110_average                              | MISMATCH     | Output does not match .expect        |
+| 110_average                              | PASS         | Output matches                       |
 | 111_conversion                           | PASS         | Output matches                       |
 | 112_backtrace                            | SKIP         | Skipped                              |
 | 113_btdll                                | SKIP         | Skipped                              |
@@ -130,7 +130,7 @@ Generated: April 2026
 | 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | MISMATCH     | Output does not match .expect        |
 | 130_large_argument                       | COMPILE_FAIL | rcc returned non-zero                |
-| 131_return_struct_in_reg                 | EXEC_FAIL    | non-zero exit                        |
+| 131_return_struct_in_reg                 | MISMATCH     | Output does not match .expect        |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | MISMATCH     | Output does not match .expect        |
 | 134_double_to_signed                     | MISMATCH     | Output does not match .expect        |
@@ -153,7 +153,7 @@ Generated: April 2026
 | test_if_simple                           | PASS         | exit=0                               |
 | test_include                             | PASS         | exit=42                              |
 | test_include2                            | PASS         | exit=10                              |
-| test_loop                                | PASS         | exit=124                             |
+| test_loop                                | PASS         | exit=0                               |
 | test_macro                               | PASS         | exit=1                               |
 | test_minimal                             | PASS         | exit=0                               |
 | test_nested_if                           | PASS         | exit=0                               |

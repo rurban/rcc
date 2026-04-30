@@ -3112,6 +3112,13 @@ static int gen(Node *node) {
                 free_reg(tmp);
             } else if (!strcmp(inst, "cmp")) {
                 printf("  cmp %s, #%d\n", reg(r_lhs, sz), imm);
+            } else if (imm >= 0 && imm <= 4095) {
+                printf("  %s %s, %s, #%d\n", inst, reg(r_lhs, sz), reg(r_lhs, sz), imm);
+            } else {
+                int tmp = alloc_reg();
+                printf("  mov %s, #%d\n", reg(tmp, sz), imm);
+                printf("  %s %s, %s, %s\n", inst, reg(r_lhs, sz), reg(r_lhs, sz), reg(tmp, sz));
+                free_reg(tmp);
 #else
             } else if (node->kind == ND_MUL && imm > 0 && (imm & (imm - 1)) == 0) {
                 // Strength reduction: multiply by power of 2 → shift
