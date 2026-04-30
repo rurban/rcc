@@ -1,6 +1,6 @@
 # RCC — Regoshi C Compiler
 
-A fast, self-contained C compiler targeting x86-64 Windows and Unix, with experimental AArch64 (ARM64) support. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux and fixed the rest by Reini Urban.
+A fast, self-contained C compiler targeting x86-64 Windows and Unix, with experimental AArch64 (ARM64) support. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux, arm64 and fixed the rest by Reini Urban.
 **RCC equally fast code as TCC** while keeping compilation speed competitive.
 
 ## Benchmark Results
@@ -61,12 +61,12 @@ Linux:
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions.
 
-Not yet: VLA's, GNU alias, atomics.
+Not yet: VLA's, GNU alias, atomics, C23.
 
 Top-level `__asm__("...")` statements are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
 The tcc suite has 137/137 test passed (100%) on linux and mingw-cross, 101/104 on windows native.
-Three tcc bugs have been detected so far.
+Three tcc bugs have been detected so far. Fixes in the work.
 
 ## Build
 
@@ -131,7 +131,7 @@ make bench
 The original windows repo is at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes now [141/141 tcc tests](tcc_test_linux.md) on linux, [141/141 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [106/109 tests](tcc_test_mingw.md) on windows native. macOS linking and arm64 port still in work (130/137 tests pass on arm64-elf, 123/137 on darwin-cross).
+This fork passes now [141/141 tcc tests](tcc_test_linux.md) on linux, [141/141 tests](tcc_test_mingw_cross.md.md) on mingw-cross, and [106/109 tests](tcc_test_mingw.md) on windows native. macOS linking and arm64 port still in work (119/142 tests pass on arm64-elf, 123/137 on darwin-cross).
 For the c-testsuite it passes 220/220.
 
 ## License

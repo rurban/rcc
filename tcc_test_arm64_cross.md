@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     138
- - **Passed**:    114
- - **Failed**:    24
- - **Pass Rate**: 82%
+ - **Total**:     142
+ - **Passed**:    119
+ - **Failed**:    23
+ - **Pass Rate**: 83%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -59,7 +59,7 @@ Generated: May 2026
 | 46_grep                                  | EXEC_FAIL    | non-zero exit                        |
 | 47_switch_return                         | PASS         | Output matches                       |
 | 48_nested_break                          | PASS         | Output matches                       |
-| 49_bracket_evaluation                    | MISMATCH     | Output does not match .expect        |
+| 49_bracket_evaluation                    | PASS         | Output matches                       |
 | 50_logical_second_arg                    | PASS         | Output matches                       |
 | 51_static                                | PASS         | Output matches                       |
 | 52_unnamed_enum                          | PASS         | Output matches                       |
@@ -69,15 +69,15 @@ Generated: May 2026
 | 61_integers                              | PASS         | Output matches                       |
 | 64_macro_nesting                         | PASS         | Output matches                       |
 | 67_macro_concat                          | PASS         | Output matches                       |
-| 70_floating_point_literals               | MISMATCH     | Output does not match .expect        |
+| 70_floating_point_literals               | PASS         | Output matches                       |
 | 71_macro_empty_arg                       | PASS         | Output matches                       |
 | 72_long_long_constant                    | PASS         | Output matches                       |
-| 73_arm64                                 | EXEC_FAIL    | non-zero exit                        |
+| 73_arm64                                 | COMPILE_FAIL | rcc returned non-zero                |
 | 75_array_in_struct_init                  | PASS         | Output matches                       |
 | 76_dollars_in_identifiers                | PASS         | Output matches                       |
 | 77_push_pop_macro                        | PASS         | Output matches                       |
-| 78_vla_label                             | SKIP         | Skipped                              |
-| 79_vla_continue                          | SKIP         | Skipped                              |
+| 78_vla_label                             | COMPILE_FAIL | rcc returned non-zero                |
+| 79_vla_continue                          | COMPILE_FAIL | rcc returned non-zero                |
 | 80_flexarray                             | EXEC_FAIL    | non-zero exit                        |
 | 81_types                                 | PASS         | Output matches                       |
 | 82_attribs_position                      | PASS         | Output matches                       |
@@ -116,13 +116,13 @@ Generated: May 2026
 | 114_bound_signal                         | SKIP         | Skipped                              |
 | 115_bound_setjmp                         | SKIP         | Skipped                              |
 | 116_bound_setjmp2                        | SKIP         | Skipped                              |
-| 117_builtins                             | EXEC_FAIL    | non-zero exit                        |
+| 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | COMPILE_FAIL | rcc returned non-zero                |
 | 120_alias                                | SKIP         | Skipped                              |
-| 121_struct_return                        | MISMATCH     | Output does not match .expect        |
-| 122_vla_reuse                            | SKIP         | Skipped                              |
-| 123_vla_bug                              | SKIP         | Skipped                              |
+| 121_struct_return                        | PASS         | Output matches                       |
+| 122_vla_reuse                            | COMPILE_FAIL | rcc returned non-zero                |
+| 123_vla_bug                              | COMPILE_FAIL | rcc returned non-zero                |
 | 124_atomic_counter                       | SKIP         | Skipped                              |
 | 125_atomic_misc                          | SKIP         | Skipped                              |
 | 126_bound_global                         | SKIP         | Skipped                              |
@@ -130,7 +130,7 @@ Generated: May 2026
 | 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | PASS         | Output matches                       |
 | 130_large_argument                       | MISMATCH     | Output does not match .expect        |
-| 131_return_struct_in_reg                 | MISMATCH     | Output does not match .expect        |
+| 131_return_struct_in_reg                 | PASS         | Output matches                       |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | MISMATCH     | Output does not match .expect        |
 | 134_double_to_signed                     | PASS         | Output matches                       |

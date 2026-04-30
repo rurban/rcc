@@ -530,13 +530,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
         if (arg_is_float[i]) {
-            if (!is_variadic && fp_reg_args < max_fp_args) {
+            if (fp_reg_args < max_fp_args) {
                 arg_fp_idx[i] = fp_reg_args++;
+                if (is_variadic && gp_reg_args < max_gp_args)
+                    arg_gp_idx[i] = gp_reg_args++;
             } else if (is_variadic && arg_sizes[i] > 8) {
-                // long double (16 bytes) on ARM64 doesn't fit in GP regs
                 arg_stack_idx[i] = stack_args++;
             } else if (gp_reg_args < max_gp_args) {
-                // variadic or no FP regs: pass float in GP reg
                 arg_gp_idx[i] = gp_reg_args++;
             } else {
                 arg_stack_idx[i] = stack_args++;
@@ -672,6 +672,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             continue;
         if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
             printf("  fmov %s, %s\n", argxmm[arg_fp_idx[i]], reg64[arg_regs[i]]);
+            if (arg_gp_idx[i] >= 0)
+                printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
         } else if (arg_is_float[i] && arg_gp_idx[i] >= 0) {
             // Variadic: float value (double bit pattern in GP reg) to GP arg reg
             printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
@@ -3987,7 +3989,7 @@ void codegen(Program *prog) {
 
         // Save incoming params to stack slots
         {
-            int gp_param = (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)) ? 1 : 0;
+            int gp_param = 0;
             int fp_param = 0;
             int stack_param = 0;
             char *gpreg[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
