@@ -59,7 +59,10 @@ jobs:
 
       - name: Run tests
         if: matrix.os != 'macos-latest'
-        run: make check
+        run: |
+          ./rcc --version
+          ./rcc -print-search-dirs
+          make check
 
       - name: Run linter
         run: make lint
