@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     141
- - **Passed**:    122
- - **Failed**:    19
- - **Pass Rate**: 86%
+ - **Passed**:    123
+ - **Failed**:    18
+ - **Pass Rate**: 87%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -132,7 +132,7 @@ Generated: May 2026
 | 130_large_argument                       | MISMATCH     | Output does not match .expect        |
 | 131_return_struct_in_reg                 | PASS         | Output matches                       |
 | 132_bound_test                           | PASS         | Output matches                       |
-| 133_old_func                             | MISMATCH     | Output does not match .expect        |
+| 133_old_func                             | PASS         | Output matches                       |
 | 134_double_to_signed                     | PASS         | Output matches                       |
 | 135_func_arg_struct_compare              | PASS         | Output matches                       |
 | 136_atomic_gcc_style                     | SKIP         | Skipped                              |

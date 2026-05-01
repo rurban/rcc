@@ -724,6 +724,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                     if (pt && pt->kind == TY_FLOAT)
                         printf("  fcvt s%d, %s\n", arg_fp_idx[i], argxmm[arg_fp_idx[i]]);
                 }
+                // K&R forward decl (no param info): assume float if flonum arg
+                else if (fn_type && !fn_type->param_types && named_count == 0) {
+                    printf("  fcvt s%d, %s\n", arg_fp_idx[i], argxmm[arg_fp_idx[i]]);
+                }
             }
             if (arg_gp_idx[i] >= 0)
                 printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
