@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # clang-format: a tool to run clang-format on files
 # Copyright (C) 2016 Evan Klitzke <evan@eklitzke.org>

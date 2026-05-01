@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Usage: mingw-cross.sh [rcc-options] file.c [file2.c ...] [-o output.exe]
 # Wraps rcc.exe (Windows PE) under Wine for cross-compilation.
 #

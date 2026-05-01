@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 CC     = gcc
 CFLAGS = -std=c11 -Wall -Wextra -O2 -g
 TARGET = rcc

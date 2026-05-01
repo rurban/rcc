@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
 cd "$(dirname "$0")" || exit
 if [ ! -f c-testsuite/single-exec ]; then
     git submodule update --init --recursive

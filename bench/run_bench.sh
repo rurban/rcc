@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # RCC vs TCC vs all compilers benchmark (Unix version of run_bench.ps1)
 # Usage: ./bench/run_bench.sh [rcc-binary]
 

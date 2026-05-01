@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Extract system include paths from a C compiler.
 # Usage: get-sysinc-paths.sh <compiler>
 # Outputs a C header fragment defining sys_include_paths[].

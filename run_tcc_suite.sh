@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Run the TCC compatibility test suite against rcc.
 # Usage: ./run_tcc_suite.sh [rcc-binary] [test-dir]
 #
