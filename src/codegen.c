@@ -3996,6 +3996,9 @@ void codegen(Program *prog) {
             printf("%s = %s\n", fn->name, fn_label);
         else if (fn->asm_name && (fn_exported || fn->is_weak))
             printf("%s = %s\n", fn->name, fn->asm_name);
+#if defined(__APPLE__)
+        printf("  .p2align 2\n");
+#endif
         printf("%s:\n", fn_exported ? sym_name(fn_label) : fn_label);
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
@@ -4226,6 +4229,9 @@ void codegen(Program *prog) {
             printf("%s = %s\n", fn->name, fn_label);
         else if (fn->asm_name && (fn_exported || fn->is_weak))
             printf("%s = %s\n", fn->name, fn->asm_name);
+#if defined(__APPLE__)
+        printf("  .p2align 2\n");
+#endif
         printf("%s:\n", fn_exported ? sym_name(fn_label) : fn_label);
         printf("  push rbp\n");
         printf("  mov rbp, rsp\n");
