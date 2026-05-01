@@ -1973,6 +1973,32 @@ static int gen(Node *node) {
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 printf("  movsxd %s, %s\n", reg64[r_rhs], reg(r_rhs, 4));
             printf("  %s %s, %s\n", inst, reg(r_lhs, sz), reg(r_rhs, sz));
+            // Pointer subtraction: divide byte difference by element size
+            if (node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base) {
+                int elem_sz = node->lhs->ty->base->size;
+                if (elem_sz > 1) {
+                    if ((elem_sz & (elem_sz - 1)) == 0) {
+                        // Power of 2: use arithmetic shift right
+                        int shift = 0;
+                        int tmp = elem_sz;
+                        while (tmp > 1) {
+                            shift++;
+                            tmp >>= 1;
+                        }
+                        printf("  sar %s, %d\n", reg(r_lhs, sz), shift);
+                    } else {
+                        // Non-power of 2: use idiv
+                        printf("  mov %s, %s\n", sz == 8 ? "rax" : "eax", reg(r_lhs, sz));
+                        if (sz == 8)
+                            printf("  cqo\n");
+                        else
+                            printf("  cdq\n");
+                        printf("  mov %s, %d\n", sz == 8 ? "r11" : "r11d", elem_sz);
+                        printf("  idiv %s\n", sz == 8 ? "r11" : "r11d");
+                        printf("  mov %s, %s\n", reg(r_lhs, sz), sz == 8 ? "rax" : "eax");
+                    }
+                }
+            }
             free_reg(r_rhs);
         }
 
