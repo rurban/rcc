@@ -1,5 +1,12 @@
+param(
+    [switch] $O1
+)
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
+
+$RCCFLAGS = ""
+if ($O1) { $RCCFLAGS = "-O1" }
 
 $TestDir = if (Test-Path (Join-Path $ScriptDir "tinycc\tests\tests2")) {
     Join-Path $ScriptDir "tinycc\tests\tests2"
@@ -127,7 +134,13 @@ foreach ($file in $TestFiles) {
     # 1. Compilation - capture stderr (warnings) to mirror Linux runner behaviour
     $compileStart = Get-Date
     $tmpErr = [System.IO.Path]::GetTempFileName()
-    $process = Start-Process -FilePath $RCC -ArgumentList "$extraFlags $src", "-o", $exe -PassThru -Wait -RedirectStandardError $tmpErr -ErrorAction SilentlyContinue
+    $argList = @()
+    if ($RCCFLAGS) { $argList += $RCCFLAGS }
+    if ($extraFlags) { $argList += $extraFlags }
+    $argList += $src
+    $argList += "-o"
+    $argList += $exe
+    $process = Start-Process -FilePath $RCC -ArgumentList $argList -PassThru -Wait -RedirectStandardError $tmpErr -ErrorAction SilentlyContinue
     $compileStdErr = if (Test-Path $tmpErr) { Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue } else { $null }
     Remove-Item $tmpErr -Force -ErrorAction SilentlyContinue
     $compileEnd = Get-Date

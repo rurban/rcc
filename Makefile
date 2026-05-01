@@ -58,10 +58,10 @@ compile_commands.json: $(SRCS)
 	bear -- make
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = powershell -ExecutionPolicy Bypass -File run_tcc_suite.ps1
+TEST_RUNNER = powershell -ExecutionPolicy Bypass -File run_tcc_suite.ps1 -O1
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
 else
-TEST_RUNNER = ./run_tcc_suite.sh && ./run-c-testsuite.sh
+TEST_RUNNER = ./run_tcc_suite.sh "" "" -O1 && ./run-c-testsuite.sh
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 
