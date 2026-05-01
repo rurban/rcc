@@ -32,6 +32,7 @@ test/*.out
 /AGENTS.md
 /CLAUDE.md
 /kimi-export*.md
+/session-ses*.md
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt

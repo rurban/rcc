@@ -645,17 +645,30 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             arg_regs[i] = gen(argv[i]);
     }
 
-    // Save caller-saved regs (indices 0-5: x10-x15) via pre-decrement pushes
+    // Allocate one block for caller-saved regs + stack args.
+    // Layout (from low sp upward):
+    //   [sp + 0 .. stack_args*8-1]        : stack args (callee reads via x29+16+idx*8)
+    //   [sp + stack_args*8 .. total-1]    : saved caller-saved regs
+    // This keeps stack args at the standard AAPCS64 location relative to sp_at_call.
     int arm64_saved_mask = used_regs & 63;
     int sv_count = __builtin_popcount(arm64_saved_mask);
 
+    if (sv_count > 0 || stack_args > 0) {
+        int total = (sv_count + stack_args) * 8;
+        total = (total + 15) & ~15;
+        printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, total);
+    }
+
+    // Save caller-saved regs ABOVE stack args area
+    int sv_off = 0;
     for (int i = 0; i < 6; i++) {
         if (arm64_saved_mask & (1 << i)) {
-            printf("  str %s, [%s, #-8]!\n", reg64[i], STACK_REG);
+            printf("  str %s, [%s, #%d]\n", reg64[i], STACK_REG, (stack_args + sv_off) * 8);
+            sv_off++;
         }
     }
 
-    // Push stack args at sp (reverse order)
+    // Push stack args at sp+idx*8 (callee reads from x29+16+idx*8 = sp+idx*8)
     for (int i = nargs - 1; i >= 0; i--) {
         if (arg_stack_idx[i] < 0)
             continue;
@@ -753,14 +766,22 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(callee);
     }
 
-    // Restore caller-saved registers via post-increment loads
+    // Restore caller-saved registers from above-stack-args area
     if (arm64_saved_mask) {
-        // Restore in reverse order: x15 first (highest on stack)
-        for (int i = 5; i >= 0; i--) {
+        int sv = 0;
+        for (int i = 0; i < 6; i++) {
             if (arm64_saved_mask & (1 << i)) {
-                printf("  ldr %s, [%s], #8\n", reg64[i], STACK_REG);
+                printf("  ldr %s, [%s, #%d]\n", reg64[i], STACK_REG, (stack_args + sv) * 8);
+                sv++;
             }
         }
+    }
+
+    // Restore sp
+    if (sv_count > 0 || stack_args > 0) {
+        int total = (sv_count + stack_args) * 8;
+        total = (total + 15) & ~15;
+        printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, total);
     }
 
     if (has_hidden_retbuf) {
@@ -1906,27 +1927,21 @@ static int gen(Node *node) {
             if (rhs_reads_same) {
                 int ra = gen_addr(node->lhs);
                 int rt = alloc_reg();
-                BF_LOAD(unit_sz, ra, rt);
+                int eff_sz_rhs = unit_sz > 8 ? 8 : unit_sz;
+                BF_LOAD(eff_sz_rhs, ra, rt);
 #ifdef ARCH_ARM64
-                if (bo > 0) printf("  lsr %s, %s, #%d\n", reg64[rt], reg64[rt], bo);
-                if (bw < unit_sz * 8) {
-                    unsigned long long m = (1ULL << bw) - 1;
-                    int t2 = alloc_reg();
-                    emit_mov_imm64(reg64[t2], m);
-                    printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[t2]);
-                    free_reg(t2);
-                }
-                BF_LOAD(unit_sz, ra, rt);
                 int tmp = alloc_reg();
                 emit_mov_imm64(reg64[tmp], ~mask);
                 printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[tmp]);
+                // Repurpose tmp for bitfield mask before allocating rv,
+                // preventing tmp/rv aliasing when the spiller reuses tmp as rv.
+                emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
                 int rv = alloc_reg();
                 printf("  mov %s, %s\n", reg64[rv], reg64[r2]);
-                emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
                 printf("  and %s, %s, %s\n", reg64[rv], reg64[rv], reg64[tmp]);
                 if (bo > 0) printf("  lsl %s, %s, #%d\n", reg64[rv], reg64[rv], bo);
                 printf("  orr %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rv]);
-                BF_STORE(unit_sz, ra, rt);
+                BF_STORE(eff_sz_rhs, ra, rt);
                 free_reg(tmp);
                 free_reg(rv);
                 free_reg(rt);
@@ -1943,9 +1958,11 @@ static int gen(Node *node) {
             int tmp = alloc_reg();
             emit_mov_imm64(reg64[tmp], ~mask);
             printf("  and %s, %s, %s\n", reg64[rt], reg64[rt], reg64[tmp]);
+            // Repurpose tmp for bitfield mask before allocating rv,
+            // preventing tmp/rv aliasing when the spiller reuses tmp as rv.
+            emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
             int rv = alloc_reg();
             printf("  mov %s, %s\n", reg64[rv], reg64[r2]);
-            emit_mov_imm64(reg64[tmp], (1ULL << bw) - 1);
             printf("  and %s, %s, %s\n", reg64[rv], reg64[rv], reg64[tmp]);
             if (bo > 0) printf("  lsl %s, %s, #%d\n", reg64[rv], reg64[rv], bo);
             printf("  orr %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rv]);
@@ -4095,9 +4112,29 @@ void codegen(Program *prog) {
                     }
                     gp_param++;
                 } else {
-                    // Stack argument — load from caller's frame
-                    printf("  ldr x11, [%s, #%d]\n", FRAME_PTR, 16 + stack_param * 8);
-                    printf("  str x11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                    // Stack argument — load from caller's frame using correct width
+                    int spoff = 16 + stack_param * 8;
+                    if (is_flonum(var->ty)) {
+                        if (var->ty->size == 4) {
+                            printf("  ldr s0, [%s, #%d]\n", FRAME_PTR, spoff);
+                            printf("  str s0, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                        } else {
+                            printf("  ldr d0, [%s, #%d]\n", FRAME_PTR, spoff);
+                            printf("  str d0, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                        }
+                    } else if (var->ty->size <= 1) {
+                        printf("  ldrb w11, [%s, #%d]\n", FRAME_PTR, spoff);
+                        printf("  strb w11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                    } else if (var->ty->size <= 2) {
+                        printf("  ldrh w11, [%s, #%d]\n", FRAME_PTR, spoff);
+                        printf("  strh w11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                    } else if (var->ty->size <= 4) {
+                        printf("  ldr w11, [%s, #%d]\n", FRAME_PTR, spoff);
+                        printf("  str w11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                    } else {
+                        printf("  ldr x11, [%s, #%d]\n", FRAME_PTR, spoff);
+                        printf("  str x11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                    }
                     stack_param++;
                 }
             }

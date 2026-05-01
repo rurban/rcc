@@ -3,8 +3,8 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     141
- - **Passed**:    123
- - **Failed**:    18
+ - **Passed**:    124
+ - **Failed**:    17
  - **Pass Rate**: 87%
 
 ## Detailed Results
@@ -129,7 +129,7 @@ Generated: May 2026
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
 | 128_run_atexit                           | PASS         | Output matches                       |
 | 129_scopes                               | PASS         | Output matches                       |
-| 130_large_argument                       | MISMATCH     | Output does not match .expect        |
+| 130_large_argument                       | PASS         | Output matches                       |
 | 131_return_struct_in_reg                 | PASS         | Output matches                       |
 | 132_bound_test                           | PASS         | Output matches                       |
 | 133_old_func                             | PASS         | Output matches                       |
