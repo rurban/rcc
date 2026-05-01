@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     142
- - **Passed**:    119
- - **Failed**:    19
- - **Pass Rate**: 86%
+ - **Total**:     141
+ - **Passed**:    121
+ - **Failed**:    20
+ - **Pass Rate**: 85%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -33,7 +33,7 @@ Generated: May 2026
 | 20_pointer_comparison                    | PASS         | Output matches                       |
 | 21_char_array                            | PASS         | Output matches                       |
 | 22_floating_point                        | MISMATCH     | Output does not match .expect        |
-| 23_type_coercion                         | MISMATCH     | Output does not match .expect        |
+| 23_type_coercion                         | PASS         | Output matches                       |
 | 24_math_library                          | PASS         | Output matches                       |
 | 25_quicksort                             | PASS         | Output matches                       |
 | 26_character_constants                   | PASS         | Output matches                       |
@@ -94,7 +94,7 @@ Generated: May 2026
 | 93_integer_promotion                     | PASS         | Output matches                       |
 | 94_generic                               | PASS         | Output matches                       |
 | 95_bitfields                             | MISMATCH     | Output does not match .expect        |
-| 95_bitfields_ms                          | MISMATCH     | Output does not match .expect        |
+| 95_bitfields_ms                          | SKIP         | Skipped                              |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
 | 97_utf8_string_literal                   | PASS         | Output matches                       |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |

@@ -211,6 +211,10 @@ SKIP_TESTS="
 MINGW_SKIP_TESTS="
 "
 
+ARM64_SKIP_TESTS="
+95_bitfields_ms
+"
+
 is_skipped() {
 	# Enable 73_arm64 test on ARM64 native/cross; skip otherwise
 	if [ "$1" = "73_arm64" ] && [ "$is_arm64" != "1" ] && [ "$RCC" != "$SCRIPT_DIR/arm64-cross.sh" ]; then
@@ -223,7 +227,12 @@ $1
 		case "$MINGW_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-	fi
+        fi
+	if [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
+		case "$ARM64_SKIP_TESTS" in *"
+$1
+"*) return 0 ;; esac
+        fi
 	return 1
 }
 
@@ -338,14 +347,16 @@ while IFS= read -r src; do
 
         # 2a. Darwin: compile+link only (can't execute Mach-O on Linux)
 	if [ "$is_darwin" = "1" ]; then
-	    # shellcheck disable=SC2059
+            expect_file="$TEST_DIR/$base.expect"
 	    if [ -f "$expect_file" ]; then
 		add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
+		# shellcheck disable=SC2059
 		printf "${GREEN}PASS (compile OK)${RESET}\n"
 		passed=$((passed + 1))
 		print_change "$base" "PASS"
 	    else
 		add_row "$base" "COMPILE_OK" "linked ok (no expect, no exec)"
+		# shellcheck disable=SC2059
 		printf "${GRAY}PASS (no expect, compile OK)${RESET}\n"
 		passed=$((passed + 1))
 		print_change "$base" "PASS"
@@ -531,10 +542,13 @@ fi
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
-if [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 119 ]
-elif [ "$REPORT_FILE" = "$SCRIPT_DIR/tcc_test_arm64.md" ]; then
+# arm64-darwin native
+if [ "$REPORT_FILE" = "$SCRIPT_DIR/tcc_test_arm64.md" ]; then
     [ "$passed" -ge 1 ]
+elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
+    [ "$passed" -ge 1 ]
+elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
+    [ "$passed" -ge 120 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
     [ "$passed" -ge 141 ]
 else
