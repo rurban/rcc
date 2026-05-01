@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
-  Parts from chibicc.
-  MIT License
-  Copyright (c) 2019 Rui Ueyama.
+  Derived from slimcc by fuhsnn.
   Optimized by Reini Urban 2026
 */
 #include "rcc.h"
@@ -16,9 +14,10 @@ typedef struct {
 } UTF32Range;
 
 // clang-format off
-// Note the spec bug, that these Unicode Identifier ranges are entirely insecure
+// Note the C11 spec bug, that these Unicode Identifier ranges are entirely insecure
 // and renders identifiers unidentifiable.
 // See libu8ident for a better approach. But it didn't make it into C23 nor C26.
+// TODO add libu8ident -Whomoglyph checks here
 static UTF32Range xid_start[] = {
   {0x41, 0x5A},       {0x61, 0x7A},       {0xAA, 0xAA},       {0xB5, 0xB5},
   {0xBA, 0xBA},       {0xC0, 0xD6},       {0xD8, 0xF6},       {0xF8, 0x2C1},
@@ -326,11 +325,6 @@ int encode_utf8(char *buf, uint32_t c) {
 
 // Read a UTF-8-encoded Unicode code point from a source file.
 // We assume that source files are always in UTF-8.
-//
-// UTF-8 is a variable-width encoding in which one code point is
-// encoded in one to four bytes. One byte UTF-8 code points are
-// identical to ASCII. Non-ASCII characters are encoded using more
-// than one byte.
 uint32_t decode_utf8(char **new_pos, char *p) {
   if ((unsigned char)*p < 128) {
     *new_pos = p + 1;

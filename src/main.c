@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+// Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #ifdef _WIN32
 #include <process.h>

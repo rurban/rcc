@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+// Derived from slimcc by fuhsnn.
 #include "rcc.h"
 #include <stdarg.h>
 
