@@ -71,7 +71,7 @@ void help(void) {
            "-mms-bitfields     use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields  use GCC bitfield layout by default\n"
            "-###          dry-run (print commands, don't execute)\n"
-           "-v            show version\n"
+           "-print-search-dirs  print install, include and library paths\n"
            "-Dname[=val]  define a macro value\n"
            "-Uname        undefine a macro value\n"
            "--help\n"
@@ -131,6 +131,10 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argv[i], "--version")) {
             printf("rcc %s\n", VERSION);
+            return 0;
+        }
+        if (!strcmp(argv[i], "-print-search-dirs")) {
+            print_search_dirs(GCC);
             return 0;
         }
         if (!strcmp(argv[i], "-S")) {

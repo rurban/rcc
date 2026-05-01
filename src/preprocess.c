@@ -1704,3 +1704,22 @@ char *preprocess(char *filename, char *p) {
     char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts);
     return result;
 }
+
+void print_search_dirs(const char *gcc) {
+    printf("install: %s\n", RCC_INCDIR);
+    for (int i = 0; i < nb_user_include_paths; i++)
+        printf("include: =%s\n", user_include_paths[i]);
+    for (int i = 0; sys_include_paths[i]; i++)
+        printf("include: =%s\n", sys_include_paths[i]);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "%s -print-search-dirs 2>/dev/null", gcc);
+    FILE *fp = popen(cmd, "r");
+    if (fp) {
+        char line[4096];
+        while (fgets(line, sizeof(line), fp)) {
+            if (!strncmp(line, "libraries:", 10))
+                fputs(line, stdout);
+        }
+        pclose(fp);
+    }
+}

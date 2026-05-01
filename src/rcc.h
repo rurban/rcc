@@ -64,6 +64,7 @@ char *preprocess(char *filename, char *p);
 void add_define(char *def);
 void add_undef(char *name);
 void add_include_path(const char *path);
+void print_search_dirs(const char *gcc);
 Token *tokenize(char *filename, char *p);
 void init_builtins(void);
 

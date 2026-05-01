@@ -105,6 +105,7 @@ make bench
     -Uname             undefine a macro value
     -W                 print diagnostic warnings (stack spilling)
     -###               dry-run (print commands, don't execute)
+    -print-search-dirs print install, include and library paths
     --help
     --version
 
