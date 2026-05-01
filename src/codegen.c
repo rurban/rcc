@@ -1540,8 +1540,8 @@ static int gen(Node *node) {
         int r = alloc_reg();
         int id = add_float_literal(node->fval, 8); // Always store as double
 #ifdef ARCH_ARM64
-        emit_adrp_add("x11", format(".LF%d", id));
-        printf("  ldr d0, [x11]\n");
+        emit_adrp_add(reg64[r], format(".LF%d", id));
+        printf("  ldr d0, [%s]\n", reg64[r]);
         printf("  fmov %s, d0\n", reg64[r]);
 #else
         printf("  movsd xmm0, [rip + .LF%d]\n", id);
@@ -1612,8 +1612,8 @@ static int gen(Node *node) {
                 } else {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        emit_adrp_add("x11", label);
-                        printf("  ldr s0, [x11]\n");
+                        emit_adrp_add(reg64[r], label);
+                        printf("  ldr s0, [%s]\n", reg64[r]);
                         printf("  fcvt d0, s0\n");
 #else
                         printf("  movss xmm0, dword ptr [rip + %s]\n", label);
@@ -1621,8 +1621,8 @@ static int gen(Node *node) {
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        emit_adrp_add("x11", label);
-                        printf("  ldr d0, [x11]\n");
+                        emit_adrp_add(reg64[r], label);
+                        printf("  ldr d0, [%s]\n", reg64[r]);
 #else
                         printf("  movsd xmm0, qword ptr [rip + %s]\n", label);
 #endif

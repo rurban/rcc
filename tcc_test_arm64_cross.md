@@ -4,8 +4,8 @@ Generated: May 2026
 ## Summary
  - **Total**:     142
  - **Passed**:    119
- - **Failed**:    23
- - **Pass Rate**: 83%
+ - **Failed**:    19
+ - **Pass Rate**: 86%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -34,7 +34,7 @@ Generated: May 2026
 | 21_char_array                            | PASS         | Output matches                       |
 | 22_floating_point                        | MISMATCH     | Output does not match .expect        |
 | 23_type_coercion                         | MISMATCH     | Output does not match .expect        |
-| 24_math_library                          | MISMATCH     | Output does not match .expect        |
+| 24_math_library                          | PASS         | Output matches                       |
 | 25_quicksort                             | PASS         | Output matches                       |
 | 26_character_constants                   | PASS         | Output matches                       |
 | 27_sizeof                                | PASS         | Output matches                       |
