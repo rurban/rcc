@@ -645,22 +645,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             arg_regs[i] = gen(argv[i]);
     }
 
-    // Save any live caller-saved registers (indices 0-5: x10-x15) before stack reserve
+    // Save caller-saved regs (indices 0-5: x10-x15) via pre-decrement pushes
     int arm64_saved_mask = used_regs & 63;
+    int sv_count = __builtin_popcount(arm64_saved_mask);
 
-    if (stack_reserve > 0)
-        printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, stack_reserve);
-
-    // Save caller-saved regs to [sp] area (on or after sub sp)
-    int sv_off = 0;
     for (int i = 0; i < 6; i++) {
         if (arm64_saved_mask & (1 << i)) {
-            printf("  str %s, [%s, #%d]\n", reg64[i], STACK_REG, sv_off * 8);
-            sv_off++;
+            printf("  str %s, [%s, #-8]!\n", reg64[i], STACK_REG);
         }
     }
 
-    // Push stack args (reverse order)
+    // Push stack args at sp (reverse order)
     for (int i = nargs - 1; i >= 0; i--) {
         if (arg_stack_idx[i] < 0)
             continue;
@@ -669,11 +664,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             r = gen_addr(argv[i]);
         else
             r = gen(argv[i]);
-        if (is_flonum(argv[i]->ty)) {
-            printf("  str %s, [%s, #%d]\n", reg64[r], STACK_REG, arg_stack_idx[i] * 8);
-        } else {
-            printf("  str %s, [%s, #%d]\n", reg64[r], STACK_REG, arg_stack_idx[i] * 8);
-        }
+        printf("  str %s, [%s, #%d]\n", reg64[r], STACK_REG, arg_stack_idx[i] * 8);
         free_reg(r);
     }
 
@@ -762,16 +753,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(callee);
     }
 
-    if (stack_reserve > 0)
-        printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, stack_reserve);
-
-    // Restore caller-saved registers (saved in sub sp area)
+    // Restore caller-saved registers via post-increment loads
     if (arm64_saved_mask) {
-        int sv = 0;
-        for (int i = 0; i < 6; i++) {
+        // Restore in reverse order: x15 first (highest on stack)
+        for (int i = 5; i >= 0; i--) {
             if (arm64_saved_mask & (1 << i)) {
-                printf("  ldr %s, [%s, #%d]\n", reg64[i], STACK_REG, sv * 8);
-                sv++;
+                printf("  ldr %s, [%s], #8\n", reg64[i], STACK_REG);
             }
         }
     }
