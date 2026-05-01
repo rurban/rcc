@@ -548,9 +548,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_stack_idx[i] = -1;
         bool is_named = (i < named_count);
         if (arg_is_float[i]) {
-            // Types > 8 bytes (long double) go on stack, not in registers
+            // Long double (> 8 bytes): pass in q-register (SIMD), not d-register or stack
             if (arg_sizes[i] > 8) {
-                arg_stack_idx[i] = stack_args++;
+                if (fp_reg_args < max_fp_args)
+                    arg_fp_idx[i] = fp_reg_args++;
+                else
+                    arg_stack_idx[i] = stack_args++;
                 continue;
             }
             if (is_variadic && !is_named) {
@@ -717,6 +720,37 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
+        if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
+            // Long double (128-bit): convert double to quad inline, copy to q-register
+            int cl = ++rcc_label_count;
+            char *vr = reg64[arg_regs[i]];
+            printf("  cmp %s, #0\n", vr);
+            printf("  b.eq .L.quad_z.%d\n", cl);
+            printf("  asr x4, %s, #63\n", vr);
+            printf("  and x4, x4, #1\n");
+            printf("  ubfx x3, %s, #52, #11\n", vr);
+            printf("  mov x16, #15360\n");
+            printf("  add x3, x3, x16\n");
+            printf("  lsl x5, %s, #12\n", vr);
+            printf("  lsr x5, x5, #12\n");
+            printf("  and x1, x5, #0xF\n");
+            printf("  lsl x1, x1, #60\n");
+            printf("  lsr x2, x5, #4\n");
+            printf("  lsl x3, x3, #48\n");
+            printf("  orr x2, x2, x3\n");
+            printf("  lsl x4, x4, #63\n");
+            printf("  orr x2, x2, x4\n");
+            printf("  b .L.quad_d.%d\n", cl);
+            printf(".L.quad_z.%d:\n", cl);
+            printf("  mov x1, #0\n");
+            printf("  mov x2, #0\n");
+            printf(".L.quad_d.%d:\n", cl);
+            printf("  ins v%d.d[0], x1\n", arg_fp_idx[i]);
+            printf("  ins v%d.d[1], x2\n", arg_fp_idx[i]);
+            // No GP copy for long double (matches GCC convention)
+            free_reg(arg_regs[i]);
+            continue;
+        }
         if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
             printf("  fmov %s, %s\n", argxmm[arg_fp_idx[i]], reg64[arg_regs[i]]);
             // Convert double->float only if callee param is known float,
@@ -1648,7 +1682,7 @@ static int gen(Node *node) {
     }
     case ND_FNUM: {
         int r = alloc_reg();
-        int id = add_float_literal(node->fval, 8); // Always store as double
+        int id = add_float_literal(node->fval, 8); // Always store as double for computations
 #ifdef ARCH_ARM64
         emit_adrp_add(reg64[r], format(".LF%d", id));
         printf("  ldr d0, [%s]\n", reg64[r]);

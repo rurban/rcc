@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     141
- - **Passed**:    126
- - **Failed**:    15
- - **Pass Rate**: 89%
+ - **Passed**:    128
+ - **Failed**:    13
+ - **Pass Rate**: 90%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -32,7 +32,7 @@ Generated: May 2026
 | 19_pointer_arithmetic                    | PASS         | Output matches                       |
 | 20_pointer_comparison                    | PASS         | Output matches                       |
 | 21_char_array                            | PASS         | Output matches                       |
-| 22_floating_point                        | MISMATCH     | Output does not match .expect        |
+| 22_floating_point                        | PASS         | Output matches                       |
 | 23_type_coercion                         | PASS         | Output matches                       |
 | 24_math_library                          | PASS         | Output matches                       |
 | 25_quicksort                             | PASS         | Output matches                       |
@@ -100,7 +100,7 @@ Generated: May 2026
 | 98_al_ax_extend                          | SKIP         | Skipped                              |
 | 99_fastcall                              | SKIP         | Skipped                              |
 | 100_c99array-decls                       | PASS         | Output matches                       |
-| 101_cleanup                              | MISMATCH     | Output does not match .expect        |
+| 101_cleanup                              | PASS         | Output matches                       |
 | 102_alignas                              | PASS         | Output matches                       |
 | 103_implicit_memmove                     | PASS         | Output matches                       |
 | 104_inline                               | MISMATCH     | Output does not match .expect        |
