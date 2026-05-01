@@ -28,6 +28,7 @@ tcc_test_*.md
 test/*.out
 /mingw-test.sh
 /compile_commands.json
+/.cache
 /AGENTS.md
 /CLAUDE.md
 /kimi-export*.md

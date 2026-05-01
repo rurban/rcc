@@ -297,6 +297,7 @@ int main(int argc, char **argv) {
         // Check local dev tree first, then installed path
         struct stat libst;
 #ifdef RCC_INCDIR
+        // cppcheck-suppress syntaxError
         const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
         if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
             snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
