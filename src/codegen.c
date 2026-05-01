@@ -2082,12 +2082,12 @@ static int gen(Node *node) {
             delta = node->lhs->ty->base->size;
         // Update in-place: load into temp, add/sub, store back
         int r3 = alloc_reg();
-        printf("  ldr %s, [%s]\n", reg64[r3], reg64[r]);
+        printf("  ldr %s, [%s]\n", reg(r3, sz), reg64[r]);
         if (node->kind == ND_POST_INC)
-            printf("  add %s, %s, #%d\n", reg64[r3], reg64[r3], delta);
+            printf("  add %s, %s, #%d\n", reg(r3, sz), reg(r3, sz), delta);
         else
-            printf("  sub %s, %s, #%d\n", reg64[r3], reg64[r3], delta);
-        printf("  str %s, [%s]\n", reg64[r3], reg64[r]);
+            printf("  sub %s, %s, #%d\n", reg(r3, sz), reg(r3, sz), delta);
+        printf("  str %s, [%s]\n", reg(r3, sz), reg64[r]);
         free_reg(r3);
 #else
         printf("  mov %s, %s [%s]\n", reg(r2, sz), ptr_size(sz), reg64[r]);
