@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install gcc
+          brew install gcc coreutils
           cd tinycc && ./configure && make && sudo make install
 
       - name: Install dependencies (Windows)
