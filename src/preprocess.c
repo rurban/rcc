@@ -16,6 +16,7 @@ typedef struct CondIncl CondIncl;
 
 struct Macro {
     Macro *next;
+    Macro *hash_next; // hash-table chain
     char *name;
     bool is_function;
     bool is_variadic;
@@ -23,6 +24,34 @@ struct Macro {
     int param_len;
     char *body;
 };
+
+#define MACRO_HT_SIZE 2048 // power of 2
+static Macro *macro_htab[MACRO_HT_SIZE];
+
+static uint32_t macro_hash(const char *name) {
+    uint32_t h = 2166136261u;
+    for (; *name; name++) {
+        h ^= (uint8_t)*name;
+        h *= 16777619;
+    }
+    return h & (MACRO_HT_SIZE - 1);
+}
+
+static void macro_ht_add(Macro *m) {
+    uint32_t h = macro_hash(m->name);
+    m->hash_next = macro_htab[h];
+    macro_htab[h] = m;
+}
+
+static void macro_ht_remove(const char *name) {
+    uint32_t h = macro_hash(name);
+    for (Macro **p = &macro_htab[h]; *p; p = &(*p)->hash_next) {
+        if (strcmp((*p)->name, name) == 0) {
+            *p = (*p)->hash_next;
+            return;
+        }
+    }
+}
 
 struct OnceFile {
     OnceFile *next;
@@ -70,6 +99,9 @@ void add_include_path(const char *path) {
 static void clear_macros(void) {
     macros = cmdline_macros;
     macro_stack = NULL;
+    memset(macro_htab, 0, sizeof(macro_htab));
+    for (Macro *m = cmdline_macros; m; m = m->next)
+        macro_ht_add(m);
 }
 
 int pack_align = 0;
@@ -381,7 +413,8 @@ static void strip_comments(char *p) {
 }
 
 static Macro *find_macro(char *name) {
-    for (Macro *m = macros; m; m = m->next)
+    uint32_t h = macro_hash(name);
+    for (Macro *m = macro_htab[h]; m; m = m->hash_next)
         if (strcmp(m->name, name) == 0)
             return m;
     return NULL;
@@ -418,6 +451,8 @@ static void pop_macro(char *name) {
     }
     if (!ms) return;
     if (ms->param_len < 0) {
+        // Remove the macro from both linked list and hash table
+        macro_ht_remove(name);
         Macro **pm = &macros;
         while (*pm) {
             if (strcmp((*pm)->name, name) == 0) {
@@ -433,6 +468,7 @@ static void pop_macro(char *name) {
             m->name = name;
             m->next = macros;
             macros = m;
+            macro_ht_add(m);
         }
         m->is_function = ms->is_function;
         m->is_variadic = ms->is_variadic;
@@ -446,8 +482,10 @@ static void define_macro(char *name, bool is_function, char **params, int param_
     Macro *m = find_macro(name);
     if (!m) {
         m = arena_alloc(sizeof(Macro));
+        m->name = name; // must be set before macro_ht_add
         m->next = macros;
         macros = m;
+        macro_ht_add(m);
     }
     m->name = name;
     m->is_function = is_function;
@@ -479,6 +517,7 @@ void add_define(char *def) {
 }
 
 void add_undef(char *name) {
+    macro_ht_remove(name);
     Macro **prev = &macros;
     for (Macro *m = macros; m; prev = &m->next, m = m->next) {
         if (strcmp(m->name, name) == 0) {
@@ -759,7 +798,7 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
         return text;
 
     StrBuf sb;
-    sb_init(&sb, strlen(text) * 16 + 256);
+    sb_init(&sb, strlen(text) + 256);
 
     for (char *p = text; *p;) {
         if (*p == '"' || *p == '\'') {
@@ -1265,6 +1304,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                 while (s < end && pp_is_ident2(*s))
                     s++;
                 char *name = pp_strndup(name_start, s - name_start);
+                macro_ht_remove(name);
                 Macro **pm = &macros;
                 while (*pm) {
                     if (strcmp((*pm)->name, name) == 0) {
