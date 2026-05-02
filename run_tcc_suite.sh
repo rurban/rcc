@@ -171,12 +171,17 @@ print_change() {
 	_new="$2"
 	_old=$(awk -v n="$_base" '$1 == n { print $2; exit }' "$OLD_STATES" 2>/dev/null)
 	[ -z "$_old" ] && return
-	[ "$_old" = "$_new" ] && return
-	if [ "$_new" = "PASS" ]; then
+	# Normalize COMPILE_OK to PASS for change detection (Darwin compile-only)
+	_old_cmp="$_old"
+	_new_cmp="$_new"
+	[ "$_old_cmp" = "COMPILE_OK" ] && _old_cmp="PASS"
+	[ "$_new_cmp" = "COMPILE_OK" ] && _new_cmp="PASS"
+	[ "$_old_cmp" = "$_new_cmp" ] && return
+	if [ "$_new_cmp" = "PASS" ]; then
 		# shellcheck disable=SC2059
 		printf "    ${GREEN}-> FIXED${RESET} (was %s)\n" "$_old"
 		fixes=$((fixes + 1))
-	elif [ "$_old" = "PASS" ]; then
+	elif [ "$_old_cmp" = "PASS" ]; then
 		# shellcheck disable=SC2059
 		printf "    ${RED}-> REGRESSION${RESET} (was PASS)\n"
 		regressions=$((regressions + 1))
