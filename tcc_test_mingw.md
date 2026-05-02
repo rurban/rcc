@@ -1,11 +1,11 @@
 # TCC Test Suite Report for RCC
-Generated on: 05/02/2026 19:56:43
+Generated on: 05/02/2026 20:26:32
 
 ## Summary
 - **Total Tests**: 109
-- **Passed**: 106
-- **Failed**: 3
-- **Pass Rate**: 97.25%
+- **Passed**: 107
+- **Failed**: 2
+- **Pass Rate**: 98.17%
 
 ## Detailed Results
 | Test | Status | Message |
@@ -81,7 +81,7 @@ Generated on: 05/02/2026 19:56:43
 | 80_flexarray | PASS | Output matches |
 | 81_types | PASS | Output matches |
 | 82_attribs_position | PASS | Output matches |
-| 83_utf8_in_identifiers | MISMATCH | Output does not match .expect |
+| 83_utf8_in_identifiers | PASS | Output matches |
 | 84_hex-float | PASS | Output matches |
 | 85_asm-outside-function | PASS | Output matches |
 | 86_memory-model | PASS | Output matches |
@@ -100,7 +100,7 @@ Generated on: 05/02/2026 19:56:43
 | 98_al_ax_extend | SKIP | Skipped |
 | 99_fastcall | SKIP | Skipped |
 | 100_c99array-decls | PASS | Output matches |
-| 101_cleanup | MISMATCH | Output does not match .expect |
+| 101_cleanup | EXEC_FAIL | exited with code -1073741819 |
 | 102_alignas | PASS | Output matches |
 | 103_implicit_memmove | PASS | Output matches |
 | 104_inline | SKIP | Skipped |
@@ -118,7 +118,7 @@ Generated on: 05/02/2026 19:56:43
 | 116_bound_setjmp2 | SKIP | Skipped |
 | 117_builtins | PASS | Output matches |
 | 118_switch | PASS | Output matches |
-| 119_random_stuff | MISMATCH | Output does not match .expect |
+| 119_random_stuff | EXEC_FAIL | exited with code -1073741819 |
 | 120_alias | SKIP | Skipped |
 | 121_struct_return | PASS | Output matches |
 | 122_vla_reuse | PASS | Output matches |

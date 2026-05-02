@@ -191,25 +191,47 @@ foreach ($file in $TestFiles) {
         $inGrepDir = $true
     }
 
+    $execFailed = $false
+    $execFailMsg = ""
     try {
         $actualOutput = & $exe @ExtraArgs 2>&1 | Out-String
+        # Non-zero exit code means the test program itself crashed/failed.
+        # & $exe never throws for non-zero exit; check $LASTEXITCODE explicitly.
+        if ($LASTEXITCODE -ne 0) {
+            $execFailed = $true
+            $execFailMsg = "exited with code $LASTEXITCODE"
+        }
         # Prepend compile-time warnings (stderr) so output matches Linux runner format
         if ($compileStdErr) { $actualOutput = $compileStdErr + $actualOutput }
         $actualOutput = $actualOutput.Trim()
     } catch {
-        if ($inGrepDir) { Pop-Location }
+        $execFailed = $true
+        $execFailMsg = $_.Exception.Message
+    }
+
+    if ($inGrepDir) { Pop-Location }
+
+    if ($execFailed) {
         Write-Host "EXECUTION FAIL" -ForegroundColor Red
+        # Emit assembly so we can see what the compiler generated
+        $asmFile = Join-Path $TestDir "$base.s"
+        $asmArgs = @(); if ($RCCFLAGS) { $asmArgs += $RCCFLAGS }
+        $asmArgs += "-S"; $asmArgs += $src; $asmArgs += "-o"; $asmArgs += $asmFile
+        $null = Start-Process -FilePath $RCC -ArgumentList $asmArgs -PassThru -Wait -ErrorAction SilentlyContinue
+        if (Test-Path $asmFile) {
+            Write-Host "  --- assembly ($base.s) ---" -ForegroundColor DarkCyan
+            Get-Content $asmFile | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkCyan }
+            Remove-Item $asmFile -Force -ErrorAction SilentlyContinue
+        }
         $Results += [PSCustomObject]@{
-            Test = $base
-            Status = "EXEC_FAIL"
-            Message = $_.Exception.Message
+            Test    = $base
+            Status  = "EXEC_FAIL"
+            Message = $execFailMsg
         }
         $Failed++
         if (Test-Path $exe) { Remove-Item $exe -Force }
         continue
     }
-
-    if ($inGrepDir) { Pop-Location }
 
     # 3. Verification
     $expectFile = if (Test-Path $fixupFile) { $fixupFile } else { $upstreamExpect }
@@ -318,7 +340,7 @@ if (-not $report.EndsWith("`n")) { $report += "`n" }
 Write-Host "`nTest complete. Summary: $Passed Passed, $Failed Failed." -ForegroundColor Cyan
 Write-Host "Full report saved to $ReportFile"
 
-if ($Passed -ge 106) {
+if ($Passed -ge 107) {
     exit 0
 } else {
     exit 1

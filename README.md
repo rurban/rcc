@@ -59,14 +59,14 @@ Linux:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's.
 
-Not yet: VLA's, GNU alias, atomics, C23.
+Not yet: GNU alias, atomics, C23.
 
-Top-level `__asm__("...")` statements are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
+Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
-The tcc suite has 141/141 test passed (100%) on linux and mingw-cross,
-106/109 on windows native, 133/141 on arm64-darwin native.
+The tcc suite has 142/142 test passed (100%) on linux and mingw-cross,
+107/109 on windows native, 134/143 on arm64-darwin native.
 
 Three tcc bugs have been detected so far. Fixes in the work.
 
@@ -137,10 +137,10 @@ This fork passes now:
 
 - [142/142 tests](tcc_test_linux.md) on linux
 - [142/142 tests](tcc_test_mingw_cross.md.md) on mingw-cross
-- [106/109 tests](tcc_test_mingw.md) on windows native
+- [107/109 tests](tcc_test_mingw.md) on windows native
 - [141/141 tests](tcc_test_arm64_cross.md) on arm64-cross (elf)
 - [134/141 tests](tcc_test_darwin_cross.md) on darwin-cross (compilation only)
-- [133/141 tests](tcc_test_arm64.md) on arm64-darwin native
+- [134/143 tests](tcc_test_arm64.md) on arm64-darwin native
   For the c-testsuite it passes 220/220.
 
 ## License
