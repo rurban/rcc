@@ -301,9 +301,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     char *argreg32[] = {"ecx", "edx", "r8d", "r9d"};
     char *argreg64[] = {"rcx", "rdx", "r8", "r9"};
     char *argxmm[] = {"xmm0", "xmm1", "xmm2", "xmm3"};
-    int max_gp_args = 4;
-    int max_fp_args = 4;
     int shadow_space = 32;
+    int max_gp_args = 4;
 #elif defined(ARCH_ARM64)
     // AAPCS64: 8 GP arg regs (x0-x7), 8 SIMD/FP arg regs (v0-v7)
     // x8 is the indirect result register for struct returns
@@ -312,7 +311,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     char *argxmm[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
     int max_gp_args = 8;
     int max_fp_args = 8;
-    int shadow_space = 0;
+    //int shadow_space = 0;
 #else
     char *argreg32[] = {"edi", "esi", "edx", "ecx", "r8d", "r9d"};
     char *argreg64[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
@@ -602,8 +601,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         else
             arg_stack_idx[i] = stack_args++;
     }
-    int stack_pad = (stack_args & 1) ? 8 : 0;
-    int stack_reserve = stack_args > 0 ? stack_args * 8 + stack_pad : 0;
+    //int stack_pad = (stack_args & 1) ? 8 : 0;
+    //int stack_reserve = stack_args > 0 ? stack_args * 8 + stack_pad : 0;
 #else
     int gp_reg_args = has_hidden_retbuf ? 1 : 0;
     int fp_reg_args = 0;
@@ -1111,10 +1110,13 @@ static int phys_reg_id(const char *s) {
     if (!strncmp(s, "r9", 2) && (s[2] == '\0' || s[2] == 'd' || s[2] == 'w' || s[2] == 'b')) return 9;
     return -1;
 }
+
+#ifndef ARCH_ARM64
 static int same_phys(const char *a, const char *b) {
     int ia = phys_reg_id(a), ib = phys_reg_id(b);
     return ia >= 0 && ia == ib;
 }
+#endif
 
 static int add_float_literal(double val, int size) {
     FloatLit *fl = arena_alloc(sizeof(FloatLit));
@@ -1163,13 +1165,13 @@ static char *var_label(LVar *var) {
 
 static char *reg(int r, int size) {
 #ifdef ARCH_ARM64
-    if (r < 0 || r >= NUM_REGS)
-        error("invalid register %d", r);
+    if (r < 0 || r > 11)
+        error("invalid register %d, arm64 has only 12", r);
     if (size == 8) return reg64[r];
     return reg32[r]; // arm64: wN for 1/2/4 bytes
 #else
     if (r < 0 || r > 7)
-        error("invalid register %d", r);
+        error("invalid register %d, x86_64 has only 8", r);
     if (size == 1) return reg8[r];
     if (size == 2) return reg16[r];
     if (size == 4) return reg32[r];
@@ -1202,10 +1204,13 @@ static void emit_adrp_add(const char *reg, const char *label) {
     printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
 #endif
 }
+#endif
 
 // Emit load/store-safe address for [x29, #-offset] when offset > 255
 // Returns register holding the address (must be freed by caller)
+#if 0
 static int emit_stack_addr(int offset) {
+#ifdef ARCH_ARM64
     int ta = alloc_reg();
     if (offset <= 4095)
         printf("  sub %s, %s, #%d\n", reg64[ta], FRAME_PTR, offset);
@@ -1222,20 +1227,23 @@ static int emit_stack_addr(int offset) {
         printf("  sub %s, %s, %s\n", reg64[ta], FRAME_PTR, reg64[ta]);
     }
     return ta;
+#else
+    int ta = alloc_reg();
+    printf("  lea %s, [rbp-%d]\n", reg64[ta], offset);
+    return ta;
+#endif
 }
 #endif
 
+#ifndef ARCH_ARM64
+// arm64: no ptr suffix needed in load/store (size encoded in register name)
 static char *ptr_size(int size) {
-#ifdef ARCH_ARM64
-    // arm64: no ptr suffix needed in load/store (size encoded in register name)
-    return "";
-#else
     if (size == 1) return "byte ptr";
     if (size == 2) return "word ptr";
     if (size == 4) return "dword ptr";
     return "qword ptr";
-#endif
 }
+#endif
 
 static int op_size(Type *ty) {
     if (is_integer(ty) && ty->size < 4)
@@ -1264,6 +1272,8 @@ static bool use_unsigned_cmp(Node *node) {
     return get_integer_type(size, lhs->is_unsigned || rhs->is_unsigned)->is_unsigned;
 }
 
+#ifdef ARCH_ARM64
+#if 0
 static int base_regnum_from_addr(const char *addr) {
     int bn = -1, off = 0;
     if (sscanf(addr, "[x%d]", &bn) == 1)
@@ -1272,6 +1282,7 @@ static int base_regnum_from_addr(const char *addr) {
         return bn;
     return -1;
 }
+#endif
 
 static bool base_reg_conflicts_with_dest(const char *addr, int r) {
     // Check if base register in addr matches destination register r
@@ -1334,9 +1345,9 @@ static void emit_store_offset(Type *ty, int r, const char *base, int offset) {
             printf("  str %s, [%s, #%d]\n", reg(r, 8), base, offset);
     }
 }
+#endif
 
 static void emit_load(Type *ty, int r, char *addr) {
-    int load_sz = op_size(ty);
 #ifdef ARCH_ARM64
     // ARM64 narrow loads always write to w register (32-bit), zero-extending
     // Handle negative offsets with large magnitude (ARM64 ldr/str 9-bit signed limit)
@@ -1399,6 +1410,7 @@ static void emit_load(Type *ty, int r, char *addr) {
     printf("  ldr %s, %s\n", reg(r, 8), addr);
     if (ta >= 0) free_reg(ta);
 #else
+    int load_sz = op_size(ty);
     if (load_sz < 4) load_sz = 4; // movsx/movzx dest must be wider than source
     if (ty->size == 1) {
         printf("  %s %s, byte ptr %s\n", ty->is_unsigned ? "movzx" : "movsx", reg(r, load_sz), addr);
@@ -3553,6 +3565,7 @@ static int gen(Node *node) {
     return -1;
 }
 
+#ifndef ARCH_ARM64
 // Helper: map 64-bit register name to 32-bit
 static const char *to32(const char *r64) {
     if (!strcmp(r64, "rax")) return "eax";
@@ -3570,6 +3583,7 @@ static const char *to32(const char *r64) {
     if (!strcmp(r64, "rsi")) return "esi";
     return NULL;
 }
+#endif
 
 // Fast peephole parsing helpers (avoid sscanf in hot loop)
 static int peep_mov_reg_reg(char *line, char *dst, int dst_sz, char *src, int src_sz) {
@@ -3588,6 +3602,17 @@ static int peep_mov_reg_reg(char *line, char *dst, int dst_sz, char *src, int sr
     memcpy(src, p, slen + 1);
     return 1;
 }
+static int peep_label(char *line, char *lbl, int lbl_sz) {
+    char *col = strchr(line, ':');
+    if (!col || col == line) return 0;
+    int len = col - line;
+    if (len >= lbl_sz) return 0;
+    memcpy(lbl, line, len);
+    lbl[len] = '\0';
+    return 1;
+}
+
+#ifndef ARCH_ARM64
 static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
     if (strncmp(line, "  mov [rbp-", 11) != 0) return 0;
     char *p = line + 11;
@@ -3656,15 +3681,6 @@ static int peep_jmp(char *line, char *lbl, int lbl_sz) {
     memcpy(lbl, p, len + 1);
     return 1;
 }
-static int peep_label(char *line, char *lbl, int lbl_sz) {
-    char *col = strchr(line, ':');
-    if (!col || col == line) return 0;
-    int len = col - line;
-    if (len >= lbl_sz) return 0;
-    memcpy(lbl, line, len);
-    lbl[len] = '\0';
-    return 1;
-}
 static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, int *imm) {
     if (strncmp(line, "  mov ", 6) != 0) return 0;
     char *p = line + 6;
@@ -3682,6 +3698,8 @@ static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, int *imm) {
     *imm = (int)v;
     return 1;
 }
+#endif
+
 static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_sz, char *src, int src_sz) {
     if (line[0] != ' ' || line[1] != ' ') return 0;
     char *p = line + 2;
@@ -3705,6 +3723,7 @@ static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_s
     memcpy(src, p, slen + 1);
     return 1;
 }
+#ifndef ARCH_ARM64
 static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int mem_sz) {
     if (strncmp(line, "  mov ", 6) != 0) return 0;
     char *p = line + 6;
@@ -3721,10 +3740,22 @@ static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int me
     memcpy(mem, p, mlen + 1);
     return 1;
 }
+#endif
 
 // Helper: check if string is a register name
 static int is_reg(const char *s) {
-    return (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2));
+#ifndef ARCH_ARM64
+    // x86 registers
+    if (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2))
+        return 1;
+#else
+    // ARM64 registers: xN, wN
+    if ((s[0] == 'x' || s[0] == 'w') && s[1] >= '0' && s[1] <= '9')
+        return 1;
+    if ((s[0] == 'x' || s[0] == 'w') && s[1] == '1' && s[2] >= '0' && s[2] <= '9')
+        return 1;
+#endif
+    return 0;
 }
 
 // Check if a physical register is used after line 'after' before being overwritten
@@ -3761,6 +3792,196 @@ static int reg_live_after(char **lines, int nlines, int after, int pid) {
             if (strstr(lines[k], variants[vi])) return 1;
         }
     }
+    return 0;
+}
+
+// ARM64 peep helpers (parser-style, no sscanf)
+#ifdef ARCH_ARM64
+// Match "  str %[^,], [x29, #-N]" → fill reg, offset, return 1
+static int peep_arm_str_fp(const char *line, char *reg, int reg_sz, int *off) {
+    if (strncmp(line, "  str ", 6) != 0) return 0;
+    const char *p = line + 6;
+    const char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ') p++;
+    return sscanf(p, "[x29, #-%d]", off) == 1;
+}
+// Match "  ldr %[^,], [x29, #-N]" → fill reg, offset, return 1
+static int peep_arm_ldr_fp(const char *line, char *reg, int reg_sz, int *off) {
+    if (strncmp(line, "  ldr ", 6) != 0) return 0;
+    const char *p = line + 6;
+    const char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ') p++;
+    return sscanf(p, "[x29, #-%d]", off) == 1;
+}
+// Match "  b .LABEL" → fill label, return 1
+static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
+    if (strncmp(line, "  b .", 5) != 0) return 0;
+    int len = strlen(line + 5);
+    if (len >= lbl_sz) return 0;
+    memcpy(lbl, line + 5, len + 1);
+    return 1;
+}
+#endif
+
+// === Peephole Patterns 2-5 ===
+
+// Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
+static int peep_pattern2(char **lines, int li, int lj) {
+#ifdef ARCH_ARM64
+    char sr[32], dr[32];
+    int off1, off2;
+    if (peep_arm_str_fp(lines[li], sr, sizeof(sr), &off1) &&
+        peep_arm_ldr_fp(lines[lj], dr, sizeof(dr), &off2) &&
+        off1 == off2) {
+        char *newl = format("  mov %s, %s", dr, sr);
+        lines[lj] = strdup(newl);
+        return 1;
+    }
+#else
+    int off1, off2;
+    char sr[32], dr[32], sz[16];
+    if (peep_mov_rbp_reg(lines[li], &off1, sr, sizeof(sr))) {
+        if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
+            off1 == off2 && !strcmp(sz, "dword")) {
+            const char *r32 = to32(sr);
+            if (r32) {
+                lines[lj] = strdup(format("  mov %s, %s", dr, r32));
+                return 1;
+            }
+        }
+        if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
+            off1 == off2 && !strcmp(sz, "qword")) {
+            lines[lj] = strdup(format("  mov %s, %s", dr, sr));
+            return 1;
+        }
+    }
+    { // 2b: mov dword [rbp-N], VAL; mov REG, dword [rbp-N]
+        int off1, off2, val;
+        char dr[32], sz[16];
+        if (peep_mov_rbp_imm(lines[li], &off1, &val) &&
+            peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
+            off1 == off2 && !strcmp(sz, "dword")) {
+            lines[lj] = strdup(format("  mov %s, %d", dr, val));
+            return 1;
+        }
+    }
+#endif
+    return 0;
+}
+
+// Pattern 3: jmp/b .LABEL; .LABEL: → delete branch
+static int peep_pattern3(char **lines, int li, int lj) {
+    char lbl1[80], lbl2[80];
+#ifdef ARCH_ARM64
+    if (!peep_arm_b(lines[li], lbl1, sizeof(lbl1))) return 0;
+#else
+    if (!peep_jmp(lines[li], lbl1, sizeof(lbl1))) return 0;
+#endif
+    if (!peep_label(lines[lj], lbl2, sizeof(lbl2))) return 0;
+    char *t = lbl2;
+    while (*t == ' ') t++;
+    if (!strcmp(lbl1, t)) {
+        lines[li][0] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+// Pattern 4: mov REG, #IMM; OP REG2, REG → OP REG2, #IMM
+static int peep_pattern4(char **lines, int nlines, int li, int lj) {
+    char rd[32];
+    int imm_val;
+#ifdef ARCH_ARM64
+    (void)nlines;
+    (void)li;
+    (void)lj;
+    if (sscanf(lines[li], " mov %31s, #%d", rd, &imm_val) != 2) return 0;
+    // We'd need peep_op to match arm64 3-op; skip for now
+    return 0;
+#else
+    if (!peep_mov_reg_imm(lines[li], rd, sizeof(rd), &imm_val) || !is_reg(rd))
+        return 0;
+    char *comma = strchr(lines[li], ',');
+    if (comma) {
+        char *val = comma + 1;
+        while (*val == ' ' || *val == '\t') val++;
+        if (val[0] == '0' && (val[1] == 'x' || val[1] == 'X')) return 0;
+    }
+    int rd_pid = phys_reg_id(rd);
+    char op[16], od[64], os[32];
+    if (!peep_op_reg_reg(lines[lj], op, sizeof(op), od, sizeof(od), os, sizeof(os)) ||
+        !same_phys(os, rd)) return 0;
+    if (!strcmp(op, "cmp") || !strcmp(op, "add") || !strcmp(op, "sub") ||
+        !strcmp(op, "and") || !strcmp(op, "or") || !strcmp(op, "xor") ||
+        !strcmp(op, "imul")) {
+        if (((!strcmp(op, "add") || !strcmp(op, "sub") || !strcmp(op, "or") || !strcmp(op, "xor")) && imm_val == 0) ||
+            (!strcmp(op, "imul") && imm_val == 1)) {
+            lines[lj][0] = '\0';
+        } else {
+            lines[lj] = strdup(format("  %s %s, %d", op, od, imm_val));
+        }
+        if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
+            lines[li][0] = '\0';
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+// Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
+static int peep_pattern5(char **lines, int nlines, int li, int lj) {
+    int lk = lj + 1;
+    while (lk < nlines && (!lines[lk] || !lines[lk][0])) lk++;
+    if (lk >= nlines) return 0;
+    char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
+#ifndef ARCH_ARM64
+    if (peep_mov_reg_mem(lines[li], r1, sizeof(r1), mem1, sizeof(mem1)) &&
+        peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
+        peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
+        !strcmp(r1, r2) && !strcmp(r2, r3) &&
+        is_reg(d3) && !is_reg(mem1)) {
+        int r1_pid = phys_reg_id(r1);
+        if (r1_pid >= 0 && reg_live_after(lines, nlines, lk, r1_pid))
+            return 0;
+        lines[li] = strdup(format("  mov %s, %s", d3, mem1));
+        lines[lj] = strdup(format("  %s %s, %s", op2, d3, imm2));
+        lines[lk][0] = '\0';
+        return 1;
+    }
+#else
+    // ARM64: ldr R, [mem]; OP R, R, #IMM; mov dst, R -> ldr dst, [mem]; OP dst, dst, #IMM
+    if (sscanf(lines[li], " ldr %31[^,], %127[^\n]", r1, mem1) == 2 &&
+        peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
+        peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
+        !strcmp(r1, r2) && !strcmp(r2, r3) &&
+        is_reg(d3) && !is_reg(mem1)) {
+        int r1_pid = phys_reg_id(r1);
+        if (r1_pid >= 0 && reg_live_after(lines, nlines, lk, r1_pid))
+            return 0;
+        char *val = strchr(imm2, ',');
+        if (val) {
+            val++;
+            while (*val == ' ') val++;
+        } else
+            val = imm2;
+        lines[li] = strdup(format("  ldr %s, %s", d3, mem1));
+        lines[lj] = strdup(format("  %s %s, %s, %s", op2, d3, d3, val));
+        lines[lk][0] = '\0';
+        return 1;
+    }
+#endif
     return 0;
 }
 
@@ -4262,8 +4483,60 @@ void codegen(Program *prog) {
         body_text[body_len] = '\0';
         fclose(body_file);
 
-        // Emit body (skip peephole for now)
-        fputs(body_text, stdout);
+        // Emit body with peephole optimization
+        {
+#define PEEP_MAX 65536
+            char *plines[PEEP_MAX];
+            char *chunk = body_text;
+            while (*chunk) {
+                int nlines = 0;
+                char *p = chunk;
+                while (*p && nlines < PEEP_MAX) {
+                    plines[nlines] = p;
+                    char *nl = strchr(p, '\n');
+                    if (nl) {
+                        *nl = '\0';
+                        p = nl + 1;
+                    } else
+                        p += strlen(p);
+                    nlines++;
+                }
+                chunk = p;
+                if (!opt_O0 && nlines < 50000) {
+                    for (int pass = 0; pass < 4; pass++) {
+                        for (int li = 0; li < nlines - 1; li++) {
+                            if (!plines[li] || !plines[li][0]) continue;
+                            int lj = li + 1;
+                            while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
+                            if (lj >= nlines) break;
+                            // Pattern 1: mov REG, SRC; mov DEST, REG → mov DEST, SRC
+                            char d1[80], s1[80], d2[80], s2[80];
+                            if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
+                                peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                                !strcmp(s2, d1) && is_reg(d1) && is_reg(s1)) {
+                                plines[lj] = strdup(format("  mov %s, %s", d2, s1));
+                                int pid = phys_reg_id(d1);
+                                if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
+                                    plines[li] = "";
+                                continue;
+                            }
+                            // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
+                            if (peep_pattern2(plines, li, lj)) continue;
+                            // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
+                            if (peep_pattern3(plines, li, lj)) continue;
+                            // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
+                            if (peep_pattern4(plines, nlines, li, lj)) continue;
+                            // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
+                            if (peep_pattern5(plines, nlines, li, lj)) continue;
+                        }
+                    }
+                }
+                for (int li = 0; li < nlines; li++)
+                    if (plines[li] && plines[li][0])
+                        fprintf(stdout, "%s\n", plines[li]);
+            }
+        }
+        free(body_text);
 
         // === ARM64 epilogue ===
         printf(".L.return.%s:\n", fn->name);
@@ -4309,7 +4582,6 @@ void codegen(Program *prog) {
         printf("  ldp %s, %s, [%s], #16\n", FRAME_PTR, LINK_REG, STACK_REG);
         printf("  ret\n");
 
-        free(body_text);
 #else
         // === x86_64 prologue ===
         // Determine which callee-saved regs need saving.
@@ -4419,13 +4691,13 @@ void codegen(Program *prog) {
 
 // Process body in chunks to handle functions larger than PEEP_MAX lines.
 #define PEEP_MAX 65536
-        char *lines[PEEP_MAX];
+        char *plines[PEEP_MAX];
         char *chunk = body_text;
         while (*chunk) {
             int nlines = 0;
             char *p = chunk;
             while (*p && nlines < PEEP_MAX) {
-                lines[nlines] = p;
+                plines[nlines] = p;
                 char *nl = strchr(p, '\n');
                 if (nl) {
                     *nl = '\0';
@@ -4440,35 +4712,42 @@ void codegen(Program *prog) {
             if (!opt_O0 && nlines < 50000) {
                 for (int pass = 0; pass < 4; pass++) {
                     for (int li = 0; li < nlines - 1; li++) {
-                        if (!lines[li] || !lines[li][0]) continue;
+                        if (!plines[li] || !plines[li][0]) continue;
                         int lj = li + 1;
-                        while (lj < nlines && (!lines[lj] || !lines[lj][0])) lj++;
+                        while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
                         if (lj >= nlines) break;
 
                         char d1[80], s1[80], d2[80], s2[80];
 
                         // Pattern 1: mov REG, SRC; mov DEST, REG -> mov DEST, SRC
-                        if (peep_mov_reg_reg(lines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
-                            peep_mov_reg_reg(lines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
+                            peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
                             strcmp(s2, d1) == 0 && is_reg(d1) && is_reg(s1)) {
                             char newline[200];
                             snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
-                            lines[lj] = strdup(newline);
+                            plines[lj] = strdup(newline);
                             int pid = phys_reg_id(d1);
-                            if (pid >= 0 && !reg_live_after(lines, nlines, lj, pid))
-                                lines[li] = "";
+                            if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
+                                plines[li] = "";
                             continue;
                         }
 
-                        // ... rest of peephole patterns ...
+                        // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
+                        if (peep_pattern2(plines, li, lj)) continue;
+                        // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
+                        if (peep_pattern3(plines, li, lj)) continue;
+                        // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
+                        if (peep_pattern4(plines, nlines, li, lj)) continue;
+                        // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
+                        if (peep_pattern5(plines, nlines, li, lj)) continue;
                     }
                 }
             }
 
             // Emit chunk
             for (int li = 0; li < nlines; li++) {
-                if (lines[li] && lines[li][0])
-                    fprintf(stdout, "%s\n", lines[li]);
+                if (plines[li] && plines[li][0])
+                    fprintf(stdout, "%s\n", plines[li]);
             }
         }
         free(body_text);

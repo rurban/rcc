@@ -12,6 +12,7 @@ static int line_num = 1;
 
 // Reports an error and exit.
 // cppcheck-suppress va_end_missing
+// TODO not-returning attribute
 void error(char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -22,6 +23,7 @@ void error(char *fmt, ...) {
 }
 
 // Gorgeous error reporting with pointing carets.
+// TODO not-returning attribute
 static void verror_at(char *loc, int len, char *fmt, va_list ap) {
     // Find line containing `loc`
     char *line = loc;
