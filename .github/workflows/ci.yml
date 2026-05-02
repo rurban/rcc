@@ -67,10 +67,6 @@ jobs:
       - name: Run linter
         run: make lint
 
-      - name: Run benchmarks
-        if: steps.changed.outputs.sources == 'true'
-        run: make bench
-
       - name: Check for source changes
         id: changed
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
@@ -81,6 +77,10 @@ jobs:
               - 'src/**'
               - 'bench/**'
               - 'run_tcc_suite.ps1'
+
+      - name: Run benchmarks
+        if: steps.changed.outputs.sources == 'true'
+        run: make bench
 
       - name: Upload Windows reports
         if: matrix.os == 'windows-latest' && steps.changed.outputs.sources == 'true'
