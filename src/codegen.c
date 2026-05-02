@@ -1831,7 +1831,9 @@ static int gen(Node *node) {
     }
     case ND_LVAR: {
         int r = alloc_reg();
+#ifndef ARCH_ARM64
         char *label = var_label(node->var);
+#endif
         if (node->var->ty->kind == TY_VLA) {
             if (node->var->is_local) {
 #ifdef ARCH_ARM64
