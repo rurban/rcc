@@ -1711,7 +1711,15 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
             sz = op_size(cond->rhs->ty);
         if (cond->rhs->kind == ND_NUM && cond->rhs->val == (int32_t)cond->rhs->val) {
 #ifdef ARCH_ARM64
-            printf("  cmp %s, #%d\n", reg(r_lhs, sz), (int)cond->rhs->val);
+            int32_t imm = (int32_t)cond->rhs->val;
+            if (imm >= 0 && imm <= 4095) {
+                printf("  cmp %s, #%d\n", reg(r_lhs, sz), imm);
+            } else if (imm < 0 && imm >= -4095) {
+                printf("  cmn %s, #%d\n", reg(r_lhs, sz), -imm);
+            } else {
+                emit_mov_imm64("x16", (uint64_t)(int64_t)imm);
+                printf("  cmp %s, %s\n", reg(r_lhs, sz), sz <= 4 ? "w16" : "x16");
+            }
 #else
             printf("  cmp %s, %d\n", reg(r_lhs, sz), (int)cond->rhs->val);
 #endif
@@ -3611,7 +3619,14 @@ static int gen(Node *node) {
                 printf("  mul %s, %s, %s\n", reg(r_lhs, sz), reg(r_lhs, sz), reg(tmp, sz));
                 free_reg(tmp);
             } else if (!strcmp(inst, "cmp")) {
-                printf("  cmp %s, #%d\n", reg(r_lhs, sz), imm);
+                if (imm >= 0 && imm <= 4095) {
+                    printf("  cmp %s, #%d\n", reg(r_lhs, sz), imm);
+                } else if (imm < 0 && imm >= -4095) {
+                    printf("  cmn %s, #%d\n", reg(r_lhs, sz), -imm);
+                } else {
+                    emit_mov_imm64("x16", (uint64_t)(int64_t)imm);
+                    printf("  cmp %s, %s\n", reg(r_lhs, sz), sz <= 4 ? "w16" : "x16");
+                }
             } else if (node->kind != ND_BITAND && node->kind != ND_BITOR && node->kind != ND_BITXOR &&
                        imm >= 0 && imm <= 4095) {
                 // add/sub accept simple immediate; bitwise ops need bitmask encoding

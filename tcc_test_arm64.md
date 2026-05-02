@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     142
- - **Passed**:    127
- - **Failed**:    15
- - **Pass Rate**: 89%
+ - **Passed**:    128
+ - **Failed**:    14
+ - **Pass Rate**: 90%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -121,7 +121,7 @@ Generated: May 2026
 | 119_random_stuff                         | MISMATCH     | Output does not match .expect        |
 | 120_alias                                | SKIP         | Skipped                              |
 | 121_struct_return                        | PASS         | Output matches                       |
-| 122_vla_reuse                            | COMPILE_FAIL | executable missing                   |
+| 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |
 | 124_atomic_counter                       | SKIP         | Skipped                              |
 | 125_atomic_misc                          | SKIP         | Skipped                              |
