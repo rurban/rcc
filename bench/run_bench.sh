@@ -42,7 +42,11 @@ KEFIR_O1_EXE="$BENCHDIR/bench_kefir_o1"
 SLIMCC_EXE="$BENCHDIR/bench_slimcc"
 
 RUNS=3
-REPORT="$BENCHDIR/bench_report.md"
+if [ "$(uname -s)" = "Darwin" ]; then
+	REPORT="$BENCHDIR/bench_report_darwin.md"
+else
+	REPORT="$BENCHDIR/bench_report.md"
+fi
 
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
@@ -166,7 +170,11 @@ IFS="$oldifs"
 
 # Write markdown report
 {
-	printf "# Linux RCC Benchmark Results\n\n"
+	if [ "$(uname -s)" = "Darwin" ]; then
+		printf "# Darwin RCC Benchmark Results\n\n"
+	else
+		printf "# Linux RCC Benchmark Results\n\n"
+	fi
 	printf "_Generated: %s_\n\n" "$(date '+%B %Y')"
 	printf "| %-12s | %12s | %12s | %10s |\n" \
 		"Compiler" "Compile (ms)" "Execute (ms)" "Total (ms)"

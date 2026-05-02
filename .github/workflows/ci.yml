@@ -68,7 +68,7 @@ jobs:
         run: make lint
 
       - name: Run benchmarks
-        if: matrix.os != 'macos-latest' && steps.changed.outputs.sources == 'true'
+        if: steps.changed.outputs.sources == 'true'
         run: make bench
 
       - name: Check for source changes
@@ -97,7 +97,7 @@ jobs:
         with:
           name: macos-reports
           path: |
-            bench/bench_report_arm64.md
+            bench/bench_report_darwin.md
             tcc_test_arm64.md
 
       - name: Make dist
