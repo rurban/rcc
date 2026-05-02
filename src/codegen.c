@@ -23,7 +23,9 @@ static int rcc_label_count = 0;
 static int va_gp_start;
 static int va_fp_start;
 static int va_st_start;
+#ifndef ARCH_ARM64
 static int va_reg_save_ofs;
+#endif
 static int break_stack[128];
 static int continue_stack[128];
 static int ctrl_depth = 0;
@@ -801,30 +803,31 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         printf("  mov x8, %s\n", reg64[hidden_ret_reg]);
     }
 
-    // Move evaluated args into arg registers
+    // Pre-pass: long double args first (before any GP arg regs are set),
+    // since the conversion clobbers x1/x2 which may hold earlier GP arg values.
+    // Uses only scratch regs x16/x17 (not in alloc pool) and output x1:x2 for ins.
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
-            // Long double (128-bit): convert double to quad inline, copy to q-register
             int cl = ++rcc_label_count;
             char *vr = reg64[arg_regs[i]];
             printf("  cmp %s, #0\n", vr);
             printf("  b.eq .L.quad_z.%d\n", cl);
-            printf("  asr x4, %s, #63\n", vr);
-            printf("  and x4, x4, #1\n");
-            printf("  ubfx x3, %s, #52, #11\n", vr);
+            printf("  ubfx x17, %s, #52, #11\n", vr);
             printf("  mov x16, #15360\n");
-            printf("  add x3, x3, x16\n");
-            printf("  lsl x5, %s, #12\n", vr);
-            printf("  lsr x5, x5, #12\n");
-            printf("  and x1, x5, #0xF\n");
+            printf("  add x17, x17, x16\n");
+            printf("  lsl x16, %s, #12\n", vr);
+            printf("  lsr x16, x16, #12\n");
+            printf("  and x1, x16, #0xF\n");
             printf("  lsl x1, x1, #60\n");
-            printf("  lsr x2, x5, #4\n");
-            printf("  lsl x3, x3, #48\n");
-            printf("  orr x2, x2, x3\n");
-            printf("  lsl x4, x4, #63\n");
-            printf("  orr x2, x2, x4\n");
+            printf("  lsr x2, x16, #4\n");
+            printf("  lsl x17, x17, #48\n");
+            printf("  orr x2, x2, x17\n");
+            printf("  asr x17, %s, #63\n", vr);
+            printf("  and x17, x17, #1\n");
+            printf("  lsl x17, x17, #63\n");
+            printf("  orr x2, x2, x17\n");
             printf("  b .L.quad_d.%d\n", cl);
             printf(".L.quad_z.%d:\n", cl);
             printf("  mov x1, #0\n");
@@ -832,8 +835,15 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             printf(".L.quad_d.%d:\n", cl);
             printf("  ins v%d.d[0], x1\n", arg_fp_idx[i]);
             printf("  ins v%d.d[1], x2\n", arg_fp_idx[i]);
-            // No GP copy for long double (matches GCC convention)
             free_reg(arg_regs[i]);
+        }
+    }
+
+    // Move evaluated args into arg registers
+    for (int i = 0; i < nargs; i++) {
+        if (arg_stack_idx[i] >= 0)
+            continue;
+        if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
             continue;
         }
         if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
@@ -3369,17 +3379,39 @@ static int gen(Node *node) {
     }
     case ND_VA_START: {
         int r = gen(node->lhs);
+#ifdef ARCH_ARM64
+        printf("  mov w16, #%d\n", va_gp_start);
+        printf("  str w16, [%s]\n", reg64[r]);
+        printf("  mov w16, #%d\n", va_fp_start);
+        printf("  str w16, [%s, #4]\n", reg64[r]);
+        printf("  add x16, %s, #%d\n", FRAME_PTR, va_st_start);
+        printf("  str x16, [%s, #8]\n", reg64[r]);
+        printf("  mov x16, %s\n", STACK_REG);
+        printf("  str x16, [%s, #16]\n", reg64[r]);
+#else
         printf("  mov dword ptr [%s], %d\n", reg64[r], va_gp_start);
         printf("  mov dword ptr [%s + 4], %d\n", reg64[r], va_fp_start);
         printf("  lea rdx, [rbp+%d]\n", va_st_start);
         printf("  mov [%s + 8], rdx\n", reg64[r]);
         printf("  lea rdx, [rbp-%d]\n", va_reg_save_ofs);
         printf("  mov [%s + 16], rdx\n", reg64[r]);
+#endif
         free_reg(r);
         return -1;
     }
     case ND_VA_COPY: {
         int rd = gen(node->lhs);
+#ifdef ARCH_ARM64
+        int rs = gen(node->rhs);
+        printf("  ldr x16, [%s]\n", reg64[rs]);
+        printf("  str x16, [%s]\n", reg64[rd]);
+        printf("  ldr x16, [%s, #8]\n", reg64[rs]);
+        printf("  str x16, [%s, #8]\n", reg64[rd]);
+        printf("  ldr x16, [%s, #16]\n", reg64[rs]);
+        printf("  str x16, [%s, #16]\n", reg64[rd]);
+        free_reg(rd);
+        free_reg(rs);
+#else
         printf("  push %s\n", reg64[rd]);
         free_reg(rd);
         int rs = gen(node->rhs);
@@ -3393,12 +3425,75 @@ static int gen(Node *node) {
         printf("  mov [%s + 16], rcx\n", reg64[rpop]);
         free_reg(rs);
         free_reg(rpop);
+#endif
         return -1;
     }
     case ND_VA_ARG: {
         int r = gen(node->lhs);
         Type *ty = node->ty->base;
         bool is_fp = is_flonum(ty);
+#ifdef ARCH_ARM64
+        bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 16;
+        // rcc passes ALL structs >8 bytes by pointer (not by value).
+        // va_arg must read 8-byte pointer from reg save area, then dereference.
+        bool is_ptr_val_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
+
+        // Only use FP path for bare float types; structs (incl. HFA) always go in GP regs.
+        if (is_fp) {
+            int fp_size = 16;
+            printf("  ldr w16, [%s, #4]\n", reg64[r]); // fp_offset
+            printf("  mov w17, w16\n");
+            printf("  add w17, w17, #%d\n", fp_size);
+            printf("  cmp w17, #%d\n", 192);
+            printf("  b.hi .L.va_overflow.%d\n", rcc_label_count);
+            printf("  ldr x12, [%s, #16]\n", reg64[r]); // reg_save_area
+            printf("  add x12, x12, x16\n");
+            printf("  add w16, w16, #%d\n", fp_size);
+            printf("  str w16, [%s, #4]\n", reg64[r]);
+            printf("  b .L.va_done.%d\n", rcc_label_count);
+        } else {
+            // Pointer-passed structs use gp_size=8 (the pointer fits in one register);
+            // after reading from the reg save area we must dereference it.
+            // Normal types use 8 bytes (fits in one register) or 16 bytes (long double).
+            int gp_size = is_ptr_val_struct ? 8 : (ty->size <= 8 ? 8 : 16);
+            printf("  ldr w16, [%s]\n", reg64[r]); // gp_offset
+            printf("  mov w17, w16\n");
+            printf("  add w17, w17, #%d\n", gp_size);
+            printf("  cmp w17, #%d\n", 64);
+            printf("  b.hi .L.va_overflow.%d\n", rcc_label_count);
+            printf("  ldr x12, [%s, #16]\n", reg64[r]); // reg_save_area
+            printf("  add x12, x12, x16\n");
+            if (is_ptr_val_struct) {
+                printf("  ldr x12, [x12]\n");
+            }
+            printf("  add w16, w16, #%d\n", gp_size);
+            printf("  str w16, [%s]\n", reg64[r]);
+            printf("  b .L.va_done.%d\n", rcc_label_count);
+        }
+
+        printf(".L.va_overflow.%d:\n", rcc_label_count);
+        printf("  ldr x12, [%s, #8]\n", reg64[r]); // overflow_arg_area
+        if (is_ptr_struct || is_ptr_val_struct) {
+            // Pointer-passed struct: load pointer from stack, advance by 8
+            printf("  ldr x16, [x12]\n");
+            printf("  add x12, x12, #8\n");
+            printf("  str x12, [%s, #8]\n", reg64[r]);
+            printf("  mov x12, x16\n");
+        } else {
+            int align = ty->align;
+            int ovf_size = ty->size <= 8 ? 8 : (ty->size + 7) & ~7;
+            if (align > 8) {
+                printf("  add x12, x12, #%d\n", align - 1);
+                printf("  and x12, x12, #-%d\n", align);
+            }
+            printf("  mov x16, x12\n");
+            printf("  add x16, x16, #%d\n", ovf_size);
+            printf("  str x16, [%s, #8]\n", reg64[r]);
+        }
+
+        printf(".L.va_done.%d:\n", rcc_label_count);
+        printf("  mov %s, x12\n", reg64[r]);
+#else
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
         if (is_fp) {
             printf("  cmp dword ptr [%s + 4], 160\n", reg64[r]);
@@ -3431,6 +3526,7 @@ static int gen(Node *node) {
             printf("  mov rcx, [rcx]\n");
         printf(".L.va_done.%d:\n", rcc_label_count);
         printf("  mov %s, rcx\n", reg64[r]);
+#endif
         rcc_label_count++;
         return r;
     }
@@ -4390,10 +4486,10 @@ void codegen(Program *prog) {
 
         // Save params to locals (emitted to body buffer, will be after prologue)
         // ARM64: handled in the Pass 2 prologue instead
+#ifndef ARCH_ARM64
         int param_xmm_index = 0;
         int stack_param_index = 0;
         int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) ? 1 : 0;
-#ifndef ARCH_ARM64
 #ifdef _WIN32
         char *param_regs64[] = {"rcx", "rdx", "r8", "r9"};
         char *param_regs32[] = {"ecx", "edx", "r8d", "r9d"};
@@ -4533,6 +4629,7 @@ void codegen(Program *prog) {
         }
 #endif /* !ARCH_ARM64 */
 
+#ifndef ARCH_ARM64
         // Save arg registers if function is variadic
         if (fn->is_variadic) {
             int gp_count = param_index;
@@ -4567,6 +4664,26 @@ void codegen(Program *prog) {
                 rcc_label_count++;
             }
         }
+#else
+        // Compute va_list init values for ARM64 (register saves are in Pass 2)
+        if (fn->is_variadic) {
+            int gp_param = 0;
+            int fp_param = 0;
+            int stack_param = 0;
+            for (LVar *var = fn->params; var; var = var->param_next) {
+                if (is_flonum(var->ty)) {
+                    if (fp_param < 8) fp_param++;
+                } else if (gp_param < 8) {
+                    gp_param++;
+                } else {
+                    stack_param++;
+                }
+            }
+            va_gp_start = gp_param * 8;
+            va_fp_start = 64 + fp_param * 16;
+            va_st_start = 16 + stack_param * 8;
+        }
+#endif
 
         for (Node *n = fn->body; n; n = n->next) {
             int r = gen(n);
@@ -4587,9 +4704,13 @@ void codegen(Program *prog) {
             if (callee_mask & (1 << j)) n_callee_saved++;
 
         int need = fn->stack_size + fn_struct_ret_total + 32;
+        int va_save_size = fn->is_variadic ? 192 : 0;
+        if (fn->is_variadic)
+            need += va_save_size;
         int frame_size = need + 16 + n_callee_saved * 8;
         // Round up to 16-byte alignment
         frame_size = (frame_size + 15) & ~15;
+        // va_reg_save_ofs not used on ARM64; reg_save_area is stored as sp in va_start
 
         // Symbol linkage
         bool has_noninline_decl = false;
@@ -4643,8 +4764,20 @@ void codegen(Program *prog) {
             printf("  sub %s, %s, x16\n", STACK_REG, STACK_REG);
         }
 
+        // Save variadic argument registers at the bottom of the frame (sp)
+        if (fn->is_variadic) {
+            printf("  stp x0, x1, [%s]\n", STACK_REG);
+            printf("  stp x2, x3, [%s, #16]\n", STACK_REG);
+            printf("  stp x4, x5, [%s, #32]\n", STACK_REG);
+            printf("  stp x6, x7, [%s, #48]\n", STACK_REG);
+            printf("  stp q0, q1, [%s, #64]\n", STACK_REG);
+            printf("  stp q2, q3, [%s, #96]\n", STACK_REG);
+            printf("  stp q4, q5, [%s, #128]\n", STACK_REG);
+            printf("  stp q6, q7, [%s, #160]\n", STACK_REG);
+        }
+
         // Save callee-saved regs
-        int cs_off = 16;
+        int cs_off = fn->is_variadic ? 192 + 16 : 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 printf("  str %s, [%s, #%d]\n", reg64[j + 6], STACK_REG, cs_off);
@@ -4679,10 +4812,10 @@ void codegen(Program *prog) {
         }
 
         // Save incoming params to stack slots
+        int gp_param = 0;
+        int fp_param = 0;
+        int stack_param = 0;
         {
-            int gp_param = 0;
-            int fp_param = 0;
-            int stack_param = 0;
             char *gpreg[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
             char *wpreg[] = {"w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"};
             char *fpreg[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
@@ -4755,6 +4888,7 @@ void codegen(Program *prog) {
                 }
             }
         }
+
 
         // Read body into lines
         fseek(body_file, 0, SEEK_END);
