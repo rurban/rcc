@@ -1300,6 +1300,18 @@ static void emit_adrp_add(const char *reg, const char *label) {
     printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
 #endif
 }
+
+// GOT-based address load for weak symbols: undefined weak → NULL, defined → address.
+// Required on Linux ARM64; Darwin already uses GOT in emit_adrp_add.
+static void emit_adrp_got(const char *reg, const char *label) {
+#if defined(__APPLE__)
+    printf("  adrp %s, %s@GOTPAGE\n", reg, label);
+    printf("  ldr %s, [%s, %s@GOTPAGEOFF]\n", reg, reg, label);
+#else
+    printf("  adrp %s, :got:%s\n", reg, label);
+    printf("  ldr %s, [%s, :got_lo12:%s]\n", reg, reg, label);
+#endif
+}
 #endif
 
 // Emit load/store-safe address for [x29, #-offset] when offset > 255
@@ -1610,7 +1622,10 @@ static int gen_addr(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
+            if (node->var->is_weak)
+                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+            else
+                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
             printf("  lea %s, [rip + %s]\n", reg64[r], var_label(node->var));
 #endif
@@ -1867,7 +1882,10 @@ static int gen(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
+            if (node->var->is_weak)
+                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+            else
+                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
             printf("  lea %s, [rip + %s]\n", reg64[r], label);
 #endif
@@ -1986,10 +2004,18 @@ static int gen(Node *node) {
                     printf(".L.copy_end.%d:\n", c);
                 }
                 if (copy_len < lhs_size) {
-                    printf("  mov x12, #%d\n", lhs_size - copy_len);
+                    // Zero dst[copy_len .. lhs_size-1]; count x12 from lhs_size down to copy_len
                     int c2 = ++rcc_label_count;
+                    printf("  mov x12, #%d\n", lhs_size);
                     printf(".L.copy.%d:\n", c2);
-                    printf("  cmp x12, #0\n");
+                    if (copy_len >= 0 && copy_len <= 4095)
+                        printf("  cmp x12, #%d\n", copy_len);
+                    else {
+                        printf("  mov x16, #%d\n", copy_len & 0xffff);
+                        if (copy_len >> 16)
+                            printf("  movk x16, #%d, lsl #16\n", (copy_len >> 16) & 0xffff);
+                        printf("  cmp x12, x16\n");
+                    }
                     printf("  b.eq .L.copy_end.%d\n", c2);
                     printf("  sub x12, x12, #1\n");
                     printf("  strb wzr, [%s, x12]\n", reg64[dst]);

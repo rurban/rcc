@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     141
- - **Passed**:    134
- - **Failed**:    7
- - **Pass Rate**: 95%
+ - **Passed**:    137
+ - **Failed**:    4
+ - **Pass Rate**: 97%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -78,7 +78,7 @@ Generated: May 2026
 | 77_push_pop_macro                        | PASS         | Output matches                       |
 | 78_vla_label                             | PASS         | Output matches                       |
 | 79_vla_continue                          | PASS         | Output matches                       |
-| 80_flexarray                             | EXEC_FAIL    | non-zero exit                        |
+| 80_flexarray                             | PASS         | Output matches                       |
 | 81_types                                 | PASS         | Output matches                       |
 | 82_attribs_position                      | PASS         | Output matches                       |
 | 83_utf8_in_identifiers                   | PASS         | Output matches                       |
@@ -88,7 +88,7 @@ Generated: May 2026
 | 87_dead_code                             | PASS         | Output matches                       |
 | 88_codeopt                               | PASS         | Output matches                       |
 | 89_nocode_wanted                         | PASS         | Output matches                       |
-| 90_struct-init                           | MISMATCH     | Output does not match .expect        |
+| 90_struct-init                           | PASS         | Output matches                       |
 | 91_ptr_longlong_arith32                  | PASS         | Output matches                       |
 | 92_enum_bitfield                         | PASS         | Output matches                       |
 | 93_integer_promotion                     | MISMATCH     | Output does not match .expect        |
@@ -103,7 +103,7 @@ Generated: May 2026
 | 101_cleanup                              | PASS         | Output matches                       |
 | 102_alignas                              | PASS         | Output matches                       |
 | 103_implicit_memmove                     | PASS         | Output matches                       |
-| 104_inline                               | MISMATCH     | Output does not match .expect        |
+| 104_inline                               | PASS         | Output matches                       |
 | 105_local_extern                         | PASS         | Output matches                       |
 | 106_versym                               | PASS         | Output matches                       |
 | 107_stack_safe                           | PASS         | Output matches                       |
