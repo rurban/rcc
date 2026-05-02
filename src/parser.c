@@ -50,6 +50,7 @@ static LVar *current_fn_scope_locals;
 static char *parser_current_fn;
 static int current_block_depth;
 static bool suppress_fn_scope_update;
+static bool fn_uses_vla;
 
 typedef struct LabelScope LabelScope;
 typedef struct PendingGoto PendingGoto;
@@ -419,6 +420,15 @@ static Node *append_cleanup_range(Node *body, LVar *begin, LVar *end, Token *tok
     for (LVar *var = begin; var && var != end; var = var->next) {
         if (var->is_local && var->cleanup_func)
             cur = cur->next = make_cleanup_stmt(var, tok);
+        if (var->is_local && var->ty->kind == TY_VLA) {
+            Node *v = new_node(ND_EXPR_STMT, tok);
+            Node *a = new_node(ND_ALLOCA, tok);
+            a->kind = ND_ALLOCA_ZINIT;
+            a->var = var;
+            a->lhs = new_num(0, tok);
+            v->lhs = a;
+            cur = cur->next = v;
+        }
     }
 
     if (!head.next)
@@ -843,10 +853,12 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
 
 static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
     int dims[16];
+    Node *vla_exprs[16] = {0};
     int ndims = 0;
     while (equal(tok, "[")) {
         tok = tok->next;
         int len = 0;
+        Node *vla_expr = NULL;
         while (equal(tok, "const") || equal(tok, "volatile") || equal(tok, "restrict") || equal(tok, "static"))
             tok = tok->next;
         if (!equal(tok, "]")) {
@@ -855,19 +867,28 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
             } else {
                 Node *node = expr(&tok, tok);
                 long long val = 0;
-                if (!eval_const_expr(node, &val))
-                    error_tok(tok, "expected array size");
-                len = (int)val;
+                if (eval_const_expr(node, &val)) {
+                    len = (int)val;
+                } else {
+                    len = -1;
+                    vla_expr = node;
+                }
             }
         }
         tok = skip(tok, "]");
         if (ndims >= 16)
             error_tok(tok, "too many array dimensions");
-        dims[ndims++] = len;
+        dims[ndims] = len;
+        vla_exprs[ndims] = vla_expr;
+        ndims++;
     }
     // Apply dimensions from innermost (rightmost in source) to outermost
-    for (int i = ndims - 1; i >= 0; i--)
-        ty = array_of(ty, dims[i]);
+    for (int i = ndims - 1; i >= 0; i--) {
+        if (vla_exprs[i])
+            ty = vla_of(ty, vla_exprs[i], 0);
+        else
+            ty = array_of(ty, dims[i]);
+    }
 
     if (equal(tok, "(")) {
         Token *next = tok->next;
@@ -2517,6 +2538,16 @@ static Node *declaration(Token **rest, Token *tok) {
             if (pending_asm_name)
                 var->asm_name = pending_asm_name;
             var->cleanup_func = cleanup ? cleanup : ty->cleanup_func;
+
+            // VLA: compute size and allocate stack space
+            if (ty->kind == TY_VLA) {
+                Node *vla_node = new_node(ND_ALLOCA, tok);
+                vla_node->lhs = ty->vla_len_expr;
+                vla_node->var = var;
+                cur = cur->next = new_unary(ND_EXPR_STMT, vla_node, tok);
+                fn_uses_vla = true;
+            }
+
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
             if (equal(tok, "=")) {
@@ -4189,6 +4220,7 @@ Program *parse(Token *tok) {
                 Type *fty;
                 bool is_variadic = false;
                 LVar *params = NULL;
+                fn_uses_vla = false;
 
                 if (ty->kind == TY_FUNC) {
                     fty = ty;
@@ -4354,6 +4386,7 @@ Program *parse(Token *tok) {
                     fn->body = body->body;
                     fn->stack_size = align_to(stack_offset, 16);
                     fn->is_variadic = is_variadic;
+                    fn->dealloc_vla = fn_uses_vla;
                     fn->is_constructor = pending_constructor;
                     fn->is_destructor = pending_destructor;
                     LVar *fn_sym2 = find_global_name(name);

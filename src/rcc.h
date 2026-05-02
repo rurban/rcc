@@ -96,11 +96,13 @@ typedef enum {
     TY_LDOUBLE,
     TY_PTR,
     TY_ARRAY,
+    TY_VLA, // variable-length array
     TY_STRUCT,
     TY_UNION,
     TY_FUNC,
 } TypeKind;
 
+typedef struct Node Node;
 typedef struct Type Type;
 typedef struct Member Member;
 
@@ -138,6 +140,9 @@ struct Type {
     unsigned char bitfield_mode;
     char *cleanup_func; // __attribute__((__cleanup__(func))) on the type
     char *name; // for parameter types: the parameter name
+    Node *vla_len_expr; // VLA dimension expression (NULL = constant)
+    void *vla_len_val; // LVar temporary for evaluated VLA dimension
+    int64_t array_len; // array size (for both TY_ARRAY and TY_VLA constant fallback)
 };
 
 static inline bool ty_const(const Type *t) { return t->qual & QUAL_CONST; }
@@ -282,6 +287,9 @@ typedef enum {
     ND_VA_START, // "va_start"
     ND_VA_COPY, // "va_copy"
     ND_VA_ARG, // "va_arg"
+    ND_ALLOCA, // VLA stack allocation
+    ND_ALLOCA_ZINIT, // VLA stack allocation + zero init
+    ND_CHAIN, // Chain expressions (evaluate lhs, result is rhs)
 } NodeKind;
 
 typedef struct Node Node;
@@ -366,6 +374,7 @@ struct Function {
     bool is_extern;
     bool is_weak;
     bool has_def;
+    bool dealloc_vla; // restore RSP from VLA base on scope exit
 };
 
 typedef struct StrLit StrLit;
@@ -403,6 +412,9 @@ Program *parse(Token *tok);
 //
 bool va_arg_need_copy(Type *ty);
 void codegen(Program *prog);
+
+// VLA
+Type *vla_of(Type *base, Node *expr, int64_t arr_len);
 
 // Optimizer (CTFE)
 void optimize(Program *prog);

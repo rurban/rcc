@@ -23,7 +23,8 @@ static int rcc_label_count = 0;
 static int va_gp_start;
 static int va_fp_start;
 static int va_st_start;
-static int va_reg_save_ofs; // offset of reg_save_area from rbp
+static int va_reg_save_ofs;
+static int vla_base_ofs; // offset of reg_save_area from rbp
 static int break_stack[128];
 static int continue_stack[128];
 static int ctrl_depth = 0;
@@ -157,6 +158,34 @@ static void emit_alloca(void) {
 }
 
 static char *var_label(LVar *var);
+
+static void builtin_alloca(Node *node) {
+    printf("  mov rcx, rsp\n");
+    printf("  sub rsp, rax\n");
+    int align = node->var ? (node->var->ty->align > 16 ? 16 : 16) : 16;
+    printf("  and rsp, -%d\n", align);
+    printf("  sub rcx, rsp\n");
+    if (node->kind == ND_ALLOCA_ZINIT) {
+        printf("  pxor xmm0, xmm0\n");
+        printf(".L.alloca.zero.%d:\n", rcc_label_count);
+        printf("  sub rcx, 16\n");
+        printf("  js .L.alloca.done.%d\n", rcc_label_count);
+        printf("  movaps [rsp + rcx], xmm0\n");
+        printf("  jmp .L.alloca.zero.%d\n", rcc_label_count);
+    } else {
+        printf(".L.alloca.probe.%d:\n", rcc_label_count);
+        printf("  sub rcx, 4096\n");
+        printf("  js .L.alloca.done.%d\n", rcc_label_count);
+        printf("  or byte ptr [rsp + rcx], 0\n");
+        printf("  jmp .L.alloca.probe.%d\n", rcc_label_count);
+    }
+    printf(".L.alloca.done.%d:\n", rcc_label_count);
+    rcc_label_count++;
+    if (node->var)
+        printf("  mov [rbp-%d], rsp\n", node->var->offset);
+    else
+        printf("  mov rax, rsp\n");
+}
 
 bool va_arg_need_copy(Type *ty) {
     if (ty->size > 8 && ty->size <= 16) {
@@ -835,9 +864,12 @@ static int gen_addr(Node *node) {
     switch (node->kind) {
     case ND_LVAR: {
         int r = alloc_reg();
-        if (node->var->is_local)
-            printf("  lea %s, [rbp-%d]\n", reg64[r], node->var->offset);
-        else {
+        if (node->var->is_local) {
+            if (node->var->ty->kind == TY_VLA)
+                printf("  lea %s, [rbp-%d]\n", reg64[r], node->var->offset - 8);
+            else
+                printf("  lea %s, [rbp-%d]\n", reg64[r], node->var->offset);
+        } else {
             if (node->var->is_weak)
                 printf(".weak %s\n", var_label(node->var));
             printf("  lea %s, [rip + %s]\n", reg64[r], var_label(node->var));
@@ -956,7 +988,12 @@ static int gen(Node *node) {
     case ND_LVAR: {
         int r = alloc_reg();
         char *label = var_label(node->var);
-        if (node->var->ty->kind == TY_ARRAY) {
+        if (node->var->ty->kind == TY_VLA) {
+            if (node->var->is_local)
+                printf("  mov %s, [rbp-%d]\n", reg64[r], node->var->offset - 8);
+            else
+                printf("  mov %s, [rip + %s]\n", reg64[r], label);
+        } else if (node->var->ty->kind == TY_ARRAY) {
             if (node->var->is_local)
                 printf("  lea %s, [rbp-%d]\n", reg64[r], node->var->offset);
             else
@@ -1499,10 +1536,48 @@ static int gen(Node *node) {
     }
     case ND_NULL:
         return -1;
-    case ND_COMMA: {
+    case ND_COMMA:
+    case ND_CHAIN: {
         int r1 = gen(node->lhs);
         if (r1 != -1) free_reg(r1);
         return gen(node->rhs);
+    }
+    case ND_ALLOCA:
+    case ND_ALLOCA_ZINIT: {
+        if (node->kind == ND_ALLOCA_ZINIT && node->lhs && node->lhs->kind == ND_NUM && node->lhs->val == 0) {
+            printf("  mov rsp, [rbp-%d]\n", node->var->offset);
+            return -1;
+        }
+        int r = gen(node->lhs);
+        printf("  mov [rbp-%d], rsp\n", node->var->offset);
+        printf("  mov rax, %s\n", reg64[r]);
+        free_reg(r);
+        printf("  mov rcx, rsp\n");
+        printf("  sub rsp, rax\n");
+        int align = 16;
+        printf("  and rsp, -%d\n", align);
+        printf("  sub rcx, rsp\n");
+        if (node->kind == ND_ALLOCA_ZINIT) {
+            printf("  pxor xmm0, xmm0\n");
+            printf(".L.alloca.zero.%d:\n", rcc_label_count);
+            printf("  sub rcx, 16\n");
+            printf("  js .L.alloca.done.%d\n", rcc_label_count);
+            printf("  movaps [rsp + rcx], xmm0\n");
+            printf("  jmp .L.alloca.zero.%d\n", rcc_label_count);
+        } else {
+            printf(".L.alloca.probe.%d:\n", rcc_label_count);
+            printf("  sub rcx, 4096\n");
+            printf("  js .L.alloca.done.%d\n", rcc_label_count);
+            printf("  or byte ptr [rsp + rcx], 0\n");
+            printf("  jmp .L.alloca.probe.%d\n", rcc_label_count);
+        }
+        printf(".L.alloca.done.%d:\n", rcc_label_count);
+        rcc_label_count++;
+        if (node->var)
+            printf("  mov [rbp-%d], rsp\n", node->var->offset - 8);
+        else
+            printf("  mov rax, rsp\n");
+        return -1;
     }
     case ND_BLOCK:
         for (Node *n = node->body; n; n = n->next) {
@@ -2910,7 +2985,9 @@ void codegen(Program *prog) {
         }
         if (has_cleanup)
             printf("  mov rax, [rbp-%d]\n", SPILL_R10);
-        if (fn_uses_alloca)
+        if (fn->dealloc_vla)
+            printf("  lea rsp, [rbp-%d]\n", n_pushes * 8);
+        else if (fn_uses_alloca)
             printf("  lea rsp, [rbp-%d]\n", n_pushes * 8);
         else
             printf("  add rsp, %d\n", sub_amount);

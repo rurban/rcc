@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     141
- - **Passed**:    137
- - **Failed**:    4
- - **Pass Rate**: 97%
+ - **Passed**:    139
+ - **Failed**:    2
+ - **Pass Rate**: 98%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -76,8 +76,8 @@ Generated: May 2026
 | 75_array_in_struct_init                  | PASS         | Output matches                       |
 | 76_dollars_in_identifiers                | PASS         | Output matches                       |
 | 77_push_pop_macro                        | PASS         | Output matches                       |
-| 78_vla_label                             | COMPILE_FAIL | rcc returned non-zero                |
-| 79_vla_continue                          | COMPILE_FAIL | rcc returned non-zero                |
+| 78_vla_label                             | PASS         | Output matches                       |
+| 79_vla_continue                          | MISMATCH     | Output does not match .expect        |
 | 80_flexarray                             | PASS         | Output matches                       |
 | 81_types                                 | PASS         | Output matches                       |
 | 82_attribs_position                      | PASS         | Output matches                       |
@@ -121,8 +121,8 @@ Generated: May 2026
 | 119_random_stuff                         | PASS         | Output matches                       |
 | 120_alias                                | SKIP         | Skipped                              |
 | 121_struct_return                        | PASS         | Output matches                       |
-| 122_vla_reuse                            | COMPILE_FAIL | rcc returned non-zero                |
-| 123_vla_bug                              | COMPILE_FAIL | rcc returned non-zero                |
+| 122_vla_reuse                            | EXEC_FAIL    | non-zero exit                        |
+| 123_vla_bug                              | PASS         | Output matches                       |
 | 124_atomic_counter                       | SKIP         | Skipped                              |
 | 125_atomic_misc                          | SKIP         | Skipped                              |
 | 126_bound_global                         | SKIP         | Skipped                              |

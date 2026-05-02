@@ -181,7 +181,7 @@ static void add_type_internal(Node *node) {
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
-            node->ty = (lty->kind == TY_ARRAY) ? pointer_to(lty->base) : lty;
+            node->ty = (lty->kind == TY_ARRAY || lty->kind == TY_VLA) ? pointer_to(lty->base) : lty;
             return;
         }
         if (is_integer(lty) && rty->base) {
@@ -203,7 +203,7 @@ static void add_type_internal(Node *node) {
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
-            node->ty = (rty->kind == TY_ARRAY) ? pointer_to(rty->base) : rty;
+            node->ty = (rty->kind == TY_ARRAY || rty->kind == TY_VLA) ? pointer_to(rty->base) : rty;
             return;
         }
         if (lty->base && rty->base) {
@@ -328,19 +328,19 @@ static void add_type_internal(Node *node) {
             els_null = inner && inner->ty && is_integer(inner->ty) &&
                 inner->kind == ND_NUM && inner->val == 0;
         }
-        if (then_null && ety && (ety->kind == TY_PTR || ety->kind == TY_ARRAY)) {
-            node->ty = ety->kind == TY_ARRAY ? pointer_to(ety->base) : ety;
+        if (then_null && ety && (ety->kind == TY_PTR || ety->kind == TY_ARRAY || ety->kind == TY_VLA)) {
+            node->ty = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? pointer_to(ety->base) : ety;
             return;
         }
-        if (els_null && tty && (tty->kind == TY_PTR || tty->kind == TY_ARRAY)) {
-            node->ty = tty->kind == TY_ARRAY ? pointer_to(tty->base) : tty;
+        if (els_null && tty && (tty->kind == TY_PTR || tty->kind == TY_ARRAY || tty->kind == TY_VLA)) {
+            node->ty = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? pointer_to(tty->base) : tty;
             return;
         }
         // Both pointers: find composite type
-        if (tty && ety && (tty->kind == TY_PTR || tty->kind == TY_ARRAY) &&
-            (ety->kind == TY_PTR || ety->kind == TY_ARRAY)) {
-            Type *tbase = tty->kind == TY_ARRAY ? tty->base : tty->base;
-            Type *ebase = ety->kind == TY_ARRAY ? ety->base : ety->base;
+        if (tty && ety && (tty->kind == TY_PTR || tty->kind == TY_ARRAY || tty->kind == TY_VLA) &&
+            (ety->kind == TY_PTR || ety->kind == TY_ARRAY || ety->kind == TY_VLA)) {
+            Type *tbase = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? tty->base : tty->base;
+            Type *ebase = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? ety->base : ety->base;
             // void* combines with any pointer; qualifiers merge from both sides
             if (tbase->kind == TY_VOID || ebase->kind == TY_VOID) {
                 // Pick the void* side; if both void*, pick then-side
@@ -360,8 +360,8 @@ static void add_type_internal(Node *node) {
             } else {
                 // Same base kind: prefer the complete side (for incomplete arrays),
                 // then combine qualifiers
-                Type *chosen_ptr = (tty->kind == TY_ARRAY) ? pointer_to(tty->base) : tty;
-                Type *other_ptr = (ety->kind == TY_ARRAY) ? pointer_to(ety->base) : ety;
+                Type *chosen_ptr = (tty->kind == TY_ARRAY || tty->kind == TY_VLA) ? pointer_to(tty->base) : tty;
+                Type *other_ptr = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? pointer_to(ety->base) : ety;
                 // If then-base is an incomplete array and els-base is complete, use els
                 if (tbase->kind == TY_ARRAY && tbase->size == 0 &&
                     ebase->kind == TY_ARRAY && ebase->size > 0)
@@ -397,7 +397,7 @@ static void add_type_internal(Node *node) {
     case ND_COMMA:
         node->ty = node->rhs->ty;
         // Comma expressions are never lvalues; apply array/function decay
-        if (node->ty->kind == TY_ARRAY)
+        if (node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
             node->ty = pointer_to(node->ty->base);
         else if (node->ty->kind == TY_FUNC)
             node->ty = pointer_to(node->ty);
@@ -413,7 +413,7 @@ static void add_type_internal(Node *node) {
         node->ty = pointer_to(node->lhs->ty);
         return;
     case ND_DEREF:
-        if (node->lhs->ty->kind != TY_PTR && node->lhs->ty->kind != TY_ARRAY) {
+        if (node->lhs->ty->kind != TY_PTR && node->lhs->ty->kind != TY_ARRAY && node->lhs->ty->kind != TY_VLA) {
             error_tok(node->tok, "invalid pointer dereference\n\033[1;36mnote\033[0m: cannot apply '*' to a non-pointer type");
         }
         node->ty = node->lhs->ty->base;
@@ -496,4 +496,19 @@ static void add_type_internal(Node *node) {
 
 void add_type(Node *node) {
     add_type_internal(node);
+}
+
+Type *vla_of(Type *base, Node *len, int64_t arr_len) {
+    Type *ty = arena_alloc(sizeof(Type));
+    ty->kind = TY_VLA;
+    ty->size = 16; // 8 for array base ptr + 8 for saved RSP
+    ty->align = 8;
+    ty->base = base;
+    if (len) {
+        add_type(len);
+        ty->vla_len_expr = len;
+    } else {
+        ty->array_len = arr_len;
+    }
+    return ty;
 }
