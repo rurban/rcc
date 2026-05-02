@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     137
- - **Passed**:    96
- - **Failed**:    41
- - **Pass Rate**: 70%
+ - **Total**:     141
+ - **Passed**:    130
+ - **Failed**:    11
+ - **Pass Rate**: 92%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -20,21 +20,21 @@ Generated: May 2026
 | 07_function                              | COMPILE_OK   | linked, (execution skipped)          |
 | 08_while                                 | COMPILE_OK   | linked, (execution skipped)          |
 | 09_do_while                              | COMPILE_OK   | linked, (execution skipped)          |
-| 10_pointer                               | COMPILE_FAIL | rcc returned non-zero                |
+| 10_pointer                               | COMPILE_OK   | linked, (execution skipped)          |
 | 11_precedence                            | COMPILE_OK   | linked, (execution skipped)          |
 | 12_hashdefine                            | COMPILE_OK   | linked, (execution skipped)          |
 | 13_integer_literals                      | COMPILE_OK   | linked, (execution skipped)          |
 | 14_if                                    | COMPILE_OK   | linked, (execution skipped)          |
 | 15_recursion                             | COMPILE_OK   | linked, (execution skipped)          |
 | 16_nesting                               | COMPILE_OK   | linked, (execution skipped)          |
-| 17_enum                                  | COMPILE_FAIL | rcc returned non-zero                |
+| 17_enum                                  | COMPILE_OK   | linked, (execution skipped)          |
 | 18_include                               | COMPILE_OK   | linked, (execution skipped)          |
 | 19_pointer_arithmetic                    | COMPILE_OK   | linked, (execution skipped)          |
 | 20_pointer_comparison                    | COMPILE_OK   | linked, (execution skipped)          |
 | 21_char_array                            | COMPILE_OK   | linked, (execution skipped)          |
-| 22_floating_point                        | COMPILE_FAIL | rcc returned non-zero                |
-| 23_type_coercion                         | COMPILE_FAIL | rcc returned non-zero                |
-| 24_math_library                          | COMPILE_FAIL | rcc returned non-zero                |
+| 22_floating_point                        | COMPILE_OK   | linked, (execution skipped)          |
+| 23_type_coercion                         | COMPILE_OK   | linked, (execution skipped)          |
+| 24_math_library                          | COMPILE_OK   | linked, (execution skipped)          |
 | 25_quicksort                             | COMPILE_OK   | linked, (execution skipped)          |
 | 26_character_constants                   | COMPILE_OK   | linked, (execution skipped)          |
 | 27_sizeof                                | COMPILE_OK   | linked, (execution skipped)          |
@@ -43,7 +43,7 @@ Generated: May 2026
 | 30_hanoi                                 | COMPILE_OK   | linked, (execution skipped)          |
 | 31_args                                  | COMPILE_OK   | linked, (execution skipped)          |
 | 32_led                                   | COMPILE_OK   | linked, (execution skipped)          |
-| 33_ternary_op                            | COMPILE_FAIL | rcc returned non-zero                |
+| 33_ternary_op                            | COMPILE_OK   | linked, (execution skipped)          |
 | 34_array_assignment                      | COMPILE_OK   | linked, (execution skipped)          |
 | 35_sizeof                                | COMPILE_OK   | linked, (execution skipped)          |
 | 36_array_initialisers                    | COMPILE_OK   | linked, (execution skipped)          |
@@ -59,86 +59,86 @@ Generated: May 2026
 | 46_grep                                  | COMPILE_FAIL | rcc returned non-zero                |
 | 47_switch_return                         | COMPILE_OK   | linked, (execution skipped)          |
 | 48_nested_break                          | COMPILE_OK   | linked, (execution skipped)          |
-| 49_bracket_evaluation                    | COMPILE_FAIL | rcc returned non-zero                |
+| 49_bracket_evaluation                    | COMPILE_OK   | linked, (execution skipped)          |
 | 50_logical_second_arg                    | COMPILE_OK   | linked, (execution skipped)          |
-| 51_static                                | COMPILE_FAIL | rcc returned non-zero                |
+| 51_static                                | COMPILE_OK   | linked, (execution skipped)          |
 | 52_unnamed_enum                          | COMPILE_OK   | linked, (execution skipped)          |
 | 54_goto                                  | COMPILE_OK   | linked, (execution skipped)          |
-| 55_lshift_type                           | COMPILE_FAIL | rcc returned non-zero                |
+| 55_lshift_type                           | COMPILE_OK   | linked, (execution skipped)          |
 | 60_errors_and_warnings                   | SKIP         | Skipped                              |
 | 61_integers                              | COMPILE_OK   | linked, (execution skipped)          |
 | 64_macro_nesting                         | COMPILE_OK   | linked, (execution skipped)          |
 | 67_macro_concat                          | COMPILE_OK   | linked, (execution skipped)          |
-| 70_floating_point_literals               | COMPILE_FAIL | rcc returned non-zero                |
+| 70_floating_point_literals               | COMPILE_OK   | linked, (execution skipped)          |
 | 71_macro_empty_arg                       | COMPILE_OK   | linked, (execution skipped)          |
 | 72_long_long_constant                    | COMPILE_OK   | linked, (execution skipped)          |
 | 73_arm64                                 | SKIP         | Skipped                              |
 | 75_array_in_struct_init                  | COMPILE_OK   | linked, (execution skipped)          |
 | 76_dollars_in_identifiers                | COMPILE_OK   | linked, (execution skipped)          |
 | 77_push_pop_macro                        | COMPILE_OK   | linked, (execution skipped)          |
-| 78_vla_label                             | SKIP         | Skipped                              |
-| 79_vla_continue                          | SKIP         | Skipped                              |
+| 78_vla_label                             | COMPILE_FAIL | rcc returned non-zero                |
+| 79_vla_continue                          | COMPILE_FAIL | rcc returned non-zero                |
 | 80_flexarray                             | COMPILE_OK   | linked, (execution skipped)          |
 | 81_types                                 | COMPILE_OK   | linked, (execution skipped)          |
-| 82_attribs_position                      | COMPILE_FAIL | rcc returned non-zero                |
-| 83_utf8_in_identifiers                   | COMPILE_FAIL | rcc returned non-zero                |
+| 82_attribs_position                      | COMPILE_OK   | linked, (execution skipped)          |
+| 83_utf8_in_identifiers                   | COMPILE_OK   | linked, (execution skipped)          |
 | 84_hex-float                             | COMPILE_OK   | linked, (execution skipped)          |
 | 85_asm-outside-function                  | COMPILE_FAIL | rcc returned non-zero                |
 | 86_memory-model                          | COMPILE_OK   | linked, (execution skipped)          |
-| 87_dead_code                             | COMPILE_FAIL | rcc returned non-zero                |
-| 88_codeopt                               | COMPILE_FAIL | rcc returned non-zero                |
-| 89_nocode_wanted                         | COMPILE_FAIL | rcc returned non-zero                |
-| 90_struct-init                           | COMPILE_FAIL | rcc returned non-zero                |
+| 87_dead_code                             | COMPILE_OK   | linked, (execution skipped)          |
+| 88_codeopt                               | COMPILE_OK   | linked, (execution skipped)          |
+| 89_nocode_wanted                         | COMPILE_OK   | linked, (execution skipped)          |
+| 90_struct-init                           | COMPILE_OK   | linked, (execution skipped)          |
 | 91_ptr_longlong_arith32                  | COMPILE_OK   | linked, (execution skipped)          |
 | 92_enum_bitfield                         | COMPILE_OK   | linked, (execution skipped)          |
 | 93_integer_promotion                     | COMPILE_OK   | linked, (execution skipped)          |
 | 94_generic                               | COMPILE_OK   | linked, (execution skipped)          |
-| 95_bitfields                             | COMPILE_FAIL | rcc returned non-zero                |
-| 95_bitfields_ms                          | COMPILE_FAIL | rcc returned non-zero                |
+| 95_bitfields                             | COMPILE_OK   | linked, (execution skipped)          |
+| 95_bitfields_ms                          | COMPILE_OK   | linked, (execution skipped)          |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
 | 97_utf8_string_literal                   | COMPILE_OK   | linked, (execution skipped)          |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |
 | 99_fastcall                              | SKIP         | Skipped                              |
 | 100_c99array-decls                       | COMPILE_OK   | linked, (execution skipped)          |
-| 101_cleanup                              | COMPILE_FAIL | rcc returned non-zero                |
+| 101_cleanup                              | COMPILE_OK   | linked, (execution skipped)          |
 | 102_alignas                              | COMPILE_OK   | linked, (execution skipped)          |
 | 103_implicit_memmove                     | COMPILE_OK   | linked, (execution skipped)          |
 | 104_inline                               | COMPILE_FAIL | rcc returned non-zero                |
-| 105_local_extern                         | COMPILE_FAIL | rcc returned non-zero                |
-| 106_versym                               | COMPILE_FAIL | rcc returned non-zero                |
-| 107_stack_safe                           | COMPILE_FAIL | rcc returned non-zero                |
-| 108_constructor                          | COMPILE_FAIL | rcc returned non-zero                |
-| 109_float_struct_calling                 | COMPILE_FAIL | rcc returned non-zero                |
-| 110_average                              | COMPILE_FAIL | rcc returned non-zero                |
-| 111_conversion                           | COMPILE_FAIL | rcc returned non-zero                |
+| 105_local_extern                         | COMPILE_OK   | linked, (execution skipped)          |
+| 106_versym                               | COMPILE_OK   | linked, (execution skipped)          |
+| 107_stack_safe                           | COMPILE_OK   | linked, (execution skipped)          |
+| 108_constructor                          | COMPILE_OK   | linked, (execution skipped)          |
+| 109_float_struct_calling                 | COMPILE_OK   | linked, (execution skipped)          |
+| 110_average                              | COMPILE_OK   | linked, (execution skipped)          |
+| 111_conversion                           | COMPILE_OK   | linked, (execution skipped)          |
 | 112_backtrace                            | SKIP         | Skipped                              |
 | 113_btdll                                | SKIP         | Skipped                              |
 | 114_bound_signal                         | SKIP         | Skipped                              |
 | 115_bound_setjmp                         | SKIP         | Skipped                              |
 | 116_bound_setjmp2                        | SKIP         | Skipped                              |
-| 117_builtins                             | COMPILE_OK   | linked, (execution skipped)          |
+| 117_builtins                             | COMPILE_FAIL | rcc returned non-zero                |
 | 118_switch                               | COMPILE_OK   | linked, (execution skipped)          |
-| 119_random_stuff                         | COMPILE_FAIL | rcc returned non-zero                |
+| 119_random_stuff                         | COMPILE_OK   | linked, (execution skipped)          |
 | 120_alias                                | SKIP         | Skipped                              |
 | 121_struct_return                        | COMPILE_OK   | linked, (execution skipped)          |
-| 122_vla_reuse                            | SKIP         | Skipped                              |
-| 123_vla_bug                              | SKIP         | Skipped                              |
+| 122_vla_reuse                            | COMPILE_FAIL | rcc returned non-zero                |
+| 123_vla_bug                              | COMPILE_FAIL | rcc returned non-zero                |
 | 124_atomic_counter                       | SKIP         | Skipped                              |
 | 125_atomic_misc                          | SKIP         | Skipped                              |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
 | 128_run_atexit                           | COMPILE_OK   | linked, (execution skipped)          |
 | 129_scopes                               | COMPILE_FAIL | rcc returned non-zero                |
-| 130_large_argument                       | COMPILE_FAIL | rcc returned non-zero                |
-| 131_return_struct_in_reg                 | COMPILE_FAIL | rcc returned non-zero                |
-| 132_bound_test                           | COMPILE_FAIL | rcc returned non-zero                |
-| 133_old_func                             | COMPILE_FAIL | rcc returned non-zero                |
-| 134_double_to_signed                     | COMPILE_FAIL | rcc returned non-zero                |
+| 130_large_argument                       | COMPILE_OK   | linked, (execution skipped)          |
+| 131_return_struct_in_reg                 | COMPILE_OK   | linked, (execution skipped)          |
+| 132_bound_test                           | COMPILE_OK   | linked, (execution skipped)          |
+| 133_old_func                             | COMPILE_OK   | linked, (execution skipped)          |
+| 134_double_to_signed                     | COMPILE_OK   | linked, (execution skipped)          |
 | 135_func_arg_struct_compare              | COMPILE_OK   | linked, (execution skipped)          |
 | 136_atomic_gcc_style                     | SKIP         | Skipped                              |
-| 137_funcall_struct_args                  | COMPILE_FAIL | rcc returned non-zero                |
+| 137_funcall_struct_args                  | COMPILE_OK   | linked, (execution skipped)          |
 | test_bitfields                           | PASS         | exit=126                             |
-| test_builtins                            | COMPILE_FAIL | rcc returned non-zero                |
+| test_builtins                            | PASS         | exit=126                             |
 | test_elif2                               | PASS         | exit=126                             |
 | test_elif_simple                         | PASS         | exit=126                             |
 | test_err                                 | PASS         | compile error as expected            |
@@ -160,7 +160,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=126                             |
 | test_real                                | PASS         | exit=126                             |
 | test_self_include2                       | PASS         | exit=126                             |
-| test_signextend                          | COMPILE_FAIL | rcc returned non-zero                |
+| test_signextend                          | PASS         | exit=126                             |
 | test_simple                              | PASS         | exit=126                             |
 | test_simple2                             | PASS         | exit=126                             |
 | test_str                                 | PASS         | exit=126                             |

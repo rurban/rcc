@@ -2,143 +2,143 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     138
- - **Passed**:    27
- - **Failed**:    111
- - **Pass Rate**: 19%
+ - **Total**:     142
+ - **Passed**:    124
+ - **Failed**:    18
+ - **Pass Rate**: 87%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
 |:-----------------------------------------|:-------------|:-------------------------------------|
-| 00_assignment                            | MISMATCH     | Output does not match .expect        |
-| 01_comment                               | MISMATCH     | Output does not match .expect        |
-| 02_printf                                | MISMATCH     | Output does not match .expect        |
-| 03_struct                                | MISMATCH     | Output does not match .expect        |
-| 04_for                                   | MISMATCH     | Output does not match .expect        |
-| 05_array                                 | MISMATCH     | Output does not match .expect        |
-| 06_case                                  | MISMATCH     | Output does not match .expect        |
-| 07_function                              | MISMATCH     | Output does not match .expect        |
-| 08_while                                 | MISMATCH     | Output does not match .expect        |
-| 09_do_while                              | MISMATCH     | Output does not match .expect        |
-| 10_pointer                               | COMPILE_FAIL | executable missing                   |
-| 11_precedence                            | MISMATCH     | Output does not match .expect        |
-| 12_hashdefine                            | MISMATCH     | Output does not match .expect        |
-| 13_integer_literals                      | MISMATCH     | Output does not match .expect        |
-| 14_if                                    | MISMATCH     | Output does not match .expect        |
-| 15_recursion                             | MISMATCH     | Output does not match .expect        |
-| 16_nesting                               | MISMATCH     | Output does not match .expect        |
-| 17_enum                                  | COMPILE_FAIL | executable missing                   |
-| 18_include                               | MISMATCH     | Output does not match .expect        |
-| 19_pointer_arithmetic                    | MISMATCH     | Output does not match .expect        |
-| 20_pointer_comparison                    | MISMATCH     | Output does not match .expect        |
-| 21_char_array                            | MISMATCH     | Output does not match .expect        |
-| 22_floating_point                        | COMPILE_FAIL | executable missing                   |
-| 23_type_coercion                         | COMPILE_FAIL | executable missing                   |
-| 24_math_library                          | COMPILE_FAIL | executable missing                   |
-| 25_quicksort                             | MISMATCH     | Output does not match .expect        |
-| 26_character_constants                   | MISMATCH     | Output does not match .expect        |
-| 27_sizeof                                | MISMATCH     | Output does not match .expect        |
-| 28_strings                               | MISMATCH     | Output does not match .expect        |
-| 29_array_address                         | MISMATCH     | Output does not match .expect        |
-| 30_hanoi                                 | MISMATCH     | Output does not match .expect        |
-| 31_args                                  | MISMATCH     | Output does not match .expect        |
-| 32_led                                   | MISMATCH     | Output does not match .expect        |
-| 33_ternary_op                            | COMPILE_FAIL | executable missing                   |
-| 34_array_assignment                      | MISMATCH     | Output does not match .expect        |
-| 35_sizeof                                | MISMATCH     | Output does not match .expect        |
-| 36_array_initialisers                    | MISMATCH     | Output does not match .expect        |
-| 37_sprintf                               | MISMATCH     | Output does not match .expect        |
-| 38_multiple_array_index                  | MISMATCH     | Output does not match .expect        |
-| 39_typedef                               | MISMATCH     | Output does not match .expect        |
-| 40_stdio                                 | MISMATCH     | Output does not match .expect        |
-| 41_hashif                                | MISMATCH     | Output does not match .expect        |
-| 42_function_pointer                      | COMPILE_FAIL | executable missing                   |
-| 43_void_param                            | MISMATCH     | Output does not match .expect        |
-| 44_scoped_declarations                   | MISMATCH     | Output does not match .expect        |
-| 45_empty_for                             | MISMATCH     | Output does not match .expect        |
-| 46_grep                                  | COMPILE_FAIL | executable missing                   |
-| 47_switch_return                         | MISMATCH     | Output does not match .expect        |
-| 48_nested_break                          | MISMATCH     | Output does not match .expect        |
-| 49_bracket_evaluation                    | COMPILE_FAIL | executable missing                   |
-| 50_logical_second_arg                    | MISMATCH     | Output does not match .expect        |
-| 51_static                                | COMPILE_FAIL | executable missing                   |
-| 52_unnamed_enum                          | MISMATCH     | Output does not match .expect        |
-| 54_goto                                  | MISMATCH     | Output does not match .expect        |
-| 55_lshift_type                           | COMPILE_FAIL | executable missing                   |
+| 00_assignment                            | PASS         | Output matches                       |
+| 01_comment                               | PASS         | Output matches                       |
+| 02_printf                                | PASS         | Output matches                       |
+| 03_struct                                | PASS         | Output matches                       |
+| 04_for                                   | PASS         | Output matches                       |
+| 05_array                                 | PASS         | Output matches                       |
+| 06_case                                  | PASS         | Output matches                       |
+| 07_function                              | PASS         | Output matches                       |
+| 08_while                                 | PASS         | Output matches                       |
+| 09_do_while                              | PASS         | Output matches                       |
+| 10_pointer                               | PASS         | Output matches                       |
+| 11_precedence                            | PASS         | Output matches                       |
+| 12_hashdefine                            | PASS         | Output matches                       |
+| 13_integer_literals                      | PASS         | Output matches                       |
+| 14_if                                    | PASS         | Output matches                       |
+| 15_recursion                             | PASS         | Output matches                       |
+| 16_nesting                               | PASS         | Output matches                       |
+| 17_enum                                  | PASS         | Output matches                       |
+| 18_include                               | PASS         | Output matches                       |
+| 19_pointer_arithmetic                    | PASS         | Output matches                       |
+| 20_pointer_comparison                    | PASS         | Output matches                       |
+| 21_char_array                            | PASS         | Output matches                       |
+| 22_floating_point                        | MISMATCH     | Output does not match .expect        |
+| 23_type_coercion                         | PASS         | Output matches                       |
+| 24_math_library                          | PASS         | Output matches                       |
+| 25_quicksort                             | PASS         | Output matches                       |
+| 26_character_constants                   | PASS         | Output matches                       |
+| 27_sizeof                                | PASS         | Output matches                       |
+| 28_strings                               | PASS         | Output matches                       |
+| 29_array_address                         | PASS         | Output matches                       |
+| 30_hanoi                                 | PASS         | Output matches                       |
+| 31_args                                  | PASS         | Output matches                       |
+| 32_led                                   | PASS         | Output matches                       |
+| 33_ternary_op                            | PASS         | Output matches                       |
+| 34_array_assignment                      | PASS         | Output matches                       |
+| 35_sizeof                                | PASS         | Output matches                       |
+| 36_array_initialisers                    | PASS         | Output matches                       |
+| 37_sprintf                               | PASS         | Output matches                       |
+| 38_multiple_array_index                  | PASS         | Output matches                       |
+| 39_typedef                               | PASS         | Output matches                       |
+| 40_stdio                                 | PASS         | Output matches                       |
+| 41_hashif                                | PASS         | Output matches                       |
+| 42_function_pointer                      | PASS         | Output matches                       |
+| 43_void_param                            | PASS         | Output matches                       |
+| 44_scoped_declarations                   | PASS         | Output matches                       |
+| 45_empty_for                             | PASS         | Output matches                       |
+| 46_grep                                  | PASS         | Output matches                       |
+| 47_switch_return                         | PASS         | Output matches                       |
+| 48_nested_break                          | PASS         | Output matches                       |
+| 49_bracket_evaluation                    | PASS         | Output matches                       |
+| 50_logical_second_arg                    | PASS         | Output matches                       |
+| 51_static                                | PASS         | Output matches                       |
+| 52_unnamed_enum                          | PASS         | Output matches                       |
+| 54_goto                                  | PASS         | Output matches                       |
+| 55_lshift_type                           | PASS         | Output matches                       |
 | 60_errors_and_warnings                   | SKIP         | Skipped                              |
-| 61_integers                              | MISMATCH     | Output does not match .expect        |
-| 64_macro_nesting                         | MISMATCH     | Output does not match .expect        |
-| 67_macro_concat                          | MISMATCH     | Output does not match .expect        |
-| 70_floating_point_literals               | COMPILE_FAIL | executable missing                   |
-| 71_macro_empty_arg                       | MISMATCH     | Output does not match .expect        |
-| 72_long_long_constant                    | MISMATCH     | Output does not match .expect        |
+| 61_integers                              | PASS         | Output matches                       |
+| 64_macro_nesting                         | PASS         | Output matches                       |
+| 67_macro_concat                          | PASS         | Output matches                       |
+| 70_floating_point_literals               | PASS         | Output matches                       |
+| 71_macro_empty_arg                       | PASS         | Output matches                       |
+| 72_long_long_constant                    | PASS         | Output matches                       |
 | 73_arm64                                 | COMPILE_FAIL | executable missing                   |
-| 75_array_in_struct_init                  | MISMATCH     | Output does not match .expect        |
-| 76_dollars_in_identifiers                | MISMATCH     | Output does not match .expect        |
-| 77_push_pop_macro                        | MISMATCH     | Output does not match .expect        |
-| 78_vla_label                             | SKIP         | Skipped                              |
-| 79_vla_continue                          | SKIP         | Skipped                              |
+| 75_array_in_struct_init                  | PASS         | Output matches                       |
+| 76_dollars_in_identifiers                | PASS         | Output matches                       |
+| 77_push_pop_macro                        | PASS         | Output matches                       |
+| 78_vla_label                             | COMPILE_FAIL | executable missing                   |
+| 79_vla_continue                          | COMPILE_FAIL | executable missing                   |
 | 80_flexarray                             | EXEC_FAIL    | non-zero exit                        |
-| 81_types                                 | MISMATCH     | Output does not match .expect        |
-| 82_attribs_position                      | COMPILE_FAIL | executable missing                   |
-| 83_utf8_in_identifiers                   | COMPILE_FAIL | executable missing                   |
-| 84_hex-float                             | MISMATCH     | Output does not match .expect        |
+| 81_types                                 | PASS         | Output matches                       |
+| 82_attribs_position                      | PASS         | Output matches                       |
+| 83_utf8_in_identifiers                   | PASS         | Output matches                       |
+| 84_hex-float                             | PASS         | Output matches                       |
 | 85_asm-outside-function                  | COMPILE_FAIL | executable missing                   |
-| 86_memory-model                          | MISMATCH     | Output does not match .expect        |
-| 87_dead_code                             | COMPILE_FAIL | executable missing                   |
-| 88_codeopt                               | COMPILE_FAIL | executable missing                   |
-| 89_nocode_wanted                         | COMPILE_FAIL | executable missing                   |
-| 90_struct-init                           | COMPILE_FAIL | executable missing                   |
-| 91_ptr_longlong_arith32                  | MISMATCH     | Output does not match .expect        |
-| 92_enum_bitfield                         | MISMATCH     | Output does not match .expect        |
+| 86_memory-model                          | PASS         | Output matches                       |
+| 87_dead_code                             | PASS         | Output matches                       |
+| 88_codeopt                               | PASS         | Output matches                       |
+| 89_nocode_wanted                         | PASS         | Output matches                       |
+| 90_struct-init                           | MISMATCH     | Output does not match .expect        |
+| 91_ptr_longlong_arith32                  | PASS         | Output matches                       |
+| 92_enum_bitfield                         | PASS         | Output matches                       |
 | 93_integer_promotion                     | MISMATCH     | Output does not match .expect        |
-| 94_generic                               | MISMATCH     | Output does not match .expect        |
-| 95_bitfields                             | COMPILE_FAIL | executable missing                   |
-| 95_bitfields_ms                          | COMPILE_FAIL | executable missing                   |
+| 94_generic                               | PASS         | Output matches                       |
+| 95_bitfields                             | MISMATCH     | Output does not match .expect        |
+| 95_bitfields_ms                          | MISMATCH     | Output does not match .expect        |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
-| 97_utf8_string_literal                   | MISMATCH     | Output does not match .expect        |
+| 97_utf8_string_literal                   | PASS         | Output matches                       |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |
 | 99_fastcall                              | SKIP         | Skipped                              |
-| 100_c99array-decls                       | MISMATCH     | Output does not match .expect        |
-| 101_cleanup                              | COMPILE_FAIL | executable missing                   |
-| 102_alignas                              | MISMATCH     | Output does not match .expect        |
-| 103_implicit_memmove                     | MISMATCH     | Output does not match .expect        |
+| 100_c99array-decls                       | PASS         | Output matches                       |
+| 101_cleanup                              | MISMATCH     | Output does not match .expect        |
+| 102_alignas                              | PASS         | Output matches                       |
+| 103_implicit_memmove                     | PASS         | Output matches                       |
 | 104_inline                               | COMPILE_FAIL | executable missing                   |
-| 105_local_extern                         | MISMATCH     | Output does not match .expect        |
-| 106_versym                               | MISMATCH     | Output does not match .expect        |
-| 107_stack_safe                           | COMPILE_FAIL | executable missing                   |
+| 105_local_extern                         | PASS         | Output matches                       |
+| 106_versym                               | PASS         | Output matches                       |
+| 107_stack_safe                           | PASS         | Output matches                       |
 | 108_constructor                          | COMPILE_FAIL | executable missing                   |
-| 109_float_struct_calling                 | MISMATCH     | Output does not match .expect        |
-| 110_average                              | COMPILE_FAIL | executable missing                   |
-| 111_conversion                           | COMPILE_FAIL | executable missing                   |
+| 109_float_struct_calling                 | PASS         | Output matches                       |
+| 110_average                              | PASS         | Output matches                       |
+| 111_conversion                           | PASS         | Output matches                       |
 | 112_backtrace                            | SKIP         | Skipped                              |
 | 113_btdll                                | SKIP         | Skipped                              |
 | 114_bound_signal                         | SKIP         | Skipped                              |
 | 115_bound_setjmp                         | SKIP         | Skipped                              |
 | 116_bound_setjmp2                        | SKIP         | Skipped                              |
-| 117_builtins                             | MISMATCH     | Output does not match .expect        |
-| 118_switch                               | MISMATCH     | Output does not match .expect        |
-| 119_random_stuff                         | COMPILE_FAIL | executable missing                   |
+| 117_builtins                             | PASS         | Output matches                       |
+| 118_switch                               | PASS         | Output matches                       |
+| 119_random_stuff                         | MISMATCH     | Output does not match .expect        |
 | 120_alias                                | SKIP         | Skipped                              |
-| 121_struct_return                        | MISMATCH     | Output does not match .expect        |
-| 122_vla_reuse                            | SKIP         | Skipped                              |
-| 123_vla_bug                              | SKIP         | Skipped                              |
+| 121_struct_return                        | PASS         | Output matches                       |
+| 122_vla_reuse                            | COMPILE_FAIL | executable missing                   |
+| 123_vla_bug                              | COMPILE_FAIL | executable missing                   |
 | 124_atomic_counter                       | SKIP         | Skipped                              |
 | 125_atomic_misc                          | SKIP         | Skipped                              |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
 | 128_run_atexit                           | COMPILE_FAIL | executable missing                   |
-| 129_scopes                               | COMPILE_FAIL | executable missing                   |
-| 130_large_argument                       | COMPILE_FAIL | executable missing                   |
-| 131_return_struct_in_reg                 | COMPILE_FAIL | executable missing                   |
-| 132_bound_test                           | COMPILE_FAIL | executable missing                   |
-| 133_old_func                             | COMPILE_FAIL | executable missing                   |
-| 134_double_to_signed                     | COMPILE_FAIL | executable missing                   |
-| 135_func_arg_struct_compare              | MISMATCH     | Output does not match .expect        |
+| 129_scopes                               | PASS         | Output matches                       |
+| 130_large_argument                       | PASS         | Output matches                       |
+| 131_return_struct_in_reg                 | PASS         | Output matches                       |
+| 132_bound_test                           | PASS         | Output matches                       |
+| 133_old_func                             | PASS         | Output matches                       |
+| 134_double_to_signed                     | PASS         | Output matches                       |
+| 135_func_arg_struct_compare              | PASS         | Output matches                       |
 | 136_atomic_gcc_style                     | SKIP         | Skipped                              |
-| 137_funcall_struct_args                  | COMPILE_FAIL | executable missing                   |
+| 137_funcall_struct_args                  | PASS         | Output matches                       |
 | test_bitfields                           | PASS         | exit=0                               |
-| test_builtins                            | COMPILE_FAIL | executable missing                   |
+| test_builtins                            | PASS         | exit=0                               |
 | test_elif2                               | PASS         | exit=0                               |
 | test_elif_simple                         | PASS         | exit=0                               |
 | test_err                                 | PASS         | compile error as expected            |
@@ -160,7 +160,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
-| test_signextend                          | COMPILE_FAIL | executable missing                   |
+| test_signextend                          | PASS         | exit=0                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

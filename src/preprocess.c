@@ -1530,21 +1530,38 @@ char *preprocess(char *filename, char *p) {
     define_pre("__SIG_ATOMIC_TYPE__", "int");
     define_pre("_Atomic", "");
 #ifdef _WIN32
-    define_pre("_WIN32", "1");
-    define_pre("__LLP64__", "1");
-#elif defined(__linux__)
-    define_pre("__linux__", "1");
-#elif defined(__APPLE__)
-    define_pre("__APPLE__", "1");
-    define_pre("__MACH__", "1");
-#elif defined(__FreeBSD__)
-    define_pre("__FreeBSD__", "1");
-#elif defined(__NetBSD__)
-    define_pre("__NetBSD__", "1");
-#elif defined(__OpenBSD__)
-    define_pre("__OpenBSD__", "1");
-#elif defined(__DragonFly__)
-    define_pre("__DragonFly__", "1");
+    if (!find_macro("_WIN32"))
+        define_macro("_WIN32", false, NULL, 0, "1");
+    if (!find_macro("__LLP64__"))
+        define_macro("__LLP64__", false, NULL, 0, "1");
+#endif
+#ifdef __linux__
+    if (!find_macro("__linux__"))
+        define_macro("__linux__", false, NULL, 0, "1");
+#endif
+#ifdef __APPLE__
+    if (!find_macro("__APPLE__"))
+        define_macro("__APPLE__", false, NULL, 0, "1");
+    if (!find_macro("__leading_underscore"))
+        define_macro("__leading_underscore", false, NULL, 0, "1");
+    if (!find_macro("__MACH__"))
+        define_macro("__MACH__", false, NULL, 0, "1");
+#endif
+#ifdef __FreeBSD__
+    if (!find_macro("__FreeBSD__"))
+        define_macro("__FreeBSD__", false, NULL, 0, "1");
+#endif
+#ifdef __NetBSD__
+    if (!find_macro("__NetBSD__"))
+        define_macro("__NetBSD__", false, NULL, 0, "1");
+#endif
+#ifdef __OpenBSD__
+    if (!find_macro("__OpenBSD__"))
+        define_macro("__OpenBSD__", false, NULL, 0, "1");
+#endif
+#ifdef __DragonFly__
+    if (!find_macro("__DragonFly__"))
+        define_macro("__DragonFly__", false, NULL, 0, "1");
 #endif
 #if !defined(_WIN32)
     define_pre("__unix", "1");

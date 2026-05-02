@@ -318,6 +318,7 @@ while IFS= read -r src; do
 		failed=$((failed + 1))
 		add_row "$base" "COMPILE_FAIL" "rcc returned non-zero"
 		print_change "$base" "COMPILE_FAIL"
+		[ -n "$p_src" ] && p_src=
 		if [ "$src" = "129_scopes.c" ]; then
 			cd - >/dev/null || exit
 			src="$TEST_DIR/129_scopes.c"
@@ -332,6 +333,7 @@ while IFS= read -r src; do
 		failed=$((failed + 1))
 		add_row "$base" "COMPILE_FAIL" "executable missing"
 		print_change "$base" "COMPILE_FAIL"
+		[ -n "$p_src" ] && p_src=
 		if [ "$src" = "129_scopes.c" ]; then
 			cd - >/dev/null || exit
 			src="$TEST_DIR/129_scopes.c"
@@ -544,11 +546,11 @@ printf "Report saved to %s\n" "$REPORT_FILE"
 
 # arm64-darwin native
 if [ "$REPORT_FILE" = "$SCRIPT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 1 ]
+    [ "$passed" -ge 27 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 94 ]
+    [ "$passed" -ge 130 ]
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 126 ]
+    [ "$passed" -ge 130 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
     [ "$passed" -ge 141 ]
 else

@@ -110,6 +110,7 @@ static int gen(Node *node);
 static int gen_addr(Node *node);
 static bool is_asm_reserved(const char *name);
 
+#if 0
 static char *func_asm_name(char *name) {
     for (TLItem *item = all_items; item; item = item->next) {
         if (item->kind == TL_FUNC && item->fn->name == name)
@@ -117,26 +118,59 @@ static char *func_asm_name(char *name) {
     }
     return name;
 }
+#endif
 
 // Mach-O symbols get a leading underscore
 static const char *sym_name(const char *name) {
 #if defined(__APPLE__)
     if (name[0] == '.' || name[0] == '/')
         return name;
-    if (name[0] == '_') return name;
     return format("_%s", name);
 #else
     return name;
 #endif
 }
 
+// Assembly label for a variable: respects __asm__ names (used as-is) and
+// applies sym_name() to regular C identifiers.
+static const char *var_sym_label(LVar *var) {
+    if (var->asm_name) return var->asm_name;
+    if (is_asm_reserved(var->name)) return format(".L_rcc_%s", var->name);
+    return sym_name(var->name);
+}
+
+// Assembly label for a function: respects __asm__ names (used as-is) and
+// applies sym_name() to regular C identifiers.
+static const char *func_label(char *name) {
+    for (TLItem *item = all_items; item; item = item->next)
+        if (item->kind == TL_FUNC && !strcmp(item->fn->name, name)) {
+            if (item->fn->asm_name)
+                return item->fn->asm_name;
+            return sym_name(item->fn->name);
+        }
+    return sym_name(name);
+}
+
+// Assembly-safe symbol name: quotes non-ASCII identifiers for LLVM assembler
+static const char *asm_sym_name(const char *name) {
+#if defined(__APPLE__)
+    const char *s = name;
+    while (*s) {
+        if ((unsigned char)*s < 0x20 || (unsigned char)*s > 0x7E)
+            return format("\"%s\"", name);
+        s++;
+    }
+#endif
+    return name;
+}
+
 static void emit_direct_call(char *name) {
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
 #ifdef ARCH_ARM64
-    printf("  bl %s\n", sym_name(func_asm_name(name)));
+    printf("  bl %s\n", asm_sym_name(func_label(name)));
 #else
-    printf("  call %s\n", sym_name(func_asm_name(name)));
+    printf("  call %s\n", func_label(name));
 #endif
 }
 
@@ -1207,8 +1241,8 @@ static void emit_mov_imm64(const char *reg, uint64_t val) {
 // Darwin: adrp reg, label@PAGE / add reg, reg, label@PAGEOFF
 static void emit_adrp_add(const char *reg, const char *label) {
 #if defined(__APPLE__)
-    printf("  adrp %s, %s@PAGE\n", reg, label);
-    printf("  add %s, %s, %s@PAGEOFF\n", reg, reg, label);
+    printf("  adrp %s, %s@GOTPAGE\n", reg, label);
+    printf("  ldr %s, [%s, %s@GOTPAGEOFF]\n", reg, reg, label);
 #else
     printf("  adrp %s, %s\n", reg, label);
     printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
@@ -1516,10 +1550,15 @@ static int gen_addr(Node *node) {
 #endif
             }
         } else {
-            if (node->var->is_weak)
-                printf(".weak %s\n", sym_name(var_label(node->var)));
+            if (node->var->is_weak) {
+#ifdef __APPLE__
+                printf(".weak_reference %s\n", asm_sym_name(var_sym_label(node->var)));
+#else
+                printf(".weak %s\n", asm_sym_name(var_sym_label(node->var)));
+#endif
+            }
 #ifdef ARCH_ARM64
-            emit_adrp_add(reg64[r], sym_name(var_label(node->var)));
+            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
             printf("  lea %s, [rip + %s]\n", reg64[r], var_label(node->var));
 #endif
@@ -1745,15 +1784,20 @@ static int gen(Node *node) {
 #endif
             else
 #ifdef ARCH_ARM64
-                emit_adrp_add(reg64[r], label);
+                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
                 printf("  lea %s, [rip + %s]\n", reg64[r], label);
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
-            if (node->var->is_weak)
-                printf(".weak %s\n", sym_name(label));
+            if (node->var->is_weak) {
+#ifdef __APPLE__
+                printf(".weak_reference %s\n", asm_sym_name(var_sym_label(node->var)));
+#else
+                printf(".weak %s\n", asm_sym_name(var_sym_label(node->var)));
+#endif
+            }
 #ifdef ARCH_ARM64
-            emit_adrp_add(reg64[r], sym_name(label));
+            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
             printf("  lea %s, [rip + %s]\n", reg64[r], label);
 #endif
@@ -1778,7 +1822,7 @@ static int gen(Node *node) {
                 } else {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        emit_adrp_add(reg64[r], label);
+                        emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr s0, [%s]\n", reg64[r]);
                         printf("  fcvt d0, s0\n");
 #else
@@ -1787,7 +1831,7 @@ static int gen(Node *node) {
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        emit_adrp_add(reg64[r], label);
+                        emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr d0, [%s]\n", reg64[r]);
 #else
                         printf("  movsd xmm0, qword ptr [rip + %s]\n", label);
@@ -1811,7 +1855,7 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
                 int ta = alloc_reg();
-                emit_adrp_add(reg64[ta], label);
+                emit_adrp_add(reg64[ta], asm_sym_name(var_sym_label(node->var)));
                 emit_load(node->ty, r, format("[%s]", reg64[ta]));
                 free_reg(ta);
 #else
@@ -3979,6 +4023,12 @@ static int peep_pattern5(char **lines, int nlines, int li, int lj) {
         peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
         !strcmp(r1, r2) && !strcmp(r2, r3) &&
         is_reg(d3) && !is_reg(mem1)) {
+        // Verify the middle instruction is OP R, R, ... (second operand must be R)
+        char *p = imm2;
+        while (*p == ' ' || *p == '\t') p++;
+        int r2len = strlen(r2);
+        if (strncmp(p, r2, r2len) != 0 || (p[r2len] != '\0' && p[r2len] != ',' && p[r2len] != ' '))
+            return 0;
         int r1_pid = phys_reg_id(r1);
         if (r1_pid >= 0 && reg_live_after(lines, nlines, lk, r1_pid))
             return 0;
@@ -4089,19 +4139,26 @@ void codegen(Program *prog) {
             if (var->ty->align > 1)
                 printf("  .balign %d\n", var->ty->align);
             if (!var->is_static)
-                printf(".globl %s\n", sym_name(label));
-            printf("%s:\n", safe_label);
+                printf(".globl %s\n", asm_sym_name(sym_name(label)));
+            printf("%s:\n", asm_sym_name(sym_name(safe_label)));
             if (reserved)
-                printf(".set %s, %s\n", label, safe_label);
+                printf(".set %s, %s\n", asm_sym_name(sym_name(label)), asm_sym_name(sym_name(safe_label)));
             if (var->init_data || var->relocs) {
                 int pos = 0;
                 for (Reloc *rel = var->relocs; rel; rel = rel->next) {
                     for (; pos < rel->offset; pos++)
                         printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+#ifdef __APPLE__
+                    if (rel->addend)
+                        printf("  .quad %s%+d\n", asm_sym_name(sym_name(rel->label)), rel->addend);
+                    else
+                        printf("  .quad %s\n", asm_sym_name(sym_name(rel->label)));
+#else
                     if (rel->addend)
                         printf("  .quad %s%+d\n", rel->label, rel->addend);
                     else
                         printf("  .quad %s\n", rel->label);
+#endif
                     pos += 8;
                 }
                 for (; pos < var->init_size; pos++)
@@ -4403,18 +4460,23 @@ void codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
-        if (fn->is_weak)
-            printf(".weak %s\n", sym_name(fn->name));
-        else if (fn_exported)
-            printf(".globl %s\n", sym_name(fn->name));
+        if (fn->is_weak) {
+#ifdef __APPLE__
+            printf(".weak_definition %s\n", asm_sym_name(sym_name(fn->name)));
+            printf(".globl %s\n", asm_sym_name(sym_name(fn->name)));
+#else
+            printf(".weak %s\n", asm_sym_name(sym_name(fn->name)));
+#endif
+        } else if (fn_exported)
+            printf(".globl %s\n", asm_sym_name(sym_name(fn->name)));
         if (fn_label != fn->name)
-            printf("%s = %s\n", fn->name, fn_label);
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", fn->name, fn->asm_name);
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn->asm_name)));
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
-        printf("%s:\n", fn_exported ? sym_name(fn_label) : fn_label);
+        printf("%s:\n", asm_sym_name(sym_name(fn_label)));
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         printf("  stp %s, %s, [%s, #-16]!\n", FRAME_PTR, LINK_REG, STACK_REG);
@@ -4656,21 +4718,26 @@ void codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
         if (fn->is_weak) {
-            printf(".weak %s\n", sym_name(fn->name));
+#ifdef __APPLE__
+            printf(".weak_definition %s\n", asm_sym_name(sym_name(fn->name)));
+            printf(".globl %s\n", asm_sym_name(sym_name(fn->name)));
+#else
+            printf(".weak %s\n", asm_sym_name(sym_name(fn->name)));
+#endif
         } else if (fn_exported) {
-            printf(".globl %s\n", sym_name(fn->name));
+            printf(".globl %s\n", asm_sym_name(sym_name(fn->name)));
         }
         // When the function name collides with a reserved name (e.g. register),
         // emit an alias from the real name to the safe label so that references
         // resolve correctly.
         if (fn_label != fn->name)
-            printf("%s = %s\n", fn->name, fn_label);
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", fn->name, fn->asm_name);
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn->asm_name)));
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
-        printf("%s:\n", fn_exported ? sym_name(fn_label) : fn_label);
+        printf("%s:\n", asm_sym_name(sym_name(fn_label)));
         printf("  push rbp\n");
         printf("  mov rbp, rsp\n");
 
@@ -4766,7 +4833,7 @@ void codegen(Program *prog) {
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_constructor)
-                printf("  .quad %s\n", item->fn->name);
+                printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
     }
     if (has_dtor) {
@@ -4779,7 +4846,7 @@ void codegen(Program *prog) {
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor)
-                printf("  .quad %s\n", item->fn->name);
+                printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
     }
 
@@ -4790,8 +4857,10 @@ void codegen(Program *prog) {
     if (float_lits) {
 #ifdef _WIN32
         printf("\n.section .rdata,\"dr\"\n");
+#elif defined(__APPLE__)
+        printf("\n.section __TEXT,__const\n");
 #else
-        printf("\n.section .rodata\n");
+                printf("\n.section .rodata\n");
 #endif
         printf("  .balign 8\n");
         for (FloatLit *fl = float_lits; fl; fl = fl->next) {

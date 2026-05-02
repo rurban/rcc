@@ -10,6 +10,13 @@ FILE *__acrt_iob_func(unsigned idx);
 #define stdin (__acrt_iob_func(0))
 #define stdout (__acrt_iob_func(1))
 #define stderr (__acrt_iob_func(2))
+#elif defined(__APPLE__)
+extern FILE *__stdinp;
+extern FILE *__stdoutp;
+extern FILE *__stderrp;
+#define stdin __stdinp
+#define stdout __stdoutp
+#define stderr __stderrp
 #else
 extern FILE *stdin;
 extern FILE *stdout;
