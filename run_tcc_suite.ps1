@@ -6,6 +6,12 @@ param(
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
+# Ensure UTF-8 source files (e.g. 83_utf8_in_identifiers) are decoded correctly
+# when capturing child-process output.  Windows defaults to the OEM code page
+# (CP437/CP850/CP1252) which misinterprets raw UTF-8 bytes.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding          = [System.Text.Encoding]::UTF8
+
 $RCCFLAGS = ""
 if ($O1) { $RCCFLAGS = "-O1" }
 

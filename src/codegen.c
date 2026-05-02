@@ -4516,10 +4516,19 @@ void codegen(Program *prog) {
                         continue;
                     } // invalid UTF-8, skip
                     p = next;
-                    if (s->elem_size == 2)
-                        printf("  .2byte %u\n", c);
-                    else
+                    if (s->elem_size == 2) {
+                        // UTF-16: Windows wchar_t is UCS-2 (2 bytes).
+                        // Code points above U+FFFF need a surrogate pair.
+                        if (c > 0xFFFF) {
+                            uint32_t sc = c - 0x10000;
+                            printf("  .2byte %u\n", 0xD800 | (sc >> 10));
+                            printf("  .2byte %u\n", 0xDC00 | (sc & 0x3FF));
+                        } else {
+                            printf("  .2byte %u\n", c);
+                        }
+                    } else {
                         printf("  .4byte %u\n", c);
+                    }
                 }
                 if (s->elem_size == 2)
                     printf("  .2byte 0\n");
