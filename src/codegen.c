@@ -1093,6 +1093,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
 // Map any register name to a physical register ID (for peephole optimization)
 static int phys_reg_id(const char *s) {
+#ifndef ARCH_ARM64
     if (!strncmp(s, "r10", 3)) return 10;
     if (!strncmp(s, "r11", 3)) return 11;
     if (!strncmp(s, "r12", 3)) return 12;
@@ -1108,6 +1109,15 @@ static int phys_reg_id(const char *s) {
     if (!strncmp(s, "rsi", 3) || !strncmp(s, "esi", 3) || !strcmp(s, "sil") || !strcmp(s, "si")) return 6;
     if (!strncmp(s, "r8", 2) && (s[2] == '\0' || s[2] == 'd' || s[2] == 'w' || s[2] == 'b')) return 8;
     if (!strncmp(s, "r9", 2) && (s[2] == '\0' || s[2] == 'd' || s[2] == 'w' || s[2] == 'b')) return 9;
+#else
+    if ((s[0] == 'x' || s[0] == 'w') && s[1] >= '0' && s[1] <= '9') {
+        int n = s[1] - '0';
+        if (s[2] >= '0' && s[2] <= '9') n = n * 10 + (s[2] - '0');
+        if (n >= 0 && n <= 30 && (s[2] == '\0' || (s[2] >= '0' && s[2] <= '9' && s[3] == '\0')))
+            return n;
+    }
+    if (!strcmp(s, "xzr") || !strcmp(s, "wzr")) return 31;
+#endif
     return -1;
 }
 
@@ -3769,6 +3779,7 @@ static int reg_live_after(char **lines, int nlines, int after, int pid) {
             break;
         }
     }
+#ifndef ARCH_ARM64
     if (pid == 0) {
         variants[nv++] = "rax";
         variants[nv++] = "eax";
@@ -3785,6 +3796,7 @@ static int reg_live_after(char **lines, int nlines, int after, int pid) {
         variants[nv++] = "ebx";
         variants[nv++] = "bl";
     }
+#endif
     for (int k = after + 1; k < nlines && k < after + 30; k++) {
         if (!lines[k] || !lines[k][0]) continue;
         if (lines[k][0] != ' ') return 1;
@@ -3983,6 +3995,67 @@ static int peep_pattern5(char **lines, int nlines, int li, int lj) {
     }
 #endif
     return 0;
+}
+
+#define PEEP_MAX 65536
+
+static void emit_peephole_body(char *body_text) {
+    char *plines[PEEP_MAX];
+    char *chunk = body_text;
+    while (*chunk) {
+        int nlines = 0;
+        char *p = chunk;
+        while (*p && nlines < PEEP_MAX) {
+            plines[nlines] = p;
+            char *nl = strchr(p, '\n');
+            if (nl) {
+                *nl = '\0';
+                p = nl + 1;
+            } else
+                p += strlen(p);
+            nlines++;
+        }
+        chunk = p;
+
+        if (!opt_O0 && nlines < 50000) {
+            for (int pass = 0; pass < 4; pass++) {
+                for (int li = 0; li < nlines - 1; li++) {
+                    if (!plines[li] || !plines[li][0]) continue;
+                    int lj = li + 1;
+                    while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
+                    if (lj >= nlines) break;
+
+                    char d1[80], s1[80], d2[80], s2[80];
+
+                    // Pattern 1: mov REG, SRC; mov DEST, REG -> mov DEST, SRC
+                    if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
+                        peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        !strcmp(s2, d1) && is_reg(d1) && is_reg(s1)) {
+                        char newline[200];
+                        snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
+                        plines[lj] = strdup(newline);
+                        int pid = phys_reg_id(d1);
+                        if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
+                            plines[li] = "";
+                        continue;
+                    }
+
+                    // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
+                    if (peep_pattern2(plines, li, lj)) continue;
+                    // Pattern 3: jmp/b .LABEL; .LABEL: -> delete branch
+                    if (peep_pattern3(plines, li, lj)) continue;
+                    // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
+                    if (peep_pattern4(plines, nlines, li, lj)) continue;
+                    // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R -> mov dst, [mem]; OP dst, IMMx
+                    if (peep_pattern5(plines, nlines, li, lj)) continue;
+                }
+            }
+        }
+
+        for (int li = 0; li < nlines; li++)
+            if (plines[li] && plines[li][0])
+                fprintf(stdout, "%s\n", plines[li]);
+    }
 }
 
 void codegen(Program *prog) {
@@ -4484,58 +4557,7 @@ void codegen(Program *prog) {
         fclose(body_file);
 
         // Emit body with peephole optimization
-        {
-#define PEEP_MAX 65536
-            char *plines[PEEP_MAX];
-            char *chunk = body_text;
-            while (*chunk) {
-                int nlines = 0;
-                char *p = chunk;
-                while (*p && nlines < PEEP_MAX) {
-                    plines[nlines] = p;
-                    char *nl = strchr(p, '\n');
-                    if (nl) {
-                        *nl = '\0';
-                        p = nl + 1;
-                    } else
-                        p += strlen(p);
-                    nlines++;
-                }
-                chunk = p;
-                if (!opt_O0 && nlines < 50000) {
-                    for (int pass = 0; pass < 4; pass++) {
-                        for (int li = 0; li < nlines - 1; li++) {
-                            if (!plines[li] || !plines[li][0]) continue;
-                            int lj = li + 1;
-                            while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
-                            if (lj >= nlines) break;
-                            // Pattern 1: mov REG, SRC; mov DEST, REG → mov DEST, SRC
-                            char d1[80], s1[80], d2[80], s2[80];
-                            if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
-                                peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                                !strcmp(s2, d1) && is_reg(d1) && is_reg(s1)) {
-                                plines[lj] = strdup(format("  mov %s, %s", d2, s1));
-                                int pid = phys_reg_id(d1);
-                                if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
-                                    plines[li] = "";
-                                continue;
-                            }
-                            // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
-                            if (peep_pattern2(plines, li, lj)) continue;
-                            // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
-                            if (peep_pattern3(plines, li, lj)) continue;
-                            // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
-                            if (peep_pattern4(plines, nlines, li, lj)) continue;
-                            // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
-                            if (peep_pattern5(plines, nlines, li, lj)) continue;
-                        }
-                    }
-                }
-                for (int li = 0; li < nlines; li++)
-                    if (plines[li] && plines[li][0])
-                        fprintf(stdout, "%s\n", plines[li]);
-            }
-        }
+        emit_peephole_body(body_text);
         free(body_text);
 
         // === ARM64 epilogue ===
@@ -4689,67 +4711,8 @@ void codegen(Program *prog) {
         body_text[body_len] = '\0';
         fclose(body_file);
 
-// Process body in chunks to handle functions larger than PEEP_MAX lines.
-#define PEEP_MAX 65536
-        char *plines[PEEP_MAX];
-        char *chunk = body_text;
-        while (*chunk) {
-            int nlines = 0;
-            char *p = chunk;
-            while (*p && nlines < PEEP_MAX) {
-                plines[nlines] = p;
-                char *nl = strchr(p, '\n');
-                if (nl) {
-                    *nl = '\0';
-                    p = nl + 1;
-                } else
-                    p += strlen(p);
-                nlines++;
-            }
-            chunk = p; // next chunk starts here
-
-            // Run peephole on this chunk
-            if (!opt_O0 && nlines < 50000) {
-                for (int pass = 0; pass < 4; pass++) {
-                    for (int li = 0; li < nlines - 1; li++) {
-                        if (!plines[li] || !plines[li][0]) continue;
-                        int lj = li + 1;
-                        while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
-                        if (lj >= nlines) break;
-
-                        char d1[80], s1[80], d2[80], s2[80];
-
-                        // Pattern 1: mov REG, SRC; mov DEST, REG -> mov DEST, SRC
-                        if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
-                            peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                            strcmp(s2, d1) == 0 && is_reg(d1) && is_reg(s1)) {
-                            char newline[200];
-                            snprintf(newline, sizeof(newline), "  mov %s, %s", d2, s1);
-                            plines[lj] = strdup(newline);
-                            int pid = phys_reg_id(d1);
-                            if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
-                                plines[li] = "";
-                            continue;
-                        }
-
-                        // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
-                        if (peep_pattern2(plines, li, lj)) continue;
-                        // Pattern 3: jmp .LABEL; .LABEL: → delete jmp
-                        if (peep_pattern3(plines, li, lj)) continue;
-                        // Pattern 4: mov REG, IMM; OP REG2, REG → OP REG2, IMM
-                        if (peep_pattern4(plines, nlines, li, lj)) continue;
-                        // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
-                        if (peep_pattern5(plines, nlines, li, lj)) continue;
-                    }
-                }
-            }
-
-            // Emit chunk
-            for (int li = 0; li < nlines; li++) {
-                if (plines[li] && plines[li][0])
-                    fprintf(stdout, "%s\n", plines[li]);
-            }
-        }
+        // Emit body with peephole optimization
+        emit_peephole_body(body_text);
         free(body_text);
 
         // Emit epilogue
