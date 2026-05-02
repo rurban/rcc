@@ -175,6 +175,23 @@ static Node *new_fnum(double fval, Token *tok) {
     return node;
 }
 
+// Compute the byte size expression for a VLA allocation: count * element_size
+static Node *vla_alloc_size(Type *ty, Token *tok) {
+    Node *base_sz = (ty->base->kind == TY_VLA)
+        ? vla_alloc_size(ty->base, tok)
+        : new_node(ND_NUM, tok);
+    if (ty->base->kind != TY_VLA) {
+        base_sz->val = ty->base->size;
+        base_sz->ty = ty_ulong;
+    }
+    Node *count = ty->vla_len_expr ? ty->vla_len_expr : new_node(ND_NUM, tok);
+    if (!ty->vla_len_expr) {
+        count->val = ty->array_len;
+        count->ty = ty_ulong;
+    }
+    return new_binary(ND_MUL, count, base_sz, tok);
+}
+
 static Type *copy_type(Type *ty) {
     // For struct/union types, return the original. These are identity types
     // that can be completed later via tag declarations. Creating a shallow
@@ -2542,7 +2559,7 @@ static Node *declaration(Token **rest, Token *tok) {
             // VLA: compute size and allocate stack space
             if (ty->kind == TY_VLA) {
                 Node *vla_node = new_node(ND_ALLOCA, tok);
-                vla_node->lhs = ty->vla_len_expr;
+                vla_node->lhs = vla_alloc_size(ty, tok);
                 vla_node->var = var;
                 cur = cur->next = new_unary(ND_EXPR_STMT, vla_node, tok);
                 fn_uses_vla = true;

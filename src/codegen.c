@@ -24,7 +24,6 @@ static int va_gp_start;
 static int va_fp_start;
 static int va_st_start;
 static int va_reg_save_ofs;
-static int vla_base_ofs; // offset of reg_save_area from rbp
 static int break_stack[128];
 static int continue_stack[128];
 static int ctrl_depth = 0;
@@ -159,33 +158,6 @@ static void emit_alloca(void) {
 
 static char *var_label(LVar *var);
 
-static void builtin_alloca(Node *node) {
-    printf("  mov rcx, rsp\n");
-    printf("  sub rsp, rax\n");
-    int align = node->var ? (node->var->ty->align > 16 ? 16 : 16) : 16;
-    printf("  and rsp, -%d\n", align);
-    printf("  sub rcx, rsp\n");
-    if (node->kind == ND_ALLOCA_ZINIT) {
-        printf("  pxor xmm0, xmm0\n");
-        printf(".L.alloca.zero.%d:\n", rcc_label_count);
-        printf("  sub rcx, 16\n");
-        printf("  js .L.alloca.done.%d\n", rcc_label_count);
-        printf("  movaps [rsp + rcx], xmm0\n");
-        printf("  jmp .L.alloca.zero.%d\n", rcc_label_count);
-    } else {
-        printf(".L.alloca.probe.%d:\n", rcc_label_count);
-        printf("  sub rcx, 4096\n");
-        printf("  js .L.alloca.done.%d\n", rcc_label_count);
-        printf("  or byte ptr [rsp + rcx], 0\n");
-        printf("  jmp .L.alloca.probe.%d\n", rcc_label_count);
-    }
-    printf(".L.alloca.done.%d:\n", rcc_label_count);
-    rcc_label_count++;
-    if (node->var)
-        printf("  mov [rbp-%d], rsp\n", node->var->offset);
-    else
-        printf("  mov rax, rsp\n");
-}
 
 bool va_arg_need_copy(Type *ty) {
     if (ty->size > 8 && ty->size <= 16) {
@@ -1808,6 +1780,15 @@ static int gen(Node *node) {
         return -1;
     case ND_GOTO:
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
+        // Restore RSP past any VLAs leaving scope (VLA reuse: same address on re-entry)
+        {
+            LVar *outermost_vla = NULL;
+            for (LVar *v = node->cleanup_begin; v && v != node->cleanup_end; v = v->next)
+                if (v->ty->kind == TY_VLA)
+                    outermost_vla = v;
+            if (outermost_vla)
+                printf("  mov rsp, [rbp-%d]\n", outermost_vla->offset);
+        }
         printf("  jmp .L.label.%s.%s\n", current_fn, node->label_name);
         return -1;
     case ND_GOTO_IND: {
