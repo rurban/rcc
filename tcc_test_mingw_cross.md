@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     145
+ - **Total**:     146
  - **Passed**:    144
- - **Failed**:    1
- - **Pass Rate**: 99%
+ - **Failed**:    2
+ - **Pass Rate**: 98%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -119,12 +119,12 @@ Generated: May 2026
 | 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | PASS         | Output matches                       |
-| 120_alias                                | SKIP         | Skipped                              |
+| 120_alias                                | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | PASS         | Output matches                       |
 | 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |
 | 124_atomic_counter                       | PASS         | Output matches                       |
-| 125_atomic_misc                          | COMPILE_FAIL | rcc returned non-zero                |
+| 125_atomic_misc                          | MISMATCH     | Output differs                       |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | PASS         | Output matches                       |
 | 128_run_atexit                           | PASS         | Output matches                       |

@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     142
+ - **Total**:     144
  - **Passed**:    136
- - **Failed**:    6
- - **Pass Rate**: 95%
+ - **Failed**:    8
+ - **Pass Rate**: 94%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -119,12 +119,12 @@ Generated: May 2026
 | 117_builtins                             | COMPILE_FAIL | rcc returned non-zero                |
 | 118_switch                               | COMPILE_OK   | linked, (execution skipped)          |
 | 119_random_stuff                         | COMPILE_OK   | linked, (execution skipped)          |
-| 120_alias                                | SKIP         | Skipped                              |
+| 120_alias                                | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | COMPILE_OK   | linked, (execution skipped)          |
 | 122_vla_reuse                            | COMPILE_OK   | linked, (execution skipped)          |
 | 123_vla_bug                              | COMPILE_OK   | linked, (execution skipped)          |
 | 124_atomic_counter                       | COMPILE_OK   | linked, (execution skipped)          |
-| 125_atomic_misc                          | SKIP         | Skipped                              |
+| 125_atomic_misc                          | MISMATCH     | Output differs                       |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | SKIP         | Skipped                              |
 | 128_run_atexit                           | COMPILE_OK   | linked, (execution skipped)          |

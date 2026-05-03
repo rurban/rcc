@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     144
+ - **Total**:     145
  - **Passed**:    143
- - **Failed**:    1
- - **Pass Rate**: 99%
+ - **Failed**:    2
+ - **Pass Rate**: 98%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -119,12 +119,12 @@ Generated: May 2026
 | 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | PASS         | Output matches                       |
-| 120_alias                                | SKIP         | Skipped                              |
+| 120_alias                                | COMPILE_FAIL | rcc returned non-zero                |
 | 121_struct_return                        | PASS         | Output matches                       |
 | 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |
 | 124_atomic_counter                       | PASS         | Output matches                       |
-| 125_atomic_misc                          | COMPILE_FAIL | rcc returned non-zero                |
+| 125_atomic_misc                          | MISMATCH     | Output differs                       |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | SKIP         | Skipped                              |
 | 128_run_atexit                           | PASS         | Output matches                       |
@@ -161,7 +161,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
-| test_signextend                          | PASS         | exit=1                               |
+| test_signextend                          | PASS         | exit=0                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

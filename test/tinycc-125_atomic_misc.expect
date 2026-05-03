@@ -1,0 +1,53 @@
+[test_atomic_compare_exchange]
+1 99 77
+0 80 80
+85 33 80
+90 66 80
+
+[test_atomic_store]
+r = 12, i = 24
+
+[test_atomic_store_pointer]
+*p = 2
+
+[test_atomic_store_struct]
+1 2 3 4
+
+[test_atomic_op]
+fetch_add: SUCCESS
+fetch_sub: SUCCESS
+fetch_or: SUCCESS
+fetch_xor: SUCCESS
+fetch_and: SUCCESS
+
+[test_atomic_op2]
+fetch_add: SUCCESS
+fetch_sub: SUCCESS
+fetch_or: SUCCESS
+fetch_xor: SUCCESS
+fetch_and: SUCCESS
+fetch_nand: SUCCESS
+add_fetch: SUCCESS
+sub_fetch: SUCCESS
+or_fetch: SUCCESS
+xor_fetch: SUCCESS
+and_fetch: SUCCESS
+nand_fetch: SUCCESS
+
+[test_atomic_thread_signal]
+1
+
+[test_atomic_error_1]
+
+[test_atomic_error_2]
+
+[test_atomic_error_3]
+
+[test_atomic_error_4]
+
+[test_atomic_warn_1]
+
+[test_atomic_warn_2]
+
+[test_atomic_warn_3]
+

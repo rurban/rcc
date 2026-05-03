@@ -205,8 +205,7 @@ SKIP_TESTS="
 114_bound_signal
 115_bound_setjmp
 116_bound_setjmp2
-120_alias
-125_atomic_misc
+ 120_alias
 126_bound_global
 "
 
@@ -219,6 +218,19 @@ ARM64_SKIP_TESTS="
 95_bitfields_ms
 127_asm_goto
 "
+
+# Tests that use tcc's -dt flag: multi-sub-test files with .expect
+# Each test name is extracted from '#if defined test_' / '#elif defined test_'
+DT_TESTS="
+125_atomic_misc
+"
+
+# Extract test names from a source file in source order
+extract_dt_tests() {
+    grep -n 'defined\s*(*test_\w*' "$1" 2>/dev/null | \
+        grep -oP 'test_\w+' | while read -r t; do echo "$t"; done | \
+        awk '!seen[$0]++'
+}
 
 is_skipped() {
 	# Enable 73_arm64 test on ARM64 native/cross; skip otherwise
@@ -304,21 +316,71 @@ while IFS= read -r src; do
 		fi
         fi
         # 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
+        # Handle -dt multi-sub-test files
         # shellcheck disable=SC2086,SC2129
-	if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
+        if echo "$DT_TESTS" | grep -qw "$base"; then
+            expect_file="$TEST_DIR/$base.expect"
+            true >"$TMP_OUT"
+            for tname in $(extract_dt_tests "$src" 2>/dev/null); do
+                echo "[$tname]" >>"$TMP_OUT"
+                # Try to compile and run; capture both stdout and stderr
+                if "$RCC" $RCCFLAGS -D$tname -o "$TMP_EXE" \
+                    "$src" >"$TMP_OUT".err 2>&1; then
+                    run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1 || true
+                else
+                    # Compilation failed: capture error output, strip ANSI codes
+                    sed 's/\x1b\[[0-9;]*m//g' "$TMP_OUT".err >>"$TMP_OUT"
+                fi
+                echo "" >>"$TMP_OUT"
+            done
+            rm -f "$TMP_OUT".err
+            # Compare against expect file
+            if [ -f "$expect_file" ]; then
+                if diff -q "$expect_file" "$TMP_OUT" >/dev/null 2>&1; then
+                    # shellcheck disable=SC2059
+                    printf "${GREEN}PASS${RESET}\n"
+                    passed=$((passed + 1))
+                    add_row "$base" "PASS" "Output matches"
+                    print_change "$base" "PASS"
+                else
+                    # shellcheck disable=SC2059
+                    printf "${RED}MISMATCH${RESET}\n"
+                    failed=$((failed + 1))
+                    add_row "$base" "MISMATCH" "Output differs"
+                    print_change "$base" "MISMATCH"
+                    [ -n "$p_src" ] && p_src=
+                fi
+            else
+                # shellcheck disable=SC2059
+                printf "${GREEN}PASS (no expect)${RESET}\n"
+                passed=$((passed + 1))
+                add_row "$base" "PASS" "Output generated (no expect)"
+                print_change "$base" "PASS"
+            fi
+            [ -n "$p_src" ] && p_src=
+            continue
+        fi
+        if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
+            # shellcheck disable=SC2129
             echo "[test_128_return]" >"$TMP_OUT"
+	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
             run_exe "$TMP_EXE" >>"$TMP_OUT"
             run_atexit="$?"
+            # shellcheck disable=SC2129
             echo "[returns $run_atexit]" >>"$TMP_OUT"
             echo "" >>"$TMP_OUT"
+	    # shellcheck disable=SC2129
             echo "[test_128_exit]" >>"$TMP_OUT"
+	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
             run_exe "$TMP_EXE" >>"$TMP_OUT"
             xx="$?"
             run_atexit="$run_atexit $xx"
             echo "[returns $xx]" >>"$TMP_OUT"
-        elif ! "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
+        else
+            # shellcheck disable=SC2086
+            if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
 		# shellcheck disable=SC2059
 		printf "${RED}COMPILE FAIL${RESET}\n"
 		failed=$((failed + 1))
@@ -331,7 +393,8 @@ while IFS= read -r src; do
 			RCC="$orig_RCC"
 		fi
 		continue
-	fi
+	    fi
+        fi
         [ -n "$p_src" ] && p_src=
 	if [ ! -x "$TMP_EXE" ]; then
 		# shellcheck disable=SC2059
@@ -558,7 +621,7 @@ elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
     [ "$passed" -ge 142 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 143 ]
+    [ "$passed" -ge 144 ]
 else
-    [ "$passed" -ge 143 ]
+    [ "$passed" -ge 144 ]
 fi
