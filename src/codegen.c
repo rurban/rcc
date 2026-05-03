@@ -1385,18 +1385,81 @@ static void sign_extend_to(int r, int from_size, int to_size) {
         return;
     if (to_size == 8) {
         if (from_size == 4)
-            printf("  movsxd %s, %s\n", reg64[r], reg32[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  sxtw %s, %s\n"
+#else
+                "  movsxd %s, %s\n"
+#endif
+                ,
+                reg64[r], reg32[r]);
         else if (from_size == 2)
-            printf("  movsx %s, %s\n", reg64[r], reg16[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  sxth %s, %s\n"
+#else
+                "  movsx %s, %s\n"
+#endif
+                ,
+                reg64[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg16[r]
+#endif
+            );
         else if (from_size == 1)
-            printf("  movsx %s, %s\n", reg64[r], reg8[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  sxtb %s, %s\n"
+#else
+                "  movsx %s, %s\n"
+#endif
+                ,
+                reg64[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg8[r]
+#endif
+            );
         else
+#ifdef ARCH_ARM64
+            printf("  sxtw %s, %s\n", reg64[r], reg32[r]);
+#else
             printf("  movsxd %s, %s\n", reg64[r], reg32[r]);
+#endif
     } else if (to_size == 4) {
         if (from_size == 2)
-            printf("  movsx %s, %s\n", reg32[r], reg16[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  sxth %s, %s\n"
+#else
+                "  movsx %s, %s\n"
+#endif
+                ,
+                reg32[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg16[r]
+#endif
+            );
         else if (from_size == 1)
-            printf("  movsx %s, %s\n", reg32[r], reg8[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  sxtb %s, %s\n"
+#else
+                "  movsx %s, %s\n"
+#endif
+                ,
+                reg32[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg8[r]
+#endif
+            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     }
@@ -1409,16 +1472,68 @@ static void zero_extend_to(int r, int from_size, int to_size) {
         if (from_size == 4)
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
         else if (from_size == 2)
-            printf("  movzx %s, %s\n", reg64[r], reg16[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  uxth %s, %s\n"
+#else
+                "  movzx %s, %s\n"
+#endif
+                ,
+                reg64[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg16[r]
+#endif
+            );
         else if (from_size == 1)
-            printf("  movzx %s, %s\n", reg64[r], reg8[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  uxtb %s, %s\n"
+#else
+                "  movzx %s, %s\n"
+#endif
+                ,
+                reg64[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg8[r]
+#endif
+            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     } else if (to_size == 4) {
         if (from_size == 2)
-            printf("  movzx %s, %s\n", reg32[r], reg16[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  uxth %s, %s\n"
+#else
+                "  movzx %s, %s\n"
+#endif
+                ,
+                reg32[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg16[r]
+#endif
+            );
         else if (from_size == 1)
-            printf("  movzx %s, %s\n", reg32[r], reg8[r]);
+            printf(
+#ifdef ARCH_ARM64
+                "  uxtb %s, %s\n"
+#else
+                "  movzx %s, %s\n"
+#endif
+                ,
+                reg32[r],
+#ifdef ARCH_ARM64
+                reg32[r]
+#else
+                reg8[r]
+#endif
+            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     }
@@ -2711,31 +2826,10 @@ static int gen(Node *node) {
         } else if (to->size == 4 && from->size == 8) {
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
         } else if (to->size == 8 && from->size < 8) {
-#ifdef ARCH_ARM64
-            if (from->size == 4) {
-                if (from->is_unsigned)
-                    printf("  mov %s, %s\n", reg32[r], reg32[r]);
-                else
-                    printf("  sxtw %s, %s\n", reg64[r], reg32[r]);
-            } else {
-                if (from->size == 1) {
-                    if (from->is_unsigned)
-                        printf("  uxtb %s, %s\n", reg64[r], reg32[r]);
-                    else
-                        printf("  sxtb %s, %s\n", reg64[r], reg32[r]);
-                } else {
-                    if (from->is_unsigned)
-                        printf("  uxth %s, %s\n", reg64[r], reg32[r]);
-                    else
-                        printf("  sxth %s, %s\n", reg64[r], reg32[r]);
-                }
-            }
-#else
             if (from->is_unsigned)
                 zero_extend_to(r, from->size, 8);
             else
                 sign_extend_to(r, from->size, 8);
-#endif
         }
         return r;
     }
