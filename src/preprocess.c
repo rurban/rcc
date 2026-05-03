@@ -17,6 +17,7 @@ typedef struct CondIncl CondIncl;
 struct Macro {
     Macro *next;
     Macro *hash_next; // hash-table chain
+    uint32_t hash; // cached hash value
     char *name;
     bool is_function;
     bool is_variadic;
@@ -39,6 +40,7 @@ static uint32_t macro_hash(const char *name) {
 
 static void macro_ht_add(Macro *m) {
     uint32_t h = macro_hash(m->name);
+    m->hash = h;
     m->hash_next = macro_htab[h];
     macro_htab[h] = m;
 }
@@ -444,7 +446,7 @@ static void strip_comments(char *p) {
 static Macro *find_macro(char *name) {
     uint32_t h = macro_hash(name);
     for (Macro *m = macro_htab[h]; m; m = m->hash_next)
-        if (strcmp(m->name, name) == 0)
+        if (m->hash == h && strcmp(m->name, name) == 0)
             return m;
     return NULL;
 }
