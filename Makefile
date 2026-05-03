@@ -1,9 +1,31 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 CC     = gcc
-CFLAGS = -std=c11 -Wall -Wextra -O3 -g -flto
+CFLAGS = -std=c11 -Wall -Wextra -O3 -g
 TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
+
+# Detect clang vs gcc
+IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -c clang)
+
+ifeq ($(IS_CLANG),0)
+CFLAGS += -flto=auto
+else
+CFLAGS += -flto=thin
+# Probe for LLVM LTO plugin (needed when linking with ld.bfd/ld.gold).
+# Try llvm-config-<major> first (avoids broken alternatives symlinks), then llvm-config.
+#LLVM_LIBDIR := $(shell \
+#    major=$$($(CC) --version 2>/dev/null | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+'); \
+#    for cmd in "llvm-config-$$major" llvm-config; do \
+#        d=$$($$cmd --libdir 2>/dev/null) && test -n "$$d" && echo "$$d" && break; \
+#    done)
+#ifneq ($(LLVM_LIBDIR),)
+#LTO_PLUGIN := $(LLVM_LIBDIR)/LLVMgold.so
+#ifneq ($(wildcard $(LTO_PLUGIN)),)
+#LDFLAGS += -Wl,-plugin,$(LTO_PLUGIN)
+#endif
+#endif
+endif
 
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
@@ -53,13 +75,16 @@ ifeq ($(shell uname -s),Linux)
 ifeq ($(CC),gcc)
 CFLAGS += -march=native
 endif
+ifneq ($(IS_CLANG),0)
+CFLAGS += -march=native
+endif
 endif
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 $(TARGET): $(OBJS) $(MINGW_O)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 src/sysinc_paths.h:
 	RCC_CC="$(CC)"; \
@@ -88,7 +113,7 @@ compile_commands.json: $(SRCS)
 # Profile build: rcc compiled with -pg for gprof analysis
 rcc_prof: CFLAGS += -pg
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) -o $@ $(SRCS) -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
 
 # Run profile: compile a decent-sized file to generate gmon.out
 prof: rcc_prof
