@@ -154,6 +154,35 @@ static void sb_putc(StrBuf *sb, char c) {
     sb->buf[sb->len] = '\0';
 }
 
+static void sb_puts(StrBuf *sb, char *s);
+
+static char *dump_macros(void) {
+    StrBuf sb;
+    sb_init(&sb, 4096);
+    for (Macro *m = macros; m; m = m->next) {
+        sb_puts(&sb, "#define ");
+        sb_puts(&sb, m->name);
+        if (m->is_function) {
+            sb_putc(&sb, '(');
+            for (int i = 0; i < m->param_len; i++) {
+                if (i > 0)
+                    sb_puts(&sb, ", ");
+                sb_puts(&sb, m->params[i]);
+            }
+            if (m->is_variadic) {
+                if (m->param_len > 0)
+                    sb_puts(&sb, ", ");
+                sb_puts(&sb, "...");
+            }
+            sb_putc(&sb, ')');
+        }
+        sb_putc(&sb, ' ');
+        sb_puts(&sb, m->body);
+        sb_putc(&sb, '\n');
+    }
+    return sb.buf;
+}
+
 static void sb_puts(StrBuf *sb, char *s) {
     int len = strlen(s);
     sb_reserve(sb, sb->len + len + 1);
@@ -1698,6 +1727,8 @@ char *preprocess(char *filename, char *p) {
 
     SplicedInput spliced = splice_lines_with_counts(p);
     char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts);
+    if (opt_dM)
+        return dump_macros();
     return result;
 }
 

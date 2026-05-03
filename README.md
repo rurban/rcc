@@ -96,6 +96,7 @@ make bench
     -Lpath             add linker path
     -lname             add lib
     -E                 preprocessor-only
+    -dM                dump all macro definitions (use with -E)
     -S                 assemble-only
     -c                 compile-only
     -o file            set output filename

@@ -37,7 +37,8 @@ OutPath *reverse(OutPath *head) {
 
 // Returns the contents of a given file.
 static char *read_file(char *path) {
-    FILE *fp = fopen(path, "r");
+    bool is_stdin = strcmp(path, "-") == 0;
+    FILE *fp = is_stdin ? stdin : fopen(path, "r");
     if (!fp)
         error("cannot open %s: %m", path);
 
@@ -51,7 +52,8 @@ static char *read_file(char *path) {
     if (size == 0 || buf[size - 1] != '\n') {
         buf[size++] = '\n';
     }
-    fclose(fp);
+    if (!is_stdin)
+        fclose(fp);
     buf[size] = '\0';
     return buf;
 }
@@ -69,6 +71,7 @@ void help(void) {
            "-Lpath        add linker path\n"
            "-lname        add lib\n"
            "-E            preprocessor-only\n"
+           "-dM           dump all macro definitions (use with -E)\n"
            "-S            assemble-only\n"
            "-c            compile-only\n"
            "-o file       set output filename\n"
@@ -89,6 +92,7 @@ bool opt_O0 = false;
 bool opt_O1 = false;
 bool opt_W = false;
 bool opt_dryrun = false;
+bool opt_dM = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -160,6 +164,8 @@ int main(int argc, char **argv) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-###")) {
             opt_dryrun = true;
+        } else if (!strcmp(argv[i], "-dM")) {
+            opt_dM = true;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
