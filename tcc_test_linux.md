@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     146
- - **Passed**:    146
- - **Failed**:    0
- - **Pass Rate**: 100%
+ - **Passed**:    145
+ - **Failed**:    1
+ - **Pass Rate**: 99%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -124,7 +124,7 @@ Generated: May 2026
 | 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |
 | 124_atomic_counter                       | PASS         | Output matches                       |
-| 125_atomic_misc                          | PASS         | Output matches                       |
+| 125_atomic_misc                          | MISMATCH     | Output differs                       |
 | 126_bound_global                         | SKIP         | Skipped                              |
 | 127_asm_goto                             | PASS         | Output matches                       |
 | 128_run_atexit                           | PASS         | Output matches                       |
@@ -161,7 +161,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
-| test_signextend                          | PASS         | exit=1                               |
+| test_signextend                          | PASS         | exit=0                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

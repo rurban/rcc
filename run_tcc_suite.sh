@@ -315,6 +315,12 @@ while IFS= read -r src; do
 			p_src="-D__TINYC__"
 		fi
         fi
+	if [ "$src" = "$TEST_DIR/125_atomic_misc.c" ]; then
+		orig_RCC="$RCC"
+		RCC="$(realpath "$RCC")"
+		cd "$TEST_DIR" || exit
+		src=125_atomic_misc.c
+	fi
         # 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
         # Handle -dt multi-sub-test files
         # shellcheck disable=SC2086,SC2129
@@ -334,9 +340,14 @@ while IFS= read -r src; do
                 echo "" >>"$TMP_OUT"
             done
             rm -f "$TMP_OUT".err
+            if [ "$src" = "125_atomic_misc.c" ]; then
+                cd - >/dev/null || exit
+                src="$TEST_DIR/125_atomic_misc.c"
+                RCC="$orig_RCC"
+            fi
             # Compare against expect file
             if [ -f "$expect_file" ]; then
-                if diff -q "$expect_file" "$TMP_OUT" >/dev/null 2>&1; then
+                if diff -Nbu "$expect_file" "$TMP_OUT"; then
                     # shellcheck disable=SC2059
                     printf "${GREEN}PASS${RESET}\n"
                     passed=$((passed + 1))
@@ -348,6 +359,7 @@ while IFS= read -r src; do
                     failed=$((failed + 1))
                     add_row "$base" "MISMATCH" "Output differs"
                     print_change "$base" "MISMATCH"
+                    cp "$TMP_OUT" "test/$base.out"
                     [ -n "$p_src" ] && p_src=
                 fi
             else
@@ -356,6 +368,9 @@ while IFS= read -r src; do
                 passed=$((passed + 1))
                 add_row "$base" "PASS" "Output generated (no expect)"
                 print_change "$base" "PASS"
+            fi
+            if [ -n "$fixed_up" ]; then
+                mv "$upstream_expect".orig "$upstream_expect"
             fi
             [ -n "$p_src" ] && p_src=
             continue
