@@ -48,6 +48,12 @@ CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
 endif
+# Native Linux builds: optimize for the host CPU
+ifeq ($(shell uname -s),Linux)
+ifeq ($(CC),gcc)
+CFLAGS += -march=native
+endif
+endif
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
