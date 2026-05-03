@@ -93,6 +93,9 @@ static int spill_offset(int r) {
 #define SPILL_R14 96
 #define SPILL_R15 104
 #define SPILL_RSI 112
+#define SPILL_LOGAND 120
+#define SPILL_ATOMIC_OLD 128
+#define ALL_REGS_MASK ((1 << NUM_REGS) - 1)
 
 static int spill_offset(int r) {
     static int offsets[] = {SPILL_R10, SPILL_R11, SPILL_RBX,
@@ -3069,7 +3072,8 @@ static int gen(Node *node) {
     }
     case ND_LOGAND: {
         int c = ++rcc_label_count;
-        int r = alloc_reg();
+        bool pool_full = (used_regs == ALL_REGS_MASK);
+        int r = pool_full ? -1 : alloc_reg();
         int lhs = gen(node->lhs);
 #ifdef ARCH_ARM64
         printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
@@ -3081,21 +3085,36 @@ static int gen(Node *node) {
         printf("  cset %s, ne\n", reg(r, 4));
 #else
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        printf("  mov %s, 0\n", reg(r, 4));
-        printf("  je .L.end.%d\n", c);
+        if (pool_full) {
+            printf("  mov byte ptr [rbp-%d], 0\n", SPILL_LOGAND);
+            printf("  je .L.end.%d\n", c);
+        } else {
+            printf("  mov %s, 0\n", reg(r, 4));
+            printf("  je .L.end.%d\n", c);
+        }
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
-        printf("  setne al\n");
-        printf("  movzx %s, al\n", reg(r, 4));
+        if (pool_full) {
+            printf("  setne al\n");
+            printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
+        } else {
+            printf("  setne al\n");
+            printf("  movzx %s, al\n", reg(r, 4));
+        }
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
+        if (pool_full) {
+            r = alloc_reg(); // now regs freed by gen(rhs), should be free
+            printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+        }
         return r;
     }
     case ND_LOGOR: {
         int c = ++rcc_label_count;
-        int r = alloc_reg();
+        bool pool_full = (used_regs == ALL_REGS_MASK);
+        int r = pool_full ? -1 : alloc_reg();
         int lhs = gen(node->lhs);
 #ifdef ARCH_ARM64
         printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
@@ -3107,16 +3126,30 @@ static int gen(Node *node) {
         printf("  cset %s, ne\n", reg(r, 4));
 #else
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        printf("  mov %s, 1\n", reg(r, 4));
-        printf("  jne .L.end.%d\n", c);
+        if (pool_full) {
+            printf("  mov byte ptr [rbp-%d], 1\n", SPILL_LOGAND);
+            printf("  jne .L.end.%d\n", c);
+        } else {
+            printf("  mov %s, 1\n", reg(r, 4));
+            printf("  jne .L.end.%d\n", c);
+        }
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
-        printf("  setne al\n");
-        printf("  movzx %s, al\n", reg(r, 4));
+        if (pool_full) {
+            printf("  setne al\n");
+            printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
+        } else {
+            printf("  setne al\n");
+            printf("  movzx %s, al\n", reg(r, 4));
+        }
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
+        if (pool_full) {
+            r = alloc_reg();
+            printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+        }
         return r;
     }
     case ND_COND: {
@@ -4025,6 +4058,12 @@ static int gen(Node *node) {
             }
             return r_old;
         } else {
+            // Save r_val to stack before it might be spilled
+            printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
+                                                       : sz == 4              ? "dword"
+                                                                              : "qword"),
+                   SPILL_LOGAND, reg(r_val, sz));
+            free_reg(r_val);
             int r_new = alloc_reg();
             int lbl2 = rcc_label_count++;
             printf(".L.atom_fop.%d:\n", lbl2);
@@ -4037,13 +4076,40 @@ static int gen(Node *node) {
                                                                    : sz == 4              ? "dword"
                                                                                           : "qword"),
                    reg64[r_addr]);
+            // Save old value before computing new (r_old may == r_new)
+            printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
+                                                       : sz == 4              ? "dword"
+                                                                              : "qword"),
+                   SPILL_ATOMIC_OLD, reg(r_old, sz));
             printf("  mov %s, %s\n", reg(r_new, sz), reg(r_old, sz));
             switch (op) {
-            case 2: printf("  or %s, %s\n", reg(r_new, sz), reg(r_val, sz)); break;
-            case 3: printf("  xor %s, %s\n", reg(r_new, sz), reg(r_val, sz)); break;
-            case 4: printf("  and %s, %s\n", reg(r_new, sz), reg(r_val, sz)); break;
+            case 2:
+                printf("  or %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_LOGAND);
+                break;
+            case 3:
+                printf("  xor %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_LOGAND);
+                break;
+            case 4:
+                printf("  and %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_LOGAND);
+                break;
             case 5:
-                printf("  and %s, %s\n", reg(r_new, sz), reg(r_val, sz));
+                printf("  and %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_LOGAND);
                 printf("  not %s\n", reg(r_new, sz));
                 break;
             }
@@ -4054,23 +4120,20 @@ static int gen(Node *node) {
             printf("  jne .L.atom_fop.%d\n", lbl2);
             if (node->atomic_ord == MEMORDER_SEQ_CST)
                 printf("  mfence\n");
-            free_reg(r_val);
             free_reg(r_addr);
-            if (is_store) {
-                free_reg(r_old);
-                if (sz < 4 && !use_unsigned(node->ty))
-                    sign_extend_to(r_new, sz, 4);
-                else if (sz < 4)
-                    zero_extend_to(r_new, sz, 4);
-                return r_new;
-            } else {
-                free_reg(r_new);
-                if (sz < 4 && !use_unsigned(node->ty))
-                    sign_extend_to(r_old, sz, 4);
-                else if (sz < 4)
-                    zero_extend_to(r_old, sz, 4);
-                return r_old;
-            }
+            free_reg(r_new);
+            // Reload old value from stack (r_old may have been overwritten if it shares reg with r_new)
+            if (r_old == r_new)
+                printf("  mov %s, %s ptr [rbp-%d]\n", reg(r_old, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_ATOMIC_OLD);
+            if (!is_store && sz < 4 && !use_unsigned(node->ty))
+                sign_extend_to(r_old, sz, 4);
+            else if (!is_store && sz < 4)
+                zero_extend_to(r_old, sz, 4);
+            return r_old;
         }
 #endif
     }
