@@ -216,6 +216,7 @@ struct LVar {
     LVar *param_next;
     char *name;
     char *asm_name; // Assembly-level name (for static locals)
+    char *alias_target; // __attribute__((alias("target")))
     int offset;
     Type *ty;
     bool is_local;
@@ -392,6 +393,7 @@ struct Function {
     Function *next;
     char *name;
     char *asm_name;
+    char *alias_target;
     Type *ty;
     LVar *params;
     LVar *locals;

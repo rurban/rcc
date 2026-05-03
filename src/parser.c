@@ -39,6 +39,7 @@ static Token *pending_cleanup_tok;
 static bool pending_constructor;
 static bool pending_destructor;
 static char *pending_asm_name;
+static char *pending_alias_target;
 
 static StrLit *str_lits;
 static int str_lit_counter;
@@ -228,6 +229,8 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
     var->name = name;
     var->ty = ty;
     var->is_local = is_local;
+    var->alias_target = NULL;
+    var->asm_name = NULL;
 
     if (is_local) {
         int size = ty->size < 4 ? 4 : ty->size;
@@ -673,6 +676,29 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     tok = tok->next;
                     if (equalc(tok, "("))
                         tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "alias") || equalc(tok, "__alias__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    if (tok->kind == TK_STR) {
+                        int len = tok->len;
+                        if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
+                            len -= 2;
+                        char *target = malloc(len + 1);
+                        if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
+                            memcpy(target, tok->str + 1, len);
+                        else
+                            memcpy(target, tok->str, len + 1);
+                        target[len] = '\0';
+                        pending_alias_target = str_intern(target, len);
+                        free(target);
+                    }
+                    tok = tok->next;
+                    tok = skip(tok, ")");
                     if (equalc(tok, ","))
                         tok = tok->next;
                     continue;
@@ -1127,6 +1153,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         pending_constructor = false;
         pending_destructor = false;
         pending_asm_name = NULL;
+        pending_alias_target = NULL;
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)
             error_tok(tok, "invalid storage class in member declaration");
@@ -2461,6 +2488,7 @@ static Node *declaration(Token **rest, Token *tok) {
     pending_constructor = false;
     pending_destructor = false;
     pending_asm_name = NULL;
+    pending_alias_target = NULL;
     Type *base = declspec(&tok, tok, &attr);
     char *type_level_cleanup = pending_cleanup_func;
     Node head = {};
@@ -2609,6 +2637,7 @@ static Node *declaration(Token **rest, Token *tok) {
     }
 
     pending_asm_name = NULL;
+    pending_alias_target = NULL;
     *rest = skip(tok, ";");
     return head.next ? head.next : new_node(ND_NULL, tok);
 }
@@ -4863,17 +4892,24 @@ Program *parse(Token *tok) {
                     // Register function symbol
                     Type *fn_symbol_ty = pointer_to(fty);
                     LVar *existing = find_global_name(name);
+                    LVar *fn_lvar = existing;
                     if (!existing) {
-                        LVar *fn_sym = new_var(name, fn_symbol_ty, false);
-                        fn_sym->is_extern = attr.is_extern || (!attr.is_inline && !attr.is_static);
-                        fn_sym->is_function = true;
-                        fn_sym->is_inline = attr.is_inline;
-                        fn_sym->is_weak = attr.is_weak;
-                        fn_sym->is_static = attr.is_static;
+                        fn_lvar = new_var(name, fn_symbol_ty, false);
+                        fn_lvar->is_extern = attr.is_extern || (!attr.is_inline && !attr.is_static);
+                        fn_lvar->is_function = true;
+                        fn_lvar->is_inline = attr.is_inline;
+                        fn_lvar->is_weak = attr.is_weak;
+                        fn_lvar->is_static = attr.is_static;
+                        if (pending_asm_name)
+                            fn_lvar->asm_name = pending_asm_name;
+                        if (pending_alias_target) {
+                            fn_lvar->alias_target = pending_alias_target;
+                            pending_alias_target = NULL;
+                        }
                         // A declaration without inline (and without static) makes the
                         // function an external symbol even if a prior inline def exists.
                         if (!attr.is_inline && !attr.is_static)
-                            fn_sym->has_init = true; // reuse has_init as "has non-inline decl"
+                            fn_lvar->has_init = true; // reuse has_init as "has non-inline decl"
                     } else {
                         existing->ty = fn_symbol_ty;
                         // Update flags on redeclaration
@@ -4885,6 +4921,12 @@ Program *parse(Token *tok) {
                             existing->is_static = true;
                         if (attr.is_extern)
                             existing->is_extern = true;
+                        if (pending_asm_name)
+                            existing->asm_name = pending_asm_name;
+                        if (pending_alias_target) {
+                            existing->alias_target = pending_alias_target;
+                            pending_alias_target = NULL;
+                        }
                         if (!attr.is_inline && !attr.is_static)
                             existing->has_init = true; // non-inline extern decl seen
                     }
@@ -4911,7 +4953,10 @@ Program *parse(Token *tok) {
                     }
                     Function *fn = arena_alloc(sizeof(Function));
                     fn->name = name;
-                    fn->asm_name = pending_asm_name;
+                    LVar *fn_sym2 = find_global_name(name);
+                    fn->asm_name = pending_asm_name ? pending_asm_name
+                                                    : (fn_sym2 ? fn_sym2->asm_name : NULL);
+                    fn->alias_target = pending_alias_target;
                     fn->ty = fty;
                     fn->params = params;
                     fn->locals = fn_locals;
@@ -4921,7 +4966,6 @@ Program *parse(Token *tok) {
                     fn->dealloc_vla = fn_uses_vla;
                     fn->is_constructor = pending_constructor;
                     fn->is_destructor = pending_destructor;
-                    LVar *fn_sym2 = find_global_name(name);
                     fn->is_inline = attr.is_inline;
                     // is_static is sticky: if any decl was static the fn is static
                     fn->is_static = attr.is_static || (fn_sym2 && fn_sym2->is_static);
@@ -4932,6 +4976,7 @@ Program *parse(Token *tok) {
                     pending_constructor = false;
                     pending_destructor = false;
                     pending_asm_name = NULL;
+                    pending_alias_target = NULL;
                     TLItem *item = arena_alloc(sizeof(TLItem));
                     item->kind = TL_FUNC;
                     item->fn = fn;
@@ -4969,7 +5014,10 @@ Program *parse(Token *tok) {
                     var->is_extern = attr.is_extern;
                     if (pending_asm_name)
                         var->asm_name = pending_asm_name;
+                    if (pending_alias_target)
+                        var->alias_target = pending_alias_target;
                     pending_asm_name = NULL;
+                    pending_alias_target = NULL;
                     if (equalc(tok, "=")) {
                         tok = tok->next;
                         global_initializer(&tok, tok, var);

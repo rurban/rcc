@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     146
- - **Passed**:    144
- - **Failed**:    2
- - **Pass Rate**: 98%
+ - **Passed**:    145
+ - **Failed**:    1
+ - **Pass Rate**: 99%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -119,7 +119,7 @@ Generated: May 2026
 | 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | PASS         | Output matches                       |
-| 120_alias                                | COMPILE_FAIL | rcc returned non-zero                |
+| 120_alias                                | PASS         | Output matches                       |
 | 121_struct_return                        | PASS         | Output matches                       |
 | 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |

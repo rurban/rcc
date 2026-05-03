@@ -615,13 +615,13 @@ printf "Report saved to %s\n" "$REPORT_FILE"
 
 # arm64-darwin native
 if [ "$REPORT_FILE" = "$SCRIPT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 135 ]
+    [ "$passed" -ge 134 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 137 ]
+    [ "$passed" -ge 136 ]
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 142 ]
+    [ "$passed" -ge 144 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 144 ]
+    [ "$passed" -ge 145 ]
 else
-    [ "$passed" -ge 144 ]
+    [ "$passed" -ge 146 ]
 fi

@@ -3,9 +3,9 @@ Generated: May 2026
 
 ## Summary
  - **Total**:     146
- - **Passed**:    144
- - **Failed**:    2
- - **Pass Rate**: 98%
+ - **Passed**:    146
+ - **Failed**:    0
+ - **Pass Rate**: 100%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -119,7 +119,7 @@ Generated: May 2026
 | 117_builtins                             | PASS         | Output matches                       |
 | 118_switch                               | PASS         | Output matches                       |
 | 119_random_stuff                         | PASS         | Output matches                       |
-| 120_alias                                | COMPILE_FAIL | executable missing                   |
+| 120_alias                                | PASS         | Output matches                       |
 | 121_struct_return                        | PASS         | Output matches                       |
 | 122_vla_reuse                            | PASS         | Output matches                       |
 | 123_vla_bug                              | PASS         | Output matches                       |
@@ -137,7 +137,7 @@ Generated: May 2026
 | 135_func_arg_struct_compare              | PASS         | Output matches                       |
 | 136_atomic_gcc_style                     | PASS         | Output matches                       |
 | 137_funcall_struct_args                  | PASS         | Output matches                       |
-| test_arm64_asm                           | COMPILE_FAIL | executable missing                   |
+| test_arm64_asm                           | PASS         | exit=0                               |
 | test_bitfields                           | PASS         | exit=0                               |
 | test_builtins                            | PASS         | exit=0                               |
 | test_elif2                               | PASS         | exit=0                               |
@@ -161,7 +161,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
-| test_signextend                          | PASS         | exit=0                               |
+| test_signextend                          | PASS         | exit=1                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

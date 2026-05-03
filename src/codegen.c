@@ -4975,14 +4975,61 @@ void codegen(Program *prog) {
     // Emit data section for strings
     if (prog->globals || prog->strs || float_lits) {
         printf("\n.data\n");
+        // Track emitted symbols to avoid duplicates (e.g. __asm__("same_name"))
+        char **emitted_syms = NULL;
+        int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
-            if (var->is_extern)
-                continue;
-            // Skip function symbols - they're emitted as code in the text section
-            // (or not at all for inline functions without body)
-            if (var->is_function)
+            if (var->is_extern && !var->alias_target && !var->asm_name)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
+            if (var->is_function && !var->alias_target && !var->asm_name)
+                continue;
+            // Handle function aliases (__attribute__((alias)) or __asm__ renaming)
+            if (var->is_function && !var->alias_target && var->asm_name) {
+                // __asm__("target") on a function: alias the C name to the asm_name
+                printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
+                printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)),
+                       asm_sym_name(sym_name(var->asm_name)));
+                continue;
+            }
+            if (var->alias_target) {
+                if (!var->is_static)
+                    printf(".globl %s\n", asm_sym_name(sym_name(label)));
+                printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
+                       asm_sym_name(sym_name(var->alias_target)));
+                continue;
+            }
+            // If a global with this asm_name already emitted, skip (alias target)
+            bool sym_already_emitted = false;
+            const char *canon = asm_sym_name(sym_name(label));
+            for (int i = 0; i < emitted_count; i++) {
+                if (strcmp(emitted_syms[i], canon) == 0) {
+                    sym_already_emitted = true;
+                    break;
+                }
+            }
+            if (sym_already_emitted)
+                continue;
+            if (var->asm_name) {
+                // Check if asm_name matches another global that provides data
+                LVar *existing = NULL;
+                for (LVar *g = prog->globals; g; g = g->next) {
+                    if (g != var && !g->is_extern && !g->is_function &&
+                        strcmp(g->name, var->asm_name) == 0 &&
+                        (g->has_init || g->init_data)) {
+                        existing = g;
+                        break;
+                    }
+                }
+                if (existing) {
+                    // This is an alias via __asm__ — emit .set instead of data
+                    printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
+                    printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)), canon);
+                    continue;
+                }
+            }
+            emitted_syms = realloc(emitted_syms, (emitted_count + 1) * sizeof(char *));
+            emitted_syms[emitted_count++] = strdup(canon);
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
             if (var->ty->align > 1)
@@ -5027,6 +5074,9 @@ void codegen(Program *prog) {
                 printf("  .zero %d\n", var->ty->size);
             }
         }
+        for (int i = 0; i < emitted_count; i++)
+            free(emitted_syms[i]);
+        free(emitted_syms);
         for (StrLit *s = prog->strs; s; s = s->next) {
             printf(".LC%d:\n", s->id);
             if (s->prefix != 0) {
