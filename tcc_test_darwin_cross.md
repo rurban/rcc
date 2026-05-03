@@ -2,10 +2,10 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     145
- - **Passed**:    137
- - **Failed**:    8
- - **Pass Rate**: 94%
+ - **Total**:     142
+ - **Passed**:    136
+ - **Failed**:    6
+ - **Pass Rate**: 95%
 
 ## Detailed Results
 | Test                                     | Status       | Message                              |
@@ -94,7 +94,7 @@ Generated: May 2026
 | 93_integer_promotion                     | COMPILE_OK   | linked, (execution skipped)          |
 | 94_generic                               | COMPILE_OK   | linked, (execution skipped)          |
 | 95_bitfields                             | COMPILE_OK   | linked, (execution skipped)          |
-| 95_bitfields_ms                          | COMPILE_OK   | linked, (execution skipped)          |
+| 95_bitfields_ms                          | SKIP         | Skipped                              |
 | 96_nodata_wanted                         | SKIP         | Skipped                              |
 | 97_utf8_string_literal                   | COMPILE_OK   | linked, (execution skipped)          |
 | 98_al_ax_extend                          | SKIP         | Skipped                              |
@@ -124,9 +124,9 @@ Generated: May 2026
 | 122_vla_reuse                            | COMPILE_OK   | linked, (execution skipped)          |
 | 123_vla_bug                              | COMPILE_OK   | linked, (execution skipped)          |
 | 124_atomic_counter                       | COMPILE_OK   | linked, (execution skipped)          |
-| 125_atomic_misc                          | COMPILE_FAIL | rcc returned non-zero                |
+| 125_atomic_misc                          | SKIP         | Skipped                              |
 | 126_bound_global                         | SKIP         | Skipped                              |
-| 127_asm_goto                             | COMPILE_FAIL | rcc returned non-zero                |
+| 127_asm_goto                             | SKIP         | Skipped                              |
 | 128_run_atexit                           | COMPILE_OK   | linked, (execution skipped)          |
 | 129_scopes                               | COMPILE_FAIL | rcc returned non-zero                |
 | 130_large_argument                       | COMPILE_OK   | linked, (execution skipped)          |

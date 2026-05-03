@@ -3072,10 +3072,9 @@ static int gen(Node *node) {
     }
     case ND_LOGAND: {
         int c = ++rcc_label_count;
-        bool pool_full = (used_regs == ALL_REGS_MASK);
-        int r = pool_full ? -1 : alloc_reg();
-        int lhs = gen(node->lhs);
 #ifdef ARCH_ARM64
+        int r = alloc_reg();
+        int lhs = gen(node->lhs);
         printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
         printf("  mov %s, #0\n", reg(r, 4));
         printf("  b.eq .L.end.%d\n", c);
@@ -3084,39 +3083,30 @@ static int gen(Node *node) {
         printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
         printf("  cset %s, ne\n", reg(r, 4));
 #else
+        int lhs = gen(node->lhs);
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        if (pool_full) {
-            printf("  mov byte ptr [rbp-%d], 0\n", SPILL_LOGAND);
-            printf("  je .L.end.%d\n", c);
-        } else {
-            printf("  mov %s, 0\n", reg(r, 4));
-            printf("  je .L.end.%d\n", c);
-        }
+        printf("  mov byte ptr [rbp-%d], 0\n", SPILL_LOGAND);
+        printf("  je .L.end.%d\n", c);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
-        if (pool_full) {
-            printf("  setne al\n");
-            printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
-        } else {
-            printf("  setne al\n");
-            printf("  movzx %s, al\n", reg(r, 4));
-        }
+        printf("  setne al\n");
+        printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
-        if (pool_full) {
-            r = alloc_reg(); // now regs freed by gen(rhs), should be free
-            printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
-        }
+#ifdef ARCH_ARM64
+#else
+        int r = alloc_reg();
+        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+#endif
         return r;
     }
     case ND_LOGOR: {
         int c = ++rcc_label_count;
-        bool pool_full = (used_regs == ALL_REGS_MASK);
-        int r = pool_full ? -1 : alloc_reg();
-        int lhs = gen(node->lhs);
 #ifdef ARCH_ARM64
+        int r = alloc_reg();
+        int lhs = gen(node->lhs);
         printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
         printf("  mov %s, #1\n", reg(r, 4));
         printf("  b.ne .L.end.%d\n", c);
@@ -3125,31 +3115,23 @@ static int gen(Node *node) {
         printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
         printf("  cset %s, ne\n", reg(r, 4));
 #else
+        int lhs = gen(node->lhs);
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        if (pool_full) {
-            printf("  mov byte ptr [rbp-%d], 1\n", SPILL_LOGAND);
-            printf("  jne .L.end.%d\n", c);
-        } else {
-            printf("  mov %s, 1\n", reg(r, 4));
-            printf("  jne .L.end.%d\n", c);
-        }
+        printf("  mov byte ptr [rbp-%d], 1\n", SPILL_LOGAND);
+        printf("  jne .L.end.%d\n", c);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
-        if (pool_full) {
-            printf("  setne al\n");
-            printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
-        } else {
-            printf("  setne al\n");
-            printf("  movzx %s, al\n", reg(r, 4));
-        }
+        printf("  setne al\n");
+        printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
-        if (pool_full) {
-            r = alloc_reg();
-            printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
-        }
+#ifdef ARCH_ARM64
+#else
+        int r = alloc_reg();
+        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+#endif
         return r;
     }
     case ND_COND: {
@@ -4033,24 +4015,32 @@ static int gen(Node *node) {
         if (op == 0 || op == 1) {
             if (op == 1)
                 printf("  neg %s\n", reg(r_val, sz));
+            // Save val to stack before xadd clobbers it
+            printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
+                                                       : sz == 4              ? "dword"
+                                                                              : "qword"),
+                   SPILL_LOGAND, reg(r_val, sz));
             printf("  mov %s, %s\n", reg(r_old, sz), reg(r_val, sz));
-            if (r_old == r_addr && (spilled_regs & (1 << r_addr))) {
-                printf("  mov %s, [rbp-%d]\n", reg64[r_val], spill_offset(r_addr));
-                printf("  lock xadd %s ptr [%s], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
-                                                             : sz == 4              ? "dword"
-                                                                                    : "qword"),
-                       reg64[r_val], reg(r_old, sz));
-            } else {
-                printf("  lock xadd %s ptr [%s], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
-                                                             : sz == 4              ? "dword"
-                                                                                    : "qword"),
-                       reg64[r_addr], reg(r_old, sz));
-            }
             free_reg(r_val);
+            if (r_old == r_addr && (spilled_regs & (1 << r_addr))) {
+                printf("  mov %s, [rbp-%d]\n", reg64[r_addr], spill_offset(r_addr));
+            }
+            printf("  lock xadd %s ptr [%s], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
+                                                         : sz == 4              ? "dword"
+                                                                                : "qword"),
+                   reg64[r_addr], reg(r_old, sz));
             free_reg(r_addr);
             if (node->atomic_ord == MEMORDER_SEQ_CST)
                 printf("  mfence\n");
-            if (!is_store && sz < 4) {
+            if (is_store) {
+                // add_fetch/sub_fetch: return new value = old + val
+                printf("  add %s, %s ptr [rbp-%d]\n", reg(r_old, sz),
+                       (sz == 1 ? "byte" : sz == 2 ? "word"
+                            : sz == 4              ? "dword"
+                                                   : "qword"),
+                       SPILL_LOGAND);
+            }
+            if (sz < 4) {
                 if (!use_unsigned(node->ty))
                     sign_extend_to(r_old, sz, 4);
                 else
@@ -4121,19 +4111,27 @@ static int gen(Node *node) {
             if (node->atomic_ord == MEMORDER_SEQ_CST)
                 printf("  mfence\n");
             free_reg(r_addr);
-            free_reg(r_new);
-            // Reload old value from stack (r_old may have been overwritten if it shares reg with r_new)
-            if (r_old == r_new)
-                printf("  mov %s, %s ptr [rbp-%d]\n", reg(r_old, sz),
-                       (sz == 1 ? "byte" : sz == 2 ? "word"
-                            : sz == 4              ? "dword"
-                                                   : "qword"),
-                       SPILL_ATOMIC_OLD);
-            if (!is_store && sz < 4 && !use_unsigned(node->ty))
-                sign_extend_to(r_old, sz, 4);
-            else if (!is_store && sz < 4)
-                zero_extend_to(r_old, sz, 4);
-            return r_old;
+            if (is_store) {
+                free_reg(r_old);
+                if (sz < 4 && !use_unsigned(node->ty))
+                    sign_extend_to(r_new, sz, 4);
+                else if (sz < 4)
+                    zero_extend_to(r_new, sz, 4);
+                return r_new;
+            } else {
+                free_reg(r_new);
+                if (r_old == r_new)
+                    printf("  mov %s, %s ptr [rbp-%d]\n", reg(r_old, sz),
+                           (sz == 1 ? "byte" : sz == 2 ? "word"
+                                : sz == 4              ? "dword"
+                                                       : "qword"),
+                           SPILL_ATOMIC_OLD);
+                if (sz < 4 && !use_unsigned(node->ty))
+                    sign_extend_to(r_old, sz, 4);
+                else if (sz < 4)
+                    zero_extend_to(r_old, sz, 4);
+                return r_old;
+            }
         }
 #endif
     }
