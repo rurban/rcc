@@ -2,8 +2,8 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     148
- - **Passed**:    148
+ - **Total**:     149
+ - **Passed**:    149
  - **Failed**:    0
  - **Pass Rate**: 100%
 
@@ -145,6 +145,7 @@ Generated: May 2026
 | test_elif2                               | PASS         | exit=0                               |
 | test_elif_simple                         | PASS         | exit=0                               |
 | test_err                                 | PASS         | compile error as expected            |
+| test_fallthrough                         | PASS         | exit=0                               |
 | test_func                                | PASS         | exit=0                               |
 | test_if                                  | PASS         | exit=0                               |
 | test_if2                                 | PASS         | exit=0                               |
@@ -163,7 +164,7 @@ Generated: May 2026
 | test_ptr                                 | PASS         | exit=0                               |
 | test_real                                | PASS         | exit=0                               |
 | test_self_include2                       | PASS         | exit=1                               |
-| test_signextend                          | PASS         | exit=0                               |
+| test_signextend                          | PASS         | exit=1                               |
 | test_simple                              | PASS         | exit=1                               |
 | test_simple2                             | PASS         | exit=1                               |
 | test_str                                 | PASS         | exit=0                               |

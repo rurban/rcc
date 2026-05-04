@@ -80,6 +80,27 @@ static bool equal(Token *tok, char *op) {
 // Fast variant for string-literal comparisons (avoids strlen at runtime)
 #define equalc(tok, op)     ((tok) && (tok)->loc && (tok)->len == (int)(sizeof(op) - 1) &&      memcmp((tok)->loc, op, sizeof(op) - 1) == 0)
 
+// Peek past a single __attribute__((...)) block without consuming tokens.
+// Returns the token after the closing )), or NULL if structure doesn't match.
+static Token *peek_past_attr(Token *tok) {
+    if (!equalc(tok, "__attribute__") && !equalc(tok, "__attribute"))
+        return NULL;
+    tok = tok->next;
+    if (!equalc(tok, "(")) return NULL;
+    tok = tok->next;
+    if (!equalc(tok, "(")) return NULL;
+    tok = tok->next;
+    int depth = 1;
+    while (depth > 0 && tok->kind != TK_EOF) {
+        if (equalc(tok, "(")) depth++;
+        else if (equalc(tok, ")"))
+            depth--;
+        tok = tok->next;
+    }
+    if (!equalc(tok, ")")) return NULL; // final closing paren
+    return tok->next;
+}
+
 static Token *skip(Token *tok, char *op) {
     if (!equal(tok, op))
         error_tok(tok, "expected specific operator");
@@ -2671,6 +2692,16 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             }
             continue;
         }
+        // Standalone __attribute__((...)) at statement level (e.g. __fallthrough__)
+        if ((equalc(tok, "__attribute__") || equalc(tok, "__attribute"))) {
+            Token *after = peek_past_attr(tok);
+            if (after && equalc(after, ";")) {
+                cur->next = stmt(&tok, tok);
+                while (cur->next)
+                    cur = cur->next;
+                continue;
+            }
+        }
         if (is_typename(tok)) {
             // A typedef name followed by ':' is a label, not a declaration.
             if (find_typedef(tok) && equalc(tok->next, ":")) {
@@ -3064,6 +3095,13 @@ static Node *stmt(Token **rest, Token *tok) {
 
     if (is_asm_keyword(tok))
         return parse_asm_stmt(rest, tok);
+
+    // Standalone __attribute__((...)) statement (e.g., __fallthrough__)
+    if (equalc(tok, "__attribute__") || equalc(tok, "__attribute")) {
+        tok = skip_attributes(tok);
+        *rest = skip(tok, ";");
+        return new_node(ND_NULL, tok);
+    }
 
     Node *node = new_node(ND_EXPR_STMT, tok);
     node->lhs = expr(&tok, tok);
