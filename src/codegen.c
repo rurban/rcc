@@ -107,6 +107,7 @@ static int spill_offset(int r) {
 
 static int spilled_regs = 0;
 static int spill_count = 0;
+static const char *reg_owner[NUM_REGS];
 
 static char *reg(int r, int size);
 static int alloc_reg(void);
@@ -1725,8 +1726,12 @@ static int alloc_reg(void) {
     // (least likely to be referenced by outer callers right now).
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if (used_regs & (1 << i)) {
-            if (opt_W)
-                fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            if (opt_W) {
+                if (reg_owner[i])
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
+                else
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            }
 #ifdef ARCH_ARM64
             printf("  str %s, [%s, #-%d]\n", reg64[i], FRAME_PTR, spill_offset(i));
 #else
@@ -1754,6 +1759,7 @@ static void free_reg(int i) {
         spilled_regs &= ~(1 << i);
     }
     used_regs &= ~(1 << i);
+    reg_owner[i] = NULL;
 }
 
 static int gen(Node *node);
@@ -1763,6 +1769,7 @@ static int gen_addr(Node *node) {
     switch (node->kind) {
     case ND_LVAR: {
         int r = alloc_reg();
+        if (opt_W) reg_owner[r] = node->var->name;
         if (node->var->is_local) {
             if (node->var->ty->kind == TY_VLA) {
 #ifdef ARCH_ARM64
@@ -2008,6 +2015,7 @@ static int gen(Node *node) {
     }
     case ND_LVAR: {
         int r = alloc_reg();
+        if (opt_W) reg_owner[r] = node->var->name;
 #ifndef ARCH_ARM64
         char *label = var_label(node->var);
 #endif
@@ -5141,6 +5149,7 @@ void codegen(Program *prog) {
         ever_used_regs = 0;
         spilled_regs = 0;
         spill_count = 0;
+        memset(reg_owner, 0, sizeof(reg_owner));
         ctrl_depth = 0;
         fn_uses_alloca = false;
 

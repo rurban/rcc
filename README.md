@@ -20,16 +20,16 @@ Linux:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           69 |          721 |        790 |
-| RCC -O1   |           68 |          748 |        816 |
-| TCC       |       **19** |          724 |        743 |
-| SLIMCC    |           61 |          735 |        796 |
-| KEFIR     |          285 |          818 |       1103 |
-| KEFIR -O1 |          270 |          521 |        791 |
-| GCC -O0   |          102 |          665 |        767 |
-| GCC -O2   |          240 |      **223** |        463 |
-| Clang -O0 |          121 |          737 |        858 |
-| Clang -O2 |          158 |          237 |    **395** |
+| RCC       |           45 |          597 |        642 |
+| RCC -O1   |           47 |          606 |        653 |
+| TCC       |       **12** |          565 |    **577** |
+| SLIMCC    |           49 |          625 |        674 |
+| KEFIR     |          228 |          662 |        890 |
+| KEFIR -O1 |          192 |      **486** |        678 |
+| GCC -O0   |           69 |          562 |        631 |
+| GCC -O2   |          178 |          214 |        392 |
+| Clang -O0 |          108 |          629 |        737 |
+| Clang -O2 |          132 |          228 |        360 |
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
