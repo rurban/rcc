@@ -44,7 +44,7 @@ static char *read_file(char *path) {
 
     int filemax = 10 * 1024 * 1024;
     char *buf = arena_alloc(filemax);
-    int size = fread(buf, 1, filemax - 2, fp);
+    size_t size = fread(buf, 1, filemax - 2, fp);
     if (!feof(fp)) {
         error("%s: file too large", path);
     }
@@ -233,6 +233,7 @@ int main(int argc, char **argv) {
 
             Token *tok = tokenize(in_path, preprocessed);
             Program *prog = parse(tok);
+            prog->in_path = in_path;
 
             // Type system / Semantic checks
             for (TLItem *item = prog->items; item; item = item->next) {

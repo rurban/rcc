@@ -435,6 +435,7 @@ struct Program {
     TLItem *items;
     LVar *globals;
     StrLit *strs;
+    char *in_path;
 };
 
 // Parser entry point

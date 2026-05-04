@@ -5561,10 +5561,13 @@ void codegen(Program *prog) {
 
         // Read body into lines
         fseek(body_file, 0, SEEK_END);
-        long body_len = ftell(body_file);
+        size_t body_len = ftell(body_file);
         fseek(body_file, 0, SEEK_SET);
         char *body_text = malloc(body_len + 1);
-        fread(body_text, 1, body_len, body_file);
+        size_t size = fread(body_text, 1, body_len, body_file);
+        if (size != body_len) {
+            fprintf(stderr, "truncated tmpfile for %s when reading it back in\n", prog->in_path);
+        }
         body_text[body_len] = '\0';
         fclose(body_file);
 
