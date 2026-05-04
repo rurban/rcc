@@ -1442,6 +1442,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     mem->offset = 0;
                     if (max_size < mem_ty->size)
                         max_size = mem_ty->size;
+                    if (max_align < mem_ty->align)
+                        max_align = mem_ty->align;
                 } else {
                     int a = mem_ty->align;
                     if (struct_pack > 0 && (struct_pack < a || a == 0))
