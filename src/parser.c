@@ -486,6 +486,7 @@ static Node *append_cleanup_range(Node *body, LVar *begin, LVar *end, Token *tok
 static bool is_storage_class(Token *tok) {
     return equalc(tok, "typedef") || equalc(tok, "extern") || equalc(tok, "static") ||
         equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__") ||
+        equalc(tok, "register") || equalc(tok, "auto") ||
         equalc(tok, "const") || equalc(tok, "volatile") || equalc(tok, "restrict") ||
         equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
         equalc(tok, "signed") ||
@@ -1526,6 +1527,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
         if (equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__")) {
             attr->is_inline = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "register") || equalc(tok, "auto")) {
             tok = tok->next;
             continue;
         }
