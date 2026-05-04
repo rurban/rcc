@@ -59,13 +59,13 @@ Linux:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's, atomics, GNU alias.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), arm64 long doubles, unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's, atomics, GNU alias.
 
-Not yet: C23.
+Not yet: C23, -fpie, -fpic
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
-The tcc suite has 146/146 test passed (100%) on linux and mingw-cross,
+The tcc suite has 148/148 test passed (100%) on linux and mingw-cross,
 109/111 on windows native, 134/147 on arm64-darwin native.
 
 Three tcc core and test bugs have been detected so far. Fixes in the work.
@@ -136,13 +136,13 @@ The original windows repo is now at https://github.com/DocDamage/realtime-c-comp
 
 This fork passes now:
 
-- [146/146 tests](tcc_test_linux.md) on linux
-- [146/146 tests](tcc_test_mingw_cross.md.md) on mingw-cross
-- [144/145 tests](tcc_test_arm64_cross.md) on arm64-cross (elf)
-- [136/144 tests](tcc_test_darwin_cross.md) on darwin-cross (compilation only)
+- [148/148 tests](tcc_test_linux.md) on linux
+- [148/148 tests](tcc_test_mingw_cross.md.md) on mingw-cross
+- [147/147 tests](tcc_test_arm64_cross.md) on arm64-cross (elf)
+- [146/146 tests](tcc_test_darwin_cross.md) on darwin-cross (compilation only)
 - [134/147 tests](tcc_test_arm64.md) on arm64-darwin native
 - [109/112 tests](tcc_test_mingw.md) on windows native via powershell testing
-- For the c-testsuite it passes 220/220 on all platforms.
+- For the c-testsuite it passes 220/220 tests on all platforms.
 
 ## License
 

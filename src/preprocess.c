@@ -1594,6 +1594,15 @@ char *preprocess(char *filename, char *p) {
 
 #include "gcc_predefined.h"
 
+#ifdef __APPLE__
+        if (!find_macro("__APPLE__"))
+            define_macro("__APPLE__", false, NULL, 0, "1");
+        if (!find_macro("__leading_underscore"))
+            define_macro("__leading_underscore", false, NULL, 0, "1");
+        if (!find_macro("__MACH__"))
+            define_macro("__MACH__", false, NULL, 0, "1");
+#endif
+
 #if 0
     // OLD: GCC builtin type macros (required for <stdatomic.h> and other system headers)
     define_pre("__SIZE_TYPE__", "long unsigned int");

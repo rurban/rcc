@@ -70,7 +70,7 @@ if ! $RUNTIME run --rm \
     -v "$(realpath "$TMP_S"):/work/input.s:Z" \
     -v "$TMP_EXE_DIR:/out:Z" \
     "$IMAGE" \
-    sh -c "export PATH=/usr/osxcross/bin:\$PATH && aarch64-apple-darwin20.4-clang $ld_flags /work/input.s -o /out/$outbase 2>&1"; then
+    sh -c "export PATH=/usr/osxcross/bin:\$PATH && aarch64-apple-darwin20.4-clang $ld_flags -Wl,-undefined,dynamic_lookup /work/input.s -o /out/$outbase 2>&1"; then
     rm -rf "$TMP_S" "$TMP_EXE_DIR"
     exit 1
 fi

@@ -17,6 +17,7 @@ a.out
 rcc
 rcc-arm64
 rcc-darwin
+rcc_prof
 actual.txt
 fred.txt
 err.log
@@ -24,9 +25,7 @@ tmp*.c
 101_cleanup.md
 /tcc_tests
 amazon_bug_bounty/
-tcc_test_*.md
 test/*.out
-/mingw-test.sh
 /compile_commands.json
 /.cache
 /AGENTS.md
@@ -36,9 +35,8 @@ test/*.out
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt
-rcc-arm64
-rcc_prof
 .rcc-arm64.stamp
 *.arm64.o
+arm64-run.sh
 qemu_*.core
 gmon.out

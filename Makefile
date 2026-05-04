@@ -139,6 +139,7 @@ test-all: $(TARGET)
 	@$(TEST_RUNNER)
 	./mingw-test.sh
 	./arm64-test.sh
+	./darwin-test.sh
 
 lint:
 	if command -v prek; then prek run -a; \

@@ -317,16 +317,17 @@ static void emit_vla_dealloc(LVar *begin, LVar *end) {
 static void emit_alloca(void) {
 #ifdef ARCH_ARM64
     printf("\n"
-           "__rcc_alloca:\n"
+           "%s:\n"
            "  // alloca(size) — x0 = rounded size, returns new sp in x0\n"
            "  add x0, x0, #15\n"
            "  and x0, x0, #-16\n"
            "  sub sp, sp, x0\n"
            "  mov x0, sp\n"
-           "  ret\n");
+           "  ret\n",
+           sym_name("__rcc_alloca"));
 #else
     printf("\n"
-           "__rcc_alloca:\n"
+           "%s:\n"
            "  pop rdx\n"
 #ifdef _WIN32
            "  mov rax, rcx\n"
@@ -350,7 +351,8 @@ static void emit_alloca(void) {
            "  mov rax, rsp\n"
            ".Lalloca3:\n"
            "  push rdx\n"
-           "  ret\n");
+           "  ret\n",
+           sym_name("__rcc_alloca"));
 #endif
 }
 
@@ -3815,24 +3817,22 @@ static int gen(Node *node) {
         int sz = node->ty->size;
         int r_result = alloc_reg();
 #ifdef ARCH_ARM64
-        int r_tmp = alloc_reg();
         int lbl = rcc_label_count++;
         printf(".L.atom_xchg.%d:\n", lbl);
         if (sz == 1) {
             printf("  ldxrb %s, [%s]\n", reg32[r_result], reg64[r_addr]);
-            printf("  stxrb %s, %s, [%s]\n", reg32[r_tmp], reg32[r_val], reg64[r_addr]);
+            printf("  stxrb w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         } else if (sz == 2) {
             printf("  ldxrh %s, [%s]\n", reg32[r_result], reg64[r_addr]);
-            printf("  stxrh %s, %s, [%s]\n", reg32[r_tmp], reg32[r_val], reg64[r_addr]);
+            printf("  stxrh w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         } else if (sz == 4) {
             printf("  ldxr %s, [%s]\n", reg32[r_result], reg64[r_addr]);
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg32[r_val], reg64[r_addr]);
+            printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         } else {
             printf("  ldxr %s, [%s]\n", reg64[r_result], reg64[r_addr]);
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg64[r_val], reg64[r_addr]);
+            printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         }
-        printf("  cbnz %s, .L.atom_xchg.%d\n", reg32[r_tmp], lbl);
-        free_reg(r_tmp);
+        printf("  cbnz w9, .L.atom_xchg.%d\n", lbl);
 #else
         printf("  xchg %s ptr [%s], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
                                                 : sz == 4              ? "dword"
@@ -3867,7 +3867,6 @@ static int gen(Node *node) {
         Type *elem_ty = node->lhs->ty && node->lhs->ty->base ? node->lhs->ty->base : ty_int;
         emit_load(elem_ty, r_expected, format("[%s]", reg64[r_expectedaddr]));
         int r_old = alloc_reg();
-        int r_tmp = alloc_reg();
         int lbl = rcc_label_count++;
         printf(".L.atom_cas.%d:\n", lbl);
         if (sz == 1)
@@ -3881,24 +3880,23 @@ static int gen(Node *node) {
         printf("  cmp %s, %s\n", reg(r_old, sz), reg(r_expected, sz));
         printf("  b.ne .L.atom_cas_fail.%d\n", lbl);
         if (sz == 1)
-            printf("  stxrb %s, %s, [%s]\n", reg32[r_tmp], reg32[r_desired], reg64[r_addr]);
+            printf("  stxrb w9, %s, [%s]\n", reg32[r_desired], reg64[r_addr]);
         else if (sz == 2)
-            printf("  stxrh %s, %s, [%s]\n", reg32[r_tmp], reg32[r_desired], reg64[r_addr]);
+            printf("  stxrh w9, %s, [%s]\n", reg32[r_desired], reg64[r_addr]);
         else if (sz == 4)
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg32[r_desired], reg64[r_addr]);
+            printf("  stxr w9, %s, [%s]\n", reg32[r_desired], reg64[r_addr]);
         else
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg64[r_desired], reg64[r_addr]);
+            printf("  stxr w9, %s, [%s]\n", reg64[r_desired], reg64[r_addr]);
         if (node->atomic_weak)
-            printf("  cbnz %s, .L.atom_cas_fail.%d\n", reg32[r_tmp], lbl);
+            printf("  cbnz w9, .L.atom_cas_fail.%d\n", lbl);
         else
-            printf("  cbnz %s, .L.atom_cas.%d\n", reg32[r_tmp], lbl);
+            printf("  cbnz w9, .L.atom_cas.%d\n", lbl);
         printf("  mov %s, #1\n", reg64[r_result]);
         printf("  b .L.atom_cas_done.%d\n", lbl);
         printf(".L.atom_cas_fail.%d:\n", lbl);
         printf("  mov %s, #0\n", reg64[r_result]);
         emit_store(elem_ty, r_old, format("[%s]", reg64[r_expectedaddr]));
         printf(".L.atom_cas_done.%d:\n", lbl);
-        free_reg(r_tmp);
         free_reg(r_old);
         free_reg(r_expected);
 #else
@@ -3956,62 +3954,59 @@ static int gen(Node *node) {
     }
     case ND_ATOMIC_FETCH_OP: {
         int r_addr = gen(node->lhs);
-        int r_old = alloc_reg();
         int r_val = gen(node->rhs);
         int sz = node->ty->size;
         int op = node->atomic_fetch_op;
         bool is_store = node->atomic_is_store;
 #ifdef ARCH_ARM64
-        int r_new = alloc_reg();
+        printf("  mov %s, %s\n", sz == 8 ? "x9" : "w9", reg(r_val, sz));
+        free_reg(r_val);
+        int old_dummy = alloc_reg();
+        int old_slot = spill_offset(old_dummy);
+        free_reg(old_dummy);
         int r_tmp = alloc_reg();
         int lbl = rcc_label_count++;
         printf(".L.atom_fop.%d:\n", lbl);
         if (sz == 1)
-            printf("  ldxrb %s, [%s]\n", reg32[r_old], reg64[r_addr]);
+            printf("  ldxrb %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else if (sz == 2)
-            printf("  ldxrh %s, [%s]\n", reg32[r_old], reg64[r_addr]);
+            printf("  ldxrh %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else if (sz == 4)
-            printf("  ldxr %s, [%s]\n", reg32[r_old], reg64[r_addr]);
+            printf("  ldxr %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else
-            printf("  ldxr %s, [%s]\n", reg64[r_old], reg64[r_addr]);
-        printf("  mov %s, %s\n", reg64[r_new], reg64[r_old]);
+            printf("  ldxr %s, [%s]\n", reg64[r_tmp], reg64[r_addr]);
+        printf("  str %s, [%s, #-%d]\n", reg64[r_tmp], FRAME_PTR, old_slot);
+        const char *rv = (sz == 8) ? "x9" : "w9";
         switch (op) {
-        case 0: printf("  add %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz)); break;
-        case 1: printf("  sub %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz)); break;
-        case 2: printf("  orr %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz)); break;
-        case 3: printf("  eor %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz)); break;
-        case 4: printf("  and %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz)); break;
+        case 0: printf("  add %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv); break;
+        case 1: printf("  sub %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv); break;
+        case 2: printf("  orr %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv); break;
+        case 3: printf("  eor %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv); break;
+        case 4: printf("  and %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv); break;
         case 5:
-            printf("  and %s, %s, %s\n", reg(r_new, sz), reg(r_new, sz), reg(r_val, sz));
-            printf("  mvn %s, %s\n", reg(r_new, sz), reg(r_new, sz));
+            printf("  and %s, %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz), rv);
+            printf("  mvn %s, %s\n", reg(r_tmp, sz), reg(r_tmp, sz));
             break;
         }
         if (sz == 1)
-            printf("  stxrb %s, %s, [%s]\n", reg32[r_tmp], reg32[r_new], reg64[r_addr]);
+            printf("  stxrb w8, %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else if (sz == 2)
-            printf("  stxrh %s, %s, [%s]\n", reg32[r_tmp], reg32[r_new], reg64[r_addr]);
+            printf("  stxrh w8, %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else if (sz == 4)
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg32[r_new], reg64[r_addr]);
+            printf("  stxr w8, %s, [%s]\n", reg32[r_tmp], reg64[r_addr]);
         else
-            printf("  stxr %s, %s, [%s]\n", reg32[r_tmp], reg64[r_new], reg64[r_addr]);
-        printf("  cbnz %s, .L.atom_fop.%d\n", reg32[r_tmp], lbl);
+            printf("  stxr w8, %s, [%s]\n", reg64[r_tmp], reg64[r_addr]);
+        printf("  cbnz w8, .L.atom_fop.%d\n", lbl);
         if (node->atomic_ord == MEMORDER_SEQ_CST)
             printf("  dmb ish\n");
-        free_reg(r_tmp);
-        free_reg(r_val);
+        if (!is_store)
+            printf("  ldr %s, [%s, #-%d]\n", reg64[r_tmp], FRAME_PTR, old_slot);
         free_reg(r_addr);
-        if (is_store) {
-            free_reg(r_old);
-            if (sz < 8 && !use_unsigned(node->ty))
-                sign_extend_to(r_new, sz, 8);
-            return r_new;
-        } else {
-            free_reg(r_new);
-            if (sz < 8 && !use_unsigned(node->ty))
-                sign_extend_to(r_old, sz, 8);
-            return r_old;
-        }
+        if (sz < 8 && !use_unsigned(node->ty))
+            sign_extend_to(r_tmp, sz, 8);
+        return r_tmp;
 #else
+        int r_old = alloc_reg();
         if (op == 0 || op == 1) {
             if (op == 1)
                 printf("  neg %s\n", reg(r_val, sz));
@@ -4989,7 +4984,7 @@ void codegen(Program *prog) {
                 // __asm__("target") on a function: alias the C name to the asm_name
                 printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)),
-                       asm_sym_name(sym_name(var->asm_name)));
+                       asm_sym_name(var->asm_name));
                 continue;
             }
             if (var->alias_target) {
@@ -5405,7 +5400,7 @@ void codegen(Program *prog) {
         if (fn_label != fn->name)
             printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn->asm_name)));
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(fn->asm_name));
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
