@@ -551,6 +551,7 @@ static bool is_typename(Token *tok) {
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Node *expr(Token **rest, Token *tok);
 static bool eval_const_expr(Node *node, long long *val);
+static bool eval_const_addr_expr(Node *node, long long *val);
 static void global_initializer(Token **rest, Token *tok, LVar *var);
 
 static void maybe_update_align(int *align, int value) {
@@ -752,6 +753,23 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
     return tok;
 }
 
+static bool eval_const_addr_expr(Node *node, long long *val) {
+    if (!node) return false;
+    switch (node->kind) {
+    case ND_MEMBER: {
+        long long base_val;
+        if (!eval_const_addr_expr(node->lhs, &base_val))
+            return false;
+        *val = base_val + node->member->offset;
+        return true;
+    }
+    case ND_DEREF:
+        return eval_const_expr(node->lhs, val);
+    default:
+        return eval_const_expr(node, val);
+    }
+}
+
 static bool eval_const_expr(Node *node, long long *val) {
     long long lhs;
     long long rhs;
@@ -809,6 +827,12 @@ static bool eval_const_expr(Node *node, long long *val) {
         if (node->ty)
             return (*val = node->ty->size), true;
         return false;
+    case ND_ADDR:
+        // &*x = x
+        if (node->lhs->kind == ND_DEREF)
+            return eval_const_expr(node->lhs->lhs, val);
+        // offsetof: &((struct S*)0)->member
+        return eval_const_addr_expr(node->lhs, val);
     case ND_COMMA:
         return eval_const_expr(node->rhs, val);
     case ND_COND:

@@ -2,8 +2,8 @@
 Generated: May 2026
 
 ## Summary
- - **Total**:     149
- - **Passed**:    149
+ - **Total**:     150
+ - **Passed**:    150
  - **Failed**:    0
  - **Pass Rate**: 100%
 
@@ -147,6 +147,7 @@ Generated: May 2026
 | test_err                                 | PASS         | compile error as expected            |
 | test_fallthrough                         | PASS         | exit=0                               |
 | test_func                                | PASS         | exit=0                               |
+| test_gperf                               | PASS         | exit=0                               |
 | test_if                                  | PASS         | exit=0                               |
 | test_if2                                 | PASS         | exit=0                               |
 | test_if3                                 | PASS         | exit=0                               |
