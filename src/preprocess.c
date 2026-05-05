@@ -21,6 +21,7 @@ struct Macro {
     char *name;
     bool is_function;
     bool is_variadic;
+    bool disabled; // blue-paint: currently being expanded
     char **params;
     int param_len;
     char *body;
@@ -619,6 +620,23 @@ static char *resolve_include(char *curr_file, char *spec) {
     return NULL;
 }
 
+// Blue-paint: mark the Macro entry directly so the flag survives rescans.
+// \x02 is the in-string marker that keeps blue-painted tokens opaque through
+// all intermediate rescans; strip_bluepaint() removes it at the top level.
+static void push_disabled(Macro *m) { m->disabled = true; }
+static void pop_disabled(Macro *m) { m->disabled = false; }
+
+static char *strip_bluepaint(char *s) {
+    if (!memchr(s, '\x02', strlen(s) + 1))
+        return s;
+    StrBuf sb;
+    sb_init(&sb, strlen(s) + 1);
+    for (char *p = s; *p; p++)
+        if (*p != '\x02')
+            sb_putc(&sb, *p);
+    return sb.buf;
+}
+
 static char *expand_text(char *text, char *filename, unsigned line_no, int depth);
 
 static int find_param_index(Macro *m, char *name) {
@@ -671,7 +689,8 @@ static char *paste_tokens(char *s) {
     return sb.buf;
 }
 
-static char *substitute_macro(Macro *m, char **args, int argc, char *filename, int line_no, int depth) {
+static char *substitute_macro(Macro *m, char **args, int argc, char *filename,
+                              unsigned line_no, int depth) {
     StrBuf sb;
     sb_init(&sb, strlen(m->body) * 8 + 256);
 
@@ -833,6 +852,15 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
     sb_init(&sb, strlen(text) + 256);
 
     for (char *p = text; *p;) {
+        // \x02 is the blue-paint marker: keep it and the following identifier
+        // verbatim (no expansion) through all rescans; stripped only at top level
+        if (*p == '\x02') {
+            sb_putc(&sb, *p++);
+            while (pp_is_ident2(*p))
+                sb_putc(&sb, *p++);
+            continue;
+        }
+
         if (*p == '"' || *p == '\'') {
             char quote = *p;
             sb_putc(&sb, *p++);
@@ -893,6 +921,12 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             continue;
         }
 
+        if (m->disabled) {
+            sb_putc(&sb, '\x02'); // blue-paint marker: survives rescans
+            sb_puts(&sb, name);
+            continue;
+        }
+
         if (m->is_function) {
             char *q = p;
             while (isspace((unsigned char)*q))
@@ -905,17 +939,34 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             char *args[32];
             char *end = NULL;
             int argc = parse_macro_args(q + 1, args, 32, &end);
-            char *subst = substitute_macro(m, args, argc, filename, line_no, depth + 1);
+            // Validate argument count: for non-variadic macros, argc must match param_len
+            if (!m->is_variadic && argc != m->param_len) {
+                sb_puts(&sb, name);
+                sb_putc(&sb, '(');
+                for (int i = 0; i < argc; i++) {
+                    if (i > 0) sb_putc(&sb, ',');
+                    sb_puts(&sb, args[i]);
+                }
+                sb_putc(&sb, ')');
+                p = end;
+                continue;
+            }
+            push_disabled(m);
+            char *subst = substitute_macro(m, args, argc, filename, line_no, depth);
             sb_puts(&sb, expand_text(subst, filename, line_no, depth + 1));
+            pop_disabled(m);
             p = end;
             continue;
         }
 
+        push_disabled(m);
         sb_puts(&sb, expand_text(m->body, filename, line_no, depth + 1));
+        pop_disabled(m);
     }
 
     if (strcmp(sb.buf, text) != 0)
         return expand_text(sb.buf, filename, line_no, depth + 1);
+    return sb.buf;
     return sb.buf;
 }
 
@@ -1191,7 +1242,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
 
         if (s < end && *s == '#') {
             if (acc.len > 0) {
-                char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
                 sb_puts(&out, expanded);
                 for (int i = 0; i < acc_phys_count; i++)
                     sb_putc(&out, '\n');
@@ -1386,7 +1437,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                     spec = pp_strndup(start, inc_arg - start);
                 } else {
                     char *arg_str = pp_strndup(inc_arg, inc_end - inc_arg);
-                    expanded = expand_text(arg_str, filename, 1, 0);
+                    expanded = strip_bluepaint(expand_text(arg_str, filename, 1, 0));
                     if (expanded) {
                         char *ep = expanded;
                         while (*ep && isspace((unsigned char)*ep)) ep++;
@@ -1528,7 +1579,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                 acc_line_count++;
                 acc_phys_count += line_counts ? line_counts[line_idx] : 1;
                 if (count_unmatched_parens(acc.buf, acc.buf + acc.len) <= 0) {
-                    char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                    char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
                     sb_puts(&out, expanded);
                     for (int i = 0; i < acc_phys_count; i++)
                         sb_putc(&out, '\n');
@@ -1538,7 +1589,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                     acc_phys_count = 0;
                 }
             } else {
-                char *expanded = expand_text(pp_strndup(line, end - line), filename, line_no, 0);
+                char *expanded = strip_bluepaint(expand_text(pp_strndup(line, end - line), filename, line_no, 0));
                 sb_puts(&out, expanded);
                 {
                     int n = line_counts ? line_counts[line_idx] : 1;
@@ -1549,7 +1600,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
         } else {
             if (acc.len > 0) {
                 /* flush accumulator before inactive section */
-                char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+                char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
                 sb_puts(&out, expanded);
                 for (int i = 0; i < acc_phys_count; i++)
                     sb_putc(&out, '\n');
@@ -1572,7 +1623,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
     }
 
     if (acc.len > 0) {
-        char *expanded = expand_text(acc.buf, filename, acc_line_no, 0);
+        char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
         sb_puts(&out, expanded);
         for (int i = 0; i < acc_phys_count; i++)
             sb_putc(&out, '\n');
