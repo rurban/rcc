@@ -1990,7 +1990,7 @@ static Type *infer_array_type(Type *ty, Token *tok) {
         return ty;
     if (tok->kind == TK_STR) {
         if (tok->string_literal_prefix == 0)
-            return array_of(ty->base, (int)strlen(tok->str) + 1);
+            return array_of(ty->base, tok->len + 1);
         // For wide strings, count UTF-8 characters (each becomes one wchar)
         return array_of(ty->base, utf8_len(tok->str) + 1);
     }
