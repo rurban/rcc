@@ -82,7 +82,7 @@ char *str_intern(const char *start, int len) {
 
     InternedStr *s = arena_alloc(sizeof(InternedStr));
     s->str = arena_alloc(len + 1);
-    memcpy(s->str, start, len);
+    memmove(s->str, start, len);
     s->str[len] = '\0';
     s->len = len;
 

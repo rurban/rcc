@@ -374,18 +374,55 @@ bool va_arg_need_copy(Type *ty) {
 }
 
 static int gen_funcall(Node *node, int hidden_ret_reg) {
-    Node *argv[64];
     int nargs = 0;
-    int arg_regs[64];
-    int arg_sizes[64];
-    bool arg_is_float[64];
-#ifndef _WIN32
-    int arg_gp_idx[64];
-    int arg_fp_idx[64];
-    int arg_stack_idx[64];
-#endif
     for (Node *arg = node->args; arg; arg = arg->next)
-        argv[nargs++] = arg;
+        nargs++;
+
+    Node *argv_stk[64];
+    int arg_regs_stk[64];
+    int arg_sizes_stk[64];
+    bool arg_is_float_stk[64];
+#ifndef _WIN32
+    int arg_gp_idx_stk[64];
+    int arg_fp_idx_stk[64];
+    int arg_stack_idx_stk[64];
+#endif
+
+    Node **argv;
+    int *arg_regs;
+    int *arg_sizes;
+    bool *arg_is_float;
+#ifndef _WIN32
+    int *arg_gp_idx;
+    int *arg_fp_idx;
+    int *arg_stack_idx;
+#endif
+
+    if (nargs <= 64) {
+        argv = argv_stk;
+        arg_regs = arg_regs_stk;
+        arg_sizes = arg_sizes_stk;
+        arg_is_float = arg_is_float_stk;
+#ifndef _WIN32
+        arg_gp_idx = arg_gp_idx_stk;
+        arg_fp_idx = arg_fp_idx_stk;
+        arg_stack_idx = arg_stack_idx_stk;
+#endif
+    } else {
+        argv = arena_alloc(sizeof(Node *) * nargs);
+        arg_regs = arena_alloc(sizeof(int) * nargs);
+        arg_sizes = arena_alloc(sizeof(int) * nargs);
+        arg_is_float = arena_alloc(sizeof(bool) * nargs);
+#ifndef _WIN32
+        arg_gp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_fp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_stack_idx = arena_alloc(sizeof(int) * nargs);
+#endif
+    }
+
+    int idx = 0;
+    for (Node *arg = node->args; arg; arg = arg->next)
+        argv[idx++] = arg;
 
     char *call_target = node->funcname;
     if (call_target && is_asm_reserved(call_target))
