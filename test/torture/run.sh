@@ -1,11 +1,15 @@
 #!/bin/bash
 # GCC torture test runner for rcc. Stolen from ncc.
-# Usage: ./run.sh [test.c]  — run one test
-#        ./run.sh           — run all tests
-#        ./run.sh --summary — run all and show only summary
+# Usage: ./run.sh                      — run all tests with ../../rcc
+#        ./run.sh [rcc-binary]         — run all with given rcc
+#        ./run.sh [rcc-binary] [test]  — run single test
+#        ./run.sh --summary            — run all, show only summary
+#
+# rcc-binary can be an rcc binary or a cross-compilation wrapper
+# script (e.g. ./mingw-cross.sh, ./arm64-cross.sh).
 
 cd "$(dirname "$0")" || exit
-RCC="../../rcc"
+RCC="${1:-../../rcc}"
 PASS=0
 FAIL_COMPILE=0
 FAIL_RUNTIME=0
@@ -15,10 +19,36 @@ COMPILE_ERRORS=""
 RUNTIME_ERRORS=""
 SUMMARY_ONLY=0
 
+if [ $# -gt 0 ] && [ "$1" != "--summary" ]; then
+    RCC="$1"
+    shift
+fi
 if [ "$1" = "--summary" ]; then
     SUMMARY_ONLY=1
     shift
 fi
+
+# Detect cross-compilation wrapper and set runner for test execution
+RUNNER=""
+case "$RCC" in
+    *arm64-cross*|*rcc-arm64*)
+        if command -v qemu-aarch64 >/dev/null 2>&1; then
+            for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 \
+                     /usr/aarch64-linux-gnu/sys-root; do
+                if [ -f "$p/lib/ld-linux-aarch64.so.1" ] || [ -d "$p/usr/include" ]; then
+                    RUNNER="qemu-aarch64 -L $p"
+                    break
+                fi
+            done
+            [ -z "$RUNNER" ] && RUNNER="qemu-aarch64"
+        fi
+        ;;
+    *mingw-cross*|*rcc.exe*)
+        if command -v wine >/dev/null 2>&1; then
+            RUNNER="wine"
+        fi
+        ;;
+esac
 
 run_test() {
     local src="$1"
@@ -86,11 +116,22 @@ run_test() {
     fi
 
     # Run with timeout
-    if ! perl -e 'alarm 5; exec @ARGV' -- "/tmp/torture_rcc_${name}" >/dev/null 2>&1; then
-        FAIL_RUNTIME=$((FAIL_RUNTIME+1))
-        RUNTIME_ERRORS="$RUNTIME_ERRORS $name"
-        [ $SUMMARY_ONLY -eq 0 ] && echo "FAIL(runtime): $name"
-        return
+    TIMEOUT=5
+    if [ -n "$RUNNER" ]; then
+        # shellcheck disable=SC2086
+        if ! timeout $TIMEOUT $RUNNER "/tmp/torture_rcc_${name}" >/dev/null 2>&1; then
+            FAIL_RUNTIME=$((FAIL_RUNTIME+1))
+            RUNTIME_ERRORS="$RUNTIME_ERRORS $name"
+            [ $SUMMARY_ONLY -eq 0 ] && echo "FAIL(runtime): $name"
+            return
+        fi
+    else
+        if ! timeout $TIMEOUT "/tmp/torture_rcc_${name}" >/dev/null 2>&1; then
+            FAIL_RUNTIME=$((FAIL_RUNTIME+1))
+            RUNTIME_ERRORS="$RUNTIME_ERRORS $name"
+            [ $SUMMARY_ONLY -eq 0 ] && echo "FAIL(runtime): $name"
+            return
+        fi
     fi
 
     PASS=$((PASS+1))
@@ -98,7 +139,10 @@ run_test() {
 }
 
 if [ -n "$1" ]; then
-    run_test "$1"
+    case "$1" in
+        *.c) run_test "$1" ;;
+        *)   run_test "$1.c" ;;
+    esac
 else
     for f in *.c; do
         run_test "$f"
@@ -116,4 +160,17 @@ fi
 if [ -n "$RUNTIME_ERRORS" ]; then
     echo ""
     echo "Runtime failures:$RUNTIME_ERRORS" | fold -s -w 80
+fi
+
+# shellcheck disable=SC2143
+if [ "$RCC" = "../../arm64-cross.sh" ]; then
+    [ "$PASS" -ge 800 ]
+elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+    [ "$PASS" -ge 800 ]
+elif [ "$RCC" = "../../mingw-cross.sh" ]; then
+    [ "$PASS" -ge 800 ]
+elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
+    [ "$PASS" -ge 800 ]
+else
+    [ "$PASS" -ge 823 ]
 fi
