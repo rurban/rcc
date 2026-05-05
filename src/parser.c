@@ -5045,6 +5045,14 @@ Program *parse(Token *tok) {
                             }
                             tok = skip(tok, ";");
                         }
+                        // Recalculate stack offsets with correct types
+                        stack_offset = 80;
+                        for (LVar *p = params; p; p = p->param_next) {
+                            int size = p->ty->size < 4 ? 4 : p->ty->size;
+                            int align = p->ty->align < 4 ? 4 : p->ty->align;
+                            stack_offset = align_to(stack_offset + size, align);
+                            p->offset = stack_offset;
+                        }
                         for (LVar *p = params; p; p = p->param_next) {
                             if (!p->ty)
                                 p->ty = ty_int;
