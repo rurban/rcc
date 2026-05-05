@@ -201,7 +201,9 @@ clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe rcc_prof src/sysinc_paths.h src/gcc_predefined.h \
               fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o lib/darwin.o lib/darwin$(OBJ_EXT)
 	if command -v git > /dev/null 2>&1; then \
-	  cd tinycc && git reset --hard && git clean -dxf tests/tests2; fi
+	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
+	  cd c-testsuite && git clean -dxf . && cd ..; \
+	fi
 
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
