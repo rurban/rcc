@@ -219,7 +219,7 @@ print_change() {
 }
 
 # Tests to skip – mirrors tinycc/tests/tests2/Makefile SKIP, minus TCC-internals
-# (bound-checker, backtrace, btdll, builtins are TCC-runtime-only and omitted here)
+# (bound-checker, backtrace, btdll are TCC-runtime-only and omitted here)
 #tcc-extension working: 34_array_assignment
 SKIP_TESTS="
 60_errors_and_warnings
