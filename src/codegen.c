@@ -2882,13 +2882,29 @@ static int gen(Node *node) {
         free_reg(r3);
 #else
         printf("  mov %s, %s [%s]\n", reg(r2, sz), ptr_size(sz), reg64[r]);
-        int delta = 1;
-        if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
-            delta = node->lhs->ty->base->size;
-        if (node->kind == ND_POST_INC)
-            printf("  add %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
-        else
-            printf("  sub %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
+        bool is_float = is_flonum(node->lhs->ty);
+        if (is_float) {
+            int id = add_float_literal(1.0, sz);
+            printf("  movq xmm0, %s\n", reg64[r2]);
+            if (sz == 4)
+                printf("  %s xmm0, [rip + .LF%d]\n",
+                       node->kind == ND_POST_INC ? "addss" : "subss", id);
+            else
+                printf("  %s xmm0, [rip + .LF%d]\n",
+                       node->kind == ND_POST_INC ? "addsd" : "subsd", id);
+            if (sz == 4)
+                printf("  movss dword ptr [%s], xmm0\n", reg64[r]);
+            else
+                printf("  movsd qword ptr [%s], xmm0\n", reg64[r]);
+        } else {
+            int delta = 1;
+            if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
+                delta = node->lhs->ty->base->size;
+            if (node->kind == ND_POST_INC)
+                printf("  add %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
+            else
+                printf("  sub %s [%s], %d\n", ptr_size(sz), reg64[r], delta);
+        }
 #endif
         free_reg(r);
         return r2;
