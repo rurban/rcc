@@ -619,6 +619,33 @@ static char *resolve_include(char *curr_file, char *spec) {
     return NULL;
 }
 
+// Blue-paint stack: macros currently being expanded (self-reference prevention)
+typedef struct DisabledMacro DisabledMacro;
+struct DisabledMacro {
+    DisabledMacro *next;
+    char *name;
+};
+static DisabledMacro *disabled_macros = NULL;
+
+static bool is_disabled(char *name) {
+    for (DisabledMacro *d = disabled_macros; d; d = d->next)
+        if (strcmp(d->name, name) == 0)
+            return true;
+    return false;
+}
+
+static void push_disabled(char *name) {
+    DisabledMacro *d = arena_alloc(sizeof(DisabledMacro));
+    d->name = name;
+    d->next = disabled_macros;
+    disabled_macros = d;
+}
+
+static void pop_disabled(void) {
+    if (disabled_macros)
+        disabled_macros = disabled_macros->next;
+}
+
 static char *expand_text(char *text, char *filename, unsigned line_no, int depth);
 
 static int find_param_index(Macro *m, char *name) {
@@ -893,6 +920,11 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             continue;
         }
 
+        if (is_disabled(name)) {
+            sb_puts(&sb, name);
+            continue;
+        }
+
         if (m->is_function) {
             char *q = p;
             while (isspace((unsigned char)*q))
@@ -905,13 +937,29 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             char *args[32];
             char *end = NULL;
             int argc = parse_macro_args(q + 1, args, 32, &end);
+            // Validate argument count: for non-variadic macros, argc must match param_len
+            if (!m->is_variadic && argc != m->param_len) {
+                sb_puts(&sb, name);
+                sb_putc(&sb, '(');
+                for (int i = 0; i < argc; i++) {
+                    if (i > 0) sb_putc(&sb, ',');
+                    sb_puts(&sb, args[i]);
+                }
+                sb_putc(&sb, ')');
+                p = end;
+                continue;
+            }
+            push_disabled(name);
             char *subst = substitute_macro(m, args, argc, filename, line_no, depth + 1);
             sb_puts(&sb, expand_text(subst, filename, line_no, depth + 1));
+            pop_disabled();
             p = end;
             continue;
         }
 
+        push_disabled(name);
         sb_puts(&sb, expand_text(m->body, filename, line_no, depth + 1));
+        pop_disabled();
     }
 
     if (strcmp(sb.buf, text) != 0)
