@@ -1694,7 +1694,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = is_unsigned ? ty_ulong : ty_long;
         } else if (is_int || is_signed || is_unsigned) {
             ty = is_unsigned ? ty_uint : ty_int;
-        } else if (attr_align > 0) {
+        } else {
             ty = ty_int;
             warn_tok(tok, "type defaults to int");
         }
