@@ -453,12 +453,18 @@ static void add_type_internal(Node *node) {
             } else if (node->lhs->ty->kind == TY_FUNC) {
                 node->ty = node->lhs->ty->return_ty;
             } else if (node->funcname) {
-                node->ty = ty_int;
+                LVar *gvar = find_global_name(node->funcname);
+                node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
+                    ? gvar->ty->return_ty
+                    : ty_int;
             } else {
                 node->ty = ty_int;
             }
         } else if (node->funcname) {
-            node->ty = ty_int;
+            LVar *gvar = find_global_name(node->funcname);
+            node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
+                ? gvar->ty->return_ty
+                : ty_int;
         } else {
             node->ty = ty_int;
         }

@@ -236,6 +236,7 @@ struct LVar {
 
 typedef struct Node Node;
 void add_type(Node *node);
+LVar *find_global_name(char *name);
 
 #define MAX_ASM_OPERANDS 30
 
