@@ -284,7 +284,7 @@ static LVar *find_var(Token *tok) {
     return NULL;
 }
 
-static LVar *find_global_name(char *name) {
+LVar *find_global_name(char *name) {
     for (LVar *var = globals; var; var = var->next)
         if (var->name == name)
             return var;

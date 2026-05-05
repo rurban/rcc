@@ -3306,11 +3306,36 @@ static int gen(Node *node) {
                 free_reg(src);
             } else {
                 int r = gen(node->lhs);
-                if (node->lhs->ty && is_flonum(node->lhs->ty)) {
+                Type *ret_ty = current_fn_def->ty->return_ty;
+                if (ret_ty && is_flonum(ret_ty)) {
+                    if (node->lhs->ty && is_flonum(node->lhs->ty)) {
 #ifdef ARCH_ARM64
-                    printf("  fmov d0, %s\n", reg64[r]);
+                        printf("  fmov d0, %s\n", reg64[r]);
 #else
-                    printf("  movq xmm0, %s\n", reg64[r]);
+                        printf("  movq xmm0, %s\n", reg64[r]);
+#endif
+                    } else if (ret_ty->size == 4) {
+#ifdef ARCH_ARM64
+                        printf("  scvtf s0, %s\n", reg64[r]);
+#else
+                        printf("  cvtsi2ss xmm0, %s\n", reg64[r]);
+#endif
+                    } else {
+#ifdef ARCH_ARM64
+                        printf("  scvtf d0, %s\n", reg64[r]);
+#else
+                        printf("  cvtsi2sd xmm0, %s\n", reg64[r]);
+#endif
+                    }
+                } else if (node->lhs->ty && is_flonum(node->lhs->ty)) {
+                    // Float expression returned as integer: convert from xmm0/d0
+                    int sz = ret_ty ? ret_ty->size : 8;
+#ifdef ARCH_ARM64
+                    printf("  fcvtzs %s, d0\n", reg(r, sz));
+                    printf("  mov x0, %s\n", reg(r, sz));
+#else
+                    printf("  cvttsd2si %s, xmm0\n", reg(r, sz));
+                    printf("  mov rax, %s\n", reg(r, sz));
 #endif
                 } else {
 #ifdef ARCH_ARM64
