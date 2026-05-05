@@ -85,29 +85,32 @@ static int spill_offset(int r) {
     return spill_slot[r];
 }
 #else
-// Spill slot offsets from rbp for register spilling
-#define SPILL_R10 56
-#define SPILL_R11 64
-#define SPILL_RBX 72
-#define SPILL_R12 80
-#define SPILL_R13 88
-#define SPILL_R14 96
-#define SPILL_R15 104
-#define SPILL_RSI 112
-static int SPILL_LOGAND = 120;
-static int SPILL_ATOMIC_OLD = 128;
+// Spill slot offsets from rbp for register spilling (dynamic, grows from 8)
+static int spill_slot[NUM_REGS];
+static int next_spill_slot;
+static int spill_logand, spill_atomic_old;
 #define ALL_REGS_MASK ((1 << NUM_REGS) - 1)
 
-static void init_spill_offsets(int stack_size) {
-    SPILL_LOGAND = stack_size < 80 ? stack_size - 8 : stack_size - 72;
-    SPILL_ATOMIC_OLD = stack_size < 88 ? stack_size - 16 : stack_size - 80;
+static int alloc_spill_slot(void);
+
+static void init_spill_slots(void) {
+    memset(spill_slot, 0, sizeof(spill_slot));
+    next_spill_slot = 8;
+    spill_logand = alloc_spill_slot();
+    spill_atomic_old = alloc_spill_slot();
+}
+
+static int alloc_spill_slot(void) {
+    int slot = next_spill_slot;
+    next_spill_slot += 8;
+    return slot;
 }
 
 static int spill_offset(int r) {
-    static int offsets[] = {SPILL_R10, SPILL_R11, SPILL_RBX,
-                            SPILL_R12, SPILL_R13, SPILL_R14,
-                            SPILL_R15, SPILL_RSI};
-    return offsets[r];
+    if (!spill_slot[r]) {
+        spill_slot[r] = alloc_spill_slot();
+    }
+    return spill_slot[r];
 }
 #endif
 
@@ -998,12 +1001,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     // === x86_64 (Windows + Linux) calling convention ===
     int saved_scratch = used_regs & 3;
     if ((saved_scratch & 1) && hidden_ret_reg != 0) {
-        printf("  mov [rbp-%d], r10\n", SPILL_R10);
+        printf("  mov [rbp-%d], r10\n", spill_offset(0));
         // Keep r10 marked as in-use so alloc_reg() doesn't reuse it for the
         // hidden ret buffer, which would overwrite a caller's live arg value.
     }
     if ((saved_scratch & 2) && hidden_ret_reg != 1) {
-        printf("  mov [rbp-%d], r11\n", SPILL_R11);
+        printf("  mov [rbp-%d], r11\n", spill_offset(1));
         // Same for r11.
     }
 
@@ -1200,11 +1203,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
     if ((saved_scratch & 2) && hidden_ret_reg != 1) {
         used_regs |= 2;
-        printf("  mov r11, [rbp-%d]\n", SPILL_R11);
+        printf("  mov r11, [rbp-%d]\n", spill_offset(1));
     }
     if ((saved_scratch & 1) && hidden_ret_reg != 0) {
         used_regs |= 1;
-        printf("  mov r10, [rbp-%d]\n", SPILL_R10);
+        printf("  mov r10, [rbp-%d]\n", spill_offset(0));
     }
 
     if (has_hidden_retbuf) {
@@ -3415,20 +3418,20 @@ static int gen(Node *node) {
 #else
         int lhs = gen(node->lhs);
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        printf("  mov byte ptr [rbp-%d], 0\n", SPILL_LOGAND);
+        printf("  mov byte ptr [rbp-%d], 0\n", spill_logand);
         printf("  je .L.end.%d\n", c);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
         printf("  setne al\n");
-        printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
+        printf("  mov byte ptr [rbp-%d], al\n", spill_logand);
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
 #ifdef ARCH_ARM64
 #else
         int r = alloc_reg();
-        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), spill_logand);
 #endif
         return r;
     }
@@ -3447,20 +3450,20 @@ static int gen(Node *node) {
 #else
         int lhs = gen(node->lhs);
         printf("  cmp %s, 0\n", reg(lhs, node->lhs->ty->size));
-        printf("  mov byte ptr [rbp-%d], 1\n", SPILL_LOGAND);
+        printf("  mov byte ptr [rbp-%d], 1\n", spill_logand);
         printf("  jne .L.end.%d\n", c);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         printf("  cmp %s, 0\n", reg(rhs, node->rhs->ty->size));
         printf("  setne al\n");
-        printf("  mov byte ptr [rbp-%d], al\n", SPILL_LOGAND);
+        printf("  mov byte ptr [rbp-%d], al\n", spill_logand);
 #endif
         free_reg(rhs);
         printf(".L.end.%d:\n", c);
 #ifdef ARCH_ARM64
 #else
         int r = alloc_reg();
-        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), SPILL_LOGAND);
+        printf("  movzx %s, byte ptr [rbp-%d]\n", reg(r, 4), spill_logand);
 #endif
         return r;
     }
@@ -4537,7 +4540,7 @@ static int gen(Node *node) {
             printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
                                                        : sz == 4              ? "dword"
                                                                               : "qword"),
-                   SPILL_LOGAND, reg(r_val, sz));
+                   spill_logand, reg(r_val, sz));
             printf("  mov %s, %s\n", reg(r_old, sz), reg(r_val, sz));
             free_reg(r_val);
             if (r_old == r_addr && (spilled_regs & (1 << r_addr))) {
@@ -4556,7 +4559,7 @@ static int gen(Node *node) {
                        (sz == 1 ? "byte" : sz == 2 ? "word"
                             : sz == 4              ? "dword"
                                                    : "qword"),
-                       SPILL_LOGAND);
+                       spill_logand);
             }
             if (sz < 4) {
                 if (!use_unsigned(node->ty))
@@ -4570,7 +4573,7 @@ static int gen(Node *node) {
             printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
                                                        : sz == 4              ? "dword"
                                                                               : "qword"),
-                   SPILL_LOGAND, reg(r_val, sz));
+                   spill_logand, reg(r_val, sz));
             free_reg(r_val);
             int r_new = alloc_reg();
             int lbl2 = rcc_label_count++;
@@ -4588,7 +4591,7 @@ static int gen(Node *node) {
             printf("  mov %s ptr [rbp-%d], %s\n", (sz == 1 ? "byte" : sz == 2 ? "word"
                                                        : sz == 4              ? "dword"
                                                                               : "qword"),
-                   SPILL_ATOMIC_OLD, reg(r_old, sz));
+                   spill_atomic_old, reg(r_old, sz));
             printf("  mov %s, %s\n", reg(r_new, sz), reg(r_old, sz));
             switch (op) {
             case 2:
@@ -4596,28 +4599,28 @@ static int gen(Node *node) {
                        (sz == 1 ? "byte" : sz == 2 ? "word"
                             : sz == 4              ? "dword"
                                                    : "qword"),
-                       SPILL_LOGAND);
+                       spill_logand);
                 break;
             case 3:
                 printf("  xor %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
                        (sz == 1 ? "byte" : sz == 2 ? "word"
                             : sz == 4              ? "dword"
                                                    : "qword"),
-                       SPILL_LOGAND);
+                       spill_logand);
                 break;
             case 4:
                 printf("  and %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
                        (sz == 1 ? "byte" : sz == 2 ? "word"
                             : sz == 4              ? "dword"
                                                    : "qword"),
-                       SPILL_LOGAND);
+                       spill_logand);
                 break;
             case 5:
                 printf("  and %s, %s ptr [rbp-%d]\n", reg(r_new, sz),
                        (sz == 1 ? "byte" : sz == 2 ? "word"
                             : sz == 4              ? "dword"
                                                    : "qword"),
-                       SPILL_LOGAND);
+                       spill_logand);
                 printf("  not %s\n", reg(r_new, sz));
                 break;
             }
@@ -4643,7 +4646,7 @@ static int gen(Node *node) {
                            (sz == 1 ? "byte" : sz == 2 ? "word"
                                 : sz == 4              ? "dword"
                                                        : "qword"),
-                           SPILL_ATOMIC_OLD);
+                           spill_atomic_old);
                 if (sz < 4 && !use_unsigned(node->ty))
                     sign_extend_to(r_old, sz, 4);
                 else if (sz < 4)
@@ -5649,7 +5652,9 @@ void codegen(Program *prog) {
         current_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
-        init_spill_offsets(fn->stack_size);
+#ifndef ARCH_ARM64
+        init_spill_slots();
+#endif
         fn_struct_ret_off = 0;
         fn_struct_ret_total = 0;
 
@@ -6177,9 +6182,9 @@ void codegen(Program *prog) {
         int need = fn->stack_size + fn_struct_ret_total + 32;
         if (fn->is_variadic)
             need = va_reg_save_ofs;
-        // Reserve space for register spill slots (deepest at rbp-120)
-        if (spill_count > 0 && need < 120)
-            need = 120;
+        // Reserve space for register spill slots
+        if (need < next_spill_slot)
+            need = next_spill_slot;
         int push_bytes = n_pushes * 8;
         int sub_amount = need - push_bytes;
         if (sub_amount < 32) sub_amount = 32;
@@ -6284,13 +6289,13 @@ void codegen(Program *prog) {
                 break;
             }
         if (has_cleanup)
-            printf("  mov [rbp-%d], rax\n", SPILL_R10);
+            printf("  mov [rbp-%d], rax\n", spill_offset(0));
         for (LVar *var = fn->locals; var; var = var->next) {
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
         }
         if (has_cleanup)
-            printf("  mov rax, [rbp-%d]\n", SPILL_R10);
+            printf("  mov rax, [rbp-%d]\n", spill_offset(0));
         if (fn->dealloc_vla)
             printf("  lea rsp, [rbp-%d]\n", n_pushes * 8);
         else if (fn_uses_alloca)
