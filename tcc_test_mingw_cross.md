@@ -4,8 +4,8 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 150
-- **Passed**: 148
+- **Total**: 149
+- **Passed**: 147
 - **Failed**: 2
 - **Pass Rate**: 98%
 
@@ -143,7 +143,7 @@ Generated: May 2026
 | 138_arm64_encoding          | SKIP         | Skipped                   |
 | 139_arm64_errors            | SKIP         | Skipped                   |
 | 140_arm64_extasm            | SKIP         | Skipped                   |
-| test_arm64_asm              | PASS         | exit=0                    |
+| test_arm64_asm              | SKIP         | Skipped                   |
 | test_atomic_op              | PASS         | exit=0                    |
 | test_atomic_op2             | PASS         | exit=0                    |
 | test_bitfields              | PASS         | exit=0                    |

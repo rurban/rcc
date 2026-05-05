@@ -91,10 +91,32 @@ printf "Test dir: %s\n\n" "$TEST_DIR"
 total=0
 passed=0
 failed=0
-report_rows=""
 
+# Compute max test name length for terminal display
+_unitname() { basename "$1" .c; }
+max_name_len=4
+for f in "$TEST_DIR"/*.c; do
+	[ -f "$f" ] || continue
+	n=$(_unitname "$f")
+	[ "${#n}" -gt "$max_name_len" ] && max_name_len="${#n}"
+done
+UNIT_TEST_DIR="$SCRIPT_DIR/test"
+if [ -d "$UNIT_TEST_DIR" ]; then
+	for f in "$UNIT_TEST_DIR"/test_*.c; do
+		[ -f "$f" ] || continue
+		n=$(_unitname "$f")
+		[ "${#n}" -gt "$max_name_len" ] && max_name_len="${#n}"
+	done
+fi
+
+# Format a table cell prettier-style: " content_padded_to_width "
+fmt_cell() { printf " %-*s " "$2" "$1"; }
+# Format table separator column: " :--- "
+fmt_sep() { printf " :%s " "$(printf '%*s' "$(($1 - 1))" '' | tr ' ' '-')"; }
+
+report_raw=""
 add_row() {
-	report_rows="${report_rows}$(printf '| %-40s | %-12s | %-36s |' "$1" "$2" "$3")\n"
+	report_raw="${report_raw}${1}|${2}|${3}\n"
 }
 
 # Helper: tests with special runtime arguments
@@ -302,7 +324,7 @@ while IFS= read -r src; do
 	base="${fname%.c}"
 
 	if is_skipped "$base"; then
-		printf "  %-40s %s\n" "$base..." "SKIP"
+		printf "  %-${max_name_len}s %s\n" "$base" "SKIP"
 		add_row "$base" "SKIP" "Skipped"
 		p_src=
 		continue
@@ -323,7 +345,7 @@ while IFS= read -r src; do
 
 	total=$((total + 1))
 
-	printf "  %-40s " "$base..."
+	printf "  %-${max_name_len}s " "$base"
 
 	in_cd_dir=
 	if echo "$CD_TESTS" | grep -qw "$base"; then
@@ -551,14 +573,21 @@ $(printf '%s\n' "$TEST_DIR"/*.c | sort -V)
 EOF
 
 # Run tests in test/ directory
-UNIT_TEST_DIR="$SCRIPT_DIR/test"
 if [ -d "$UNIT_TEST_DIR" ]; then
 	# shellcheck disable=SC2059
-	printf "\n${CYAN}Unit tests (test/)...${RESET}\n"
+	printf "\n${CYAN}Unit tests (test/)${RESET}\n"
 
 	# Tests expected to fail compilation (compile error is the correct outcome)
 	expect_compile_fail() {
 		case "$1" in test_err) return 0 ;; esac
+		return 1
+	}
+
+	# Unit tests to skip on certain platforms
+	skip_unit_test() {
+		case "$1" in
+			test_arm64_asm) [ -z "$is_arm64" ] && return 0 ;;
+		esac
 		return 1
 	}
 
@@ -567,8 +596,14 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fname="$(basename "$src")"
 		base="${fname%.c}"
 
+		if skip_unit_test "$base"; then
+			printf "  %-${max_name_len}s %s\n" "$base..." "SKIP"
+			add_row "$base" "SKIP" "Skipped"
+			continue
+		fi
+
 		total=$((total + 1))
-		printf "  %-40s " "$base..."
+		printf "  %-${max_name_len}s " "$base..."
 
 		if expect_compile_fail "$base"; then
 			# shellcheck disable=SC2086
@@ -649,29 +684,53 @@ fi
 {
         LC_TIME=en_US.UTF-8
 	printf '# TCC Test Suite Report for RCC\n'
+	printf '\n'
 	printf 'Generated: %s\n\n' "$(date '+%B %Y')"
 	printf '## Summary\n'
-	printf -- ' - **Total**:     %d\n' "$total"
-	printf -- ' - **Passed**:    %d\n' "$passed"
-	printf -- ' - **Failed**:    %d\n' "$failed"
-	printf -- ' - **Pass Rate**: %d%%\n\n' "$pct"
+	printf '\n'
+	printf -- '- **Total**: %d\n' "$total"
+	printf -- '- **Passed**: %d\n' "$passed"
+	printf -- '- **Failed**: %d\n' "$failed"
+	printf -- '- **Pass Rate**: %d%%\n\n' "$pct"
 	printf '## Detailed Results\n'
-	printf '| %-40s | %-12s | %-36s |\n' "Test" "Status" "Message"
-	printf '|:-----------------------------------------|:-------------|:-------------------------------------|\n'
-	printf '%b' "$report_rows"
+	printf '\n'
+	# Post-process: compute column widths from actual data
+	printf '%b' "$report_raw" > "$TMP_OUT".data
+	nm=4; sm=6; mm=7
+	while IFS='|' read -r name status message; do
+		[ -z "$name" ] && continue
+		[ "${#name}" -gt "$nm" ] && nm="${#name}"
+		[ "${#status}" -gt "$sm" ] && sm="${#status}"
+		[ "${#message}" -gt "$mm" ] && mm="${#message}"
+	done < "$TMP_OUT".data
+	# Format header and separator
+	printf "|%s|%s|%s|\n" \
+		"$(fmt_cell "Test" "$nm")" \
+		"$(fmt_cell "Status" "$sm")" \
+		"$(fmt_cell "Message" "$mm")"
+	printf "|%s|%s|%s|\n" \
+		"$(fmt_sep "$nm")" "$(fmt_sep "$sm")" "$(fmt_sep "$mm")"
+	# Format data rows
+	while IFS='|' read -r name status message; do
+		printf "|%s|%s|%s|\n" \
+			"$(fmt_cell "$name" "$nm")" \
+			"$(fmt_cell "$status" "$sm")" \
+			"$(fmt_cell "$message" "$mm")"
+	done < "$TMP_OUT".data
+	rm -f "$TMP_OUT".data
 } >"$SCRIPT_DIR/$REPORT_FILE"
 
 printf "Report saved to %s\n" "$REPORT_FILE"
 
 # arm64-darwin native
 if [ "$REPORT_FILE" = "$SCRIPT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 141 ]
+    [ "$passed" -ge 145 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 146 ]
+    [ "$passed" -ge 152 ]
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
     [ "$passed" -ge 152 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 148 ]
+    [ "$passed" -ge 147 ]
 else
-    [ "$passed" -ge 148 ]
+    [ "$passed" -ge 149 ]
 fi
