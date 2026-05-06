@@ -338,31 +338,31 @@ static void emit_alloca(void) {
 #else
     printf("\n"
            "%s:\n"
-           "  pop rdx\n"
+           "  pop rdx\n",
+           sym_name("__rcc_alloca"));
 #ifdef _WIN32
-           "  mov rax, rcx\n"
+    printf("  mov rax, rcx\n");
 #else
-           "  mov rax, rdi\n"
+    printf("  mov rax, rdi\n");
 #endif
-           "  add rax, 15\n"
+    printf("  add rax, 15\n"
            "  and rax, -16\n"
-           "  jz .Lalloca3\n"
+           "  jz .Lalloca3\n");
 #ifdef _WIN32
-           ".Lalloca1:\n"
+    printf(".Lalloca1:\n"
            "  cmp rax, 4096\n"
            "  jb .Lalloca2\n"
            "  test [rsp-4096], rax\n"
            "  sub rsp, 4096\n"
            "  sub rax, 4096\n"
-           "  jmp .Lalloca1\n"
+           "  jmp .Lalloca1\n");
 #endif
-           ".Lalloca2:\n"
+    printf(".Lalloca2:\n"
            "  sub rsp, rax\n"
            "  mov rax, rsp\n"
            ".Lalloca3:\n"
            "  push rdx\n"
-           "  ret\n",
-           sym_name("__rcc_alloca"));
+           "  ret\n");
 #endif
 }
 
@@ -1451,44 +1451,23 @@ static void sign_extend_to(int r, int from_size, int to_size) {
         return;
     if (to_size == 8) {
         if (from_size == 4)
-            printf(
 #ifdef ARCH_ARM64
-                "  sxtw %s, %s\n"
+            printf("  sxtw %s, %s\n", reg64[r], reg32[r]);
 #else
-                "  movsxd %s, %s\n"
+            printf("  movsxd %s, %s\n", reg64[r], reg32[r]);
 #endif
-                ,
-                reg64[r], reg32[r]);
         else if (from_size == 2)
-            printf(
 #ifdef ARCH_ARM64
-                "  sxth %s, %s\n"
+            printf("  sxth %s, %s\n", reg64[r], reg32[r]);
 #else
-                "  movsx %s, %s\n"
+            printf("  movsx %s, %s\n", reg64[r], reg16[r]);
 #endif
-                ,
-                reg64[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg16[r]
-#endif
-            );
         else if (from_size == 1)
-            printf(
 #ifdef ARCH_ARM64
-                "  sxtb %s, %s\n"
+            printf("  sxtb %s, %s\n", reg64[r], reg32[r]);
 #else
-                "  movsx %s, %s\n"
+            printf("  movsx %s, %s\n", reg64[r], reg8[r]);
 #endif
-                ,
-                reg64[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg8[r]
-#endif
-            );
         else
 #ifdef ARCH_ARM64
             printf("  sxtw %s, %s\n", reg64[r], reg32[r]);
@@ -1497,35 +1476,17 @@ static void sign_extend_to(int r, int from_size, int to_size) {
 #endif
     } else if (to_size == 4) {
         if (from_size == 2)
-            printf(
 #ifdef ARCH_ARM64
-                "  sxth %s, %s\n"
+            printf("  sxth %s, %s\n", reg32[r], reg32[r]);
 #else
-                "  movsx %s, %s\n"
+            printf("  movsx %s, %s\n", reg32[r], reg16[r]);
 #endif
-                ,
-                reg32[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg16[r]
-#endif
-            );
         else if (from_size == 1)
-            printf(
 #ifdef ARCH_ARM64
-                "  sxtb %s, %s\n"
+            printf("  sxtb %s, %s\n", reg32[r], reg32[r]);
 #else
-                "  movsx %s, %s\n"
+            printf("  movsx %s, %s\n", reg32[r], reg8[r]);
 #endif
-                ,
-                reg32[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg8[r]
-#endif
-            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     }
@@ -1538,68 +1499,32 @@ static void zero_extend_to(int r, int from_size, int to_size) {
         if (from_size == 4)
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
         else if (from_size == 2)
-            printf(
 #ifdef ARCH_ARM64
-                "  uxth %s, %s\n"
+            printf("  uxth %s, %s\n", reg64[r], reg32[r]);
 #else
-                "  movzx %s, %s\n"
+            printf("  movzx %s, %s\n", reg64[r], reg16[r]);
 #endif
-                ,
-                reg64[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg16[r]
-#endif
-            );
         else if (from_size == 1)
-            printf(
 #ifdef ARCH_ARM64
-                "  uxtb %s, %s\n"
+            printf("  uxtb %s, %s\n", reg64[r], reg32[r]);
 #else
-                "  movzx %s, %s\n"
+            printf("  movzx %s, %s\n", reg64[r], reg8[r]);
 #endif
-                ,
-                reg64[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg8[r]
-#endif
-            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     } else if (to_size == 4) {
         if (from_size == 2)
-            printf(
 #ifdef ARCH_ARM64
-                "  uxth %s, %s\n"
+            printf("  uxth %s, %s\n", reg32[r], reg32[r]);
 #else
-                "  movzx %s, %s\n"
+            printf("  movzx %s, %s\n", reg32[r], reg16[r]);
 #endif
-                ,
-                reg32[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg16[r]
-#endif
-            );
         else if (from_size == 1)
-            printf(
 #ifdef ARCH_ARM64
-                "  uxtb %s, %s\n"
+            printf("  uxtb %s, %s\n", reg32[r], reg32[r]);
 #else
-                "  movzx %s, %s\n"
+            printf("  movzx %s, %s\n", reg32[r], reg8[r]);
 #endif
-                ,
-                reg32[r],
-#ifdef ARCH_ARM64
-                reg32[r]
-#else
-                reg8[r]
-#endif
-            );
         else
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
     }
@@ -5610,7 +5535,12 @@ void codegen(Program *prog) {
                     continue;
                 }
             }
-            emitted_syms = realloc(emitted_syms, (emitted_count + 1) * sizeof(char *));
+            char **new_syms = realloc(emitted_syms, (emitted_count + 1) * sizeof(char *));
+            if (!new_syms) {
+                fprintf(stderr, "realloc failed\n");
+                exit(1);
+            }
+            emitted_syms = new_syms;
             emitted_syms[emitted_count++] = (char *)canon;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;

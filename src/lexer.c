@@ -24,6 +24,8 @@ void error(char *fmt, ...) {
 
 // Compute the reported line number for a location in the preprocessed source.
 static int compute_line_no(char *loc) {
+    if (!loc)
+        return 1;
     char *line = loc;
     while (current_input < line && line[-1] != '\n')
         line--;
@@ -42,6 +44,12 @@ static int compute_line_no(char *loc) {
 // Gorgeous error reporting with pointing carets.
 // TODO not-returning attribute
 static void verror_at(char *loc, int len, char *fmt, va_list ap) {
+    if (!loc) {
+        fprintf(stderr, "\033[1;31merror:\033[0m ");
+        vfprintf(stderr, fmt, ap);
+        fprintf(stderr, "\n");
+        exit(1);
+    }
     // Find line containing `loc`
     char *line = loc;
     while (current_input < line && line[-1] != '\n')
