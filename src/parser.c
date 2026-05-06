@@ -487,9 +487,11 @@ static bool is_storage_class(Token *tok) {
     return equalc(tok, "typedef") || equalc(tok, "extern") || equalc(tok, "static") ||
         equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__") ||
         equalc(tok, "register") || equalc(tok, "auto") ||
-        equalc(tok, "const") || equalc(tok, "volatile") || equalc(tok, "restrict") ||
+        equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
+        equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
+        equalc(tok, "restrict") ||
         equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
-        equalc(tok, "signed") ||
+        equalc(tok, "signed") || equalc(tok, "__signed__") ||
         equalc(tok, "unsigned") || equalc(tok, "short") || equalc(tok, "long");
 }
 
@@ -516,9 +518,9 @@ static Token *skip_attributes(Token *tok) {
 static unsigned char collect_type_quals(Token **rest, Token *tok) {
     unsigned char q = 0;
     while (true) {
-        if (equalc(tok, "const"))
+        if (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__"))
             q |= QUAL_CONST;
-        else if (equalc(tok, "volatile"))
+        else if (equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__"))
             q |= QUAL_VOLATILE;
         else if (equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__"))
             q |= QUAL_RESTRICT;
@@ -954,7 +956,10 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
         tok = tok->next;
         int len = 0;
         Node *vla_expr = NULL;
-        while (equalc(tok, "const") || equalc(tok, "volatile") || equalc(tok, "restrict") || equalc(tok, "static"))
+        while (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
+               equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
+               equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
+               equalc(tok, "static"))
             tok = tok->next;
         if (!equalc(tok, "]")) {
             if (equalc(tok, "*")) {
@@ -1534,12 +1539,12 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "const")) {
+        if (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__")) {
             quals |= QUAL_CONST;
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "volatile")) {
+        if (equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__")) {
             quals |= QUAL_VOLATILE;
             tok = tok->next;
             continue;
@@ -1567,7 +1572,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "signed")) {
+        if (equalc(tok, "signed") || equalc(tok, "__signed__")) {
             is_signed = true;
             tok = tok->next;
             continue;
@@ -1844,6 +1849,102 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
     }
 
     return false;
+}
+
+// Extract a symbol + addend from an expression tree for global initializer relocs.
+// Handles: &var, &var.member, &var[const], &(var+const)->member, &("string"[n]), etc.
+static bool extract_reloc(Node *node, char **label, int *addend) {
+    if (!node) return false;
+    char *lbl = NULL, *rbl = NULL;
+    int ladd = 0, radd = 0;
+    switch (node->kind) {
+    case ND_LVAR:
+        if (node->var && !node->var->is_local) {
+            *label = node->var->name;
+            *addend = 0;
+            return true;
+        }
+        return false;
+    case ND_STR: {
+        StrLit *s = new_str_lit(node->str, strlen(node->str) + 1, 0, 1);
+        *label = format(".LC%d", s->id);
+        *addend = 0;
+        return true;
+    }
+    case ND_NUM:
+        *label = NULL;
+        *addend = (int)node->val;
+        return true;
+    case ND_ADD:
+        if (extract_reloc(node->lhs, &lbl, &ladd) && extract_reloc(node->rhs, &rbl, &radd)) {
+            if (!rbl) {
+                *label = lbl;
+                *addend = ladd + radd;
+                return true;
+            }
+            if (!lbl) {
+                *label = rbl;
+                *addend = ladd + radd;
+                return true;
+            }
+        }
+        return false;
+    case ND_MUL: {
+        long long lv, rv;
+        if (eval_const_expr(node->lhs, &lv) && eval_const_expr(node->rhs, &rv)) {
+            *label = NULL;
+            *addend = (int)(lv * rv);
+            return true;
+        }
+        return false;
+    }
+    case ND_SUB:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_BITAND:
+    case ND_BITXOR:
+    case ND_BITOR:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_NEG:
+    case ND_NOT:
+    case ND_BITNOT: {
+        long long v;
+        if (eval_const_expr(node, &v)) {
+            *label = NULL;
+            *addend = (int)v;
+            return true;
+        }
+        return false;
+    }
+    case ND_CAST:
+        return extract_reloc(node->lhs, label, addend);
+    case ND_ADDR:
+        // &*x = x : ND_ADDR(ND_DEREF(x)) -> skip the ADDR/DEREF pair
+        if (node->lhs->kind == ND_DEREF)
+            return extract_reloc(node->lhs->lhs, label, addend);
+        // offsetof pattern &((struct S*)0)->member
+        return extract_reloc(node->lhs, label, addend);
+    case ND_DEREF:
+        return extract_reloc(node->lhs, label, addend);
+    case ND_MEMBER:
+        if (extract_reloc(node->lhs, &lbl, &ladd)) {
+            *label = lbl;
+            *addend = ladd + node->member->offset;
+            return true;
+        }
+        return false;
+    case ND_COND: {
+        long long cv;
+        if (!eval_const_expr(node->cond, &cv))
+            return false;
+        return extract_reloc(cv ? node->then : node->els, label, addend);
+    }
+    case ND_COMMA:
+        return extract_reloc(node->rhs, label, addend);
+    default:
+        return false;
+    }
 }
 
 static Token *skip_initializer(Token *tok) {
@@ -2317,11 +2418,42 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             append_reloc(var, offset, label, addend);
             return next;
         }
+        // &(compound literal) for pointer types
+        if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
+            tok = tok->next;
+            Token *compound_start = find_compound_literal_start(tok);
+            Token *t = tok;
+            while (equalc(t, "(")) t = t->next;
+            Type *compound_ty = type_name(&t, t);
+            while (equalc(t, ")")) t = t->next;
+            static int anon_count;
+            char *name = format(".Lanon.%d", anon_count++);
+            LVar *anon_var = new_var(name, compound_ty, false);
+            Token *rest_inner = NULL;
+            global_initializer(&rest_inner, compound_start, anon_var);
+            tok = rest_inner;
+            append_reloc(var, offset, name, 0);
+            return tok;
+        }
     }
 
     // Scalar
     Node *node = assign(&tok, tok);
     add_type(node);
+
+    // For pointer types, try extracting a reloc from the expression
+    if (ty->kind == TY_PTR) {
+        char *label = NULL;
+        int addend = 0;
+        if (extract_reloc(node, &label, &addend)) {
+            if (label)
+                append_reloc(var, offset, label, addend);
+            else
+                write_scalar_bytes(var, offset, ty->size, (int64_t)addend);
+            return tok;
+        }
+    }
+
     if (is_flonum(ty)) {
         double fv = 0;
         if (eval_double_const_expr(node, &fv)) {
@@ -2783,6 +2915,17 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                     cur = cur->next;
                 continue;
             }
+        }
+        // __label__ declaration for GNU C local label variables
+        if (equalc(tok, "__label__")) {
+            tok = tok->next;
+            while (tok->kind == TK_IDENT) {
+                record_label_scope(tok->name, locals);
+                tok = tok->next;
+                if (equalc(tok, ",")) tok = tok->next;
+            }
+            tok = skip(tok, ";");
+            continue;
         }
         if (is_typename(tok)) {
             // A typedef name followed by ':' is a label, not a declaration.
@@ -4875,6 +5018,20 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             *rest = tok;
             return;
         }
+        // Try parsing as expression and extracting reloc
+        Node *node = assign(&tok, tok);
+        add_type(node);
+        if (extract_reloc(node, &label, &addend)) {
+            var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+            var->init_size = var->ty->size;
+            if (label)
+                append_reloc(var, 0, label, addend);
+            else
+                var->init_val = addend;
+            *rest = tok;
+            return;
+        }
+        error_tok(tok, "unsupported global initializer");
     }
 
     if (var->ty->kind == TY_ARRAY && equalc(tok, "{")) {
