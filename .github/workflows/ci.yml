@@ -101,6 +101,7 @@ jobs:
           path: |
             bench/bench_report_darwin.md
             test/tcc_test_arm64.md
+            test/torture_report_arm64.log
             test_report_arm64.md
 
       - name: Upload Linux reports
@@ -111,6 +112,7 @@ jobs:
           path: |
             bench/bench_report_linux.md
             test/tcc_test_linux.md
+            test/torture_report_linux.log
             test_report_linux.md
 
       - name: Make dist

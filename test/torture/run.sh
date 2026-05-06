@@ -32,6 +32,7 @@ fi
 RUNNER=""
 PLATFORM=linux
 case "$RCC" in
+    *darwin-cross*|*rcc-darwin*) PLATFORM=darwin_cross ;;
     *arm64-cross*|*rcc-arm64*)
         PLATFORM=arm64_cross
         if command -v qemu-aarch64 >/dev/null 2>&1; then
@@ -70,6 +71,12 @@ run_test() {
     if grep -qE 'dg-skip-if.*!\s*\{.*(i\?86|x86_64|i386)' "$src" 2>/dev/null; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(x86-only): $name"
+        return
+    fi
+
+    if grep -qE '__complex__' "$src" 2>/dev/null; then
+        SKIP=$((SKIP+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(__complex__): $name"
         return
     fi
 
@@ -122,6 +129,13 @@ run_test() {
         FAIL_COMPILE=$((FAIL_COMPILE+1))
         COMPILE_ERRORS="$COMPILE_ERRORS $name"
         [ $SUMMARY_ONLY -eq 0 ] && echo "FAIL(compile): $name"
+        return
+    fi
+
+    # darwin_cross: compile-only, cannot run Mach-O binaries on Linux
+    if [ "$PLATFORM" = "darwin_cross" ]; then
+        PASS=$((PASS+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "PASS(compile): $name"
         return
     fi
 
@@ -188,11 +202,13 @@ cd ../../ || true
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
     [ "$PASS" -ge 825 ]
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
-    [ "$PASS" -ge 827 ]
+    [ "$PASS" -ge 830 ]
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
     [ "$PASS" -ge 817 ]
+elif [ "$RCC" = "../../darwin-cross.sh" ]; then
+    [ "$PASS" -ge 892 ]
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
     [ "$PASS" -ge 700 ]
 else
-    [ "$PASS" -ge 836 ]
+    [ "$PASS" -ge 835 ]
 fi

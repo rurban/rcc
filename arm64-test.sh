@@ -36,6 +36,6 @@ if [ -n "${1:-}" ]; then
     rm -f "$TMP_OUT" "$TMP_EXE"
 else
     ./run_tcc_suite.sh ./rcc-arm64
-    test/torture/run.sh ../../arm64-cross.sh
+    test/torture/capture.sh ../../arm64-cross.sh
     ./gen-test-report.sh arm64_cross
 fi

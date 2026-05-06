@@ -12,12 +12,12 @@ repos:
       - id: check-yaml # checks yaml files for parseable syntax.
       - id: detect-private-key # detects the presence of private keys.
       - id: end-of-file-fixer # ensures that a file is either empty, or ends with one newline.
-        exclude: tinycc/|\.expect|test_report_linux\.md
+        exclude: tinycc/|\.expect|test_report_linux\.md|test/
       - id: fix-byte-order-marker # removes utf-8 byte order marker.
       - id: mixed-line-ending # replaces or checks mixed line ending.
       - id: requirements-txt-fixer # sorts entries in requirements.txt.
       - id: trailing-whitespace # trims trailing whitespace.
-        exclude: tinycc/|\.expect
+        exclude: tinycc/|\.expect|test/
       - id: check-executables-have-shebangs
       - id: check-symlinks
       - id: destroyed-symlinks

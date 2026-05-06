@@ -178,19 +178,22 @@ How it works:
 - Tests: `01_type_sizes.c` through `15_long_double_conv.c` (15 compliance tests)
 - Writes `test-compliance-<platform>.summary` for the unified report
 
-3d. `test/torture/run.sh` — GCC Torture Tests
+3d. `test/torture/capture.sh` / `test/torture/run.sh` — GCC Torture Tests
 
-File: `test/torture/run.sh` (199 lines)
+File: `test/torture/run.sh` (212 lines)
+Wrapper: `test/torture/capture.sh`
 
 How it works:
 
 - Runs ~1000 GCC torture test files from `test/torture/*.c`
 - Takes optional rcc binary as first argument (for cross-compilation testing)
 - Detects cross-compilation wrapper, sets `PLATFORM` and runner:
+  - `darwin_cross`: compile-only (Mach-O cannot run on Linux), no runner
   - `arm64_cross`: `qemu-aarch64` for arm64 cross
   - `mingw_cross`: `wine` for mingw cross
   - Native: auto-detected from `uname`
 - Skips tests with:
+  - `__complex__` (not implemented)
   - `dg-skip-if` x86-only (x87 FPU, MMX, SSE)
   - `dg-require-effective-target trampolines` (macOS W^X)
   - `scalar_storage_order` attribute (GCC-only)
@@ -199,9 +202,12 @@ How it works:
   - Nested functions / statement expressions
   - Missing include files (infrastructure, not compiler bugs)
 - Compiles with rcc and `-lm`, then runs binary with 5-second timeout
+- `darwin_cross`: compile-only — compile success counts as `PASS(compile)`
 - Classifies failures as `FAIL_COMPILE` or `FAIL_RUNTIME`
 - Summary: `=== TOTAL=N PASS=N FAIL_COMPILE=N FAIL_RUNTIME=N SKIP=N ===`
 - Writes `test-torture-<PLATFORM>.summary` for the unified report
+- `capture.sh` wrapper: runs `run.sh`, reads PLATFORM from summary file, saves
+  stdout to `test/torture_report_<PLATFORM>.log`
 - Exit code: >= platform specific pass threshold
 
 ---
@@ -222,14 +228,14 @@ make -s CC=x86_64-w64-mingw32-gcc
 WINE_DISABLE_RANDR=1
 export WINE_DISABLE_RANDR
 ./run_tcc_suite.sh
-test/torture/run.sh ../../mingw-cross.sh
+test/torture/capture.sh ../../mingw-cross.sh
 ./gen-test-report.sh mingw_cross
 ```
 
 - Cleans and rebuilds rcc with the mingw cross-compiler (`x86_64-w64-mingw32-gcc`)
 - Produces `rcc.exe` (Windows PE binary)
 - Runs `run_tcc_suite.sh`, which auto-detects `rcc.exe` and uses `mingw-cross.sh` wrapper
-- Runs torture tests via `mingw-cross.sh`
+- Runs torture tests via `capture.sh` (wraps `run.sh` with `mingw-cross.sh`)
 - Generates `test_report_mingw_cross.md` via EXIT trap (always, even on failure)
 
 4b. `arm64-test.sh`
@@ -246,7 +252,7 @@ make -s CC=aarch64-linux-gnu-gcc
 ```
 
 - Builds `rcc-arm64` with the aarch64 cross-compiler
-- If no test name given: runs `run_tcc_suite.sh ./rcc-arm64` and then `test/torture/run.sh ../../arm64-cross.sh`
+- If no test name given: runs `run_tcc_suite.sh ./rcc-arm64` and then `test/torture/capture.sh ../../arm64-cross.sh`
 - If single test name given: compiles that one test and compares output directly
 - Generates `test_report_arm64_cross.md` via EXIT trap
 
@@ -264,10 +270,12 @@ make -s clean
 make -s CC=gcc CFLAGS="-std=c11 -Wall -Wextra -O2 -g -D__APPLE__ -DARCH_ARM64" \
     TARGET=rcc-darwin OBJ_EXT=.darwin.o
 ./run_tcc_suite.sh ./rcc-darwin
+test/torture/capture.sh ../../darwin-cross.sh
 ```
 
 - Compiles `rcc-darwin` with `-D__APPLE__ -DARCH_ARM64` (host binary, Darwin-targeted codegen)
 - Runs the TCC test suite via `darwin-cross.sh` (compile+link only, no execution)
+- Runs torture tests via `capture.sh` (compile-only via `darwin_cross` platform)
 - Generates `test_report_darwin_cross.md` via EXIT trap
 
 Cross-Compilation Wrappers:
@@ -440,19 +448,24 @@ make check
 make test-full
   └─ make clean && make
      make check (as above)
-     test/torture/run.sh                     → test-torture-linux.summary
+     test/torture/capture.sh                 → test-torture-linux.summary
+                                                test/torture_report_linux.log
      ./gen-test-report.sh linux              → test_report_linux.md (updated)
      ./mingw-test.sh                         → test/tcc_test_mingw_cross.md
-                                               test-tcc-mingw_cross.summary
-                                               test-torture-mingw_cross.summary
-                                            → test_report_mingw_cross.md
+                                                test-tcc-mingw_cross.summary
+                                                test-torture-mingw_cross.summary
+                                                test/torture_report_mingw_cross.log
+                                             → test_report_mingw_cross.md
      ./arm64-test.sh                         → test/tcc_test_arm64_cross.md
-                                               test-tcc-arm64_cross.summary
-                                               test-torture-arm64_cross.summary
-                                            → test_report_arm64_cross.md
+                                                test-tcc-arm64_cross.summary
+                                                test-torture-arm64_cross.summary
+                                                test/torture_report_arm64_cross.log
+                                             → test_report_arm64_cross.md
      ./darwin-test.sh                        → test/tcc_test_darwin_cross.md
-                                               test-tcc-darwin_cross.summary
-                                            → test_report_darwin_cross.md
+                                                test-tcc-darwin_cross.summary
+                                                test-torture-darwin_cross.summary
+                                                test/torture_report_darwin_cross.log
+                                             → test_report_darwin_cross.md
 ```
 
 The full test infrastructure provides **4 different test suites** across

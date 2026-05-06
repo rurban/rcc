@@ -143,7 +143,7 @@ test check: $(TARGET)
 	@$(TEST_RUNNER)
 
 test-torture: $(TARGET)
-	test/torture/run.sh
+	test/torture/capture.sh
 	./gen-test-report.sh
 
 test-full: $(TARGET)
