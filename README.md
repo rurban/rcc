@@ -143,10 +143,10 @@ This fork passes now:
 - [152/152 tests](tcc_test_arm64_cross.md) on arm64-cross (ELF)
 - [152/152 tests](tcc_test_darwin_cross.md) on darwin-cross (Mach-O, compile+link only)
 - [145/152 tests](tcc_test_arm64.md) on arm64-darwin native
-- [109/111 tests](tcc_test_mingw.md) on windows native via powershell testing
+- [108/111 tests](tcc_test_mingw.md) on windows native via powershell testing
 - The c-testsuite pass 220/220 tests on all platforms.
-- The gcc-torture tests pass 220/220 tests on linux.
-- The ncc/compliance tests pass 752/995 tests on linux.
+- The gcc-torture tests pass 823/995 tests on linux.
+- The ncc/compliance tests pass 15/15 tests on linux.
 
 ## License
 
