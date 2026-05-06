@@ -1801,6 +1801,9 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         return true;
     }
 
+    while (is_cast(tok))
+        parse_cast_type(&tok, tok);
+
     if (equalc(tok, "&"))
         tok = tok->next;
 

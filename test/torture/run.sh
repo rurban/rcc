@@ -186,13 +186,13 @@ cd ../../ || true
 
 # shellcheck disable=SC2143
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
-    [ "$PASS" -ge 822 ]
+    [ "$PASS" -ge 825 ]
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
     [ "$PASS" -ge 827 ]
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
-    [ "$PASS" -ge 814 ]
+    [ "$PASS" -ge 817 ]
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
     [ "$PASS" -ge 700 ]
 else
-    [ "$PASS" -ge 833 ]
+    [ "$PASS" -ge 836 ]
 fi

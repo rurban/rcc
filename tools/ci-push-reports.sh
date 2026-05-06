@@ -63,8 +63,8 @@ for f in $files; do
 done
 
 echo "Staging downloaded report files..."
-git add bench/bench_report_mingw.md tcc_test_mingw.md 2>/dev/null || true
-git add bench/bench_report_darwin.md tcc_test_arm64.md 2>/dev/null || true
+git add bench/bench_report_mingw.md test/tcc_test_mingw.md test_report_mingw.md 2>/dev/null || true
+git add bench/bench_report_darwin.md test/tcc_test_arm64.md test_report_arm64.md 2>/dev/null || true
 rm -rf macos-reports windows-reports || true
 
 if git diff --cached --quiet; then
