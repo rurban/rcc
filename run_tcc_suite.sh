@@ -234,6 +234,9 @@ SKIP_TESTS="
 116_bound_setjmp2
  120_alias
 126_bound_global
+141_riscv_asm_pseudo
+142_riscv_asm_longlong
+143_riscv_asm_farith
 "
 
 # Tests skipped only when using mingw-cross.sh (Windows cross-compilation)

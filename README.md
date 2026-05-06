@@ -138,8 +138,8 @@ The original windows repo is now at https://github.com/DocDamage/realtime-c-comp
 
 This fork passes now:
 
-- [150/150 tests](tcc_test_linux.md) on linux (x86-64)
-- [148/150 tests](tcc_test_mingw_cross.md) on mingw-cross (x86-64)
+- [152/152 tests](tcc_test_linux.md) on linux (x86-64)
+- [151/152 tests](tcc_test_mingw_cross.md) on mingw-cross (x86-64)
 - [152/152 tests](tcc_test_arm64_cross.md) on arm64-cross (ELF)
 - [152/152 tests](tcc_test_darwin_cross.md) on darwin-cross (Mach-O, compile+link only)
 - [145/152 tests](tcc_test_arm64.md) on arm64-darwin native
