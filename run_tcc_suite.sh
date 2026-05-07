@@ -754,7 +754,7 @@ elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
     [ "$passed" -ge 155 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 149 ]
+    [ "$passed" -ge 151 ]
 else
     [ "$passed" -ge 152 ]
 fi

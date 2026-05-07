@@ -3857,6 +3857,31 @@ static int gen(Node *node) {
                 }
                 return -1;
             }
+            // if(0) with labels: skip dead non-label nodes before the
+            // first label (Duff device pattern where labels are reachable
+            // via switch/goto).  Plain if(1) with labels falls through.
+            if (!node->cond->val) {
+                // Find outermost block body
+                Node *list = node->then;
+                while (list && list->kind == ND_BLOCK && list->body &&
+                       list->body->kind == ND_BLOCK && !list->body->next)
+                    list = list->body;
+                if (list && list->kind == ND_BLOCK)
+                    list = list->body;
+                // Skip to first label/case
+                Node *n = list;
+                while (n && n->kind != ND_LABEL && n->kind != ND_CASE && n->kind != ND_LABEL_VAL)
+                    n = n->next;
+                // If the first label is a case (Duff), skip dead code before it.
+                // Otherwise generate full body to preserve goto labels.
+                if (n && n->kind == ND_CASE) {
+                    for (; n; n = n->next) {
+                        int r = gen(n);
+                        if (r != -1) free_reg(r);
+                    }
+                    return -1;
+                }
+            }
         }
         int c = ++rcc_label_count;
         char end_label[32], else_label[32];
