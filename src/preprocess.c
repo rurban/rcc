@@ -925,6 +925,23 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             }
         }
 
+        // Numeric suffix (F/f/L/l/U/u etc.) immediately following a digit or dot
+        // must not be expanded as a macro.  E.g. 0.0F with #define F 140.
+        if (start > text && (isdigit((unsigned char)start[-1]) || start[-1] == '.')) {
+            bool is_suffix = true;
+            for (char *s = name; *s; s++) {
+                char c = *s;
+                if (c != 'F' && c != 'f' && c != 'L' && c != 'l' && c != 'U' && c != 'u') {
+                    is_suffix = false;
+                    break;
+                }
+            }
+            if (is_suffix) {
+                sb_puts(&sb, name);
+                continue;
+            }
+        }
+
         Macro *m = find_macro(name);
         if (!m) {
             sb_puts(&sb, name);
