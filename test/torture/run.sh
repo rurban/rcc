@@ -102,20 +102,11 @@ run_test() {
         return
     fi
 
-    # GCC-specific ULL bitfield arithmetic truncation (clang also fails these)
-    if grep -qE 'unsigned long long.*:[[:space:]]*[3-9][0-9]' "$src" 2>/dev/null; then
-        SKIP=$((SKIP+1))
-        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(gcc-ull-bitfield): $name"
-        return
-    fi
-
     # Nested functions / statement expressions (not implemented)
-    if grep -qE '\{\(\{' "$src" 2>/dev/null || grep -qE 'dg-require-effective-target nested' "$src" 2>/dev/null; then
-        SKIP=$((SKIP+1))
-        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(nested-func): $name"
-        return
-    fi
-    if [ "$name" = "20061220-1" ] || [ "$name" = "nest-align-1" ] || [ "$name" = "920415-1" ]; then
+    if grep -qE 'dg-require-effective-target nested' "$src" 2>/dev/null || \
+       [ "$name" = "20061220-1" ] || \
+       [ "$name" = "nest-align-1" ] || \
+       [ "$name" = "920415-1" ]; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(nested-func): $name"
         return
@@ -213,15 +204,15 @@ cd ../../ || true
 
 # shellcheck disable=SC2143
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
-    [ "$PASS" -ge 858 ]
+    [ "$PASS" -ge 864 ]
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
-    [ "$PASS" -ge 857 ]
+    [ "$PASS" -ge 861 ]
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
     [ "$PASS" -ge 855 ]
 elif [ "$RCC" = "../../darwin-cross.sh" ]; then
-    [ "$PASS" -ge 900 ]
+    [ "$PASS" -ge 906 ]
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
     [ "$PASS" -ge 700 ]
 else
-    [ "$PASS" -ge 880 ]
+    [ "$PASS" -ge 875 ]
 fi

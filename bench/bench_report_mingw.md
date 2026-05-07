@@ -1,21 +1,20 @@
 # Windows RCC Benchmark Results
 
-_Generated: 05/07/2026 15:08:18_
+_Generated: 05/07/2026 16:34:15_
 
 | Compiler              | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------------------- | -----------: | -----------: | ---------: |
-| RCC (your compiler)   |         2920 |          549 |       3469 |
-| RCC -O1 (optimized)   |         1258 |          544 |       1802 |
-| TCC (Tiny C Compiler) |         1270 |          428 |       1698 |
-| GCC -O0 (no opt)      |         1248 |          420 |       1668 |
-| GCC -O2 (optimized)   |         1251 |          117 |       1368 |
-| CLANG -O2 (optimized) |         1265 |          169 |       1434 |
+| RCC (your compiler)   |         6988 |          613 |       7601 |
+| RCC -O1 (optimized)   |         1267 |          608 |       1875 |
+| TCC (Tiny C Compiler) |         1266 |          499 |       1765 |
+| GCC -O0 (no opt)      |         2270 |          466 |       2736 |
+| GCC -O2 (optimized)   |         2264 |          119 |       2383 |
 
 ## Windows RCC vs TCC Head-to-Head
 
-- Compile speed : RCC/TCC = 2.3x
-- Execute speed : RCC/TCC = 1.28x
-- Total : RCC/TCC = 2.04x
+- Compile speed : RCC/TCC = 5.52x
+- Execute speed : RCC/TCC = 1.23x
+- Total : RCC/TCC = 4.31x
 
 ## Output Correctness
 
@@ -24,4 +23,3 @@ _Generated: 05/07/2026 15:08:18_
 - TCC (Tiny C Compiler): OK
 - GCC -O0 (no opt): OK
 - GCC -O2 (optimized): OK
-- CLANG -O2 (optimized): OK
