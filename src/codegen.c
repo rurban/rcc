@@ -3583,6 +3583,9 @@ static int gen(Node *node) {
                     printf("  mov x0, %s\n", reg64[r]);
 #else
                     printf("  mov rax, %s\n", reg64[r]);
+                    // Truncate return value to match function return type width
+                    if (ret_ty && ret_ty->size < 4 && ret_ty->is_unsigned)
+                        printf("  and eax, %d\n", (1 << (ret_ty->size * 8)) - 1);
 #endif
                 }
                 free_reg(r);
