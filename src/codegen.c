@@ -3865,7 +3865,7 @@ static int gen(Node *node) {
                     printf("  mov x0, %s\n", reg(r, sz));
 #else
                     printf("  cvttsd2si %%xmm0, %s\n", reg(r, sz));
-                    printf("  movq %s, %%rax\n", reg(r, sz));
+                    printf("  movq %s, %%rax\n", reg64[r]); // upper 32 bits zero-extended by cvttsd2si
 #endif
                 } else {
 #ifdef ARCH_ARM64

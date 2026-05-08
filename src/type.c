@@ -63,7 +63,7 @@ Type *pointer_to(Type *base) {
     return ty;
 }
 
-Type *array_of(Type *base, int len) {
+Type *array_of(Type *base, int64_t len) {
     Type *ty = arena_alloc(sizeof(Type));
     ty->kind = TY_ARRAY;
     ty->size = base->size * len;

@@ -694,8 +694,7 @@ static char *paste_tokens(char *s) {
     return sb.buf;
 }
 
-static char *substitute_macro(Macro *m, char **args, int argc, char *filename,
-                              unsigned line_no, int depth) {
+static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc) {
     StrBuf sb;
     sb_init(&sb, strlen(m->body) * 8 + 256);
 
@@ -766,7 +765,8 @@ static char *substitute_macro(Macro *m, char **args, int argc, char *filename,
                 char *name = pp_strndup(start, p - start);
                 int idx = find_param_index(m, name);
                 if (idx >= 0 && idx < argc) {
-                    sb_puts(&sb, quote_string(args[idx]));
+                    // # stringification uses unexpanded (raw) argument
+                    sb_puts(&sb, quote_string(raw_args ? raw_args[idx] : args[idx]));
                     continue;
                 }
                 sb_putc(&sb, '#');
@@ -792,7 +792,8 @@ static char *substitute_macro(Macro *m, char **args, int argc, char *filename,
             }
             int idx = find_param_index(m, name);
             if (idx >= 0 && idx < argc) {
-                sb_puts(&sb, expand_text(args[idx], filename, line_no, depth + 1));
+                // args[] are pre-expanded; emit directly
+                sb_puts(&sb, args[idx]);
                 continue;
             }
             sb_puts(&sb, name);
@@ -978,8 +979,14 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
                 p = end;
                 continue;
             }
+            // C11 6.10.3.1: pre-expand arguments before substitution.
+            // Keep raw (unexpanded) args for # stringification.
+            char *raw_args[32];
+            for (int i = 0; i < argc; i++) raw_args[i] = args[i];
+            for (int i = 0; i < argc; i++)
+                args[i] = expand_text(args[i], filename, line_no, depth + 1);
             push_disabled(m);
-            char *subst = substitute_macro(m, args, argc, filename, line_no, depth);
+            char *subst = substitute_macro(m, args, raw_args, argc);
             sb_puts(&sb, expand_text(subst, filename, line_no, depth + 1));
             pop_disabled(m);
             p = end;

@@ -142,7 +142,7 @@ struct Member {
 
 struct Type {
     TypeKind kind;
-    int size; // sizeof
+    int64_t size; // sizeof
     int align; // alignment
     bool is_unsigned;
     bool is_enum; // enum type — treated as unsigned for bitfield extraction
@@ -204,7 +204,7 @@ bool is_flonum(Type *ty);
 bool is_number(Type *ty);
 Type *get_integer_type(int size, bool is_unsigned);
 Type *pointer_to(Type *base);
-Type *array_of(Type *base, int len);
+Type *array_of(Type *base, int64_t len);
 
 typedef struct Reloc Reloc;
 struct Reloc {

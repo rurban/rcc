@@ -109,7 +109,7 @@ static Token *skip(Token *tok, char *op) {
     return tok->next;
 }
 
-static int align_to(int n, int align) {
+static int64_t align_to(int64_t n, int64_t align) {
     return (n + align - 1) & ~(align - 1);
 }
 
@@ -989,12 +989,12 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
 }
 
 static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
-    int dims[16];
+    int64_t dims[16];
     Node *vla_exprs[16] = {0};
     int ndims = 0;
     while (equalc(tok, "[")) {
         tok = tok->next;
-        int len = 0;
+        int64_t len = 0;
         Node *vla_expr = NULL;
         while (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
                equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
@@ -1008,7 +1008,7 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
                 Node *node = expr(&tok, tok);
                 long long val = 0;
                 if (eval_const_expr(node, &val)) {
-                    len = (int)val;
+                    len = val;
                 } else {
                     len = -1;
                     vla_expr = node;
@@ -1228,8 +1228,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     tok = tok->next;
     Member head = {};
     Member *cur = &head;
-    int offset = 0;
-    int max_size = 0;
+    int64_t offset = 0;
+    int64_t max_size = 0;
     int max_align = 1;
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
     int struct_pack = pack_align; // capture #pragma pack value at struct start
