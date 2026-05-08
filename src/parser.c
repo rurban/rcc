@@ -42,6 +42,8 @@ static bool pending_destructor;
 static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static char *pending_asm_name;
 static char *pending_alias_target;
+// VLA-containing struct: emit size-capture code before the next statement
+static Node *pending_vla_struct_capture;
 
 static StrLit *str_lits;
 static int str_lit_counter;
@@ -1504,6 +1506,32 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                         a = struct_pack;
                     offset = align_to(offset, a);
                     mem->offset = offset;
+                    if (mem_ty->kind == TY_VLA && mem_ty->vla_len_expr) {
+                        // VLA struct member: capture size into a hidden lvar now
+                        // (before any n++ can change the VLA dimension variable).
+                        // struct size = fixed_prefix + len * base_size
+                        Node *base_sz_n = new_num(mem_ty->base->size, tok);
+                        add_type(base_sz_n);
+                        Node *vla_sz = new_binary(ND_MUL, mem_ty->vla_len_expr, base_sz_n, tok);
+                        add_type(vla_sz);
+                        Node *full_sz;
+                        if (offset > 0) {
+                            Node *off_n = new_num(offset, tok);
+                            add_type(off_n);
+                            full_sz = new_binary(ND_ADD, off_n, vla_sz, tok);
+                            add_type(full_sz);
+                        } else {
+                            full_sz = vla_sz;
+                        }
+                        // Create hidden lvar to freeze the size at struct definition time
+                        LVar *cap = new_var("", ty_long, true);
+                        Node *cap_node = new_var_node(cap, tok);
+                        Node *assign = new_binary(ND_ASSIGN, cap_node, full_sz, tok);
+                        add_type(assign);
+                        pending_vla_struct_capture = new_unary(ND_EXPR_STMT, assign, tok);
+                        // sizeof(struct s) now reads from the frozen capture variable
+                        ty->vla_len_expr = new_var_node(cap, tok);
+                    }
                     offset += mem_ty->size;
                     bit_pos = offset * 8;
                     ms_prev_kind = TY_FUNC;
@@ -3000,6 +3028,11 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             cur->next = declaration(&tok, tok);
             while (cur->next)
                 cur = cur->next;
+            // Emit VLA-struct size capture before any subsequent n++ can change it
+            if (pending_vla_struct_capture) {
+                cur = cur->next = pending_vla_struct_capture;
+                pending_vla_struct_capture = NULL;
+            }
             continue;
         }
         cur = cur->next = stmt(&tok, tok);
@@ -4508,6 +4541,11 @@ static Node *unary(Token **rest, Token *tok) {
                 add_type(result);
                 return result;
             }
+            // VLA-containing struct: vla_len_expr holds the full runtime size expr
+            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->vla_len_expr) {
+                add_type(ty->vla_len_expr);
+                return ty->vla_len_expr;
+            }
             return new_num(ty->size, tok);
         }
         Node *node = unary(&tok, tok->next);
@@ -4520,6 +4558,10 @@ static Node *unary(Token **rest, Token *tok) {
             Node *result = new_binary(ND_MUL, len, base_sz, tok);
             add_type(result);
             return result;
+        }
+        if ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->vla_len_expr) {
+            add_type(node->ty->vla_len_expr);
+            return node->ty->vla_len_expr;
         }
         return new_num(node->ty->size, tok);
     }
