@@ -139,12 +139,15 @@ done
         write_section TCC "TCC Compatibility Tests"
     fi
     if [ "$has_ctest" -eq 1 ]; then
+        printf '\n'
         write_section CTEST "c-testsuite"
     fi
     if [ "$has_compliance" -eq 1 ]; then
+        printf '\n'
         write_section COMPLIANCE "Compliance Tests (vs GCC)"
     fi
     if [ "$has_torture" -eq 1 ]; then
+        printf '\n'
         write_section TORTURE "GCC Torture Tests" FAIL_COMPILE FAIL_RUNTIME
     fi
 } > "$REPORT"

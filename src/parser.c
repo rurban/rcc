@@ -38,6 +38,7 @@ static char *pending_cleanup_func;
 static Token *pending_cleanup_tok;
 static bool pending_constructor;
 static bool pending_destructor;
+static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static char *pending_asm_name;
 static char *pending_alias_target;
 
@@ -729,6 +730,25 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "mode") || equalc(tok, "__mode__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    if (tok->kind == TK_IDENT) {
+                        if (equalc(tok, "QI")) pending_mode = 1;
+                        else if (equalc(tok, "HI"))
+                            pending_mode = 2;
+                        else if (equalc(tok, "SI"))
+                            pending_mode = 3;
+                        else if (equalc(tok, "DI"))
+                            pending_mode = 4;
+                        tok = tok->next;
+                    }
+                    tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "(")) {
                     tok = skip_balanced(tok);
                 } else {
@@ -1011,6 +1031,13 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
 static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     int decl_align = 0;
     tok = read_type_attrs(tok, &decl_align, NULL);
+    if (pending_mode) {
+        ty = copy_type(ty);
+        int sizes[] = {0, 1, 2, 4, 8};
+        ty->size = sizes[pending_mode];
+        ty->align = ty->size;
+        pending_mode = 0;
+    }
     while (equalc(tok, "*")) {
         ty = pointer_to(ty);
         tok = tok->next;

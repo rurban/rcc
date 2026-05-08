@@ -456,7 +456,8 @@ static void add_type_internal(Node *node) {
                 LVar *gvar = find_global_name(node->funcname);
                 node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                     ? gvar->ty->return_ty
-                    : ty_int;
+                    : (strcmp(node->funcname, "alloca") == 0) ? pointer_to(ty_void)
+                                                              : ty_int;
             } else {
                 node->ty = ty_int;
             }
@@ -464,7 +465,8 @@ static void add_type_internal(Node *node) {
             LVar *gvar = find_global_name(node->funcname);
             node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                 ? gvar->ty->return_ty
-                : ty_int;
+                : (strcmp(node->funcname, "alloca") == 0) ? pointer_to(ty_void)
+                                                          : ty_int;
         } else {
             node->ty = ty_int;
         }

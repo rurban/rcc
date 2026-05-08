@@ -3800,7 +3800,7 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
                         printf("  scvtf s0, %s\n", reg64[r]);
 #else
-                        printf("  cvtsi2ss xmm0, %s\n", reg64[r]);
+                        printf("  cvtsi2ss %s, %%xmm0\n", reg64[r]);
 #endif
                     } else {
 #ifdef ARCH_ARM64
@@ -3816,7 +3816,7 @@ static int gen(Node *node) {
                     printf("  fcvtzs %s, d0\n", reg(r, sz));
                     printf("  mov x0, %s\n", reg(r, sz));
 #else
-                    printf("  cvttsd2si %s, xmm0\n", reg(r, sz));
+                    printf("  cvttsd2si %%xmm0, %s\n", reg(r, sz));
                     printf("  movq %s, %%rax\n", reg(r, sz));
 #endif
                 } else {
