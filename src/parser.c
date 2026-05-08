@@ -13,6 +13,7 @@ struct VarAttr {
     bool is_inline;
     bool is_weak;
     bool has_type;
+    bool is_packed;
     unsigned char bitfield_mode;
 };
 
@@ -687,6 +688,19 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "packed") || equalc(tok, "__packed__")) {
+                    if (attr)
+                        attr->is_packed = true;
+                    // Also set align=1 so member-level packed attr takes effect
+                    maybe_update_align(align, 1);
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "constructor") || equalc(tok, "__constructor__")) {
                     pending_constructor = true;
                     tok = tok->next;
@@ -1219,6 +1233,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int max_align = 1;
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
     int struct_pack = pack_align; // capture #pragma pack value at struct start
+    if (struct_attr.is_packed && struct_pack == 0) struct_pack = 1;
     bool use_ms_bitfields = false;
     if (!is_union) {
         if (ty->bitfield_mode == BF_MODE_MS)
@@ -4989,30 +5004,58 @@ static Node *conditional(Token **rest, Token *tok) {
     return node;
 }
 
+// Compound assignment: a op= b → (tmp=&a, *tmp = *tmp op b)
+// Evaluates the LHS exactly once, preventing double side-effects like a[i++] |= 1.
+// Falls back to ASSIGN(lhs, OP(lhs, rhs)) for bitfields (can't take address of bitfield).
+static Node *to_assign(Node *binary) {
+    add_type(binary->lhs);
+    Token *tok = binary->tok;
+    Node *lhs = binary->lhs;
+    // Bitfields can't be addressed; the old ASSIGN(lhs, OP(lhs, rhs)) is safe
+    // because bitfield member access has no side effects in the lhs path.
+    if (lhs->kind == ND_MEMBER && lhs->member && lhs->member->bit_width > 0)
+        return new_binary(ND_ASSIGN, lhs, new_binary(binary->kind, lhs, binary->rhs, tok), tok);
+    Type *lhs_ty = lhs->ty;
+    if (lhs_ty->kind == TY_ARRAY || lhs_ty->kind == TY_VLA)
+        lhs_ty = pointer_to(lhs_ty->base);
+    LVar *var = new_var("", pointer_to(lhs_ty), true);
+    Node *addr_lhs = new_unary(ND_ADDR, lhs, tok);
+    addr_lhs->ty = pointer_to(lhs_ty);
+    Node *expr1 = new_binary(ND_ASSIGN, new_var_node(var, tok), addr_lhs, tok);
+    expr1->ty = var->ty;
+    Node *deref_r = new_unary(ND_DEREF, new_var_node(var, tok), tok);
+    deref_r->ty = lhs_ty;
+    Node *deref_w = new_unary(ND_DEREF, new_var_node(var, tok), tok);
+    deref_w->ty = lhs_ty;
+    Node *op = new_binary(binary->kind, deref_r, binary->rhs, tok);
+    Node *expr2 = new_binary(ND_ASSIGN, deref_w, op, tok);
+    return new_binary(ND_COMMA, expr1, expr2, tok);
+}
+
 static Node *assign(Token **rest, Token *tok) {
     Node *node = conditional(&tok, tok);
     if (equalc(tok, "="))
         node = new_binary(ND_ASSIGN, node, assign(&tok, tok->next), tok);
     else if (equalc(tok, "+="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_ADD, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_ADD, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "-="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_SUB, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_SUB, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "*="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_MUL, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_MUL, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "/="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_DIV, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_DIV, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "%="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_MOD, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_MOD, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "&="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_BITAND, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_BITAND, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "|="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_BITOR, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_BITOR, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "^="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_BITXOR, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_BITXOR, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, "<<="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_SHL, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_SHL, node, assign(&tok, tok->next), tok));
     else if (equalc(tok, ">>="))
-        node = new_binary(ND_ASSIGN, node, new_binary(ND_SHR, node, assign(&tok, tok->next), tok), tok);
+        node = to_assign(new_binary(ND_SHR, node, assign(&tok, tok->next), tok));
     *rest = tok;
     return node;
 }
