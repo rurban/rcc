@@ -12,6 +12,7 @@ cd "$(dirname "$0")" || exit
 SCRIPT_DIR=.
 REPORT_DIR="test"
 RCC="${1:-}"
+ONLY_TEST="${2:-}"
 TEST_DIR="$SCRIPT_DIR/tinycc/tests/tests2"
 RCCFLAGS="-O1"
 
@@ -92,8 +93,7 @@ fi
 
 # shellcheck disable=SC2059
 printf "${CYAN}Starting TCC Test Suite on RCC...${RESET}\n"
-printf "RCC:      %s\n" "$RCC"
-[ -n "$RCCFLAGS" ] && printf "Flags:    %s\n" "$RCCFLAGS"
+echo "RCC: $RCC $RCCFLAGS"
 printf "Test dir: %s\n\n" "$TEST_DIR"
 
 total=0
@@ -339,6 +339,10 @@ while IFS= read -r src; do
         esac
 
 	base="${fname%.c}"
+
+	if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
+		continue
+	fi
 
 	if is_skipped "$base"; then
 		printf "  %-${max_name_len}s %s\n" "$base" "SKIP"
@@ -613,6 +617,10 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fname="$(basename "$src")"
 		base="${fname%.c}"
 
+		if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
+			continue
+		fi
+
 		if skip_unit_test "$base"; then
 			printf "  %-${max_name_len}s %s\n" "$base..." "SKIP"
 			add_row "$base" "SKIP" "Skipped"
@@ -675,13 +683,15 @@ fi
 
 rm -f "$TMP_OUT"
 
-# Write machine-readable summary for unified report
-{
-    printf 'SUITE=tcc\n'
-    printf 'TOTAL=%d\n' "$total"
-    printf 'PASS=%d\n' "$passed"
-    printf 'FAIL=%d\n' "$failed"
-} > "$SCRIPT_DIR/test-tcc-$PLATFORM.summary"
+# Write machine-readable summary for unified report (skipped when filtering)
+if [ -z "$ONLY_TEST" ]; then
+    {
+        printf 'SUITE=tcc\n'
+        printf 'TOTAL=%d\n' "$total"
+        printf 'PASS=%d\n' "$passed"
+        printf 'FAIL=%d\n' "$failed"
+    } > "$SCRIPT_DIR/test-tcc-$PLATFORM.summary"
+fi
 
 # Summary
 echo ""
@@ -706,7 +716,8 @@ if [ $((regressions + fixes + changed)) -gt 0 ]; then
 fi
 
 # Markdown report
-{
+if [ -z "$ONLY_TEST" ]; then
+    {
         LC_TIME=en_US.UTF-8
 	printf '# TCC Test Suite Report for RCC\n'
 	printf '\n'
@@ -743,12 +754,16 @@ fi
 			"$(fmt_cell "$message" "$mm")"
 	done < "$TMP_OUT".data
 	rm -f "$TMP_OUT".data
-} >"$SCRIPT_DIR/$REPORT_FILE"
+    } >"$SCRIPT_DIR/$REPORT_FILE"
 
-printf "Report saved to %s\n" "$REPORT_FILE"
+    printf "Report saved to %s\n" "$REPORT_FILE"
+fi
 
+# When filtering to a single test, pass/fail based on that test alone
+if [ -n "$ONLY_TEST" ]; then
+    [ "$failed" -eq 0 ]
 # arm64-darwin native
-if [ "$REPORT_FILE" = "$REPORT_DIR/tcc_test_arm64.md" ]; then
+elif [ "$REPORT_FILE" = "$REPORT_DIR/tcc_test_arm64.md" ]; then
     [ "$passed" -ge 145 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
     [ "$passed" -ge 155 ]
