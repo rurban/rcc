@@ -5,8 +5,8 @@
 
 set -e
 
-BENCHDIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$BENCHDIR/bench.c"
+cd "$(dirname "$0")/.." || exit
+SRC="bench/bench.c"
 RCC="${1:-./rcc}"
 TCC="${TCC:-tcc}"
 GCC="${GCC:-gcc}"
@@ -16,8 +16,8 @@ if [ -z "$KEFIR" ] && [ -e "/opt/kefir/bin/kefir" ]; then
    KEFIR="/opt/kefir/bin/kefir"
 fi
 SLIMCC="$(which slimcc 2>/dev/null || true)"
-if [ -z "$SLIMCC" ] && [ -e "$BENCHDIR/../../slimcc/slimcc" ]; then
-   SLIMCC="$BENCHDIR/../../slimcc/slimcc"
+if [ -z "$SLIMCC" ] && [ -e "bench/../../slimcc/slimcc" ]; then
+   SLIMCC="bench/../../slimcc/slimcc"
 fi
 
 # Check rcc and tcc exist
@@ -30,22 +30,22 @@ if ! command -v "$TCC" >/dev/null 2>&1; then
     TCC=""
 fi
 
-RCC_EXE="$BENCHDIR/bench_rcc"
-RCC_O1_EXE="$BENCHDIR/bench_rcc_o1"
-TCC_EXE="$BENCHDIR/bench_tcc"
-GCC_EXE="$BENCHDIR/bench_gcc"
-GCC_O2_EXE="$BENCHDIR/bench_gcc_o2"
-CLANG_EXE="$BENCHDIR/bench_clang"
-CLANG_O2_EXE="$BENCHDIR/bench_clang_o2"
-KEFIR_EXE="$BENCHDIR/bench_kefir"
-KEFIR_O1_EXE="$BENCHDIR/bench_kefir_o1"
-SLIMCC_EXE="$BENCHDIR/bench_slimcc"
+RCC_EXE="bench/bench_rcc"
+RCC_O1_EXE="bench/bench_rcc_o1"
+TCC_EXE="bench/bench_tcc"
+GCC_EXE="bench/bench_gcc"
+GCC_O2_EXE="bench/bench_gcc_o2"
+CLANG_EXE="bench/bench_clang"
+CLANG_O2_EXE="bench/bench_clang_o2"
+KEFIR_EXE="bench/bench_kefir"
+KEFIR_O1_EXE="bench/bench_kefir_o1"
+SLIMCC_EXE="bench/bench_slimcc"
 
 RUNS=3
 if [ "$(uname -s)" = "Darwin" ]; then
-	REPORT="$BENCHDIR/bench_report_darwin.md"
+	REPORT="bench/bench_report_darwin.md"
 else
-	REPORT="$BENCHDIR/bench_report.md"
+	REPORT="bench/bench_report.md"
 fi
 
 cleanup() {
@@ -170,6 +170,7 @@ IFS="$oldifs"
 
 # Write markdown report
 {
+	LC_TIME=en_us.UTF-8
 	if [ "$(uname -s)" = "Darwin" ]; then
 		printf "# Darwin RCC Benchmark Results\n\n"
 	else

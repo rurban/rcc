@@ -44,8 +44,8 @@ downloaded=
 m_files="bench/bench_report_darwin.md test/tcc_test_arm64.md test/torture_report_arm64.log test_report_arm64.md"
 w_files="bench/bench_report_mingw.md test_report_mingw.md test/tcc_test_mingw.md"
 l_files="bench/bench_report_linux.md test/tcc_test_linux.md test/torture_report_linux.log test_report_linux.md"
-# shellcheck disable=SC2086
-rm -f $m_files $w_files $l_files
+dirs="linux-reports macos-reports windows-reports"
+rm -rf linux-reports macos-reports windows-reports
 if gh run download "$run_id" -D . 2>/dev/null; then
     downloaded=yes
 else
@@ -56,12 +56,10 @@ if [ -z "$downloaded" ]; then
     echo "No artifacts were downloaded, nothing to do."
     exit 0
 fi
-for f in $m_files $w_files $l_files; do
-    if [ -f "$f" ]; then
-        echo "Downloaded $f"
-    else
-        git checkout "$f"
-    fi
+pwd="$(pwd)"
+for d in $dirs; do
+    cd "$d" && rsync -av . ..
+    cd "$pwd" || exit 1
 done
 
 echo "Staging downloaded report files..."
