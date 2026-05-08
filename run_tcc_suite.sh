@@ -1,9 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Run the TCC compatibility test suite against rcc.
-# Usage: ./run_tcc_suite.sh [rcc-binary] [test-dir] [extra-rcc-flags]
-#
-# Extra rcc flags (e.g. -O0) are passed to every compilation invocation.
+# Usage: ./run_tcc_suite.sh [rcc-binary] [test-name]
 #
 # Compiles each tcc_tests/*.c file with rcc, runs it, and diffs the output
 # against the corresponding *.expect file.  Tests without an .expect file
@@ -14,12 +12,15 @@ cd "$(dirname "$0")" || exit
 SCRIPT_DIR=.
 REPORT_DIR="test"
 RCC="${1:-}"
-TEST_DIR="${2:-$SCRIPT_DIR/tinycc/tests/tests2}"
-RCCFLAGS="${3:-}"
+TEST_DIR="$SCRIPT_DIR/tinycc/tests/tests2"
+RCCFLAGS="-O1"
 
 PLATFORM=linux
 REPORT_FILE=$REPORT_DIR/tcc_test_linux.md
 
+if [ ! -e tinycc ]; then
+    git submodule update --init --recursive tinycc
+fi
 if [ ! -e tcc_tests ]; then
     ln -s tinycc/tests/tests2 tcc_tests
 fi

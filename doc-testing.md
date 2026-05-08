@@ -9,7 +9,7 @@ ifeq ($(OS),Windows_NT)
 TEST_RUNNER = powershell -ExecutionPolicy Bypass -File run_tcc_suite.ps1 -O1 && ./gen-test-report.sh mingw
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
 else
-TEST_RUNNER = ./run_tcc_suite.sh "" "" -O1 && ./run-c-testsuite.sh && test/compliance/run.sh && ./gen-test-report.sh
+TEST_RUNNER = ./run_tcc_suite.sh && ./run-c-testsuite.sh && test/compliance/run.sh && ./gen-test-report.sh
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 
@@ -19,7 +19,7 @@ test check: $(TARGET)
 
 On Linux/macOS: `make check` runs four things sequentially:
 
-1. `./run_tcc_suite.sh "" "" -O1` — TCC compatibility test suite with `-O1` optimization
+1. `./run_tcc_suite.sh — TCC compatibility test suite with `-O1` optimization
 2. `./run-c-testsuite.sh` — c-testsuite (220 single-exec C tests)
 3. `test/compliance/run.sh` — Compliance tests comparing rcc output against gcc
 4. `./gen-test-report.sh` — Generates a unified `test_report_<platform>.md` from all test summaries
@@ -433,7 +433,7 @@ Note: The CI only runs `make check` (not `make test-full`). Cross-compilation te
 ```
 make check
   └─ Non-Windows:
-              ./run_tcc_suite.sh "" "" -O1  → test/tcc_test_linux.md
+              ./run_tcc_suite.sh             → test/tcc_test_linux.md
                                               test-tcc-linux.summary
               ./run-c-testsuite.sh           → c-testsuite.tap.txt
                                               test-ctest-linux.summary

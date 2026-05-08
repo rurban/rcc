@@ -18,6 +18,39 @@ static void cg_emit(const char *fmt, ...) {
 
 static char *current_fn;
 static int current_fn_stack_size = 0; // fn->stack_size of the function being generated
+
+// Debug info (DWARF .loc directives, enabled by -g)
+#define MAX_DEBUG_FILES 128
+static char *debug_files[MAX_DEBUG_FILES];
+static int debug_file_count = 0;
+static int last_debug_file = 0;
+static int last_debug_line = 0;
+
+static int get_debug_file_idx(char *filename) {
+    if (!filename) return 1;
+    for (int i = 0; i < debug_file_count; i++)
+        if (strcmp(debug_files[i], filename) == 0)
+            return i + 1;
+    if (debug_file_count >= MAX_DEBUG_FILES)
+        return 1;
+    int idx = ++debug_file_count;
+    debug_files[idx - 1] = filename;
+    printf("  .file %d \"%s\"\n", idx, filename);
+    return idx;
+}
+
+static void emit_loc(Node *node) {
+    if (!node->tok || !node->tok->filename)
+        return;
+    int line = node->tok->lineno;
+    if (line <= 0) return;
+    int fidx = get_debug_file_idx(node->tok->filename);
+    if (fidx == last_debug_file && line == last_debug_line)
+        return;
+    printf("  .loc %d %d 0\n", fidx, line);
+    last_debug_file = fidx;
+    last_debug_line = line;
+}
 static int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 static int fn_struct_ret_total = 0; // high-water mark of struct-ret-buf space used
 static int rcc_label_count = 0;
@@ -2566,6 +2599,9 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
 // Generate code for a given node.
 static int gen(Node *node) {
     if (!node) return -1;
+
+    if (opt_g)
+        emit_loc(node);
 
     switch (node->kind) {
     case ND_NUM: {
@@ -6164,6 +6200,9 @@ void codegen(Program *prog) {
     all_items = prog->items;
     all_strs = prog->strs;
     alloca_needed = false;
+    debug_file_count = 0;
+    last_debug_file = 0;
+    last_debug_line = 0;
     // Assembly header
 #ifndef ARCH_ARM64
     /* AT&T syntax is now the default */
@@ -6357,6 +6396,8 @@ void codegen(Program *prog) {
         memset(reg_owner, 0, sizeof(reg_owner));
         ctrl_depth = 0;
         fn_uses_alloca = false;
+        last_debug_file = 0;
+        last_debug_line = 0;
 
         // Save params to locals (emitted to body buffer, will be after prologue)
         // ARM64: handled in the Pass 2 prologue instead

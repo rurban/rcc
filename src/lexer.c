@@ -9,6 +9,10 @@ char *current_input;
 char *current_filename;
 static int current_line_offset = 0;
 static int line_num = 1;
+// Tracks the filename from #line directives for debug info (tok->filename).
+// Kept separate from current_filename so error messages always use the
+// original in_path (relative/short) while tok->filename gets the resolved path.
+static char *current_debug_filename;
 
 // Reports an error and exit.
 // cppcheck-suppress va_end_missing
@@ -167,6 +171,10 @@ static Token *new_token(TokenKind kind, char *start, char *end) {
     tok->kind = kind;
     tok->loc = start;
     tok->len = end - start;
+    if (opt_g) {
+        tok->filename = current_debug_filename;
+        tok->lineno = compute_line_no(start);
+    }
     return tok;
 }
 
@@ -268,6 +276,8 @@ static char read_escaped_char(char **new_pos, char *p) {
 Token *tokenize(char *filename, char *p) {
     current_input = p;
     current_filename = filename;
+    if (opt_g)
+        current_debug_filename = filename;
     Token head = {};
     Token *cur = &head;
 
@@ -293,9 +303,12 @@ Token *tokenize(char *filename, char *p) {
                 while (*q == ' ' || *q == '\t') q++;
                 if (*q == '"') {
                     // Parse filename
+                    char *fn_start = q + 1;
                     q++;
                     while (*q && *q != '"') q++;
                     if (*q == '"') {
+                        if (opt_g)
+                            current_debug_filename = str_intern(fn_start, q - fn_start);
                         // Save current position for line counting
                         current_input = p;
                         current_line_offset = q + 1 - current_input;

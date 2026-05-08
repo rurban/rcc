@@ -72,19 +72,20 @@ void help(void) {
            "-Lpath              add linker path\n"
            "-lname              add lib\n"
            "-E                  preprocessor-only\n"
-           "-dM                 dump all macro definitions (use with -E)\n"
-           "-fdump-ast           dump AST for debugging\n"
            "-S                  assemble-only\n"
            "-c                  compile-only\n"
            "-o file             set output filename\n"
            "-O0                 disable peephole optimizer\n"
            "-O1                 enable peephole + CTFE optimizations\n"
+           "-g                  emit DWARF line-number debug info\n"
            "-W                  enable more compiler warnings\n"
            "-Dname[=val]        define a macro\n"
            "-Uname              undefine a macro\n"
            "-mms-bitfields      use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields   use GCC bitfield layout by default\n"
            "-###                dry-run (print commands, don't execute)\n"
+           "-dM                 dump all macro definitions (use with -E)\n"
+           "-fdump-ast          dump AST for debugging\n"
            "-print-search-dirs  print install, include and library paths\n"
            "--help\n"
            "--version\n");
@@ -96,6 +97,7 @@ bool opt_W = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
 bool opt_fdump_ast = false;
+bool opt_g = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -171,6 +173,11 @@ int main(int argc, char **argv) {
             opt_dM = true;
         } else if (!strcmp(argv[i], "-fdump-ast")) {
             opt_fdump_ast = true;
+        } else if (!strcmp(argv[i], "-g") || !strcmp(argv[i], "-g1") ||
+                   !strcmp(argv[i], "-g2") || !strcmp(argv[i], "-g3")) {
+            opt_g = true;
+        } else if (!strcmp(argv[i], "-g0")) {
+            opt_g = false;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
@@ -329,6 +336,7 @@ int main(int argc, char **argv) {
             snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
 #ifdef RCC_INCDIR
         else {
+            // cppcheck-suppress syntaxError
             const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
             if (stat(rcc_darwin, &libst) == 0)
                 snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);

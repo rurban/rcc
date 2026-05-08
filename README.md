@@ -60,9 +60,9 @@ Linux:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins.
 
-Not yet: C23, -fpie, -fpic
+Not yet: complex, nested functions, C23, -fpie, -fpic
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
@@ -98,20 +98,21 @@ make bench
     -Lpath             add linker path
     -lname             add lib
     -E                 preprocessor-only
-    -dM                dump all macro definitions (use with -E)
-    -fdump-ast         dump AST to stderr for debugging
     -S                 assemble-only
     -c                 compile-only
     -o file            set output filename
     -O0                disable peephole optimizer
     -O1                enable peephole + CTFE optimizations
-    -mms-bitfields     use MSVC bitfields (default on Windows)
-    -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
+    -g                 emit DWARF line-number debug info
+    -W                 print diagnostic warnings (stack spilling)
     -Dname[=val]       define a macro value
     -Uname             undefine a macro value
-    -W                 print diagnostic warnings (stack spilling)
-    -###               dry-run (print commands, don't execute)
+    -mms-bitfields     use MSVC bitfields (default on Windows)
+    -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
     -print-search-dirs print install, include and library paths
+    -###               dry-run (print commands, don't execute)
+    -dM                dump all macro definitions (use with -E)
+    -fdump-ast         dump AST to stderr for debugging
     --help
     --version
 
