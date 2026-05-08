@@ -3790,7 +3790,7 @@ static int gen(Node *node) {
                 int c = ++rcc_label_count;
                 int retbuf_offset = 0;
                 for (LVar *var = current_fn_def->locals; var; var = var->next) {
-                    if (var->name && var->name[0] == '\0') {
+                    if (var->name && strcmp(var->name, "__retbuf") == 0) {
                         retbuf_offset = var->offset;
                         break;
                     }
@@ -6724,7 +6724,7 @@ void codegen(Program *prog) {
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
-                if (var->name && var->name[0] == '\0') {
+                if (var->name && strcmp(var->name, "__retbuf") == 0) {
                     retbuf_offset = var->offset;
                     break;
                 }
@@ -6989,7 +6989,7 @@ void codegen(Program *prog) {
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
-                if (var->name && var->name[0] == '\0') {
+                if (var->name && strcmp(var->name, "__retbuf") == 0) {
                     retbuf_offset = var->offset;
                     break;
                 }

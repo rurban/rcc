@@ -5563,7 +5563,7 @@ Program *parse(Token *tok) {
                 }
 
                 if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION)) {
-                    LVar *retbuf = new_var("", pointer_to(fty->return_ty), true);
+                    LVar *retbuf = new_var("__retbuf", pointer_to(fty->return_ty), true);
                     retbuf->cleanup_func = NULL;
                 }
 

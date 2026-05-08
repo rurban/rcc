@@ -214,5 +214,5 @@ elif [ "$RCC" = "../../darwin-cross.sh" ]; then
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
     [ "$PASS" -ge 700 ]
 else
-    [ "$PASS" -ge 914 ]
+    [ "$PASS" -ge 915 ]
 fi

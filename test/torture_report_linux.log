@@ -23,7 +23,7 @@ PASS: 20000419-1
 PASS: 20000422-1
 PASS: 20000503-1
 PASS: 20000511-1
-FAIL(runtime): 20000519-1
+PASS: 20000519-1
 PASS: 20000519-2
 PASS: 20000523-1
 PASS: 20000528-1
@@ -67,7 +67,7 @@ PASS: 20001009-1
 PASS: 20001009-2
 PASS: 20001011-1
 PASS: 20001013-1
-FAIL(runtime): 20001017-1
+PASS: 20001017-1
 PASS: 20001017-2
 PASS: 20001024-1
 PASS: 20001026-1
@@ -162,6 +162,7 @@ PASS: 20020402-3
 PASS: 20020404-1
 PASS: 20020406-1
 SKIP(complex): 20020411-1
+./test/torture/run.sh: line 65: 12946 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): 20020412-1
 PASS: 20020413-1
 PASS: 20020418-1
@@ -200,6 +201,7 @@ PASS: 20021119-1
 PASS: 20021120-1
 PASS: 20021120-2
 PASS: 20021120-3
+./test/torture/run.sh: line 65: 13617 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): 20021127-1
 PASS: 20021204-1
 PASS: 20021219-1
@@ -215,6 +217,7 @@ PASS: 20030209-1
 PASS: 20030216-1
 PASS: 20030218-1
 PASS: 20030221-1
+./test/torture/run.sh: line 65: 13893 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): 20030222-1
 PASS: 20030224-2
 PASS: 20030307-1
@@ -228,7 +231,7 @@ PASS: 20030404-1
 PASS: 20030408-1
 SKIP(nested-func): 20030501-1
 PASS: 20030606-1
-FAIL(runtime): 20030613-1
+PASS: 20030613-1
 PASS: 20030626-1
 PASS: 20030626-2
 PASS: 20030714-1
@@ -300,7 +303,7 @@ PASS: 20040917-1
 PASS: 20041011-1
 PASS: 20041019-1
 PASS: 20041112-1
-FAIL(runtime): 20041113-1
+PASS: 20041113-1
 PASS: 20041114-1
 SKIP(complex): 20041124-1
 PASS: 20041126-1
@@ -308,7 +311,7 @@ SKIP(complex): 20041201-1
 PASS: 20041210-1
 PASS: 20041212-1
 PASS: 20041213-2
-FAIL(runtime): 20041214-1
+PASS: 20041214-1
 PASS: 20041218-1
 PASS: 20041218-2
 PASS: 20050104-1
@@ -381,14 +384,14 @@ PASS: 20071202-1
 PASS: 20071205-1
 PASS: 20071210-1
 PASS: 20071211-1
-FAIL(runtime): 20071213-1
+PASS: 20071213-1
 PASS: 20071216-1
 PASS: 20071219-1
 PASS: 20071220-1
 PASS: 20071220-2
 PASS: 20080117-1
 PASS: 20080122-1
-FAIL(runtime): 20080222-1
+PASS: 20080222-1
 PASS: 20080408-1
 PASS: 20080424-1
 FAIL(runtime): 20080502-1
@@ -464,6 +467,7 @@ PASS: 20190820-1
 PASS: 20190901-1
 PASS: 20191023-1
 PASS: 20210505-1
+./test/torture/run.sh: line 65: 18315 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): 20221006-1
 PASS: 20230509-1
 PASS: 20230510-1
@@ -490,7 +494,7 @@ PASS: 920501-4
 PASS: 920501-5
 PASS: 920501-6
 SKIP(trampolines): 920501-7
-FAIL(runtime): 920501-8
+PASS: 920501-8
 PASS: 920501-9
 PASS: 920506-1
 PASS: 920520-1
@@ -499,21 +503,21 @@ PASS: 920604-1
 PASS: 920612-1
 SKIP(trampolines): 920612-2
 PASS: 920618-1
-FAIL(runtime): 920625-1
+PASS: 920625-1
 PASS: 920710-1
 PASS: 920711-1
 PASS: 920721-1
 PASS: 920721-2
 PASS: 920721-3
 SKIP(nested-func): 920721-4
-FAIL(runtime): 920726-1
+PASS: 920726-1
 PASS: 920728-1
 PASS: 920730-1
 PASS: 920731-1
 PASS: 920810-1
 PASS: 920812-1
 PASS: 920829-1
-FAIL(runtime): 920908-1
+PASS: 920908-1
 PASS: 920908-2
 PASS: 920909-1
 PASS: 920922-1
@@ -581,19 +585,19 @@ PASS: 930929-1
 PASS: 930930-1
 PASS: 930930-2
 SKIP(trampolines): 931002-1
-FAIL(runtime): 931004-10
-PASS: 931004-11
-FAIL(runtime): 931004-12
-PASS: 931004-13
-FAIL(runtime): 931004-14
 PASS: 931004-1
-FAIL(runtime): 931004-2
+PASS: 931004-10
+PASS: 931004-11
+PASS: 931004-12
+PASS: 931004-13
+PASS: 931004-14
+PASS: 931004-2
 PASS: 931004-3
-FAIL(runtime): 931004-4
+PASS: 931004-4
 PASS: 931004-5
-FAIL(runtime): 931004-6
+PASS: 931004-6
 PASS: 931004-7
-FAIL(runtime): 931004-8
+PASS: 931004-8
 PASS: 931004-9
 PASS: 931005-1
 PASS: 931009-1
@@ -681,7 +685,7 @@ PASS: 961122-2
 PASS: 961125-1
 PASS: 961206-1
 PASS: 961213-1
-FAIL(runtime): 961223-1
+PASS: 961223-1
 SKIP(nested-func): 970214-1
 SKIP(nested-func): 970214-2
 SKIP(nested-func): 970217-1
@@ -701,7 +705,7 @@ PASS: 980602-1
 PASS: 980602-2
 PASS: 980604-1
 PASS: 980605-1
-FAIL(runtime): 980608-1
+PASS: 980608-1
 PASS: 980612-1
 PASS: 980617-1
 PASS: 980618-1
@@ -754,7 +758,7 @@ PASS: 991202-1
 PASS: 991202-2
 PASS: 991202-3
 PASS: 991216-1
-FAIL(runtime): 991216-2
+PASS: 991216-2
 PASS: 991216-4
 PASS: 991221-1
 PASS: 991227-1
@@ -772,21 +776,23 @@ PASS: align-nest
 PASS: alloca-1
 PASS: anon-1
 PASS: arith-1
-PASS: arith-rand
 PASS: arith-rand-ll
+PASS: arith-rand
 PASS: ashldi-1
 PASS: ashrdi-1
 PASS: bcp-1
-PASS: bf64-1
 PASS: bf-layout-1
 SKIP(nested-func): bf-pack-1
 PASS: bf-sign-1
 PASS: bf-sign-2
-PASS: bitfld-10
+PASS: bf64-1
 PASS: bitfld-1
+PASS: bitfld-10
 PASS: bitfld-2
+./test/torture/run.sh: line 65: 23675 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): bitfld-3
 PASS: bitfld-4
+./test/torture/run.sh: line 65: 23719 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): bitfld-5
 PASS: bitfld-6
 PASS: bitfld-7
@@ -797,7 +803,8 @@ PASS: bitops-1
 PASS: bswap-1
 PASS: bswap-2
 PASS: bswap-3
-FAIL(compile): builtin-bitops-1
+PASS: built-in-setjmp
+PASS: builtin-bitops-1
 PASS: builtin-constant
 PASS: builtin-prefetch-1
 PASS: builtin-prefetch-2
@@ -805,7 +812,6 @@ PASS: builtin-prefetch-3
 PASS: builtin-prefetch-4
 PASS: builtin-prefetch-5
 PASS: builtin-prefetch-6
-FAIL(runtime): built-in-setjmp
 SKIP(nested-func): builtin-types-compatible-p
 PASS: call-trap-1
 PASS: cbrt
@@ -813,11 +819,11 @@ PASS: cmpdi-1
 PASS: cmpsf-1
 PASS: cmpsi-1
 PASS: cmpsi-2
+PASS: comp-goto-1
+SKIP(trampolines): comp-goto-2
 PASS: compare-1
 PASS: compare-2
 PASS: compare-3
-PASS: comp-goto-1
-SKIP(trampolines): comp-goto-2
 SKIP(complex): complex-1
 SKIP(complex): complex-2
 PASS: complex-3
@@ -827,6 +833,7 @@ SKIP(complex): complex-6
 SKIP(complex): complex-7
 SKIP(nested-func): compndlit-1
 PASS: const-addr-expr-1
+./test/torture/run.sh: line 65: 24538 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): conversion
 PASS: cvt-1
 PASS: dbra-1
@@ -847,14 +854,15 @@ PASS: enum-2
 PASS: enum-3
 PASS: extzvsi
 SKIP(nested-func): ffs-1
-FAIL(compile): ffs-2
+PASS: ffs-2
 PASS: float-floor
 PASS: floatunsisf-1
 PASS: fprintf-1
 PASS: fprintf-2
-FAIL(runtime): fprintf-chk-1
+PASS: fprintf-chk-1
 PASS: frame-address
 PASS: func-ptr-1
+./test/torture/run.sh: line 65: 25089 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): gofast
 PASS: ifcvt-onecmpl-abs-1
 PASS: index-1
@@ -863,25 +871,25 @@ PASS: int-compare
 PASS: ipa-sra-1
 PASS: ipa-sra-2
 PASS: longlong
+PASS: loop-1
 PASS: loop-10
 PASS: loop-11
 PASS: loop-12
 PASS: loop-13
 PASS: loop-14
 PASS: loop-15
-PASS: loop-1
-PASS: loop-2b
 PASS: loop-2
+PASS: loop-2b
 PASS: loop-2c
 PASS: loop-2d
 PASS: loop-2e
-SKIP(missing-include): loop-2f
-SKIP(missing-include): loop-2g
-PASS: loop-3b
+PASS: loop-2f
+PASS: loop-2g
 PASS: loop-3
+PASS: loop-3b
 PASS: loop-3c
-PASS: loop-4b
 PASS: loop-4
+PASS: loop-4b
 PASS: loop-5
 PASS: loop-6
 PASS: loop-7
@@ -914,8 +922,9 @@ PASS: mod-1
 PASS: mode-dependent-address
 PASS: mul-sext
 PASS: multdi-1
-FAIL(runtime): multi-ix
+PASS: multi-ix
 SKIP(nested-func): nest-align-1
+SKIP(nested-func): nest-stdar-1
 SKIP(trampolines): nestfunc-1
 SKIP(trampolines): nestfunc-2
 SKIP(trampolines): nestfunc-3
@@ -923,7 +932,6 @@ PASS: nestfunc-4
 SKIP(trampolines): nestfunc-5
 SKIP(trampolines): nestfunc-6
 SKIP(nested-func): nestfunc-7
-SKIP(nested-func): nest-stdar-1
 PASS: p18298
 PASS: packed-1
 PASS: packed-2
@@ -994,13 +1002,8 @@ PASS: pr114207
 PASS: pr114396
 PASS: pr114552
 
-=== TOTAL=995 PASS=887 FAIL_COMPILE=2 FAIL_RUNTIME=33 SKIP=73 ===
-Pass rate (excl. skip): 96%
+=== TOTAL=995 PASS=915 FAIL_COMPILE=0 FAIL_RUNTIME=9 SKIP=71 ===
+Pass rate (excl. skip): 99%
 
-Compile failures: builtin-bitops-1 ffs-2
-
-Runtime failures: 20000519-1 20001017-1 20020412-1 20021127-1 20030222-1 
-20030613-1 20041113-1 20041214-1 20071213-1 20080222-1 20080502-1 20221006-1 
-920501-8 920625-1 920726-1 920908-1 931004-10 931004-12 931004-14 931004-2 
-931004-4 931004-6 931004-8 961223-1 980608-1 991216-2 bitfld-3 bitfld-5 
-built-in-setjmp conversion fprintf-chk-1 gofast multi-ix
+Runtime failures: 20020412-1 20021127-1 20030222-1 20080502-1 20221006-1 
+bitfld-3 bitfld-5 conversion gofast
