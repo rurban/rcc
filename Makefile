@@ -36,6 +36,13 @@ INCDIR = $(PREFIX)/include/rcc
 LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
 
+ifneq ($(findstring apple,$(MACHINE)),)
+DARWIN_O = lib/darwin.o
+TARGET_DEPS = $(OBJS) $(DARWIN_O)
+else
+TARGET_DEPS = $(OBJS) $(MINGW_O)
+endif
+
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
 RCC_INCDIR ?= $(CURDIR)/include
@@ -43,6 +50,7 @@ RCC_INCDIR ?= $(CURDIR)/include
 ifeq ($(OS),Windows_NT)
 TARGET = rcc.exe
 MINGW_O = lib/mingw$(OBJ_EXT)
+TARGET_DEPS += -lpthread
 OBJ_EXT = .obj
 PREFIX ?= C:/Program Files/rcc
 BINDIR = $(PREFIX)
@@ -54,6 +62,7 @@ else
 ifeq ($(CC),x86_64-w64-mingw32-gcc)
 TARGET = rcc.exe
 MINGW_O = lib/mingw$(OBJ_EXT)
+TARGET_DEPS += -lpthread
 OBJ_EXT = .obj
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 endif
@@ -83,15 +92,8 @@ DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
-ifneq ($(findstring apple,$(MACHINE)),)
-DARWIN_O = lib/darwin.o
-TARGET_DEPS = $(OBJS) $(DARWIN_O)
-else
-TARGET_DEPS = $(OBJS) $(MINGW_O)
-endif
-
 $(TARGET): $(TARGET_DEPS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_DEPS)
 
 src/sysinc_paths.h:
 	RCC_CC="$(CC)"; \
@@ -236,4 +238,4 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-.PHONY: clean test check test-full test-torture lint bench install dist bench prof
+.PHONY: clean test check test-full test-torture lint bench install dist bench prof -lpthread

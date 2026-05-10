@@ -3,6 +3,7 @@ src/gcc_predefined.h
 TAGS
 .gdbinit
 *.exe
+libwinpthread-1.dll
 a.out
 *.o
 *.obj

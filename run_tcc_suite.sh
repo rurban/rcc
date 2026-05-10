@@ -341,6 +341,7 @@ while IFS= read -r src; do
 	base="${fname%.c}"
 
 	if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
+		p_src=
 		continue
 	fi
 
