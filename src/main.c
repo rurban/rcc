@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
             char *preprocessed = preprocess(in_path, contents);
             if (opt_time)
                 fprintf(stderr, "  preprocess  %s: %6lu us\n", in_path,
-                        now_us() - t0);
+                        (unsigned long)(now_us() - t0));
 
             if (opt_E) {
                 printf("%s", preprocessed);
@@ -282,14 +282,14 @@ int main(int argc, char **argv) {
             Token *tok = tokenize(in_path, preprocessed);
             if (opt_time)
                 fprintf(stderr, "  lex         %s: %6lu us\n", in_path,
-                        now_us() - t0);
+                        (unsigned long)(now_us() - t0));
 
             t0 = opt_time ? now_us() : 0;
             Program *prog = parse(tok);
             prog->in_path = in_path;
             if (opt_time)
                 fprintf(stderr, "  parse       %s: %6lu us\n", in_path,
-                        now_us() - t0);
+                        (unsigned long)(now_us() - t0));
 
             if (opt_fdump_ast)
                 dump_ast(prog);
@@ -305,7 +305,7 @@ int main(int argc, char **argv) {
             }
             if (opt_time)
                 fprintf(stderr, "  typecheck   %s: %6lu us\n", in_path,
-                        now_us() - t0);
+                        (unsigned long)(now_us() - t0));
 
             // CTFE runs only with -O1; peephole skipped with -O0.
             if (opt_O1) {
@@ -313,7 +313,7 @@ int main(int argc, char **argv) {
                 optimize(prog);
                 if (opt_time)
                     fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", in_path,
-                            now_us() - t0);
+                            (unsigned long)(now_us() - t0));
             }
 
             if (!opt_dryrun) {
@@ -330,10 +330,10 @@ int main(int argc, char **argv) {
                 if (opt_time) {
                     uint64_t cg_total = now_us() - t0;
                     fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
-                            cg_total - time_peep_us);
+                            (unsigned long)(cg_total - time_peep_us));
                     if (!opt_O0)
                         fprintf(stderr, "  peephole    %s: %6lu us\n", in_path,
-                                time_peep_us);
+                                (unsigned long)time_peep_us);
                 }
                 fflush(stdout);
                 // Restore stdout to console if we want to print further, but we are done.
