@@ -440,6 +440,35 @@ static bool parse_x86_mem(const char *s, X86Mem *m) {
     return false;
 }
 
+// Check if operand is a RIP-relative reference like "sym(%rip)".
+// If so, fills *sym_out (static buffer) with the symbol name and returns true.
+static bool is_rip_rel(const char *op, const char **sym_out) {
+    static char sym_buf[256];
+    const char *rip = strstr(op, "(%rip)");
+    if (!rip) return false;
+    int len = (int)(rip - op);
+    if (len <= 0) return false; // bare (%rip) — unusual, skip
+    strncpy(sym_buf, op, (size_t)len);
+    sym_buf[len] = '\0';
+    if (sym_out) *sym_out = sym_buf;
+    return true;
+}
+
+// Emit an x86-64 RIP-relative instruction that takes a memory operand.
+// The instruction is emitted with disp32=0; a R_X86_64_PC32 relocation
+// is added pointing at sym with addend -4.
+// encode_fn(buf, sz, dst_reg, mem) must emit the instruction.
+// This variant handles LEA, MOV r,m, and similar load-from-RIP forms.
+static void emit_rip_rel_load(AsmState *as, const char *sym,
+                              void (*emit_fn)(SecBuf *, int, X86Reg, X86Mem),
+                              int sz, X86Reg dst) {
+    SecBuf *buf = &as->obj->text;
+    X86Mem rip_mem = {X86_NOREG, X86_NOREG, 1, 0}; // base=NOREG → mod=0, rm=5 = RIP+disp32
+    emit_fn(buf, sz, dst, rip_mem);
+    int sidx = ensure_sym(as, sym);
+    objfile_add_reloc(as->obj, SEC_TEXT, buf->len - 4, sidx, R_X86_64_PC32, -4);
+}
+
 // ---------------------------------------------------------------------------
 // Directive handling
 // ---------------------------------------------------------------------------
@@ -1483,7 +1512,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             return true;
         }
         if (is_mem(0) && is_reg(1)) {
-            x86_mov_rm(buf, sz, R(1), M(0));
+            const char *rip_sym;
+            if (is_rip_rel(ops[0], &rip_sym))
+                emit_rip_rel_load(as, rip_sym, x86_mov_rm, sz, R(1));
+            else
+                x86_mov_rm(buf, sz, R(1), M(0));
             return true;
         }
         if (is_reg(0) && is_sym(1)) {
@@ -1495,7 +1528,13 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // LEA
     if (!strncmp(mnem, "lea", 3)) {
-        if (is_mem(0) && is_reg(1)) x86_lea(buf, sz, R(1), M(0));
+        if (is_mem(0) && is_reg(1)) {
+            const char *rip_sym;
+            if (is_rip_rel(ops[0], &rip_sym))
+                emit_rip_rel_load(as, rip_sym, x86_lea, sz, R(1));
+            else
+                x86_lea(buf, sz, R(1), M(0));
+        }
         return true;
     }
 
@@ -1646,6 +1685,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // JMP and Jcc
     if (!strcmp(mnem, "jmp") || !strcmp(mnem, "jmpq")) {
+        // Strip AT&T indirect prefix '*' (e.g. jmp *%r10 → jmp %r10)
+        if (nops > 0 && ops[0][0] == '*') ops[0]++;
         if (is_reg(0)) {
             x86_jmp_r(buf, R(0));
             return true;
@@ -1716,6 +1757,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // CALL
     if (!strcmp(mnem, "call") || !strcmp(mnem, "callq")) {
+        // Strip AT&T indirect prefix '*' (e.g. call *%r10 → call %r10)
+        if (nops > 0 && ops[0][0] == '*') ops[0]++;
         if (is_reg(0)) {
             x86_call_r(buf, R(0));
             return true;
@@ -1788,17 +1831,38 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // SSE
     if (!strcmp(mnem, "movsd")) {
-        if (is_reg(0) && is_reg(1)) x86_movsd_rr(buf, (X86XmmReg)parse_x86_reg64(ops[0]), (X86XmmReg)parse_x86_reg64(ops[1]));
-        else if (is_mem(0) && is_reg(1))
-            x86_movsd_rm(buf, (X86XmmReg)R(1), M(0));
-        else if (is_reg(0) && is_mem(1))
+        if (is_reg(0) && is_reg(1))
+            x86_movsd_rr(buf, (X86XmmReg)parse_x86_reg64(ops[0]), (X86XmmReg)parse_x86_reg64(ops[1]));
+        else if (is_mem(0) && is_reg(1)) {
+            const char *rip_sym;
+            X86XmmReg xd = (X86XmmReg)R(1);
+            if (is_rip_rel(ops[0], &rip_sym)) {
+                X86Mem rip_m = {X86_NOREG, X86_NOREG, 1, 0};
+                x86_movsd_rm(buf, xd, rip_m);
+                int sidx = ensure_sym(as, rip_sym);
+                objfile_add_reloc(as->obj, SEC_TEXT, buf->len - 4, sidx, R_X86_64_PC32, -4);
+            } else {
+                x86_movsd_rm(buf, xd, M(0));
+            }
+        } else if (is_reg(0) && is_mem(1))
             x86_movsd_mr(buf, M(1), (X86XmmReg)R(0));
         return true;
     }
     if (!strcmp(mnem, "movss")) {
-        if (is_reg(0) && is_reg(1)) x86_movss_rr(buf, (X86XmmReg)R(0), (X86XmmReg)R(1));
-        else if (is_mem(0) && is_reg(1))
-            x86_movss_rm(buf, (X86XmmReg)R(1), M(0));
+        if (is_reg(0) && is_reg(1))
+            x86_movss_rr(buf, (X86XmmReg)R(0), (X86XmmReg)R(1));
+        else if (is_mem(0) && is_reg(1)) {
+            const char *rip_sym;
+            X86XmmReg xd = (X86XmmReg)R(1);
+            if (is_rip_rel(ops[0], &rip_sym)) {
+                X86Mem rip_m = {X86_NOREG, X86_NOREG, 1, 0};
+                x86_movss_rm(buf, xd, rip_m);
+                int sidx = ensure_sym(as, rip_sym);
+                objfile_add_reloc(as->obj, SEC_TEXT, buf->len - 4, sidx, R_X86_64_PC32, -4);
+            } else {
+                x86_movss_rm(buf, xd, M(0));
+            }
+        }
         return true;
     }
     if (!strcmp(mnem, "addsd")) {
