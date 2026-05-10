@@ -1819,9 +1819,6 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_conjf", "conjf");
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
-        define_pre("__builtin_ffs", "ffs");
-        define_pre("__builtin_ffsl", "ffsl");
-        define_pre("__builtin_ffsll", "ffsll");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
         // __builtin_va_* are handled as parser builtins, not macros
         define_pre("__GNUC__", "4");
@@ -1888,9 +1885,6 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_conjf", "conjf");
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
-        define_pre("__builtin_ffs", "ffs");
-        define_pre("__builtin_ffsl", "ffsl");
-        define_pre("__builtin_ffsll", "ffsll");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
         // __builtin_va_* are handled as parser builtins, not macros
         define_pre("__extension__", "");
