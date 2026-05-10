@@ -92,6 +92,8 @@ struct ObjReloc {
 #define R_AARCH64_LDST8_ABS_LO12_NC      278
 #define R_AARCH64_ADR_GOT_PAGE           311
 #define R_AARCH64_LD64_GOT_LO12_NC       312
+#define R_AARCH64_TLSLE_ADD_TPREL_HI12 549
+#define R_AARCH64_TLSLE_ADD_TPREL_LO12 550
 
 // ELF x86-64 relocation types
 #define R_X86_64_NONE       0

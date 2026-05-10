@@ -1157,7 +1157,8 @@ static size_t asm_jmp_label_to(SecBuf *s, const char *label) {
     return off;
 #endif
 }
-// Conditional branch wrappers with label strings (forward-fixup)
+// Conditional branch wrappers with label strings (forward-fixup) — x86 only
+#ifndef ARCH_ARM64
 static size_t asm_jb_label_to(SecBuf *s, const char *label) {
     size_t off = s->len;
     x86_jcc_rel32(s, X86_B, 0);
@@ -1186,6 +1187,7 @@ static size_t asm_ja_label_to(SecBuf *s, const char *label) {
     asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, X86_A, -1, false);
     return off;
 }
+#endif // !ARCH_ARM64
 
 
 static size_t asm_jmp_label(SecBuf *s) {
@@ -3451,7 +3453,7 @@ static void asm_mov_mem8_rcx_rax(SecBuf *s) {
     x86_mov_rm(s, 8, X86_RAX, m); // movq 8(%rcx), %rax
 }
 #endif // !ARCH_ARM64
-#endif // CODEGEN_ASM_H
+#ifndef ARCH_ARM64
 // adcq $0, 8(rd)  — add-with-carry 0 to high 64-bit (x86 encoding: REX.W 83 /2 ib)
 static void asm_adcq_mem8_0(SecBuf *s, VReg rd) {
     X86Reg r = REG(rd);
@@ -3615,3 +3617,5 @@ static void asm_setcc_al(SecBuf *s, X86Cond cond) {
 
 // "xorl r, r" — zero a virtual register (already exists as asm_xor_reg_reg)
 // but also need the specific "xorl %s, %s" form for int128 compare epilogue
+#endif // !ARCH_ARM64
+#endif // CODEGEN_ASM_H

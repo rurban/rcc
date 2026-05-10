@@ -152,6 +152,8 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
         case R_AARCH64_ADD_ABS_LO12_NC: return ARM64_RELOC_PAGEOFF12;
         case R_AARCH64_ADR_GOT_PAGE: return ARM64_RELOC_GOT_LOAD_PAGE21;
         case R_AARCH64_LD64_GOT_LO12_NC: return ARM64_RELOC_GOT_LOAD_PAGEOFF12;
+        case R_AARCH64_TLSLE_ADD_TPREL_HI12: return ARM64_RELOC_ADDEND;
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12: return ARM64_RELOC_ADDEND;
         default: return ARM64_RELOC_UNSIGNED;
         }
     } else {
@@ -161,6 +163,7 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
         case R_X86_64_PC32: return X86_64_RELOC_SIGNED;
         case R_X86_64_32S: return X86_64_RELOC_SIGNED;
         case R_X86_64_32: return X86_64_RELOC_UNSIGNED;
+        case R_X86_64_TPOFF32: return X86_64_RELOC_TLV;
         default: return X86_64_RELOC_UNSIGNED;
         }
     }
@@ -295,9 +298,9 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
 
-    // segment vm size = from text_off to end of last section (including BSS padding)
-    uint64_t seg_vmsize = (rodata_off + rodata_size) - text_off;
-    uint64_t seg_filesize = seg_vmsize; // .o files: vmsize == filesize (no zero-fill)
+    // segment vm size = from text_off to end of rodata, plus BSS VM allocation
+    uint64_t seg_filesize = (rodata_off + rodata_size) - text_off;
+    uint64_t seg_vmsize = seg_filesize + obj->bss_size;
 
     // -----------------------------------------------------------------------
     // Write file
