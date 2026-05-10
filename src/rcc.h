@@ -197,6 +197,8 @@ extern bool opt_W;
 extern bool opt_ms_bitfields;
 extern bool opt_dM;
 extern bool opt_g;
+extern bool opt_pie;
+extern bool opt_pic;
 extern int pack_align;
 extern bool sse42_available;
 

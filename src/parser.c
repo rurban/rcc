@@ -5728,6 +5728,7 @@ Program *parse(Token *tok) {
                         var = new_var(name, ty, false);
                     }
                     var->is_extern = attr.is_extern;
+                    var->is_static = attr.is_static;
                     if (pending_asm_name)
                         var->asm_name = pending_asm_name;
                     if (pending_alias_target)

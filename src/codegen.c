@@ -162,6 +162,12 @@ static bool is_asm_reserved(const char *name);
 static void sign_extend_to(int r, int from_size, int to_size);
 static void zero_extend_to(int r, int from_size, int to_size);
 
+static bool var_needs_got(LVar *var) {
+    if (var->is_local) return false;
+    if (var->is_static) return false;
+    return opt_pic;
+}
+
 #if 0
 static char *func_asm_name(char *name) {
     for (TLItem *item = all_items; item; item = item->next) {
@@ -2691,12 +2697,15 @@ static int gen_addr(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            if (node->var->is_weak)
+            if (node->var->is_weak || var_needs_got(node->var))
                 emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
-            printf("  lea %s(%%rip), %s\n", var_label(node->var), reg64[r]);
+            if (var_needs_got(node->var))
+                printf("  mov %s@GOTPCREL(%%rip), %s\n", var_label(node->var), reg64[r]);
+            else
+                printf("  lea %s(%%rip), %s\n", var_label(node->var), reg64[r]);
 #endif
         }
         return r;
@@ -2983,10 +2992,18 @@ static int gen(Node *node) {
 #endif
             } else {
 #ifdef ARCH_ARM64
-                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                if (var_needs_got(node->var))
+                    emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                else
+                    emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                 printf("  ldr %s, [%s]\n", reg64[r], reg64[r]);
 #else
-                printf("  mov %s(%%rip), %s\n", label, reg64[r]);
+                if (var_needs_got(node->var)) {
+                    printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+                    printf("  mov (%s), %s\n", reg64[r], reg64[r]);
+                } else {
+                    printf("  mov %s(%%rip), %s\n", label, reg64[r]);
+                }
 #endif
             }
         } else if (node->var->ty->kind == TY_ARRAY) {
@@ -3011,8 +3028,14 @@ static int gen(Node *node) {
 #endif
             else
 #ifdef ARCH_ARM64
+                if (var_needs_got(node->var))
+                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+            else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
+                if (var_needs_got(node->var))
+                printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+            else
                 printf("  lea %s(%%rip), %s\n", label, reg64[r]);
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
@@ -3024,12 +3047,15 @@ static int gen(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            if (node->var->is_weak)
+            if (node->var->is_weak || var_needs_got(node->var))
                 emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
-            printf("  lea %s(%%rip), %s\n", label, reg64[r]);
+            if (var_needs_got(node->var))
+                printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+            else
+                printf("  lea %s(%%rip), %s\n", label, reg64[r]);
 #endif
         } else if (is_flonum(node->var->ty)) {
             {
@@ -3052,19 +3078,35 @@ static int gen(Node *node) {
                 } else {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                        if (var_needs_got(node->var))
+                            emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                        else
+                            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr s0, [%s]\n", reg64[r]);
                         printf("  fcvt d0, s0\n");
 #else
-                        printf("  movss %s(%%rip), %%xmm0\n", label);
+                        if (var_needs_got(node->var)) {
+                            printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+                            printf("  movss (%s), %%xmm0\n", reg64[r]);
+                        } else {
+                            printf("  movss %s(%%rip), %%xmm0\n", label);
+                        }
                         printf("  cvtss2sd %%xmm0, %%xmm0\n");
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                        if (var_needs_got(node->var))
+                            emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
+                        else
+                            emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr d0, [%s]\n", reg64[r]);
 #else
-                        printf("  movsd %s(%%rip), %%xmm0\n", label);
+                        if (var_needs_got(node->var)) {
+                            printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+                            printf("  movsd (%s), %%xmm0\n", reg64[r]);
+                        } else {
+                            printf("  movsd %s(%%rip), %%xmm0\n", label);
+                        }
 #endif
                     }
                 }
@@ -3085,11 +3127,19 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
                 int ta = alloc_reg();
-                emit_adrp_add(reg64[ta], asm_sym_name(var_sym_label(node->var)));
+                if (var_needs_got(node->var))
+                    emit_adrp_got(reg64[ta], asm_sym_name(var_sym_label(node->var)));
+                else
+                    emit_adrp_add(reg64[ta], asm_sym_name(var_sym_label(node->var)));
                 emit_load(node->ty, r, format("[%s]", reg64[ta]));
                 free_reg(ta);
 #else
-                emit_load(node->ty, r, format("%s(%%rip)", label));
+                if (var_needs_got(node->var)) {
+                    printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
+                    emit_load(node->ty, r, format("(%s)", reg64[r]));
+                } else {
+                    emit_load(node->ty, r, format("%s(%%rip)", label));
+                }
 #endif
             }
         }

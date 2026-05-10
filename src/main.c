@@ -69,12 +69,8 @@ void help(void) {
     printf("rcc [options...] [-o outfile] [-c] infile(s)...\n");
     printf("Options:\n"
            "-I path             add include path\n"
-           "-Lpath              add linker path\n"
-           "-lname              add lib\n"
-           "-pthread            link with pthreads library\n"
-           "-shared             create shared library\n"
-           "-static             link statically\n"
-           "-Wl,<opt>           pass option to linker\n"
+           "-Dname[=val]        define a macro\n"
+           "-Uname              undefine a macro\n"
            "-E                  preprocessor-only\n"
            "-S                  assemble-only\n"
            "-c                  compile-only\n"
@@ -83,10 +79,16 @@ void help(void) {
            "-O1                 enable peephole + CTFE optimizations\n"
            "-g                  emit DWARF line-number debug info\n"
            "-W                  enable more compiler warnings\n"
-           "-Dname[=val]        define a macro\n"
-           "-Uname              undefine a macro\n"
+           "-Lpath              add linker path\n"
+           "-lname              add lib\n"
+           "-pthread            link with pthreads library\n"
+           "-shared             create shared library\n"
+           "-static             link statically\n"
+           "-Wl,<opt>           pass option to linker\n"
            "-mms-bitfields      use MSVC bitfield layout by default\n"
            "-mno-ms-bitfields   use GCC bitfield layout by default\n"
+           "-pie|-fPIE|-fpie    generate position-independent executable\n"
+           "-fPIC|-fpic         generate position-independent code\n"
            "-###                dry-run (print commands, don't execute)\n"
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
@@ -102,6 +104,8 @@ bool opt_dryrun = false;
 bool opt_dM = false;
 bool opt_fdump_ast = false;
 bool opt_g = false;
+bool opt_pie = false;
+bool opt_pic = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
     true;
@@ -186,6 +190,11 @@ int main(int argc, char **argv) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
             opt_ms_bitfields = false;
+        } else if (!strcmp(argv[i], "-pie") || !strcmp(argv[i], "-fPIE") ||
+                   !strcmp(argv[i], "-fpie")) {
+            opt_pie = true;
+        } else if (!strcmp(argv[i], "-fPIC") || !strcmp(argv[i], "-fpic")) {
+            opt_pic = true;
         } else if (!strcmp(argv[i], "-o")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -o\n");
@@ -313,7 +322,13 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
             snprintf(cmd, sizeof(cmd), "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup", out_path);
 #else
-            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
+            if (opt_pic) {
+                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
+            } else if (opt_pie) {
+                snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
+            } else {
+                snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
+            }
 #endif
         }
         if (!opt_dryrun) {
