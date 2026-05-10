@@ -47,6 +47,7 @@ test/*.out
 /.opencode
 pngout.png
 rcc-preview2.png
+/chat_export*.md
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt

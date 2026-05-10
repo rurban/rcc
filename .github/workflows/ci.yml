@@ -63,6 +63,17 @@ jobs:
       - name: Build
         run: make
 
+
+      - name: Smoke test extern symbols (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+          ./rcc -o /tmp/smoke /tmp/smoke.c
+          /tmp/smoke
+          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+          ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+          /tmp/smoke2
+          rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
       - name: Run tests
         run: |
           ./rcc --version
