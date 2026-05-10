@@ -12,9 +12,14 @@ rcc_flags=""
 ldflags=""
 inputs=""
 output=""
+emit_asm=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+	-S)
+		emit_asm=1
+		shift
+		;;
 	-o)
 		output="$2"
 		shift 2
@@ -54,14 +59,22 @@ if [ -z "$inputs" ]; then
 	exit 1
 fi
 
-if [ -z "$output" ]; then
-	output="a.exe"
-fi
-
 WINEDEBUG=fixme-all
 WINEDLLOVERRIDES="winedbg=d"
 WINENOPOPUPS=1
 export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS
+
+if [ "$emit_asm" -eq 1 ]; then
+	if [ -z "$output" ]; then
+		output="$(echo "$inputs" | sed 's/\.c$/.s/')"
+	fi
+	# shellcheck disable=SC2086
+	exec wine "$scriptdir/rcc.exe" $rcc_flags -S -o "$output" $inputs
+fi
+
+if [ -z "$output" ]; then
+	output="a.exe"
+fi
 
 # Ensure libwinpthread-1.dll is available for Wine (needed by mingw-w64 CRT)
 if [ ! -f "$HOME/.wine/drive_c/windows/system32/libwinpthread-1.dll" ]; then
@@ -74,16 +87,16 @@ if [ ! -f "$scriptdir/lib/mingw.obj" ]; then
     x86_64-w64-mingw32-gcc -c "$scriptdir/lib/mingw.c" -o "$scriptdir/lib/mingw.obj" || exit 1
 fi
 
-s_files=""
+o_files=""
 for input in $inputs; do
-	TMP_S="$(mktemp -u /tmp/mingw_cross_XXXXXX.s)"
+	TMP_O="$(mktemp -u /tmp/mingw_cross_XXXXXX.o)"
 	# shellcheck disable=SC2086
-	if ! wine "$scriptdir/rcc.exe" $rcc_flags -S -o "$TMP_S" "$input" $ldflags; then
-		rm -f $s_files
+	if ! wine "$scriptdir/rcc.exe" $rcc_flags -c -o "$TMP_O" "$input" $ldflags; then
+		rm -f $o_files
 		exit 1
 	fi
-	s_files="$s_files $TMP_S"
+	o_files="$o_files $TMP_O"
 done
 
 # shellcheck disable=SC2086
-x86_64-w64-mingw32-gcc -o "$output" $s_files "$scriptdir/lib/mingw.obj" $ldflags && rm -f $s_files
+x86_64-w64-mingw32-gcc -o "$output" $o_files "$scriptdir/lib/mingw.obj" $ldflags && rm -f $o_files

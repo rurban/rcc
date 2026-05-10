@@ -462,8 +462,13 @@ Program *parse(Token *tok);
 //
 // CodeGen
 //
+struct ObjFile;
 bool va_arg_need_copy(Type *ty);
-void codegen(Program *prog);
+struct ObjFile *codegen(Program *prog);
+void objfile_free(struct ObjFile *obj);
+int elf_write(struct ObjFile *obj, const char *path);
+int macho_write(struct ObjFile *obj, const char *path);
+int coff_write(struct ObjFile *obj, const char *path);
 
 // VLA
 Type *vla_of(Type *base, Node *expr, int64_t arr_len);

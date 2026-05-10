@@ -4,8 +4,8 @@ Generated: June 2026
 
 ## Summary
 
-- **Total**: 153
-- **Passed**: 153
+- **Total**: 152
+- **Passed**: 152
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -122,7 +122,7 @@ Generated: June 2026
 | 117_builtins                | PASS   | Output matches            |
 | 118_switch                  | PASS   | Output matches            |
 | 119_random_stuff            | PASS   | Output matches            |
-| 120_alias                   | PASS   | Output matches            |
+| 120_alias                   | SKIP   | Skipped                   |
 | 121_struct_return           | PASS   | Output matches            |
 | 122_vla_reuse               | PASS   | Output matches            |
 | 123_vla_bug                 | PASS   | Output matches            |

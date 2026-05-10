@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
+#include "asm.h"
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -18,7 +19,6 @@ static uint64_t now_us(void) {
 #ifndef GCC
 #define GCC "gcc"
 #endif
-
 void add_define(char *def);
 void add_undef(char *name);
 void dump_ast(Program *prog);
@@ -152,8 +152,8 @@ int main(int argc, char **argv) {
         "a.out"
 #endif
         ;
-    char *in_path = NULL;
-    bool first_input = true;
+    char *input_files[64];
+    int n_inputs = 0;
     bool opt_S = false;
     bool opt_c = false;
     bool opt_E = false;
@@ -302,62 +302,38 @@ int main(int argc, char **argv) {
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
-            OutPath *p = arena_alloc(sizeof(OutPath));
-            p->path = argv[i];
-            p->next = input_paths;
-            input_paths = p;
+            if (n_inputs < 64)
+                input_files[n_inputs++] = argv[i];
         }
     }
 
-    if (!input_paths) {
+    if (n_inputs == 0) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
     }
 
-    int file_index = 0;
-    for (OutPath *ip = reverse(input_paths); ip; ip = ip->next, file_index++) {
-        in_path = ip->path;
+    // Process each input file
+    for (int fi = 0; fi < n_inputs; fi++) {
+        char *cur_path = input_files[fi];
 
-        // Default output for -c without -o: <basename>.o
-        if (opt_c && !opt_o) {
-            char *base = path_basename(in_path);
-            char *dot = strrchr(base, '.');
-            if (dot)
-                out_path = format("%.*s.o", (int)(dot - base), base);
-            else
-                out_path = format("%s.o", base);
+        char *asm_path;
+        if (opt_S) {
+            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+        } else if (opt_c) {
+            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+        } else {
+            asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), fi, path_basename(cur_path));
         }
-
-        // Object files skip compilation and go directly to linker input
-        size_t in_len = strlen(in_path);
-        if ((in_len >= 2 && !strcmp(in_path + in_len - 2, ".o")) || (in_len >= 3 && !strcmp(in_path + in_len - 3, ".so"))
-#ifdef __APPLE__
-            || (in_len >= 6 && !strcmp(in_path + in_len - 6, ".dylib"))
-#endif
-#ifdef _WIN32
-            || (in_len >= 4 && !strcmp(in_path + in_len - 4, ".obj")) || (in_len >= 4 && !strcmp(in_path + in_len - 4, ".dll"))
-#endif
-        ) {
-            OutPath *p = arena_alloc(sizeof(OutPath));
-            p->path = in_path;
-            p->next = obj_paths;
-            obj_paths = p;
-            continue;
-        }
-
-        char *asm_path = opt_S
-            ? opt_o ? out_path : format("%s.s", path_basename(in_path))
-            : format("rcc_tmp_%d_%d_%s.s", _getpid(), file_index, path_basename(in_path));
 
         // Tokenize and Parse
-        char *contents = read_file(in_path);
+        char *contents = read_file(cur_path);
 
         // Always preprocess - opt_E just outputs preprocessed result
         uint64_t t0 = opt_time ? now_us() : 0;
-        char *preprocessed = preprocess(in_path, contents);
+        char *preprocessed = preprocess(cur_path, contents);
         if (opt_time)
-            fprintf(stderr, "  preprocess  %s: %6lu us\n", in_path,
-                    (unsigned long)(now_us() - t0));
+            fprintf(stderr, "  preprocess  %s: %6lu us\n", cur_path,
+                    now_us() - t0);
 
         if (opt_E) {
             printf("%s", preprocessed);
@@ -365,116 +341,104 @@ int main(int argc, char **argv) {
         }
 
         t0 = opt_time ? now_us() : 0;
-        Token *tok = tokenize(in_path, preprocessed);
+        Token *tok = tokenize(cur_path, preprocessed);
         if (opt_time)
-            fprintf(stderr, "  lex         %s: %6lu us\n", in_path,
-                    (unsigned long)(now_us() - t0));
+            fprintf(stderr, "  lex         %s: %6lu us\n", cur_path,
+                    now_us() - t0);
 
         t0 = opt_time ? now_us() : 0;
         Program *prog = parse(tok);
-        prog->in_path = in_path;
+        prog->in_path = cur_path;
         if (opt_time)
-            fprintf(stderr, "  parse       %s: %6lu us\n", in_path,
-                    (unsigned long)(now_us() - t0));
+            fprintf(stderr, "  parse       %s: %6lu us\n", cur_path,
+                    now_us() - t0);
 
         if (opt_fdump_ast)
             dump_ast(prog);
 
         // Type system / Semantic checks
         t0 = opt_time ? now_us() : 0;
-#ifdef DEBUG
-        TLItem *tfast = prog->items;
-#endif
         for (TLItem *item = prog->items; item; item = item->next) {
-#ifdef DEBUG
-            if (tfast) {
-                tfast = tfast->next;
-                if (tfast) tfast = tfast->next;
-            }
-            if (tfast && item == tfast) {
-                fprintf(stderr, "  typecheck   %s: CYCLE in prog->items chain!\n", in_path);
-                break;
-            }
-#endif
             if (item->kind != TL_FUNC)
                 continue;
-            Node *n = item->fn->body;
-            // try to find a cycle in the linked list. switch case_next looped
-#ifdef DEBUG
-            uint64_t f0 = opt_time ? now_us() : 0;
-            uint64_t ncount = 0;
-            Node *fast = n;
-#endif
-            while (n) {
-#ifdef DEBUG
-                if (opt_time && opt_v && (ncount % 10) == 0) {
-                    fprintf(stderr, "  typecheck   %s: %-20s %5lu nodes...\n", in_path,
-                            item->fn->name, (unsigned long)ncount);
-                    fflush(stderr);
-                }
-#endif
+            for (Node *n = item->fn->body; n; n = n->next) {
                 check_type(n);
-                n = n->next;
-#ifdef DEBUG
-                ncount++;
-                if (fast) {
-                    fast = fast->next;
-                    if (fast) fast = fast->next;
-                }
-                if (fast && n && n == fast) {
-                    fprintf(stderr, "  typecheck   %s: CYCLE in %s body next chain!\n",
-                            in_path, item->fn->name);
-                    break;
-                }
-#endif
             }
-#ifdef DEBUG
-            fflush(stderr);
-            if (opt_time && opt_v)
-                fprintf(stderr, "  typecheck   %s: %-20s %5lu nodes %6lu us\n", in_path,
-                        item->fn->name, (unsigned long)ncount,
-                        (unsigned long)(now_us() - f0));
-#endif
         }
-        //fflush(stderr);
         if (opt_time)
-            fprintf(stderr, "  typecheck   %s: %6lu us\n", in_path,
-                    (unsigned long)(now_us() - t0));
-        fflush(stderr);
+            fprintf(stderr, "  typecheck   %s: %6lu us\n", cur_path,
+                    now_us() - t0);
 
         // CTFE runs only with -O1; peephole skipped with -O0.
         if (opt_O1) {
             t0 = opt_time ? now_us() : 0;
             optimize(prog);
             if (opt_time)
-                fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", in_path,
-                        (unsigned long)(now_us() - t0));
+                fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", cur_path,
+                        now_us() - t0);
         }
 
         if (!opt_dryrun) {
-            // Redirect stdout to our assembly file (append for multi-file)
-            if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
-                fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
-                return 1;
-            }
-            first_input = false;
-            // Code generation (prints assembly to stdout, which is now asm_path)
             time_peep_us = 0;
             t0 = opt_time ? now_us() : 0;
-            codegen(prog);
+            struct ObjFile *obj = codegen(prog);
             if (opt_time) {
                 uint64_t cg_total = now_us() - t0;
-                fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
-                        (unsigned long)(cg_total - time_peep_us));
+                fprintf(stderr, "  codegen     %s: %6lu us\n", cur_path,
+                        cg_total - time_peep_us);
                 if (!opt_O0)
-                    fprintf(stderr, "  peephole    %s: %6lu us\n", in_path,
-                            (unsigned long)time_peep_us);
+                    fprintf(stderr, "  peephole    %s: %6lu us\n", cur_path,
+                            time_peep_us);
             }
-            fflush(stdout);
-            // Restore stdout to console if we want to print further, but we are done.
-            fclose(stdout);
-        } else {
-            first_input = false;
+            // Write binary .o file
+            char *tmp_obj_path = asm_path;
+            if (opt_S) {
+                tmp_obj_path = format("%s.tmp.o", asm_path);
+            }
+            int wr;
+#ifdef _WIN32
+            wr = coff_write(obj, tmp_obj_path);
+#elif __APPLE__
+            wr = macho_write(obj, tmp_obj_path);
+#else
+            wr = elf_write(obj, tmp_obj_path);
+#endif
+            if (wr != 0) {
+                fprintf(stderr, "rcc: error: cannot write object file %s\n", tmp_obj_path);
+                return 1;
+            }
+            objfile_free(obj);
+            if (opt_S) {
+                char cmd[2048];
+                // Derive objdump name from GCC: "gcc" -> "objdump",
+                // "aarch64-linux-gnu-gcc" -> "aarch64-linux-gnu-objdump"
+                const char *objdump = "objdump";
+                size_t gcc_len = strlen(GCC);
+                if (gcc_len > 4 && GCC[gcc_len - 1] == 'c' && GCC[gcc_len - 2] == 'c' && GCC[gcc_len - 3] == 'g' && GCC[gcc_len - 4] == '-') {
+                    // Cross-compiler: strip trailing "-gcc", append "-objdump"
+                    char *triple = malloc(gcc_len - 3);
+                    if (triple) {
+                        memcpy(triple, GCC, gcc_len - 4);
+                        triple[gcc_len - 4] = '\0';
+                        size_t len = strlen(triple) + 9;
+                        char *xobj = malloc(len);
+                        if (xobj) {
+                            snprintf(xobj, len, "%s-objdump", triple);
+                            objdump = xobj;
+                        }
+                        free(triple);
+                    }
+                }
+                snprintf(cmd, sizeof(cmd), "%s -d -r --no-show-raw-insn '%s' > '%s' && "
+                                           "%s -s -j .data -j .rodata -j .bss '%s' >> '%s' && rm -f '%s'",
+                         objdump, tmp_obj_path, asm_path,
+                         objdump, tmp_obj_path, asm_path, tmp_obj_path);
+                int status = system(cmd);
+                if (status != 0) {
+                    fprintf(stderr, "rcc: error: objdump failed for -S output\n");
+                    return 1;
+                }
+            }
         }
 
         if (!opt_S && !opt_dryrun) {
@@ -484,55 +448,34 @@ int main(int argc, char **argv) {
             out_paths = p;
         }
     }
-
     // Assemble / Link if not just compiling to assembly or preprocessing
     if (!opt_S && !opt_E) {
-        char cmd[1024];
+        if (opt_dryrun) {
+            // Print what we would do
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "<built-in-assembler> -o %s", out_path);
+            printf("%s\n", cmd);
+            return 0;
+        }
+
+        out_paths = reverse(out_paths);
+
         if (opt_c) {
-            if (opt_pic)
-                snprintf(cmd, sizeof(cmd), GCC " -c -fPIC -o %s", out_path);
-            else
-                snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
-        } else {
-#ifdef __APPLE__
-            // Prefer lib/darwin.dylib (provides on_exit with exit-code capture
-            // via dyld interposing).  Fall back to RCC_INCDIR path for installs.
-            struct stat libst_darwin;
-            char darwin_link[512] = "";
-            if (stat("lib/darwin.dylib", &libst_darwin) == 0) {
-                char cwd[256];
-                const char *rpath = getcwd(cwd, sizeof(cwd)) ? cwd : ".";
-                snprintf(darwin_link, sizeof(darwin_link),
-                         "lib/darwin.dylib -Wl,-rpath,%s/lib", rpath);
-            }
-#ifdef RCC_INCDIR
-            else if (stat(RCC_INCDIR "/../lib/darwin.dylib", &libst_darwin) == 0)
-                snprintf(darwin_link, sizeof(darwin_link),
-                         "%s/../lib/darwin.dylib -Wl,-rpath,%s/../lib",
-                         RCC_INCDIR, RCC_INCDIR);
-#endif
-            snprintf(cmd, sizeof(cmd),
-                     "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup %s",
-                     out_path, darwin_link);
-#else
-            if (opt_pic) {
-                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
-            } else if (opt_pie) {
-                snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
-            } else if (strstr(libs, "-shared")) {
-                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
-            } else {
-                snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
-            }
-#endif
-        }
-        if (!opt_dryrun) {
-            out_paths = reverse(out_paths);
+            // -c: codegen already produced binary .o files; rename to out_path
+            int status = 0;
             for (OutPath *p = out_paths; p; p = p->next) {
-                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+                if (strcmp(p->path, out_path) != 0) {
+                    if (rename(p->path, out_path) != 0) {
+                        fprintf(stderr, "rcc: error: rename %s -> %s failed\n", p->path, out_path);
+                        status = 1;
+                    }
+                }
             }
+            return status;
         }
+        // Linking: codegen already produced .o files; add them to linker command
+        char cmd[4096];
+        int status = 0;
         if (obj_paths) {
             obj_paths = reverse(obj_paths);
             for (OutPath *p = obj_paths; p; p = p->next) {
@@ -541,45 +484,72 @@ int main(int argc, char **argv) {
             }
         }
 
-#if defined(_WIN32) || defined(__MINGW32__)
-        struct stat libst;
-#endif
-#if defined(_WIN32) || defined(__MINGW32__)
-        // Link mingw runtime lib (provides on_exit etc.)
-        // Check local dev tree first, then installed path
-#ifdef RCC_INCDIR
-        // cppcheck-suppress syntaxError
-        const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
-        if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
+#ifdef __APPLE__
+        snprintf(cmd, sizeof(cmd), GCC " -o %s -arch arm64"
+                                       " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+                                       " -Wl,-undefined,dynamic_lookup",
+                 out_path);
+#else
+        if (opt_pie)
+            snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
+        else if (opt_pic)
+            snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
         else
+            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
 #endif
-            if (stat("lib/mingw.obj", &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
+
+        // Codegen already produced .o files; add them directly to linker command
+        for (OutPath *p = out_paths; p; p = p->next) {
+            strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
+            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+        }
+
+#if defined(_WIN32) || defined(__MINGW32__)
+        {
+            struct stat libst;
+#ifdef RCC_INCDIR
+            const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
+            if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
+            else
+#endif
+                if (stat("lib/mingw.obj", &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
+        }
+#endif
+#ifdef __APPLE__
+        {
+            struct stat libst;
+            // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
+#ifdef RCC_INCDIR
+            const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
+            if (stat(rcc_darwin, &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
+            else
+#endif
+                if (stat("lib/darwin.o", &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
+        }
 #endif
 
         if (libs_len)
             strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
 
-        if (opt_dryrun) {
-            printf("%s\n", cmd);
-            return 0;
+        if (!status) {
+            uint64_t t_link = opt_time ? now_us() : 0;
+            status = system(cmd);
+            if (opt_time)
+                fprintf(stderr, "  link        %s: %6lu us\n", out_path,
+                        (unsigned long)(now_us() - t_link));
+            if (status != 0)
+                fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
         }
 
-        uint64_t t_link = opt_time ? now_us() : 0;
-        int status = system(cmd);
-        if (opt_time)
-            fprintf(stderr, "  link        %s: %6lu us\n", out_path,
-                    (unsigned long)(now_us() - t_link));
-        if (status != 0) {
-            fprintf(stderr, "rcc: error: backend %s failed with code %d\n", cmd, status);
-        }
-        for (OutPath *p = out_paths; p; p = p->next) {
+        // Cleanup temp files
+        for (OutPath *p = out_paths; p; p = p->next)
             remove(p->path);
-        }
-        if (status != 0) {
-            return status;
-        }
+
+        return status ? 1 : 0;
     }
     return 0;
 }

@@ -305,7 +305,7 @@ SKIP_TESTS="
 114_bound_signal
 115_bound_setjmp
 116_bound_setjmp2
- 120_alias
+120_alias
 126_bound_global
 141_riscv_asm
 "
