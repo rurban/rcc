@@ -1917,7 +1917,15 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             // the frame-relative address — it is always valid.
             printf("  lea -%d(%%rbp), %s\n", temp_ret_slot, reg64[temp_ret_reg]);
         }
-        return temp_ret_reg != -1 ? temp_ret_reg : hidden_ret_reg;
+        int ret = temp_ret_reg != -1 ? temp_ret_reg : hidden_ret_reg;
+#ifdef _WIN32
+        // On Windows, structs ≤8 bytes are passed by value. When the caller
+        // did NOT provide a hidden ret buffer (hidden_ret_reg == -1), the
+        // return register holds the buffer address; load the value from it.
+        if (hidden_ret_reg == -1 && node->ty->size <= 8 && node->ty->size > 0)
+            printf("  movq (%s), %s\n", reg64[ret], reg64[ret]);
+#endif
+        return ret;
     }
 
     int r = alloc_reg();
@@ -4258,7 +4266,7 @@ static int gen(Node *node) {
 #endif
         } else if (to->size == 4 && from->size == 8) {
             printf("  mov %s, %s\n", reg32[r], reg32[r]);
-        } else if (to->size == 8 && from->size < 8) {
+        } else if (to->size == 8 && from->size < 8 && from->kind != TY_ARRAY && from->kind != TY_STRUCT && from->kind != TY_UNION) {
             if (from->is_unsigned)
                 zero_extend_to(r, from->size, 8);
             else
@@ -5632,8 +5640,6 @@ static int gen(Node *node) {
         // Windows x64: all varargs (incl. float/double) read from GP reg save area.
         // The caller duplicates FP args into both GP and XMM registers.
         // gp_offset limit is 32 (4 GP regs * 8 bytes each).
-        // is_fp and is_ptr_struct use an extended check: float and ptr struct
-        // go through GP save area directly, not FP path.
         if (is_ptr_struct) {
             printf("  cmpl $24, (%s)\n", reg64[r]);
             printf("  ja .L.va_overflow.%d\n", rcc_label_count);
