@@ -360,6 +360,7 @@ while IFS= read -r src; do
 	[ -z "$p_src" ] && [ -n "${companions[$base]:-}" ] && p_src="${companions[$base]}"
 
 	if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
+		p_src=
 		continue
 	fi
 

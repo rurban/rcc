@@ -9,6 +9,7 @@
 scriptdir="$(cd "$(dirname "$0")" && pwd)"
 
 rcc_flags=""
+ldflags=""
 inputs=""
 output=""
 
@@ -17,6 +18,10 @@ while [ $# -gt 0 ]; do
 	-o)
 		output="$2"
 		shift 2
+		;;
+        -l*|-L*|-pthread)
+		ldflags="$ldflags $1"
+		shift
 		;;
 	-*)
 		# rcc option: collect for passing through
@@ -73,7 +78,7 @@ o_files=""
 for input in $inputs; do
 	TMP_O="$(mktemp -u /tmp/mingw_cross_XXXXXX.o)"
 	# shellcheck disable=SC2086
-	if ! wine "$scriptdir/rcc.exe" $rcc_flags -c -o "$TMP_O" "$input"; then
+	if ! wine "$scriptdir/rcc.exe" $rcc_flags -c -o "$TMP_O" "$input" $ldflags; then
 		rm -f $o_files
 		exit 1
 	fi
@@ -81,4 +86,4 @@ for input in $inputs; do
 done
 
 # shellcheck disable=SC2086
-x86_64-w64-mingw32-gcc -o "$output" $o_files "$scriptdir/lib/mingw.obj" && rm -f $o_files
+x86_64-w64-mingw32-gcc -o "$output" $o_files "$scriptdir/lib/mingw.obj" $ldflags && rm -f $o_files

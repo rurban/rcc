@@ -55,18 +55,16 @@ INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
 SRCS += src/x86_enc.c
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 MINGW_O = lib/mingw$(OBJ_EXT)
+TARGET_DEPS = -lpthread
 OBJ_EXT = .obj
 SRCS += src/x86_enc.c
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 else ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
 SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
@@ -75,6 +73,7 @@ endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
+OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 # Native Linux builds: optimize for the host CPU
 ifeq ($(shell uname -s),Linux)
@@ -92,18 +91,17 @@ ifneq ($(findstring apple,$(MACHINE)),)
 SRCS += src/macho_write.c src/arm64_enc.c
 DARWIN_O = lib/darwin.o
 OBJS += $(DARWIN_O)
-TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 SRCS += src/coff_write.c
-OBJS += $(MINGW_O)
+OBJS += $(MINGW_O) -lpthread
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
 SRCS += src/elf_write.c src/x86_enc.c
 OBJS += $(MINGW_O)
-TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 endif
 
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS)
@@ -251,4 +249,4 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-.PHONY: clean test check test-full test-torture lint bench install dist bench prof
+.PHONY: clean test check test-full test-torture lint bench install dist bench prof -lpthread
