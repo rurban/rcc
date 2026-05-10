@@ -599,8 +599,13 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 }
                 size_t off = secbuf_emit64le(buf, (uint64_t)addend);
                 int sidx = ensure_sym(as, symname);
+#ifdef __aarch64__
+                uint32_t abs64_reloc = R_AARCH64_ABS64;
+#else
+                uint32_t abs64_reloc = R_X86_64_64;
+#endif
                 objfile_add_reloc(as->obj, as->cur_sec, off, sidx,
-                                  R_AARCH64_ABS64, addend);
+                                  abs64_reloc, addend);
             } else if (!is_sym) {
                 int64_t v = strtoll(val, NULL, 0);
                 switch (sz) {
@@ -1538,26 +1543,30 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-// ADD / SUB / AND / OR / XOR  (all four operand combinations)
-#define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mi) \
+// ADD / SUB / AND / OR / XOR  (all five operand forms)
+#define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr, fn_mi) \
     if (!strncmp(mnem, name, strlen(name))) { \
         if (is_imm(0)&&is_reg(1))  { fn_ri(buf,sz,R(1),(int32_t)IMM(0)); } \
         else if (is_reg(0)&&is_reg(1))  { fn_rr(buf,sz,R(1),R(0)); } \
         else if (is_mem(0)&&is_reg(1))  { fn_rm(buf,sz,R(1),M(0)); } \
+        else if (is_reg(0)&&is_mem(1))  { fn_mr(buf,sz,M(1),R(0)); } \
         else if (is_imm(0)&&is_mem(1))  { fn_mi(buf,sz,M(1),(int32_t)IMM(0)); } \
-        else if (is_reg(0)&&is_mem(1))  { fn_mi(buf,sz,M(1),0); /* fallback: treat reg as imm0 */ } \
         return true; \
     }
-    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm, x86_add_mi)
-    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm, x86_sub_mi)
-    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mi)
-    ALU_OP("or", x86_or_rr, x86_or_ri, x86_add_rm, x86_or_mi)
-    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mi)
+    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm, x86_add_mr, x86_add_mi)
+    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm, x86_sub_mr, x86_sub_mi)
+    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mr, x86_and_mi)
+    ALU_OP("or", x86_or_rr, x86_or_ri, x86_add_rm, x86_or_mr, x86_or_mi)
+    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr, x86_xor_mi)
 #undef ALU_OP
 
     // IMUL
     if (!strncmp(mnem, "imul", 4)) {
-        if (nops == 2 && is_reg(0) && is_reg(1)) x86_imul_rr(buf, sz, R(1), R(0));
+        if (nops == 2 && is_reg(0) && is_reg(1))
+            x86_imul_rr(buf, sz, R(1), R(0));
+        else if (nops == 2 && is_imm(0) && is_reg(1))
+            // imul $imm, %reg → IMUL reg, reg, imm (2-operand form, same src=dst)
+            x86_imul_rri(buf, sz, R(1), R(1), (int32_t)IMM(0));
         else if (nops == 3 && is_imm(2))
             x86_imul_rri(buf, sz, R(1), R(0), (int32_t)IMM(2));
         else if (nops == 1)
