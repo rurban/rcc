@@ -41,7 +41,7 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 PREFIX ?= /usr/local
@@ -56,6 +56,20 @@ RUN_TESTS = run_tests
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
+
+ifneq ($(findstring apple,$(MACHINE)),)
+SRCS += src/macho_write.c src/arm64_enc.c
+DARWIN_O = lib/darwin.dylib
+TARGET_DEPS += $(DARWIN_O)
+else ifneq ($(findstring mingw,$(MACHINE)),)
+SRCS += src/coff_write.c src/x86_enc.c
+OBJS += $(MINGW_O) -lpthread
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+else
+SRCS += src/elf_write.c src/x86_enc.c
+TARGET_DEPS += $(MINGW_O)
+TARGET_EXT += $(MINGW_O)
+endif
 
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
@@ -75,9 +89,8 @@ BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
-OBJS = $(SRCS:.c=$(OBJ_EXT))
-else
-ifeq ($(CC),x86_64-w64-mingw32-gcc)
+SRCS += src/x86_enc.c
+else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
@@ -93,10 +106,12 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 RCC_GCC = gcc.exe
 endif
 ifeq ($(CC),aarch64-linux-gnu-gcc)
+SRCS += src/x86_enc.c
+else ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
 RUN_TESTS = run_tests_arm64
+SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
@@ -105,7 +120,8 @@ endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
-endif
+OBJS = $(SRCS:.c=$(OBJ_EXT))
+
 # Native Linux builds: optimize for the host CPU
 ifeq ($(shell uname -s),Linux)
 ifeq ($(CC),gcc)
@@ -115,13 +131,22 @@ ifneq ($(IS_CLANG),0)
 CFLAGS += -march=native
 endif
 endif
+DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
+VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 
 ifneq ($(findstring apple,$(MACHINE)),)
+SRCS += src/macho_write.c src/arm64_enc.c
 DARWIN_O = lib/rcc_darwin.dylib
+OBJS += $(DARWIN_O)
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(DARWIN_O)
+else ifneq ($(findstring mingw,$(MACHINE)),)
+SRCS += src/coff_write.c
+TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
+OBJS += $(MINGW_O) -lpthread
 else
-TARGET_DEPS += $(MINGW_O)
-TARGET_EXT += $(MINGW_O)
+OBJS += $(MINGW_O)
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
 
@@ -365,7 +390,6 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-FORCE:
-
 .PHONY: clean leanclean test check test-extra check-extra check-full check-torture \
 	test-full test-torture lint bench install dist bench prof FORCE
+FORCE:

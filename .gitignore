@@ -43,6 +43,7 @@ test/*.out
 /kimi-export*.md
 /session-ses*.md
 /omp-*.html
+/chat_export*.md
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt
