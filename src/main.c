@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
+#include "asm.h"
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -358,83 +359,136 @@ int main(int argc, char **argv) {
 
     // Assemble / Link if not just compiling to assembly or preprocessing
     if (!opt_S && !opt_E) {
-        char cmd[1024];
+        if (opt_dryrun) {
+            // Print what we would do
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "<built-in-assembler> -o %s", out_path);
+            printf("%s\n", cmd);
+            return 0;
+        }
+
+        out_paths = reverse(out_paths);
+
         if (opt_c) {
-            snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
-        } else {
-#ifdef __APPLE__
-            snprintf(cmd, sizeof(cmd), "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup", out_path);
-#else
-            if (opt_pic) {
-                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
-            } else if (opt_pie) {
-                snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
-            } else {
-                snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
-            }
-#endif
-        }
-        if (!opt_dryrun) {
-            out_paths = reverse(out_paths);
+            // -c: assemble each .s file to the single output .o using built-in assembler
+            // For multiple inputs we'd need per-file .o names, but rcc currently
+            // concatenates all to one .s, so just assemble that one file.
+            uint64_t t0 = opt_time ? now_us() : 0;
+            int status = 0;
             for (OutPath *p = out_paths; p; p = p->next) {
-                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+                if (assemble_file(p->path, out_path) != 0) {
+                    fprintf(stderr, "rcc: error: assembly failed for %s\n", p->path);
+                    status = 1;
+                }
+                remove(p->path);
             }
+            if (opt_time)
+                fprintf(stderr, "  assemble    %s: %6lu us\n", out_path,
+                        (unsigned long)(now_us() - t0));
+            return status;
         }
 
+        // Linking: assemble each .s to a temp .o, then call the linker
+        char cmd[4096];
+        int status = 0;
 
-#if defined(_WIN32) || defined(__MINGW32__) || defined(__APPLE__)
-        struct stat libst;
+#ifndef __APPLE__
+        // Choose linker: prefer mold, then ld
+        const char *linker = "ld";
+        {
+            // Check if mold is available
+            if (system("which mold >/dev/null 2>&1") == 0)
+                linker = "mold";
+        }
 #endif
-#if defined(_WIN32) || defined(__MINGW32__)
-        // Link mingw runtime lib (provides on_exit etc.)
-        // Check local dev tree first, then installed path
-#ifdef RCC_INCDIR
-        // cppcheck-suppress syntaxError
-        const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
-        if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
+
+#ifdef __APPLE__
+        snprintf(cmd, sizeof(cmd), "ld -o %s -arch arm64"
+                                   " -syslibroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+                                   " -lSystem",
+                 out_path);
+#else
+        if (opt_pie)
+            snprintf(cmd, sizeof(cmd), "%s -pie -o %s", linker, out_path);
         else
+            snprintf(cmd, sizeof(cmd), "%s --no-pie -o %s", linker, out_path);
+        // Add dynamic linker and crt files (needed for executable)
+        strncat(cmd, " -dynamic-linker /lib64/ld-linux-x86-64.so.2"
+                     " /usr/lib64/crt1.o /usr/lib64/crti.o"
+                     " -lc /usr/lib64/crtn.o",
+                sizeof(cmd) - strlen(cmd) - 1);
 #endif
-            if (stat("lib/mingw.obj", &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
+
+        // Assemble each .s file to a temp .o and add to linker command
+        OutPath *obj_paths = NULL;
+        uint64_t t_asm = opt_time ? now_us() : 0;
+        for (OutPath *p = out_paths; p; p = p->next) {
+            char obj_tmp[256];
+            snprintf(obj_tmp, sizeof(obj_tmp), "%s.tmp.o", p->path);
+            if (assemble_file(p->path, obj_tmp) != 0) {
+                fprintf(stderr, "rcc: error: assembly failed for %s\n", p->path);
+                status = 1;
+                break;
+            }
+            OutPath *op = arena_alloc(sizeof(OutPath));
+            op->path = format("%s", obj_tmp);
+            op->next = obj_paths;
+            obj_paths = op;
+            strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
+            strncat(cmd, obj_tmp, sizeof(cmd) - strlen(cmd) - 1);
+        }
+        if (opt_time)
+            fprintf(stderr, "  assemble    %s: %6lu us\n", out_path,
+                    (unsigned long)(now_us() - t_asm));
+
+#if defined(_WIN32) || defined(__MINGW32__)
+        {
+            struct stat libst;
+#ifdef RCC_INCDIR
+            const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
+            if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
+            else
+#endif
+                if (stat("lib/mingw.obj", &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
+        }
 #endif
 #ifdef __APPLE__
-        // Link Darwin runtime lib (provides on_exit etc. on macOS)
-        if (stat("lib/darwin.o", &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
+        {
+            struct stat libst;
+            if (stat("lib/darwin.o", &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
 #ifdef RCC_INCDIR
-        else {
-            // cppcheck-suppress syntaxError
-            const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
-            if (stat(rcc_darwin, &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
-        }
+            else {
+                const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
+                if (stat(rcc_darwin, &libst) == 0)
+                    snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
+            }
 #endif
+        }
 #endif
 
         if (libs_len)
             strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
 
-        if (opt_dryrun) {
-            printf("%s\n", cmd);
-            return 0;
+        if (!status) {
+            uint64_t t_link = opt_time ? now_us() : 0;
+            status = system(cmd);
+            if (opt_time)
+                fprintf(stderr, "  link        %s: %6lu us\n", out_path,
+                        (unsigned long)(now_us() - t_link));
+            if (status != 0)
+                fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
         }
 
-        uint64_t t_link = opt_time ? now_us() : 0;
-        int status = system(cmd);
-        if (opt_time)
-            fprintf(stderr, "  link        %s: %6lu us\n", out_path,
-                    (unsigned long)(now_us() - t_link));
-        if (status != 0) {
-            fprintf(stderr, "rcc: error: backend %s failed with code %d\n", cmd, status);
-        }
-        for (OutPath *p = out_paths; p; p = p->next) {
+        // Cleanup temp files
+        for (OutPath *p = out_paths; p; p = p->next)
             remove(p->path);
-        }
-        if (status != 0) {
-            return status;
-        }
+        for (OutPath *p = obj_paths; p; p = p->next)
+            remove(p->path);
+
+        return status ? 1 : 0;
     }
     return 0;
 }
