@@ -6551,43 +6551,6 @@ static int is_reg(const char *s) {
 }
 
 // Check if a physical register is used after line 'after' before being overwritten
-static int reg_live_after(char **lines, int nlines, int after, int pid) {
-    const char *variants[6] = {0};
-    int nv = 0;
-    for (int vi = 0; vi < 8; vi++) {
-        if (phys_reg_id(reg64[vi]) == pid) {
-            variants[nv++] = reg64[vi];
-            variants[nv++] = reg32[vi];
-            break;
-        }
-    }
-#ifndef ARCH_ARM64
-    if (pid == 0) {
-        variants[nv++] = "%rax";
-        variants[nv++] = "%eax";
-        variants[nv++] = "%al";
-    } else if (pid == 1) {
-        variants[nv++] = "%rcx";
-        variants[nv++] = "%ecx";
-        variants[nv++] = "%cl";
-    } else if (pid == 2) {
-        variants[nv++] = "%rdx";
-        variants[nv++] = "%edx";
-    } else if (pid == 3) {
-        variants[nv++] = "%rbx";
-        variants[nv++] = "%ebx";
-        variants[nv++] = "%bl";
-    }
-#endif
-    for (int k = after + 1; k < nlines && k < after + 30; k++) {
-        if (!lines[k] || !lines[k][0]) continue;
-        if (lines[k][0] != ' ') return 1;
-        for (int vi = 0; vi < nv && variants[vi]; vi++) {
-            if (strstr(lines[k], variants[vi])) return 1;
-        }
-    }
-    return 0;
-}
 
 // ARM64 peep helpers (parser-style, no sscanf)
 #ifdef ARCH_ARM64
@@ -6697,11 +6660,10 @@ static int peep_pattern3(char **lines, int li, int lj) {
 }
 
 // Pattern 4: mov REG, #IMM; OP REG2, REG → OP REG2, #IMM
-static int peep_pattern4(char **lines, int nlines, int li, int lj) {
+static int peep_pattern4(char **lines, int li, int lj) {
     char rd[32];
     int imm_val;
 #ifdef ARCH_ARM64
-    (void)nlines;
     (void)li;
     (void)lj;
     if (sscanf(lines[li], " mov %31s, #%d", rd, &imm_val) != 2) return 0;
@@ -6712,14 +6674,12 @@ static int peep_pattern4(char **lines, int nlines, int li, int lj) {
         return 0;
     long v_check = strtol(strchr(lines[li], '$') + 1, NULL, 0);
     if (v_check != (int)v_check) return 0;
-    int rd_pid = phys_reg_id(rd);
     char op[16], od[64], os[32];
     if (!peep_op_reg_reg(lines[lj], op, sizeof(op), od, sizeof(od), os, sizeof(os)) ||
         !same_phys(od, rd)) return 0;
     char *opname = op;
     int olen = strlen(op);
     if (olen > 1 && (op[olen - 1] == 'l' || op[olen - 1] == 'q' || op[olen - 1] == 'w' || op[olen - 1] == 'b')) {
-        // tmp buffer to strip size suffix for comparison
         static char opbase[16];
         memcpy(opbase, op, olen - 1);
         opbase[olen - 1] = '\0';
@@ -6734,19 +6694,64 @@ static int peep_pattern4(char **lines, int nlines, int li, int lj) {
         } else {
             lines[lj] = format("  %s $%d, %s", op, imm_val, os);
         }
-        if (rd_pid >= 0 && !reg_live_after(lines, nlines, lj, rd_pid))
-            lines[li][0] = '\0';
+        // Conservative: skip dead-predecessor deletion without forward scan
         return 1;
     }
 #endif
     return 0;
 }
 
+// Scan up to 30 lines of remaining body text (newlines still intact) for pid use.
+static int reg_live_in_text(const char *text, int pid) {
+    const char *variants[6] = {NULL};
+    int nv = 0;
+    for (int vi = 0; vi < NUM_REGS; vi++) {
+        if (phys_reg_id(reg64[vi]) == pid) {
+            variants[nv++] = reg64[vi];
+            variants[nv++] = reg32[vi];
+            break;
+        }
+    }
+#ifndef ARCH_ARM64
+    if (pid == 0) {
+        variants[nv++] = "%rax";
+        variants[nv++] = "%eax";
+        variants[nv++] = "%al";
+    } else if (pid == 1) {
+        variants[nv++] = "%rcx";
+        variants[nv++] = "%ecx";
+        variants[nv++] = "%cl";
+    } else if (pid == 2) {
+        variants[nv++] = "%rdx";
+        variants[nv++] = "%edx";
+    } else if (pid == 3) {
+        variants[nv++] = "%rbx";
+        variants[nv++] = "%ebx";
+        variants[nv++] = "%bl";
+    }
+#endif
+    const char *p = text;
+    for (int cnt = 0; cnt < 30 && *p; cnt++) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len > 0) {
+            if (*p != ' ') return 1; // label = block boundary, conservatively live
+            for (int vi = 0; vi < nv && variants[vi]; vi++) {
+                size_t vlen = strlen(variants[vi]);
+                for (size_t i = 0; i + vlen <= len; i++) {
+                    if (memcmp(p + i, variants[vi], vlen) == 0) return 1;
+                }
+            }
+        }
+        p = nl ? nl + 1 : p + len;
+        if (!nl) break;
+    }
+    return 0;
+}
+
 // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
-static int peep_pattern5(char **lines, int nlines, int li, int lj) {
-    int lk = lj + 1;
-    while (lk < nlines && (!lines[lk] || !lines[lk][0])) lk++;
-    if (lk >= nlines) return 0;
+// rest: unprocessed body text after the window (newlines still intact) for liveness scan
+static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest) {
     char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
 #ifndef ARCH_ARM64
     if (peep_mov_reg_mem(lines[li], r1, sizeof(r1), mem1, sizeof(mem1)) &&
@@ -6755,7 +6760,7 @@ static int peep_pattern5(char **lines, int nlines, int li, int lj) {
         !strcmp(r1, imm2) && !strcmp(imm2, r3) &&
         is_reg(d3) && !is_reg(mem1)) {
         int r1_pid = phys_reg_id(r1);
-        if (r1_pid >= 0 && reg_live_after(lines, nlines, lk, r1_pid))
+        if (r1_pid >= 0 && reg_live_in_text(rest, r1_pid))
             return 0;
         lines[li] = format("  mov %s, %s", mem1, d3);
         lines[lj] = format("  %s %s, %s", op2, r2, d3);
@@ -6779,7 +6784,7 @@ static int peep_pattern5(char **lines, int nlines, int li, int lj) {
         if (strchr(p + r2len, ',') == NULL)
             return 0;
         int r1_pid = phys_reg_id(r1);
-        if (r1_pid >= 0 && reg_live_after(lines, nlines, lk, r1_pid))
+        if (r1_pid >= 0 && reg_live_in_text(rest, r1_pid))
             return 0;
         char *val = strchr(imm2, ',');
         if (val) {
@@ -6796,62 +6801,95 @@ static int peep_pattern5(char **lines, int nlines, int li, int lj) {
     return 0;
 }
 
-#define PEEP_MAX 65536
-
 static void emit_peephole_body(char *body_text) {
-    char *plines[PEEP_MAX];
-    char *chunk = body_text;
-    while (*chunk) {
-        int nlines = 0;
-        char *p = chunk;
-        while (*p && nlines < PEEP_MAX) {
-            plines[nlines] = p;
+    if (opt_O0) {
+        fputs(body_text, stdout);
+        return;
+    }
+
+    // 3-line sliding window: w[0]=oldest pending, w[2]=newest
+    char *w[3] = {NULL, NULL, NULL};
+    int wn = 0;
+    const char *rest = body_text; // points into body_text after window (newlines intact)
+    char *p = body_text; // scan pointer; \n replaced with \0 as lines are parsed
+
+    for (;;) {
+        char *line = NULL;
+        if (*p) {
             char *nl = strchr(p, '\n');
             if (nl) {
                 *nl = '\0';
+                line = p;
                 p = nl + 1;
-            } else
+            } else {
+                line = p;
                 p += strlen(p);
-            nlines++;
+            }
+            rest = p;
         }
-        chunk = p;
 
-        if (!opt_O0 && nlines < 50000) {
-            for (int pass = 0; pass < 4; pass++) {
-                for (int li = 0; li < nlines - 1; li++) {
-                    if (!plines[li] || !plines[li][0]) continue;
-                    int lj = li + 1;
-                    while (lj < nlines && (!plines[lj] || !plines[lj][0])) lj++;
-                    if (lj >= nlines) break;
+        if (!line) {
+            for (int i = 0; i < wn; i++)
+                if (w[i] && w[i][0]) fprintf(stdout, "%s\n", w[i]);
+            break;
+        }
 
+        // Commit oldest when window is full
+        if (wn == 3) {
+            if (w[0] && w[0][0]) fprintf(stdout, "%s\n", w[0]);
+            w[0] = w[1];
+            w[1] = w[2];
+            w[2] = NULL;
+            wn = 2;
+        }
+        w[wn++] = line;
+
+        // Repeatedly try patterns on all adjacent non-empty pairs in the window
+        bool any;
+        do {
+            any = false;
+            for (int ii = 0; ii < wn; ii++) {
+                if (!w[ii] || !w[ii][0]) continue;
+                int jj = ii + 1;
+                while (jj < wn && (!w[jj] || !w[jj][0])) jj++;
+                if (jj >= wn) break;
+                int kk = jj + 1;
+                while (kk < wn && (!w[kk] || !w[kk][0])) kk++;
+
+                // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST
+                {
                     char d1[80], s1[80], d2[80], s2[80];
-
-                    // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST
-                    if (peep_mov_reg_reg(plines[li], d1, sizeof(d1), s1, sizeof(s1)) &&
-                        peep_mov_reg_reg(plines[lj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                        !strcmp(d2, s1) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
-                        plines[lj] = format("  mov %s, %s", d1, s2);
-                        int pid = phys_reg_id(s1);
-                        if (pid >= 0 && !reg_live_after(plines, nlines, lj, pid))
-                            plines[li] = "";
-                        continue;
+                    if (peep_mov_reg_reg(w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
+                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        !strcmp(d2, s1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                        w[jj] = format("  mov %s, %s", d1, s2);
+                        // Conservative: skip dead-predecessor deletion without full forward scan
+                        any = true;
+                        break;
                     }
-
-                    // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
-                    if (peep_pattern2(plines, li, lj)) continue;
-                    // Pattern 3: jmp/b .LABEL; .LABEL: -> delete branch
-                    if (peep_pattern3(plines, li, lj)) continue;
-                    // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
-                    if (peep_pattern4(plines, nlines, li, lj)) continue;
-                    // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R -> mov dst, [mem]; OP dst, IMMx
-                    if (peep_pattern5(plines, nlines, li, lj)) continue;
+                }
+                // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
+                if (peep_pattern2(w, ii, jj)) {
+                    any = true;
+                    break;
+                }
+                // Pattern 3: jmp/b .LABEL; .LABEL: -> delete branch
+                if (peep_pattern3(w, ii, jj)) {
+                    any = true;
+                    break;
+                }
+                // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
+                if (peep_pattern4(w, ii, jj)) {
+                    any = true;
+                    break;
+                }
+                // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R -> mov dst, [mem]; OP dst, IMMx
+                if (kk < wn && peep_pattern5(w, ii, jj, kk, rest)) {
+                    any = true;
+                    break;
                 }
             }
-        }
-
-        for (int li = 0; li < nlines; li++)
-            if (plines[li] && plines[li][0])
-                fprintf(stdout, "%s\n", plines[li]);
+        } while (any);
     }
 }
 
