@@ -418,6 +418,9 @@ while IFS= read -r src; do
                 passed=$((passed + 1))
                 add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
                 p_src=
+	        if [ -n "$ONLY_TEST" ]; then
+		    exit
+	        fi
                 continue
             fi
             # Compare against expect file
@@ -448,6 +451,9 @@ while IFS= read -r src; do
                 mv "$upstream_expect".orig "$upstream_expect"
             fi
             [ -n "$p_src" ] && p_src=
+	    if [ -n "$ONLY_TEST" ]; then
+		exit
+	    fi
             continue
         fi
         if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
@@ -555,6 +561,9 @@ while IFS= read -r src; do
 		add_row "$base" "EXEC_FAIL" "non-zero exit"
 		print_change "$base" "EXEC_FAIL"
 		rm -f "$TMP_EXE"
+		if [ -n "$ONLY_TEST" ]; then
+			exit
+		fi
 		continue
 	fi
 	rm -f "$TMP_EXE"
@@ -590,6 +599,9 @@ while IFS= read -r src; do
         if [ -n "$fixed_up" ]; then
 	    mv "$upstream_expect".orig "$upstream_expect"
         fi
+	if [ -n "$ONLY_TEST" ]; then
+		exit
+	fi
 done <<EOF
 $(printf '%s\n' "$TEST_DIR"/*.c | sort -V)
 EOF
@@ -647,6 +659,9 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 				add_row "$base" "PASS" "compile error as expected"
 				print_change "$base" "PASS"
 			fi
+			if [ -n "$ONLY_TEST" ]; then
+				exit
+			fi
 			continue
 		fi
 
@@ -657,6 +672,9 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			failed=$((failed + 1))
 			add_row "$base" "COMPILE_FAIL" "rcc returned non-zero"
 			print_change "$base" "COMPILE_FAIL"
+			if [ -n "$ONLY_TEST" ]; then
+				exit
+			fi
 			continue
 		fi
 		if [ ! -x "$TMP_EXE" ]; then
@@ -665,6 +683,9 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			failed=$((failed + 1))
 			add_row "$base" "COMPILE_FAIL" "executable missing"
 			print_change "$base" "COMPILE_FAIL"
+			if [ -n "$ONLY_TEST" ]; then
+				exit
+			fi
 			continue
 		fi
 
@@ -672,11 +693,15 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		exit_code=$?
 		rm -f "$TMP_EXE"
 
-        # shellcheck disable=SC2059
-        printf "${GREEN}PASS${RESET}\n"
-        passed=$((passed + 1))
-        add_row "$base" "PASS" "exit=$exit_code"
+                # shellcheck disable=SC2059
+                printf "${GREEN}PASS${RESET}\n"
+                passed=$((passed + 1))
+                add_row "$base" "PASS" "exit=$exit_code"
 		print_change "$base" "PASS"
+
+		if [ -n "$ONLY_TEST" ]; then
+			exit
+		fi
 	done <<EOF
 $(printf '%s\n' "$UNIT_TEST_DIR"/test_*.c | sort -V)
 EOF
@@ -771,7 +796,7 @@ elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
     [ "$passed" -ge 155 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 151 ]
+    [ "$passed" -ge 152 ]
 else
     [ "$passed" -ge 152 ]
 fi

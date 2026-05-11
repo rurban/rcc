@@ -1728,6 +1728,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             : gen(argv[i]);
         if (is_flonum(argv[i]->ty)) {
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + (i - reg_nargs) * 8);
+        } else if (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) {
+            printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + (i - reg_nargs) * 8);
         } else {
             if (argv[i]->ty->size == 1)
                 printf("  movzbl %s, %s\n", reg8[r], reg32[r]);
@@ -1792,6 +1794,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         else
             r = gen(argv[i]);
         if (is_flonum(argv[i]->ty)) {
+            printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + arg_stack_idx[i] * 8);
+        } else if (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) {
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + arg_stack_idx[i] * 8);
         } else {
             if (argv[i]->ty->is_unsigned)
