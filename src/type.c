@@ -149,8 +149,12 @@ static void add_type_internal(Node *node) {
     add_type_internal(node->els);
     add_type_internal(node->init);
     add_type_internal(node->inc);
-    add_type_internal(node->case_next);
-    add_type_internal(node->default_case);
+    // case_next and default_case are internal control-flow chains for
+    // codegen dispatch only; the body/next and lhs chains already cover
+    // all case nodes.  Skipping them avoids cycles between lhs (forward
+    // fall-through) and case_next (backward prepend) in large switches.
+    // add_type_internal(node->case_next);
+    // add_type_internal(node->default_case);
 
     for (Node *n = node->body; n; n = n->next)
         add_type_internal(n);
