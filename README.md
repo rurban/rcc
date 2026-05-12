@@ -79,7 +79,8 @@ finstrument, vector_size.
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
 The test suites has all tests passed on linux, mingw-cross, arm64-cross,
-darwin-cross, windows native and arm64-darwin native.
+darwin-cross.
+windows native and arm64-darwin native have a few bugs left, which look like test artefacts.
 
 Three tcc core and test bugs have been detected so far. Fixes in the work.
 
