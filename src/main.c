@@ -86,7 +86,8 @@ void help(void) {
            "-O1                 enable peephole + CTFE optimizations\n"
            "-g                  emit DWARF line-number debug info\n"
            "-W                  enable more compiler warnings\n"
-           "-Wno-homoglyph      disable Unicode homoglyph/confusable warnings\n"
+           "-Werror             treat all warnings as errors\n"
+           "-Wno-homoglyph      disable Unicode indentifer homoglyph warnings\n"
            "-Lpath              add linker path\n"
            "-lname              add lib\n"
            "-pthread            link with pthreads library\n"
@@ -98,6 +99,7 @@ void help(void) {
            "-pie|-fPIE|-fpie    generate position-independent executable\n"
            "-fPIC|-fpic         generate position-independent code\n"
            "-time               print timing for each compilation substep\n"
+           "-v                  be more verbose\n"
            "-###                dry-run (print commands, don't execute)\n"
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
@@ -109,6 +111,7 @@ void help(void) {
 bool opt_O0 = false;
 bool opt_O1 = false;
 bool opt_W = false;
+bool opt_Werror = false;
 bool opt_Wno_homoglyph = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
@@ -187,6 +190,8 @@ int main(int argc, char **argv) {
             opt_O1 = true;
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
+        } else if (!strcmp(argv[i], "-Werror")) {
+            opt_Werror = true;
         } else if (!strcmp(argv[i], "-Wno-homoglyph")) {
             opt_Wno_homoglyph = true;
         } else if (!strcmp(argv[i], "-###")) {

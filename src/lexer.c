@@ -131,10 +131,15 @@ void warn_tok(Token *tok, char *fmt, ...) {
         // warn without location info
         va_list ap;
         va_start(ap, fmt);
-        fprintf(stderr, "warning: ");
+        if (opt_Werror)
+            fprintf(stderr, "\033[1;31merror:\033[0m ");
+        else
+            fprintf(stderr, "warning: ");
         vfprintf(stderr, fmt, ap);
         fprintf(stderr, "\n");
         va_end(ap);
+        if (opt_Werror)
+            exit(1);
         return;
     }
     // Compute line number
@@ -159,10 +164,15 @@ void warn_tok(Token *tok, char *fmt, ...) {
             base = p + 1;
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "%s:%d: warning: ", base, reported_line);
+    if (opt_Werror)
+        fprintf(stderr, "%s:%d: \033[1;31merror:\033[0m ", base, reported_line);
+    else
+        fprintf(stderr, "%s:%d: warning: ", base, reported_line);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+    if (opt_Werror)
+        exit(1);
 }
 
 // Create a new token.

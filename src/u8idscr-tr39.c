@@ -22,11 +22,8 @@
 #include "u8id_private.h"
 #include <u8ident.h>
 
-#  include "htable.h"
 #include "u8id_gc.h"
 #include "scripts.h"
-// optional. default: disabled
-#include "confus.h"
 #include "mark.h"
 // we are the owner of these lists
 #undef EXTERN_SCRIPTS
@@ -270,12 +267,6 @@ LOCAL bool u8ident_is_greek_latin_confus(const uint32_t cp) {
              : false;
 }
 
-EXTERN bool u8ident_is_confusable(const uint32_t cp) {
-  return bsearch(&cp, confusables, ARRAY_SIZE(confusables), 4, compar32) != NULL
-             ? true
-             : false;
-}
-
 EXTERN const char *u8ident_script_name(const int scr) {
   if (scr < 0 || scr > LAST_SCRIPT)
     return NULL;
@@ -319,12 +310,6 @@ EXTERN int u8ident_free_ctx(u8id_ctx_t i) {
   if (i <= i_ctx) {
     if (ctxp[i].count > 8)
       free(ctxp[i].u8p);
-    if (ctxp[i].htab) {
-      free_htab(ctxp[i].htab);
-      free_htab(ctxp[i].htab1);
-    }
-    free(ctxp[i].htab);
-    free(ctxp[i].htab1);
     memset(&ctxp[i], 0, sizeof(u8id_ctx_t));
     if (i > 0)
       i_ctx = i - 1; // switch to the previous context
