@@ -1378,6 +1378,17 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         pop_macro(name);
                         sb_putc(&out, '\n');
                     }
+                } else if (pp_startswith(s, "unicode")) {
+                    // Pass through to lexer: # pragma unicode ScriptName
+                    sb_puts(&out, "# pragma unicode");
+                    s += 7;
+                    while (s < end && isspace((unsigned char)*s)) s++;
+                    if (s < end) {
+                        while (s < end && !isspace((unsigned char)*s) && *s != '\n') {
+                            sb_putc(&out, *s++);
+                        }
+                    }
+                    sb_putc(&out, '\n');
                 } else {
                     sb_putc(&out, '\n');
                 }
