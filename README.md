@@ -118,6 +118,8 @@ make bench
     -O1                enable peephole + CTFE optimizations
     -g                 emit DWARF line-number debug info
     -W                 print diagnostic warnings (stack spilling)
+    -Werror            error on all warnings (but not internal spill to check warnings)
+    -Wno-homoglypth    suppress homoglyph unicode identifier warnings
     -Lpath             add linker path
     -lname             add lib
     -pthread           link with pthreads library
@@ -129,6 +131,7 @@ make bench
     -pie|-fPIE|-fpie   generate position-independent executable
     -fPIC|-fpic        generate position-independent code
     -time              print timing for each compilation substep
+    -v                 be more verbose
     -###               dry-run (print commands, don't execute)
     -dM                dump all macro definitions (use with -E)
     -fdump-ast         dump AST to stderr for debugging
@@ -148,6 +151,8 @@ make bench
 | `src/codegen.c`    | x86-64/ARM64 code generator with register allocator and peephole optimizer |
 | `src/opt.c`        | AST-level optimizer and CTFE interpreter                                   |
 | `src/alloc.c`      | Arena memory allocator                                                     |
+| `src/unicode.c`    | basic unicode identifier checks                                            |
+| `src/u8id*.c`      | libu8ident homoglyph checks                                                |
 | `src/rcc.h`        | Shared data structures and declarations                                    |
 | `include/`         | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)             |
 | `bench/`           | Benchmark suite and runner script                                          |
