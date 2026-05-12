@@ -471,7 +471,7 @@ static void add_type_internal(Node *node) {
             node->ty = ty_int;
         }
         for (Node *n = node->args; n; n = n->next)
-            add_type(n);
+            check_type(n);
         return;
     case ND_STR:
         node->ty = pointer_to(ty_char);
@@ -522,7 +522,7 @@ static void add_type_internal(Node *node) {
     }
 }
 
-void add_type(Node *node) {
+void check_type(Node *node) {
     add_type_internal(node);
 }
 
@@ -533,7 +533,7 @@ Type *vla_of(Type *base, Node *len, int64_t arr_len) {
     ty->align = 8;
     ty->base = base;
     if (len) {
-        add_type(len);
+        check_type(len);
         ty->vla_len_expr = len;
     } else {
         ty->array_len = arr_len;

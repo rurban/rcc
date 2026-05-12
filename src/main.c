@@ -299,12 +299,25 @@ int main(int argc, char **argv) {
             for (TLItem *item = prog->items; item; item = item->next) {
                 if (item->kind != TL_FUNC)
                     continue;
+                if (opt_time)
+                    fprintf(stderr, "  typecheck   %s: %-20s entering\n", in_path,
+                            item->fn->name);
+                uint64_t f0 = opt_time ? now_us() : 0;
+                uint64_t ncount = 0;
                 for (Node *n = item->fn->body; n; n = n->next) {
-                    add_type(n);
+                    check_type(n);
+                    ncount++;
+                    if (opt_time && (ncount % 10) == 0)
+                        fprintf(stderr, "  typecheck   %s: %-20s %5lu nodes...\n", in_path,
+                                item->fn->name, (unsigned long)ncount);
                 }
+                if (opt_time)
+                    fprintf(stderr, "  typecheck   %s: %-20s %5lu nodes %6lu us\n", in_path,
+                            item->fn->name, (unsigned long)ncount,
+                            (unsigned long)(now_us() - f0));
             }
             if (opt_time)
-                fprintf(stderr, "  typecheck   %s: %6lu us\n", in_path,
+                fprintf(stderr, "  typecheck   %s: %6lu us total\n", in_path,
                         (unsigned long)(now_us() - t0));
 
             // CTFE runs only with -O1; peephole skipped with -O0.
