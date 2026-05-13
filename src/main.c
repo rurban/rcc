@@ -149,7 +149,6 @@ int main(int argc, char **argv) {
 #endif
         ;
     char *in_path = NULL;
-    bool first_input = true;
     bool opt_S = false;
     bool opt_c = false;
     bool opt_E = false;
@@ -264,8 +263,8 @@ int main(int argc, char **argv) {
             in_path = argv[i];
 
             char *asm_path = opt_S
-                ? opt_o ? out_path : format("%s.s", path_basename(in_path))
-                : format("rcc_tmp_%d_%d_%s.s", _getpid(), i, path_basename(in_path));
+                ? opt_o ? out_path : format("%s.o", path_basename(in_path))
+                : format("rcc_tmp_%d_%d_%s.o", _getpid(), i, path_basename(in_path));
 
             // Tokenize and Parse
             char *contents = read_file(in_path);
@@ -321,16 +320,9 @@ int main(int argc, char **argv) {
             }
 
             if (!opt_dryrun) {
-                // Redirect stdout to our assembly file (append for multi-file)
-                if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
-                    fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
-                    return 1;
-                }
-                first_input = false;
-                // Code generation (prints assembly to stdout, which is now asm_path)
                 time_peep_us = 0;
                 t0 = opt_time ? now_us() : 0;
-                codegen(prog);
+                struct ObjFile *obj = codegen(prog);
                 if (opt_time) {
                     uint64_t cg_total = now_us() - t0;
                     fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
@@ -339,11 +331,19 @@ int main(int argc, char **argv) {
                         fprintf(stderr, "  peephole    %s: %6lu us\n", in_path,
                                 time_peep_us);
                 }
-                fflush(stdout);
-                // Restore stdout to console if we want to print further, but we are done.
-                fclose(stdout);
+                // Write binary .o file
+                int wr;
+#ifdef __APPLE__
+                wr = macho_write(obj, asm_path);
+#else
+                wr = elf_write(obj, asm_path);
+#endif
+                if (wr != 0) {
+                    fprintf(stderr, "rcc: error: cannot write object file %s\n", asm_path);
+                    return 1;
+                }
+                objfile_free(obj);
             } else {
-                first_input = false;
             }
 
             if (!opt_S && !opt_dryrun) {
@@ -373,31 +373,23 @@ int main(int argc, char **argv) {
         out_paths = reverse(out_paths);
 
         if (opt_c) {
-            // -c: assemble each .s file to the single output .o using built-in assembler
-            // For multiple inputs we'd need per-file .o names, but rcc currently
-            // concatenates all to one .s, so just assemble that one file.
-            uint64_t t0 = opt_time ? now_us() : 0;
+            // -c: codegen already produced binary .o files; rename to out_path
             int status = 0;
             for (OutPath *p = out_paths; p; p = p->next) {
-                if (assemble_file(p->path, out_path) != 0) {
-                    fprintf(stderr, "rcc: error: assembly failed for %s\n", p->path);
-                    status = 1;
+                if (strcmp(p->path, out_path) != 0) {
+                    if (rename(p->path, out_path) != 0) {
+                        fprintf(stderr, "rcc: error: rename %s -> %s failed\n", p->path, out_path);
+                        status = 1;
+                    }
                 }
-                remove(p->path);
             }
-            if (opt_time)
-                fprintf(stderr, "  assemble    %s: %6lu us\n", out_path,
-                        (unsigned long)(now_us() - t0));
             return status;
         }
 
-        // Linking: assemble each .s to a temp .o, then call the linker
+        // Linking: codegen already produced .o files; add them to linker command
         char cmd[4096];
         int status = 0;
 
-        // Use GCC as the linker frontend with -fuse-ld= so it handles crt files,
-        // sysroot, and -Wl,... passthrough correctly across all targets.
-        // LD is probed at build time (mold if available, else ld).
 #ifdef __APPLE__
         snprintf(cmd, sizeof(cmd), GCC " -o %s -arch arm64"
                                        " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -412,27 +404,11 @@ int main(int argc, char **argv) {
             snprintf(cmd, sizeof(cmd), GCC " -fuse-ld=" LD " -no-pie -o %s", out_path);
 #endif
 
-        // Assemble each .s file to a temp .o and add to linker command
-        OutPath *obj_paths = NULL;
-        uint64_t t_asm = opt_time ? now_us() : 0;
+        // Codegen already produced .o files; add them directly to linker command
         for (OutPath *p = out_paths; p; p = p->next) {
-            char obj_tmp[256];
-            snprintf(obj_tmp, sizeof(obj_tmp), "%s.tmp.o", p->path);
-            if (assemble_file(p->path, obj_tmp) != 0) {
-                fprintf(stderr, "rcc: error: assembly failed for %s\n", p->path);
-                status = 1;
-                break;
-            }
-            OutPath *op = arena_alloc(sizeof(OutPath));
-            op->path = format("%s", obj_tmp);
-            op->next = obj_paths;
-            obj_paths = op;
             strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-            strncat(cmd, obj_tmp, sizeof(cmd) - strlen(cmd) - 1);
+            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
         }
-        if (opt_time)
-            fprintf(stderr, "  assemble    %s: %6lu us\n", out_path,
-                    (unsigned long)(now_us() - t_asm));
 
 #if defined(_WIN32) || defined(__MINGW32__)
         {
@@ -477,8 +453,6 @@ int main(int argc, char **argv) {
 
         // Cleanup temp files
         for (OutPath *p = out_paths; p; p = p->next)
-            remove(p->path);
-        for (OutPath *p = obj_paths; p; p = p->next)
             remove(p->path);
 
         return status ? 1 : 0;
