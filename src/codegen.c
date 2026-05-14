@@ -56,8 +56,10 @@ static size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
     x86_lea(s, 8, CG_X86_REG(r), m);
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
-        if (sidx < 0)
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_OBJECT);
+        if (sidx < 0) {
+            bool is_local_label = label[0] == '.';
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
+        }
         objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_PC32, -4);
     }
     asm_record(ASM_LEA_FP, off, s->len - off, r, -1, -1, 8, 0, 0, label, 0, -1, false);
@@ -1931,14 +1933,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 (void)0 /* FIXME: unconverted printf: "  movq %s, %s\n" */;
             } else if (arg_sizes[i] == 1) {
                 if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                    (void)0 /* FIXME: unconverted printf: "  movsbl %s, %s\n" */;
+                    x86_movsx(cg_sec, 4, 1, cg_x86_argreg[arg_gp_idx[i]], CG_X86_REG(arg_regs[i]));
                 else
-                    (void)0 /* FIXME: unconverted printf: "  movzbl %s, %s\n" */;
+                    x86_movzx(cg_sec, 4, 1, cg_x86_argreg[arg_gp_idx[i]], CG_X86_REG(arg_regs[i]));
             } else if (arg_sizes[i] == 2) {
                 if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                    (void)0 /* FIXME: unconverted printf: "  movswl %s, %s\n" */;
+                    x86_movsx(cg_sec, 4, 2, cg_x86_argreg[arg_gp_idx[i]], CG_X86_REG(arg_regs[i]));
                 else
-                    (void)0 /* FIXME: unconverted printf: "  movzwl %s, %s\n" */;
+                    x86_movzx(cg_sec, 4, 2, cg_x86_argreg[arg_gp_idx[i]], CG_X86_REG(arg_regs[i]));
             } else if (arg_sizes[i] == 4) {
                 x86_mov_rr(cg_sec, 4, cg_x86_argreg[arg_gp_idx[i]], CG_X86_REG(arg_regs[i]));
             } else {
@@ -2454,16 +2456,43 @@ static void emit_load(Type *ty, int r, char *addr) {
     // x86_64: parse addr format and emit proper load
     int sz = op_size(ty);
     int off;
-    if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
+    if (ty->size == 1) {
+        if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
+            if (ty->is_unsigned)
+                x86_movzx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(X86_RBP, off));
+            else
+                x86_movsx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(X86_RBP, off));
+        } else if (addr[0] == '(') {
+            X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+            if (ty->is_unsigned)
+                x86_movzx_rm(cg_sec, 4, 1, CG_X86_REG(r), m);
+            else
+                x86_movsx_rm(cg_sec, 4, 1, CG_X86_REG(r), m);
+        } else {
+            // RIP-relative or other: FIXME narrow load
+            X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
+            x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
+        }
+    } else if (ty->size == 2) {
+        if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
+            if (ty->is_unsigned)
+                x86_movzx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(X86_RBP, off));
+            else
+                x86_movsx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(X86_RBP, off));
+        } else if (addr[0] == '(') {
+            X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+            if (ty->is_unsigned)
+                x86_movzx_rm(cg_sec, 4, 2, CG_X86_REG(r), m);
+            else
+                x86_movsx_rm(cg_sec, 4, 2, CG_X86_REG(r), m);
+        } else {
+            // RIP-relative or other: FIXME narrow load
+            X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
+            x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
+        }
+    } else if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
         asm_mov_rbp_reg(cg_sec, r, sz, off);
-    } else if (sscanf(addr, "(%s)", (char[32]){0}) == 0 && addr[0] == '(') {
-        // Reg-indirect: addr like "(%r10)" - extract base reg
-        char regname[32];
-        int n = 0;
-        for (const char *p = addr + 1; *p && *p != ')'; p++)
-            regname[n++] = *p;
-        regname[n] = 0;
-        // The base register is already in r, so this is a deref of r
+    } else if (addr[0] == '(') {
         X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
         x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
     } else {
@@ -2829,7 +2858,7 @@ static int gen_addr(Node *node) {
             if (var_needs_got(node->var))
                 (void)0 /* FIXME: mov indirect/mem */;
             else
-                (void)0 /* FIXME: rip-relative */;
+                asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
 #endif
         }
         return r;
@@ -3071,11 +3100,13 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
 #ifdef ARCH_ARM64
     asm_cmp_zero(cg_sec, r, cond->ty->size);
     free_reg(r);
-    asm_jcc_label(cg_sec, ARM64_EQ);
+    size_t cond_off = asm_jcc_label(cg_sec, ARM64_EQ);
+    asm_fixup_add(cg_sec, cond_off, label, 1);
 #else
     asm_cmp_zero(cg_sec, r, cond->ty->size);
     free_reg(r);
-    asm_jcc_label(cg_sec, X86_E);
+    size_t cond_off = asm_jcc_label(cg_sec, X86_E);
+    asm_fixup_add(cg_sec, cond_off, label, 1);
 #endif
 }
 
@@ -3155,7 +3186,9 @@ static int gen(Node *node) {
                     (void)0 /* FIXME: mov indirect/mem */;
                     (void)0 /* FIXME: indirect mov */;
                 } else {
-                    (void)0 /* FIXME: mov indirect/mem */;
+                    asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
+                    X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+                    x86_mov_rm(cg_sec, 8, CG_X86_REG(r), m);
                 }
 #endif
             }
@@ -3189,7 +3222,7 @@ static int gen(Node *node) {
                 if (var_needs_got(node->var))
                 (void)0 /* FIXME: mov indirect/mem */;
             else
-                (void)0 /* FIXME: rip-relative */;
+                asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
             if (node->var->is_weak) {
@@ -3208,7 +3241,7 @@ static int gen(Node *node) {
             if (var_needs_got(node->var))
                 (void)0 /* FIXME: mov indirect/mem */;
             else
-                (void)0 /* FIXME: rip-relative */;
+                asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
 #endif
         } else if (is_flonum(node->var->ty)) {
             {
@@ -3291,7 +3324,8 @@ static int gen(Node *node) {
                     (void)0 /* FIXME: mov indirect/mem */;
                     emit_load(node->ty, r, format("(%s)", reg64[r]));
                 } else {
-                    emit_load(node->ty, r, format("%s(%%rip)", label));
+                    asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
+                    emit_load(node->ty, r, format("(%s)", reg64[r]));
                 }
 #endif
             }
@@ -3786,7 +3820,18 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         emit_store(node->lhs->ty, r2, format("[%s]", reg64[r1]));
 #else
-        (void)0 /* FIXME: mov indirect/mem */;
+        {
+            int st_sz = node->lhs->ty->size;
+            if (st_sz == 8) st_sz = 8;
+            else if (st_sz == 4)
+                st_sz = 4;
+            else if (st_sz == 2)
+                st_sz = 2;
+            else
+                st_sz = 1;
+            X86Mem m = {CG_X86_REG(r1), X86_NOREG, 1, 0};
+            x86_mov_mr(cg_sec, st_sz, m, CG_X86_REG(r2));
+        }
 #endif
         free_reg(r1);
         return r2;
@@ -5055,22 +5100,19 @@ static int gen(Node *node) {
                     asm_cmp_reg_reg(cg_sec, tmp, cond, 8);
                     free_reg(tmp);
                 }
-                asm_jcc_label(cg_sec, X86_E);
+                size_t case_jmp = asm_jcc_label(cg_sec, X86_E);
+                asm_fixup_add(cg_sec, case_jmp, format(".L.case.%d", cs->label_id), 1);
 #endif
             }
         }
         if (node->default_case) {
             if (!node->default_case->label_id)
                 node->default_case->label_id = ++rcc_label_count;
-#ifdef ARCH_ARM64
-            asm_jmp_label(cg_sec);
+            size_t sw_jmp = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, sw_jmp, format(".L.case.%d", node->default_case->label_id), 0);
         } else {
-            asm_jmp_label(cg_sec);
-#else
-            asm_jmp_label(cg_sec);
-        } else {
-            asm_jmp_label(cg_sec);
-#endif
+            size_t sw_jmp = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, sw_jmp, format(".L.end.%d", c), 0);
         }
         free_reg(cond);
         break_stack[ctrl_depth] = c;
@@ -5079,13 +5121,13 @@ static int gen(Node *node) {
         int r_body = gen(node->then);
         if (r_body != -1) free_reg(r_body);
         ctrl_depth--;
-        (void)0 /* FIXME: label .L.xxx.c */;
+        cg_def_label(format(".L.end.%d", c));
         return -1;
     }
     case ND_CASE: {
         if (!node->label_id)
             node->label_id = ++rcc_label_count;
-        (void)0 /* FIXME: label .L.xxx.node->label_id */;
+        cg_def_label(format(".L.case.%d", node->label_id));
         return gen(node->lhs);
     }
     case ND_BREAK:
@@ -5093,31 +5135,28 @@ static int gen(Node *node) {
             error("stray break");
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
-#ifdef ARCH_ARM64
-        asm_jmp_label(cg_sec);
-#else
-        asm_jmp_label(cg_sec);
-#endif
+        {
+            size_t brk_off = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, brk_off, format(".L.end.%d", break_stack[ctrl_depth - 1]), 0);
+        }
         return -1;
     case ND_CONTINUE:
         if (ctrl_depth == 0)
             error("stray continue");
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
-#ifdef ARCH_ARM64
-        asm_jmp_label(cg_sec);
-#else
-        asm_jmp_label(cg_sec);
-#endif
+        {
+            size_t cont_off = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, cont_off, format(".L.continue.%d", continue_stack[ctrl_depth - 1]), 0);
+        }
         return -1;
     case ND_GOTO:
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
-#ifdef ARCH_ARM64
-        asm_jmp_label(cg_sec);
-#else
-        asm_jmp_label(cg_sec);
-#endif
+        {
+            size_t goto_off = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, goto_off, format(".L.label.%s.%s", current_fn, node->label_name), 0);
+        }
         return -1;
     case ND_GOTO_IND: {
         int r = gen(node->lhs);
@@ -5130,7 +5169,7 @@ static int gen(Node *node) {
         return -1;
     }
     case ND_LABEL: {
-        (void)0 /* FIXME: unconverted printf: ".L.label.%s.%s:\n" */;
+        cg_def_label(format(".L.label.%s.%s", current_fn, node->label_name));
         return gen(node->lhs);
     }
     case ND_LABEL_VAL: {
@@ -7242,46 +7281,63 @@ struct ObjFile *codegen(Program *prog) {
             emitted_syms[emitted_count++] = (char *)canon;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
-            if (var->ty->align > 1)
-                (void)0 /* directive: .balign */;
-            if (!var->is_static)
-                (void)0 /* .globl symbol handled by objfile */;
-            cg_def_label(asm_sym_name(sym_name(safe_label)));
-            if (reserved)
-                (void)0 /* .set directive */;
-            if (var->init_data || var->relocs) {
-                int pos = 0;
-                for (Reloc *rel = var->relocs; rel; rel = rel->next) {
-                    for (; pos < rel->offset; pos++)
-                        (void)0 /* directive: .byte */;
-#ifdef __APPLE__
-                    if (rel->addend)
-                        (void)0 /* directive: .quad */;
-                    else
-                        (void)0 /* directive: .quad */;
-#else
-                    if (rel->addend)
-                        (void)0 /* directive: .quad */;
-                    else
-                        (void)0 /* directive: .quad */;
-#endif
-                    pos += 8;
-                }
-                for (; pos < var->init_size; pos++)
-                    (void)0 /* directive: .byte */;
-                if (var->ty->size > var->init_size)
-                    (void)0 /* directive: .zero */;
-            } else if (var->has_init) {
-                if (var->ty->size == 1)
-                    (void)0 /* directive: .byte */;
-                else if (var->ty->size == 2)
-                    (void)0 /* directive: .word */;
-                else if (var->ty->size == 4)
-                    (void)0 /* directive: .long */;
+            int is_bss = (!var->init_data && !var->relocs && !var->has_init && var->ty->size > 0);
+            const char *sym_name_str = asm_sym_name(sym_name(safe_label));
+            if (is_bss) {
+                size_t align = var->ty->align > 1 ? var->ty->align : 1;
+                size_t rem = cg_obj->bss_size % align;
+                if (rem) cg_obj->bss_size += align - rem;
+                size_t off = cg_obj->bss_size;
+                if (!var->is_static)
+                    objfile_add_sym(cg_obj, sym_name_str, SEC_BSS, off, var->ty->size, SB_GLOBAL, ST_OBJECT);
                 else
-                    (void)0 /* directive: .quad */;
-            } else if (var->ty->size > 0) {
-                (void)0 /* directive: .zero */;
+                    objfile_add_sym(cg_obj, sym_name_str, SEC_BSS, off, var->ty->size, SB_LOCAL, ST_OBJECT);
+                cg_label_ht_add(sym_name_str, off);
+                if (reserved)
+                    objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), SEC_BSS, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, ST_OBJECT);
+                cg_obj->bss_size += var->ty->size;
+            } else {
+                cg_set_section(SEC_DATA);
+                secbuf_align(cg_sec, var->ty->align > 1 ? var->ty->align : 1);
+                size_t off = cg_sec->len;
+                if (!var->is_static)
+                    objfile_add_sym(cg_obj, sym_name_str, SEC_DATA, off, var->ty->size, SB_GLOBAL, ST_OBJECT);
+                else
+                    objfile_add_sym(cg_obj, sym_name_str, SEC_DATA, off, var->ty->size, SB_LOCAL, ST_OBJECT);
+                cg_label_ht_add(sym_name_str, off);
+                if (reserved)
+                    objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), SEC_DATA, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, ST_OBJECT);
+                if (var->init_data || var->relocs) {
+                    int pos = 0;
+                    for (Reloc *rel = var->relocs; rel; rel = rel->next) {
+                        for (; pos < rel->offset; pos++)
+                            secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]);
+                        size_t rel_off = cg_sec->len;
+                        secbuf_emit64le(cg_sec, (uint64_t)rel->addend);
+                        int sidx = objfile_find_sym(cg_obj, rel->label);
+                        if (sidx < 0)
+                            sidx = objfile_add_sym(cg_obj, rel->label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_X86_64_64, 0);
+                        pos += 8;
+                    }
+                    for (; pos < var->init_size; pos++)
+                        secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]);
+                    if (var->ty->size > var->init_size) {
+                        size_t pad = var->ty->size - var->init_size;
+                        secbuf_reserve(cg_sec, pad);
+                        memset(cg_sec->data + cg_sec->len, 0, pad);
+                        cg_sec->len += pad;
+                    }
+                } else if (var->has_init) {
+                    if (var->ty->size == 1)
+                        secbuf_emit8(cg_sec, (uint8_t)var->init_val);
+                    else if (var->ty->size == 2)
+                        secbuf_emit16le(cg_sec, (uint16_t)var->init_val);
+                    else if (var->ty->size == 4)
+                        secbuf_emit32le(cg_sec, (uint32_t)var->init_val);
+                    else
+                        secbuf_emit64le(cg_sec, (uint64_t)var->init_val);
+                }
             }
         }
         free(emitted_syms);
