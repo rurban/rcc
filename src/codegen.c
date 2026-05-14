@@ -2975,6 +2975,31 @@ static int gen_addr(Node *node) {
 
 
 static void gen_cond_branch_inv(Node *cond, char *label) {
+    if (cond->kind == ND_LOGAND) {
+        gen_cond_branch_inv(cond->lhs, label);
+        gen_cond_branch_inv(cond->rhs, label);
+        return;
+    }
+    if (cond->kind == ND_LOGOR) {
+        int c = ++rcc_label_count;
+        char skip_label[32];
+        sprintf(skip_label, ".L.or_skip.%d", c);
+        // If lhs is true, skip to end (don't branch to label)
+        int lhs = gen(cond->lhs);
+        asm_cmp_zero(cg_sec, lhs, cond->lhs->ty->size);
+        free_reg(lhs);
+#ifdef ARCH_ARM64
+        size_t o = asm_jcc_label(cg_sec, ARM64_NE);
+        asm_fixup_add(cg_sec, o, skip_label, 1);
+#else
+        size_t o = asm_jcc_label(cg_sec, X86_NE);
+        asm_fixup_add(cg_sec, o, skip_label, 1);
+#endif
+        // If lhs was false, check rhs; if rhs is also false, branch to label
+        gen_cond_branch_inv(cond->rhs, label);
+        cg_def_label(skip_label);
+        return;
+    }
     if (cond->kind == ND_EQ || cond->kind == ND_NE || cond->kind == ND_LT || cond->kind == ND_LE) {
         if (is_flonum(cond->lhs->ty)) {
             int r_lhs = gen(cond->lhs);
@@ -3442,7 +3467,12 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
                 emit_store(node->lhs->ty, src, format("[%s]", reg64[dst]));
 #else
-                (void)0 /* FIXME: mov indirect/mem */;
+                {
+                    int st_sz = node->lhs->ty->size;
+                    if (st_sz < 4) st_sz = st_sz;
+                    X86Mem m = {CG_X86_REG(dst), X86_NOREG, 1, 0};
+                    x86_mov_mr(cg_sec, st_sz, m, CG_X86_REG(src));
+                }
 #endif
                 free_reg(src);
                 return dst;
@@ -3470,15 +3500,21 @@ static int gen(Node *node) {
             if (copy_is_vla_struct && r_vla_sz >= 0)
                 asm_mov_reg_reg(cg_sec, 1, r_vla_sz, 8);
             else
-                (void)0 /* FIXME: unconverted printf: "  movq $%d, %%rcx\n" */;
-            (void)0 /* FIXME: label .L.xxx.c */;
+                asm_mov_imm(cg_sec, 1, 8, node->lhs->ty->size);
+            cg_def_label(format(".L.copy.%d", c));
             asm_cmp_zero(cg_sec, 1, 8);
-            asm_jcc_label(cg_sec, X86_E);
-            (void)0 /* FIXME: sized mov */;
-            (void)0 /* FIXME: sized mov */;
+            size_t cj1 = asm_jcc_label(cg_sec, X86_E);
+            asm_fixup_add(cg_sec, cj1, format(".L.copy_end.%d", c), 1);
+            {
+                X86Mem msrc = x86_mem_idx(CG_X86_REG(src), CG_X86_REG(1), 1, -1);
+                X86Mem mdst = x86_mem_idx(CG_X86_REG(dst), CG_X86_REG(1), 1, -1);
+                x86_mov_rm(cg_sec, 1, X86_RAX, msrc);
+                x86_mov_mr(cg_sec, 1, mdst, X86_RAX);
+            }
             asm_dec(cg_sec, 1, 8);
-            asm_jmp_label(cg_sec);
-            (void)0 /* FIXME: label .L.xxx.c */;
+            size_t cj2 = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, cj2, format(".L.copy.%d", c), 0);
+            cg_def_label(format(".L.copy_end.%d", c));
 #endif
             if (r_vla_sz >= 0) free_reg(r_vla_sz);
             free_reg(src);
@@ -3884,7 +3920,7 @@ static int gen(Node *node) {
             (void)0 /* FIXME: unconverted printf: "  cmp %s, #0\n" */;
             asm_cset(cg_sec, r, ARM64_EQ);
 #else
-            (void)0 /* FIXME: unconverted printf: "  cmp $0, %s\n" */;
+            asm_cmp_zero(cg_sec, r, node->lhs->ty->size);
             asm_setcc(cg_sec, 0, X86_E);
             asm_movzx(cg_sec, r, 0, 4, 1);
 #endif
@@ -3908,22 +3944,26 @@ static int gen(Node *node) {
         } else {
             emit_mov_imm64("x12", (uint64_t)var->ty->size);
         }
-        (void)0 /* FIXME: label .L.xxx.c */;
+        cg_def_label(format(".L.zero.%d", c));
         asm_cmp_zero(cg_sec, 9, 8);
-        asm_jcc_label(cg_sec, ARM64_EQ);
+        size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ);
+        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
         asm_dec(cg_sec, 9, 8);
         (void)0 /* FIXME: sized ld/st */;
-        asm_jmp_label(cg_sec);
-        (void)0 /* FIXME: label .L.xxx.c */;
+        size_t zj2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
+        cg_def_label(format(".L.zero_end.%d", c));
 #else
-        (void)0 /* FIXME: unconverted printf: "  movq $%d, %%rcx\n" */;
-        (void)0 /* FIXME: label .L.xxx.c */;
+        asm_mov_imm(cg_sec, 1, 8, var->ty->size);
+        cg_def_label(format(".L.zero.%d", c));
         asm_cmp_zero(cg_sec, 1, 8);
-        asm_jcc_label(cg_sec, X86_E);
-        (void)0 /* FIXME: sized mov */;
+        size_t zj1 = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
+        x86_mov_mi(cg_sec, 1, x86_mem_idx(X86_RBP, CG_X86_REG(1), 1, -var->offset - 1), 0);
         asm_dec(cg_sec, 1, 8);
-        asm_jmp_label(cg_sec);
-        (void)0 /* FIXME: label .L.xxx.c */;
+        size_t zj2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
+        cg_def_label(format(".L.zero_end.%d", c));
 #endif
         return -1;
     }
@@ -4194,21 +4234,20 @@ static int gen(Node *node) {
             }
             return r;
 #else
-            if (eff_ls == 1)
-                (void)0 /* FIXME: indirect ext */;
-            else if (eff_ls == 2)
-                (void)0 /* FIXME: indirect ext */;
-            else if (eff_ls == 4)
-                (void)0 /* FIXME: indirect mov */;
-            else
-                (void)0 /* FIXME: indirect mov */;
+            {
+                X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+                x86_mov_rm(cg_sec, eff_ls, CG_X86_REG(r), m);
+            }
             if (bo > 0)
                 asm_shr_imm(cg_sec, r, 8, (uint8_t)(bo));
             if (r_addr >= 0) {
                 int overflow = bo + bw - 64;
                 int tmp = alloc_reg();
-                (void)0 /* FIXME: movzbl addr */;
-                (void)0 /* FIXME: and variant */;
+                X86Mem m = {CG_X86_REG(r_addr), X86_NOREG, 1, 8};
+                x86_movzx_rm(cg_sec, 8, 1, CG_X86_REG(tmp), m);
+                unsigned long long mask = (1ULL << overflow) - 1;
+                asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)(mask));
+                asm_and_reg_reg(cg_sec, tmp, 0, 8);
                 asm_shl_imm(cg_sec, tmp, 8, (uint8_t)(64 - bo));
                 asm_or_reg_reg(cg_sec, tmp, r, 8);
                 free_reg(tmp);
@@ -4772,98 +4811,112 @@ static int gen(Node *node) {
     }
     case ND_LOGAND: {
         int c = ++rcc_label_count;
+        char false_label[32];
+        sprintf(false_label, ".L.logand_false.%d", c);
 #ifdef ARCH_ARM64
         int r = alloc_reg();
         int lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
         asm_movq_zero(cg_sec, r);
-        asm_jcc_label(cg_sec, ARM64_EQ);
+        size_t ja1 = asm_jcc_label(cg_sec, ARM64_EQ);
+        asm_fixup_add(cg_sec, ja1, false_label, 1);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
         asm_cset(cg_sec, r, ARM64_NE);
 #else
+        int r = alloc_reg();
         int lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
-        (void)0 /* FIXME: sized mov */;
-        asm_jcc_label(cg_sec, X86_E);
+        asm_movl_zero(cg_sec, r);
+        size_t ja1 = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, ja1, false_label, 1);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
-        asm_setcc(cg_sec, 0, X86_NE);
-        (void)0 /* FIXME: sized mov */;
+        asm_setcc(cg_sec, r, X86_NE);
+        asm_movzx(cg_sec, r, r, 4, 1);
 #endif
         free_reg(rhs);
-        (void)0 /* FIXME: label .L.xxx.c */;
-#ifdef ARCH_ARM64
-#else
-        int r = alloc_reg();
-        (void)0 /* FIXME: movzbl addr */;
-#endif
+        cg_def_label(false_label);
         return r;
     }
     case ND_LOGOR: {
         int c = ++rcc_label_count;
+        char true_label[32], end_label[32];
+        sprintf(true_label, ".L.logor_true.%d", c);
+        sprintf(end_label, ".L.logor_end.%d", c);
 #ifdef ARCH_ARM64
         int r = alloc_reg();
         int lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
         asm_mov_imm(cg_sec, r, 4, 1);
-        asm_jcc_label(cg_sec, ARM64_NE);
+        size_t jo1 = asm_jcc_label(cg_sec, ARM64_NE);
+        asm_fixup_add(cg_sec, jo1, true_label, 1);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
         asm_cset(cg_sec, r, ARM64_NE);
+        size_t jo2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, jo2, end_label, 0);
+        cg_def_label(true_label);
 #else
+        int r = alloc_reg();
         int lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
-        (void)0 /* FIXME: sized mov */;
-        asm_jcc_label(cg_sec, X86_NE);
+        asm_mov_imm(cg_sec, r, 4, 1);
+        size_t jo1 = asm_jcc_label(cg_sec, X86_NE);
+        asm_fixup_add(cg_sec, jo1, true_label, 1);
         free_reg(lhs);
         int rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
-        asm_setcc(cg_sec, 0, X86_NE);
-        (void)0 /* FIXME: sized mov */;
+        asm_setcc(cg_sec, r, X86_NE);
+        asm_movzx(cg_sec, r, r, 4, 1);
+        size_t jo2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, jo2, end_label, 0);
+        cg_def_label(true_label);
 #endif
         free_reg(rhs);
-        (void)0 /* FIXME: label .L.xxx.c */;
-#ifdef ARCH_ARM64
-#else
-        int r = alloc_reg();
-        (void)0 /* FIXME: movzbl addr */;
-#endif
+        cg_def_label(end_label);
         return r;
     }
     case ND_COND: {
         int c = ++rcc_label_count;
+        char else_label[32], end_label[32];
+        sprintf(else_label, ".L.cond_else.%d", c);
+        sprintf(end_label, ".L.cond_end.%d", c);
         int r = alloc_reg();
         int cond = gen(node->cond);
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, cond, node->cond->ty->size);
-        asm_jcc_label(cg_sec, ARM64_EQ);
+        size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ);
+        asm_fixup_add(cg_sec, cj1, else_label, 1);
         free_reg(cond);
         int then_r = gen(node->then);
         asm_mov_reg_reg(cg_sec, r, then_r, 8);
         free_reg(then_r);
-        asm_jmp_label(cg_sec);
-        (void)0 /* FIXME: label .L.xxx.c */;
+        size_t cj2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, cj2, end_label, 0);
+        cg_def_label(else_label);
         int else_r = gen(node->els);
         asm_mov_reg_reg(cg_sec, r, else_r, 8);
         free_reg(else_r);
 #else
         asm_cmp_zero(cg_sec, cond, node->cond->ty->size);
-        asm_jcc_label(cg_sec, X86_E);
+        size_t cj1 = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, cj1, else_label, 1);
         free_reg(cond);
         int then_r = gen(node->then);
         asm_mov_reg_reg(cg_sec, then_r, r, 8);
         free_reg(then_r);
-        asm_jmp_label(cg_sec);
-        (void)0 /* FIXME: label .L.xxx.c */;
+        size_t cj2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, cj2, end_label, 0);
+        cg_def_label(else_label);
         int else_r = gen(node->els);
         asm_mov_reg_reg(cg_sec, else_r, r, 8);
         free_reg(else_r);
 #endif
-        (void)0 /* FIXME: label .L.xxx.c */;
+        cg_def_label(end_label);
         return r;
     }
     case ND_IF: {
@@ -5017,11 +5070,13 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, r, node->cond->ty->size);
         free_reg(r);
-        asm_jcc_label(cg_sec, ARM64_NE);
+        size_t do_j = asm_jcc_label(cg_sec, ARM64_NE);
+        asm_fixup_add(cg_sec, do_j, begin_label, 1);
 #else
         asm_cmp_zero(cg_sec, r, node->cond->ty->size);
         free_reg(r);
-        asm_jcc_label(cg_sec, X86_NE);
+        size_t do_j = asm_jcc_label(cg_sec, X86_NE);
+        asm_fixup_add(cg_sec, do_j, begin_label, 1);
 #endif
         cg_def_label(end_label);
         ctrl_depth--;
@@ -6248,19 +6303,21 @@ static int gen(Node *node) {
             free_reg(tmp);
         }
 #else
-        (void)0 /* FIXME: mov reg(r_lhs, sz), sz == 8 ? "%rax" : "%eax" */;
+        x86_mov_rr(cg_sec, sz, X86_RAX, CG_X86_REG(r_lhs));
         if (is_unsigned) {
-            if (sz == 8)
-                asm_movl_zero(cg_sec, 2);
-            else
-                asm_movl_zero(cg_sec, 2);
+            x86_xor_rr(cg_sec, 4, X86_RDX, X86_RDX);
         } else {
-            if (sz == 8) (void)0 /* FIXME: cqo/cdq */;
-            else
-                (void)0 /* FIXME: cqo/cdq */;
+            if (sz == 8) x86_cqo(cg_sec);
+            else x86_cdq(cg_sec);
         }
-        (void)0 /* FIXME: unconverted printf: "  %s %s\n" */;
-        (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+        if (is_unsigned)
+            x86_div_r(cg_sec, sz, CG_X86_REG(r_rhs));
+        else
+            x86_idiv_r(cg_sec, sz, CG_X86_REG(r_rhs));
+        if (node->kind == ND_DIV)
+            x86_mov_rr(cg_sec, sz, CG_X86_REG(r_lhs), X86_RAX);
+        else
+            x86_mov_rr(cg_sec, sz, CG_X86_REG(r_lhs), X86_RDX);
 #endif
         free_reg(r_rhs);
         return r_lhs;
@@ -6285,11 +6342,22 @@ static int gen(Node *node) {
         }
 #else
         if (node->rhs->kind == ND_NUM) {
-            (void)0 /* FIXME: unconverted printf: "  %s $%d, %s\n" */;
+            int imm = (int)node->rhs->val;
+            if (node->kind == ND_SHL)
+                asm_shl_imm(cg_sec, r_lhs, sz, (uint8_t)(imm));
+            else if (use_unsigned(node->ty))
+                asm_shr_imm(cg_sec, r_lhs, sz, (uint8_t)(imm));
+            else
+                asm_sar_imm(cg_sec, r_lhs, sz, (uint8_t)(imm));
         } else {
             int r_rhs = gen(node->rhs);
-            asm_mov_reg_reg(cg_sec, 1, r_rhs, 4);
-            (void)0 /* FIXME: unconverted printf: "  %s %%cl, %s\n" */;
+            x86_mov_rr(cg_sec, 4, X86_RCX, CG_X86_REG(r_rhs));
+            if (node->kind == ND_SHL)
+                asm_shl_cl(cg_sec, r_lhs, sz);
+            else if (use_unsigned(node->ty))
+                asm_shr_cl(cg_sec, r_lhs, sz);
+            else
+                asm_sar_cl(cg_sec, r_lhs, sz);
             free_reg(r_rhs);
         }
 #endif
@@ -6477,14 +6545,14 @@ static int gen(Node *node) {
                         asm_sar_imm(cg_sec, r_lhs, sz, (uint8_t)(shift));
                     } else {
                         // Non-power of 2: use idiv
-                        (void)0 /* FIXME: mov reg(r_lhs, sz), sz == 8 ? "%rax" : "%eax" */;
+                        x86_mov_rr(cg_sec, sz, X86_RAX, CG_X86_REG(r_lhs));
                         if (sz == 8)
-                            (void)0 /* FIXME: cqo/cdq */;
+                            x86_cqo(cg_sec);
                         else
-                            (void)0 /* FIXME: cqo/cdq */;
-                        (void)0 /* FIXME: unconverted printf: "  mov $%d, %s\n" */;
-                        (void)0 /* FIXME: div */;
-                        (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                            x86_cdq(cg_sec);
+                        x86_mov_ri(cg_sec, sz, X86_RCX, elem_sz);
+                        x86_idiv_r(cg_sec, sz, X86_RCX);
+                        x86_mov_rr(cg_sec, sz, CG_X86_REG(r_lhs), X86_RAX);
                     }
                 }
             }
@@ -6504,16 +6572,16 @@ static int gen(Node *node) {
             cset_cond = use_unsigned_cmp(node) ? "ls" : "le";
         (void)0 /* FIXME: cset with var cond */;
 #else
-            char *set = "";
-            if (node->kind == ND_EQ) set = "sete";
-            else if (node->kind == ND_NE)
-                set = "setne";
-            else if (node->kind == ND_LT)
-                set = use_unsigned_cmp(node) ? "setb" : "setl";
-            else if (node->kind == ND_LE)
-                set = use_unsigned_cmp(node) ? "setbe" : "setle";
-            (void)0 /* FIXME: unconverted printf: "  %s %%al\n" */;
-            (void)0 /* FIXME: unconverted printf: "  movzbl %%al, %s\n" */;
+        X86Cond cond = X86_E;
+        if (node->kind == ND_EQ) cond = X86_E;
+        else if (node->kind == ND_NE)
+            cond = X86_NE;
+        else if (node->kind == ND_LT)
+            cond = use_unsigned_cmp(node) ? X86_B : X86_L;
+        else if (node->kind == ND_LE)
+            cond = use_unsigned_cmp(node) ? X86_BE : X86_LE;
+        asm_setcc(cg_sec, r_lhs, cond);
+        asm_movzx(cg_sec, r_lhs, r_lhs, 4, 1);
 #endif
     }
     // Extended bitfield arithmetic masking (GCC extension for unsigned long long : N).
