@@ -45,6 +45,74 @@ int 漢字 = 42;
 int كتاب = 99;
 #pragma unicode reset
 
+// Test 6: Function names with Unicode
+#pragma unicode Cyrillic
+double функции(double x) {
+    return x * 2.0;
+}
+#pragma unicode reset
+
+// Test 7: Parameter names with Unicode
+#pragma unicode Cyrillic
+static int сложение(int первое, int второе) {
+    return первое + второе;
+}
+#pragma unicode reset
+
+// Test 8: Typedef with Unicode
+#pragma unicode Cyrillic
+typedef double число;
+#pragma unicode reset
+
+// Test 9: Enum constants with Unicode
+#pragma unicode Cyrillic
+enum цвета {
+    КРАСНЫЙ = 1,
+    ЗЕЛЁНЫЙ = 2,
+    СИНИЙ = 3
+};
+#pragma unicode reset
+
+// Test 10: Struct member names with Unicode
+#pragma unicode Cyrillic
+struct точка {
+    double x;
+    double y;
+    char имя[32];
+};
+#pragma unicode reset
+
+#pragma unicode Cyrillic
+struct точка точка1 = { 1.0, 2.0, "test" };
+#pragma unicode reset
+
+// Test 13: Macro names with Unicode
+#pragma unicode Cyrillic
+#define ПРИВЕТ 42
+#define УДВОИТЬ(x) ((x) * 2)
+#pragma unicode reset
+
+// Test 14: #ifdef/#ifndef/#undef with Unicode macro names
+#pragma unicode Cyrillic
+#define ТЕСТ_МАКРО 123
+#ifdef ТЕСТ_МАКРО
+int макро_определён = 1;
+#else
+int макро_определён = 0;
+#endif
+#ifndef ТЕСТ_НЕТ
+int макро_отсутствует = 1;
+#else
+int макро_отсутствует = 0;
+#endif
+#undef ТЕСТ_МАКРО
+#ifdef ТЕСТ_МАКРО
+int макро_после_undef = 0;
+#else
+int макро_после_undef = 1;
+#endif
+#pragma unicode reset
+
 int main() {
 #pragma unicode Cyrillic
     printf("привет=%g\n", привет);
@@ -69,6 +137,78 @@ int main() {
 #pragma unicode Arabic
     printf("كتاب=%d\n", كتاب);
     assert(كتاب == 99);
+#pragma unicode reset
+
+    // Test 6: Function call with Unicode name
+#pragma unicode Cyrillic
+    double р = функции(5.0);
+    assert(р == 10.0);
+    printf("функции(5.0)=%g\n", р);
+#pragma unicode reset
+
+    // Test 7: Parameter names with Unicode
+#pragma unicode Cyrillic
+    int сумма = сложение(10, 20);
+    assert(сумма == 30);
+    printf("сложение(10,20)=%d\n", сумма);
+#pragma unicode reset
+
+    // Test 8: Typedef with Unicode
+#pragma unicode Cyrillic
+    число пи = 3.14159;
+    assert(пи > 3.14);
+    printf("число пи=%g\n", пи);
+#pragma unicode reset
+
+    // Test 9: Enum constants with Unicode
+#pragma unicode Cyrillic
+    assert(КРАСНЫЙ == 1);
+    printf("КРАСНЫЙ=%d\n", КРАСНЫЙ);
+#pragma unicode reset
+
+    // Test 10: Struct member names with Unicode
+#pragma unicode Cyrillic
+    assert(точка1.x == 1.0);
+    assert(точка1.y == 2.0);
+    printf("точка1.x=%g точка1.y=%g\n", точка1.x, точка1.y);
+#pragma unicode reset
+
+    // Test 11: Local variable names with Unicode
+#pragma unicode Cyrillic
+    {
+        int русский = 42;
+        assert(русский == 42);
+        printf("русский=%d\n", русский);
+    }
+#pragma unicode reset
+
+    // Test 13: Macro names with Unicode
+#pragma unicode Cyrillic
+    assert(ПРИВЕТ == 42);
+    printf("ПРИВЕТ=%d\n", ПРИВЕТ);
+    assert(УДВОИТЬ(21) == 42);
+    printf("УДВОИТЬ(21)=%d\n", УДВОИТЬ(21));
+#pragma unicode reset
+
+    // Test 14: #ifdef/#ifndef/#undef with Unicode macro names
+#pragma unicode Cyrillic
+    assert(макро_определён == 1);
+    assert(макро_отсутствует == 1);
+    assert(макро_после_undef == 1);
+    printf("макро_определён=%d макро_отсутствует=%d макро_после_undef=%d\n",
+           макро_определён, макро_отсутствует, макро_после_undef);
+#pragma unicode reset
+
+    // Test 12: Label names with Unicode (goto)
+#pragma unicode Cyrillic
+    {
+        int метка = 0;
+        goto МЕТКА;
+        метка = 1;
+    МЕТКА:
+        assert(метка == 0);
+        printf("метка (after goto)=%d\n", метка);
+    }
 #pragma unicode reset
 
     return 0;

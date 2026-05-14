@@ -2,6 +2,7 @@
 // Parts derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdlib.h>
 
 #ifdef _WIN32
@@ -114,12 +115,29 @@ int pack_align = 0;
 int pack_align_stack[16];
 int pack_align_idx = 0;
 
+static void pp_warn(char *filename, unsigned line_no, char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "%s:%u: warning: ", filename, line_no);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+}
+
+static void pp_check_ident(char *name, int len, char *filename, unsigned line_no) {
+    if (opt_Wno_homoglyph)
+        return;
+    const char *w = u8ident_check_ident(name, len);
+    if (w)
+        pp_warn(filename, line_no, "%s", w);
+}
+
 static bool pp_startswith(char *p, char *q) {
     return strncmp(p, q, strlen(q)) == 0;
 }
 
 static bool pp_is_ident1(char c) {
-    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_' || c == '$';
+    return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || c == '_' || c == '$' || (unsigned char)c >= 128;
 }
 
 static bool pp_is_ident2(char c) {
@@ -1358,6 +1376,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                             while (s < end && pp_is_ident2(*s)) s++;
                         }
                         char *name = pp_strndup(name_start, s - name_start);
+                        pp_check_ident(name, s - name_start, filename, line_no);
                         push_macro(name);
                         sb_putc(&out, '\n');
                     }
@@ -1375,10 +1394,22 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                             while (s < end && pp_is_ident2(*s)) s++;
                         }
                         char *name = pp_strndup(name_start, s - name_start);
+                        pp_check_ident(name, s - name_start, filename, line_no);
                         pop_macro(name);
                         sb_putc(&out, '\n');
                     }
                 } else if (pp_startswith(s, "unicode")) {
+                    // Process pragma in preprocessor too (for macro name checking)
+                    char *t = s + 7;
+                    while (t < end && isspace((unsigned char)*t)) t++;
+                    char *sname = t;
+                    while (t < end && !isspace((unsigned char)*t) && *t != '\n') t++;
+                    if (t > sname) {
+                        char *name = arena_alloc(t - sname + 1);
+                        memcpy(name, sname, t - sname);
+                        name[t - sname] = 0;
+                        u8ident_allow_script(name);
+                    }
                     // Pass through to lexer: # pragma unicode ScriptName
                     sb_puts(&out, "# pragma unicode");
                     s += 7;
@@ -1400,6 +1431,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 while (s < end && pp_is_ident2(*s))
                     s++;
                 char *name = pp_strndup(name_start, s - name_start);
+                pp_check_ident(name, s - name_start, filename, line_no);
                 bool is_function = false;
                 bool is_variadic = false;
                 bool is_gnu_variadic = false;
@@ -1481,6 +1513,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 while (s < end && pp_is_ident2(*s))
                     s++;
                 char *name = pp_strndup(name_start, s - name_start);
+                pp_check_ident(name, s - name_start, filename, line_no);
                 macro_ht_remove(name);
                 Macro **pm = &macros;
                 while (*pm) {
@@ -1599,6 +1632,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 while (s < end && pp_is_ident2(*s))
                     s++;
                 char *name = pp_strndup(name_start, s - name_start);
+                pp_check_ident(name, s - name_start, filename, line_no);
                 CondIncl *ci = arena_alloc(sizeof(CondIncl));
                 ci->parent_active = active;
                 ci->active = active && find_macro(name);
@@ -1615,6 +1649,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 while (s < end && pp_is_ident2(*s))
                     s++;
                 char *name = pp_strndup(name_start, s - name_start);
+                pp_check_ident(name, s - name_start, filename, line_no);
                 CondIncl *ci = arena_alloc(sizeof(CondIncl));
                 ci->parent_active = active;
                 ci->active = active && !find_macro(name);
