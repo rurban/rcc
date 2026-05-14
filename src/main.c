@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
             opt_O0 = true;
-        } else if (!strcmp(argv[i], "-O1")) {
+        } else if (!strcmp(argv[i], "-O1") || !strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
             opt_O1 = true;
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
@@ -220,6 +220,28 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-pthread")) {
             add_define("_REENTRANT");
             int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
+            if (n > 0 && libs_len + n < (int)sizeof(libs))
+                libs_len += n;
+        } else if (!strcmp(argv[i], "--as-needed") ||
+                   !strcmp(argv[i], "--no-as-needed")) {
+            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " -Wl,%s", argv[i]);
+            if (n > 0 && libs_len + n < (int)sizeof(libs))
+                libs_len += n;
+        } else if (!strcmp(argv[i], "-z")) {
+            if (++i >= argc) {
+                fprintf(stderr, "error: missing argument for -z\n");
+                return 1;
+            }
+            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " -Wl,-z,%s", argv[i]);
+            if (n > 0 && libs_len + n < (int)sizeof(libs))
+                libs_len += n;
+        } else if (!strcmp(argv[i], "-rpath")) {
+            if (++i >= argc) {
+                fprintf(stderr, "error: missing argument for -rpath\n");
+                return 1;
+            }
+            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len,
+                             " -Wl,-rpath,%s", argv[i]);
             if (n > 0 && libs_len + n < (int)sizeof(libs))
                 libs_len += n;
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
@@ -272,11 +294,24 @@ int main(int argc, char **argv) {
         } else {
             in_path = argv[i];
 
+            // Default output for -c without -o: <basename>.o
+            if (opt_c && !opt_o) {
+                char *base = path_basename(in_path);
+                char *dot = strrchr(base, '.');
+                if (dot)
+                    out_path = format("%.*s.o", (int)(dot - base), base);
+                else
+                    out_path = format("%s.o", base);
+            }
+
             // Object files skip compilation and go directly to linker input
             size_t in_len = strlen(in_path);
-            if ((in_len >= 2 && !strcmp(in_path + in_len - 2, ".o"))
+            if ((in_len >= 2 && !strcmp(in_path + in_len - 2, ".o")) || (in_len >= 3 && !strcmp(in_path + in_len - 3, ".so"))
+#ifdef __APPLE__
+                || (in_len >= 6 && !strcmp(in_path + in_len - 6, ".dylib"))
+#endif
 #ifdef _WIN32
-                || (in_len >= 4 && !strcmp(in_path + in_len - 4, ".obj"))
+                || (in_len >= 4 && !strcmp(in_path + in_len - 4, ".obj")) || (in_len >= 4 && !strcmp(in_path + in_len - 4, ".dll"))
 #endif
             ) {
                 OutPath *p = arena_alloc(sizeof(OutPath));

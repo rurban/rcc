@@ -4,33 +4,33 @@ _Generated: May 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           74 |          624 |        698 |
-| RCC -O1   |           80 |          624 |        704 |
-| TCC       |           44 |          556 |        600 |
-| GCC -O0   |           82 |          462 |        544 |
-| GCC -O2   |          103 |          279 |        382 |
-| Clang -O0 |           58 |          471 |        529 |
-| Clang -O2 |          108 |          287 |        395 |
+| RCC       |           90 |          604 |        694 |
+| RCC -O1   |           70 |          601 |        671 |
+| TCC       |           37 |          531 |        568 |
+| GCC -O0   |           68 |          451 |        519 |
+| GCC -O2   |          130 |          272 |        402 |
+| Clang -O0 |           54 |          448 |        502 |
+| Clang -O2 |           79 |          271 |        350 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:    507 us
-  lex         bench.c:     74 us
-  parse       bench.c:     60 us
+  preprocess  bench.c:    492 us
+  lex         bench.c:     68 us
+  parse       bench.c:     52 us
   typecheck   bench.c:      5 us
-  codegen     bench.c:   2119 us
-  peephole    bench.c:    242 us
-  link        bench_rcc:  73989 us
+  codegen     bench.c:   1402 us
+  peephole    bench.c:    224 us
+  link        bench_rcc:  67557 us
 
 RCC -O1:
-  preprocess  bench.c:    476 us
-  lex         bench.c:     68 us
-  parse       bench.c:     53 us
-  typecheck   bench.c:      5 us
+  preprocess  bench.c:    639 us
+  lex         bench.c:     71 us
+  parse       bench.c:     51 us
+  typecheck   bench.c:      4 us
   opt(CTFE)   bench.c:     11 us
-  codegen     bench.c:   1662 us
-  peephole    bench.c:    237 us
-  link        bench_rcc_o1:  65109 us
+  codegen     bench.c:   2556 us
+  peephole    bench.c:    257 us
+  link        bench_rcc_o1:  76642 us
 ```
