@@ -856,7 +856,7 @@ static int parse_macro_args(char *p, char **args, int max_args, char **end_out) 
             depth--;
             if (depth == 0) {
                 // M() has zero args; M( ) or M(x) has one or more
-                if (arg_start == p) {
+                if (arg_start == p && argc == 0) {
                     *end_out = p + 1;
                     return 0;
                 }

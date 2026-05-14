@@ -4,33 +4,33 @@ _Generated: May 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |          159 |          608 |        767 |
-| RCC -O1   |           89 |          642 |        731 |
-| TCC       |           64 |          572 |        636 |
-| GCC -O0   |          105 |          540 |        645 |
-| GCC -O2   |          133 |          335 |        468 |
-| Clang -O0 |           90 |          522 |        612 |
-| Clang -O2 |          125 |          336 |        461 |
+| RCC       |           79 |          635 |        714 |
+| RCC -O1   |           89 |          630 |        719 |
+| TCC       |           57 |          559 |        616 |
+| GCC -O0   |           76 |          474 |        550 |
+| GCC -O2   |          118 |          282 |        400 |
+| Clang -O0 |           74 |          475 |        549 |
+| Clang -O2 |          100 |          286 |        386 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:    697 us
-  lex         bench.c:    137 us
-  parse       bench.c:     75 us
-  typecheck   bench.c:      5 us
-  codegen     bench.c:   2056 us
-  peephole    bench.c:    234 us
-  link        bench_rcc:  73496 us
+  preprocess  bench.c:    498 us
+  lex         bench.c:    140 us
+  parse       bench.c:     60 us
+  typecheck   bench.c:      4 us
+  codegen     bench.c:   2471 us
+  peephole    bench.c:    237 us
+  link        bench_rcc:  77237 us
 
 RCC -O1:
-  preprocess  bench.c:    719 us
-  lex         bench.c:    354 us
-  parse       bench.c:    212 us
-  typecheck   bench.c:     11 us
-  opt(CTFE)   bench.c:     32 us
-  codegen     bench.c:   2882 us
-  peephole    bench.c:    309 us
-  link        bench_rcc_o1:  90873 us
+  preprocess  bench.c:    398 us
+  lex         bench.c:    145 us
+  parse       bench.c:     55 us
+  typecheck   bench.c:      5 us
+  opt(CTFE)   bench.c:     11 us
+  codegen     bench.c:   1739 us
+  peephole    bench.c:    244 us
+  link        bench_rcc_o1:  68175 us
 ```
