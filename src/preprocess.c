@@ -583,12 +583,16 @@ static void mark_once_file(char *path) {
 
 #include "sysinc_paths.h"
 
-static char *resolve_include(char *curr_file, char *spec) {
-    char *dir = path_dirname(curr_file);
-    char *path = path_join(dir, spec);
-    //fprintf(stderr, "resolve_include: %s (curr_file=%s, spec=%s))\n", path, curr_file, spec);
-    if (file_exists(path))
-        return canonical_path(path);
+static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
+    char *path;
+    // #include "..." checks adjacent dir first; #include <...> does not
+    if (!is_angle) {
+        char *dir = path_dirname(curr_file);
+        path = path_join(dir, spec);
+        //fprintf(stderr, "resolve_include: %s (curr_file=%s, spec=%s))\n", path, curr_file, spec);
+        if (file_exists(path))
+            return canonical_path(path);
+    }
 
 #ifndef RCC_INCDIR
 #define RCC_INCDIR "include"
@@ -1042,12 +1046,21 @@ static long eval_primary(char **rest, char *p, char *filename) {
             p++;
         p = skip_spaces(p);
         char *spec = NULL;
+        bool is_angle = false;
         if (*p == '"') {
             char *start = ++p;
             while (*p && *p != '"')
                 p++;
             spec = pp_strndup(start, p - start);
             if (*p == '"')
+                p++;
+        } else if (*p == '<') {
+            is_angle = true;
+            char *start = ++p;
+            while (*p && *p != '>')
+                p++;
+            spec = pp_strndup(start, p - start);
+            if (*p == '>')
                 p++;
         } else {
             char *start = p;
@@ -1062,13 +1075,17 @@ static long eval_primary(char **rest, char *p, char *filename) {
                 if (*spec == '"') {
                     spec[strlen(spec) - 1] = '\0';
                     spec++;
+                } else if (*spec == '<') {
+                    is_angle = true;
+                    spec[strlen(spec) - 1] = '\0';
+                    spec++;
                 }
             }
         }
         if (*p == ')')
             p++;
         *rest = p;
-        return resolve_include(filename, spec) != NULL;
+        return resolve_include(filename, spec, is_angle) != NULL;
     }
 
     if (*p == '(') {
@@ -1242,10 +1259,14 @@ static int count_unmatched_parens(char *start, char *end) {
     return open - close;
 }
 
-static char *preprocess_file(char *filename, char *input, int *line_counts) {
+static char *preprocess_file(char *filename, char *input, int *line_counts, int depth) {
     char *fpath = full_path(filename);
     if (is_once_file(fpath))
         return "";
+    if (depth > 245) {
+        error("Include depth exceeded in file: %s", filename);
+        return "";
+    }
 
     strip_comments(input);
 
@@ -1473,7 +1494,9 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                 char *inc_end = s;
                 char *spec = NULL;
                 char *expanded = NULL;
+                bool is_angle = false;
                 if (inc_arg < inc_end && (*inc_arg == '"' || *inc_arg == '<')) {
+                    is_angle = (*inc_arg == '<');
                     char close = (*inc_arg == '"') ? '"' : '>';
                     char *start = ++inc_arg;
                     while (inc_arg < inc_end && *inc_arg != close)
@@ -1486,6 +1509,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                         char *ep = expanded;
                         while (*ep && isspace((unsigned char)*ep)) ep++;
                         if (*ep == '"' || *ep == '<') {
+                            is_angle = (*ep == '<');
                             char close = (*ep == '"') ? '"' : '>';
                             char *start = ++ep;
                             while (*ep && *ep != close) ep++;
@@ -1494,7 +1518,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                     }
                 }
                 if (spec) {
-                    char *path = resolve_include(fpath, spec);
+                    char *path = resolve_include(fpath, spec, is_angle);
                     if (path) {
                         char *inc = read_pp_file(path);
                         if (inc) {
@@ -1504,7 +1528,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts) {
                             unsigned src_resume = line_no + 1; // source line after #include
                             sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
                             SplicedInput spliced_inc = splice_lines_with_counts(inc);
-                            sb_puts(&out, preprocess_file(full_path(path), spliced_inc.text, spliced_inc.line_counts));
+                            sb_puts(&out, preprocess_file(full_path(path), spliced_inc.text, spliced_inc.line_counts, depth + 1));
                             line_no += incl_lines;
                             sb_puts(&out, format("# %u \"%s\"\n", src_resume, fpath));
                         } else {
@@ -1904,7 +1928,7 @@ char *preprocess(char *filename, char *p) {
     }
 
     SplicedInput spliced = splice_lines_with_counts(p);
-    char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts);
+    char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts, 0);
     if (opt_dM)
         return dump_macros();
     return result;
