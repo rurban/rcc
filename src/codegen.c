@@ -416,7 +416,7 @@ static void arm64_load_from_fp_minus(int offset, const char *dst) {
         asm_sub_x17_fp_imm(cg_sec, offset); // sub x17, x29, #offset
         asm_ldr_x16_x17(cg_sec); // ldr dst, [x17]
     } else {
-        int v = offset;
+        unsigned v = offset;
         asm_mov_imm(cg_sec, 17, 8, v & 0xffff); // mov r17, #v
         v >>= 16;
         int s = 16;
@@ -439,7 +439,7 @@ static void arm64_store_to_fp_minus(int offset) {
         asm_sub_x17_fp_imm(cg_sec, offset); // sub x17,x29,#offset
         asm_str_x16_x17(cg_sec); // str x16, [x17]
     } else {
-        int v = offset;
+        unsigned v = offset;
         asm_mov_imm(cg_sec, 17, 8, v & 0xffff); // mov x17, #v
         v >>= 16;
         int s = 16;
@@ -515,28 +515,40 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int arg_regs_stk[64];
     int arg_sizes_stk[64];
     bool arg_is_float_stk[64];
-#ifndef _WIN32
+#ifdef _WIN32
     int arg_gp_idx_stk[64];
     int arg_fp_idx_stk[64];
     int arg_stack_idx_stk[64];
-#ifdef ARCH_ARM64
+#elif defined(ARCH_ARM64)
+    int arg_gp_idx_stk[64];
+    int arg_fp_idx_stk[64];
+    int arg_stack_idx_stk[64];
     int arg_hfa_count_stk[64];
     int arg_hfa_elem_size_stk[64];
-#endif
+#else
+    int arg_gp_idx_stk[64];
+    int arg_fp_idx_stk[64];
+    int arg_stack_idx_stk[64];
 #endif
 
     Node **argv;
     int *arg_regs;
     int *arg_sizes;
     bool *arg_is_float;
-#ifndef _WIN32
+#ifdef _WIN32
     int *arg_gp_idx;
     int *arg_fp_idx;
     int *arg_stack_idx;
-#ifdef ARCH_ARM64
+#elif defined(ARCH_ARM64)
+    int *arg_gp_idx;
+    int *arg_fp_idx;
+    int *arg_stack_idx;
     int *arg_hfa_count;
     int *arg_hfa_elem_size;
-#endif
+#else
+    int *arg_gp_idx;
+    int *arg_fp_idx;
+    int *arg_stack_idx;
 #endif
 
     if (nargs <= 64) {
@@ -544,28 +556,40 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_regs = arg_regs_stk;
         arg_sizes = arg_sizes_stk;
         arg_is_float = arg_is_float_stk;
-#ifndef _WIN32
+#ifdef _WIN32
         arg_gp_idx = arg_gp_idx_stk;
         arg_fp_idx = arg_fp_idx_stk;
         arg_stack_idx = arg_stack_idx_stk;
-#ifdef ARCH_ARM64
+#elif defined(ARCH_ARM64)
+        arg_gp_idx = arg_gp_idx_stk;
+        arg_fp_idx = arg_fp_idx_stk;
+        arg_stack_idx = arg_stack_idx_stk;
         arg_hfa_count = arg_hfa_count_stk;
         arg_hfa_elem_size = arg_hfa_elem_size_stk;
-#endif
+#else
+        arg_gp_idx = arg_gp_idx_stk;
+        arg_fp_idx = arg_fp_idx_stk;
+        arg_stack_idx = arg_stack_idx_stk;
 #endif
     } else {
         argv = arena_alloc(sizeof(Node *) * nargs);
         arg_regs = arena_alloc(sizeof(int) * nargs);
         arg_sizes = arena_alloc(sizeof(int) * nargs);
         arg_is_float = arena_alloc(sizeof(bool) * nargs);
-#ifndef _WIN32
+#ifdef _WIN32
         arg_gp_idx = arena_alloc(sizeof(int) * nargs);
         arg_fp_idx = arena_alloc(sizeof(int) * nargs);
         arg_stack_idx = arena_alloc(sizeof(int) * nargs);
-#ifdef ARCH_ARM64
+#elif defined(ARCH_ARM64)
+        arg_gp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_fp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_stack_idx = arena_alloc(sizeof(int) * nargs);
         arg_hfa_count = arena_alloc(sizeof(int) * nargs);
         arg_hfa_elem_size = arena_alloc(sizeof(int) * nargs);
-#endif
+#else
+        arg_gp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_fp_idx = arena_alloc(sizeof(int) * nargs);
+        arg_stack_idx = arena_alloc(sizeof(int) * nargs);
 #endif
     }
 
@@ -583,6 +607,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #ifdef _WIN32
     char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
     char *argreg64[] = {"%rcx", "%rdx", "%r8", "%r9"};
+    X86Reg cg_x86_argreg[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
     char *argxmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
     int shadow_space = 32;
     int max_gp_args = 4;
