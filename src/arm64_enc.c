@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // AArch64 instruction encoder.  All instructions are 32-bit fixed-width.
 // Reference: Arm Architecture Reference Manual for A-profile architecture.
+#ifdef ARCH_ARM64
 #include "arm64_enc.h"
 #include <assert.h>
 #include <stdint.h>
@@ -82,34 +83,34 @@ static uint32_t logic_imm_field(int sf, uint64_t val) {
 // Data processing — immediate
 // ---------------------------------------------------------------------------
 
-uint32_t arm64_movz(int sf, int rd, uint16_t imm16, int shift16) {
+uint32_t arm64_movz(int sf, int rd, uint16_t imm16, uint16_t shift16) {
     assert(shift16 == 0 || shift16 == 16 || shift16 == 32 || shift16 == 48);
     return SF(sf) | 0xd2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_movk(int sf, int rd, uint16_t imm16, int shift16) {
+uint32_t arm64_movk(int sf, int rd, uint16_t imm16, uint16_t shift16) {
     return SF(sf) | 0xf2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_movn(int sf, int rd, uint16_t imm16, int shift16) {
+uint32_t arm64_movn(int sf, int rd, uint16_t imm16, uint16_t shift16) {
     return SF(sf) | 0x92800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_add_imm(int sf, int rd, int rn, int32_t imm12, int sh) {
+uint32_t arm64_add_imm(int sf, int rd, int rn, int32_t imm12, uint16_t sh) {
     assert(imm12 >= 0 && imm12 < 4096);
     return SF(sf) | 0x11000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_adds_imm(int sf, int rd, int rn, int32_t imm12, int sh) {
+uint32_t arm64_adds_imm(int sf, int rd, int rn, int32_t imm12, uint32_t sh) {
     return SF(sf) | 0x31000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_sub_imm(int sf, int rd, int rn, int32_t imm12, int sh) {
+uint32_t arm64_sub_imm(int sf, int rd, int rn, int32_t imm12, uint32_t sh) {
     assert(imm12 >= 0 && imm12 < 4096);
     return SF(sf) | 0x51000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_subs_imm(int sf, int rd, int rn, int32_t imm12, int sh) {
+uint32_t arm64_subs_imm(int sf, int rd, int rn, int32_t imm12, uint32_t sh) {
     return SF(sf) | 0x71000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
@@ -522,3 +523,4 @@ uint32_t arm64_stp_fp(int opc, int rt1, int rt2, int rn, int32_t imm7, bool pre,
     uint32_t base = 0x2c000000u | BITS(31, 30, opc);
     return ldp_stp(base, rt1, rt2, rn, imm7, pre, post);
 }
+#endif /* ARCH_ARM64 */
