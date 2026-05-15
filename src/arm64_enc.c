@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // AArch64 instruction encoder.  All instructions are 32-bit fixed-width.
 // Reference: Arm Architecture Reference Manual for A-profile architecture.
+#include "rcc.h"
 #ifdef ARCH_ARM64
 #include "arm64_enc.h"
 #include <assert.h>
@@ -41,21 +42,22 @@ static bool try_encode_logic_imm(int sf, uint64_t val,
         if (elem == 0 || (elem & mask) == mask) continue;
         // Find the rotation
         // Count trailing zeros of ~elem to find where 0-run starts
-        int cto = 0; // count trailing ones
-        uint64_t t = elem;
-        while (t & 1) {
-            cto++;
-            t >>= 1;
-        }
-        // Now find where the 1-run really starts (may be rotated)
         int ctz_inv = 0;
-        t = (~elem) & mask;
+        uint64_t t = (~elem) & mask;
         while (t & 1) {
             ctz_inv++;
             t >>= 1;
         }
         // Rotation amount = ctz_inv
         int immr = ctz_inv % e;
+        // Rotate elem right by immr so the 1-run starts at bit 0
+        uint64_t rotated = ((elem >> immr) | (elem << (e - immr))) & mask;
+        int cto = 0; // count trailing ones of rotated element
+        t = rotated;
+        while (t & 1) {
+            cto++;
+            t >>= 1;
+        }
         int imms = cto - 1;
         int N = (e == 64) ? 1 : 0;
         if (!sf && e == 64) return false;

@@ -522,6 +522,32 @@ static size_t asm_mul_reg_reg(SecBuf *s, int dst, int src, int size) {
     return count;
 #endif
 }
+static size_t asm_sdiv_reg_reg(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_sdiv(sf, CG_ARM_REG(dst), CG_ARM_REG(dst), CG_ARM_REG(src)));
+    return 4;
+#else
+    x86_idiv_r(s, size, CG_X86_REG(src));
+    size_t count = s->len - off;
+    return count;
+#endif
+}
+static size_t asm_udiv_reg_reg(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_udiv(sf, CG_ARM_REG(dst), CG_ARM_REG(dst), CG_ARM_REG(src)));
+    return 4;
+#else
+    (void)s;
+    (void)dst;
+    (void)src;
+    (void)size;
+    return 0;
+#endif
+}
 
 static size_t asm_neg(SecBuf *s, int r, int size) {
     size_t off = s->len;
@@ -948,6 +974,7 @@ static size_t asm_movabs_phy(SecBuf *s, X86Reg reg, uint64_t val) {
     asm_record(ASM_MOV_RI, off, s->len - off, (int)reg, -1, -1, 8, (int64_t)val, 0, NULL, 0, -1, false);
     return s->len - off;
 }
+#endif
 #ifdef ARCH_ARM64
 static size_t asm_add_x0_fp_imm(SecBuf *s, int imm) {
     size_t off = s->len;
@@ -978,6 +1005,16 @@ static size_t asm_mov_x0_sp(SecBuf *s) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_add_imm(1, 0, 31, 0, 0));
     return s->len - off;
+}
+static size_t asm_sub_sp_sp_reg(SecBuf *s, int r) {
+    size_t o = s->len;
+    secbuf_emit32le(s, arm64_sub_reg(1, 31, 31, CG_ARM_REG(r), ARM64_LSL, 0));
+    return s->len - o;
+}
+static size_t asm_mov_reg_sp(SecBuf *s, int r) {
+    size_t o = s->len;
+    secbuf_emit32le(s, arm64_add_imm(1, CG_ARM_REG(r), 31, 0, 0));
+    return s->len - o;
 }
 static size_t asm_add_sp_sp_x16(SecBuf *s) {
     size_t off = s->len;
@@ -1039,8 +1076,41 @@ static size_t asm_cmn_imm(SecBuf *s, int r, int sf, int imm) {
     secbuf_emit32le(s, arm64_subs_imm(sf, 31, CG_ARM_REG(r), -imm, 0));
     return s->len - o;
 }
+static size_t asm_add_reg_fp_imm(SecBuf *s, int r, int32_t imm) {
+    size_t o = s->len;
+    if (imm >= 0)
+        secbuf_emit32le(s, arm64_add_imm(1, CG_ARM_REG(r), 29, imm, 0));
+    else
+        secbuf_emit32le(s, arm64_sub_imm(1, CG_ARM_REG(r), 29, -imm, 0));
+    return s->len - o;
+}
+static size_t asm_sub_reg_fp_imm(SecBuf *s, int r, int32_t imm) {
+    size_t o = s->len;
+    if (imm >= 0)
+        secbuf_emit32le(s, arm64_sub_imm(1, CG_ARM_REG(r), 29, imm, 0));
+    else
+        secbuf_emit32le(s, arm64_add_imm(1, CG_ARM_REG(r), 29, -imm, 0));
+    return s->len - o;
+}
+static size_t asm_sub_reg_fp_reg(SecBuf *s, int dst, int src, int size) {
+    size_t o = s->len;
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_sub_reg(sf, CG_ARM_REG(dst), 29, CG_ARM_REG(src), ARM64_LSL, 0));
+    return s->len - o;
+}
+static size_t asm_stur_fp(SecBuf *s, int r, int off) {
+    size_t o = s->len;
+    secbuf_emit32le(s, arm64_stur(1, CG_ARM_REG(r), 29, -off));
+    return s->len - o;
+}
+static size_t asm_ldur_fp(SecBuf *s, int r, int off) {
+    size_t o = s->len;
+    secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(r), 29, -off));
+    return s->len - o;
+}
 #endif
 
+#ifndef ARCH_ARM64
 // Use codegen register indices (0..7) for these wrappers
 static size_t asm_mov_rbp_reg(SecBuf *s, int r, int size, int offset) {
     size_t off = s->len;
@@ -1063,6 +1133,8 @@ static size_t asm_lea_rbp_reg(SecBuf *s, int r, int size, int offset) {
     asm_record(ASM_LEA_FP, off, s->len - off, r, -1, -1, size, 0, -offset, NULL, 0, -1, false);
     return s->len - off;
 }
+#endif
+
 static size_t asm_cmp_imm(SecBuf *s, int r, int size, int32_t imm) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
@@ -1074,6 +1146,8 @@ static size_t asm_cmp_imm(SecBuf *s, int r, int size, int32_t imm) {
     asm_record(ASM_CMP_RI, off, s->len - off, r, -1, -1, size, imm, 0, NULL, 0, -1, false);
     return s->len - off;
 }
+
+#ifndef ARCH_ARM64
 static size_t asm_test_reg_reg(SecBuf *s, int a, int b, int size) {
     size_t off = s->len;
     x86_test_rr(s, size, CG_X86_REG(a), CG_X86_REG(b));
@@ -1241,7 +1315,8 @@ static size_t asm_ldr_fp(SecBuf *s, int dst_fp_r, int base_r, int size) {
 #else
     X86Mem m = {CG_X86_REG(base_r), X86_NOREG, 1, 0};
     if (size == 8) x86_movsd_rm(s, (X86XmmReg)dst_fp_r, m);
-    else x86_movss_rm(s, (X86XmmReg)dst_fp_r, m);
+    else
+        x86_movss_rm(s, (X86XmmReg)dst_fp_r, m);
 #endif
     return s->len - off;
 }
@@ -1254,7 +1329,8 @@ static size_t asm_str_fp(SecBuf *s, int src_fp_r, int base_r, int size) {
 #else
     X86Mem m = {CG_X86_REG(base_r), X86_NOREG, 1, 0};
     if (size == 8) x86_movsd_mr(s, m, (X86XmmReg)src_fp_r);
-    else x86_movss_mr(s, m, (X86XmmReg)src_fp_r);
+    else
+        x86_movss_mr(s, m, (X86XmmReg)src_fp_r);
 #endif
     return s->len - off;
 }
