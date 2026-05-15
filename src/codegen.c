@@ -2001,7 +2001,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #endif
         (void)0 /* TODO: movq to/from xmm */;
     } else {
-        asm_mov_reg_reg(cg_sec, r, 0, 8); // mov r0 -> rr
+        x86_mov_rr(cg_sec, 8, CG_X86_REG(r), X86_RAX); // movq %%rax, %s
     }
     return r;
 #endif
