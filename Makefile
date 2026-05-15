@@ -5,6 +5,11 @@ TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
 
+ifeq ($(ASAN),1)
+CFLAGS += -fsanitize=address -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=address
+endif
+
 # Detect clang vs gcc
 IS_CLANG := $(shell $(CC) --version 2>/dev/null | grep -c clang)
 
@@ -249,4 +254,4 @@ TAGS: $(SRCS) src/rcc.h
 
 FORCE:
 
-.PHONY: clean test check test-full test-torture lint bench install dist bench prof -lpthread FORCE
+.PHONY: clean test check test-full test-torture lint bench install dist bench prof FORCE
