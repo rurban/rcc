@@ -2176,7 +2176,7 @@ static int emit_stack_addr(int offset) {
             v >>= 16;
             s += 16;
         }
-        (void)0 /* FIXME: unconverted printf: "  sub %s, %s, %s\n" */;
+        secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), 29, CG_ARM_REG(ta), ARM64_LSL, 0));
     }
     return ta;
 #else
@@ -2308,202 +2308,136 @@ static void zero_extend_to(int r, int from_size, int to_size) {
 }
 
 #ifdef ARCH_ARM64
-#if 0
-static int base_regnum_from_addr(const char *addr) {
-    int bn = -1, off = 0;
-    if (sscanf(addr, "[x%d]", &bn) == 1)
-        return bn;
-    if (sscanf(addr, "[x%d, #%d]", &bn, &off) == 2)
-        return bn;
-    return -1;
-}
-#endif
+// Sentinels for base register index in emit_store / emit_load:
+// >= 0: virtual register index, CG_ARM_REG maps to physical register
+// ARM64_BASE_FP (-29): frame pointer (x29)
+// ARM64_BASE_SP (-31): stack pointer (x31)
+#define ARM64_BASE_FP (-29)
+#define ARM64_BASE_SP (-31)
+#define ARM64_BASE_X16 (-16)
 
-static bool base_reg_conflicts_with_dest(const char *addr, int r) {
-    // Check if base register in addr matches destination register r
-    // Returns true if the underlying ARM reg (xN) is the same as reg64[r]
-    int bn = -1, off = 0;
-    if (sscanf(addr, "[x%d]", &bn) == 1)
-        return strcmp(format("x%d", bn), reg64[r]) == 0;
-    if (sscanf(addr, "[x%d, #%d]", &bn, &off) == 2)
-        return strcmp(format("x%d", bn), reg64[r]) == 0;
-    return false;
+// Get physical ARM64 register number from base index
+static int arm64_base_phys(int base) {
+    if (base == ARM64_BASE_FP) return 29;
+    if (base == ARM64_BASE_SP) return 31;
+    if (base == ARM64_BASE_X16) return 16;
+    return CG_ARM_REG(base);
 }
 
-static void emit_store(Type *ty, int r, char *addr) {
+// Check if base register matches destination virtual register
+static bool arm64_base_conflicts(int base, int r) {
+    return base >= 0 && base == r;
+}
+
+static void emit_store(Type *ty, int src, int base, int off) {
     int sz = ty->size;
-    if (sz == 1)
-        (void)0 /* FIXME: sized ld/st */;
-    else if (sz == 2)
-        (void)0 /* FIXME: sized ld/st */;
-    else if (sz == 4)
-        (void)0 /* FIXME: unconverted printf: "  str %s, %s\n" */;
-    else
-        (void)0 /* FIXME: unconverted printf: "  str %s, %s\n" */;
-}
-
-static void emit_store_offset(Type *ty, int r, const char *base, int offset) {
-    int sz = ty->size;
-    int abs_off = offset < 0 ? -offset : offset;
-    // ARM64 unscaled offset range is -256..255; use temp register for larger
-    if (abs_off > 255) {
-        int ta = alloc_reg();
-        asm_mov_imm(cg_sec, ta, 8, abs_off & 0xffff);
-        int v = abs_off >> 16;
-        int s = 16;
-        while (v) {
-            asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s);
-            v >>= 16;
-            s += 16;
-        }
-        if (offset < 0)
-            (void)0 /* FIXME: unconverted printf: "  sub %s, %s, %s\n" */;
-        else
-            (void)0 /* FIXME: unconverted printf: "  add %s, %s, %s\n" */;
-        if (sz == 1)
-            (void)0 /* FIXME: sized ld/st */;
-        else if (sz == 2)
-            (void)0 /* FIXME: sized ld/st */;
-        else if (sz == 4)
-            asm_str_reg_off(cg_sec, r, ta, 8, 0);
-        else
-            asm_str_reg_off(cg_sec, r, ta, 8, 0);
-        free_reg(ta);
+    int bp = arm64_base_phys(base);
+    if (off == 0) {
+        if (sz == 1) secbuf_emit32le(cg_sec, arm64_strb_uoff(CG_ARM_REG(src), bp, 0));
+        else if (sz == 2) secbuf_emit32le(cg_sec, arm64_strh_uoff(CG_ARM_REG(src), bp, 0));
+        else if (sz == 4) secbuf_emit32le(cg_sec, arm64_str_uoff(0, CG_ARM_REG(src), bp, 0));
+        else secbuf_emit32le(cg_sec, arm64_str_uoff(1, CG_ARM_REG(src), bp, 0));
+    } else if (off > -256 && off < 256) {
+        if (sz == 4) secbuf_emit32le(cg_sec, arm64_stur(0, CG_ARM_REG(src), bp, off));
+        else secbuf_emit32le(cg_sec, arm64_stur(1, CG_ARM_REG(src), bp, off));
     } else {
-        if (sz == 1)
-            (void)0 /* FIXME: sized ld/st */;
-        else if (sz == 2)
-            (void)0 /* FIXME: sized ld/st */;
-        else if (sz == 4)
-            (void)0 /* FIXME: ldr/str phy/off */;
-        else
-            (void)0 /* FIXME: ldr/str phy/off */;
+        int ta = alloc_reg();
+        if (off < 0) {
+            int u = -off;
+            asm_mov_imm(cg_sec, ta, 8, u);
+            secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+        } else {
+            asm_mov_imm(cg_sec, ta, 8, off);
+            secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+        }
+        secbuf_emit32le(cg_sec, arm64_str_uoff(sz == 8 ? 1 : 0, CG_ARM_REG(src), CG_ARM_REG(ta), 0));
+        free_reg(ta);
     }
+}
+
+static void emit_store_offset(Type *ty, int r, int base, int offset) {
+    int sz = ty->size;
+    int bp = arm64_base_phys(base);
+    int off = offset;
+    if (off > -256 && off < 256 && sz >= 4) {
+        secbuf_emit32le(cg_sec, arm64_stur(sz == 8 ? 1 : 0, CG_ARM_REG(r), bp, off));
+        return;
+    }
+    int abs_off = off < 0 ? -off : off;
+    int ta = alloc_reg();
+    asm_mov_imm(cg_sec, ta, 8, abs_off & 0xffff);
+    int v = abs_off >> 16;
+    int s = 16;
+    while (v) {
+        asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s);
+        v >>= 16;
+        s += 16;
+    }
+    if (off < 0)
+        secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+    else
+        secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+    if (sz == 1) secbuf_emit32le(cg_sec, arm64_strb_uoff(CG_ARM_REG(r), CG_ARM_REG(ta), 0));
+    else if (sz == 2) secbuf_emit32le(cg_sec, arm64_strh_uoff(CG_ARM_REG(r), CG_ARM_REG(ta), 0));
+    else if (sz == 4) secbuf_emit32le(cg_sec, arm64_str_uoff(0, CG_ARM_REG(r), CG_ARM_REG(ta), 0));
+    else secbuf_emit32le(cg_sec, arm64_str_uoff(1, CG_ARM_REG(r), CG_ARM_REG(ta), 0));
+    free_reg(ta);
 }
 #endif
 
-static void emit_load(Type *ty, int r, char *addr) {
+static void emit_load(Type *ty, int r, int base, int off) {
 #ifdef ARCH_ARM64
-    // ARM64 narrow loads always write to w register (32-bit), zero-extending
-    // Handle negative offsets with large magnitude (ARM64 ldr/str 9-bit signed limit)
-    int off = 0;
-    char base[32];
-
-    // ARM64: ldr wN,[xN] and ldr xN,[xN] are CONSTRAINED UNPREDICTABLE.
-    // Detect when base register matches destination and use a temp.
-    int ta = -1;
-    if (base_reg_conflicts_with_dest(addr, r)) {
-        ta = alloc_reg();
-        if (ta == r) {
-            // alloc_reg() spilled r and returned it.  Loading into r would
-            // overwrite the base address, and free_reg(ta) would unspill
-            // and clobber the loaded value.  Use x16 (scratch, not in pool)
-            // for the base copy instead.
-            used_regs &= ~(1 << ta);
-            if (spilled_regs & (1 << ta))
-                spilled_regs &= ~(1 << ta);
-            (void)0 /* FIXME: mov phy */;
-            addr = "[x16]";
-            ta = -1;
-        } else {
-            asm_mov_reg_reg(cg_sec, ta, r, 8);
-            addr = format("[%s]", reg64[ta]);
-        }
-    }
-
-    if (sscanf(addr, "[%31[^,], #%d]", base, &off) == 2 && off < -255) {
-        int tr = alloc_reg();
-        if (-off <= 4095)
-            asm_sub_imm(cg_sec, tr, 8, base);
-        else {
-            int v = -off;
-            asm_mov_imm(cg_sec, tr, 8, v & 0xffff);
-            v >>= 16;
-            int s = 16;
-            while (v) {
-                asm_movk(cg_sec, tr, 1, (uint16_t)(v & 0xffff), s);
-                v >>= 16;
-                s += 16;
-            }
-            (void)0 /* FIXME: unconverted printf: "  sub %s, %s, %s\n" */;
-        }
-        if (ty->size == 1) {
-            (void)0 /* FIXME: unconverted printf: "  %s %s, [%s]\n" */;
-        } else if (ty->size == 2) {
-            (void)0 /* FIXME: unconverted printf: "  %s %s, [%s]\n" */;
-        } else if (ty->size == 4) {
-            asm_ldr_reg_off(cg_sec, r, tr, 8, 0);
-        } else {
-            asm_ldr_reg_off(cg_sec, r, tr, 8, 0);
-        }
-        free_reg(tr);
-        if (ta >= 0) free_reg(ta);
-        return;
+    int bp = arm64_base_phys(base);
+    // ARM64: ldr wN,[xN] is CONSTRAINED UNPREDICTABLE — avoid base==dest
+    if (arm64_base_conflicts(base, r)) {
+        secbuf_emit32le(cg_sec, arm64_add_reg(1, 16, 31, bp, ARM64_LSL, 0));
+        bp = 16; // x16 scratch
     }
     if (ty->size == 1) {
-        (void)0 /* FIXME: generic 2op: %s %s, %s */;
-        if (ta >= 0) free_reg(ta);
-        return;
+        secbuf_emit32le(cg_sec, arm64_ldrb_imm(CG_ARM_REG(r), bp, (int32_t)off));
+    } else if (ty->size == 2) {
+        secbuf_emit32le(cg_sec, arm64_ldrh_imm(CG_ARM_REG(r), bp, (int32_t)off));
+    } else if (ty->size == 4) {
+        secbuf_emit32le(cg_sec, arm64_ldr_imm(0, CG_ARM_REG(r), bp, (int32_t)off, false));
+    } else {
+        secbuf_emit32le(cg_sec, arm64_ldr_imm(1, CG_ARM_REG(r), bp, (int32_t)off, false));
     }
-    if (ty->size == 2) {
-        (void)0 /* FIXME: generic 2op: %s %s, %s */;
-        if (ta >= 0) free_reg(ta);
-        return;
-    }
-    if (ty->size == 4) {
-        (void)0 /* FIXME: unconverted printf: "  ldr %s, %s\n" */;
-        if (ta >= 0) free_reg(ta);
-        return;
-    }
-    (void)0 /* FIXME: unconverted printf: "  ldr %s, %s\n" */;
-    if (ta >= 0) free_reg(ta);
 #else
-    // x86_64: parse addr format and emit proper load
+#ifndef X86_BASE_RBP
+#define X86_BASE_RBP (-1)
+#endif
+    // x86_64: base >= 0 = virtual reg, X86_BASE_RBP = rbp-relative
     int sz = op_size(ty);
-    int off;
-    if (ty->size == 1) {
-        if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
+    if (base == X86_BASE_RBP) {
+        X86Reg xbp = CG_X86_FP;
+        if (ty->size == 1) {
             if (ty->is_unsigned)
-                x86_movzx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(X86_RBP, off));
+                x86_movzx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(xbp, off));
             else
-                x86_movsx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(X86_RBP, off));
-        } else if (addr[0] == '(') {
-            X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+                x86_movsx_rm(cg_sec, 4, 1, CG_X86_REG(r), x86_mem(xbp, off));
+        } else if (ty->size == 2) {
+            if (ty->is_unsigned)
+                x86_movzx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(xbp, off));
+            else
+                x86_movsx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(xbp, off));
+        } else {
+            asm_mov_rbp_reg(cg_sec, r, sz, off);
+        }
+    } else {
+        X86Mem m = {CG_X86_REG(base), X86_NOREG, 1, (int64_t)off};
+        if (ty->size == 1) {
             if (ty->is_unsigned)
                 x86_movzx_rm(cg_sec, 4, 1, CG_X86_REG(r), m);
             else
                 x86_movsx_rm(cg_sec, 4, 1, CG_X86_REG(r), m);
-        } else {
-            // RIP-relative or other: FIXME narrow load
-            X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
-            x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
-        }
-    } else if (ty->size == 2) {
-        if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
-            if (ty->is_unsigned)
-                x86_movzx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(X86_RBP, off));
-            else
-                x86_movsx_rm(cg_sec, 4, 2, CG_X86_REG(r), x86_mem(X86_RBP, off));
-        } else if (addr[0] == '(') {
-            X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+        } else if (ty->size == 2) {
             if (ty->is_unsigned)
                 x86_movzx_rm(cg_sec, 4, 2, CG_X86_REG(r), m);
             else
                 x86_movsx_rm(cg_sec, 4, 2, CG_X86_REG(r), m);
         } else {
-            // RIP-relative or other: FIXME narrow load
-            X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
             x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
         }
-    } else if (sscanf(addr, "-%d(%%rbp)", &off) == 1) {
-        asm_mov_rbp_reg(cg_sec, r, sz, off);
-    } else if (addr[0] == '(') {
-        X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
-        x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
-    } else {
-        // RIP-relative or other: use as fallback
-        X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
-        x86_mov_rm(cg_sec, sz, CG_X86_REG(r), m);
     }
     if (sz == 8 && ty->size < 4)
         asm_movzx(cg_sec, r, r, 4, ty->size);
@@ -2840,7 +2774,7 @@ static int gen_addr(Node *node) {
                         v >>= 16;
                         s += 16;
                     }
-                    (void)0 /* FIXME: unconverted printf: "  sub %s, %s, %s\n" */;
+                    secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(r), 29, CG_ARM_REG(r), ARM64_LSL, 0));
                 }
 #else
                 asm_lea_rbp_reg(cg_sec, r, 8, node->var->offset);
@@ -3237,7 +3171,7 @@ static int gen(Node *node) {
                         v >>= 16;
                         s += 16;
                     }
-                    (void)0 /* FIXME: unconverted printf: "  sub %s, %s, %s\n" */;
+                    secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(r), 29, CG_ARM_REG(r), ARM64_LSL, 0));
                 }
 #else
                 asm_lea_rbp_reg(cg_sec, r, 8, node->var->offset);
@@ -3335,9 +3269,9 @@ static int gen(Node *node) {
         } else {
             if (node->var->is_local)
 #ifdef ARCH_ARM64
-                emit_load(node->ty, r, format("[%s, #-%d]", FRAME_PTR, node->var->offset));
+                emit_load(node->ty, r, ARM64_BASE_FP, -node->var->offset);
 #else
-                emit_load(node->ty, r, format("-%d(%%rbp)", node->var->offset));
+                emit_load(node->ty, r, X86_BASE_RBP, node->var->offset);
 #endif
             else {
 #ifdef ARCH_ARM64
@@ -3347,15 +3281,15 @@ static int gen(Node *node) {
                     emit_adrp_got(reg64[ta], asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(reg64[ta], asm_sym_name(var_sym_label(node->var)));
-                emit_load(node->ty, r, format("[%s]", reg64[ta]));
+                emit_load(node->ty, r, ta, 0);
                 free_reg(ta);
 #else
                 if (var_needs_got(node->var)) {
                     (void)0 /* FIXME: mov indirect/mem */;
-                    emit_load(node->ty, r, format("(%s)", reg64[r]));
+                    emit_load(node->ty, r, r, 0);
                 } else {
                     asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
-                    emit_load(node->ty, r, format("(%s)", reg64[r]));
+                    emit_load(node->ty, r, r, 0);
                 }
 #endif
             }
@@ -3470,7 +3404,7 @@ static int gen(Node *node) {
             // store the value directly instead of copying bytes from the address in the register.
             if (node->rhs->ty && !(node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY) && node->lhs->ty->size <= 8) {
 #ifdef ARCH_ARM64
-                emit_store(node->lhs->ty, src, format("[%s]", reg64[dst]));
+                emit_store(node->lhs->ty, src, dst, 0);
 #else
                 {
                     int st_sz = node->lhs->ty->size;
@@ -3858,7 +3792,7 @@ static int gen(Node *node) {
         int r1 = gen_addr(node->lhs);
         int r2 = gen(node->rhs);
 #ifdef ARCH_ARM64
-        emit_store(node->lhs->ty, r2, format("[%s]", reg64[r1]));
+        emit_store(node->lhs->ty, r2, r1, 0);
 #else
         {
             int st_sz = node->lhs->ty->size;
@@ -4099,10 +4033,10 @@ static int gen(Node *node) {
         }
 #ifdef ARCH_ARM64
         // Load current value (correct load width for type)
-        emit_load(node->lhs->ty, r2, format("[%s]", reg64[r]));
+        emit_load(node->lhs->ty, r2, r, 0);
         // Update in-place: load into temp, add/sub, store back
         int r3 = alloc_reg();
-        emit_load(node->lhs->ty, r3, format("[%s]", reg64[r]));
+        emit_load(node->lhs->ty, r3, r, 0);
         if (is_flonum(node->lhs->ty)) {
             // Float post-inc/dec: use fp arithmetic via d0/d1
             int id = add_float_literal(1.0, sz);
@@ -4126,7 +4060,7 @@ static int gen(Node *node) {
             else
                 asm_sub_imm(cg_sec, r3, sz, reg(r3, sz));
         }
-        emit_store(node->lhs->ty, r3, format("[%s]", reg64[r]));
+        emit_store(node->lhs->ty, r3, r, 0);
         free_reg(r3);
 #else
         // x86_64: load from [r] into r2 with proper extension
@@ -4274,9 +4208,9 @@ static int gen(Node *node) {
 #endif
         } else {
 #ifdef ARCH_ARM64
-            emit_load(load_ty, r, format("[%s]", reg64[r]));
+            emit_load(load_ty, r, r, 0);
 #else
-            emit_load(load_ty, r, format("(%s)", reg64[r]));
+            emit_load(load_ty, r, r, 0);
 #endif
         }
         if (node->member && node->member->bit_width > 0) {
@@ -4505,9 +4439,9 @@ static int gen(Node *node) {
 #endif
         } else {
 #ifdef ARCH_ARM64
-            emit_load(node->ty, r, format("[%s]", reg64[r]));
+            emit_load(node->ty, r, r, 0);
 #else
-            emit_load(node->ty, r, format("(%s)", reg64[r]));
+            emit_load(node->ty, r, r, 0);
 #endif
         }
         return r;
@@ -5339,7 +5273,7 @@ static int gen(Node *node) {
                 int r = alloc_reg();
                 op_regs[i] = r;
                 op->reg = r;
-                emit_load(op->expr->ty, r, format("[%s]", reg64[r_addr]));
+                emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg64[r]);
             } else {
                 // Input register (r) or symbol address (S):
@@ -5574,7 +5508,7 @@ static int gen(Node *node) {
                 op_regs[i] = r;
                 op->reg = r;
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
-                emit_load(op->expr->ty, r, format("(%s)", reg64[r_addr]));
+                emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
             } else if (*c >= '0' && *c <= '9') {
                 // Matching constraint: defer to second pass
@@ -5890,7 +5824,7 @@ static int gen(Node *node) {
             else secbuf_emit32le(cg_sec, arm64_ldar(sz == 8 ? 1 : 0, CG_ARM_REG(r), CG_ARM_REG(r_addr)));
         }
         else
-            emit_load(node->ty, r, format("[%s]", reg64[r_addr]));
+            emit_load(node->ty, r, r_addr, 0);
 #else
         if (sz < 4) {
             if (sz == 1)
@@ -5932,7 +5866,7 @@ static int gen(Node *node) {
             else secbuf_emit32le(cg_sec, arm64_stlr(sz == 8 ? 1 : 0, CG_ARM_REG(r_val), CG_ARM_REG(r_addr)));
         }
         else
-            emit_store(node->lhs->ty->base ? node->lhs->ty->base : ty_int, r_val, format("[%s]", reg64[r_addr]));
+            emit_store(node->lhs->ty->base ? node->lhs->ty->base : ty_int, r_val, r_addr, 0);
         if (ord == MEMORDER_SEQ_CST)
             asm_dmb(cg_sec);
 #else
@@ -5995,7 +5929,7 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         int r_expected = alloc_reg();
         Type *elem_ty = node->lhs->ty && node->lhs->ty->base ? node->lhs->ty->base : ty_int;
-        emit_load(elem_ty, r_expected, format("[%s]", reg64[r_expectedaddr]));
+        emit_load(elem_ty, r_expected, r_expectedaddr, 0);
         int r_old = alloc_reg();
         int lbl = rcc_label_count++;
         (void)0 /* FIXME: label .L.xxx.lbl */;
@@ -6025,7 +5959,7 @@ static int gen(Node *node) {
         asm_jmp_label(cg_sec);
         (void)0 /* FIXME: label .L.xxx.lbl */;
         asm_movq_zero(cg_sec, r_result);
-        emit_store(elem_ty, r_old, format("[%s]", reg64[r_expectedaddr]));
+        emit_store(elem_ty, r_old, r_expectedaddr, 0);
         (void)0 /* FIXME: label .L.xxx.lbl */;
         free_reg(r_old);
         free_reg(r_expected);
