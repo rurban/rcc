@@ -479,7 +479,7 @@ static void emit_alloca(void) {
     asm_add_x0_x0_imm(cg_sec, 15); // add x0, x0, #15
     asm_and_x0_x0_imm(cg_sec, ~16ULL); // and x0, x0, #~16
     asm_sub_sp_sp_x0(cg_sec); // sub sp, sp, x0
-    asm_add_x0_sp_0(cg_sec); // mov x0, sp
+    asm_mov_x0_sp(cg_sec); // mov x0, sp
     asm_ret(cg_sec); // ret
 #else
     x86_mov_rr(cg_sec, 8, X86_RAX, X86_RDI); // .Lalloca2:\n  subq %%rax, %%rsp\n  movq %%rsp, %%rax\n.Lalloca3:\n  pushq %%rdx\n  ret
