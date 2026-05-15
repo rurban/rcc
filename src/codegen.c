@@ -5442,7 +5442,10 @@ static int gen(Node *node) {
         next_char:;
         }
         out[olen] = '\0';
-        (void)0 /* FIXME: unconverted printf: "%s\n" */;
+        if (olen > 0) {
+            secbuf_emitbuf(cg_sec, out, olen);
+            secbuf_emit8(cg_sec, '\n');
+        }
 
         // Store back output register operands to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
@@ -5616,7 +5619,10 @@ static int gen(Node *node) {
             }
         }
         out[olen] = '\0';
-        (void)0 /* FIXME: unconverted printf: "%s\n" */;
+        if (olen > 0) {
+            secbuf_emitbuf(cg_sec, out, olen);
+            secbuf_emit8(cg_sec, '\n');
+        }
 
         // Store back register outputs ("=r", "+r") to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
