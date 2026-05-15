@@ -959,27 +959,27 @@ static size_t asm_sub_x0_fp_x16(SecBuf *s) {
     secbuf_emit32le(s, arm64_sub_reg(1, 0, 29, 16, ARM64_LSL, 0));
     return s->len - off;
 }
-static size_t asm_alloca_add(SecBuf *s) {
+static size_t asm_add_x0_x0_imm(SecBuf *s, int imm) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_add_imm(1, 0, 0, 15, 0));
+    secbuf_emit32le(s, arm64_add_imm(1, 0, 0, imm, 0));
     return s->len - off;
 }
-static size_t asm_alloca_and(SecBuf *s) {
+static size_t asm_and_x0_x0_imm(SecBuf *s, uint64_t imm) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_and_imm(1, 0, 0, ~15ULL));
+    secbuf_emit32le(s, arm64_and_imm(1, 0, 0, imm));
     return s->len - off;
 }
-static size_t asm_alloca_sub_sp_r0(SecBuf *s) {
+static size_t asm_sub_sp_sp_x0(SecBuf *s) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_sub_reg(1, 31, 31, 0, ARM64_LSL, 0));
     return s->len - off;
 }
-static size_t asm_alloca_mov_r0_sp(SecBuf *s) {
+static size_t asm_add_x0_sp_0(SecBuf *s) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_add_reg(1, 0, 31, 0, ARM64_LSL, 0));
     return s->len - off;
 }
-static size_t asm_vla_mov_sp_x16(SecBuf *s) {
+static size_t asm_add_sp_sp_x16(SecBuf *s) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_add_reg(1, 31, 31, 16, ARM64_LSL, 0));
     return s->len - off;

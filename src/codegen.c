@@ -476,11 +476,11 @@ static void emit_vla_dealloc(LVar *begin, LVar *end) {
 static void emit_alloca(void) {
     cg_global_label("__rcc_alloca");
 #ifdef ARCH_ARM64
-    asm_alloca_add(cg_sec); // \n%s:\n  popq %%rdx\n", sym_name("__rcc_alloca
-    asm_alloca_and(cg_sec); // movq %%rcx, %%rax
-    asm_alloca_sub_sp_r0(cg_sec); // movq %%rdi, %%rax
-    asm_alloca_mov_r0_sp(cg_sec); // addq $15, %%rax\n  andq $-16, %%rax\n  jz .Lalloca3
-    asm_ret(cg_sec); // .Lalloca1:\n  cmpq $4096, %%rax\n  jb .Lalloca2\n  testq %%rax, -4096(%%rsp)\n  subq $4096, %%rsp\n  subq $4096, %%rax\n  jmp .Lalloca1
+    asm_add_x0_x0_imm(cg_sec, 15); // add x0, x0, #15
+    asm_and_x0_x0_imm(cg_sec, ~16ULL); // and x0, x0, #~16
+    asm_sub_sp_sp_x0(cg_sec); // sub sp, sp, x0
+    asm_add_x0_sp_0(cg_sec); // mov x0, sp
+    asm_ret(cg_sec); // ret
 #else
     x86_mov_rr(cg_sec, 8, X86_RAX, X86_RDI); // .Lalloca2:\n  subq %%rax, %%rsp\n  movq %%rsp, %%rax\n.Lalloca3:\n  pushq %%rdx\n  ret
     x86_add_ri(cg_sec, 8, X86_RAX, 15); // \n%s:\n  popq %%rdx\n", sym_name("__rcc_alloca
