@@ -491,7 +491,7 @@ static void emit_alloca(void) {
     secbuf_emit32le(cg_sec, arm64_and_imm(1, 0, 0, ~15ULL));
     secbuf_emit32le(cg_sec, arm64_sub_reg(1, 31, 31, 0, ARM64_LSL, 0));
     secbuf_emit32le(cg_sec, arm64_add_reg(1, 0, 31, 0, ARM64_LSL, 0));
-    secbuf_emit32le(cg_sec, arm64_ret(30));
+    asm_ret(cg_sec);
 #else
     x86_mov_rr(cg_sec, 8, X86_RAX, X86_RDI);
     x86_add_ri(cg_sec, 8, X86_RAX, 15);
@@ -1325,10 +1325,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         fn_uses_alloca = true;
         int ra = gen(node->args);
         // Round up to 16 bytes and adjust sp
-        secbuf_emit32le(cg_sec, arm64_add_imm(1, CG_ARM_REG(ra), CG_ARM_REG(ra), 15, 0));
-        secbuf_emit32le(cg_sec, arm64_and_imm(1, CG_ARM_REG(ra), CG_ARM_REG(ra), ~15ULL));
-        secbuf_emit32le(cg_sec, arm64_sub_reg(1, 31, 31, CG_ARM_REG(ra), ARM64_LSL, 0));
-        secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ra), 31, 0, ARM64_LSL, 0));
+        asm_add_imm(cg_sec, ra, 8 if 1=="1" else 4, 15);
+        asm_and_imm(cg_sec, ra, 8 if 1=="1" else 4, ~15ULL);
+        asm_sub_reg_reg(cg_sec, 31, ra, 8 if 1=="1" else 4);
+        asm_mov_reg_reg(cg_sec, ra, 0, 8 if 1=="1" else 4);
         // Save current sp/ptr to the alloca var slot
         if (node->args && node->args->ty) {
             // caller uses return value from ra
@@ -1530,7 +1530,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (sv_count > 0 || stack_args > 0) {
         int total = (sv_count + stack_args) * 8;
         total = (total + 15) & ~15;
-        secbuf_emit32le(cg_sec, arm64_sub_imm(1, 31, 31, total, 0));
+        asm_sub_imm(cg_sec, 31, 8 if 1=="1" else 4, total);
     }
 
     // Save caller-saved regs ABOVE stack args area
@@ -1714,7 +1714,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (sv_count > 0 || stack_args > 0) {
         int total = (sv_count + stack_args) * 8;
         total = (total + 15) & ~15;
-        secbuf_emit32le(cg_sec, arm64_add_imm(1, 31, 31, total, 0));
+        asm_add_imm(cg_sec, 31, 8 if 1=="1" else 4, total);
     }
 
     if (has_hidden_retbuf) {
@@ -1743,7 +1743,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             (void)0 /* arm64 fcvt d0,s0 */;
         (void)0 /* FIXME: fmov */;
     } else {
-        secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(r), 31, 0, ARM64_LSL, 0));
+        asm_mov_reg_reg(cg_sec, r, 0, 8 if 1=="1" else 4);
     }
     return r;
 #else
@@ -2098,11 +2098,11 @@ static void emit_mov_imm64(const char *reg, uint64_t val) {
     bool is_w = (reg[0] == 'w');
     int sf = is_w ? 0 : 1;
     int rd = atoi(reg + 1);
-    secbuf_emit32le(cg_sec, arm64_movz(sf, rd, (uint16_t)(val & 0xffff), 0));
+    asm_movz(cg_sec, rd, sf, (uint16_t)(val & 0xffff), 0);
     val >>= 16;
     int shift = 16;
     while (val) {
-        secbuf_emit32le(cg_sec, arm64_movk(sf, rd, (uint16_t)(val & 0xffff), shift));
+        asm_movk(cg_sec, rd, sf, (uint16_t)(val & 0xffff), shift);
         val >>= 16;
         shift += 16;
     }
@@ -2114,12 +2114,12 @@ static void emit_mov_imm(const char *reg, int imm) {
     int sf = is_w ? 0 : 1;
     int rd = atoi(reg + 1);
     uint64_t val = is_w ? (uint64_t)(uint32_t)imm : (uint64_t)(int64_t)(int32_t)imm;
-    secbuf_emit32le(cg_sec, arm64_movz(sf, rd, (uint16_t)(val & 0xffff), 0));
+    asm_movz(cg_sec, rd, sf, (uint16_t)(val & 0xffff), 0);
     val >>= 16;
     int shift = 16;
     int max_shift = is_w ? 16 : 48;
     while (val && shift <= max_shift) {
-        secbuf_emit32le(cg_sec, arm64_movk(sf, rd, (uint16_t)(val & 0xffff), shift));
+        asm_movk(cg_sec, rd, sf, (uint16_t)(val & 0xffff), shift);
         val >>= 16;
         shift += 16;
     }
@@ -2133,7 +2133,7 @@ static void emit_adrp_add(const char *reg, const char *label) {
     int rd = atoi(reg + 1);
     (void)is_w;
     size_t adrp_off = cg_sec->len;
-    secbuf_emit32le(cg_sec, arm64_adrp(rd, 0));
+    asm_adrp(cg_sec, rd);
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
@@ -2176,7 +2176,7 @@ static int emit_stack_addr(int offset) {
             v >>= 16;
             s += 16;
         }
-        secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), 29, CG_ARM_REG(ta), ARM64_LSL, 0));
+        asm_sub_reg_reg(cg_sec, ta, ta, 8 if 1=="1" else 4);
     }
     return ta;
 #else
@@ -2333,22 +2333,22 @@ static void emit_store(Type *ty, int src, int base, int off) {
     int sz = ty->size;
     int bp = arm64_base_phys(base);
     if (off == 0) {
-        if (sz == 1) secbuf_emit32le(cg_sec, arm64_strb_uoff(CG_ARM_REG(src), bp, 0));
-        else if (sz == 2) secbuf_emit32le(cg_sec, arm64_strh_uoff(CG_ARM_REG(src), bp, 0));
-        else if (sz == 4) secbuf_emit32le(cg_sec, arm64_str_uoff(0, CG_ARM_REG(src), bp, 0));
-        else secbuf_emit32le(cg_sec, arm64_str_uoff(1, CG_ARM_REG(src), bp, 0));
+        if (sz == 1) asm_str_reg_off(cg_sec, src, bp, 1, 0);
+        else if (sz == 2) asm_str_reg_off(cg_sec, src, bp, 2, 0);
+        else if (sz == 4) asm_str_reg_off(cg_sec, src, bp, 8 if 0=="1" else 4, 0);
+        else asm_str_reg_off(cg_sec, src, bp, 8 if 1=="1" else 4, 0);
     } else if (off > -256 && off < 256) {
-        if (sz == 4) secbuf_emit32le(cg_sec, arm64_stur(0, CG_ARM_REG(src), bp, off));
-        else secbuf_emit32le(cg_sec, arm64_stur(1, CG_ARM_REG(src), bp, off));
+        if (sz == 4) asm_stur(cg_sec, src, bp, 0, off);
+        else asm_stur(cg_sec, src, bp, 1, off);
     } else {
         int ta = alloc_reg();
         if (off < 0) {
             int u = -off;
             asm_mov_imm(cg_sec, ta, 8, u);
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+            asm_add_reg_reg(cg_sec, ta, ta, 8 if 1=="1" else 4);
         } else {
             asm_mov_imm(cg_sec, ta, 8, off);
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+            asm_add_reg_reg(cg_sec, ta, ta, 8 if 1=="1" else 4);
         }
         secbuf_emit32le(cg_sec, arm64_str_uoff(sz == 8 ? 1 : 0, CG_ARM_REG(src), CG_ARM_REG(ta), 0));
         free_reg(ta);
@@ -2374,9 +2374,9 @@ static void emit_store_offset(Type *ty, int r, int base, int offset) {
         s += 16;
     }
     if (off < 0)
-        secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+        asm_sub_reg_reg(cg_sec, ta, ta, 8 if 1=="1" else 4);
     else
-        secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0));
+        asm_add_reg_reg(cg_sec, ta, ta, 8 if 1=="1" else 4);
     if (sz == 1) secbuf_emit32le(cg_sec, arm64_strb_uoff(CG_ARM_REG(r), CG_ARM_REG(ta), 0));
     else if (sz == 2) secbuf_emit32le(cg_sec, arm64_strh_uoff(CG_ARM_REG(r), CG_ARM_REG(ta), 0));
     else if (sz == 4) secbuf_emit32le(cg_sec, arm64_str_uoff(0, CG_ARM_REG(r), CG_ARM_REG(ta), 0));
@@ -2774,7 +2774,7 @@ static int gen_addr(Node *node) {
                         v >>= 16;
                         s += 16;
                     }
-                    secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(r), 29, CG_ARM_REG(r), ARM64_LSL, 0));
+                    asm_sub_reg_reg(cg_sec, r, r, 8 if 1=="1" else 4);
                 }
 #else
                 asm_lea_rbp_reg(cg_sec, r, 8, node->var->offset);
@@ -3118,7 +3118,7 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         emit_adrp_add(reg64[r], format(".LF%d", id));
         asm_ldr_fp(cg_sec, 0, r, 8);
-        secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r), 0));
+        asm_fmov_f2i(cg_sec, r, 0, 1);
 #else
         (void)0 /* FIXME: rip-relative */;
         (void)0 /* TODO: movq to/from xmm */;
@@ -3171,7 +3171,7 @@ static int gen(Node *node) {
                         v >>= 16;
                         s += 16;
                     }
-                    secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(r), 29, CG_ARM_REG(r), ARM64_LSL, 0));
+                    asm_sub_reg_reg(cg_sec, r, r, 8 if 1=="1" else 4);
                 }
 #else
                 asm_lea_rbp_reg(cg_sec, r, 8, node->var->offset);
@@ -3233,7 +3233,7 @@ static int gen(Node *node) {
                         else
                             emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         asm_ldr_fp(cg_sec, 0, r, 4);
-                        secbuf_emit32le(cg_sec, arm64_fcvt(1, 0, 0, 0));
+                        asm_fcvt(cg_sec, 1, 0, 0, 0);
 #else
                         if (var_needs_got(node->var)) {
                             (void)0 /* FIXME: mov indirect/mem */;
@@ -3261,7 +3261,7 @@ static int gen(Node *node) {
                     }
                 }
 #ifdef ARCH_ARM64
-                secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r), 0));
+                asm_fmov_f2i(cg_sec, r, 0, 1);
 #else
                 asm_movq_xmm_r(cg_sec, r, X86_XMM0);
 #endif
@@ -3359,8 +3359,8 @@ static int gen(Node *node) {
                     else {
                         asm_mov_imm(cg_sec, 16, 8, copy_len & 0xffff);
                         if (copy_len >> 16)
-                            secbuf_emit32le(cg_sec, arm64_movk(1, 16, (uint16_t)(copy_len >> 16), 16));
-                        secbuf_emit32le(cg_sec, arm64_subs_reg(1, 31, CG_ARM_REG(9), 16, ARM64_LSL, 0));
+                            asm_movk(cg_sec, 16, 1, (uint16_t)(copy_len >> 16), 16);
+                        asm_cmp_reg_reg(cg_sec, 9, 16, 8 if 1=="1" else 4);
                     }
                     asm_jcc_label(cg_sec, ARM64_EQ);
                     asm_dec(cg_sec, 9, 8);
@@ -3465,7 +3465,7 @@ static int gen(Node *node) {
             int r1 = gen_addr(node->lhs);
             (void)0 /* FIXME: fmov */;
             if (node->lhs->ty->size == 4) {
-                secbuf_emit32le(cg_sec, arm64_fcvt(3, 0, 0, 0));
+                asm_fcvt(cg_sec, 3, 0, 0, 0);
                 asm_str_fp(cg_sec, 0, r1, 4);
             } else {
                 asm_str_fp(cg_sec, 0, r1, 8);
@@ -4050,7 +4050,7 @@ static int gen(Node *node) {
                 secbuf_emit32le(cg_sec, node->kind == ND_POST_INC ? arm64_fadd(1, 0, 0, 1) : arm64_fsub(1, 0, 0, 1));
             }
             free_reg(tmp);
-            secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r3), 0));
+            asm_fmov_f2i(cg_sec, r3, 0, 1);
         } else {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
@@ -4112,11 +4112,11 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
             if (load_ty->size == 4) {
                 asm_ldr_fp(cg_sec, 0, r, 4);
-                secbuf_emit32le(cg_sec, arm64_fcvt(1, 0, 0, 0));
+                asm_fcvt(cg_sec, 1, 0, 0, 0);
             } else {
                 asm_ldr_fp(cg_sec, 0, r, 8);
             }
-            secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r), 0));
+            asm_fmov_f2i(cg_sec, r, 0, 1);
 #else
             if (load_ty->size == 4) {
                 x86_movss_rm(cg_sec, X86_XMM0, x86_mem(CG_X86_REG(r), 0));
@@ -4400,7 +4400,7 @@ static int gen(Node *node) {
     case ND_BITNOT: {
         int r = gen(node->lhs);
 #ifdef ARCH_ARM64
-        secbuf_emit32le(cg_sec, arm64_mvn(1, CG_ARM_REG(r), CG_ARM_REG(r), ARM64_LSL, 0));
+        asm_not(cg_sec, r, 8 if 1=="1" else 4);
 #else
         x86_not_r(cg_sec, node->ty->size, CG_X86_REG(r));
 #endif
@@ -4423,11 +4423,11 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
             if (node->ty->size == 4) {
                 asm_ldr_fp(cg_sec, 0, r, 4);
-                secbuf_emit32le(cg_sec, arm64_fcvt(1, 0, 0, 0));
+                asm_fcvt(cg_sec, 1, 0, 0, 0);
             } else {
                 asm_ldr_fp(cg_sec, 0, r, 8);
             }
-            secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r), 0));
+            asm_fmov_f2i(cg_sec, r, 0, 1);
 #else
             if (node->ty->size == 4) {
                 x86_movss_rm(cg_sec, X86_XMM0, x86_mem(CG_X86_REG(r), 0));
@@ -5727,10 +5727,10 @@ static int gen(Node *node) {
         if (is_fp) {
             int fp_size = 16;
             (void)0 /* FIXME: ldr/str phy/off */;
-            secbuf_emit32le(cg_sec, arm64_subs_imm(0, 31, 16, 0, 0));
+            asm_cmp_imm(cg_sec, 16, 8 if 0=="1" else 4, 0);
             asm_jcc_label(cg_sec, ARM64_GE);
             (void)0 /* FIXME: ldr/str phy/off */;
-            secbuf_emit32le(cg_sec, arm64_sxtw(17, 16));
+            asm_sxtw(cg_sec, 17, 16);
             (void)0 /* FIXME: add phy */;
             (void)0 /* FIXME: add phy */;
             (void)0 /* FIXME: ldr/str phy/off */;
@@ -5741,10 +5741,10 @@ static int gen(Node *node) {
             // Normal types use 8 bytes (fits in one register).
             int gp_size = 8;
             (void)0 /* FIXME: ldr/str phy/off */;
-            secbuf_emit32le(cg_sec, arm64_subs_imm(0, 31, 16, 0, 0));
+            asm_cmp_imm(cg_sec, 16, 8 if 0=="1" else 4, 0);
             asm_jcc_label(cg_sec, ARM64_GE);
             (void)0 /* FIXME: ldr/str phy/off */;
-            secbuf_emit32le(cg_sec, arm64_sxtw(17, 16));
+            asm_sxtw(cg_sec, 17, 16);
             (void)0 /* FIXME: add phy */;
             if (is_ptr_val_struct) {
                 (void)0 /* FIXME: ldr/str phy/off */;
@@ -5825,8 +5825,8 @@ static int gen(Node *node) {
                                                       : "";
         bool use_acquire = (ord == MEMORDER_ACQUIRE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST || ord == MEMORDER_CONSUME);
         if (use_acquire) {
-            if (sz == 1) secbuf_emit32le(cg_sec, arm64_ldarb(CG_ARM_REG(r), CG_ARM_REG(r_addr)));
-            else if (sz == 2) secbuf_emit32le(cg_sec, arm64_ldarh(CG_ARM_REG(r), CG_ARM_REG(r_addr)));
+            if (sz == 1) asm_ldarb(cg_sec, r, r_addr));
+            else if (sz == 2) asm_ldarh(cg_sec, r, r_addr));
             else secbuf_emit32le(cg_sec, arm64_ldar(sz == 8 ? 1 : 0, CG_ARM_REG(r), CG_ARM_REG(r_addr)));
         }
         else
@@ -5867,8 +5867,8 @@ static int gen(Node *node) {
                                                       : "";
         bool use_release = (ord == MEMORDER_RELEASE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST);
         if (use_release) {
-            if (sz == 1) secbuf_emit32le(cg_sec, arm64_stlrb(CG_ARM_REG(r_val), CG_ARM_REG(r_addr)));
-            else if (sz == 2) secbuf_emit32le(cg_sec, arm64_stlrh(CG_ARM_REG(r_val), CG_ARM_REG(r_addr)));
+            if (sz == 1) asm_stlrb(cg_sec, r_val, r_addr));
+            else if (sz == 2) asm_stlrh(cg_sec, r_val, r_addr));
             else secbuf_emit32le(cg_sec, arm64_stlr(sz == 8 ? 1 : 0, CG_ARM_REG(r_val), CG_ARM_REG(r_addr)));
         }
         else
@@ -6173,10 +6173,10 @@ static int gen(Node *node) {
         else if (node->kind == ND_MUL) asm_fmul(cg_sec, 1);
         else if (node->kind == ND_DIV) asm_fdiv(cg_sec, 1);
         if (node->ty->kind == TY_FLOAT) {
-            secbuf_emit32le(cg_sec, arm64_fcvt(3, 0, 0, 0));
-            secbuf_emit32le(cg_sec, arm64_fcvt(1, 0, 0, 0));
+            asm_fcvt(cg_sec, 3, 0, 0, 0);
+            asm_fcvt(cg_sec, 1, 0, 0, 0);
         }
-        secbuf_emit32le(cg_sec, arm64_fmov_f2i(1, CG_ARM_REG(r_lhs), 0));
+        asm_fmov_f2i(cg_sec, r_lhs, 0, 1);
 #else
         asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs);
         asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs);
@@ -7720,9 +7720,9 @@ struct ObjFile *codegen(Program *prog) {
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         (void)0 /* FIXME: ldp/stp */;
-        secbuf_emit32le(cg_sec, arm64_add_imm(1, 29, 31, 0, 0));
+        asm_mov_reg_reg(cg_sec, 29, 31, 8 if 1=="1" else 4);
         if (frame_size <= 4095)
-            secbuf_emit32le(cg_sec, arm64_sub_imm(1, 31, 31, frame_size, 0));
+            asm_sub_imm(cg_sec, 31, 8 if 1=="1" else 4, frame_size);
         else {
             int fs = frame_size;
             asm_mov_imm(cg_sec, 16, 8, fs & 0xffff);
@@ -7944,7 +7944,7 @@ struct ObjFile *codegen(Program *prog) {
         // before reading callee-saved regs (stored at sp+16..sp+n at frame entry)
         if (fn->dealloc_vla || fn_uses_alloca) {
             if (frame_size <= 4095)
-                secbuf_emit32le(cg_sec, arm64_sub_imm(1, 31, 29, frame_size, 0));
+                asm_sub_imm(cg_sec, 31, 8 if 1=="1" else 4, frame_size);
             else {
                 int fs = frame_size;
                 asm_mov_imm(cg_sec, 16, 8, fs & 0xffff);
@@ -7955,7 +7955,7 @@ struct ObjFile *codegen(Program *prog) {
                     fs >>= 16;
                     s += 16;
                 }
-                secbuf_emit32le(cg_sec, arm64_sub_reg(1, 31, 29, 16, ARM64_LSL, 0));
+                asm_sub_reg_reg(cg_sec, 31, 16, 8 if 1=="1" else 4);
             }
         }
 
@@ -7969,7 +7969,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         if (frame_size <= 4095)
-            secbuf_emit32le(cg_sec, arm64_add_imm(1, 31, 31, frame_size, 0));
+            asm_add_imm(cg_sec, 31, 8 if 1=="1" else 4, frame_size);
         else {
             int fs = frame_size;
             asm_mov_imm(cg_sec, 16, 8, fs & 0xffff);
@@ -7980,7 +7980,7 @@ struct ObjFile *codegen(Program *prog) {
                 fs >>= 16;
                 s += 16;
             }
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, 31, 31, 16, ARM64_LSL, 0));
+            asm_add_reg_reg(cg_sec, 31, 16, 8 if 1=="1" else 4);
         }
         (void)0 /* FIXME: ldp/stp */;
         asm_ret(cg_sec);
