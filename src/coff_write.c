@@ -452,9 +452,6 @@ int coff_write(ObjFile *obj, const char *path) {
     uint32_t symtab_off = off;
     uint32_t symtab_size = (uint32_t)total_sym_count * 18;
 
-    // Pad to DWORD boundary for string table
-    uint32_t strtab_pad = (4 - (symtab_size & 3)) & 3;
-
     // -------------------------------------------------------------------
     // Copy section data and patch addends
     // -------------------------------------------------------------------
@@ -570,7 +567,6 @@ int coff_write(ObjFile *obj, const char *path) {
     }
 
     // --- String table ---
-    wzeros(f, strtab_pad);
     wbuf(f, strtab.data, strtab.len);
 
     fclose(f);

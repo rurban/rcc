@@ -69,16 +69,16 @@ if [ ! -f "$scriptdir/lib/mingw.obj" ]; then
     x86_64-w64-mingw32-gcc -c "$scriptdir/lib/mingw.c" -o "$scriptdir/lib/mingw.obj" || exit 1
 fi
 
-s_files=""
+o_files=""
 for input in $inputs; do
-	TMP_S="$(mktemp -u /tmp/mingw_cross_XXXXXX.s)"
+	TMP_O="$(mktemp -u /tmp/mingw_cross_XXXXXX.o)"
 	# shellcheck disable=SC2086
-	if ! wine "$scriptdir/rcc.exe" $rcc_flags -S -o "$TMP_S" "$input"; then
-		rm -f $s_files
+	if ! wine "$scriptdir/rcc.exe" $rcc_flags -c -o "$TMP_O" "$input"; then
+		rm -f $o_files
 		exit 1
 	fi
-	s_files="$s_files $TMP_S"
+	o_files="$o_files $TMP_O"
 done
 
 # shellcheck disable=SC2086
-x86_64-w64-mingw32-gcc -o "$output" $s_files "$scriptdir/lib/mingw.obj" && rm -f $s_files
+x86_64-w64-mingw32-gcc -o "$output" $o_files "$scriptdir/lib/mingw.obj" && rm -f $o_files
