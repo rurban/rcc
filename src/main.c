@@ -337,7 +337,9 @@ int main(int argc, char **argv) {
                     tmp_obj_path = format("%s.tmp.o", asm_path);
                 }
                 int wr;
-#ifdef __APPLE__
+#ifdef _WIN32
+                wr = coff_write(obj, tmp_obj_path);
+#elif __APPLE__
                 wr = macho_write(obj, tmp_obj_path);
 #else
                 wr = elf_write(obj, tmp_obj_path);

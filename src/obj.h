@@ -148,5 +148,6 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
 // Object file writers
 int elf_write(ObjFile *obj, const char *path);
 int macho_write(ObjFile *obj, const char *path);
+int coff_write(ObjFile *obj, const char *path);
 
 #endif // OBJ_H

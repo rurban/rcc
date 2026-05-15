@@ -31,8 +31,7 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/obj.c src/elf_write.c src/macho_write.c src/arm64_enc.c src/x86_enc.c src/asm.c
-OBJS = $(SRCS:.c=$(OBJ_EXT))
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/obj.c src/arm64_enc.c src/x86_enc.c src/asm.c
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -74,6 +73,7 @@ CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
 endif
+
 # Native Linux builds: optimize for the host CPU
 ifeq ($(shell uname -s),Linux)
 ifeq ($(CC),gcc)
@@ -92,9 +92,16 @@ MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 ifneq ($(findstring apple,$(MACHINE)),)
 DARWIN_O = lib/darwin.o
 TARGET_DEPS = $(OBJS) $(DARWIN_O)
+SRCS += src/macho_write.c
+else ifneq ($(findstring mingw,$(MACHINE)),)
+SRCS += src/coff_write.c
+TARGET_DEPS = $(OBJS) $(MINGW_O)
 else
+SRCS += src/elf_write.c
 TARGET_DEPS = $(OBJS) $(MINGW_O)
 endif
+
+OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
