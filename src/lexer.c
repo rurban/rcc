@@ -176,14 +176,14 @@ void warn_tok(Token *tok, char *fmt, ...) {
 }
 
 // Create a new token.
-static Token *new_token(TokenKind kind, char *start, char *end) {
+static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     Token *tok = arena_alloc(sizeof(Token));
     tok->kind = kind;
     tok->loc = start;
     tok->len = end - start;
     if (opt_g) {
         tok->filename = current_debug_filename;
-        tok->lineno = compute_line_no(start);
+        tok->lineno = lineno;
     }
     return tok;
 }
@@ -290,10 +290,12 @@ Token *tokenize(char *filename, char *p) {
         current_debug_filename = filename;
     Token head = {};
     Token *cur = &head;
+    int cur_lineno = 1;
 
     while (*p) {
         // Skip whitespace characters.
         if (isspace(*p)) {
+            if (*p == '\n') cur_lineno++;
             p++;
             continue;
         }
@@ -324,9 +326,11 @@ Token *tokenize(char *filename, char *p) {
                         current_line_offset = q + 1 - current_input;
                         // Update line number
                         line_num = n - 1;
+                        cur_lineno = n;
                         // Skip to end of line
                         p = q + 1;
                         while (*p && *p != '\n') p++;
+                        if (*p == '\n') cur_lineno++;
                         continue;
                     }
                 }
@@ -354,13 +358,20 @@ Token *tokenize(char *filename, char *p) {
                     // Skip rest of line
                     while (*r && *r != '\n') r++;
                     p = r;
-                    if (*p == '\n') p++;
+                    if (*p == '\n') {
+                        p++;
+                        cur_lineno++;
+                    }
                     continue;
                 }
             }
             if (!is_pack_pragma) {
                 while (*p && *p != '\n')
                     p++;
+                if (*p == '\n') {
+                    p++;
+                    cur_lineno++;
+                }
                 continue;
             }
         }
@@ -378,6 +389,8 @@ Token *tokenize(char *filename, char *p) {
             char *q = strstr(p + 2, "*/");
             if (!q)
                 error_at(p, "unclosed block comment");
+            for (char *r = p + 2; r < q; r++)
+                if (*r == '\n') cur_lineno++;
             p = q + 2;
             continue;
         }
@@ -437,7 +450,7 @@ Token *tokenize(char *filename, char *p) {
             }
 
             if (is_float) {
-                cur = cur->next = new_token(TK_FNUM, q, p);
+                cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
                 // Check for 'f'/'F' or 'l'/'L' suffix
                 char last = *(p - 1);
                 if (last == 'f' || last == 'F') {
@@ -451,7 +464,7 @@ Token *tokenize(char *filename, char *p) {
                     cur->val = 0; // flag: is double
                 }
             } else {
-                cur = cur->next = new_token(TK_NUM, q, p);
+                cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
                 if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
                     int64_t val = 0;
                     char *bp = q + 2;
@@ -480,7 +493,7 @@ Token *tokenize(char *filename, char *p) {
                 c = decode_utf8(&pos, p);
             } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
             if (pos != p) {
-                cur = cur->next = new_token(TK_IDENT, start, p);
+                cur = cur->next = new_token(TK_IDENT, start, p, cur_lineno);
                 cur->name = str_intern(start, p - start);
                 if (!opt_Wno_homoglyph) {
                     const char *w = u8ident_check_ident(cur->name, p - start);
@@ -502,7 +515,7 @@ Token *tokenize(char *filename, char *p) {
                     p = pos;
                     c = decode_utf8(&pos, p);
                 } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
-                cur = cur->next = new_token(TK_IDENT, start, p);
+                cur = cur->next = new_token(TK_IDENT, start, p, cur_lineno);
                 cur->name = str_intern(start, p - start);
                 if (!opt_Wno_homoglyph) {
                     const char *w = u8ident_check_ident(cur->name, p - start);
@@ -568,8 +581,10 @@ Token *tokenize(char *filename, char *p) {
 
                 // String concatenation: merge adjacent string literals
                 char *q = p;
-                while (isspace(*q))
+                while (isspace(*q)) {
+                    if (*q == '\n') cur_lineno++;
                     q++;
+                }
                 if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '"')
                     q++;
                 if (*q != '"')
@@ -578,7 +593,7 @@ Token *tokenize(char *filename, char *p) {
             }
 
             buf[len] = '\0';
-            cur = cur->next = new_token(TK_STR, start, p);
+            cur = cur->next = new_token(TK_STR, start, p, cur_lineno);
             cur->str = str_intern(buf, len); // intern it
             cur->len = len;
             cur->string_literal_prefix = prefix;
@@ -603,7 +618,7 @@ Token *tokenize(char *filename, char *p) {
             }
             if (*p != '\'') error_at(start, "unclosed character literal");
             p++;
-            cur = cur->next = new_token(TK_NUM, start, p);
+            cur = cur->next = new_token(TK_NUM, start, p, cur_lineno);
             cur->val = (uint8_t)c;
             continue;
         }
@@ -611,7 +626,7 @@ Token *tokenize(char *filename, char *p) {
         // Punctuators
         int punct_len = read_punct(p);
         if (punct_len) {
-            cur = cur->next = new_token(TK_PUNCT, p, p + punct_len);
+            cur = cur->next = new_token(TK_PUNCT, p, p + punct_len, cur_lineno);
             p += punct_len;
             continue;
         }
@@ -619,6 +634,6 @@ Token *tokenize(char *filename, char *p) {
         error_at(p, "invalid token");
     }
 
-    cur->next = new_token(TK_EOF, p, p);
+    cur->next = new_token(TK_EOF, p, p, cur_lineno);
     return head.next;
 }

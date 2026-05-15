@@ -1289,6 +1289,30 @@ static int count_unmatched_parens(char *start, char *end) {
     return open - close;
 }
 
+static int count_parens_preserve_quote(char *start, char *end, int *quote_state) {
+    int open = 0;
+    int close = 0;
+    int qs = *quote_state;
+
+    while (start < end) {
+        if (qs) {
+            if (*start == qs)
+                qs = 0;
+            else if (*start == '\\' && start + 1 < end)
+                start++;
+        } else if (*start == '"' || *start == '\'') {
+            qs = *start;
+        } else if (*start == '(') {
+            open++;
+        } else if (*start == ')') {
+            close++;
+        }
+        start++;
+    }
+    *quote_state = qs;
+    return open - close;
+}
+
 static char *preprocess_file(char *filename, char *input, int *line_counts, int depth) {
     char *fpath = full_path(filename);
     if (is_once_file(fpath))
@@ -1311,6 +1335,8 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
     sb_init(&acc, 4096);
     unsigned acc_line_no = 0;
     int acc_phys_count = 0;
+    int acc_parens = 0;
+    int acc_quote = 0;
 
     for (char *p = input; *p;) {
         char *line = p;
@@ -1692,9 +1718,12 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     sb_putc(&out, '\n');
             }
         } else if (active) {
-            if (acc.len > 0 || count_unmatched_parens(line, end) > 0) {
+            int line_parens = count_unmatched_parens(line, end);
+            if (acc.len > 0 || line_parens > 0) {
                 if (acc.len == 0) {
                     acc_line_no = line_no;
+                    acc_parens = 0;
+                    acc_quote = 0;
                 }
                 if (acc.len > 0)
                     sb_putc(&acc, ' ');
@@ -1703,7 +1732,8 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 acc.len += end - line;
                 acc.buf[acc.len] = '\0';
                 acc_phys_count += line_counts ? line_counts[line_idx] : 1;
-                if (count_unmatched_parens(acc.buf, acc.buf + acc.len) <= 0) {
+                acc_parens += count_parens_preserve_quote(line, end, &acc_quote);
+                if (acc_parens <= 0) {
                     char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
                     sb_puts(&out, expanded);
                     for (int i = 0; i < acc_phys_count; i++)
@@ -1711,6 +1741,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     acc.len = 0;
                     acc.buf[0] = '\0';
                     acc_phys_count = 0;
+                    acc_parens = 0;
                 }
             } else {
                 char *expanded = strip_bluepaint(expand_text(pp_strndup(line, end - line), filename, line_no, 0));
@@ -1731,6 +1762,8 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 acc.len = 0;
                 acc.buf[0] = '\0';
                 acc_phys_count = 0;
+                acc_parens = 0;
+                acc_quote = 0;
             }
             {
                 int n = line_counts ? line_counts[line_idx] : 1;
