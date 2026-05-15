@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Write a Mach-O 64-bit relocatable object file (.o) from an ObjFile.
 // Targets: macOS x86-64 and arm64.
+#ifdef __APPLE__
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -474,3 +475,4 @@ int macho_write(ObjFile *obj, const char *path) {
     free(mst.data);
     return 0;
 }
+#endif /* __APPLE__ */
