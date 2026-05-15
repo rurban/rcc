@@ -976,7 +976,7 @@ static size_t asm_sub_sp_sp_x0(SecBuf *s) {
 }
 static size_t asm_add_x0_sp_0(SecBuf *s) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_add_reg(1, 0, 31, 0, ARM64_LSL, 0));
+    secbuf_emit32le(s, arm64_add_imm(1, 0, 31, 0, 0));
     return s->len - off;
 }
 static size_t asm_add_sp_sp_x16(SecBuf *s) {
