@@ -141,22 +141,21 @@ make bench
 
 ## Project Structure
 
-| File               | Description                                                                |
-| ------------------ | -------------------------------------------------------------------------- |
-| `src/main.c`       | Driver: CLI, assembler/linker invocation                                   |
-| `src/lexer.c`      | Tokenizer with number/string/char literal support                          |
-| `src/preprocess.c` | C preprocessor (`#include`, `#define`, `#if`, macros)                      |
-| `src/parser.c`     | Recursive-descent parser → AST                                             |
-| `src/type.c`       | Type system (primitives, pointers, arrays, structs, functions)             |
-| `src/codegen.c`    | x86-64/ARM64 code generator with register allocator and peephole optimizer |
-| `src/opt.c`        | AST-level optimizer and CTFE interpreter                                   |
-| `src/alloc.c`      | Arena memory allocator                                                     |
-| `src/unicode.c`    | basic unicode identifier checks                                            |
-| `src/u8id*.c`      | libu8ident homoglyph checks                                                |
-| `src/rcc.h`        | Shared data structures and declarations                                    |
-| `include/`         | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)             |
-| `bench/`           | Benchmark suite and runner script                                          |
-| `test/`            | Test programs                                                              |
+| File                | Description                                                                |
+| ------------------- | -------------------------------------------------------------------------- |
+| `src/main.c`        | Driver: CLI, assembler/linker invocation                                   |
+| `src/lexer.c`       | Tokenizer with number/string/char literal support                          |
+| `src/preprocess.c`  | C preprocessor (`#include`, `#define`, `#if`, macros)                      |
+| `src/parser.c`      | Recursive-descent parser → AST                                             |
+| `src/type.c`        | Type system (primitives, pointers, arrays, structs, functions)             |
+| `src/codegen.c`     | x86-64/ARM64 code generator with register allocator and peephole optimizer |
+| `src/opt.c`         | AST-level optimizer and CTFE interpreter                                   |
+| `src/alloc.c`       | Arena memory allocator                                                     |
+| `src/unicode.{c,h}` | libu8ident unicode identifier checks                                       |
+| `src/rcc.h`         | Shared data structures and declarations                                    |
+| `include/`          | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)             |
+| `bench/`            | Benchmark suite and runner script                                          |
+| `test/`             | Test programs                                                              |
 
 ## Unix fork
 
