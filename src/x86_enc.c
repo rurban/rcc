@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // x86-64 instruction encoder.
 // Reference: Intel® 64 and IA-32 Architectures Software Developer's Manual.
+#ifndef ARCH_ARM64
 #include "x86_enc.h"
 #include "obj.h"
 #include <stdint.h>
@@ -656,3 +657,4 @@ void x86_fstpt_m(SecBuf *s, X86Mem m) {
 // but ucomisd needs 66 0F 2E, not F2 0F 2E. Let me just emit directly:
 // (these overwrite the implementations above)
 // They're already correctly using the `emit1(s,0x66)` + sse_rr(0x0f,...) pattern which works.
+#endif /* !ARCH_ARM64 */
