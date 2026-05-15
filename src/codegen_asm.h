@@ -1586,6 +1586,7 @@ static size_t asm_adrp(SecBuf *s, int rd) {
     return s->len - off;
 }
 
+#ifndef ARCH_ARM64
 // movzx/movsx from memory addressed by a virtual register
 static size_t asm_movzx_mem_reg(SecBuf *s, int dst, int src_addr, int dst_sz, int src_sz) {
     size_t off = s->len;
@@ -1647,6 +1648,7 @@ static size_t asm_xor_rbp_reg(SecBuf *s, int r, int size, int offset) {
     asm_record(ASM_XOR_RR, off, s->len - off, r, -1, -1, size, 0, offset, NULL, 0, -1, false);
     return s->len - off;
 }
+#endif /* !ARCH_ARM64 */
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
