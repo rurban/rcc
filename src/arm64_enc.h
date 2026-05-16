@@ -11,6 +11,42 @@
 #define ARM64_XZR 31
 #define ARM64_SP  31
 
+// ARM64 physical register enum
+typedef enum {
+    ARM64_X0 = 0,
+    ARM64_X1,
+    ARM64_X2,
+    ARM64_X3,
+    ARM64_X4,
+    ARM64_X5,
+    ARM64_X6,
+    ARM64_X7,
+    ARM64_X8,
+    ARM64_X9,
+    ARM64_X10,
+    ARM64_X11,
+    ARM64_X12,
+    ARM64_X13,
+    ARM64_X14,
+    ARM64_X15,
+    ARM64_X16,
+    ARM64_X17,
+    ARM64_X18,
+    ARM64_X19,
+    ARM64_X20,
+    ARM64_X21,
+    ARM64_X22,
+    ARM64_X23,
+    ARM64_X24,
+    ARM64_X25,
+    ARM64_X26,
+    ARM64_X27,
+    ARM64_X28,
+    ARM64_XX29 = 29, // FP / X29
+    ARM64_X30 = 30, // LR
+    ARM64_X31 = 31, // SP or XZR depending on context
+} Arm64Reg;
+
 // Condition codes (cond field in B.cond / CSEL etc.)
 typedef enum {
     ARM64_EQ = 0,
