@@ -150,7 +150,11 @@ uint32_t arm64_ldr_reg(int sz, int rt, int rn, int rm, bool ext, int s);
 uint32_t arm64_str_reg(int sz, int rt, int rn, int rm, bool ext, int s);
 // Unscaled immediate (LDUR/STUR)
 uint32_t arm64_ldur(int sf, int rt, int rn, int32_t imm9);
+uint32_t arm64_ldurb(int rt, int rn, int32_t imm9);
+uint32_t arm64_ldurh(int rt, int rn, int32_t imm9);
 uint32_t arm64_stur(int sf, int rt, int rn, int32_t imm9);
+uint32_t arm64_sturb(int rt, int rn, int32_t imm9);
+uint32_t arm64_sturh(int rt, int rn, int32_t imm9);
 // Load-exclusive / store-exclusive
 uint32_t arm64_ldxr(int sf, int rt, int rn);
 uint32_t arm64_ldxrb(int rt, int rn);

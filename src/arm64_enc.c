@@ -362,8 +362,20 @@ uint32_t arm64_strh_imm(int rt, int rn, int32_t imm9) {
 uint32_t arm64_ldur(int sf, int rt, int rn, int32_t imm9) {
     return (sf ? 0xf8400000u : 0xb8400000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
 }
+uint32_t arm64_ldurb(int rt, int rn, int32_t imm9) {
+    return 0x38400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+}
+uint32_t arm64_ldurh(int rt, int rn, int32_t imm9) {
+    return 0x78400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+}
 uint32_t arm64_stur(int sf, int rt, int rn, int32_t imm9) {
     return (sf ? 0xf8000000u : 0xb8000000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+}
+uint32_t arm64_sturb(int rt, int rn, int32_t imm9) {
+    return 0x38000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+}
+uint32_t arm64_sturh(int rt, int rn, int32_t imm9) {
+    return 0x78000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
 }
 
 // Register offset

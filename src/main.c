@@ -262,9 +262,14 @@ int main(int argc, char **argv) {
         } else {
             in_path = argv[i];
 
-            char *asm_path = opt_S
-                ? opt_o ? out_path : format("%s.o", path_basename(in_path))
-                : format("rcc_tmp_%d_%d_%s.o", _getpid(), i, path_basename(in_path));
+            char *asm_path;
+            if (opt_S) {
+                asm_path = opt_o ? out_path : format("%s.o", path_basename(in_path));
+            } else if (opt_c) {
+                asm_path = opt_o ? out_path : format("%s.o", path_basename(in_path));
+            } else {
+                asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), i, path_basename(in_path));
+            }
 
             // Tokenize and Parse
             char *contents = read_file(in_path);
@@ -351,7 +356,11 @@ int main(int argc, char **argv) {
                 objfile_free(obj);
                 if (opt_S) {
                     char cmd[2048];
+#ifdef ARCH_ARM64
+                    snprintf(cmd, sizeof(cmd), "aarch64-linux-gnu-objdump -d -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
+#else
                     snprintf(cmd, sizeof(cmd), "objdump -d -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
+#endif
                              tmp_obj_path, asm_path, tmp_obj_path);
                     int status = system(cmd);
                     if (status != 0) {

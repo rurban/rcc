@@ -79,22 +79,22 @@ if [ -z "$output" ]; then
     output="a.arm64"
 fi
 
-s_files=""
+o_files=""
 for input in $inputs; do
-    TMP_S="$(mktemp /tmp/arm64_cross_XXXXXX.s)"
+    TMP_O="$(mktemp /tmp/arm64_cross_XXXXXX.o)"
     # shellcheck disable=SC2086
-    if ! "$ARM64_QEMU" ${ARM64_SYSROOT:+-L "$ARM64_SYSROOT"} "$rcc_bin" $rcc_flags -S -o "$TMP_S" "$input"; then
-        rm -f $s_files
+    if ! "$ARM64_QEMU" ${ARM64_SYSROOT:+-L "$ARM64_SYSROOT"} "$rcc_bin" $rcc_flags -c -o "$TMP_O" "$input"; then
+        rm -f $o_files
         exit 1
     fi
-    s_files="$s_files $TMP_S"
+    o_files="$o_files $TMP_O"
 done
 
 # shellcheck disable=SC2086
 if [ -n "$ARM64_SYSROOT" ] && [ -d "$ARM64_SYSROOT/usr/include" ]; then
-    "$ARM64_CC" --sysroot="$ARM64_SYSROOT" -no-pie -o "$output" $s_files $ld_flags && rm -f $s_files
+    "$ARM64_CC" --sysroot="$ARM64_SYSROOT" -no-pie -o "$output" $o_files $ld_flags && rm -f $o_files
 else
-    "$ARM64_CC" -no-pie -o "$output" $s_files $ld_flags && rm -f $s_files
+    "$ARM64_CC" -no-pie -o "$output" $o_files $ld_flags && rm -f $o_files
 fi
 
 ret=$?
