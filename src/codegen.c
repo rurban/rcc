@@ -974,7 +974,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             asm_mov_reg_reg(cg_sec, r, 5, 8); // mov r5 -> rr
             for (int i = 0; i < depth; i++)
                 asm_ldr_reg_off(cg_sec, r, r, 8, 0); // ldr x{r}, [x{r}]
-            (void)0 /* FIXME: ldr/str phy/off */;
+            asm_ldr_reg_off(cg_sec, r, r, 8, 8); // ldr x{r}, [x{r}, #8]  (return addr)
 #else
             asm_mov_reg_reg(cg_sec, r, 5, 8); // mov r5 -> rr
             for (int i = 0; i < depth; i++)
@@ -989,16 +989,19 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             int rbuf = gen(node->args);
             int c = ++rcc_label_count;
             int r = alloc_reg();
-            asm_str_fp_reg(cg_sec, rbuf); // str fp,[rrbuf]
-            (void)0 /* FIXME: adrp/adr */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: mov phy */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: mov phy */;
-            asm_jmp_label(cg_sec); // mov (%s), %s
-            (void)0 /* FIXME: label .L.xxx.c */;
-            cg_def_label(format(".L.setjmp.%d", c)); // mov 8(%s), %s
-            asm_mov_reg_reg(cg_sec, r, 0, 8); // mov r0 -> rr
+            asm_str_fp_reg(cg_sec, rbuf); // str x29, [x{rbuf}]  (buf[0] = fp)
+            asm_adr_x16_label(cg_sec, format(".L.setjmp.%d", c)); // adr x16, .L.setjmp.c (resume addr)
+            asm_str_x16_reg_uoff(cg_sec, rbuf, 8); // str x16, [x{rbuf}, #8]   (buf[1] = resume addr)
+            asm_mov_x16_sp(cg_sec); // mov x16, sp
+            asm_str_x16_reg_uoff(cg_sec, rbuf, 16); // str x16, [x{rbuf}, #16]  (buf[2] = sp)
+            asm_mov_imm(cg_sec, r, 4, 0); // mov r, #0  (setjmp returns 0 normally)
+            {
+                size_t jmp_off = asm_jmp_label(cg_sec); // b .L.setjmp_end.c (skip resume block)
+                cg_def_label(format(".L.setjmp.%d", c)); // .L.setjmp.c: (longjmp jumps here)
+                asm_mov_retval(cg_sec, r, 8); // mov r, x0  (longjmp return value)
+                asm_fixup_add(cg_sec, jmp_off, format(".L.setjmp_end.%d", c), 0);
+                cg_def_label(format(".L.setjmp_end.%d", c)); // end of setjmp inline
+            }
             free_reg(rbuf);
             return r;
         }
@@ -1006,12 +1009,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             // Inline __builtin_longjmp: restore fp, sp from buf; jump to resume addr with val
             int rbuf = gen(node->args);
             int rval = gen(node->args->next);
-            asm_ldr_fp_reg(cg_sec, rbuf); // ldr fp,[rrbuf]
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: mov phy */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: mov phy */;
-            asm_jmp_reg(cg_sec, 16); // jmp r16
+            asm_ldr_fp_reg(cg_sec, rbuf); // ldr x29, [x{rbuf}]   (buf[0] → restore fp)
+            asm_ldr_x16_reg_uoff(cg_sec, rbuf, 16); // ldr x16, [x{rbuf}, #16] (buf[2] = saved sp)
+            asm_mov_sp_x16(cg_sec); // mov sp, x16
+            asm_ldr_x16_reg_uoff(cg_sec, rbuf, 8); // ldr x16, [x{rbuf}, #8]  (buf[1] = resume addr)
+            asm_mov_x0_reg(cg_sec, rval); // mov x0, x{rval}  (setjmp return value)
+            asm_jmp_reg(cg_sec, 16); // br x16
             free_reg(rbuf);
             free_reg(rval);
             return -1;
@@ -1657,10 +1660,9 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_hfa_count[i] > 0 && arg_fp_idx[i] >= 0) {
             for (int j = 0; j < arg_hfa_count[i]; j++) {
                 int off = j * arg_hfa_elem_size[i];
-                if (arg_hfa_elem_size[i] == 4)
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                else
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                // ldr s/d{fp_idx+j}, [x{arg_regs[i]}, #off]
+                asm_ldr_fp_off(cg_sec, arg_fp_idx[i] + j, arg_regs[i],
+                               arg_hfa_elem_size[i], (uint32_t)off);
             }
             free_reg(arg_regs[i]);
             continue;
@@ -4470,7 +4472,7 @@ static int gen(Node *node) {
                 }
 #ifdef ARCH_ARM64
                 if (retbuf_offset <= 4095)
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    asm_ldur_phy(cg_sec, 11, 29, 1, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
                 else {
                     int v = retbuf_offset;
                     asm_mov_imm(cg_sec, 16, 8, v & 0xffff); // mov $v & 0xffff, r16
