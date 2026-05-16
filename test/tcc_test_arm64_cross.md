@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 155
-- **Passed**: 107
-- **Failed**: 48
-- **Pass Rate**: 69%
+- **Passed**: 110
+- **Failed**: 45
+- **Pass Rate**: 70%
 
 ## Detailed Results
 
@@ -16,7 +16,7 @@ Generated: May 2026
 | 00_assignment               | PASS         | Output matches                |
 | 01_comment                  | PASS         | Output matches                |
 | 02_printf                   | PASS         | Output matches                |
-| 03_struct                   | COMPILE_FAIL | rcc returned non-zero         |
+| 03_struct                   | PASS         | Output matches                |
 | 04_for                      | PASS         | Output matches                |
 | 05_array                    | PASS         | Output matches                |
 | 06_case                     | PASS         | Output matches                |
@@ -30,7 +30,7 @@ Generated: May 2026
 | 14_if                       | PASS         | Output matches                |
 | 15_recursion                | PASS         | Output matches                |
 | 16_nesting                  | PASS         | Output matches                |
-| 17_enum                     | MISMATCH     | Output does not match .expect |
+| 17_enum                     | PASS         | Output matches                |
 | 18_include                  | PASS         | Output matches                |
 | 19_pointer_arithmetic       | PASS         | Output matches                |
 | 20_pointer_comparison       | PASS         | Output matches                |
@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP         | Skipped                       |
 | 99_fastcall                 | SKIP         | Skipped                       |
 | 100_c99array-decls          | PASS         | Output matches                |
-| 101_cleanup                 | COMPILE_FAIL | rcc returned non-zero         |
+| 101_cleanup                 | EXEC_FAIL    | non-zero exit                 |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
@@ -120,7 +120,7 @@ Generated: May 2026
 | 115_bound_setjmp            | SKIP         | Skipped                       |
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
 | 117_builtins                | EXEC_FAIL    | non-zero exit                 |
-| 118_switch                  | MISMATCH     | Output does not match .expect |
+| 118_switch                  | PASS         | Output matches                |
 | 119_random_stuff            | COMPILE_FAIL | rcc returned non-zero         |
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
 | 121_struct_return           | EXEC_FAIL    | non-zero exit                 |

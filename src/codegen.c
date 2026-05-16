@@ -1554,16 +1554,24 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         }
     }
 
-    // Push stack args at sp+idx*8 (callee reads from x29+16+idx*8 = sp+idx*8)
+    // Push stack args at [sp + arg_stack_idx[i]*8]
     for (int i = nargs - 1; i >= 0; i--) {
         if (arg_stack_idx[i] < 0)
             continue;
+        int off = arg_stack_idx[i] * 8;
         int r;
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
         else
             r = gen(argv[i]);
-        (void)0 /* FIXME: ldr/str phy/off */;
+        int sz = arg_sizes[i] <= 4 ? 4 : 8;
+        if (arg_is_float[i]) {
+            // float stack arg: move to d0 then store as double
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+            secbuf_emit32le(cg_sec, arm64_str_fp(3, 0, 31, (uint32_t)off)); // str d0, [sp, #off]
+        } else {
+            asm_str_reg_off(cg_sec, r, 31, sz, (uint32_t)off); // str x{r}, [sp, #off]
+        }
         free_reg(r);
     }
 
@@ -2099,13 +2107,11 @@ static void emit_mov_imm64(const char *reg, uint64_t val) {
     bool is_w = (reg[0] == 'w');
     int sf = is_w ? 0 : 1;
     int rd = atoi(reg + 1);
-    asm_movz(cg_sec, rd, sf, (uint16_t)(val & 0xffff), 0); // movz x{rd}, #val
-    val >>= 16;
-    int shift = 16;
-    while (val) {
-        asm_movk(cg_sec, rd, sf, (uint16_t)(val & 0xffff), shift); // movk x{rd}, #val, lsl #shift
-        val >>= 16;
-        shift += 16;
+    int max_shift = is_w ? 16 : 48;
+    asm_movz(cg_sec, rd, sf, (uint16_t)(val & 0xffff), 0); // movz x{rd}, #lo16
+    for (int sh = 16; sh <= max_shift; sh += 16) {
+        if ((val >> sh) != 0) // only emit if remaining bits non-zero
+            asm_movk(cg_sec, rd, sf, (uint16_t)((val >> sh) & 0xffff), sh);
     }
 }
 
@@ -5028,7 +5034,7 @@ static int gen(Node *node) {
                     asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
                 else {
                     int tmp = alloc_reg();
-                    emit_mov_imm64(reg64[tmp], (uint64_t)cs->case_val);
+                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
                     asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
                     free_reg(tmp);
                 }
@@ -5041,7 +5047,7 @@ static int gen(Node *node) {
                     asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_end); // cmp $(long long)cs->case_end, rcond
                 else {
                     int tmp = alloc_reg();
-                    emit_mov_imm64(reg64[tmp], (uint64_t)cs->case_end);
+                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_end); // mov tmp, #case_end
                     asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
                     free_reg(tmp);
                 }
@@ -5083,7 +5089,7 @@ static int gen(Node *node) {
                     asm_cmp_imm(cg_sec, cond, sz, (long long)cs->case_val); // cmp $(long long)cs->case_val, rcond
                 } else {
                     int tmp = alloc_reg();
-                    emit_mov_imm64(reg64[tmp], (uint64_t)cs->case_val);
+                    asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
                     asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
                     free_reg(tmp);
                 }
@@ -6506,7 +6512,7 @@ static int gen(Node *node) {
                         asm_sar_imm(cg_sec, r_lhs, sz, (uint8_t)shift); // asr r_lhs, r_lhs, #shift
                     } else {
                         int tmp = alloc_reg();
-                        emit_mov_imm64(reg64[tmp], (uint64_t)elem_sz);
+                        asm_mov_imm(cg_sec, tmp, sz, (int64_t)elem_sz); // mov tmp, #elem_sz
                         asm_sdiv_reg_reg(cg_sec, r_lhs, tmp, sz); // sdiv r_lhs, r_lhs, tmp
                         free_reg(tmp);
                     }
@@ -7955,13 +7961,15 @@ struct ObjFile *codegen(Program *prog) {
                 break;
             }
         if (has_cleanup) {
-            // Restore x16 if it was used by cleanup (it is caller-saved, no need to restore)
+            // Save x0 (return value) to x19 (callee-saved) before cleanup calls
+            secbuf_emit32le(cg_sec, arm64_orr_reg(1, 19, 31, 0, ARM64_LSL, 0)); // mov x19, x0
         }
         for (LVar *var = fn->locals; var; var = var->next)
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
         if (has_cleanup) {
-            // x16 is caller-saved, no restore needed
+            // Restore x0 from x19 after cleanup calls
+            secbuf_emit32le(cg_sec, arm64_orr_reg(1, 0, 31, 19, ARM64_LSL, 0)); // mov x0, x19
         }
 
         // VLA or alloca may have moved sp; restore to fixed frame position
