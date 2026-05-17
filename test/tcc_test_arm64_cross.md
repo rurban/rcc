@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 154
-- **Passed**: 107
-- **Failed**: 47
-- **Pass Rate**: 69%
+- **Passed**: 108
+- **Failed**: 46
+- **Pass Rate**: 70%
 
 ## Detailed Results
 
@@ -48,7 +48,7 @@ Generated: May 2026
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
 | 33_ternary_op               | COMPILE_FAIL | rcc returned non-zero         |
 | 34_array_assignment         | MISMATCH     | Output does not match .expect |
-| 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
+| 35_sizeof                   | PASS         | Output matches                |
 | 36_array_initialisers       | PASS         | Output matches                |
 | 37_sprintf                  | PASS         | Output matches                |
 | 38_multiple_array_index     | PASS         | Output matches                |

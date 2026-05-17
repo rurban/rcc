@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 104
-- **Failed**: 47
-- **Pass Rate**: 68%
+- **Passed**: 108
+- **Failed**: 43
+- **Pass Rate**: 71%
 
 ## Detailed Results
 
@@ -46,7 +46,7 @@ Generated: May 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
-| 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
+| 33_ternary_op               | MISMATCH     | Output does not match .expect |
 | 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
 | 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -62,7 +62,7 @@ Generated: May 2026
 | 46_grep                     | PASS         | Output matches                |
 | 47_switch_return            | PASS         | Output matches                |
 | 48_nested_break             | PASS         | Output matches                |
-| 49_bracket_evaluation       | MISMATCH     | Output does not match .expect |
+| 49_bracket_evaluation       | PASS         | Output matches                |
 | 50_logical_second_arg       | PASS         | Output matches                |
 | 51_static                   | PASS         | Output matches                |
 | 52_unnamed_enum             | PASS         | Output matches                |
@@ -79,8 +79,8 @@ Generated: May 2026
 | 75_array_in_struct_init     | EXEC_FAIL    | non-zero exit                 |
 | 76_dollars_in_identifiers   | PASS         | Output matches                |
 | 77_push_pop_macro           | PASS         | Output matches                |
-| 78_vla_label                | EXEC_FAIL    | non-zero exit                 |
-| 79_vla_continue             | EXEC_FAIL    | non-zero exit                 |
+| 78_vla_label                | PASS         | Output matches                |
+| 79_vla_continue             | PASS         | Output matches                |
 | 80_flexarray                | EXEC_FAIL    | non-zero exit                 |
 | 81_types                    | PASS         | Output matches                |
 | 82_attribs_position         | PASS         | Output matches                |
@@ -124,7 +124,7 @@ Generated: May 2026
 | 119_random_stuff            | EXEC_FAIL    | non-zero exit                 |
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
 | 121_struct_return           | MISMATCH     | Output does not match .expect |
-| 122_vla_reuse               | EXEC_FAIL    | non-zero exit                 |
+| 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
 | 124_atomic_counter          | EXEC_FAIL    | non-zero exit                 |
 | 125_atomic_misc             | MISMATCH     | Output differs                |

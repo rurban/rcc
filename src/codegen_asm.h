@@ -2424,15 +2424,15 @@ static size_t asm_movsd_mr_rbp(SecBuf *s, int xmm_src, int offset) {
 // movss offset(%%rbp), xmm_dst  — load single float from frame
 static size_t asm_movss_rm_rbp(SecBuf *s, int xmm_dst, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
-    x86_movss_rm(s, (X86XmmReg)xmm_dst, m); // movss offset(%%rbp), xmm_dst
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movss_rm(s, (X86XmmReg)xmm_dst, m); // movss -offset(%%rbp), xmm_dst
     return s->len - off;
 }
-// movsd offset(%%rbp), xmm_dst  — load double float from frame
+// movsd -offset(%%rbp), xmm_dst  — load double float from frame
 static size_t asm_movsd_rm_rbp(SecBuf *s, int xmm_dst, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
-    x86_movsd_rm(s, (X86XmmReg)xmm_dst, m); // movsd offset(%%rbp), xmm_dst
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movsd_rm(s, (X86XmmReg)xmm_dst, m); // movsd -offset(%%rbp), xmm_dst
     return s->len - off;
 }
 // cvtsd2ss from XMM param_xmm[i], store to rbp — convert param double to float
