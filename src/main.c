@@ -19,10 +19,6 @@ static uint64_t now_us(void) {
 #ifndef GCC
 #define GCC "gcc"
 #endif
-#ifndef LD
-#define LD "ld"
-#endif
-
 void add_define(char *def);
 void add_undef(char *name);
 void dump_ast(Program *prog);
@@ -422,11 +418,11 @@ int main(int argc, char **argv) {
                  out_path);
 #else
         if (opt_pie)
-            snprintf(cmd, sizeof(cmd), GCC " -fuse-ld=" LD " -pie -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
         else if (opt_pic)
-            snprintf(cmd, sizeof(cmd), GCC " -fuse-ld=" LD " -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
         else
-            snprintf(cmd, sizeof(cmd), GCC " -fuse-ld=" LD " -no-pie -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
 #endif
 
         // Codegen already produced .o files; add them directly to linker command
