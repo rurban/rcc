@@ -4,10 +4,10 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 152
-- **Passed**: 102
+- **Total**: 151
+- **Passed**: 101
 - **Failed**: 50
-- **Pass Rate**: 67%
+- **Pass Rate**: 66%
 
 ## Detailed Results
 
@@ -35,9 +35,9 @@ Generated: May 2026
 | 19_pointer_arithmetic       | PASS         | Output matches                |
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
-| 22_floating_point           | EXEC_FAIL    | non-zero exit                 |
-| 23_type_coercion            | EXEC_FAIL    | non-zero exit                 |
-| 24_math_library             | EXEC_FAIL    | non-zero exit                 |
+| 22_floating_point           | MISMATCH     | Output does not match .expect |
+| 23_type_coercion            | MISMATCH     | Output does not match .expect |
+| 24_math_library             | MISMATCH     | Output does not match .expect |
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
 | 27_sizeof                   | PASS         | Output matches                |
@@ -136,19 +136,15 @@ Generated: May 2026
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | MISMATCH     | Output does not match .expect |
 | 133_old_func                | MISMATCH     | Output does not match .expect |
-| 134_double_to_signed        | EXEC_FAIL    | non-zero exit                 |
+| 134_double_to_signed        | MISMATCH     | Output does not match .expect |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
 | 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | SKIP         | Skipped                       |
-| 138_narrow_return_promotion | MISMATCH     | Output does not match .expect |
 | 139_arm64_errors            | SKIP         | Skipped                       |
-| 139_narrow_type_conversion  | MISMATCH     | Output does not match .expect |
 | 140_arm64_extasm            | SKIP         | Skipped                       |
-| 140_int_sign_extension      | PASS         | Output matches                |
-| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
-| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
-| 143_riscv_asm_farith        | SKIP         | Skipped                       |
+| 141_riscv_asm               | MISMATCH     | Output does not match .expect |
+| 142_int_conversion          | MISMATCH     | Output does not match .expect |
 | test_arm64_asm              | SKIP         | Skipped                       |
 | test_atomic_op              | PASS         | exit=0                        |
 | test_atomic_op2             | PASS         | exit=0                        |

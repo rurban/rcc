@@ -4,10 +4,10 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 155
-- **Passed**: 107
-- **Failed**: 48
-- **Pass Rate**: 69%
+- **Total**: 154
+- **Passed**: 105
+- **Failed**: 49
+- **Pass Rate**: 68%
 
 ## Detailed Results
 
@@ -141,14 +141,10 @@ Generated: May 2026
 | 136_atomic_gcc_style        | EXEC_FAIL    | non-zero exit                 |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | EXEC_FAIL    | non-zero exit                 |
-| 138_narrow_return_promotion | COMPILE_FAIL | rcc returned non-zero         |
 | 139_arm64_errors            | PASS         | Output matches                |
-| 139_narrow_type_conversion  | PASS         | Output matches                |
 | 140_arm64_extasm            | EXEC_FAIL    | non-zero exit                 |
-| 140_int_sign_extension      | PASS         | Output matches                |
-| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
-| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
-| 143_riscv_asm_farith        | SKIP         | Skipped                       |
+| 141_riscv_asm               | MISMATCH     | Output does not match .expect |
+| 142_int_conversion          | COMPILE_FAIL | rcc returned non-zero         |
 | test_arm64_asm              | PASS         | exit=132                      |
 | test_atomic_op              | PASS         | exit=124                      |
 | test_atomic_op2             | PASS         | exit=124                      |

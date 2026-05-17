@@ -1856,6 +1856,70 @@ static size_t asm_fcmp(SecBuf *s, int ftype) {
     return s->len - off;
 }
 
+// str d{fp_r}, [sp, #uimm] — store float/double to SP-relative slot
+#ifdef ARCH_ARM64
+static size_t asm_str_fp_sp_off(SecBuf *s, int fp_r, uint32_t uimm) {
+    size_t off = s->len;
+    int opc = (uimm % 8 == 0) ? 3 : 2; // 3=64-bit (d), 2=32-bit (s) stride
+    secbuf_emit32le(s, arm64_str_fp(opc, fp_r, 31, uimm / (opc == 3 ? 8 : 4))); // str d{fp_r}, [sp, #uimm]
+    return s->len - off;
+}
+// asr x17, x{src}, #63 — arithmetic shift right by 63 (sign-extend)
+static size_t asm_asr_x17_reg_63(SecBuf *s, VReg src) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_asr_imm(1, 17, CG_ARM_REG(src), 63)); // asr x17, x{src}, #63
+    return s->len - off;
+}
+// ldr w{dst}, [x{src}] / ldr x{dst}, [x{src}] — load GP from reg (sf=0→32bit, 1→64bit)
+static size_t asm_ldr_phy_reg(SecBuf *s, int dst_phy, VReg src, int sf) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_uoff(sf, dst_phy, CG_ARM_REG(src), 0)); // ldr w/x{dst}, [x{src}]
+    return s->len - off;
+}
+// mov x{dst_phy}, x{src_vreg} — move vreg to physical GP register (via orr xd, xzr, xs)
+static size_t asm_mov_phy_reg(SecBuf *s, int dst_phy, VReg src, int sf) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_add_reg(sf, dst_phy, 31, CG_ARM_REG(src), ARM64_LSL, 0)); // mov x{dst_phy}, x{src}
+    return s->len - off;
+}
+// cmn vreg, #imm — compare negative (subs xzr, reg, imm)
+static size_t asm_cmn_vreg_imm(SecBuf *s, VReg r, int sz, int32_t imm) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_subs_imm(sz == 8 ? 1 : 0, 31, CG_ARM_REG(r), imm, 0)); // cmn x{r}, #imm
+    return s->len - off;
+}
+// fcvtzu w/x{r}, d0 — float→unsigned int conversion
+static size_t asm_fcvtzu(SecBuf *s, VReg r, int sz) {
+    size_t off = s->len;
+    int sf = (sz == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_fcvtzu(sf, 1, CG_ARM_REG(r), 0)); // fcvtzu w/x{r}, d0
+    return s->len - off;
+}
+// mov x19, x0 / mov x0, x19 — callee-saved retval save/restore
+static size_t asm_mov_x19_x0(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_orr_reg(1, 19, 31, 0, ARM64_LSL, 0)); // mov x19, x0
+    return s->len - off;
+}
+static size_t asm_mov_x0_x19(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_orr_reg(1, 0, 31, 19, ARM64_LSL, 0)); // mov x0, x19
+    return s->len - off;
+}
+// add xrd, xrd, #0 — relocation placeholder for ADD_ABS_LO12
+static size_t asm_add_rd_rd_0(SecBuf *s, int rd) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_add_imm(1, rd, rd, 0, 0)); // add x{rd}, x{rd}, #0
+    return s->len - off;
+}
+// ldr xrd, [xrd] — load pointer from self (GOT indirection)
+static size_t asm_ldr_rd_rd(SecBuf *s, int rd) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_uoff(1, rd, rd, 0)); // ldr x{rd}, [x{rd}]
+    return s->len - off;
+}
+#endif
+
 // ============================================================================
 // Atomics
 // ============================================================================

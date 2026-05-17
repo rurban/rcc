@@ -1614,7 +1614,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_is_float[i]) {
             // float stack arg: move to d0 then store as double
             asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-            secbuf_emit32le(cg_sec, arm64_str_fp(3, 0, 31, (uint32_t)off)); // str d0, [sp, #off]
+            asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off); // str d0, [sp, #off]
         } else {
             asm_str_reg_off(cg_sec, r, 31, sz, (uint32_t)off); // str x{r}, [sp, #off]
         }
@@ -1677,7 +1677,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 (void)0 /* FIXME: lsl/lsr phy */;
                 (void)0 /* FIXME: lsl/lsr phy */;
                 (void)0 /* FIXME: orr phy */;
-                secbuf_emit32le(cg_sec, arm64_asr_imm(1, 17, CG_ARM_REG(arg_regs[i]), 63)); // b.eq .L.quad_z.%d
+                asm_asr_x17_reg_63(cg_sec, arg_regs[i]); // asr x17, x{arg_regs[i]}, #63
                 (void)0 /* FIXME: and variant */;
                 (void)0 /* FIXME: lsl/lsr phy */;
                 (void)0 /* FIXME: orr phy */;
@@ -1714,9 +1714,9 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         // must hold the VALUE (va_arg reads it directly, not via pointer).
         if (arg_hfa_count[i] > 0 && arg_gp_idx[i] >= 0 && arg_fp_idx[i] < 0 && arg_sizes[i] <= 8) {
             if (arg_sizes[i] == 4)
-                secbuf_emit32le(cg_sec, arm64_ldr_uoff(0, arg_gp_idx[i], CG_ARM_REG(arg_regs[i]), 0)); // ldr w16, [%s]\n  mov %s, x16
+                asm_ldr_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 0); // ldr w{gp_idx}, [x{arg_reg}]
             else
-                secbuf_emit32le(cg_sec, arm64_ldr_uoff(1, arg_gp_idx[i], CG_ARM_REG(arg_regs[i]), 0)); // ldr %s, [%s]
+                asm_ldr_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // ldr x{gp_idx}, [x{arg_reg}]
             free_reg(arg_regs[i]);
             continue;
         }
@@ -1725,15 +1725,15 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], 1); // fmov d{fp_idx}, x{arg_reg}
             // For variadic float args, also pass in GP register (printf-style)
             if (arg_gp_idx[i] >= 0)
-                secbuf_emit32le(cg_sec, arm64_add_reg(1, arg_gp_idx[i], 31, CG_ARM_REG(arg_regs[i]), ARM64_LSL, 0)); // mov x{gp_idx}, x{arg_reg}
+                asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         } else if (arg_is_float[i] && arg_gp_idx[i] >= 0) {
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, arg_gp_idx[i], 31, CG_ARM_REG(arg_regs[i]), ARM64_LSL, 0)); // mov x{gp_idx}, x{arg_reg}
+            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         } else if (arg_sizes[i] == 1 || arg_sizes[i] == 2) {
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, arg_gp_idx[i], 31, CG_ARM_REG(arg_regs[i]), ARM64_LSL, 0)); // fcvt s%d, %s
+            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         } else if (arg_sizes[i] == 4) {
-            secbuf_emit32le(cg_sec, arm64_add_reg(0, arg_gp_idx[i], 31, CG_ARM_REG(arg_regs[i]), ARM64_LSL, 0)); // mov %s, %s
+            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 0); // mov w{gp_idx}, w{arg_reg}
         } else {
-            secbuf_emit32le(cg_sec, arm64_add_reg(1, arg_gp_idx[i], 31, CG_ARM_REG(arg_regs[i]), ARM64_LSL, 0)); // mov %s, %s
+            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         }
         free_reg(arg_regs[i]);
     }
@@ -2192,7 +2192,7 @@ static void emit_adrp_add(const char *reg, const char *label) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
     objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
     size_t add_off = cg_sec->len;
-    secbuf_emit32le(cg_sec, arm64_add_imm(1, rd, rd, 0, 0)); // add xrd, xrd, #0
+    asm_add_rd_rd_0(cg_sec, rd); // add x{rd}, x{rd}, #0 (reloc placeholder)
     objfile_add_reloc(cg_obj, SEC_TEXT, add_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
 }
 
@@ -2205,7 +2205,7 @@ static void emit_adrp_got(const char *reg, const char *label) {
     (void)is_w;
     emit_adrp_add(reg, label);
     size_t ldr_off = cg_sec->len;
-    secbuf_emit32le(cg_sec, arm64_ldr_uoff(1, rd, rd, 0)); // ldr xrd, [xrd]
+    asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}] (GOT indirection)
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx >= 0)
         objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
@@ -3048,7 +3048,7 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
             if (imm >= 0 && imm <= 4095) {
                 asm_cmp_imm(cg_sec, r_lhs, sz, imm); // cmp $imm, rr_lhs
             } else if (imm < 0 && imm >= -4095) {
-                secbuf_emit32le(cg_sec, arm64_subs_imm(sz == 8 ? 1 : 0, 31, CG_ARM_REG(r_lhs), -imm, 0)); // cmn %s, #%d
+                asm_cmn_vreg_imm(cg_sec, r_lhs, sz, -imm); // cmn x{r_lhs}, #(-imm)
             } else {
                 emit_mov_imm64("x16", (uint64_t)(int64_t)imm);
                 asm_cmp_reg_reg(cg_sec, r_lhs, 16, sz); // cmp r16, rr_lhs
@@ -4091,10 +4091,10 @@ static int gen(Node *node) {
             emit_adrp_add(reg64[tmp], format(".LF%d", id));
             if (sz == 4) {
                 asm_ldr_fp(cg_sec, 1, tmp, 4); // ldr s1, [x{tmp}]
-                secbuf_emit32le(cg_sec, node->kind == ND_POST_INC ? arm64_fadd(0, 0, 0, 1) : arm64_fsub(0, 0, 0, 1)); // ldr s1, .LF%d
+                (node->kind == ND_POST_INC ? asm_fadd(cg_sec, 0) : asm_fsub(cg_sec, 0)); // fadd/fsub s0, s0, s1
             } else {
                 asm_ldr_fp(cg_sec, 1, tmp, 8); // ldr d1, [x{tmp}]
-                secbuf_emit32le(cg_sec, node->kind == ND_POST_INC ? arm64_fadd(1, 0, 0, 1) : arm64_fsub(1, 0, 0, 1)); // ldr d1, .LF%d
+                (node->kind == ND_POST_INC ? asm_fadd(cg_sec, 1) : asm_fsub(cg_sec, 1)); // fadd/fsub d0, d0, d1
             }
             free_reg(tmp);
             asm_fmov_f2i(cg_sec, r3, 0, 1); // fmov x{r3}, d0
@@ -4311,7 +4311,7 @@ static int gen(Node *node) {
             {
                 int sf = (to->size == 8) ? 1 : 0;
                 if (to->is_unsigned)
-                    secbuf_emit32le(cg_sec, arm64_fcvtzu(sf, 1, CG_ARM_REG(r), 0)); // fcvtzu w/x{r}, d0
+                    asm_fcvtzu(cg_sec, r, to->size); // fcvtzu w/x{r}, d0
                 else
                     asm_cvttsd2si(cg_sec, r, to->size); // fcvtzs w/x{r}, d0
             }
@@ -8037,14 +8037,14 @@ struct ObjFile *codegen(Program *prog) {
             }
         if (has_cleanup) {
             // Save x0 (return value) to x19 (callee-saved) before cleanup calls
-            secbuf_emit32le(cg_sec, arm64_orr_reg(1, 19, 31, 0, ARM64_LSL, 0)); // mov x19, x0
+            asm_mov_x19_x0(cg_sec); // mov x19, x0 (save return value)
         }
         for (LVar *var = fn->locals; var; var = var->next)
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
         if (has_cleanup) {
             // Restore x0 from x19 after cleanup calls
-            secbuf_emit32le(cg_sec, arm64_orr_reg(1, 0, 31, 19, ARM64_LSL, 0)); // mov x0, x19
+            asm_mov_x0_x19(cg_sec); // mov x0, x19 (restore return value)
         }
 
         // VLA or alloca may have moved sp; restore to fixed frame position

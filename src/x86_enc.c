@@ -602,12 +602,14 @@ void x86_subss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf3, 0x5c, d, 
 void x86_mulss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf3, 0x59, d, sr); }
 void x86_divss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf3, 0x5e, d, sr); }
 void x86_movq_r_xmm(SecBuf *s, X86XmmReg d, X86Reg sr) {
-    // movq %r64, %xmm: REX.W 0F 6E /r (reg=d, rm=sr)
+    // movq %r64, %xmm: 66 REX.W 0F 6E /r (reg=d, rm=sr)
+    emit1(s, 0x66);
     emit1(s, rex(1, (int)d > 7, 0, (int)sr > 7));
     emit3(s, 0x0f, 0x6e, modrm(3, (int)d, (int)sr));
 }
 void x86_movq_xmm_r(SecBuf *s, X86Reg d, X86XmmReg sr) {
-    // movq %xmm, %r64: REX.W 0F 7E /r (reg=sr, rm=d)
+    // movq %xmm, %r64: 66 REX.W 0F 7E /r (reg=sr, rm=d)
+    emit1(s, 0x66);
     emit1(s, rex(1, (int)sr > 7, 0, (int)d > 7));
     emit3(s, 0x0f, 0x7e, modrm(3, (int)sr, (int)d));
 }
@@ -644,15 +646,32 @@ void x86_cvttss2si(SecBuf *s, int dstsz, X86Reg d, X86XmmReg sr) {
 void x86_cvtsd2ss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf2, 0x5a, d, sr); }
 void x86_cvtss2sd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf3, 0x5a, d, sr); }
 void x86_xorpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    // xorpd: 66 0F 57 /r
     emit1(s, 0x66);
-    sse_rr(s, 0x0f, 0x57, d, sr);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x57, modrm(3, (int)d, (int)sr));
 }
-void x86_xorps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0x0f, 0x57, d, sr); }
-void x86_movaps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0x0f, 0x28, d, sr); }
-void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) { sse_mr(s, 0x0f, 0x29, m, sr); }
+void x86_xorps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    // xorps: 0F 57 /r (no mandatory prefix)
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x57, modrm(3, (int)d, (int)sr));
+}
+void x86_movaps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    // movaps: 0F 28 /r
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x28, modrm(3, (int)d, (int)sr));
+}
+void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    // movaps: 0F 29 /r (store)
+    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    emit2(s, 0x0f, 0x29);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
 void x86_pxor(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    // pxor: 66 0F EF /r
     emit1(s, 0x66);
-    sse_rr(s, 0x0f, 0xef, d, sr);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0xef, modrm(3, (int)d, (int)sr));
 }
 
 // x87

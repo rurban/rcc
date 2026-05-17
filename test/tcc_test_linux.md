@@ -4,10 +4,10 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 152
-- **Passed**: 105
-- **Failed**: 47
-- **Pass Rate**: 69%
+- **Total**: 151
+- **Passed**: 103
+- **Failed**: 48
+- **Pass Rate**: 68%
 
 ## Detailed Results
 
@@ -35,9 +35,9 @@ Generated: May 2026
 | 19_pointer_arithmetic       | PASS         | Output matches                |
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
-| 22_floating_point           | EXEC_FAIL    | non-zero exit                 |
-| 23_type_coercion            | EXEC_FAIL    | non-zero exit                 |
-| 24_math_library             | EXEC_FAIL    | non-zero exit                 |
+| 22_floating_point           | MISMATCH     | Output does not match .expect |
+| 23_type_coercion            | MISMATCH     | Output does not match .expect |
+| 24_math_library             | MISMATCH     | Output does not match .expect |
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
 | 27_sizeof                   | PASS         | Output matches                |
@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP         | Skipped                       |
 | 99_fastcall                 | SKIP         | Skipped                       |
 | 100_c99array-decls          | PASS         | Output matches                |
-| 101_cleanup                 | EXEC_FAIL    | non-zero exit                 |
+| 101_cleanup                 | MISMATCH     | Output does not match .expect |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
@@ -136,19 +136,15 @@ Generated: May 2026
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | MISMATCH     | Output does not match .expect |
 | 133_old_func                | MISMATCH     | Output does not match .expect |
-| 134_double_to_signed        | EXEC_FAIL    | non-zero exit                 |
+| 134_double_to_signed        | MISMATCH     | Output does not match .expect |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
 | 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | SKIP         | Skipped                       |
-| 138_narrow_return_promotion | PASS         | Output matches                |
 | 139_arm64_errors            | SKIP         | Skipped                       |
-| 139_narrow_type_conversion  | PASS         | Output matches                |
 | 140_arm64_extasm            | SKIP         | Skipped                       |
-| 140_int_sign_extension      | PASS         | Output matches                |
-| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
-| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
-| 143_riscv_asm_farith        | SKIP         | Skipped                       |
+| 141_riscv_asm               | MISMATCH     | Output does not match .expect |
+| 142_int_conversion          | PASS         | Output matches                |
 | test_arm64_asm              | SKIP         | Skipped                       |
 | test_atomic_op              | PASS         | exit=0                        |
 | test_atomic_op2             | PASS         | exit=0                        |
