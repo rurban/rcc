@@ -161,6 +161,86 @@ static int spilled_regs = 0;
 static int spill_count = 0;
 static const char *reg_owner[NUM_REGS];
 
+// Pre-interned builtin name pointers for O(1) pointer-equality matching.
+// All function names come from tok->name which is str_intern'd by the lexer,
+// so pointer comparison is valid after we intern these literals once.
+#define _BI(s) str_intern(s, sizeof(s)-1)
+static const char *bi_bswap16, *bi_bswap32, *bi_bswap64;
+static const char *bi_clz, *bi_clzl, *bi_clzll;
+static const char *bi_ctz, *bi_ctzl, *bi_ctzll;
+static const char *bi_popcount, *bi_popcountl, *bi_popcountll;
+static const char *bi_parity, *bi_parityl, *bi_parityll;
+static const char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
+static const char *bi_ffs, *bi_ffsl, *bi_ffsll;
+static const char *bi_prefetch, *bi_frame_address, *bi_return_address;
+static const char *bi_setjmp, *bi_longjmp;
+static const char *bi_signbit, *bi_signbitf, *bi_signbitl;
+static const char *bi_abs, *bi_labs, *bi_llabs;
+static const char *bi_add_overflow, *bi_sub_overflow;
+static const char *bi_mul_overflow, *bi_mul_overflow_p;
+static const char *bi_memset, *bi_memcpy, *bi_memcmp;
+static const char *bi_strlen, *bi_strcmp, *bi_strchr;
+static const char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
+static const char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
+static const char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
+
+static void init_builtin_names(void) {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    bi_bswap16 = _BI("__builtin_bswap16");
+    bi_bswap32 = _BI("__builtin_bswap32");
+    bi_bswap64 = _BI("__builtin_bswap64");
+    bi_clz = _BI("__builtin_clz");
+    bi_clzl = _BI("__builtin_clzl");
+    bi_clzll = _BI("__builtin_clzll");
+    bi_ctz = _BI("__builtin_ctz");
+    bi_ctzl = _BI("__builtin_ctzl");
+    bi_ctzll = _BI("__builtin_ctzll");
+    bi_popcount = _BI("__builtin_popcount");
+    bi_popcountl = _BI("__builtin_popcountl");
+    bi_popcountll = _BI("__builtin_popcountll");
+    bi_parity = _BI("__builtin_parity");
+    bi_parityl = _BI("__builtin_parityl");
+    bi_parityll = _BI("__builtin_parityll");
+    bi_clrsb = _BI("__builtin_clrsb");
+    bi_clrsbl = _BI("__builtin_clrsbl");
+    bi_clrsbll = _BI("__builtin_clrsbll");
+    bi_ffs = _BI("__builtin_ffs");
+    bi_ffsl = _BI("__builtin_ffsl");
+    bi_ffsll = _BI("__builtin_ffsll");
+    bi_prefetch = _BI("__builtin_prefetch");
+    bi_frame_address = _BI("__builtin_frame_address");
+    bi_return_address = _BI("__builtin_return_address");
+    bi_setjmp = _BI("__builtin_setjmp");
+    bi_longjmp = _BI("__builtin_longjmp");
+    bi_signbit = _BI("__builtin_signbit");
+    bi_signbitf = _BI("__builtin_signbitf");
+    bi_signbitl = _BI("__builtin_signbitl");
+    bi_abs = _BI("__builtin_abs");
+    bi_labs = _BI("__builtin_labs");
+    bi_llabs = _BI("__builtin_llabs");
+    bi_add_overflow = _BI("__builtin_add_overflow");
+    bi_sub_overflow = _BI("__builtin_sub_overflow");
+    bi_mul_overflow = _BI("__builtin_mul_overflow");
+    bi_mul_overflow_p = _BI("__builtin_mul_overflow_p");
+    bi_memset = _BI("__builtin_memset");
+    bi_memcpy = _BI("__builtin_memcpy");
+    bi_memcmp = _BI("__builtin_memcmp");
+    bi_strlen = _BI("__builtin_strlen");
+    bi_strcmp = _BI("__builtin_strcmp");
+    bi_strchr = _BI("__builtin_strchr");
+    bi_s_abs = _BI("abs");
+    bi_s_labs = _BI("labs");
+    bi_s_llabs = _BI("llabs");
+    bi_s_memset = _BI("memset");
+    bi_s_memcpy = _BI("memcpy");
+    bi_s_memcmp = _BI("memcmp");
+    bi_s_strlen = _BI("strlen");
+    bi_s_strcmp = _BI("strcmp");
+    bi_s_strchr = _BI("strchr");
+}
+
 static char *reg(int r, int size);
 static int alloc_reg(void);
 static void free_reg(int i);
@@ -555,45 +635,64 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
     // Cross-architecture builtins (x86_64 and arm64)
     if (call_target && !has_hidden_retbuf) {
-        bool is_bswap16 = strcmp(call_target, "__builtin_bswap16") == 0;
-        bool is_bswap32 = strcmp(call_target, "__builtin_bswap32") == 0;
-        bool is_bswap64 = strcmp(call_target, "__builtin_bswap64") == 0;
-        bool is_clz = strcmp(call_target, "__builtin_clz") == 0;
-        bool is_clzl = strcmp(call_target, "__builtin_clzl") == 0;
-        bool is_clzll = strcmp(call_target, "__builtin_clzll") == 0;
-        bool is_ctz = strcmp(call_target, "__builtin_ctz") == 0;
-        bool is_ctzl = strcmp(call_target, "__builtin_ctzl") == 0;
-        bool is_ctzll = strcmp(call_target, "__builtin_ctzll") == 0;
-        bool is_popcnt = strcmp(call_target, "__builtin_popcount") == 0;
-        bool is_popcntl = strcmp(call_target, "__builtin_popcountl") == 0;
-        bool is_popcntll = strcmp(call_target, "__builtin_popcountll") == 0;
-        bool is_parity = strcmp(call_target, "__builtin_parity") == 0;
-        bool is_parityl = strcmp(call_target, "__builtin_parityl") == 0;
-        bool is_parityll = strcmp(call_target, "__builtin_parityll") == 0;
-        bool is_clrsb = strcmp(call_target, "__builtin_clrsb") == 0;
-        bool is_clrsbl = strcmp(call_target, "__builtin_clrsbl") == 0;
-        bool is_clrsbll = strcmp(call_target, "__builtin_clrsbll") == 0;
-        bool is_ffs = strcmp(call_target, "__builtin_ffs") == 0;
-        bool is_ffsl = strcmp(call_target, "__builtin_ffsl") == 0;
-        bool is_ffsll = strcmp(call_target, "__builtin_ffsll") == 0;
-        bool is_prefetch = strcmp(call_target, "__builtin_prefetch") == 0;
-        bool is_frame_addr = strcmp(call_target, "__builtin_frame_address") == 0;
-        bool is_ret_addr = strcmp(call_target, "__builtin_return_address") == 0;
-        bool is_setjmp = strcmp(call_target, "__builtin_setjmp") == 0;
-        bool is_longjmp = strcmp(call_target, "__builtin_longjmp") == 0;
-        bool is_signbit = strcmp(call_target, "__builtin_signbit") == 0 ||
-            strcmp(call_target, "__builtin_signbitf") == 0 ||
-            strcmp(call_target, "__builtin_signbitl") == 0;
-        bool is_abs_builtin = strcmp(call_target, "__builtin_abs") == 0 ||
-            strcmp(call_target, "__builtin_labs") == 0 ||
-            strcmp(call_target, "__builtin_llabs") == 0 ||
-            strcmp(call_target, "abs") == 0 ||
-            strcmp(call_target, "labs") == 0 ||
-            strcmp(call_target, "llabs") == 0;
-        bool is_add_overflow = strcmp(call_target, "__builtin_add_overflow") == 0;
-        bool is_sub_overflow = strcmp(call_target, "__builtin_sub_overflow") == 0;
-        bool is_mul_overflow = strcmp(call_target, "__builtin_mul_overflow") == 0;
-        bool is_mul_overflow_p = strcmp(call_target, "__builtin_mul_overflow_p") == 0;
+        init_builtin_names();
+        // Quick prefix check: all names here start with "__builtin_" or are
+        // short aliases (abs/labs/llabs). Skip the whole block for everything else.
+        bool maybe_builtin = (call_target[0] == '_' && call_target[1] == '_') ||
+            call_target == bi_s_abs || call_target == bi_s_labs || call_target == bi_s_llabs;
+        bool is_bswap16 = false, is_bswap32 = false, is_bswap64 = false;
+        bool is_clz = false, is_clzl = false, is_clzll = false;
+        bool is_ctz = false, is_ctzl = false, is_ctzll = false;
+        bool is_popcnt = false, is_popcntl = false, is_popcntll = false;
+        bool is_parity = false, is_parityl = false, is_parityll = false;
+        bool is_clrsb = false, is_clrsbl = false, is_clrsbll = false;
+        bool is_ffs = false, is_ffsl = false, is_ffsll = false;
+        bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
+        bool is_setjmp = false, is_longjmp = false;
+        bool is_signbit = false, is_abs_builtin = false;
+        bool is_add_overflow = false, is_sub_overflow = false;
+        bool is_mul_overflow = false, is_mul_overflow_p = false;
+        if (maybe_builtin) {
+            is_bswap16 = call_target == bi_bswap16;
+            is_bswap32 = call_target == bi_bswap32;
+            is_bswap64 = call_target == bi_bswap64;
+            is_clz = call_target == bi_clz;
+            is_clzl = call_target == bi_clzl;
+            is_clzll = call_target == bi_clzll;
+            is_ctz = call_target == bi_ctz;
+            is_ctzl = call_target == bi_ctzl;
+            is_ctzll = call_target == bi_ctzll;
+            is_popcnt = call_target == bi_popcount;
+            is_popcntl = call_target == bi_popcountl;
+            is_popcntll = call_target == bi_popcountll;
+            is_parity = call_target == bi_parity;
+            is_parityl = call_target == bi_parityl;
+            is_parityll = call_target == bi_parityll;
+            is_clrsb = call_target == bi_clrsb;
+            is_clrsbl = call_target == bi_clrsbl;
+            is_clrsbll = call_target == bi_clrsbll;
+            is_ffs = call_target == bi_ffs;
+            is_ffsl = call_target == bi_ffsl;
+            is_ffsll = call_target == bi_ffsll;
+            is_prefetch = call_target == bi_prefetch;
+            is_frame_addr = call_target == bi_frame_address;
+            is_ret_addr = call_target == bi_return_address;
+            is_setjmp = call_target == bi_setjmp;
+            is_longjmp = call_target == bi_longjmp;
+            is_signbit = call_target == bi_signbit ||
+                call_target == bi_signbitf ||
+                call_target == bi_signbitl;
+            is_abs_builtin = call_target == bi_abs ||
+                call_target == bi_labs ||
+                call_target == bi_llabs ||
+                call_target == bi_s_abs ||
+                call_target == bi_s_labs ||
+                call_target == bi_s_llabs;
+            is_add_overflow = call_target == bi_add_overflow;
+            is_sub_overflow = call_target == bi_sub_overflow;
+            is_mul_overflow = call_target == bi_mul_overflow;
+            is_mul_overflow_p = call_target == bi_mul_overflow_p;
+        }
 
         if (is_bswap16 || is_bswap32 || is_bswap64) {
             Node *arg = node->args;
@@ -1084,18 +1183,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #endif
     if (call_target && !has_hidden_retbuf && !skip_builtins) {
         // Inline expansion for common libc builtins
-        bool is_memset = strcmp(call_target, "memset") == 0 ||
-            strcmp(call_target, "__builtin_memset") == 0;
-        bool is_memcpy = strcmp(call_target, "memcpy") == 0 ||
-            strcmp(call_target, "__builtin_memcpy") == 0;
-        bool is_memcmp = strcmp(call_target, "memcmp") == 0 ||
-            strcmp(call_target, "__builtin_memcmp") == 0;
-        bool is_strlen = strcmp(call_target, "strlen") == 0 ||
-            strcmp(call_target, "__builtin_strlen") == 0;
-        bool is_strcmp = strcmp(call_target, "strcmp") == 0 ||
-            strcmp(call_target, "__builtin_strcmp") == 0;
-        bool is_strchr = strcmp(call_target, "strchr") == 0 ||
-            strcmp(call_target, "__builtin_strchr") == 0;
+        bool is_memset = call_target == bi_s_memset || call_target == bi_memset;
+        bool is_memcpy = call_target == bi_s_memcpy || call_target == bi_memcpy;
+        bool is_memcmp = call_target == bi_s_memcmp || call_target == bi_memcmp;
+        bool is_strlen = call_target == bi_s_strlen || call_target == bi_strlen;
+        bool is_strcmp = call_target == bi_s_strcmp || call_target == bi_strcmp;
+        bool is_strchr = call_target == bi_s_strchr || call_target == bi_strchr;
 
         if (is_memset || is_memcpy) {
             Node *dst = node->args;
