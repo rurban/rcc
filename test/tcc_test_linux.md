@@ -5,8 +5,8 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 105
-- **Failed**: 47
+- **Passed**: 106
+- **Failed**: 46
 - **Pass Rate**: 69%
 
 ## Detailed Results
@@ -93,7 +93,7 @@ Generated: May 2026
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | EXEC_FAIL    | non-zero exit                 |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
-| 92_enum_bitfield            | MISMATCH     | Output does not match .expect |
+| 92_enum_bitfield            | PASS         | Output matches                |
 | 93_integer_promotion        | MISMATCH     | Output does not match .expect |
 | 94_generic                  | PASS         | Output matches                |
 | 95_bitfields                | EXEC_FAIL    | non-zero exit                 |

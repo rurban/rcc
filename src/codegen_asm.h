@@ -384,16 +384,27 @@ static size_t asm_mov_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
 #endif
 }
 
-// Move ARM64 physical x0 (integer return register) to virtual register r
+// Move return register (x0/rax) to virtual register r
 static size_t asm_mov_retval(SecBuf *s, int r, int size) {
+    size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     secbuf_emit32le(s, arm64_orr_reg(sf, CG_ARM_REG(r), ARM64_XZR, 0, ARM64_LSL, 0)); // mov x{r}, x0
-    return 4;
 #else
-    x86_mov_rr(s, size, CG_X86_REG(r), X86_RAX);
-    return s->len - s->len; // size computed by caller
+    x86_mov_rr(s, size, CG_X86_REG(r), X86_RAX); // mov %rax/%eax, rr
 #endif
+    return s->len - off;
+}
+// Move virtual register r to return register (x0/rax)
+static size_t asm_mov_reg_to_retval(SecBuf *s, int r, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_orr_reg(sf, 0, ARM64_XZR, CG_ARM_REG(r), ARM64_LSL, 0)); // mov x0, x{r}
+#else
+    x86_mov_rr(s, size, X86_RAX, CG_X86_REG(r)); // mov rr, %rax
+#endif
+    return s->len - off;
 }
 static size_t asm_mov_imm(SecBuf *s, VReg r, int size, int64_t imm) {
     size_t off = s->len;
@@ -1129,6 +1140,13 @@ static size_t asm_sub_rsp_imm(SecBuf *s, int32_t imm) {
     asm_record(ASM_SUB_RI, off, s->len - off, (int)X86_RSP, -1, -1, 8, imm, 0, NULL, 0, -1, false);
     return s->len - off;
 }
+// addq $imm, %rsp  (function epilogue stack deallocation)
+static size_t asm_add_rsp_imm(SecBuf *s, int32_t imm) {
+    size_t off = s->len;
+    x86_add_ri(s, 8, X86_RSP, imm); // addq $imm, %rsp
+    asm_record(ASM_ADD_RI, off, s->len - off, (int)X86_RSP, -1, -1, 8, imm, 0, NULL, 0, -1, false);
+    return s->len - off;
+}
 // store immediate to rbp-relative: movb/movl/movq $imm, -offset(%rbp)
 static size_t asm_mov_rbp_imm(SecBuf *s, int size, int offset, int32_t imm) {
     size_t off = s->len;
@@ -1175,6 +1193,14 @@ static size_t asm_mov_base_off_reg(SecBuf *s, VReg dst, VReg base, int64_t disp,
     X86Mem m = {CG_X86_REG(base), X86_NOREG, 1, disp};
     x86_mov_rm(s, sz, CG_X86_REG(dst), m); // movl/movq disp(base), dst
     asm_record(ASM_MOV_RR, off, s->len - off, dst, base, -1, sz, 0, disp, NULL, 0, -1, false);
+    return s->len - off;
+}
+// movq phy, disp(base_vreg): store physical reg to base+offset
+static size_t asm_mov_phy_base_off(SecBuf *s, X86Reg phy, VReg base, int64_t disp, int sz) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_REG(base), X86_NOREG, 1, disp};
+    x86_mov_mr(s, sz, m, phy); // movq phy, disp(%base)
+    asm_record(ASM_MOV_RR, off, s->len - off, (int)phy, base, -1, sz, 0, disp, NULL, 0, -1, true);
     return s->len - off;
 }
 // setcc to physical reg (e.g. sete %al for compare+setne into RAX)
@@ -1560,6 +1586,22 @@ static size_t asm_rev16(SecBuf *s, int r, int size) {
 // Floating point
 // ============================================================================
 
+static size_t asm_cvtsi2ss(SecBuf *s, VReg src_r, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    secbuf_emit32le(s, arm64_scvtf(size == 8, 0, 0, CG_ARM_REG(src_r)));
+    // ARM64: single-precision uses same scvtf path as double for now
+#else
+    x86_cvtsi2ss(s, size, X86_XMM0, CG_X86_REG(src_r)); // cvtsi2ss rr, %xmm0
+#endif
+    return s->len - off;
+}
+// cvtsi2ss from physical register (e.g. %rcx for unsigned 64-bit path)
+static size_t asm_cvtsi2ss_phy(SecBuf *s, X86Reg src, int size) {
+    size_t off = s->len;
+    x86_cvtsi2ss(s, size, X86_XMM0, src); // cvtsi2ss src, %xmm0
+    return s->len - off;
+}
 static size_t asm_cvtsi2sd(SecBuf *s, VReg src_r, int size) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
