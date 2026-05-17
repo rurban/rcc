@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 154
-- **Passed**: 105
-- **Failed**: 49
-- **Pass Rate**: 68%
+- **Passed**: 107
+- **Failed**: 47
+- **Pass Rate**: 69%
 
 ## Detailed Results
 
@@ -47,7 +47,7 @@ Generated: May 2026
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
 | 33_ternary_op               | COMPILE_FAIL | rcc returned non-zero         |
-| 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
+| 34_array_assignment         | MISMATCH     | Output does not match .expect |
 | 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
 | 36_array_initialisers       | PASS         | Output matches                |
 | 37_sprintf                  | PASS         | Output matches                |
@@ -132,13 +132,13 @@ Generated: May 2026
 | 127_asm_goto                | SKIP         | Skipped                       |
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
 | 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
-| 130_large_argument          | MISMATCH     | Output does not match .expect |
+| 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | PASS         | Output matches                |
 | 133_old_func                | MISMATCH     | Output does not match .expect |
 | 134_double_to_signed        | MISMATCH     | Output does not match .expect |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
-| 136_atomic_gcc_style        | EXEC_FAIL    | non-zero exit                 |
+| 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | EXEC_FAIL    | non-zero exit                 |
 | 139_arm64_errors            | PASS         | Output matches                |
@@ -146,8 +146,8 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | COMPILE_FAIL | rcc returned non-zero         |
 | test_arm64_asm              | PASS         | exit=132                      |
-| test_atomic_op              | PASS         | exit=124                      |
-| test_atomic_op2             | PASS         | exit=124                      |
+| test_atomic_op              | PASS         | exit=139                      |
+| test_atomic_op2             | PASS         | exit=139                      |
 | test_bitfields              | PASS         | exit=132                      |
 | test_builtins               | PASS         | exit=0                        |
 | test_elif2                  | PASS         | exit=0                        |

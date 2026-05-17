@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 101
-- **Failed**: 50
-- **Pass Rate**: 66%
+- **Passed**: 102
+- **Failed**: 49
+- **Pass Rate**: 67%
 
 ## Detailed Results
 
@@ -48,7 +48,7 @@ Generated: May 2026
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
 | 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
 | 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
-| 35_sizeof                   | PASS         | Output matches                |
+| 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
 | 36_array_initialisers       | PASS         | Output matches                |
 | 37_sprintf                  | PASS         | Output matches                |
 | 38_multiple_array_index     | PASS         | Output matches                |
@@ -84,7 +84,7 @@ Generated: May 2026
 | 80_flexarray                | EXEC_FAIL    | non-zero exit                 |
 | 81_types                    | PASS         | Output matches                |
 | 82_attribs_position         | PASS         | Output matches                |
-| 83_utf8_in_identifiers      | MISMATCH     | Output does not match .expect |
+| 83_utf8_in_identifiers      | PASS         | Output matches                |
 | 84_hex-float                | PASS         | Output matches                |
 | 85_asm-outside-function     | COMPILE_FAIL | rcc returned non-zero         |
 | 86_memory-model             | PASS         | Output matches                |
@@ -112,7 +112,7 @@ Generated: May 2026
 | 107_stack_safe              | PASS         | Output matches                |
 | 108_constructor             | MISMATCH     | Output does not match .expect |
 | 109_float_struct_calling    | MISMATCH     | Output does not match .expect |
-| 110_average                 | MISMATCH     | Output does not match .expect |
+| 110_average                 | PASS         | Output matches                |
 | 111_conversion              | MISMATCH     | Output does not match .expect |
 | 112_backtrace               | SKIP         | Skipped                       |
 | 113_btdll                   | SKIP         | Skipped                       |
@@ -146,8 +146,8 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | MISMATCH     | Output does not match .expect |
 | test_arm64_asm              | SKIP         | Skipped                       |
-| test_atomic_op              | PASS         | exit=0                        |
-| test_atomic_op2             | PASS         | exit=0                        |
+| test_atomic_op              | PASS         | exit=5                        |
+| test_atomic_op2             | PASS         | exit=5                        |
 | test_bitfields              | PASS         | exit=0                        |
 | test_builtins               | PASS         | exit=0                        |
 | test_elif2                  | PASS         | exit=0                        |

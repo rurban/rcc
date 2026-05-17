@@ -199,6 +199,17 @@ void x86_mov_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
         emit_imm32(s, imm);
 }
 
+void x86_add_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
+    int needrex = (size == 8) || dst.base > 7 || (dst.index != X86_NOREG && dst.index > 7);
+    if (needrex) emit1(s, rex(size == 8, 0, dst.index > 7, dst.base > 7));
+    emit1(s, opsize(0x80, size)); // 0x80=r/m8 imm8; 0x81=r/m imm32; 0x83=r/m imm8-sign
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 0); // /0 = ADD
+    if (size == 1) emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
 void x86_or_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > 7 || (dst.index != X86_NOREG && dst.index > 7);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > 7, dst.base > 7));

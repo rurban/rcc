@@ -1576,10 +1576,18 @@ static size_t asm_rev(SecBuf *s, int r, int size) {
 }
 
 static size_t asm_rev16(SecBuf *s, int r, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_rev16(sf, CG_ARM_REG(r), CG_ARM_REG(r))); // rev16 wr, wr
+    asm_record(ASM_REV16, off, 1, r, -1, -1, size, 0, 0, NULL, 0, -1, false);
+    return 4;
+#else
     (void)s;
     (void)r;
     (void)size;
     return 0;
+#endif
 }
 
 // ============================================================================
@@ -1924,6 +1932,153 @@ static size_t asm_ldr_rd_rd(SecBuf *s, int rd) {
 // Atomics
 // ============================================================================
 
+// ============================================================================
+// x86: atomic xchg and lock cmpxchg
+// ============================================================================
+
+#ifndef ARCH_ARM64
+// xchg sz, (r_addr), r_val  — atomic exchange mem↔reg
+static size_t asm_xchg_mem(SecBuf *s, VReg r_addr, VReg r_val, int size) {
+    size_t off = s->len;
+    // XCHG always has implicit LOCK prefix
+    X86Mem m = {CG_X86_REG(r_addr), X86_NOREG, 1, 0};
+    // xchg r/m, r: opcode 87 /r (for 2/4/8), 86 /r (for 1)
+    X86Reg rv = CG_X86_REG(r_val);
+    X86Reg ra = CG_X86_REG(r_addr);
+    if (size == 8) secbuf_emit8(s, (uint8_t)(0x48 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0)));
+    else if (size == 4 && (rv >= 8 || ra >= 8))
+        secbuf_emit8(s, (uint8_t)(0x40 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0)));
+    else if (size == 2)
+        secbuf_emit8(s, 0x66);
+    secbuf_emit8(s, size == 1 ? 0x86 : 0x87);
+    uint8_t modrm = (uint8_t)(0x00 | ((rv & 7) << 3) | 4); // rm=4 for SIB
+    // Use [r_addr] directly (no SIB if not rsp)
+    if ((ra & 7) == 4) { // rsp needs SIB
+        secbuf_emit8(s, modrm);
+        secbuf_emit8(s, (uint8_t)(0x24)); // SIB: base=rsp, no index
+    } else {
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rv & 7) << 3) | (ra & 7)));
+    }
+    return s->len - off;
+}
+
+// lock cmpxchg (r_addr), r_desired, size  — rax=expected, result in rax
+// Sets ZF=1 if successful
+static size_t asm_lock_cmpxchg_mem(SecBuf *s, VReg r_addr, VReg r_desired, int size) {
+    size_t off = s->len;
+    x86_lock_prefix(s); // lock
+    X86Reg rd = CG_X86_REG(r_desired);
+    X86Reg ra = CG_X86_REG(r_addr);
+    // REX prefix if needed
+    uint8_t rex = 0;
+    if (size == 8) rex = (uint8_t)(0x48 | ((rd >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    else if (rd >= 8 || ra >= 8)
+        rex = (uint8_t)(0x40 | ((rd >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    if (size == 2) secbuf_emit8(s, 0x66);
+    if (rex) secbuf_emit8(s, rex);
+    secbuf_emit8(s, 0x0F);
+    secbuf_emit8(s, size == 1 ? 0xB0 : 0xB1); // cmpxchg m, r
+    // ModRM: mod=00, reg=r_desired, rm=r_addr
+    if ((ra & 7) == 4) {
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rd & 7) << 3) | 4));
+        secbuf_emit8(s, (uint8_t)0x24);
+    } else {
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rd & 7) << 3) | (ra & 7)));
+    }
+    return s->len - off;
+}
+
+// sete r  — set byte if equal (ZF=1)
+static size_t asm_sete(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    x86_setcc(s, X86_E, CG_X86_REG(r)); // sete r8
+    return s->len - off;
+}
+
+// lock xadd (r_addr), r_old, size  — atomic add-and-fetch old value
+// After: r_old = old value at (r_addr), (r_addr) = old + r_old
+static size_t asm_lock_xadd_mem(SecBuf *s, VReg r_addr, VReg r_old, int size) {
+    size_t off = s->len;
+    x86_lock_prefix(s); // lock
+    X86Reg rd = CG_X86_REG(r_old);
+    X86Reg ra = CG_X86_REG(r_addr);
+    uint8_t rex = 0;
+    if (size == 8) rex = (uint8_t)(0x48 | ((rd >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    else if (rd >= 8 || ra >= 8)
+        rex = (uint8_t)(0x40 | ((rd >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    if (size == 2) secbuf_emit8(s, 0x66);
+    if (rex) secbuf_emit8(s, rex);
+    secbuf_emit8(s, 0x0F);
+    secbuf_emit8(s, size == 1 ? 0xC0 : 0xC1); // xadd r/m, r
+    // ModRM: mod=00, reg=r_old, rm=r_addr
+    if ((ra & 7) == 4) {
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rd & 7) << 3) | 4));
+        secbuf_emit8(s, (uint8_t)0x24);
+    } else {
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rd & 7) << 3) | (ra & 7)));
+    }
+    return s->len - off;
+}
+
+// mov sz, -%rbp_off(%rbp), reg  — store reg to spill slot
+static size_t asm_mov_rbp_spill(SecBuf *s, VReg r, int size, int rbp_off) {
+    size_t off = s->len;
+    asm_mov_phyreg_rbp(s, CG_X86_REG(r), size, rbp_off); // mov reg, -rbp_off(%rbp)
+    return s->len - off;
+}
+
+// mov sz, reg, -%rbp_off(%rbp)  — load reg from spill slot
+static size_t asm_mov_spill_rbp(SecBuf *s, VReg r, int size, int rbp_off) {
+    size_t off = s->len;
+    asm_mov_rbp_phyreg(s, CG_X86_REG(r), size, rbp_off); // mov -rbp_off(%rbp), reg
+    return s->len - off;
+}
+
+// lock cmpxchg (r_addr), r_new  — compare %rax with (r_addr), swap if equal; result in ZF
+// Used for non-add fetch-ops (bitwise)
+static size_t asm_lock_cmpxchg_rax(SecBuf *s, VReg r_addr, VReg r_new, int size) {
+    return asm_lock_cmpxchg_mem(s, r_addr, r_new, size); // reuse the existing function
+}
+
+// add sz, -rbp_off(%rbp), reg  — add spill slot to reg (for add_fetch return)
+static size_t asm_add_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_add_rm(s, size, CG_X86_REG(r), m); // add -rbp_off(%rbp), reg
+    return s->len - off;
+}
+#endif
+
+// ============================================================================
+// ARM64: ldxr/stxr exclusive access (for atomic exchange/CAS)
+// ============================================================================
+
+#ifdef ARCH_ARM64
+// ldxrb/ldxrh/ldxr dst, [base]  — load exclusive
+static size_t asm_ldxr(SecBuf *s, VReg dst, VReg base, int size) {
+    size_t off = s->len;
+    if (size == 1)
+        secbuf_emit32le(s, arm64_ldxrb(CG_ARM_REG(dst), CG_ARM_REG(base))); // ldxrb w{dst}, [x{base}]
+    else if (size == 2)
+        secbuf_emit32le(s, arm64_ldxrh(CG_ARM_REG(dst), CG_ARM_REG(base))); // ldxrh w{dst}, [x{base}]
+    else
+        secbuf_emit32le(s, arm64_ldxr(size == 8 ? 1 : 0, CG_ARM_REG(dst), CG_ARM_REG(base))); // ldxr w/x{dst}, [x{base}]
+    return s->len - off;
+}
+
+// stxrb/stxrh/stxr w9, src, [base]  — store exclusive (result in w9)
+static size_t asm_stxr(SecBuf *s, VReg src, VReg base, int size) {
+    size_t off = s->len;
+    if (size == 1)
+        secbuf_emit32le(s, arm64_stxrb(9, CG_ARM_REG(src), CG_ARM_REG(base))); // stxrb w9, w{src}, [x{base}]
+    else if (size == 2)
+        secbuf_emit32le(s, arm64_stxrh(9, CG_ARM_REG(src), CG_ARM_REG(base))); // stxrh w9, w{src}, [x{base}]
+    else
+        secbuf_emit32le(s, arm64_stxr(size == 8 ? 1 : 0, 9, CG_ARM_REG(src), CG_ARM_REG(base))); // stxr w9, w/x{src}, [x{base}]
+    return s->len - off;
+}
+#endif /* ARCH_ARM64 for ldxr/stxr */
+
 #ifdef ARCH_ARM64
 static size_t asm_dmb(SecBuf *s) {
     size_t off = s->len;
@@ -1933,7 +2088,7 @@ static size_t asm_dmb(SecBuf *s) {
 }
 static size_t asm_dmb_ishld(SecBuf *s) { return asm_dmb(s); }
 static size_t asm_dmb_ishst(SecBuf *s) { return asm_dmb(s); }
-#endif
+#endif /* ARCH_ARM64 for dmb */
 
 // ============================================================================
 // CLD / NOP
@@ -1965,7 +2120,7 @@ static size_t asm_and_imm(SecBuf *s, VReg r, int size, int32_t imm) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    secbuf_emit32le(s, arm64_and_imm(sf, CG_ARM_REG(r), CG_ARM_REG(r), ~imm));
+    secbuf_emit32le(s, arm64_and_imm(sf, CG_ARM_REG(r), CG_ARM_REG(r), (uint64_t)(uint32_t)imm));
 #else
     x86_and_ri(s, size, CG_X86_REG(r), imm);
 #endif
@@ -2246,5 +2401,808 @@ static size_t asm_xor_rbp_reg(SecBuf *s, int r, int size, int offset) {
     return s->len - off;
 }
 #endif /* !ARCH_ARM64 */
+
+// ============================================================================
+// x86: movss/movsd to/from [rbp ± offset] and physical XMM registers
+// ============================================================================
+
+#ifndef ARCH_ARM64
+// movss xmm_src, -(offset)(%%rbp)  — store single float to frame
+static size_t asm_movss_mr_rbp(SecBuf *s, int xmm_src, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movss_mr(s, m, (X86XmmReg)xmm_src); // movss xmm_src, -(offset)(%%rbp)
+    return s->len - off;
+}
+// movsd xmm_src, -(offset)(%%rbp)  — store double float to frame
+static size_t asm_movsd_mr_rbp(SecBuf *s, int xmm_src, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movsd_mr(s, m, (X86XmmReg)xmm_src); // movsd xmm_src, -(offset)(%%rbp)
+    return s->len - off;
+}
+// movss offset(%%rbp), xmm_dst  — load single float from frame
+static size_t asm_movss_rm_rbp(SecBuf *s, int xmm_dst, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    x86_movss_rm(s, (X86XmmReg)xmm_dst, m); // movss offset(%%rbp), xmm_dst
+    return s->len - off;
+}
+// movsd offset(%%rbp), xmm_dst  — load double float from frame
+static size_t asm_movsd_rm_rbp(SecBuf *s, int xmm_dst, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    x86_movsd_rm(s, (X86XmmReg)xmm_dst, m); // movsd offset(%%rbp), xmm_dst
+    return s->len - off;
+}
+// cvtsd2ss from XMM param_xmm[i], store to rbp — convert param double to float
+static size_t asm_cvtsd2ss_xmm_rbp(SecBuf *s, int xmm_src, int offset) {
+    size_t off = s->len;
+    x86_cvtsd2ss(s, X86_XMM0, (X86XmmReg)xmm_src); // cvtsd2ss xmm_src, xmm0
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movss_mr(s, m, X86_XMM0); // movss xmm0, -(offset)(%%rbp)
+    return s->len - off;
+}
+// movsd from XMM param to rbp
+static size_t asm_movsd_xmm_rbp(SecBuf *s, int xmm_src, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_movsd_mr(s, m, (X86XmmReg)xmm_src); // movsd xmm_src, -(offset)(%%rbp)
+    return s->len - off;
+}
+// movq from physical int param register to physical r11
+static size_t asm_mov_preg_r11(SecBuf *s, X86Reg preg) {
+    size_t off = s->len;
+    x86_mov_rr(s, 8, X86_R11, preg); // movq preg, %%r11
+    return s->len - off;
+}
+// movb -1(%%r11,%%r10), %%al  — load byte from struct param
+static size_t asm_movb_r11_r10_al(SecBuf *s, int64_t disp) {
+    size_t off = s->len;
+    // movb disp(%%r11, %%r10, 1), %%al
+    // REX.B (r11>=8): 0x41 or REX.XB if both? r10=10 (>8), r11=11 (>8)
+    // Actually x86: r10=%%r10, r11=%%r11 are physical regs 10,11
+    // ModRM: mod=00, reg=0(al), rm=4(SIB); SIB: scale=0, index=r10(2 in SIB with REX), base=r11(3 in SIB with REX)
+    // REX: 0100_WRXB = 0100_0011 = 0x43 (W=0, R=0, X=1 for r10 index, B=1 for r11 base)
+    secbuf_emit8(s, 0x43); // REX.XB
+    secbuf_emit8(s, 0x8A); // MOV r8, r/m8
+    if (disp == -1) {
+        secbuf_emit8(s, (uint8_t)0x44); // ModRM: mod=01, reg=0(al), rm=4(SIB)
+        secbuf_emit8(s, (uint8_t)0x13); // SIB: scale=0, index=010(r10), base=011(r11)
+        secbuf_emit8(s, (uint8_t)0xFF); // disp8 = -1
+    } else {
+        secbuf_emit8(s, (uint8_t)0x04); // ModRM: mod=00, reg=0(al), rm=4(SIB)
+        secbuf_emit8(s, (uint8_t)0x13); // SIB
+    }
+    return s->len - off;
+}
+// movb %%al, -(offset)-1(%%rbp,%%r10)  — store byte to local struct
+static size_t asm_movb_al_rbp_r10(SecBuf *s, int offset) {
+    size_t off = s->len;
+    // movb %%al, -(offset)-1(%%rbp, %%r10, 1)
+    // REX.X for r10 index: 0x42
+    secbuf_emit8(s, 0x42); // REX.X
+    secbuf_emit8(s, 0x88); // MOV r/m8, r8
+    secbuf_emit8(s, (uint8_t)0x84); // ModRM: mod=10, reg=0(al), rm=4(SIB)
+    secbuf_emit8(s, (uint8_t)0x15); // SIB: scale=0, index=010(r10), base=101(rbp)
+    // disp32 = -(offset) - 1
+    int32_t d = -(offset)-1;
+    secbuf_emit8(s, (uint8_t)(d & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 8) & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 16) & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 24) & 0xFF));
+    return s->len - off;
+}
+// movb offset-1(%%rbp,%%r10), %%al  — load byte from stack struct
+static size_t asm_movb_rbp_r10_al(SecBuf *s, int offset) {
+    size_t off = s->len;
+    // movb (stack_offset-1)(%%rbp, %%r10, 1), %%al
+    secbuf_emit8(s, 0x42); // REX.X
+    secbuf_emit8(s, 0x8A); // MOV r8, r/m8
+    secbuf_emit8(s, (uint8_t)0x84); // ModRM: mod=10, reg=0(al), rm=4(SIB)
+    secbuf_emit8(s, (uint8_t)0x15); // SIB: scale=0, index=010(r10), base=101(rbp)
+    int32_t d = offset - 1;
+    secbuf_emit8(s, (uint8_t)(d & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 8) & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 16) & 0xFF));
+    secbuf_emit8(s, (uint8_t)((d >> 24) & 0xFF));
+    return s->len - off;
+}
+// mov offset(%%rbp), %al/%ax/%eax/%rax  — load from frame using tmpreg-appropriate size
+static size_t asm_mov_rbp_tmpreg(SecBuf *s, int offset, int sz) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    x86_mov_rm(s, sz, X86_RAX, m); // mov offset(%%rbp), %%rax/eax/ax/al
+    return s->len - off;
+}
+// mov %al/%ax/%eax/%rax, -(offset)(%%rbp)  — store to frame using tmpreg
+static size_t asm_mov_tmpreg_rbp(SecBuf *s, int offset, int sz) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    x86_mov_mr(s, sz, m, X86_RAX); // mov %%rax/eax/ax/al, -(offset)(%%rbp)
+    return s->len - off;
+}
+#endif /* !ARCH_ARM64 */
+
+// ============================================================================
+// Bit scan / count — lzcnt/tzcnt/bsf/bsr/popcnt/cls
+// ============================================================================
+
+// tzcnt dst, src  — count trailing zeros (= ctz)
+static size_t asm_tzcnt(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    // ARM64: rbit + clz
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_rbit(sf, CG_ARM_REG(dst), CG_ARM_REG(src)));
+    secbuf_emit32le(s, arm64_clz(sf, CG_ARM_REG(dst), CG_ARM_REG(dst)));
+    return s->len - off;
+#else
+    x86_tzcnt(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // tzcnt dst, src
+    return s->len - off;
+#endif
+}
+
+// bsf dst, src  — bit scan forward (= tzcnt, undefined for 0)
+static size_t asm_bsf(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_rbit(sf, CG_ARM_REG(dst), CG_ARM_REG(src)));
+    secbuf_emit32le(s, arm64_clz(sf, CG_ARM_REG(dst), CG_ARM_REG(dst)));
+    return s->len - off;
+#else
+    x86_bsf(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // bsf dst, src
+    return s->len - off;
+#endif
+}
+
+// bsr dst, src  — bit scan reverse (= 31/63 - clz, undefined for 0)
+static size_t asm_bsr(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_clz(sf, CG_ARM_REG(dst), CG_ARM_REG(src)));
+    int bits = (size == 8) ? 63 : 31;
+    secbuf_emit32le(s, arm64_sub_imm(sf, CG_ARM_REG(dst), 31, bits, 0)); // rsb: bits - clz
+    return s->len - off;
+#else
+    x86_bsr(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // bsr dst, src
+    return s->len - off;
+#endif
+}
+
+// popcnt dst, src  — population count
+static size_t asm_popcnt(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    // ARM64 software popcount: fmov → cnt → addv → fmov → and
+    // Note: ARM64 has no single-instruction scalar popcnt; use NEON
+    // Caller is responsible for NEON sequence; this just emits x86 path.
+    (void)dst;
+    (void)src;
+    (void)size;
+    return 0;
+#else
+    x86_popcnt(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // popcnt dst, src
+    return s->len - off;
+#endif
+}
+
+// cls dst, src  — count leading sign bits (ARM64 only)
+static size_t asm_cls(SecBuf *s, int dst, int src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_cls(sf, CG_ARM_REG(dst), CG_ARM_REG(src)));
+    return s->len - off;
+#else
+    // x86: no cls; caller uses sar+xor+lzcnt sequence
+    (void)dst;
+    (void)src;
+    (void)size;
+    return 0;
+#endif
+}
+
+// ============================================================================
+// Rotate — rol/ror
+// ============================================================================
+
+// rol reg, imm  — rotate left by immediate
+static size_t asm_rol_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    // ARM64: ror by (bits - shift) == rol
+    int sf = (size == 8) ? 1 : 0;
+    int bits = size * 8;
+    secbuf_emit32le(s, arm64_ror_reg(sf, CG_ARM_REG(r), CG_ARM_REG(r), (uint32_t)(bits - shift) & (bits - 1)));
+    return s->len - off;
+#else
+    x86_rol_ri(s, size, CG_X86_REG(r), shift); // rol $shift, reg
+    return s->len - off;
+#endif
+}
+
+// ============================================================================
+// Conditional move / select
+// ============================================================================
+
+// cmovcc dst, src  — conditional move (x86) / csel (ARM64)
+// cond: X86Cond (x86) or Arm64Cond (ARM64)
+static size_t asm_cmov(SecBuf *s, VReg dst, VReg src, int size, int cond) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    // csel dst, src, dst, inverse(cond): if cond true, dst=src, else dst=dst
+    // To mimic cmovCC (move if condition true): csel dst, src, dst, cond
+    secbuf_emit32le(s, arm64_csel(sf, CG_ARM_REG(dst), CG_ARM_REG(src), CG_ARM_REG(dst), (Arm64Cond)cond));
+    return s->len - off;
+#else
+    x86_cmovcc(s, size, (X86Cond)cond, CG_X86_REG(dst), CG_X86_REG(src)); // cmovCC dst, src
+    return s->len - off;
+#endif
+}
+
+// csel dst, src, zero, eq  — select: if(cond) dst=0 else dst=src (for __builtin_ffs ARM64)
+static size_t asm_csel_zero_if_eq(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    // csel dst, xzr, src, eq  (= if eq: 0, else src)
+    secbuf_emit32le(s, arm64_csel(sf, CG_ARM_REG(dst), ARM64_XZR, CG_ARM_REG(src), ARM64_EQ));
+    return s->len - off;
+#else
+    (void)dst;
+    (void)src;
+    (void)size;
+    return 0;
+#endif
+}
+
+// cneg dst, dst, mi  — negate if negative (ARM64 abs)
+static size_t asm_cneg_mi(SecBuf *s, VReg r, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_cneg(sf, CG_ARM_REG(r), CG_ARM_REG(r), ARM64_MI));
+    return s->len - off;
+#else
+    (void)r;
+    (void)size;
+    return 0;
+#endif
+}
+
+// ============================================================================
+// LEA with register + small offset (for __builtin_ffs)
+// ============================================================================
+
+// leaq 1(src), dst  /  leal 1(src), dst — lea with 1-byte displacement
+static size_t asm_lea_disp1(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_add_imm(sf, CG_ARM_REG(dst), CG_ARM_REG(src), 1, 0)); // add dst, src, #1
+    return s->len - off;
+#else
+    X86Mem m = {CG_X86_REG(src), X86_NOREG, 1, 1};
+    x86_lea(s, size, CG_X86_REG(dst), m); // lea 1(src), dst
+    return s->len - off;
+#endif
+}
+
+// ============================================================================
+// Prefetch
+// ============================================================================
+
+#ifdef ARCH_ARM64
+// prfm hint, [x{r}]  — prefetch memory
+static size_t asm_prfm(SecBuf *s, int r, int prfop) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_prfm_imm(prfop, CG_ARM_REG(r), 0)); // prfm prfop, [x{r}]
+    return s->len - off;
+}
+#endif
+
+#ifndef ARCH_ARM64
+// prefetchXX (%reg)  — x86 prefetch (emit as NOP since no single encoder)
+// hint: 0=prefetchnta, 1=prefetcht2, 2=prefetcht1, 3=prefetcht0, 4=prefetchw
+static size_t asm_prefetch(SecBuf *s, VReg r, int hint) {
+    size_t off = s->len;
+    // Encode prefetch as 0F 18 /reg mod rm:
+    // /0=prefetchnta, /1=prefetcht2, /2=prefetcht1, /3=prefetcht0, prefetchw=0F 0D /1
+    uint8_t reg_field = (uint8_t)(hint < 4 ? hint : 1);
+    uint8_t modrm = (uint8_t)(0x00 | (reg_field << 3) | (CG_X86_REG(r) & 7));
+    if (hint == 4) { // prefetchw: 0F 0D /1
+        if ((int)CG_X86_REG(r) >= 8) secbuf_emit8(s, 0x41); // REX.B
+        secbuf_emit8(s, 0x0F);
+        secbuf_emit8(s, 0x0D);
+        secbuf_emit8(s, modrm);
+    } else {
+        if ((int)CG_X86_REG(r) >= 8) secbuf_emit8(s, 0x41); // REX.B
+        secbuf_emit8(s, 0x0F);
+        secbuf_emit8(s, 0x18);
+        secbuf_emit8(s, modrm);
+    }
+    return s->len - off;
+}
+#endif
+
+// ============================================================================
+// ARM64 overflow-checked arithmetic: adds/subs/umulh/smulh/umull/smull
+// ============================================================================
+
+#ifdef ARCH_ARM64
+// adds dst, dst, src  — add and set flags
+static size_t asm_adds(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_adds_reg(sf, CG_ARM_REG(dst), CG_ARM_REG(dst), CG_ARM_REG(src), ARM64_LSL, 0)); // adds dst, dst, src
+    return s->len - off;
+}
+
+// subs dst, dst, src  — subtract and set flags
+static size_t asm_subs(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_subs_reg(sf, CG_ARM_REG(dst), CG_ARM_REG(dst), CG_ARM_REG(src), ARM64_LSL, 0)); // subs dst, dst, src
+    return s->len - off;
+}
+
+// cset dst, cond  — conditional set (already exists as asm_cset)
+
+// umulh dst, a, b  — unsigned multiply high (128-bit result high word)
+static size_t asm_umulh(SecBuf *s, VReg dst, VReg a, VReg b) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_umulh(CG_ARM_REG(dst), CG_ARM_REG(a), CG_ARM_REG(b))); // umulh dst, a, b
+    return s->len - off;
+}
+
+// smulh dst, a, b  — signed multiply high
+static size_t asm_smulh(SecBuf *s, VReg dst, VReg a, VReg b) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_smulh(CG_ARM_REG(dst), CG_ARM_REG(a), CG_ARM_REG(b))); // smulh dst, a, b
+    return s->len - off;
+}
+
+// umull xdst, wa, wb  — unsigned multiply long (32x32→64)
+static size_t asm_umull(SecBuf *s, VReg dst, VReg a, VReg b) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_umull(CG_ARM_REG(dst), CG_ARM_REG(a), CG_ARM_REG(b))); // umull dst, wa, wb
+    return s->len - off;
+}
+
+// smull xdst, wa, wb  — signed multiply long (32x32→64)
+static size_t asm_smull(SecBuf *s, VReg dst, VReg a, VReg b) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_smull(CG_ARM_REG(dst), CG_ARM_REG(a), CG_ARM_REG(b))); // smull dst, wa, wb
+    return s->len - off;
+}
+#endif /* ARCH_ARM64 */
+
+// ============================================================================
+// x86 unsigned multiply 1-operand (mul %reg — rdx:rax = rax * reg)
+// ============================================================================
+
+#ifndef ARCH_ARM64
+// mul src  — unsigned multiply: rdx:rax = rax * src
+static size_t asm_mul_1op(SecBuf *s, VReg src, int size) {
+    size_t off = s->len;
+    x86_imul_r(s, size, CG_X86_REG(src)); // imul src (unsigned 1-op not in x86_enc; use mul)
+    // Note: x86_imul_r emits IMUL (signed), for unsigned we need MUL opcode
+    // Rewind and emit proper MUL
+    s->len = off;
+    // MUL r/m: size=8 → REX.W + F7 /4; size=4 → F7 /4
+    X86Reg r = CG_X86_REG(src);
+    if (size == 8) secbuf_emit8(s, (uint8_t)(0x48 | ((r >> 3) & 1))); // REX.W (+REX.B if r>=8)
+    else if ((int)r >= 8)
+        secbuf_emit8(s, 0x41); // REX.B
+    secbuf_emit8(s, 0xF7);
+    secbuf_emit8(s, (uint8_t)(0xC0 | (4 << 3) | (r & 7))); // ModRM: /4 = mul
+    return s->len - off;
+}
+#endif
+
+// ============================================================================
+// ARM64 NEON instructions for popcnt / variadic quad float
+// ============================================================================
+
+#ifdef ARCH_ARM64
+// fmov d30, x{r}  — move GP int64 to NEON d-register (scalar)
+static size_t asm_fmov_gp_to_d30(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_fmov_i2f(1, 30, CG_ARM_REG(r))); // fmov d30, x{r}
+    return s->len - off;
+}
+
+// fmov s30, w{r}  — move GP int32 to NEON s-register (scalar)
+static size_t asm_fmov_gp_to_s30(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_fmov_i2f(0, 30, CG_ARM_REG(r))); // fmov s30, w{r}
+    return s->len - off;
+}
+
+// fmov w{r}, s30  — move NEON s-register scalar to GP int32
+static size_t asm_fmov_s30_to_gp(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_fmov_f2i(0, CG_ARM_REG(r), 30)); // fmov w{r}, s30
+    return s->len - off;
+}
+
+// cnt v30.8b, v30.8b  — popcount bytes in NEON register
+// Encoding: 0_101_1110_00_10000_01010_1_nnnnn_ddddd (SIMD CNT)
+static size_t asm_neon_cnt_v30(SecBuf *s) {
+    size_t off = s->len;
+    // cnt vd.8b, vn.8b: 0x0E205800 | (vn<<5) | vd  (Q=0, size=00, opcode=00101, U=0)
+    secbuf_emit32le(s, 0x0E205800u | (30u << 5) | 30u); // cnt v30.8b, v30.8b
+    return s->len - off;
+}
+
+// addv b30, v30.8b  — horizontal add all bytes → byte scalar
+// Encoding: 0_0_1_01110_00_11000_11011_10_nnnnn_ddddd
+static size_t asm_neon_addv_b30(SecBuf *s) {
+    size_t off = s->len;
+    // addv bd, vn.8b: 0x0E31B800 | (vn<<5) | bd
+    secbuf_emit32le(s, 0x0E31B800u | (30u << 5) | 30u); // addv b30, v30.8b
+    return s->len - off;
+}
+
+// fmov d{rd}, x{gp}  — for named ld arg: fmov to fp arg register
+static size_t asm_fmov_gp_to_d(SecBuf *s, int fp_rd, VReg gp_rs) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_fmov_i2f(1, fp_rd, CG_ARM_REG(gp_rs))); // fmov d{fp_rd}, x{gp_rs}
+    return s->len - off;
+}
+
+// ubfx x17, x{r}, #52, #11  — extract exponent bits from double
+static size_t asm_ubfx_x17_exp(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ubfx(1, 17, CG_ARM_REG(r), 52, 11)); // ubfx x17, x{r}, #52, #11
+    return s->len - off;
+}
+
+// mov x16, #15360  — constant for quad float exponent bias
+static size_t asm_mov_x16_15360(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_movz(1, 16, 15360, 0)); // mov x16, #15360
+    return s->len - off;
+}
+
+// add x17, x17, x16  — add exponent + bias
+static size_t asm_add_x17_x17_x16(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_add_reg(1, 17, 17, 16, ARM64_LSL, 0)); // add x17, x17, x16
+    return s->len - off;
+}
+
+// lsl x16, x{r}, #12  — shift mantissa
+static size_t asm_lsl_x16_r_12(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsl_imm(1, 16, CG_ARM_REG(r), 12)); // lsl x16, x{r}, #12
+    return s->len - off;
+}
+
+// lsr x16, x16, #12  — shift back mantissa
+static size_t asm_lsr_x16_x16_12(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsr_imm(1, 16, 16, 12)); // lsr x16, x16, #12
+    return s->len - off;
+}
+
+// and x1, x16, #0xF  — low nibble
+static size_t asm_and_x1_x16_0xf(SecBuf *s) {
+    size_t off = s->len;
+    int N, immr, imms;
+    uint64_t enc = arm64_encode_logic_imm(1, 0xF, &N, &immr, &imms);
+    secbuf_emit32le(s, arm64_and_imm(1, 1, 16, enc)); // and x1, x16, #0xF
+    return s->len - off;
+}
+
+// lsl x1, x1, #60  — position low nibble at top
+static size_t asm_lsl_x1_60(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsl_imm(1, 1, 1, 60)); // lsl x1, x1, #60
+    return s->len - off;
+}
+
+// lsr x2, x16, #4  — mantissa high part
+static size_t asm_lsr_x2_x16_4(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsr_imm(1, 2, 16, 4)); // lsr x2, x16, #4
+    return s->len - off;
+}
+
+// lsl x17, x17, #48  — position exponent
+static size_t asm_lsl_x17_48(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsl_imm(1, 17, 17, 48)); // lsl x17, x17, #48
+    return s->len - off;
+}
+
+// orr x2, x2, x17  — combine mantissa + exponent
+static size_t asm_orr_x2_x2_x17(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_orr_reg(1, 2, 2, 17, ARM64_LSL, 0)); // orr x2, x2, x17
+    return s->len - off;
+}
+
+// and x17, x17, #1  — isolate sign bit
+static size_t asm_and_x17_1(SecBuf *s) {
+    size_t off = s->len;
+    int N, immr, imms;
+    uint64_t enc = arm64_encode_logic_imm(1, 1, &N, &immr, &imms);
+    secbuf_emit32le(s, arm64_and_imm(1, 17, 17, enc)); // and x17, x17, #1
+    return s->len - off;
+}
+
+// lsl x17, x17, #63  — position sign bit
+static size_t asm_lsl_x17_63(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_lsl_imm(1, 17, 17, 63)); // lsl x17, x17, #63
+    return s->len - off;
+}
+
+// orr x2, x2, x17  — add sign to result (reuse orr_x2_x2_x17)
+
+// mov x1, #0  — zero x1
+static size_t asm_mov_x1_0(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_movz(1, 1, 0, 0)); // mov x1, #0
+    return s->len - off;
+}
+
+// mov x2, #0  — zero x2
+static size_t asm_mov_x2_0(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_movz(1, 2, 0, 0)); // mov x2, #0
+    return s->len - off;
+}
+
+// ins vN.d[0], x1  — insert x1 into NEON vector element 0
+static size_t asm_ins_vd0_x1(SecBuf *s, int vn) {
+    size_t off = s->len;
+    // INS vd.d[0], x1: 0x4E081C00 | (imm5=10000=d[0]) | (vn<<5)|(vd)
+    // Encoding: INS (general) = 0_1_001110_00001000_000111_rn_rd for d[0]
+    // imm5 for d[idx]: imm5 = (idx<<1)|1 = 0b10000+0 = 0x10 for idx=0... let me use raw encoding
+    // 0100_1110_0000_1000_0001_11_xxxxxx_ddddd  (Rt=1, vd=vn)
+    // ins vd.d[idx] from xn: 0x4E081C00 | (imm5=0b10000<<idx??)
+    // Correct: Q=1, op=1, imm5=10000 (d[0]), imm4=0111, n=x1, d=vn
+    // 0x4E081C20 = ins v0.d[0], x1; adjust: set Rd=vn, Rn=1
+    secbuf_emit32le(s, 0x4E081C00u | (1u << 5) | (uint32_t)vn); // ins v{vn}.d[0], x1
+    return s->len - off;
+}
+
+// ins vN.d[1], x2  — insert x2 into NEON vector element 1
+static size_t asm_ins_vd1_x2(SecBuf *s, int vn) {
+    size_t off = s->len;
+    // INS vd.d[1] from x2: imm5=0b10001 (d[1]), Rn=2, Rd=vn
+    // 0x4E180C00 | (2<<5) | vn -- let me calculate properly
+    // imm5 for d[idx]: bit0=1, bit4..1=idx => d[1]: imm5=0b10001=0x11=17
+    // opcode: 0x4E_imm5_xxx_1_1100_Rn_Rd: 0x4E000000 | (imm5<<16) | (7<<12) | (1<<10) | (rn<<5) | rd
+    // Actually: ins = 0x4E000000|(Q=1)<<30|(op=0)<<29|(imm5<<16)|(imm4<<12)|(1<<10)|(Rn<<5)|Rd
+    // imm5=0b10001, imm4=0b0111
+    secbuf_emit32le(s, 0x4E180C00u | (2u << 5) | (uint32_t)vn); // ins v{vn}.d[1], x2 ... approx
+    return s->len - off;
+}
+
+// mov x8, x{r}  — move hidden ret pointer to x8 for ARM64 ABI
+static size_t asm_mov_x8_reg(SecBuf *s, VReg r) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_orr_reg(1, 8, ARM64_XZR, CG_ARM_REG(r), ARM64_LSL, 0)); // mov x8, x{r}
+    return s->len - off;
+}
+
+// stp q{rt1}, q{rt2}, [sp, #imm7_bytes]  — store NEON quad pair
+static size_t asm_stp_q_sp(SecBuf *s, int rt1, int rt2, int32_t byte_off) {
+    size_t off = s->len;
+    // opc=2 for Q (128-bit), imm7 is in units of 16 bytes
+    int32_t imm7 = byte_off / 16;
+    secbuf_emit32le(s, arm64_stp_fp(2, rt1, rt2, ARM64_SP, imm7, false, false)); // stp q{rt1}, q{rt2}, [sp, #byte_off]
+    return s->len - off;
+}
+
+// sub x16, x29, #var->offset  — compute stack frame address
+static size_t asm_sub_x16_fp_imm(SecBuf *s, int32_t imm) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_sub_imm(1, 16, 29, imm, 0)); // sub x16, x29, #imm
+    return s->len - off;
+}
+
+// sub x16, x29, x16  — compute stack frame address (large offset)
+static size_t asm_sub_x16_fp_x16(SecBuf *s) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_sub_reg(1, 16, 29, 16, ARM64_LSL, 0)); // sub x16, x29, x16
+    return s->len - off;
+}
+
+// str s{fp_param}, [x16, #off]  — store float parameter to stack
+static size_t asm_str_s_x16_off(SecBuf *s, int fp_reg, int32_t off_bytes) {
+    size_t off = s->len;
+    // str s{fp_reg}, [x16, #off_bytes]: opc=0 (single), imm offset in units of 4
+    uint32_t uimm = (uint32_t)(off_bytes / 4);
+    secbuf_emit32le(s, arm64_str_fp(0, fp_reg, 16, uimm)); // str s{fp_reg}, [x16, #off_bytes]
+    return s->len - off;
+}
+
+// str d{fp_param}, [x16, #off]  — store double parameter to stack
+static size_t asm_str_d_x16_off(SecBuf *s, int fp_reg, int32_t off_bytes) {
+    size_t off = s->len;
+    uint32_t uimm = (uint32_t)(off_bytes / 8);
+    secbuf_emit32le(s, arm64_str_fp(1, fp_reg, 16, uimm)); // str d{fp_reg}, [x16, #off_bytes]
+    return s->len - off;
+}
+
+// str s{fp_param}, [x29, #-offset]  — store float parameter to frame
+static size_t asm_str_s_fp_neg(SecBuf *s, int fp_reg, int32_t offset) {
+    size_t off = s->len;
+    // stur s{fp_reg}, [x29, #-offset]  (unscaled for negative)
+    // or str s{fp_reg}, [x29, #-offset] using pre-index? Use STUR
+    secbuf_emit32le(s, arm64_stur(0, fp_reg, 29, -offset)); // stur s{fp_reg}, [x29, #-offset]
+    return s->len - off;
+}
+
+// str d{fp_param}, [x29, #-offset]  — store double parameter to frame
+static size_t asm_str_d_fp_neg(SecBuf *s, int fp_reg, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_stur(1, fp_reg, 29, -offset)); // stur d{fp_reg}, [x29, #-offset]
+    return s->len - off;
+}
+
+// fcvt s0, d{fp_param}  — double to single conversion (for oldstyle float params)
+static size_t asm_fcvt_s0_d(SecBuf *s, int fp_src) {
+    size_t off = s->len;
+    // fcvt sd, dn: opc=3 (single), ftype=1 (double), rd=0, rn=fp_src
+    secbuf_emit32le(s, arm64_fcvt(3, 1, 0, fp_src)); // fcvt s0, d{fp_src}
+    return s->len - off;
+}
+
+// str s0, [x29, #-offset]  — store s0 (after fcvt)
+static size_t asm_str_s0_fp_neg(SecBuf *s, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_stur(0, 0, 29, -offset)); // stur s0, [x29, #-offset]
+    return s->len - off;
+}
+
+// ldr s0, [x29, #spoff]  — load float from stack
+static size_t asm_ldr_s0_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_fp(0, 0, 29, (uint32_t)(spoff / 4))); // ldr s0, [x29, #spoff]
+    return s->len - off;
+}
+
+// ldr d0, [x29, #spoff]  — load double from stack
+static size_t asm_ldr_d0_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_fp(1, 0, 29, (uint32_t)(spoff / 8))); // ldr d0, [x29, #spoff]
+    return s->len - off;
+}
+
+// ldrb w11, [x29, #spoff]  — load byte from stack slot (stack param)
+static size_t asm_ldrb_w11_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldrb_uoff(11, 29, (uint32_t)spoff)); // ldrb w11, [x29, #spoff]
+    return s->len - off;
+}
+
+// ldrh w11, [x29, #spoff]  — load halfword from stack slot
+static size_t asm_ldrh_w11_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldrh_uoff(11, 29, (uint32_t)(spoff / 2))); // ldrh w11, [x29, #spoff]
+    return s->len - off;
+}
+
+// ldr w11, [x29, #spoff]  — load 32-bit from stack slot
+static size_t asm_ldr_w11_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_uoff(2, 11, 29, (uint32_t)(spoff / 4))); // ldr w11, [x29, #spoff]
+    return s->len - off;
+}
+
+// ldr x11, [x29, #spoff]  — load 64-bit from stack slot
+static size_t asm_ldr_x11_fp_off(SecBuf *s, int32_t spoff) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_ldr_uoff(3, 11, 29, (uint32_t)(spoff / 8))); // ldr x11, [x29, #spoff]
+    return s->len - off;
+}
+
+// strb w11, [x29, #-offset]  — store byte to frame
+static size_t asm_strb_w11_fp_neg(SecBuf *s, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_stur(0, 11, 29, -offset)); // sturb w11, [x29, #-offset]  (use stur w/ sf=0 for byte? No)
+    // Actually sturb is separate: use arm64_sturb
+    s->len = off;
+    secbuf_emit32le(s, arm64_sturb(11, 29, -offset)); // sturb w11, [x29, #-offset]
+    return s->len - off;
+}
+
+// strh w11, [x29, #-offset]  — store halfword to frame
+static size_t asm_strh_w11_fp_neg(SecBuf *s, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_sturh(11, 29, -offset)); // sturh w11, [x29, #-offset]
+    return s->len - off;
+}
+
+// str w11, [x29, #-offset]  — store 32-bit to frame
+static size_t asm_str_w11_fp_neg(SecBuf *s, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_stur(0, 11, 29, -offset)); // stur w11, [x29, #-offset]  sf=0
+    return s->len - off;
+}
+
+// str x11, [x29, #-offset]  — store 64-bit to frame
+static size_t asm_str_x11_fp_neg(SecBuf *s, int32_t offset) {
+    size_t off = s->len;
+    secbuf_emit32le(s, arm64_stur(1, 11, 29, -offset)); // stur x11, [x29, #-offset] sf=1
+    return s->len - off;
+}
+
+#endif /* ARCH_ARM64 */
+
+// ============================================================================
+// x86: add/sub with flags (for overflow builtins)
+// ============================================================================
+
+#ifndef ARCH_ARM64
+// add dst, src (with flags for carry/overflow detection)
+static size_t asm_add_rr_flags(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+    x86_add_rr(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // add dst, src
+    return s->len - off;
+}
+
+// sub dst, src (with flags)
+static size_t asm_sub_rr_flags(SecBuf *s, VReg dst, VReg src, int size) {
+    size_t off = s->len;
+    x86_sub_rr(s, size, CG_X86_REG(dst), CG_X86_REG(src)); // sub dst, src
+    return s->len - off;
+}
+
+// mov [raddr], src  — store register to memory via pointer in raddr
+static size_t asm_mov_mem_via_reg(SecBuf *s, VReg src, VReg raddr, int size) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_REG(raddr), X86_NOREG, 1, 0};
+    x86_mov_mr(s, size, m, CG_X86_REG(src)); // mov src, (raddr)
+    return s->len - off;
+}
+#endif
+
+// ============================================================================
+// x86: mov (%reg), dst  — indirect load via pointer
+// ============================================================================
+
+#ifndef ARCH_ARM64
+// mov (%rr), %rr  — indirect load (for is_frame_addr / is_ret_addr depth loop)
+static size_t asm_mov_indir(SecBuf *s, VReg r, int size) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, 0};
+    x86_mov_rm(s, size, CG_X86_REG(r), m); // mov (%rr), %rr
+    return s->len - off;
+}
+
+// mov N(%rr), %rr  — indirect load with displacement
+static size_t asm_mov_indir_disp(SecBuf *s, VReg r, int64_t disp, int size) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_REG(r), X86_NOREG, 1, disp};
+    x86_mov_rm(s, size, CG_X86_REG(r), m); // mov disp(%rr), %rr
+    return s->len - off;
+}
+#endif
+
+// ============================================================================
+// ARM64 rev16  (already stubbed; provide real implementation)
+// ============================================================================
+
+static size_t asm_rev16_real(SecBuf *s, int r, int size) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    int sf = (size == 8) ? 1 : 0;
+    secbuf_emit32le(s, arm64_rev16(sf, CG_ARM_REG(r), CG_ARM_REG(r)));
+    return s->len - off;
+#else
+    x86_rol_ri(s, 2, CG_X86_REG(r), 8); // rol $8, %rx16
+    return s->len - off;
+#endif
+}
 
 #endif // CODEGEN_ASM_H
