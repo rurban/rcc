@@ -41,7 +41,8 @@ if [ -z "$RCC" ]; then
 				WINEDEBUG=fixme-all
 				WINEDLLOVERRIDES="winedbg=d"
 				WINENOPOPUPS=1
-				export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS
+                                WINE_DISABLE_RANDR=1
+				export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS WINE_DISABLE_RANDR
                         fi
 			break
 		fi
@@ -453,7 +454,7 @@ while IFS= read -r src; do
             # shellcheck disable=SC2129
             echo "[test_128_return]" >"$TMP_OUT"
 	    # shellcheck disable=SC2086
-	    "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
+	    timeout 5s "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
             run_exe "$TMP_EXE" >>"$TMP_OUT"
             run_atexit="$?"
             # shellcheck disable=SC2129
@@ -462,14 +463,14 @@ while IFS= read -r src; do
 	    # shellcheck disable=SC2129
             echo "[test_128_exit]" >>"$TMP_OUT"
 	    # shellcheck disable=SC2086
-	    "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
+	    timeout 5s "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
             run_exe "$TMP_EXE" >>"$TMP_OUT"
             xx="$?"
             run_atexit="$run_atexit $xx"
             echo "[returns $xx]" >>"$TMP_OUT"
         else
             # shellcheck disable=SC2086
-            if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
+            if ! timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
 		# shellcheck disable=SC2059
 		printf "${RED}COMPILE FAIL${RESET}\n"
 		failed=$((failed + 1))
@@ -632,7 +633,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 
 		if expect_compile_fail "$base"; then
 			# shellcheck disable=SC2086
-			if "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
+			if timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 				# shellcheck disable=SC2059
 				printf "${RED}SHOULD FAIL (compiled ok)${RESET}\n"
 				failed=$((failed + 1))
@@ -650,7 +651,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fi
 
 		# shellcheck disable=SC2086
-		if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
+		if ! timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 			# shellcheck disable=SC2059
 			printf "${RED}COMPILE FAIL${RESET}\n"
 			failed=$((failed + 1))

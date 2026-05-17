@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 98
-- **Failed**: 54
-- **Pass Rate**: 64%
+- **Passed**: 102
+- **Failed**: 50
+- **Pass Rate**: 67%
 
 ## Detailed Results
 
@@ -24,7 +24,7 @@ Generated: May 2026
 | 08_while                    | PASS         | Output matches                |
 | 09_do_while                 | PASS         | Output matches                |
 | 10_pointer                  | PASS         | Output matches                |
-| 11_precedence               | MISMATCH     | Output does not match .expect |
+| 11_precedence               | PASS         | Output matches                |
 | 12_hashdefine               | PASS         | Output matches                |
 | 13_integer_literals         | PASS         | Output matches                |
 | 14_if                       | PASS         | Output matches                |
@@ -41,7 +41,7 @@ Generated: May 2026
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
 | 27_sizeof                   | PASS         | Output matches                |
-| 28_strings                  | EXEC_FAIL    | non-zero exit                 |
+| 28_strings                  | PASS         | Output matches                |
 | 29_array_address            | PASS         | Output matches                |
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
@@ -59,11 +59,11 @@ Generated: May 2026
 | 43_void_param               | PASS         | Output matches                |
 | 44_scoped_declarations      | PASS         | Output matches                |
 | 45_empty_for                | PASS         | Output matches                |
-| 46_grep                     | MISMATCH     | Output does not match .expect |
+| 46_grep                     | PASS         | Output matches                |
 | 47_switch_return            | PASS         | Output matches                |
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | COMPILE_FAIL | rcc returned non-zero         |
-| 50_logical_second_arg       | MISMATCH     | Output does not match .expect |
+| 50_logical_second_arg       | PASS         | Output matches                |
 | 51_static                   | PASS         | Output matches                |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
@@ -153,7 +153,7 @@ Generated: May 2026
 | test_atomic_op              | PASS         | exit=0                        |
 | test_atomic_op2             | PASS         | exit=0                        |
 | test_bitfields              | PASS         | exit=0                        |
-| test_builtins               | PASS         | exit=5                        |
+| test_builtins               | PASS         | exit=0                        |
 | test_elif2                  | PASS         | exit=0                        |
 | test_elif_simple            | PASS         | exit=0                        |
 | test_err                    | PASS         | compile error as expected     |

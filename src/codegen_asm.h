@@ -1298,14 +1298,14 @@ static size_t asm_ldr_x16_reg_uoff(SecBuf *s, int base_r, int uimm8) {
     secbuf_emit32le(s, arm64_ldr_uoff(3, 16, CG_ARM_REG(base_r), (uint32_t)(uimm8 / 8))); // ldr x16, [base, #uimm8]
     return s->len - off;
 }
-VReg reg) {
+static size_t asm_str_fp_reg(SecBuf *s, VReg reg) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_str_imm(1, 29, CG_ARM_REG(reg), 0, false));
+    secbuf_emit32le(s, arm64_str_imm(1, 29, CG_ARM_REG(reg), 0, false)); // str x29, [x{reg}]
     return s->len - off;
 }
-VReg reg) {
+static size_t asm_ldr_fp_reg(SecBuf *s, VReg reg) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_ldr_imm(1, 29, CG_ARM_REG(reg), 0, false));
+    secbuf_emit32le(s, arm64_ldr_imm(1, 29, CG_ARM_REG(reg), 0, false)); // ldr x29, [x{reg}]
     return s->len - off;
 }
 static size_t asm_ldur_x16_fp_minus(SecBuf *s, int off) {
@@ -1354,9 +1354,9 @@ static size_t asm_stur_x16_fp_minus(SecBuf *s, int off) {
     secbuf_emit32le(s, arm64_stur(1, 16, 29, -off));
     return s->len - o;
 }
-VReg src) {
+static size_t asm_asr_x17_src_63(SecBuf *s, VReg src) {
     size_t o = s->len;
-    secbuf_emit32le(s, arm64_asr_imm(1, 17, CG_ARM_REG(src), 63));
+    secbuf_emit32le(s, arm64_asr_imm(1, 17, CG_ARM_REG(src), 63)); // asr x17, x{src}, #63
     return s->len - o;
 }
 static size_t asm_cmn_imm(SecBuf *s, VReg r, int sf, int imm) {
@@ -1424,14 +1424,14 @@ static size_t asm_sub_reg_fp_reg(SecBuf *s, int dst, int src, int size) {
     secbuf_emit32le(s, arm64_sub_reg(sf, CG_ARM_REG(dst), 29, CG_ARM_REG(src), ARM64_LSL, 0));
     return s->len - o;
 }
-VReg r, int off) {
+static size_t asm_stur_fp(SecBuf *s, VReg r, int off) {
     size_t o = s->len;
-    secbuf_emit32le(s, arm64_stur(1, CG_ARM_REG(r), 29, -off));
+    secbuf_emit32le(s, arm64_stur(1, CG_ARM_REG(r), 29, -off)); // stur x{r}, [x29, #-off]
     return s->len - o;
 }
-VReg r, int off) {
+static size_t asm_ldur_fp(SecBuf *s, VReg r, int off) {
     size_t o = s->len;
-    secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(r), 29, -off));
+    secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(r), 29, -off)); // ldur x{r}, [x29, #-off]
     return s->len - o;
 }
 
@@ -1597,11 +1597,13 @@ static size_t asm_cvtsi2ss(SecBuf *s, VReg src_r, int size) {
     return s->len - off;
 }
 // cvtsi2ss from physical register (e.g. %rcx for unsigned 64-bit path)
+#ifndef ARCH_ARM64
 static size_t asm_cvtsi2ss_phy(SecBuf *s, X86Reg src, int size) {
     size_t off = s->len;
     x86_cvtsi2ss(s, size, X86_XMM0, src); // cvtsi2ss src, %xmm0
     return s->len - off;
 }
+#endif
 static size_t asm_cvtsi2sd(SecBuf *s, VReg src_r, int size) {
     size_t off = s->len;
 #ifdef ARCH_ARM64

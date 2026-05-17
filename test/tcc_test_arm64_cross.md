@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 155
-- **Passed**: 110
-- **Failed**: 45
-- **Pass Rate**: 70%
+- **Passed**: 107
+- **Failed**: 48
+- **Pass Rate**: 69%
 
 ## Detailed Results
 
@@ -63,11 +63,11 @@ Generated: May 2026
 | 47_switch_return            | PASS         | Output matches                |
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | PASS         | Output matches                |
-| 50_logical_second_arg       | PASS         | Output matches                |
+| 50_logical_second_arg       | EXEC_FAIL    | non-zero exit                 |
 | 51_static                   | PASS         | Output matches                |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
-| 55_lshift_type              | PASS         | Output matches                |
+| 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
 | 60_errors_and_warnings      | SKIP         | Skipped                       |
 | 61_integers                 | PASS         | Output matches                |
 | 64_macro_nesting            | PASS         | Output matches                |
@@ -89,7 +89,7 @@ Generated: May 2026
 | 85_asm-outside-function     | COMPILE_FAIL | rcc returned non-zero         |
 | 86_memory-model             | PASS         | Output matches                |
 | 87_dead_code                | EXEC_FAIL    | non-zero exit                 |
-| 88_codeopt                  | PASS         | Output matches                |
+| 88_codeopt                  | EXEC_FAIL    | non-zero exit                 |
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | COMPILE_FAIL | rcc returned non-zero         |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP         | Skipped                       |
 | 99_fastcall                 | SKIP         | Skipped                       |
 | 100_c99array-decls          | PASS         | Output matches                |
-| 101_cleanup                 | EXEC_FAIL    | non-zero exit                 |
+| 101_cleanup                 | COMPILE_FAIL | rcc returned non-zero         |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
@@ -149,8 +149,8 @@ Generated: May 2026
 | 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
 | 142_riscv_asm_longlong      | SKIP         | Skipped                       |
 | 143_riscv_asm_farith        | SKIP         | Skipped                       |
-| test_arm64_asm              | PASS         | exit=0                        |
-| test_atomic_op              | PASS         | exit=0                        |
+| test_arm64_asm              | PASS         | exit=132                      |
+| test_atomic_op              | PASS         | exit=124                      |
 | test_atomic_op2             | PASS         | exit=124                      |
 | test_bitfields              | PASS         | exit=132                      |
 | test_builtins               | PASS         | exit=0                        |
