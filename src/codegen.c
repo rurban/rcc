@@ -3300,10 +3300,7 @@ static int gen(Node *node) {
         asm_ldr_fp(cg_sec, 0, r, 8); // ldr d0, [x{r}]
         asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
 #else
-        if (node->ty->size == 4)
-            asm_movss_rip_xmm(cg_sec, format(".LF%d", id)); // movss .LF%d(%%rip), %%xmm0
-        else
-            asm_movsd_rip_xmm(cg_sec, format(".LF%d", id)); // movsd .LF%d(%%rip), %%xmm0
+        asm_movsd_rip_xmm(cg_sec, format(".LF%d", id)); // movsd .LF%d(%%rip), %%xmm0
         asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %%xmm0, %s
 #endif
         return r;
