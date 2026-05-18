@@ -144,7 +144,8 @@ int main(int argc, char **argv) {
         "a.out"
 #endif
         ;
-    char *in_path = NULL;
+    char *input_files[64];
+    int n_inputs = 0;
     bool opt_S = false;
     bool opt_c = false;
     bool opt_E = false;
@@ -256,144 +257,149 @@ int main(int argc, char **argv) {
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
-            in_path = argv[i];
-
-            char *asm_path;
-            if (opt_S) {
-                asm_path = opt_o ? out_path : format("%s.o", path_basename(in_path));
-            } else if (opt_c) {
-                asm_path = opt_o ? out_path : format("%s.o", path_basename(in_path));
-            } else {
-                asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), i, path_basename(in_path));
-            }
-
-            // Tokenize and Parse
-            char *contents = read_file(in_path);
-
-            // Always preprocess - opt_E just outputs preprocessed result
-            uint64_t t0 = opt_time ? now_us() : 0;
-            char *preprocessed = preprocess(in_path, contents);
-            if (opt_time)
-                fprintf(stderr, "  preprocess  %s: %6lu us\n", in_path,
-                        now_us() - t0);
-
-            if (opt_E) {
-                printf("%s", preprocessed);
-                continue;
-            }
-
-            t0 = opt_time ? now_us() : 0;
-            Token *tok = tokenize(in_path, preprocessed);
-            if (opt_time)
-                fprintf(stderr, "  lex         %s: %6lu us\n", in_path,
-                        now_us() - t0);
-
-            t0 = opt_time ? now_us() : 0;
-            Program *prog = parse(tok);
-            prog->in_path = in_path;
-            if (opt_time)
-                fprintf(stderr, "  parse       %s: %6lu us\n", in_path,
-                        now_us() - t0);
-
-            if (opt_fdump_ast)
-                dump_ast(prog);
-
-            // Type system / Semantic checks
-            t0 = opt_time ? now_us() : 0;
-            for (TLItem *item = prog->items; item; item = item->next) {
-                if (item->kind != TL_FUNC)
-                    continue;
-                for (Node *n = item->fn->body; n; n = n->next) {
-                    add_type(n);
-                }
-            }
-            if (opt_time)
-                fprintf(stderr, "  typecheck   %s: %6lu us\n", in_path,
-                        now_us() - t0);
-
-            // CTFE runs only with -O1; peephole skipped with -O0.
-            if (opt_O1) {
-                t0 = opt_time ? now_us() : 0;
-                optimize(prog);
-                if (opt_time)
-                    fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", in_path,
-                            now_us() - t0);
-            }
-
-            if (!opt_dryrun) {
-                time_peep_us = 0;
-                t0 = opt_time ? now_us() : 0;
-                struct ObjFile *obj = codegen(prog);
-                if (opt_time) {
-                    uint64_t cg_total = now_us() - t0;
-                    fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
-                            cg_total - time_peep_us);
-                    if (!opt_O0)
-                        fprintf(stderr, "  peephole    %s: %6lu us\n", in_path,
-                                time_peep_us);
-                }
-                // Write binary .o file
-                char *tmp_obj_path = asm_path;
-                if (opt_S) {
-                    tmp_obj_path = format("%s.tmp.o", asm_path);
-                }
-                int wr;
-#ifdef _WIN32
-                wr = coff_write(obj, tmp_obj_path);
-#elif __APPLE__
-                wr = macho_write(obj, tmp_obj_path);
-#else
-                wr = elf_write(obj, tmp_obj_path);
-#endif
-                if (wr != 0) {
-                    fprintf(stderr, "rcc: error: cannot write object file %s\n", tmp_obj_path);
-                    return 1;
-                }
-                objfile_free(obj);
-                if (opt_S) {
-                    char cmd[2048];
-                    // Derive objdump name from GCC: "gcc" -> "objdump",
-                    // "aarch64-linux-gnu-gcc" -> "aarch64-linux-gnu-objdump"
-                    const char *objdump = "objdump";
-                    size_t gcc_len = strlen(GCC);
-                    if (gcc_len > 4 && GCC[gcc_len - 1] == 'c' && GCC[gcc_len - 2] == 'c' && GCC[gcc_len - 3] == 'g' && GCC[gcc_len - 4] == '-') {
-                        // Cross-compiler: strip trailing "-gcc", append "-objdump"
-                        char *triple = malloc(gcc_len - 3);
-                        if (triple) {
-                            memcpy(triple, GCC, gcc_len - 4);
-                            triple[gcc_len - 4] = '\0';
-                            size_t len = strlen(triple) + 9;
-                            char *xobj = malloc(len);
-                            if (xobj) {
-                                snprintf(xobj, len, "%s-objdump", triple);
-                                objdump = xobj;
-                            }
-                            free(triple);
-                        }
-                    }
-                    snprintf(cmd, sizeof(cmd), "%s -D -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
-                             objdump, tmp_obj_path, asm_path, tmp_obj_path);
-                    int status = system(cmd);
-                    if (status != 0) {
-                        fprintf(stderr, "rcc: error: objdump failed for -S output\n");
-                        return 1;
-                    }
-                }
-            } else {
-            }
-
-            if (!opt_S && !opt_dryrun) {
-                OutPath *p = arena_alloc(sizeof(OutPath));
-                p->path = asm_path;
-                p->next = out_paths;
-                out_paths = p;
-            }
+            if (n_inputs < 64)
+                input_files[n_inputs++] = argv[i];
         }
     }
 
-    if (!in_path) {
+    if (n_inputs == 0) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
+    }
+
+    // Process each input file
+    for (int fi = 0; fi < n_inputs; fi++) {
+        char *cur_path = input_files[fi];
+
+        char *asm_path;
+        if (opt_S) {
+            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+        } else if (opt_c) {
+            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+        } else {
+            asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), fi, path_basename(cur_path));
+        }
+
+        // Tokenize and Parse
+        char *contents = read_file(cur_path);
+
+        // Always preprocess - opt_E just outputs preprocessed result
+        uint64_t t0 = opt_time ? now_us() : 0;
+        char *preprocessed = preprocess(cur_path, contents);
+        if (opt_time)
+            fprintf(stderr, "  preprocess  %s: %6lu us\n", cur_path,
+                    now_us() - t0);
+
+        if (opt_E) {
+            printf("%s", preprocessed);
+            continue;
+        }
+
+        t0 = opt_time ? now_us() : 0;
+        Token *tok = tokenize(cur_path, preprocessed);
+        if (opt_time)
+            fprintf(stderr, "  lex         %s: %6lu us\n", cur_path,
+                    now_us() - t0);
+
+        t0 = opt_time ? now_us() : 0;
+        Program *prog = parse(tok);
+        prog->in_path = cur_path;
+        if (opt_time)
+            fprintf(stderr, "  parse       %s: %6lu us\n", cur_path,
+                    now_us() - t0);
+
+        if (opt_fdump_ast)
+            dump_ast(prog);
+
+        // Type system / Semantic checks
+        t0 = opt_time ? now_us() : 0;
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind != TL_FUNC)
+                continue;
+            for (Node *n = item->fn->body; n; n = n->next) {
+                add_type(n);
+            }
+        }
+        if (opt_time)
+            fprintf(stderr, "  typecheck   %s: %6lu us\n", cur_path,
+                    now_us() - t0);
+
+        // CTFE runs only with -O1; peephole skipped with -O0.
+        if (opt_O1) {
+            t0 = opt_time ? now_us() : 0;
+            optimize(prog);
+            if (opt_time)
+                fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", cur_path,
+                        now_us() - t0);
+        }
+
+        if (!opt_dryrun) {
+            time_peep_us = 0;
+            t0 = opt_time ? now_us() : 0;
+            struct ObjFile *obj = codegen(prog);
+            if (opt_time) {
+                uint64_t cg_total = now_us() - t0;
+                fprintf(stderr, "  codegen     %s: %6lu us\n", cur_path,
+                        cg_total - time_peep_us);
+                if (!opt_O0)
+                    fprintf(stderr, "  peephole    %s: %6lu us\n", cur_path,
+                            time_peep_us);
+            }
+            // Write binary .o file
+            char *tmp_obj_path = asm_path;
+            if (opt_S) {
+                tmp_obj_path = format("%s.tmp.o", asm_path);
+            }
+            int wr;
+#ifdef _WIN32
+            wr = coff_write(obj, tmp_obj_path);
+#elif __APPLE__
+            wr = macho_write(obj, tmp_obj_path);
+#else
+            wr = elf_write(obj, tmp_obj_path);
+#endif
+            if (wr != 0) {
+                fprintf(stderr, "rcc: error: cannot write object file %s\n", tmp_obj_path);
+                return 1;
+            }
+            objfile_free(obj);
+            if (opt_S) {
+                char cmd[2048];
+                // Derive objdump name from GCC: "gcc" -> "objdump",
+                // "aarch64-linux-gnu-gcc" -> "aarch64-linux-gnu-objdump"
+                const char *objdump = "objdump";
+                size_t gcc_len = strlen(GCC);
+                if (gcc_len > 4 && GCC[gcc_len - 1] == 'c' && GCC[gcc_len - 2] == 'c' && GCC[gcc_len - 3] == 'g' && GCC[gcc_len - 4] == '-') {
+                    // Cross-compiler: strip trailing "-gcc", append "-objdump"
+                    char *triple = malloc(gcc_len - 3);
+                    if (triple) {
+                        memcpy(triple, GCC, gcc_len - 4);
+                        triple[gcc_len - 4] = '\0';
+                        size_t len = strlen(triple) + 9;
+                        char *xobj = malloc(len);
+                        if (xobj) {
+                            snprintf(xobj, len, "%s-objdump", triple);
+                            objdump = xobj;
+                        }
+                        free(triple);
+                    }
+                }
+                snprintf(cmd, sizeof(cmd), "%s -D -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
+                         objdump, tmp_obj_path, asm_path, tmp_obj_path);
+                int status = system(cmd);
+                if (status != 0) {
+                    fprintf(stderr, "rcc: error: objdump failed for -S output\n");
+                    return 1;
+                }
+            }
+        }
+
+        if (!opt_S && !opt_dryrun) {
+            OutPath *p = arena_alloc(sizeof(OutPath));
+            p->path = asm_path;
+            p->next = out_paths;
+            out_paths = p;
+        }
     }
 
     // Assemble / Link if not just compiling to assembly or preprocessing
