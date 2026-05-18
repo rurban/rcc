@@ -28,7 +28,7 @@ static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
                                         ARM64_X19, ARM64_X20, ARM64_X21,
                                         ARM64_X22, ARM64_X23, ARM64_X24};
 // convert VReg => Arm64Reg
-#define CG_ARM_REG(r)  (((r) < 0 || (r) >= 12) ? (abort(),0) : cg_arm_reg[r])
+#define CG_ARM_REG(r)  (((r) >= 12) ? (abort(),0) : r == -1 ? 0 : cg_arm_reg[r])
 #define CG_ARM_FP      ARM64_X29
 #define CG_ARM_LR      ARM64_X30
 #define CG_ARM_SP      ARM64_X31
@@ -37,7 +37,7 @@ static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
 static const int cg_x86_reg[8] = {X86_R10, X86_R11, X86_RBX, X86_R12,
                                   X86_R13, X86_R14, X86_R15, X86_RSI};
 // convert VReg => X8664Reg
-#define CG_X86_REG(r)  (((r) < 0 || (r) >= 8) ? (abort(),0) : (X86Reg)(cg_x86_reg[r]))
+#define CG_ARM_REG(r)  (((r) >= 8) ? (abort(),0) : r == -1 ? 0 : cg_x86_reg[r])
 #define CG_X86_FP      X86_RBP
 #define CG_X86_SP      X86_RSP
 #endif
@@ -56,8 +56,9 @@ typedef enum {
     R_V8,
     R_V9,
     R_V10,
-    R_V11
+    R_V11,
 #endif
+    R_NONE = -1
 } VReg;
 
 // Dry-run guard: skip emission when cg_sec is NULL
@@ -2171,13 +2172,13 @@ static size_t asm_stur(SecBuf *s, int src, int base, int sf, int off) {
     return s->len - off2;
 }
 // unscaled store for any size (byte/half/word/dword), negative offsets ok
-static size_t asm_stur_sz(SecBuf *s, int src, int base, int sz, int off) {
+static size_t asm_stur_sz(SecBuf *s, VReg src, int base, int sz, int off) {
 #ifdef ARCH_ARM64
     switch (sz) {
-    case 1: secbuf_emit32le(s, arm64_sturb(CG_ARM_REG(src), CG_ARM_REG(base), off)); break;
-    case 2: secbuf_emit32le(s, arm64_sturh(CG_ARM_REG(src), CG_ARM_REG(base), off)); break;
-    case 4: secbuf_emit32le(s, arm64_stur(0, CG_ARM_REG(src), CG_ARM_REG(base), off)); break;
-    default: secbuf_emit32le(s, arm64_stur(1, CG_ARM_REG(src), CG_ARM_REG(base), off)); break;
+    case 1: secbuf_emit32le(s, arm64_sturb(CG_ARM_REG(src), base, off)); break;
+    case 2: secbuf_emit32le(s, arm64_sturh(CG_ARM_REG(src), base, off)); break;
+    case 4: secbuf_emit32le(s, arm64_stur(0, CG_ARM_REG(src), base, off)); break;
+    default: secbuf_emit32le(s, arm64_stur(1, CG_ARM_REG(src), base, off)); break;
     }
     return 4;
 #else
@@ -2197,10 +2198,10 @@ static size_t asm_ldur(SecBuf *s, int dst, int base, int sf, int off) {
 // unscaled load for any size (byte/half/word/dword), negative offsets ok
 static size_t asm_ldur_sz(SecBuf *s, int dst, int base, int sz, int off) {
     switch (sz) {
-    case 1: secbuf_emit32le(s, arm64_ldurb(CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
-    case 2: secbuf_emit32le(s, arm64_ldurh(CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
-    case 4: secbuf_emit32le(s, arm64_ldur(0, CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
-    default: secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
+    case 1: secbuf_emit32le(s, arm64_ldurb(CG_ARM_REG(dst), base, off)); break;
+    case 2: secbuf_emit32le(s, arm64_ldurh(CG_ARM_REG(dst), base, off)); break;
+    case 4: secbuf_emit32le(s, arm64_ldur(0, CG_ARM_REG(dst), base, off)); break;
+    default: secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(dst), base, off)); break;
     }
     return 4;
     //#else

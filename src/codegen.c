@@ -557,7 +557,7 @@ bool va_arg_need_copy(Type *ty) {
     return false;
 }
 
-static int gen_funcall(Node *node, int hidden_ret_reg) {
+static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
         nargs++;
@@ -1595,7 +1595,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_hfa_count[i] > 0 || ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)) {
-            int addr = gen_addr(argv[i]);
+            VReg addr = gen_addr(argv[i]);
             if (addr < 0) {
                 // Non-lvalue struct/union (e.g. cast to struct): allocate temp slot and store value
                 int sz = argv[i]->ty->size;
@@ -1639,14 +1639,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (sv_count > 0 || stack_args > 0) {
         int total = (sv_count + stack_args) * 8;
         total = (total + 15) & ~15;
-        asm_sub_imm(cg_sec, 31, 8, total); // sub $total, r31
+        if (total < 4096)
+            secbuf_emit32le(cg_sec, arm64_sub_imm(1, ARM64_SP, ARM64_SP, total, 0)); // sub sp, sp, #total
+        else
+            secbuf_emit32le(cg_sec, arm64_sub_imm(1, ARM64_SP, ARM64_SP, total >> 12, 1)); // sub sp, sp, #total (shifted)
     }
 
     // Save caller-saved regs (virtual 0-5 = physical x10-x15) above stack args area
     int sv_off = stack_args * 8;
     for (int i = 0; i < 6; i++) {
         if (arm64_saved_mask & (1 << i)) {
-            asm_str_reg_off(cg_sec, i, 31, 8, sv_off); // str x{i}, [sp, #sv_off]
+            secbuf_emit32le(cg_sec, arm64_str_uoff(3, CG_ARM_REG(i), ARM64_SP, sv_off / 8)); // str x{i}, [sp, #sv_off]
             sv_off += 8;
         }
     }
@@ -1667,7 +1670,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
             asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off); // str d0, [sp, #off]
         } else {
-            asm_str_reg_off(cg_sec, r, 31, sz, (uint32_t)off); // str x{r}, [sp, #off]
+            secbuf_emit32le(cg_sec, arm64_str_uoff(sz == 8 ? 3 : 2, CG_ARM_REG(r), ARM64_SP, (uint32_t)(off / (sz == 8 ? 8 : 4)))); // str x{r}, [sp, #off]
         }
         free_reg(r);
     }
@@ -1805,7 +1808,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         int sv = stack_args * 8;
         for (int i = 0; i < 6; i++) {
             if (arm64_saved_mask & (1 << i)) {
-                asm_ldr_reg_off(cg_sec, i, 31, 8, sv); // ldr x{i}, [sp, #sv]
+                secbuf_emit32le(cg_sec, arm64_ldr_uoff(3, CG_ARM_REG(i), ARM64_SP, sv / 8)); // ldr x{i}, [sp, #sv]
                 sv += 8;
             }
         }
@@ -1815,7 +1818,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (sv_count > 0 || stack_args > 0) {
         int total = (sv_count + stack_args) * 8;
         total = (total + 15) & ~15;
-        asm_add_imm(cg_sec, 31, 8, total); // add $total, r31
+        if (total < 4096)
+            secbuf_emit32le(cg_sec, arm64_add_imm(1, ARM64_SP, ARM64_SP, total, 0)); // add sp, sp, #total
+        else
+            secbuf_emit32le(cg_sec, arm64_add_imm(1, ARM64_SP, ARM64_SP, total >> 12, 1)); // add sp, sp, #total (shifted)
     }
 
     if (has_hidden_retbuf) {
@@ -2450,7 +2456,7 @@ static void emit_store_offset(Type *ty, Arm64Reg r, int base, int offset) {
         return;
     }
     int abs_off = off < 0 ? -off : off;
-    VReg ta = alloc_reg();
+    int ta = alloc_reg();
     asm_mov_imm(cg_sec, ta, 8, abs_off & 0xffff); // mov ta, #abs_off_lo
     int v = abs_off >> 16;
     int s = 16;
@@ -2460,9 +2466,9 @@ static void emit_store_offset(Type *ty, Arm64Reg r, int base, int offset) {
         s += 16;
     }
     if (off < 0)
-        asm_sub_reg3(cg_sec, ta, base, ta, 8); // sub ta, base, ta
+        secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), base, CG_ARM_REG(ta), ARM64_LSL, 0)); // sub ta, base, ta
     else
-        asm_add_reg_reg(cg_sec, ta, base, 8); // add ta, ta, base
+        secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), CG_ARM_REG(ta), base, ARM64_LSL, 0)); // add ta, ta, base
     asm_str_reg_off(cg_sec, r, ta, sz, 0); // str r, [ta]
     free_reg(ta);
 }
@@ -2476,20 +2482,13 @@ static void emit_load(Type *ty, int r, int base, int off) {
         base = ARM64_BASE_X16;
     }
     if (off > -256 && off < 256) {
-        asm_ldur_sz(cg_sec, r, base, ty->size, off); // ldur r, [base, #off]
+        asm_ldur_sz(cg_sec, r, arm64_base_phys(base), ty->size, off); // ldur r, [base, #off]
     } else {
+        Arm64Reg bp = arm64_base_phys(base);
         int ta = alloc_reg();
         if (off < 0) {
-            int u = -off;
-            asm_mov_imm(cg_sec, ta, 8, u & 0xffff);
-            int v = u >> 16;
-            int s = 16;
-            while (v) {
-                asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s);
-                v >>= 16;
-                s += 16;
-            }
-            asm_sub_reg3(cg_sec, ta, base, ta, 8); // sub ta, base, ta
+            asm_mov_imm(cg_sec, ta, 8, -off); // mov ta, #-off
+            secbuf_emit32le(cg_sec, arm64_sub_reg(1, CG_ARM_REG(ta), bp, CG_ARM_REG(ta), ARM64_LSL, 0)); // sub ta, base, ta
         } else {
             asm_mov_imm(cg_sec, ta, 8, off & 0xffff);
             int v = off >> 16;
@@ -2499,7 +2498,7 @@ static void emit_load(Type *ty, int r, int base, int off) {
                 v >>= 16;
                 s += 16;
             }
-            asm_add_reg_reg(cg_sec, ta, base, 8); // add ta, ta, base
+            secbuf_emit32le(cg_sec, arm64_add_reg(1, CG_ARM_REG(ta), CG_ARM_REG(ta), bp, ARM64_LSL, 0)); // add ta, ta, base
         }
         asm_ldr_reg_off(cg_sec, r, ta, ty->size, 0); // ldr r, [ta]
         free_reg(ta);
@@ -8090,18 +8089,10 @@ struct ObjFile *codegen(Program *prog) {
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
         asm_mov_fp_sp(cg_sec); // mov x29, sp
         if (frame_size <= 4095)
-            asm_sub_imm(cg_sec, 31, 8, frame_size); // sub sp, sp, #frame_size
+            secbuf_emit32le(cg_sec, arm64_sub_imm(1, ARM64_SP, ARM64_SP, frame_size, 0)); // sub sp, sp, #frame_size
         else {
-            int fs = frame_size;
-            emit_mov_imm64(ARM64_X16, fs & 0xffff); // mov x16, #fs_lo
-            fs >>= 16;
-            int s = 16;
-            while (fs) {
-                asm_movk(cg_sec, 16, 1, (uint16_t)(fs & 0xffff), s); // movk x16, #fs_hi, lsl #s
-                fs >>= 16;
-                s += 16;
-            }
-            asm_sub_reg_reg(cg_sec, 31, 16, 8); // sub sp, sp, x16
+            emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
+            secbuf_emit32le(cg_sec, arm64_sub_reg(1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0)); // sub sp, sp, x16
         }
 
         // Save variadic argument registers at the bottom of the frame (sp)
@@ -8123,7 +8114,7 @@ struct ObjFile *codegen(Program *prog) {
         int cs_off = fn->is_variadic ? 192 + 16 : 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
-                asm_str_reg_off(cg_sec, cg_arm_reg[j + 6], CG_ARM_SP, 8, cs_off); // str x{cs}, [sp, #cs_off]
+                secbuf_emit32le(cg_sec, arm64_str_uoff(3, cg_arm_reg[j + 6], ARM64_SP, cs_off / 8)); // str x{cs}, [sp, #cs_off]
                 cs_off += 8;
             }
         }
@@ -8143,7 +8134,7 @@ struct ObjFile *codegen(Program *prog) {
                 int v = retbuf_offset;
                 emit_mov_imm64(ARM64_X16, (uint64_t)v); // mov x16, #v
                 secbuf_emit32le(cg_sec, arm64_sub_reg(1, ARM64_X16, ARM64_X29, ARM64_X16, ARM64_LSL, 0)); // sub x16, x29, x16
-                asm_str_reg_off(cg_sec, 8, ARM64_X16, 8, 0); // str x8, [x16]
+                secbuf_emit32le(cg_sec, arm64_str_uoff(3, ARM64_X8, ARM64_X16, 0)); // str x8, [x16]
             }
         }
 
@@ -8286,11 +8277,11 @@ struct ObjFile *codegen(Program *prog) {
         // before reading callee-saved regs (stored at sp+16..sp+n at frame entry)
         if (fn->dealloc_vla || fn_uses_alloca) {
             if (frame_size <= 4095)
-                asm_sub_imm(cg_sec, CG_ARM_SP, 8, frame_size); // sub sp, sp, #frame_size
+                secbuf_emit32le(cg_sec, arm64_sub_imm(1, ARM64_SP, ARM64_SP, frame_size, 0)); // sub sp, sp, #frame_size
             else {
                 int fs = frame_size;
                 emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-                asm_sub_reg_reg(cg_sec, CG_ARM_SP, ARM64_X16, 8); // sub sp, sp, x16
+                secbuf_emit32le(cg_sec, arm64_sub_reg(1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0)); // sub sp, sp, x16
             }
         }
 
@@ -8298,17 +8289,17 @@ struct ObjFile *codegen(Program *prog) {
         cs_off = 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
-                asm_ldr_reg_off(cg_sec, cg_arm_reg[j + 6], CG_ARM_SP, 8, cs_off); // ldr x{cs}, [sp, #cs_off]
+                secbuf_emit32le(cg_sec, arm64_ldr_uoff(3, cg_arm_reg[j + 6], ARM64_SP, cs_off / 8)); // ldr x{cs}, [sp, #cs_off]
                 cs_off += 8;
             }
         }
 
         if (frame_size <= 4095)
-            asm_add_imm(cg_sec, CG_ARM_SP, 8, frame_size); // add sp, sp, #frame_size
+            secbuf_emit32le(cg_sec, arm64_add_imm(1, ARM64_SP, ARM64_SP, frame_size, 0)); // add sp, sp, #frame_size
         else {
             int fs = frame_size;
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-            asm_add_reg_reg(cg_sec, CG_ARM_SP, ARM64_X16, 8); // add sp, sp, x16
+            secbuf_emit32le(cg_sec, arm64_add_reg(1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0)); // add sp, sp, x16
         }
         asm_ldp_fp_lr(cg_sec); // ldp x29, x30, [sp], #16
         asm_ret(cg_sec); // ret
