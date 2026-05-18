@@ -1320,7 +1320,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 x86_repne_prefix(cg_sec);
                 x86_scasb(cg_sec); // repne scasb
                 x86_not_r(cg_sec, 8, X86_RCX); // notq %%rcx
-                x86_dec_r(cg_sec, 8, X86_RCX); // decq %%rcx
+                x86_sub_ri(cg_sec, 8, X86_RCX, 1); // decq %rcx
                 x86_mov_rr(cg_sec, 8, X86_RAX, X86_RCX);
                 asm_pop_phy(cg_sec, X86_RCX); // popq %%rcx
                 asm_pop_phy(cg_sec, X86_RDI); // popq %%rdi
@@ -3518,12 +3518,12 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
                     asm_mov_imm(cg_sec, 9, 8, copy_len); // mov $copy_len, r9
                     cg_def_label(format(".L.strcpy.%d", c)); // .L.copy.%d:
-                    asm_cmp_zero(cg_sec, 9, 8); // cmp x9, #0
+                    secbuf_emit32le(cg_sec, arm64_subs_imm(1, ARM64_XZR, 9, 0, 0)); // cmp x9, #0
                     {
                         size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // beq .L.strcpy_end.c
                         asm_fixup_add(cg_sec, o, format(".L.strcpy_end.%d", c), 1);
                     }
-                    asm_dec(cg_sec, 9, 8); // sub x9, x9, #1
+                    secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // sub x9, x9, #1
                     // ldrb w16, [x{src}, x9]
                     asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
                     // strb w16, [x{dst}, x9]
@@ -3551,7 +3551,7 @@ static int gen(Node *node) {
                         size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // beq .L.strzero_end.c2
                         asm_fixup_add(cg_sec, o, format(".L.strzero_end.%d", c2), 1);
                     }
-                    asm_dec(cg_sec, 9, 8); // cmp x9, x16
+                    secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // cmp x9, x16
                     // strb wzr, [x{dst}, x9]
                     asm_strb_w16_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
                     {
@@ -3570,7 +3570,7 @@ static int gen(Node *node) {
                     }
                     asm_movb_rbp_r10_al(cg_sec, 0); // movb -1(src,%%rcx), %%al -- approximate: use r1 as rcx
                     asm_movb_al_rbp_r10(cg_sec, 0); // movb %%al, -1(dst,%%rcx)
-                    x86_dec_r(cg_sec, 8, X86_RCX); // subq $1, %rcx
+                    x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
                     {
                         size_t o = asm_jmp_label(cg_sec); // jmp .L.strcpy.c
                         asm_fixup_add(cg_sec, o, format(".L.strcpy.%d", c), 0);
@@ -3587,7 +3587,7 @@ static int gen(Node *node) {
                         asm_fixup_add(cg_sec, o, format(".L.strzero_end.%d", c2), 1);
                     }
                     asm_movb_al_rbp_r10(cg_sec, copy_len); // movb $0, copy_len-1(dst,%%rcx) -- approximate
-                    x86_dec_r(cg_sec, 8, X86_RCX); // subq $1, %rcx
+                    x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
                     {
                         size_t o = asm_jmp_label(cg_sec); // jmp .L.strzero.c2
                         asm_fixup_add(cg_sec, o, format(".L.strzero.%d", c2), 0);
@@ -3631,12 +3631,12 @@ static int gen(Node *node) {
             else
                 asm_mov_imm(cg_sec, 9, 8, node->lhs->ty->size); // mov x9, #size
             cg_def_label(format(".L.copy.%d", c));
-            asm_cmp_zero(cg_sec, 9, 8); // cmp x9, #0
+            secbuf_emit32le(cg_sec, arm64_subs_imm(1, ARM64_XZR, 9, 0, 0)); // cmp x9, #0
             {
                 size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
                 asm_fixup_add(cg_sec, _cj, format(".L.copy_end.%d", c), 1);
             }
-            asm_dec(cg_sec, 9, 8); // sub x9, x9, #1
+            secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // sub x9, x9, #1
             asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
             asm_strb_w16_x9(cg_sec, dst); // strb w16, [x{dst}, x9]
             {
@@ -3659,7 +3659,7 @@ static int gen(Node *node) {
                 x86_mov_rm(cg_sec, 1, X86_RAX, msrc); // cmpq $0, %%rcx
                 x86_mov_mr(cg_sec, 1, mdst, X86_RAX); // je .L.copy_end.%d
             }
-            x86_dec_r(cg_sec, 8, X86_RCX); // dec rcx
+            x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
             size_t cj2 = asm_jmp_label(cg_sec); // movb %%al, -1(%s,%%rcx)
             asm_fixup_add(cg_sec, cj2, format(".L.copy.%d", c), 0); // subq $1, %%rcx
             cg_def_label(format(".L.copy_end.%d", c)); // jmp .L.copy.%d
@@ -4079,10 +4079,10 @@ static int gen(Node *node) {
             emit_mov_imm64("x12", (uint64_t)var->ty->size);
         }
         cg_def_label(format(".L.zero.%d", c));
-        asm_cmp_zero(cg_sec, 9, 8); // cmp x9, #0
+        secbuf_emit32le(cg_sec, arm64_subs_imm(1, ARM64_XZR, 9, 0, 0)); // cmp x9, #0
         size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.zero_end.c
         asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
-        asm_dec(cg_sec, 9, 8); // sub x9, x9, #1
+        secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // sub x9, x9, #1
         asm_str_xzr_w11_x9(cg_sec); // strb wzr, [x11, x9]
         size_t zj2 = asm_jmp_label(cg_sec); // b .L.zero.c
         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0); // strb wzr, [x11, x9]
@@ -4094,7 +4094,7 @@ static int gen(Node *node) {
         size_t zj1 = asm_jcc_label(cg_sec, X86_E); // cmpq $0, %%rcx
         asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1); // fixup add for forward branch
         x86_mov_mi(cg_sec, 1, x86_mem_idx(X86_RBP, CG_X86_REG(1), 1, -var->offset - 1), 0); // movb $0, -%d-1(%%rbp,%%rcx)
-        x86_dec_r(cg_sec, 8, X86_RCX); // subq $1, %rcx
+        x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
         size_t zj2 = asm_jmp_label(cg_sec); // jmp .L.zero.%d
         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0); // fixup label
         cg_def_label(format(".L.zero_end.%d", c)); // sub x11, %s, #%d
@@ -4699,12 +4699,12 @@ static int gen(Node *node) {
                 }
                 asm_mov_imm(cg_sec, 9, 8, node->lhs->ty->size); // mov x9, #size
                 cg_def_label(format(".L.retcopy.%d", c));
-                asm_cmp_zero(cg_sec, 9, 8); // cmp x9, #0
+                secbuf_emit32le(cg_sec, arm64_subs_imm(1, ARM64_XZR, 9, 0, 0)); // cmp x9, #0
                 {
                     size_t _cj = asm_jcc_label(cg_sec, ARM64_EQ);
                     asm_fixup_add(cg_sec, _cj, format(".L.retcopy_end.%d", c), 1);
                 }
-                asm_dec(cg_sec, 9, 8); // sub x9, x9, #1
+                secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // sub x9, x9, #1
                 asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
                 asm_strb_w16_x9(cg_sec, 11); // strb w16, [x11, x9]
                 {
@@ -4724,7 +4724,7 @@ static int gen(Node *node) {
                 }
                 (void)0 /* FIXME: sized mov */;
                 (void)0 /* FIXME: sized mov */;
-                x86_dec_r(cg_sec, 8, X86_RCX); // dec rcx
+                x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
                 {
                     size_t o = asm_jmp_label(cg_sec); // .L.retcopy_end.%d:
                     asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
@@ -7888,7 +7888,7 @@ struct ObjFile *codegen(Program *prog) {
                     asm_fixup_add(cg_sec, jze1, format(".L.param_end.%d", c), 0);
                     asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%%r11,%%r10), %%al
                     asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%%rbp,%%r10)
-                    x86_dec_r(cg_sec, 8, X86_R10); // subq $1, %%r10
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp1 = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, jmp1, format(".L.param.%d", c), 0);
                     cg_def_label(format(".L.param_end.%d", c));
@@ -7951,7 +7951,7 @@ struct ObjFile *codegen(Program *prog) {
                     asm_fixup_add(cg_sec, jze2, format(".L.param_end.%d", c), 0);
                     asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%%r11,%%r10), %%al
                     asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%%rbp,%%r10)
-                    x86_dec_r(cg_sec, 8, X86_R10); // subq $1, %r10
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp2 = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, jmp2, format(".L.param.%d", c), 0);
                     cg_def_label(format(".L.param_end.%d", c));
@@ -7970,7 +7970,7 @@ struct ObjFile *codegen(Program *prog) {
                     asm_fixup_add(cg_sec, jze3, format(".L.param_end.%d", c), 0);
                     asm_movb_rbp_r10_al(cg_sec, stack_off2); // movb stack_off-1(%%rbp,%%r10), %%al
                     asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%%rbp,%%r10)
-                    x86_dec_r(cg_sec, 8, X86_R10); // subq $1, %r10
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp3 = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, jmp3, format(".L.param.%d", c), 0);
                     cg_def_label(format(".L.param_end.%d", c));
@@ -8244,10 +8244,10 @@ struct ObjFile *codegen(Program *prog) {
                         }
                         asm_mov_imm(cg_sec, 9, 8, var->ty->size); // mov x9, #var->ty->size
                         cg_def_label(format(".L.param_copy.%d", c));
-                        asm_cmp_zero(cg_sec, 9, 8); // cmp x9, #0
+                        secbuf_emit32le(cg_sec, arm64_subs_imm(1, ARM64_XZR, 9, 0, 0)); // cmp x9, #0
                         size_t cj = asm_jcc_label(cg_sec, ARM64_EQ); // beq .L.param_copy_end.%d
                         asm_fixup_add(cg_sec, cj, format(".L.param_copy_end.%d", c), 1);
-                        asm_dec(cg_sec, 9, 8); // sub x9, x9, #1
+                        secbuf_emit32le(cg_sec, arm64_sub_imm(1, 9, 9, 1, 0)); // sub x9, x9, #1
                         asm_ldur_phy(cg_sec, 18, 16, 0, 0); // ldurb w18, [x16]
                         asm_stur_phy(cg_sec, 18, 17, 0, 0); // sturb w18, [x17]
                         asm_add_imm(cg_sec, 16, 8, 1); // add x16, x16, #1
