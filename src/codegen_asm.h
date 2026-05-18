@@ -1893,7 +1893,7 @@ static size_t asm_ldr_phy_reg(SecBuf *s, int dst_phy, VReg src, int sf) {
 // mov x{dst_phy}, x{src_vreg} — move vreg to physical GP register (via orr xd, xzr, xs)
 static size_t asm_mov_phy_reg(SecBuf *s, int dst_phy, VReg src, int sf) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_add_reg(sf, dst_phy, 31, CG_ARM_REG(src), ARM64_LSL, 0)); // mov x{dst_phy}, x{src}
+    secbuf_emit32le(s, arm64_orr_reg(sf, dst_phy, ARM64_XZR, CG_ARM_REG(src), ARM64_LSL, 0)); // mov x{dst_phy}, x{src}
     return s->len - off;
 }
 // cmn vreg, #imm — compare negative (subs xzr, reg, imm)
