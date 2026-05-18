@@ -1862,7 +1862,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     }
 
     if (stack_reserve > 0)
-        asm_sub_imm(cg_sec, 4, 8, stack_reserve); // sub $stack_reserve, r4
+        x86_sub_ri(cg_sec, 8, X86_RSP, stack_reserve); // subq $stack_reserve, %rsp
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         int r = gen(argv[i]);
@@ -1912,7 +1912,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             reg_arg_mask |= (1 << arg_regs[i]);
 
     if (stack_reserve > 0)
-        asm_sub_imm(cg_sec, 4, 8, stack_reserve); // sub $stack_reserve, r4
+        x86_sub_ri(cg_sec, 8, X86_RSP, stack_reserve); // subq $stack_reserve, %rsp
 
     for (int i = nargs - 1; i >= 0; i--) {
         if (arg_stack_idx[i] < 0)
@@ -2044,8 +2044,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(callee_reg);
     }
 
-    if (stack_reserve > 0)
-        (void)0 /* FIXME: sized alu op */;
+    if (stack_reserve > 0 && (!call_target || strcmp(call_target, "alloca") != 0))
+        x86_add_ri(cg_sec, 8, X86_RSP, stack_reserve); // addq $stack_reserve, %rsp
 
     if ((saved_scratch & 2) && hidden_ret_reg != 1) {
         used_regs |= 2;

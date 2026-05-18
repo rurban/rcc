@@ -352,12 +352,27 @@ int main(int argc, char **argv) {
                 objfile_free(obj);
                 if (opt_S) {
                     char cmd[2048];
-#ifdef ARCH_ARM64
-                    snprintf(cmd, sizeof(cmd), "aarch64-linux-gnu-objdump -d -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
-#else
-                    snprintf(cmd, sizeof(cmd), "objdump -d -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
-#endif
-                             tmp_obj_path, asm_path, tmp_obj_path);
+                    // Derive objdump name from GCC: "gcc" -> "objdump",
+                    // "aarch64-linux-gnu-gcc" -> "aarch64-linux-gnu-objdump"
+                    const char *objdump = "objdump";
+                    size_t gcc_len = strlen(GCC);
+                    if (gcc_len > 4 && GCC[gcc_len - 1] == 'c' && GCC[gcc_len - 2] == 'c' && GCC[gcc_len - 3] == 'g' && GCC[gcc_len - 4] == '-') {
+                        // Cross-compiler: strip trailing "-gcc", append "-objdump"
+                        char *triple = malloc(gcc_len - 3);
+                        if (triple) {
+                            memcpy(triple, GCC, gcc_len - 4);
+                            triple[gcc_len - 4] = '\0';
+                            size_t len = strlen(triple) + 9;
+                            char *xobj = malloc(len);
+                            if (xobj) {
+                                snprintf(xobj, len, "%s-objdump", triple);
+                                objdump = xobj;
+                            }
+                            free(triple);
+                        }
+                    }
+                    snprintf(cmd, sizeof(cmd), "%s -D -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
+                             objdump, tmp_obj_path, asm_path, tmp_obj_path);
                     int status = system(cmd);
                     if (status != 0) {
                         fprintf(stderr, "rcc: error: objdump failed for -S output\n");
