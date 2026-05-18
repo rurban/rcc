@@ -638,6 +638,19 @@ static size_t asm_mul_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
     return count;
 #endif
 }
+// imul $imm, r_dst, r_src  — x86 3-operand immediate multiply
+static size_t asm_imul_imm(SecBuf *s, int dst, int src, int size, int32_t imm) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    (void)dst;
+    (void)src;
+    (void)size;
+    (void)imm;
+#else
+    x86_imul_rri(s, size, CG_X86_REG(dst), CG_X86_REG(src), imm);
+#endif
+    return s->len - off;
+}
 static size_t asm_sdiv_reg_reg(SecBuf *s, int dst, int src, int size) {
     size_t off = s->len;
 #ifdef ARCH_ARM64

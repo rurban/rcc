@@ -6806,8 +6806,7 @@ static int gen(Node *node) {
                 else if (!strcmp(inst, "sub"))
                     asm_sub_imm(cg_sec, r_lhs, sz, imm); // sub r_lhs, #imm
                 else if (!strcmp(inst, "imul")) {
-                    asm_mov_imm(cg_sec, r_lhs, sz, (int32_t)node->rhs->val); // mov r_lhs, #val
-                    asm_mul_reg_reg(cg_sec, r_lhs, r_lhs, sz); // imul r_lhs, r_lhs
+                    asm_imul_imm(cg_sec, r_lhs, r_lhs, sz, (int32_t)node->rhs->val); // imul $val, r_lhs, r_lhs
                 } else if (!strcmp(inst, "and"))
                     asm_and_imm(cg_sec, r_lhs, sz, imm); // and r_lhs, #imm
                 else if (!strcmp(inst, "or"))
