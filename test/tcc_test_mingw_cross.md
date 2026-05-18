@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 105
-- **Failed**: 46
-- **Pass Rate**: 69%
+- **Passed**: 104
+- **Failed**: 47
+- **Pass Rate**: 68%
 
 ## Detailed Results
 
@@ -36,7 +36,7 @@ Generated: May 2026
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
 | 22_floating_point           | MISMATCH     | Output does not match .expect |
-| 23_type_coercion            | MISMATCH     | Output does not match .expect |
+| 23_type_coercion            | PASS         | Output matches                |
 | 24_math_library             | MISMATCH     | Output does not match .expect |
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
@@ -46,7 +46,7 @@ Generated: May 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
-| 33_ternary_op               | MISMATCH     | Output does not match .expect |
+| 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
 | 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
 | 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -59,12 +59,12 @@ Generated: May 2026
 | 43_void_param               | PASS         | Output matches                |
 | 44_scoped_declarations      | PASS         | Output matches                |
 | 45_empty_for                | PASS         | Output matches                |
-| 46_grep                     | PASS         | Output matches                |
+| 46_grep                     | COMPILE_FAIL | rcc returned non-zero         |
 | 47_switch_return            | PASS         | Output matches                |
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | COMPILE_FAIL | rcc returned non-zero         |
 | 50_logical_second_arg       | PASS         | Output matches                |
-| 51_static                   | PASS         | Output matches                |
+| 51_static                   | EXEC_FAIL    | non-zero exit                 |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
 | 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
@@ -113,7 +113,7 @@ Generated: May 2026
 | 108_constructor             | MISMATCH     | Output does not match .expect |
 | 109_float_struct_calling    | MISMATCH     | Output does not match .expect |
 | 110_average                 | PASS         | Output matches                |
-| 111_conversion              | MISMATCH     | Output does not match .expect |
+| 111_conversion              | PASS         | Output matches                |
 | 112_backtrace               | SKIP         | Skipped                       |
 | 113_btdll                   | SKIP         | Skipped                       |
 | 114_bound_signal            | SKIP         | Skipped                       |
@@ -125,13 +125,13 @@ Generated: May 2026
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
 | 121_struct_return           | MISMATCH     | Output does not match .expect |
 | 122_vla_reuse               | PASS         | Output matches                |
-| 123_vla_bug                 | PASS         | Output matches                |
+| 123_vla_bug                 | EXEC_FAIL    | non-zero exit                 |
 | 124_atomic_counter          | EXEC_FAIL    | non-zero exit                 |
 | 125_atomic_misc             | MISMATCH     | Output differs                |
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | EXEC_FAIL    | non-zero exit                 |
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
-| 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
+| 129_scopes                  | MISMATCH     | Output does not match .expect |
 | 130_large_argument          | MISMATCH     | Output does not match .expect |
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | MISMATCH     | Output does not match .expect |
@@ -146,7 +146,7 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | MISMATCH     | Output does not match .expect |
 | test_arm64_asm              | SKIP         | Skipped                       |
-| test_atomic_op              | PASS         | exit=5                        |
+| test_atomic_op              | PASS         | exit=84                       |
 | test_atomic_op2             | PASS         | exit=5                        |
 | test_bitfields              | PASS         | exit=0                        |
 | test_builtins               | PASS         | exit=0                        |

@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 110
-- **Failed**: 41
-- **Pass Rate**: 72%
+- **Passed**: 112
+- **Failed**: 39
+- **Pass Rate**: 74%
 
 ## Detailed Results
 
@@ -36,7 +36,7 @@ Generated: May 2026
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
 | 22_floating_point           | MISMATCH     | Output does not match .expect |
-| 23_type_coercion            | MISMATCH     | Output does not match .expect |
+| 23_type_coercion            | PASS         | Output matches                |
 | 24_math_library             | MISMATCH     | Output does not match .expect |
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
@@ -93,7 +93,7 @@ Generated: May 2026
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | EXEC_FAIL    | non-zero exit                 |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
-| 92_enum_bitfield            | PASS         | Output matches                |
+| 92_enum_bitfield            | MISMATCH     | Output does not match .expect |
 | 93_integer_promotion        | MISMATCH     | Output does not match .expect |
 | 94_generic                  | PASS         | Output matches                |
 | 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
@@ -113,7 +113,7 @@ Generated: May 2026
 | 108_constructor             | MISMATCH     | Output does not match .expect |
 | 109_float_struct_calling    | MISMATCH     | Output does not match .expect |
 | 110_average                 | PASS         | Output matches                |
-| 111_conversion              | MISMATCH     | Output does not match .expect |
+| 111_conversion              | PASS         | Output matches                |
 | 112_backtrace               | SKIP         | Skipped                       |
 | 113_btdll                   | SKIP         | Skipped                       |
 | 114_bound_signal            | SKIP         | Skipped                       |
@@ -136,7 +136,7 @@ Generated: May 2026
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | MISMATCH     | Output does not match .expect |
 | 133_old_func                | MISMATCH     | Output does not match .expect |
-| 134_double_to_signed        | MISMATCH     | Output does not match .expect |
+| 134_double_to_signed        | PASS         | Output matches                |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
 | 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
@@ -146,7 +146,7 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | PASS         | Output matches                |
 | test_arm64_asm              | SKIP         | Skipped                       |
-| test_atomic_op              | PASS         | exit=139                      |
+| test_atomic_op              | PASS         | exit=132                      |
 | test_atomic_op2             | PASS         | exit=139                      |
 | test_bitfields              | PASS         | exit=0                        |
 | test_builtins               | PASS         | exit=0                        |
