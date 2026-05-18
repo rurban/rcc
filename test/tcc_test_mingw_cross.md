@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 104
-- **Failed**: 47
-- **Pass Rate**: 68%
+- **Passed**: 106
+- **Failed**: 45
+- **Pass Rate**: 70%
 
 ## Detailed Results
 
@@ -64,7 +64,7 @@ Generated: May 2026
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | COMPILE_FAIL | rcc returned non-zero         |
 | 50_logical_second_arg       | PASS         | Output matches                |
-| 51_static                   | EXEC_FAIL    | non-zero exit                 |
+| 51_static                   | MISMATCH     | Output does not match .expect |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
 | 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
@@ -131,11 +131,11 @@ Generated: May 2026
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | EXEC_FAIL    | non-zero exit                 |
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
-| 129_scopes                  | MISMATCH     | Output does not match .expect |
+| 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
 | 130_large_argument          | MISMATCH     | Output does not match .expect |
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
-| 132_bound_test              | MISMATCH     | Output does not match .expect |
-| 133_old_func                | MISMATCH     | Output does not match .expect |
+| 132_bound_test              | PASS         | Output matches                |
+| 133_old_func                | PASS         | Output matches                |
 | 134_double_to_signed        | PASS         | Output matches                |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
 | 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
