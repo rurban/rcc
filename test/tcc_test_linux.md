@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 117
-- **Failed**: 34
-- **Pass Rate**: 77%
+- **Passed**: 118
+- **Failed**: 33
+- **Pass Rate**: 78%
 
 ## Detailed Results
 
@@ -46,7 +46,7 @@ Generated: May 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
-| 33_ternary_op               | MISMATCH     | Output does not match .expect |
+| 33_ternary_op               | PASS         | Output matches                |
 | 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
 | 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -76,7 +76,7 @@ Generated: May 2026
 | 71_macro_empty_arg          | PASS         | Output matches                |
 | 72_long_long_constant       | PASS         | Output matches                |
 | 73_arm64                    | SKIP         | Skipped                       |
-| 75_array_in_struct_init     | MISMATCH     | Output does not match .expect |
+| 75_array_in_struct_init     | PASS         | Output matches                |
 | 76_dollars_in_identifiers   | PASS         | Output matches                |
 | 77_push_pop_macro           | PASS         | Output matches                |
 | 78_vla_label                | PASS         | Output matches                |
@@ -93,7 +93,7 @@ Generated: May 2026
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | EXEC_FAIL    | non-zero exit                 |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
-| 92_enum_bitfield            | PASS         | Output matches                |
+| 92_enum_bitfield            | MISMATCH     | Output does not match .expect |
 | 93_integer_promotion        | MISMATCH     | Output does not match .expect |
 | 94_generic                  | PASS         | Output matches                |
 | 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
