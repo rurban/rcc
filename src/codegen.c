@@ -1077,7 +1077,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             asm_mov_sp_x16(cg_sec); // mov sp, x16
             asm_ldr_x16_reg_uoff(cg_sec, rbuf, 8); // ldr x16, [x{rbuf}, #8]  (buf[1] = resume addr)
             asm_mov_x0_reg(cg_sec, rval); // mov x0, x{rval}  (setjmp return value)
-            asm_jmp_reg(cg_sec, 16); // br x16
+            secbuf_emit32le(cg_sec, arm64_br(ARM64_X16)); // br x16
             free_reg(rbuf);
             free_reg(rval);
             return -1;
@@ -4815,7 +4815,7 @@ static VReg gen(Node *node) {
                     else if (ret_ty && ret_ty->is_unsigned)
                         asm_mov_w0_reg32(cg_sec, r); // mov w0, reg32[r]
                     else
-                        asm_sxtw(cg_sec, 0, r); // sxtw x0, reg32[r]
+                        asm_sxtw(cg_sec, ARM64_X0, CG_ARM_REG(r)); // sxtw x0, reg32[r]
 #else
                     asm_cvttsd2si(cg_sec, r, sz); // cvttsd2si xmm0, rr
                     asm_mov_reg_to_retval(cg_sec, r, 8); // movq rr, %rax
@@ -6031,7 +6031,7 @@ static VReg gen(Node *node) {
             }
             // ldr x12, [x{r}, #16]  — __vr_top
             asm_ldr_x12_uoff(cg_sec, r, 2); // ldr x12, [x{r}, #16]
-            asm_sxtw(cg_sec, 17, 16); // sxtw x17, w16
+            asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
             asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
             asm_add_w16_imm(cg_sec, fp_size); // add w16, w16, #fp_size
             // str w16, [x{r}, #28]
@@ -6051,7 +6051,7 @@ static VReg gen(Node *node) {
             }
             // ldr x12, [x{r}, #8]  — __gr_top
             asm_ldr_x12_uoff(cg_sec, r, 1); // ldr x12, [x{r}, #8]
-            asm_sxtw(cg_sec, 17, 16); // sxtw x17, w16
+            asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
             asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
             if (is_ptr_val_struct) {
                 asm_ldr_x12_0(cg_sec); // ldr x12, [x12]
@@ -8138,7 +8138,7 @@ struct ObjFile *codegen(Program *prog) {
                 }
             }
             if (retbuf_offset <= 4095)
-                asm_stur_fp(cg_sec, 8, retbuf_offset); // stur x8, [x29, #-retbuf_offset]
+                secbuf_emit32le(cg_sec, arm64_stur(3, ARM64_X8, ARM64_X29, -retbuf_offset)); // stur x8, [x29, #-retbuf_offset]
             else {
                 int v = retbuf_offset;
                 emit_mov_imm64(ARM64_X16, (uint64_t)v); // mov x16, #v
