@@ -91,7 +91,7 @@ static size_t asm_movss_rip_xmm(SecBuf *s, const char *label) {
             bool is_local_label = label[0] == '.';
             sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
         }
-        // sse_rm: REX(1) + 0x0F(1) + op(1) + ModRM(1) + disp(4) -> disp at off+5
+        // sse_rm: pfx(1) + REX(1) + 0x0F(1) + op(1) + ModRM(1) + disp(4) -> disp at off+5
         objfile_add_reloc(cg_obj, SEC_TEXT, off + 5, sidx, R_X86_64_PC32, -4);
     }
     return s->len - off;
@@ -8465,8 +8465,8 @@ struct ObjFile *codegen(Program *prog) {
                 } else if (is_flonum(var->ty) && xfp < 8) {
                     // Save float/double param from xmm{xfp} to stack
                     if (var->ty->size <= 4) {
-                        asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0 (narrow double to float)
-                        x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp); // movss %xmm{xfp}, -off(%rbp)
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, (X86XmmReg)xfp); // cvtsd2ss %xmm{xfp}, %xmm0
+                        x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss %xmm0, -off(%rbp)
                     } else {
                         x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp); // movsd %xmm{xfp}, -off(%rbp)
                     }
