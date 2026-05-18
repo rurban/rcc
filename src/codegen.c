@@ -64,35 +64,33 @@ static size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
     asm_record(ASM_LEA_FP, off, s->len - off, r, -1, -1, 8, 0, 0, label, 0, -1, false);
     return s->len - off;
 }
-// movsd .Llabel(%rip), %xmm0 — load double constant via rip-relative address
+// movsd .Llabel(%rip), %xmm0 — 8 bytes: f2 0f 10 05 <disp32>
 static size_t asm_movsd_rip_xmm(SecBuf *s, const char *label) {
     size_t off = s->len;
-    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
-    x86_movsd_rm(s, X86_XMM0, m); // movsd .Llabel(%rip), %xmm0
+    secbuf_emit32le(s, 0x05100ff2); // f2 0f 10 05
+    secbuf_emit32le(s, 0); // placeholder disp32
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0) {
-            bool is_local_label = label[0] == '.';
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
+            bool il = label[0] == '.';
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
         }
-        // sse_rm: pfx(1) + REX(1) + 0x0F(1) + op(1) + ModRM(1) + disp(4) -> disp at off+5
-        objfile_add_reloc(cg_obj, SEC_TEXT, off + 5, sidx, R_X86_64_PC32, -4);
+        objfile_add_reloc(cg_obj, SEC_TEXT, off + 4, sidx, R_X86_64_PC32, -4);
     }
     return s->len - off;
 }
-// movss .Llabel(%rip), %xmm0 — load float constant via rip-relative address
+// movss .Llabel(%rip), %xmm0 — 8 bytes: f3 0f 10 05 <disp32>
 static size_t asm_movss_rip_xmm(SecBuf *s, const char *label) {
     size_t off = s->len;
-    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
-    x86_movss_rm(s, X86_XMM0, m); // movss .Llabel(%rip), %xmm0
+    secbuf_emit32le(s, 0x05100ff3); // f3 0f 10 05
+    secbuf_emit32le(s, 0); // placeholder disp32
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0) {
-            bool is_local_label = label[0] == '.';
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
+            bool il = label[0] == '.';
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
         }
-        // sse_rm: pfx(1) + REX(1) + 0x0F(1) + op(1) + ModRM(1) + disp(4) -> disp at off+5
-        objfile_add_reloc(cg_obj, SEC_TEXT, off + 5, sidx, R_X86_64_PC32, -4);
+        objfile_add_reloc(cg_obj, SEC_TEXT, off + 4, sidx, R_X86_64_PC32, -4);
     }
     return s->len - off;
 }
