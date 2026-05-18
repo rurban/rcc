@@ -2100,10 +2100,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
 #ifndef ARCH_ARM64
-        if (node->ty->kind == TY_FLOAT)
-            asm_cvtss2sd(cg_sec); // lea -%d(%%rbp), %s
+        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, rr
 #endif
-        (void)0 /* TODO: movq to/from xmm */;
     } else {
         asm_mov_retval(cg_sec, r, 8); // movq %rax, rr
     }
