@@ -5,8 +5,8 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 106
-- **Failed**: 45
+- **Passed**: 107
+- **Failed**: 44
 - **Pass Rate**: 70%
 
 ## Detailed Results
@@ -64,7 +64,7 @@ Generated: May 2026
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | COMPILE_FAIL | rcc returned non-zero         |
 | 50_logical_second_arg       | PASS         | Output matches                |
-| 51_static                   | MISMATCH     | Output does not match .expect |
+| 51_static                   | EXEC_FAIL    | non-zero exit                 |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
 | 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
@@ -76,7 +76,7 @@ Generated: May 2026
 | 71_macro_empty_arg          | PASS         | Output matches                |
 | 72_long_long_constant       | PASS         | Output matches                |
 | 73_arm64                    | SKIP         | Skipped                       |
-| 75_array_in_struct_init     | MISMATCH     | Output does not match .expect |
+| 75_array_in_struct_init     | PASS         | Output matches                |
 | 76_dollars_in_identifiers   | PASS         | Output matches                |
 | 77_push_pop_macro           | PASS         | Output matches                |
 | 78_vla_label                | PASS         | Output matches                |

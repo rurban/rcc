@@ -468,9 +468,9 @@ static size_t asm_movq_zero(SecBuf *s, VReg r) { return asm_xor_reg_reg(s, r, r,
 static size_t asm_movl_zero(SecBuf *s, VReg r) { return asm_xor_reg_reg(s, r, r, 4); }
 
 #ifdef ARCH_ARM64
-static size_t asm_movk(SecBuf *s, VReg r, int sf, uint16_t imm16, int shift) {
+static size_t asm_movk(SecBuf *s, Arm64Reg rd, int sf, uint16_t imm16, int shift) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_movk(sf, CG_ARM_REG(r), imm16, shift));
+    secbuf_emit32le(s, arm64_movk(sf, rd, imm16, shift));
     return 4;
 }
 #endif
@@ -1896,13 +1896,13 @@ static size_t asm_mov_x0_x19(SecBuf *s) {
     return s->len - off;
 }
 // add xrd, xrd, #0 — relocation placeholder for ADD_ABS_LO12
-static size_t asm_add_rd_rd_0(SecBuf *s, VReg rd) {
+static size_t asm_add_rd_rd_0(SecBuf *s, Arm64Reg rd) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_add_imm(1, rd, rd, 0, 0)); // add x{rd}, x{rd}, #0
     return s->len - off;
 }
 // ldr xrd, [xrd] — load pointer from self (GOT indirection)
-static size_t asm_ldr_rd_rd(SecBuf *s, VReg rd) {
+static size_t asm_ldr_rd_rd(SecBuf *s, Arm64Reg rd) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_ldr_uoff(1, rd, rd, 0)); // ldr x{rd}, [x{rd}]
     return s->len - off;
@@ -2128,9 +2128,9 @@ static size_t asm_xor_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 }
 
 #ifdef ARCH_ARM64
-static size_t asm_movz(SecBuf *s, int r, int sf, uint16_t imm16, int shift) {
+static size_t asm_movz(SecBuf *s, Arm64Reg rd, int sf, uint16_t imm16, int shift) {
     size_t off = s->len;
-    secbuf_emit32le(s, arm64_movz(sf, CG_ARM_REG(r), imm16, shift));
+    secbuf_emit32le(s, arm64_movz(sf, rd, imm16, shift));
     return s->len - off;
 }
 // fmov x{rd}, d{rn}  — copy fp reg raw bits to integer virtual reg
@@ -2193,9 +2193,9 @@ static size_t asm_ldur(SecBuf *s, int dst, int base, int sf, int off) {
 #endif
     return s->len - off2;
 }
-// unscaled load for any size (byte/half/word/dword), negative offsets ok
-static size_t asm_ldur_sz(SecBuf *s, int dst, int base, int sz, int off) {
 #ifdef ARCH_ARM64
+// unscaled load for any size (byte/half/word/dword), negative offsets ok
+static size_t asm_ldur_sz(SecBuf *s, VReg dst, VReg base, int sz, int off) {
     switch (sz) {
     case 1: secbuf_emit32le(s, arm64_ldurb(CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
     case 2: secbuf_emit32le(s, arm64_ldurh(CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
@@ -2203,10 +2203,11 @@ static size_t asm_ldur_sz(SecBuf *s, int dst, int base, int sz, int off) {
     default: secbuf_emit32le(s, arm64_ldur(1, CG_ARM_REG(dst), CG_ARM_REG(base), off)); break;
     }
     return 4;
-#else
-    return asm_ldur(s, dst, base, sz == 8 ? 1 : 0, off);
-#endif
+    //#else
+    //return asm_ldur(s, dst, base, sz == 8 ? 1 : 0, off);
 }
+#endif
+#if 0
 static size_t asm_ldr_imm(SecBuf *s, int dst, int base, int sf, int off, bool pre) {
     size_t off2 = s->len;
 #ifdef ARCH_ARM64
@@ -2227,6 +2228,7 @@ static size_t asm_str_imm(SecBuf *s, int src, int base, int sf, int off, bool pr
 #endif
     return s->len - off2;
 }
+#endif
 
 #ifdef ARCH_ARM64
 static size_t asm_stlr(SecBuf *s, int src, int base, int size) {
@@ -2281,7 +2283,7 @@ static size_t asm_ldrh(SecBuf *s, int dst, int base, int off) {
 }
 
 #ifdef ARCH_ARM64
-static size_t asm_adrp(SecBuf *s, int rd) {
+static size_t asm_adrp(SecBuf *s, Arm64Reg rd) {
     size_t off = s->len;
     secbuf_emit32le(s, arm64_adrp(rd, 0));
     return s->len - off;
@@ -3366,5 +3368,4 @@ static size_t asm_stxr_8(SecBuf *s, int r_tmp, int r_addr, int size) {
 }
 #endif // ARCH_ARM64
 
-#endif // CODEGEN_ASM_H
 #endif // CODEGEN_ASM_H
