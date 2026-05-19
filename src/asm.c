@@ -713,8 +713,8 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 // mnem is like "b.eq", "b.ne", etc. Already split at first '.'
 
 // Helper macros
-#define REG(n)  parse_arm64_reg(ops[n], NULL)
-#define REG32(n, w) parse_arm64_reg(ops[n], w)
+#define AREG(n)  parse_arm64_reg(ops[n], NULL)
+#define AREG32(n, w) parse_arm64_reg(ops[n], w)
 #define IMM(n)  parse_imm(ops[n])
 #define SF(r)   ((r) < 32 ? 1 : 0)  // always 1 for x-regs in context
 
@@ -725,20 +725,20 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     int sf = is32_0 ? 0 : 1;
 
     if (!strcmp(mnem, "nop")) {
-        secbuf_emit32le(buf, arm64_nop());
+        arm64_nop(buf);
         return true;
     }
     if (!strcmp(mnem, "ret")) {
         int rn = (nops > 0 && r0 >= 0) ? r0 : 30;
-        secbuf_emit32le(buf, arm64_ret(rn));
+        arm64_ret(buf, rn);
         return true;
     }
     if (!strcmp(mnem, "br")) {
-        secbuf_emit32le(buf, arm64_br(r0));
+        arm64_br(buf, r0);
         return true;
     }
     if (!strcmp(mnem, "blr")) {
-        secbuf_emit32le(buf, arm64_blr(r0));
+        arm64_blr(buf, r0);
         return true;
     }
 
@@ -781,12 +781,12 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         if (ops[1][0] == '#' || isdigit((unsigned char)ops[1][0]) || ops[1][0] == '-') {
             // Immediate: emit movz (and possibly movk if > 16 bits)
             uint64_t val = (uint64_t)(int64_t)IMM(1);
-            secbuf_emit32le(buf, arm64_movz(sf, r0, (uint16_t)(val & 0xffff), 0));
+            arm64_movz(buf, sf, r0, (uint16_t)(val & 0xffff), 0);
             if (val >> 16) {
                 int sh = 16;
                 uint64_t v = val >> 16;
                 while (v && sh <= (sf ? 48 : 16)) {
-                    secbuf_emit32le(buf, arm64_movk(sf, r0, (uint16_t)(v & 0xffff), sh));
+                    arm64_movk(buf, sf, r0, (uint16_t)(v & 0xffff), sh);
                     v >>= 16;
                     sh += 16;
                 }
@@ -794,7 +794,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             return true;
         }
         // Register: MOV rd, rn → ORR rd, xzr, rn
-        secbuf_emit32le(buf, arm64_orr_reg(sf, r0, 31, r1, ARM64_LSL, 0));
+        arm64_orr_reg(buf, sf, r0, 31, r1, ARM64_LSL, 0);
         return true;
     }
 
@@ -803,7 +803,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         int64_t imm = IMM(1);
         int shift = (nops > 2) ? (int)IMM(2) : 0; // e.g. "lsl #16"
         if (nops > 2 && strstr(ops[2], "lsl")) shift = (int)IMM(2);
-        secbuf_emit32le(buf, arm64_movz(sf, r0, (uint16_t)imm, shift));
+        arm64_movz(buf, sf, r0, (uint16_t)imm, shift);
         return true;
     }
     if (!strcmp(mnem, "movk")) {
@@ -814,11 +814,11 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             while (*p && !isdigit((unsigned char)*p)) p++;
             shift = atoi(p);
         }
-        secbuf_emit32le(buf, arm64_movk(sf, r0, (uint16_t)imm, shift));
+        arm64_movk(buf, sf, r0, (uint16_t)imm, shift);
         return true;
     }
     if (!strcmp(mnem, "mvn")) {
-        secbuf_emit32le(buf, arm64_mvn(sf, r0, r1, ARM64_LSL, 0));
+        arm64_mvn(buf, sf, r0, r1, ARM64_LSL, 0);
         return true;
     }
 
@@ -834,8 +834,8 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             if (!is_imm && o2[0] == ':') {
                 uint32_t rtype;
                 const char *sym = parse_arm64_sym_reloc(o2, &rtype);
-                uint32_t insn = arm64_add_imm(sf, r0, r1, 0, 0);
-                size_t off = secbuf_emit32le(buf, insn);
+                size_t off = buf->len;
+                arm64_add_imm(buf, sf, r0, r1, 0, 0);
                 int sidx = ensure_sym(as, sym);
                 objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
                 return true;
@@ -848,11 +848,19 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
                     while (*p && !isdigit((unsigned char)*p)) p++;
                     shift = atoi(p) / 12; // 0 or 1 (for shift12)
                 }
-                uint32_t insn = is_sub ? (set_flags ? arm64_subs_imm(sf, r0, r1, (int32_t)imm, shift) : arm64_sub_imm(sf, r0, r1, (int32_t)imm, shift)) : (set_flags ? arm64_adds_imm(sf, r0, r1, (int32_t)imm, shift) : arm64_add_imm(sf, r0, r1, (int32_t)imm, shift));
-                secbuf_emit32le(buf, insn);
-            } else {
-                uint32_t insn = is_sub ? (set_flags ? arm64_subs_reg(sf, r0, r1, r2, ARM64_LSL, 0) : arm64_sub_reg(sf, r0, r1, r2, ARM64_LSL, 0)) : (set_flags ? arm64_adds_reg(sf, r0, r1, r2, ARM64_LSL, 0) : arm64_add_reg(sf, r0, r1, r2, ARM64_LSL, 0));
-                secbuf_emit32le(buf, insn);
+                if (is_sub) {
+                    if (set_flags) {
+                        arm64_subs_imm(buf, sf, r0, r1, (int32_t)imm, shift);
+                    } else {
+                        arm64_sub_imm(buf, sf, r0, r1, (int32_t)imm, shift);
+                    }
+                } else {
+                    if (set_flags) {
+                        arm64_adds_imm(buf, sf, r0, r1, (int32_t)imm, shift);
+                    } else {
+                        arm64_add_imm(buf, sf, r0, r1, (int32_t)imm, shift);
+                    }
+                }
             }
         }
         return true;
@@ -865,11 +873,11 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             bool is_imm = (ops[1][0] == '#' || isdigit((unsigned char)ops[1][0]));
             if (is_imm) {
                 int64_t imm = IMM(1);
-                uint32_t insn = is_cmn ? arm64_adds_imm(sf, 31, r0, (int32_t)imm, 0) : arm64_subs_imm(sf, 31, r0, (int32_t)imm, 0);
-                secbuf_emit32le(buf, insn);
-            } else {
-                uint32_t insn = is_cmn ? arm64_adds_reg(sf, 31, r0, r1, ARM64_LSL, 0) : arm64_subs_reg(sf, 31, r0, r1, ARM64_LSL, 0);
-                secbuf_emit32le(buf, insn);
+                if (is_cmn) {
+                    arm64_adds_imm(buf, sf, 31, r0, (int32_t)imm, 0);
+                } else {
+                    arm64_subs_imm(buf, sf, 31, r0, (int32_t)imm, 0);
+                }
             }
         }
         return true;
@@ -877,165 +885,165 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 
     // MUL, SDIV, UDIV, SMULL, UMULL, SMULH, UMULH
     if (!strcmp(mnem, "mul")) {
-        secbuf_emit32le(buf, arm64_mul(sf, r0, r1, r2));
+        arm64_mul(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "sdiv")) {
-        secbuf_emit32le(buf, arm64_sdiv(sf, r0, r1, r2));
+        arm64_sdiv(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "udiv")) {
-        secbuf_emit32le(buf, arm64_udiv(sf, r0, r1, r2));
+        arm64_udiv(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "smull")) {
-        secbuf_emit32le(buf, arm64_smull(r0, r1, r2));
+        arm64_smull(buf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "umull")) {
-        secbuf_emit32le(buf, arm64_umull(r0, r1, r2));
+        arm64_umull(buf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "smulh")) {
-        secbuf_emit32le(buf, arm64_smulh(r0, r1, r2));
+        arm64_smulh(buf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "umulh")) {
-        secbuf_emit32le(buf, arm64_umulh(r0, r1, r2));
+        arm64_umulh(buf, r0, r1, r2);
         return true;
     }
 
     // Logic register
     if (!strcmp(mnem, "and")) {
-        secbuf_emit32le(buf, arm64_and_reg(sf, r0, r1, r2, ARM64_LSL, 0));
+        arm64_and_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "orr")) {
-        secbuf_emit32le(buf, arm64_orr_reg(sf, r0, r1, r2, ARM64_LSL, 0));
+        arm64_orr_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "eor")) {
-        secbuf_emit32le(buf, arm64_eor_reg(sf, r0, r1, r2, ARM64_LSL, 0));
+        arm64_eor_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "bic")) {
-        secbuf_emit32le(buf, arm64_bic_reg(sf, r0, r1, r2, ARM64_LSL, 0));
+        arm64_bic_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "ands")) {
-        secbuf_emit32le(buf, arm64_ands_reg(sf, r0, r1, r2, ARM64_LSL, 0));
+        arm64_ands_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     // TST → ANDS xzr, rn, rm
     if (!strcmp(mnem, "tst")) {
-        secbuf_emit32le(buf, arm64_ands_reg(sf, 31, r0, r1, ARM64_LSL, 0));
+        arm64_ands_reg(buf, sf, 31, r0, r1, ARM64_LSL, 0);
         return true;
     }
 
     // Shifts
     if (!strcmp(mnem, "lsl")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) secbuf_emit32le(buf, arm64_lsl_imm(sf, r0, r1, (int)IMM(2)));
+        if (imm) arm64_lsl_imm(buf, sf, r0, r1, (int)IMM(2));
         else
-            secbuf_emit32le(buf, arm64_lsl_reg(sf, r0, r1, r2));
+            arm64_lsl_reg(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "lsr")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) secbuf_emit32le(buf, arm64_lsr_imm(sf, r0, r1, (int)IMM(2)));
+        if (imm) arm64_lsr_imm(buf, sf, r0, r1, (int)IMM(2));
         else
-            secbuf_emit32le(buf, arm64_lsr_reg(sf, r0, r1, r2));
+            arm64_lsr_reg(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "asr")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) secbuf_emit32le(buf, arm64_asr_imm(sf, r0, r1, (int)IMM(2)));
+        if (imm) arm64_asr_imm(buf, sf, r0, r1, (int)IMM(2));
         else
-            secbuf_emit32le(buf, arm64_asr_reg(sf, r0, r1, r2));
+            arm64_asr_reg(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "ror")) {
-        secbuf_emit32le(buf, arm64_ror_reg(sf, r0, r1, r2));
+        arm64_ror_reg(buf, sf, r0, r1, r2);
         return true;
     }
 
     // CLZ, CLS, RBIT, REV
     if (!strcmp(mnem, "clz")) {
-        secbuf_emit32le(buf, arm64_clz(sf, r0, r1));
+        arm64_clz(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "cls")) {
-        secbuf_emit32le(buf, arm64_cls(sf, r0, r1));
+        arm64_cls(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "rbit")) {
-        secbuf_emit32le(buf, arm64_rbit(sf, r0, r1));
+        arm64_rbit(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "rev")) {
-        secbuf_emit32le(buf, arm64_rev(sf, r0, r1));
+        arm64_rev(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "rev16")) {
-        secbuf_emit32le(buf, arm64_rev16(sf, r0, r1));
+        arm64_rev16(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "rev32")) {
-        secbuf_emit32le(buf, arm64_rev32(r0, r1));
+        arm64_rev32(buf, r0, r1);
         return true;
     }
 
     // Extend
     if (!strcmp(mnem, "sxtb")) {
-        secbuf_emit32le(buf, arm64_sxtb(sf, r0, r1));
+        arm64_sxtb(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "sxth")) {
-        secbuf_emit32le(buf, arm64_sxth(sf, r0, r1));
+        arm64_sxth(buf, sf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "sxtw")) {
-        secbuf_emit32le(buf, arm64_sxtw(r0, r1));
+        arm64_sxtw(buf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "uxtb")) {
-        secbuf_emit32le(buf, arm64_uxtb(r0, r1));
+        arm64_uxtb(buf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "uxth")) {
-        secbuf_emit32le(buf, arm64_uxth(r0, r1));
+        arm64_uxth(buf, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "ubfx")) {
-        secbuf_emit32le(buf, arm64_ubfx(sf, r0, r1, (int)IMM(2), (int)IMM(3) + 1));
+        arm64_ubfx(buf, sf, r0, r1, (int)IMM(2), (int)IMM(3) + 1);
         return true;
     }
 
     // NEG / NEGS
     if (!strcmp(mnem, "neg") || !strcmp(mnem, "negs")) {
-        secbuf_emit32le(buf, arm64_neg(sf, r0, r1));
+        arm64_neg(buf, sf, r0, r1);
         return true;
     }
 
     // Conditional select
     if (!strcmp(mnem, "csel")) {
-        secbuf_emit32le(buf, arm64_csel(sf, r0, r1, r2, parse_arm64_cond(ops[3])));
+        arm64_csel(buf, sf, r0, r1, r2, parse_arm64_cond(ops[3]));
         return true;
     }
     if (!strcmp(mnem, "csinc")) {
-        secbuf_emit32le(buf, arm64_csinc(sf, r0, r1, r2, parse_arm64_cond(ops[3])));
+        arm64_csinc(buf, sf, r0, r1, r2, parse_arm64_cond(ops[3]));
         return true;
     }
     if (!strcmp(mnem, "csneg")) {
-        secbuf_emit32le(buf, arm64_csneg(sf, r0, r1, r2, parse_arm64_cond(ops[3])));
+        arm64_csneg(buf, sf, r0, r1, r2, parse_arm64_cond(ops[3]));
         return true;
     }
     if (!strcmp(mnem, "cset")) {
-        secbuf_emit32le(buf, arm64_cset(sf, r0, parse_arm64_cond(ops[1])));
+        arm64_cset(buf, sf, r0, parse_arm64_cond(ops[1]));
         return true;
     }
     if (!strcmp(mnem, "cneg")) {
-        secbuf_emit32le(buf, arm64_cneg(sf, r0, r1, parse_arm64_cond(ops[2])));
+        arm64_cneg(buf, sf, r0, r1, parse_arm64_cond(ops[2]));
         return true;
     }
 
@@ -1045,13 +1053,15 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         uint32_t rtype = R_AARCH64_ADR_PREL_PG_HI21;
         const char *sname = parse_arm64_sym_reloc(sym, &rtype);
         if (rtype == 0) rtype = R_AARCH64_ADR_PREL_PG_HI21;
-        size_t off = secbuf_emit32le(buf, arm64_adrp(r0, 0));
+        size_t off = buf->len;
+        arm64_adrp(buf, r0, 0);
         int sidx = ensure_sym(as, sname);
         objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
         return true;
     }
     if (!strcmp(mnem, "adr")) {
-        size_t off = secbuf_emit32le(buf, arm64_adr(r0, 0));
+        size_t off = buf->len;
+        arm64_adr(buf, r0, 0);
         int sidx = ensure_sym(as, ops[1]);
         objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
         return true;
@@ -1083,8 +1093,11 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             bool pre = false, post = false;
             int rn = parse_arm64_mem(ops[2], &imm, &pre, &post, NULL);
             int32_t imm7 = (int32_t)(imm / (sf ? 8 : 4));
-            uint32_t insn = is_load ? arm64_ldp(sf, rt1, rt2, rn, imm7, pre, post) : arm64_stp(sf, rt1, rt2, rn, imm7, pre, post);
-            secbuf_emit32le(buf, insn);
+            if (is_load) {
+                arm64_ldp(buf, sf, rt1, rt2, rn, imm7, pre, post);
+            } else {
+                arm64_stp(buf, sf, rt1, rt2, rn, imm7, pre, post);
+            }
             return true;
         }
 
@@ -1097,28 +1110,44 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 
         if (is_exc) {
             if (is_load) {
-                uint32_t insn = is_byte ? arm64_ldxrb(rt, rn) : is_half ? arm64_ldxrh(rt, rn)
-                                                                        : arm64_ldxr(sf, rt, rn);
-                secbuf_emit32le(buf, insn);
+                if (is_byte) {
+                    arm64_ldxrb(buf, rt, rn);
+                } else if (is_half) {
+                    arm64_ldxrh(buf, rt, rn);
+                } else {
+                    arm64_ldxr(buf, sf, rt, rn);
+                }
             } else {
                 int rs = r1; // status register for stxr
                 // stxr rs, rt, [rn]
-                uint32_t insn = is_byte ? arm64_stxrb(rs, rt, rn) : is_half ? arm64_stxrh(rs, rt, rn)
-                                                                            : arm64_stxr(sf, rs, rt, rn);
-                secbuf_emit32le(buf, insn);
+                if (is_byte) {
+                    arm64_stxrb(buf, rs, rt, rn);
+                } else if (is_half) {
+                    arm64_stxrh(buf, rs, rt, rn);
+                } else {
+                    arm64_stxr(buf, sf, rs, rt, rn);
+                }
             }
             return true;
         }
 
         if (is_acq || is_rel) {
             if (is_load) {
-                uint32_t insn = is_byte ? arm64_ldarb(rt, rn) : is_half ? arm64_ldarh(rt, rn)
-                                                                        : arm64_ldar(sf, rt, rn);
-                secbuf_emit32le(buf, insn);
+                if (is_byte) {
+                    arm64_ldarb(buf, rt, rn);
+                } else if (is_half) {
+                    arm64_ldarh(buf, rt, rn);
+                } else {
+                    arm64_ldar(buf, sf, rt, rn);
+                }
             } else {
-                uint32_t insn = is_byte ? arm64_stlrb(rt, rn) : is_half ? arm64_stlrh(rt, rn)
-                                                                        : arm64_stlr(sf, rt, rn);
-                secbuf_emit32le(buf, insn);
+                if (is_byte) {
+                    arm64_stlrb(buf, rt, rn);
+                } else if (is_half) {
+                    arm64_stlrh(buf, rt, rn);
+                } else {
+                    arm64_stlr(buf, sf, rt, rn);
+                }
             }
             return true;
         }
@@ -1128,14 +1157,20 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             int sz = is_byte ? 0 : is_half ? 1
                 : sf                       ? 3
                                            : 2;
-            uint32_t insn = is_load ? arm64_ldr_reg(sz, rt, rn, rn2, false, 0) : arm64_str_reg(sz, rt, rn, rn2, false, 0);
-            secbuf_emit32le(buf, insn);
+            if (is_load) {
+                arm64_ldr_reg(buf, sz, rt, rn, rn2, false, 0);
+            } else {
+                arm64_str_reg(buf, sz, rt, rn, rn2, false, 0);
+            }
             return true;
         }
 
         if (is_ldur) {
-            uint32_t insn = is_load ? arm64_ldur(sf, rt, rn, (int32_t)imm) : arm64_stur(sf, rt, rn, (int32_t)imm);
-            secbuf_emit32le(buf, insn);
+            if (is_load) {
+                arm64_ldur(buf, sf, rt, rn, (int32_t)imm);
+            } else {
+                arm64_stur(buf, sf, rt, rn, (int32_t)imm);
+            }
             return true;
         }
 
@@ -1148,8 +1183,12 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             int sz = is_byte ? 0 : is_half ? 1
                 : sf                       ? 3
                                            : 2;
-            uint32_t insn = is_load ? arm64_ldr_uoff(sz, rt, rn, 0) : arm64_str_uoff(sz, rt, rn, 0);
-            size_t off = secbuf_emit32le(buf, insn);
+            size_t off = buf->len;
+            if (is_load) {
+                arm64_ldr_uoff(buf, sz, rt, rn, 0);
+            } else {
+                arm64_str_uoff(buf, sz, rt, rn, 0);
+            }
             if (sym && rtype) {
                 int sidx = ensure_sym(as, sym);
                 objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
@@ -1159,48 +1198,70 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 
         // Standard immediate offset
         int32_t simm = (int32_t)imm;
-        uint32_t insn;
         if (is_byte) {
             uint32_t uoff = simm >= 0 ? (uint32_t)simm : 0;
-            insn = is_load ? (simm >= 0 ? arm64_ldrb_uoff(rt, rn, uoff) : arm64_ldrb_imm(rt, rn, simm)) : (simm >= 0 ? arm64_strb_uoff(rt, rn, uoff) : arm64_strb_imm(rt, rn, simm));
+            if (is_load) {
+                if (simm >= 0) arm64_ldrb_uoff(buf, rt, rn, uoff);
+                else
+                    arm64_ldrb_imm(buf, rt, rn, simm);
+            } else {
+                if (simm >= 0) arm64_strb_uoff(buf, rt, rn, uoff);
+                else
+                    arm64_strb_imm(buf, rt, rn, simm);
+            }
         } else if (is_half) {
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / 2) : 0;
-            insn = is_load ? (simm >= 0 ? arm64_ldrh_uoff(rt, rn, uoff) : arm64_ldrh_imm(rt, rn, simm)) : (simm >= 0 ? arm64_strh_uoff(rt, rn, uoff) : arm64_strh_imm(rt, rn, simm));
+            if (is_load) {
+                if (simm >= 0) arm64_ldrh_uoff(buf, rt, rn, uoff);
+                else
+                    arm64_ldrh_imm(buf, rt, rn, simm);
+            } else {
+                if (simm >= 0) arm64_strh_uoff(buf, rt, rn, uoff);
+                else
+                    arm64_strh_imm(buf, rt, rn, simm);
+            }
         } else if (is_sw) {
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / 4) : 0;
-            insn = simm >= 0 ? arm64_ldrsw_uoff(rt, rn, uoff) : arm64_ldrsw_imm(rt, rn, simm);
+            if (simm >= 0) arm64_ldrsw_uoff(buf, rt, rn, uoff);
+            else
+                arm64_ldrsw_imm(buf, rt, rn, simm);
         } else {
             int sz = sf ? 3 : 2;
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / (sf ? 8 : 4)) : 0;
             if (pre || post) {
-                insn = is_load ? arm64_ldr_imm(sf, rt, rn, simm, pre) : arm64_str_imm(sf, rt, rn, simm, pre);
+                if (is_load) arm64_ldr_imm(buf, sf, rt, rn, simm, pre);
+                else
+                    arm64_str_imm(buf, sf, rt, rn, simm, pre);
             } else if (simm >= 0) {
-                insn = is_load ? arm64_ldr_uoff(sz, rt, rn, uoff) : arm64_str_uoff(sz, rt, rn, uoff);
+                if (is_load) arm64_ldr_uoff(buf, sz, rt, rn, uoff);
+                else
+                    arm64_str_uoff(buf, sz, rt, rn, uoff);
             } else {
-                insn = is_load ? arm64_ldur(sf, rt, rn, simm) : arm64_stur(sf, rt, rn, simm);
+                if (is_load) arm64_ldur(buf, sf, rt, rn, simm);
+                else
+                    arm64_stur(buf, sf, rt, rn, simm);
             }
         }
-        secbuf_emit32le(buf, insn);
         return true;
     }
 
     // DMB / DSB / ISB
     if (!strcmp(mnem, "dmb")) {
-        secbuf_emit32le(buf, arm64_dmb(0xb));
+        arm64_dmb(buf, 0xb);
         return true;
     }
     if (!strcmp(mnem, "dsb")) {
-        secbuf_emit32le(buf, arm64_dsb(0xb));
+        arm64_dsb(buf, 0xb);
         return true;
     }
     if (!strcmp(mnem, "isb")) {
-        secbuf_emit32le(buf, arm64_isb());
+        arm64_isb(buf);
         return true;
     }
 
     // PRFM
     if (!strcmp(mnem, "prfm")) {
-        secbuf_emit32le(buf, arm64_nop());
+        arm64_nop(buf);
         return true;
     } // simplification
 
@@ -1215,9 +1276,9 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             bool is_dbl = (ops[0][0] == 'd' || ops[1][0] == 'd' || ops[0][0] == 'x');
             int ftype = is_dbl ? 1 : 0;
             if (d_gp && s_fp)
-                secbuf_emit32le(buf, arm64_fmov_f2i(is_dbl ? 1 : 0, r0, r1));
+                arm64_fmov_f2i(buf, is_dbl ? 1 : 0, r0, r1);
             else if (d_fp && s_gp)
-                secbuf_emit32le(buf, arm64_fmov_i2f(is_dbl ? 1 : 0, r0, r1));
+                arm64_fmov_i2f(buf, is_dbl ? 1 : 0, r0, r1);
             else { // FP to FP
                 // Use FMOV (register) encoding
                 secbuf_emit32le(buf, 0x1e204000u | ((uint32_t)ftype << 22) | ((uint32_t)r1 << 5) | (uint32_t)r0);
@@ -1227,56 +1288,56 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "fadd")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fadd(db ? 1 : 0, r0, r1, r2));
+        arm64_fadd(buf, db ? 1 : 0, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "fsub")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fsub(db ? 1 : 0, r0, r1, r2));
+        arm64_fsub(buf, db ? 1 : 0, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "fmul")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fmul(db ? 1 : 0, r0, r1, r2));
+        arm64_fmul(buf, db ? 1 : 0, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "fdiv")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fdiv(db ? 1 : 0, r0, r1, r2));
+        arm64_fdiv(buf, db ? 1 : 0, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "fneg")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fneg(db ? 1 : 0, r0, r1));
+        arm64_fneg(buf, db ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "fcmp")) {
         bool db = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_fcmp(db ? 1 : 0, r0, r1));
+        arm64_fcmp(buf, db ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "scvtf")) {
         bool src64 = (ops[1][0] == 'x');
         bool dstd = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_scvtf(src64 ? 1 : 0, dstd ? 1 : 0, r0, r1));
+        arm64_scvtf(buf, src64 ? 1 : 0, dstd ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "ucvtf")) {
         bool src64 = (ops[1][0] == 'x');
         bool dstd = (ops[0][0] == 'd');
-        secbuf_emit32le(buf, arm64_ucvtf(src64 ? 1 : 0, dstd ? 1 : 0, r0, r1));
+        arm64_ucvtf(buf, src64 ? 1 : 0, dstd ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "fcvtzs")) {
         bool dst64 = (ops[0][0] == 'x');
         bool srcd = (ops[1][0] == 'd');
-        secbuf_emit32le(buf, arm64_fcvtzs(dst64 ? 1 : 0, srcd ? 1 : 0, r0, r1));
+        arm64_fcvtzs(buf, dst64 ? 1 : 0, srcd ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "fcvtzu")) {
         bool dst64 = (ops[0][0] == 'x');
         bool srcd = (ops[1][0] == 'd');
-        secbuf_emit32le(buf, arm64_fcvtzu(dst64 ? 1 : 0, srcd ? 1 : 0, r0, r1));
+        arm64_fcvtzu(buf, dst64 ? 1 : 0, srcd ? 1 : 0, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "fcvt")) {
@@ -1285,29 +1346,29 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         bool src_d = ops[1][0] == 'd';
         int ftype = src_d ? 1 : 0;
         int opc = dst_d ? 1 : 0;
-        secbuf_emit32le(buf, arm64_fcvt(opc, ftype, r0, r1));
+        arm64_fcvt(buf, opc, ftype, r0, r1);
         return true;
     }
     if (!strcmp(mnem, "cnt")) {
-        secbuf_emit32le(buf, arm64_nop());
+        arm64_nop(buf);
         return true;
     } // vector cnt, simplify
     if (!strcmp(mnem, "addv")) {
-        secbuf_emit32le(buf, arm64_nop());
+        arm64_nop(buf);
         return true;
     } // vector addv
     if (!strcmp(mnem, "ins")) {
-        secbuf_emit32le(buf, arm64_nop());
+        arm64_nop(buf);
         return true;
     } // vector insert
 
     // Unknown — emit NOP as fallback and warn
     fprintf(stderr, "warning: unknown arm64 instruction: %s\n", mnem);
-    secbuf_emit32le(buf, arm64_nop());
+    arm64_nop(buf);
     return true;
 
-#undef REG
-#undef REG32
+#undef AREG
+#undef AREG32
 #undef IMM
 #undef SF
 }

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // ARM64 (AArch64) instruction encoder — 32-bit fixed-width encoding.
-// Returns the 4-byte instruction word; caller emits it with secbuf_emit32le().
+// Emits into SecBuf via secbuf_emit32le() internally; takes SecBuf *s as first arg.
 #ifndef ARM64_ENC_H
 #define ARM64_ENC_H
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "obj.h"
 
 // Register numbers (0-30 = x0-x30, 31 = xzr/sp depending on context)
 #define ARM64_XZR 31
@@ -91,167 +92,167 @@ typedef enum {
 // ---------------------------------------------------------------------------
 // Data processing — immediate
 // ---------------------------------------------------------------------------
-uint32_t arm64_movz(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
-uint32_t arm64_movk(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
-uint32_t arm64_movn(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
-uint32_t arm64_add_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint16_t shift2);
-uint32_t arm64_adds_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
-uint32_t arm64_sub_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
-uint32_t arm64_subs_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
-uint32_t arm64_and_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
-uint32_t arm64_orr_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
-uint32_t arm64_eor_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
-uint32_t arm64_ands_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
+void arm64_movz(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
+void arm64_movk(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
+void arm64_movn(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16);
+void arm64_add_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint16_t shift2);
+void arm64_adds_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
+void arm64_sub_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
+void arm64_subs_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t shift2);
+void arm64_and_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
+void arm64_orr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
+void arm64_eor_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
+void arm64_ands_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t imm_enc);
 
 // ---------------------------------------------------------------------------
 // Data processing — register
 // ---------------------------------------------------------------------------
-uint32_t arm64_add_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_adds_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_sub_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_subs_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_and_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_orr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_eor_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_ands_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_bic_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_mul(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // MADD xd,xn,xm,xzr
-uint32_t arm64_smull(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // SMADDL
-uint32_t arm64_umull(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // UMADDL
-uint32_t arm64_smulh(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_umulh(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_sdiv(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_udiv(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_lsl_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_lsr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_asr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_ror_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_lsl_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift);
-uint32_t arm64_lsr_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift);
-uint32_t arm64_asr_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift);
-uint32_t arm64_neg(int sf, Arm64Reg rd, Arm64Reg rm);
-uint32_t arm64_mvn(int sf, Arm64Reg rd, Arm64Reg rm, Arm64Shift sh, int imm6);
-uint32_t arm64_clz(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_cls(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_rbit(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_rev(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_rev16(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_rev32(Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_sxtb(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_sxth(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_sxtw(Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_uxtb(Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_uxth(Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_ubfx(int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width);
-uint32_t arm64_sbfx(int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width);
-uint32_t arm64_csel(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
-uint32_t arm64_csinc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
-uint32_t arm64_csneg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
-uint32_t arm64_cset(int sf, Arm64Reg rd, Arm64Cond cond);
-uint32_t arm64_cneg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Cond cond);
-uint32_t arm64_adc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_sbc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_add_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_adds_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_sub_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_subs_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_and_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_orr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_eor_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_ands_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_bic_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_mul(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // MADD xd,xn,xm,xzr
+void arm64_smull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // SMADDL
+void arm64_umull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // UMADDL
+void arm64_smulh(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_umulh(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_sdiv(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_udiv(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_lsl_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_lsr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_asr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_ror_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_lsl_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
+void arm64_lsr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
+void arm64_asr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
+void arm64_neg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rm);
+void arm64_mvn(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rm, Arm64Shift sh, int imm6);
+void arm64_clz(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_cls(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_rbit(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_rev(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_rev16(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_rev32(SecBuf *s, Arm64Reg rd, Arm64Reg rn);
+void arm64_sxtb(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_sxth(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_sxtw(SecBuf *s, Arm64Reg rd, Arm64Reg rn);
+void arm64_uxtb(SecBuf *s, Arm64Reg rd, Arm64Reg rn);
+void arm64_uxth(SecBuf *s, Arm64Reg rd, Arm64Reg rn);
+void arm64_ubfx(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width);
+void arm64_sbfx(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width);
+void arm64_csel(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
+void arm64_csinc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
+void arm64_csneg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond cond);
+void arm64_cset(SecBuf *s, int sf, Arm64Reg rd, Arm64Cond cond);
+void arm64_cneg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Cond cond);
+void arm64_adc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_sbc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 
 // ---------------------------------------------------------------------------
 // PC-relative addressing
 // ---------------------------------------------------------------------------
 // These encode 0 offset; caller adds reloc
-uint32_t arm64_adrp(Arm64Reg rd, int32_t page_imm);
-uint32_t arm64_adr(Arm64Reg rd, int32_t imm);
+void arm64_adrp(SecBuf *s, Arm64Reg rd, int32_t page_imm);
+void arm64_adr(SecBuf *s, Arm64Reg rd, int32_t imm);
 
 // ---------------------------------------------------------------------------
 // Load/Store
 // ---------------------------------------------------------------------------
-uint32_t arm64_ldr_imm(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre);
-uint32_t arm64_ldr_uoff(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_ldrb_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_ldrh_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_ldrb_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldrh_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldrsb(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldrsh(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldrsw_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldrsw_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_str_imm(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre);
-uint32_t arm64_str_uoff(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_strb_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_strh_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_strb_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_strh_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldr_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre);
+void arm64_ldr_uoff(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_ldrb_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_ldrh_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_ldrb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldrh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldrsb(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldrsh(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldrsw_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldrsw_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_str_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre);
+void arm64_str_uoff(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_strb_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_strh_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_strb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_strh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
 // Pair: LDP/STP
-uint32_t arm64_ldp(int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
-uint32_t arm64_stp(int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
+void arm64_ldp(SecBuf *s, int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
+void arm64_stp(SecBuf *s, int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 // Register offset
-uint32_t arm64_ldr_reg(int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int s);
-uint32_t arm64_str_reg(int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int s);
+void arm64_ldr_reg(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int scale);
+void arm64_str_reg(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int scale);
 // Unscaled immediate (LDUR/STUR)
-uint32_t arm64_ldur(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldurb(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_ldurh(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_stur(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_sturb(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
-uint32_t arm64_sturh(Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldur(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldurb(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_ldurh(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_stur(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_sturb(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
+void arm64_sturh(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
 // Load-exclusive / store-exclusive
-uint32_t arm64_ldxr(int sf, Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_ldxrb(Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_ldxrh(Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stxr(int sf, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stxrb(Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stxrh(Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
+void arm64_ldxr(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn);
+void arm64_ldxrb(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
+void arm64_ldxrh(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
+void arm64_stxr(SecBuf *s, int sf, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
+void arm64_stxrb(SecBuf *s, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
+void arm64_stxrh(SecBuf *s, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn);
 // Load/store acquire-release
-uint32_t arm64_ldar(int sf, Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_ldarb(Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_ldarh(Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stlr(int sf, Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stlrb(Arm64Reg rt, Arm64Reg rn);
-uint32_t arm64_stlrh(Arm64Reg rt, Arm64Reg rn);
+void arm64_ldar(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn);
+void arm64_ldarb(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
+void arm64_ldarh(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
+void arm64_stlr(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn);
+void arm64_stlrb(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
+void arm64_stlrh(SecBuf *s, Arm64Reg rt, Arm64Reg rn);
 
 // ---------------------------------------------------------------------------
 // Branches
 // ---------------------------------------------------------------------------
 // imm26 / imm19 in instruction units (4 bytes each); caller scales
-uint32_t arm64_b(int32_t imm26);
-uint32_t arm64_bl(int32_t imm26);
-uint32_t arm64_br(Arm64Reg rn);
-uint32_t arm64_blr(Arm64Reg rn);
-uint32_t arm64_ret(Arm64Reg rn); // rn=30 for normal return
-uint32_t arm64_bcond(Arm64Cond cond, int32_t imm19);
-uint32_t arm64_cbz(int sf, Arm64Reg rt, int32_t imm19);
-uint32_t arm64_cbnz(int sf, Arm64Reg rt, int32_t imm19);
-uint32_t arm64_tbz(Arm64Reg rt, int imm6, int32_t imm14);
-uint32_t arm64_tbnz(Arm64Reg rt, int imm6, int32_t imm14);
+void arm64_b(SecBuf *s, int32_t imm26);
+void arm64_bl(SecBuf *s, int32_t imm26);
+void arm64_br(SecBuf *s, Arm64Reg rn);
+void arm64_blr(SecBuf *s, Arm64Reg rn);
+void arm64_ret(SecBuf *s, Arm64Reg rn); // rn=30 for normal return
+void arm64_bcond(SecBuf *s, Arm64Cond cond, int32_t imm19);
+void arm64_cbz(SecBuf *s, int sf, Arm64Reg rt, int32_t imm19);
+void arm64_cbnz(SecBuf *s, int sf, Arm64Reg rt, int32_t imm19);
+void arm64_tbz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14);
+void arm64_tbnz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14);
 
 // ---------------------------------------------------------------------------
 // System / Misc
 // ---------------------------------------------------------------------------
-uint32_t arm64_nop(void);
-uint32_t arm64_dmb(int opt); // opt=0xb=ish
-uint32_t arm64_dsb(int opt);
-uint32_t arm64_isb(void);
-uint32_t arm64_prfm_imm(int prfop, Arm64Reg rn, uint32_t uimm);
+void arm64_nop(SecBuf *s);
+void arm64_dmb(SecBuf *s, int opt); // opt=0xb=ish
+void arm64_dsb(SecBuf *s, int opt);
+void arm64_isb(SecBuf *s);
+void arm64_prfm_imm(SecBuf *s, int prfop, Arm64Reg rn, uint32_t uimm);
 
 // ---------------------------------------------------------------------------
 // FP / SIMD
 // ---------------------------------------------------------------------------
-uint32_t arm64_fmov_f2i(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fmov_i2f(int sf, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fmov_imm(int ftype, Arm64Reg rd, uint8_t imm8);
-uint32_t arm64_fadd(int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_fsub(int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_fmul(int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_fdiv(int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_fneg(int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fabs(int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fcmp(int ftype, Arm64Reg rn, Arm64Reg rm);
-uint32_t arm64_fcvt(int opc, int ftype, Arm64Reg rd, Arm64Reg rn); // ftype→opc conversion
-uint32_t arm64_scvtf(int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_ucvtf(int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fcvtzs(int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_fcvtzu(int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
-uint32_t arm64_ldr_fp(int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_str_fp(int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
-uint32_t arm64_ldp_fp(int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
-uint32_t arm64_stp_fp(int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
+void arm64_fmov_f2i(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_fmov_i2f(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn);
+void arm64_fmov_imm(SecBuf *s, int ftype, Arm64Reg rd, uint8_t imm8);
+void arm64_fadd(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fsub(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fmul(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fdiv(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fneg(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_fabs(SecBuf *s, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_fcmp(SecBuf *s, int ftype, Arm64Reg rn, Arm64Reg rm);
+void arm64_fcvt(SecBuf *s, int opc, int ftype, Arm64Reg rd, Arm64Reg rn); // ftype→opc conversion
+void arm64_scvtf(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_ucvtf(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_fcvtzs(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_fcvtzu(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
+void arm64_ldr_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_str_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_ldp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
+void arm64_stp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 
 // Helpers to build encode-immediate field from N/immr/imms bits
 uint64_t arm64_encode_logic_imm(int sf, uint64_t val, int *N, int *immr, int *imms);

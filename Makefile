@@ -89,14 +89,14 @@ MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
 DARWIN_O = lib/darwin.o
-TARGET_DEPS = $(OBJS) $(DARWIN_O)
+TARGET_DEPS = $(OBJS) $(DARWIN_O) $(wildcard src/*.h)
 SRCS += src/macho_write.c
 else ifneq ($(findstring mingw,$(MACHINE)),)
 SRCS += src/coff_write.c
-TARGET_DEPS = $(OBJS) $(MINGW_O)
+TARGET_DEPS = $(OBJS) $(MINGW_O) $(wildcard src/*.h)
 else
 SRCS += src/elf_write.c
-TARGET_DEPS = $(OBJS) $(MINGW_O)
+TARGET_DEPS = $(OBJS) $(MINGW_O) $(wildcard src/*.h)
 endif
 
 OBJS = $(SRCS:.c=$(OBJ_EXT))

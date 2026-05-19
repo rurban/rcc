@@ -4,6 +4,7 @@
 #include "rcc.h"
 #ifdef ARCH_ARM64
 #include "arm64_enc.h"
+#include "obj.h"
 #include <assert.h>
 #include <stdint.h>
 
@@ -85,48 +86,48 @@ static uint32_t logic_imm_field(int sf, uint64_t val) {
 // Data processing — immediate
 // ---------------------------------------------------------------------------
 
-uint32_t arm64_movz(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
+void arm64_movz(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
     assert(shift16 == 0 || shift16 == 16 || shift16 == 32 || shift16 == 48);
-    return SF(sf) | 0xd2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | 0xd2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_movk(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
-    return SF(sf) | 0xf2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
+void arm64_movk(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
+    secbuf_emit32le(s, SF(sf) | 0xf2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_movn(int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
-    return SF(sf) | 0x92800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd);
+void arm64_movn(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
+    secbuf_emit32le(s, SF(sf) | 0x92800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_add_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint16_t sh) {
+void arm64_add_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint16_t sh) {
     assert(imm12 >= 0 && imm12 < 4096);
-    return SF(sf) | 0x11000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | 0x11000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_adds_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
-    return SF(sf) | 0x31000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_adds_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
+    secbuf_emit32le(s, SF(sf) | 0x31000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_sub_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
+void arm64_sub_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
     assert(imm12 >= 0 && imm12 < 4096);
-    return SF(sf) | 0x51000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | 0x51000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_subs_imm(int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
-    return SF(sf) | 0x71000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_subs_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint32_t sh) {
+    secbuf_emit32le(s, SF(sf) | 0x71000000u | BITS(23, 22, sh) | BITS(21, 10, imm12) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
-uint32_t arm64_and_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
-    return SF(sf) | 0x12000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_and_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
+    secbuf_emit32le(s, SF(sf) | 0x12000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_orr_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
-    return SF(sf) | 0x32000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_orr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
+    secbuf_emit32le(s, SF(sf) | 0x32000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_eor_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
-    return SF(sf) | 0x52000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_eor_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
+    secbuf_emit32le(s, SF(sf) | 0x52000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_ands_imm(int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
-    return SF(sf) | 0x72000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_ands_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, uint64_t val) {
+    secbuf_emit32le(s, SF(sf) | 0x72000000u | logic_imm_field(sf, val) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // ---------------------------------------------------------------------------
@@ -137,32 +138,32 @@ static uint32_t dp_reg(int sf, uint32_t opc, Arm64Reg rd, Arm64Reg rn, Arm64Reg 
     return SF(sf) | opc | BITS(23, 22, sh) | BITS(20, 16, (unsigned)rm) | BITS(15, 10, imm6) | BITS(9, 5, (unsigned)rn) | BITS(4, 0, (unsigned)rd);
 }
 
-uint32_t arm64_add_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x0b000000u, rd, rn, rm, sh, i6);
+void arm64_add_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x0b000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_adds_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x2b000000u, rd, rn, rm, sh, i6);
+void arm64_adds_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x2b000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_sub_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x4b000000u, rd, rn, rm, sh, i6);
+void arm64_sub_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x4b000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_subs_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x6b000000u, rd, rn, rm, sh, i6);
+void arm64_subs_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x6b000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_and_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x0a000000u, rd, rn, rm, sh, i6);
+void arm64_and_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x0a000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_orr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x2a000000u, rd, rn, rm, sh, i6);
+void arm64_orr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x2a000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_eor_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x4a000000u, rd, rn, rm, sh, i6);
+void arm64_eor_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x4a000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_ands_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x6a000000u, rd, rn, rm, sh, i6);
+void arm64_ands_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x6a000000u, rd, rn, rm, sh, i6));
 }
-uint32_t arm64_bic_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
-    return dp_reg(sf, 0x0a200000u, rd, rn, rm, sh, i6);
+void arm64_bic_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x0a200000u, rd, rn, rm, sh, i6));
 }
 
 // 3-register
@@ -170,226 +171,226 @@ static uint32_t dp3(int sf, uint32_t op, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, 
     return SF(sf) | op | BITS(20, 16, rm) | BITS(14, 10, ra) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
 
-uint32_t arm64_mul(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return dp3(sf, 0x1b000000u, rd, rn, rm, ARM64_XZR);
+void arm64_mul(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, dp3(sf, 0x1b000000u, rd, rn, rm, ARM64_XZR));
 }
-uint32_t arm64_smull(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return 0x9b200000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_smull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, 0x9b200000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_umull(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return 0x9ba00000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_umull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, 0x9ba00000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_smulh(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return 0x9b407c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_smulh(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, 0x9b407c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_umulh(Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return 0x9bc07c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_umulh(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, 0x9bc07c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_sdiv(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return SF(sf) | 0x1ac00c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_sdiv(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x1ac00c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_udiv(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return SF(sf) | 0x1ac00800u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_udiv(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x1ac00800u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // Shifts
 static uint32_t dp2(int sf, uint32_t op, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     return SF(sf) | op | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
-uint32_t arm64_lsl_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return dp2(sf, 0x1ac02000u, rd, rn, rm); }
-uint32_t arm64_lsr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return dp2(sf, 0x1ac02400u, rd, rn, rm); }
-uint32_t arm64_asr_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return dp2(sf, 0x1ac02800u, rd, rn, rm); }
-uint32_t arm64_ror_reg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return dp2(sf, 0x1ac02c00u, rd, rn, rm); }
+void arm64_lsl_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02000u, rd, rn, rm)); }
+void arm64_lsr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02400u, rd, rn, rm)); }
+void arm64_asr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02800u, rd, rn, rm)); }
+void arm64_ror_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02c00u, rd, rn, rm)); }
 
 // Immediate shifts use UBFM/SBFM with appropriate fields
 // LSL #shift: UBFM rd, rn, #(-shift mod bitwidth), #(bitwidth-1-shift)
-uint32_t arm64_lsl_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
+void arm64_lsl_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int immr = (-shift) & (w - 1);
     int imms = w - 1 - shift;
-    return SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, immr) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, immr) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_lsr_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
+void arm64_lsr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int imms = w - 1;
-    return SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_asr_imm(int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
+void arm64_asr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int imms = w - 1;
-    return SF(sf) | BITS(29, 23, sf ? 0x7e : 0x1e) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x7e : 0x1e) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // Unary operations
-uint32_t arm64_neg(int sf, Arm64Reg rd, Arm64Reg rm) {
-    return arm64_sub_reg(sf, rd, ARM64_XZR, rm, ARM64_LSL, 0);
+void arm64_neg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rm) {
+    arm64_sub_reg(s, sf, rd, ARM64_XZR, rm, ARM64_LSL, 0);
 }
-uint32_t arm64_mvn(int sf, Arm64Reg rd, Arm64Reg rm, Arm64Shift sh, int imm6) {
-    return dp_reg(sf, 0x2a200000u, rd, ARM64_XZR, rm, sh, imm6);
+void arm64_mvn(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rm, Arm64Shift sh, int imm6) {
+    secbuf_emit32le(s, dp_reg(sf, 0x2a200000u, rd, ARM64_XZR, rm, sh, imm6));
 }
 
 // Bit counting
 static uint32_t dp1(int sf, uint32_t op, Arm64Reg rd, Arm64Reg rn) {
     return SF(sf) | op | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
-uint32_t arm64_clz(int sf, Arm64Reg rd, Arm64Reg rn) { return dp1(sf, 0x5ac01000u, rd, rn); }
-uint32_t arm64_cls(int sf, Arm64Reg rd, Arm64Reg rn) { return dp1(sf, 0x5ac01400u, rd, rn); }
-uint32_t arm64_rbit(int sf, Arm64Reg rd, Arm64Reg rn) { return dp1(sf, 0x5ac00000u, rd, rn); }
-uint32_t arm64_rev(int sf, Arm64Reg rd, Arm64Reg rn) {
+void arm64_clz(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, dp1(sf, 0x5ac01000u, rd, rn)); }
+void arm64_cls(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, dp1(sf, 0x5ac01400u, rd, rn)); }
+void arm64_rbit(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, dp1(sf, 0x5ac00000u, rd, rn)); }
+void arm64_rev(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) {
     uint32_t opc = sf ? 0x5ac00c00u : 0x5ac00800u;
-    return dp1(sf, opc, rd, rn);
+    secbuf_emit32le(s, dp1(sf, opc, rd, rn));
 }
-uint32_t arm64_rev16(int sf, Arm64Reg rd, Arm64Reg rn) { return dp1(sf, 0x5ac00400u, rd, rn); }
-uint32_t arm64_rev32(Arm64Reg rd, Arm64Reg rn) { return 0xdac00800u | BITS(9, 5, rn) | BITS(4, 0, rd); }
+void arm64_rev16(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, dp1(sf, 0x5ac00400u, rd, rn)); }
+void arm64_rev32(SecBuf *s, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, 0xdac00800u | BITS(9, 5, rn) | BITS(4, 0, rd)); }
 
 // Sign/zero extend: use SBFM/UBFM
-uint32_t arm64_sxtb(int sf, Arm64Reg rd, Arm64Reg rn) { return SF(sf) | (sf ? 0x93401c00u : 0x13001c00u) | BITS(9, 5, rn) | BITS(4, 0, rd); }
-uint32_t arm64_sxth(int sf, Arm64Reg rd, Arm64Reg rn) { return SF(sf) | (sf ? 0x93403c00u : 0x13003c00u) | BITS(9, 5, rn) | BITS(4, 0, rd); }
-uint32_t arm64_sxtw(Arm64Reg rd, Arm64Reg rn) { return 0x93407c00u | BITS(9, 5, rn) | BITS(4, 0, rd); }
-uint32_t arm64_uxtb(Arm64Reg rd, Arm64Reg rn) { return 0x53001c00u | BITS(9, 5, rn) | BITS(4, 0, rd); }
-uint32_t arm64_uxth(Arm64Reg rd, Arm64Reg rn) { return 0x53003c00u | BITS(9, 5, rn) | BITS(4, 0, rd); }
+void arm64_sxtb(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, SF(sf) | (sf ? 0x93401c00u : 0x13001c00u) | BITS(9, 5, rn) | BITS(4, 0, rd)); }
+void arm64_sxth(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, SF(sf) | (sf ? 0x93403c00u : 0x13003c00u) | BITS(9, 5, rn) | BITS(4, 0, rd)); }
+void arm64_sxtw(SecBuf *s, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, 0x93407c00u | BITS(9, 5, rn) | BITS(4, 0, rd)); }
+void arm64_uxtb(SecBuf *s, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, 0x53001c00u | BITS(9, 5, rn) | BITS(4, 0, rd)); }
+void arm64_uxth(SecBuf *s, Arm64Reg rd, Arm64Reg rn) { secbuf_emit32le(s, 0x53003c00u | BITS(9, 5, rn) | BITS(4, 0, rd)); }
 
 // Bitfield extract
-uint32_t arm64_ubfx(int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width) {
+void arm64_ubfx(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width) {
     int imms = lsb + width - 1;
-    return SF(sf) | (sf ? 0xd3400000u : 0x53000000u) | BITS(21, 16, lsb) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | (sf ? 0xd3400000u : 0x53000000u) | BITS(21, 16, lsb) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_sbfx(int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width) {
+void arm64_sbfx(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int lsb, int width) {
     int imms = lsb + width - 1;
-    return SF(sf) | (sf ? 0x93400000u : 0x13000000u) | BITS(21, 16, lsb) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | (sf ? 0x93400000u : 0x13000000u) | BITS(21, 16, lsb) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // Conditional select
-uint32_t arm64_csel(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
-    return SF(sf) | 0x1a800000u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_csel(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
+    secbuf_emit32le(s, SF(sf) | 0x1a800000u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_csinc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
-    return SF(sf) | 0x1a800400u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_csinc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
+    secbuf_emit32le(s, SF(sf) | 0x1a800400u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_csneg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
-    return SF(sf) | 0x5a800400u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_csneg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Cond c) {
+    secbuf_emit32le(s, SF(sf) | 0x5a800400u | BITS(20, 16, rm) | BITS(15, 12, c) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_cset(int sf, Arm64Reg rd, Arm64Cond c) {
+void arm64_cset(SecBuf *s, int sf, Arm64Reg rd, Arm64Cond c) {
     // CSET = CSINC rd, xzr, xzr, invert(c)
-    return arm64_csinc(sf, rd, ARM64_XZR, ARM64_XZR, c ^ 1);
+    arm64_csinc(s, sf, rd, ARM64_XZR, ARM64_XZR, c ^ 1);
 }
-uint32_t arm64_cneg(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Cond c) {
-    return arm64_csneg(sf, rd, rn, rn, c ^ 1);
+void arm64_cneg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Cond c) {
+    arm64_csneg(s, sf, rd, rn, rn, c ^ 1);
 }
-uint32_t arm64_adc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return SF(sf) | 0x1a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_adc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x1a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_sbc(int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    return SF(sf) | 0x5a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_sbc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x5a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // ---------------------------------------------------------------------------
 // PC-relative addressing
 // ---------------------------------------------------------------------------
-uint32_t arm64_adrp(Arm64Reg rd, int32_t page_imm) {
+void arm64_adrp(SecBuf *s, Arm64Reg rd, int32_t page_imm) {
     uint32_t immlo = (uint32_t)(page_imm & 3);
     uint32_t immhi = (uint32_t)((page_imm >> 2) & 0x7ffff);
-    return 0x90000000u | BITS(30, 29, immlo) | BITS(23, 5, immhi) | BITS(4, 0, rd);
+    secbuf_emit32le(s, 0x90000000u | BITS(30, 29, immlo) | BITS(23, 5, immhi) | BITS(4, 0, rd));
 }
-uint32_t arm64_adr(Arm64Reg rd, int32_t imm) {
+void arm64_adr(SecBuf *s, Arm64Reg rd, int32_t imm) {
     uint32_t immlo = (uint32_t)(imm & 3);
     uint32_t immhi = (uint32_t)((imm >> 2) & 0x7ffff);
-    return 0x10000000u | BITS(30, 29, immlo) | BITS(23, 5, immhi) | BITS(4, 0, rd);
+    secbuf_emit32le(s, 0x10000000u | BITS(30, 29, immlo) | BITS(23, 5, immhi) | BITS(4, 0, rd));
 }
 
 // ---------------------------------------------------------------------------
 // Load/Store
 // ---------------------------------------------------------------------------
 // Unsigned offset load: size=0→byte,1→half,2→word,3→dword + sf for x-regs
-uint32_t arm64_ldr_uoff(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
+void arm64_ldr_uoff(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     // sz: 0=8bit,1=16bit,2=32bit,3=64bit
     uint32_t opc = (sz == 3) ? 0xf9400000u : (sz == 2) ? 0xb9400000u
         : (sz == 1)                                    ? 0x79400000u
                                                        : 0x39400000u;
-    return opc | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    secbuf_emit32le(s, opc | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldrb_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { return arm64_ldr_uoff(0, rt, rn, uimm); }
-uint32_t arm64_ldrh_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { return arm64_ldr_uoff(1, rt, rn, uimm); }
+void arm64_ldrb_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { arm64_ldr_uoff(s, 0, rt, rn, uimm); }
+void arm64_ldrh_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { arm64_ldr_uoff(s, 1, rt, rn, uimm); }
 
-uint32_t arm64_str_uoff(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
+void arm64_str_uoff(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     uint32_t opc = (sz == 3) ? 0xf9000000u : (sz == 2) ? 0xb9000000u
         : (sz == 1)                                    ? 0x79000000u
                                                        : 0x39000000u;
-    return opc | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    secbuf_emit32le(s, opc | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_strb_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { return arm64_str_uoff(0, rt, rn, uimm); }
-uint32_t arm64_strh_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { return arm64_str_uoff(1, rt, rn, uimm); }
+void arm64_strb_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { arm64_str_uoff(s, 0, rt, rn, uimm); }
+void arm64_strh_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) { arm64_str_uoff(s, 1, rt, rn, uimm); }
 
 // Pre/post-index (9-bit signed immediate)
 static uint32_t ldr_imm9(uint32_t opc, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
     uint32_t idx = pre ? 0xc00u : 0x400u;
     return opc | idx | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
 }
-uint32_t arm64_ldr_imm(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
-    return ldr_imm9(sf ? 0xf8400000u : 0xb8400000u, rt, rn, imm9, pre);
+void arm64_ldr_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
+    secbuf_emit32le(s, ldr_imm9(sf ? 0xf8400000u : 0xb8400000u, rt, rn, imm9, pre));
 }
-uint32_t arm64_ldrb_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return ldr_imm9(0x38400000u, rt, rn, imm9, false);
+void arm64_ldrb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, ldr_imm9(0x38400000u, rt, rn, imm9, false));
 }
-uint32_t arm64_ldrh_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return ldr_imm9(0x78400000u, rt, rn, imm9, false);
+void arm64_ldrh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, ldr_imm9(0x78400000u, rt, rn, imm9, false));
 }
-uint32_t arm64_ldrsb(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+void arm64_ldrsb(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
     uint32_t opc = sf ? 0x38800000u : 0x38c00000u;
-    return ldr_imm9(opc, rt, rn, imm9, false);
+    secbuf_emit32le(s, ldr_imm9(opc, rt, rn, imm9, false));
 }
-uint32_t arm64_ldrsh(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+void arm64_ldrsh(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
     uint32_t opc = sf ? 0x78800000u : 0x78c00000u;
-    return ldr_imm9(opc, rt, rn, imm9, false);
+    secbuf_emit32le(s, ldr_imm9(opc, rt, rn, imm9, false));
 }
-uint32_t arm64_ldrsw_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return ldr_imm9(0xb8800000u, rt, rn, imm9, false);
+void arm64_ldrsw_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, ldr_imm9(0xb8800000u, rt, rn, imm9, false));
 }
-uint32_t arm64_ldrsw_uoff(Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
-    return 0xb9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldrsw_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
+    secbuf_emit32le(s, 0xb9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_str_imm(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
-    return ldr_imm9(sf ? 0xf8000000u : 0xb8000000u, rt, rn, imm9, pre);
+void arm64_str_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
+    secbuf_emit32le(s, ldr_imm9(sf ? 0xf8000000u : 0xb8000000u, rt, rn, imm9, pre));
 }
-uint32_t arm64_strb_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return ldr_imm9(0x38000000u, rt, rn, imm9, false);
+void arm64_strb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, ldr_imm9(0x38000000u, rt, rn, imm9, false));
 }
-uint32_t arm64_strh_imm(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return ldr_imm9(0x78000000u, rt, rn, imm9, false);
+void arm64_strh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, ldr_imm9(0x78000000u, rt, rn, imm9, false));
 }
 
 // Unscaled (LDUR/STUR)
-uint32_t arm64_ldur(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return (sf ? 0xf8400000u : 0xb8400000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldur(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, (sf ? 0xf8400000u : 0xb8400000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldurb(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return 0x38400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldurb(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, 0x38400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldurh(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return 0x78400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldurh(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, 0x78400000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_stur(int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return (sf ? 0xf8000000u : 0xb8000000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_stur(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, (sf ? 0xf8000000u : 0xb8000000u) | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_sturb(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return 0x38000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_sturb(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, 0x38000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_sturh(Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    return 0x78000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_sturh(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    secbuf_emit32le(s, 0x78000000u | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
 
 // Register offset
-uint32_t arm64_ldr_reg(int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int s) {
+void arm64_ldr_reg(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int scale) {
     uint32_t opc = (sz == 3) ? 0xf8600800u : (sz == 2) ? 0xb8600800u
         : (sz == 1)                                    ? 0x78600800u
                                                        : 0x38600800u;
-    return opc | BITS(20, 16, rm) | BITS(15, 13, ext ? 6 : 3) | BITS(12, 12, s) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    secbuf_emit32le(s, opc | BITS(20, 16, rm) | BITS(15, 13, ext ? 6 : 3) | BITS(12, 12, scale) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_str_reg(int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int s) {
+void arm64_str_reg(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, Arm64Reg rm, bool ext, int scale) {
     uint32_t opc = (sz == 3) ? 0xf8200800u : (sz == 2) ? 0xb8200800u
         : (sz == 1)                                    ? 0x78200800u
                                                        : 0x38200800u;
-    return opc | BITS(20, 16, rm) | BITS(15, 13, ext ? 6 : 3) | BITS(12, 12, s) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    secbuf_emit32le(s, opc | BITS(20, 16, rm) | BITS(15, 13, ext ? 6 : 3) | BITS(12, 12, scale) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
 
 // Load/store pair
@@ -399,152 +400,152 @@ static uint32_t ldp_stp(uint32_t base, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, 
                                              : 0x01000000u;
     return base | mode | BITS(21, 15, (uint32_t)imm7 & 0x7f) | BITS(14, 10, rt2) | BITS(9, 5, rn) | BITS(4, 0, rt1);
 }
-uint32_t arm64_ldp(int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
-    return ldp_stp(sf ? 0xa8400000u : 0x28400000u, rt1, rt2, rn, imm7, pre, post);
+void arm64_ldp(SecBuf *s, int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
+    secbuf_emit32le(s, ldp_stp(sf ? 0xa8400000u : 0x28400000u, rt1, rt2, rn, imm7, pre, post));
 }
-uint32_t arm64_stp(int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
-    return ldp_stp(sf ? 0xa8000000u : 0x28000000u, rt1, rt2, rn, imm7, pre, post);
+void arm64_stp(SecBuf *s, int sf, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
+    secbuf_emit32le(s, ldp_stp(sf ? 0xa8000000u : 0x28000000u, rt1, rt2, rn, imm7, pre, post));
 }
 
 // Exclusive
-uint32_t arm64_ldxr(int sf, Arm64Reg rt, Arm64Reg rn) {
-    return (sf ? 0xc85f7c00u : 0x885f7c00u) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldxr(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, (sf ? 0xc85f7c00u : 0x885f7c00u) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldxrb(Arm64Reg rt, Arm64Reg rn) { return 0x085f7c00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
-uint32_t arm64_ldxrh(Arm64Reg rt, Arm64Reg rn) { return 0x485f7c00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
-uint32_t arm64_stxr(int sf, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
-    return (sf ? 0xc8007c00u : 0x88007c00u) | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldxrb(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x085f7c00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
+void arm64_ldxrh(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x485f7c00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
+void arm64_stxr(SecBuf *s, int sf, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, (sf ? 0xc8007c00u : 0x88007c00u) | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_stxrb(Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
-    return 0x08007c00u | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_stxrb(SecBuf *s, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, 0x08007c00u | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_stxrh(Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
-    return 0x48007c00u | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_stxrh(SecBuf *s, Arm64Reg rs, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, 0x48007c00u | BITS(20, 16, rs) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldar(int sf, Arm64Reg rt, Arm64Reg rn) {
-    return (sf ? 0xc8dffc00u : 0x88dffc00u) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldar(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, (sf ? 0xc8dffc00u : 0x88dffc00u) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_ldarb(Arm64Reg rt, Arm64Reg rn) { return 0x08dffc00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
-uint32_t arm64_ldarh(Arm64Reg rt, Arm64Reg rn) { return 0x48dffc00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
-uint32_t arm64_stlr(int sf, Arm64Reg rt, Arm64Reg rn) {
-    return (sf ? 0xc89ffc00u : 0x889ffc00u) | BITS(9, 5, rn) | BITS(4, 0, rt);
+void arm64_ldarb(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x08dffc00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
+void arm64_ldarh(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x48dffc00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
+void arm64_stlr(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn) {
+    secbuf_emit32le(s, (sf ? 0xc89ffc00u : 0x889ffc00u) | BITS(9, 5, rn) | BITS(4, 0, rt));
 }
-uint32_t arm64_stlrb(Arm64Reg rt, Arm64Reg rn) { return 0x089ffc00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
-uint32_t arm64_stlrh(Arm64Reg rt, Arm64Reg rn) { return 0x489ffc00u | BITS(9, 5, rn) | BITS(4, 0, rt); }
+void arm64_stlrb(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x089ffc00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
+void arm64_stlrh(SecBuf *s, Arm64Reg rt, Arm64Reg rn) { secbuf_emit32le(s, 0x489ffc00u | BITS(9, 5, rn) | BITS(4, 0, rt)); }
 
 // ---------------------------------------------------------------------------
 // Branches
 // ---------------------------------------------------------------------------
-uint32_t arm64_b(int32_t imm26) {
-    return 0x14000000u | ((uint32_t)imm26 & 0x3ffffffu);
+void arm64_b(SecBuf *s, int32_t imm26) {
+    secbuf_emit32le(s, 0x14000000u | ((uint32_t)imm26 & 0x3ffffffu));
 }
-uint32_t arm64_bl(int32_t imm26) {
-    return 0x94000000u | ((uint32_t)imm26 & 0x3ffffffu);
+void arm64_bl(SecBuf *s, int32_t imm26) {
+    secbuf_emit32le(s, 0x94000000u | ((uint32_t)imm26 & 0x3ffffffu));
 }
-uint32_t arm64_br(Arm64Reg rn) { return 0xd61f0000u | BITS(9, 5, rn); }
-uint32_t arm64_blr(Arm64Reg rn) { return 0xd63f0000u | BITS(9, 5, rn); }
-uint32_t arm64_ret(Arm64Reg rn) { return 0xd65f0000u | BITS(9, 5, rn); }
-uint32_t arm64_bcond(Arm64Cond cond, int32_t imm19) {
-    return 0x54000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(3, 0, cond);
+void arm64_br(SecBuf *s, Arm64Reg rn) { secbuf_emit32le(s, 0xd61f0000u | BITS(9, 5, rn)); }
+void arm64_blr(SecBuf *s, Arm64Reg rn) { secbuf_emit32le(s, 0xd63f0000u | BITS(9, 5, rn)); }
+void arm64_ret(SecBuf *s, Arm64Reg rn) { secbuf_emit32le(s, 0xd65f0000u | BITS(9, 5, rn)); }
+void arm64_bcond(SecBuf *s, Arm64Cond cond, int32_t imm19) {
+    secbuf_emit32le(s, 0x54000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(3, 0, cond));
 }
-uint32_t arm64_cbz(int sf, Arm64Reg rt, int32_t imm19) {
-    return SF(sf) | 0x34000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(4, 0, rt);
+void arm64_cbz(SecBuf *s, int sf, Arm64Reg rt, int32_t imm19) {
+    secbuf_emit32le(s, SF(sf) | 0x34000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(4, 0, rt));
 }
-uint32_t arm64_cbnz(int sf, Arm64Reg rt, int32_t imm19) {
-    return SF(sf) | 0x35000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(4, 0, rt);
+void arm64_cbnz(SecBuf *s, int sf, Arm64Reg rt, int32_t imm19) {
+    secbuf_emit32le(s, SF(sf) | 0x35000000u | BITS(23, 5, (uint32_t)imm19 & 0x7ffff) | BITS(4, 0, rt));
 }
-uint32_t arm64_tbz(Arm64Reg rt, int imm6, int32_t imm14) {
+void arm64_tbz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14) {
     uint32_t b5 = (uint32_t)(imm6 >> 5) & 1;
     uint32_t b40 = (uint32_t)imm6 & 0x1f;
-    return 0x36000000u | (b5 << 31) | BITS(23, 19, b40) | BITS(18, 5, (uint32_t)imm14 & 0x3fff) | BITS(4, 0, rt);
+    secbuf_emit32le(s, 0x36000000u | (b5 << 31) | BITS(23, 19, b40) | BITS(18, 5, (uint32_t)imm14 & 0x3fff) | BITS(4, 0, rt));
 }
-uint32_t arm64_tbnz(Arm64Reg rt, int imm6, int32_t imm14) {
+void arm64_tbnz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14) {
     uint32_t b5 = (uint32_t)(imm6 >> 5) & 1;
     uint32_t b40 = (uint32_t)imm6 & 0x1f;
-    return 0x37000000u | (b5 << 31) | BITS(23, 19, b40) | BITS(18, 5, (uint32_t)imm14 & 0x3fff) | BITS(4, 0, rt);
+    secbuf_emit32le(s, 0x37000000u | (b5 << 31) | BITS(23, 19, b40) | BITS(18, 5, (uint32_t)imm14 & 0x3fff) | BITS(4, 0, rt));
 }
 
 // ---------------------------------------------------------------------------
 // System / Misc
 // ---------------------------------------------------------------------------
-uint32_t arm64_nop(void) { return 0xd503201fu; }
-uint32_t arm64_dmb(int opt) { return 0xd50330bfu | BITS(11, 8, opt); }
-uint32_t arm64_dsb(int opt) { return 0xd503309fu | BITS(11, 8, opt); }
-uint32_t arm64_isb(void) { return 0xd5033fdfu; }
-uint32_t arm64_prfm_imm(int prfop, Arm64Reg rn, uint32_t uimm) {
-    return 0xf9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, prfop);
+void arm64_nop(SecBuf *s) { secbuf_emit32le(s, 0xd503201fu); }
+void arm64_dmb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd50330bfu | BITS(11, 8, opt)); }
+void arm64_dsb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd503309fu | BITS(11, 8, opt)); }
+void arm64_isb(SecBuf *s) { secbuf_emit32le(s, 0xd5033fdfu); }
+void arm64_prfm_imm(SecBuf *s, int prfop, Arm64Reg rn, uint32_t uimm) {
+    secbuf_emit32le(s, 0xf9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, prfop));
 }
 
 // ---------------------------------------------------------------------------
 // FP / SIMD
 // ---------------------------------------------------------------------------
 // ftype: 0=single, 1=double (most common for rcc)
-uint32_t arm64_fmov_f2i(int sf, Arm64Reg rd, Arm64Reg rn) {
+void arm64_fmov_f2i(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) {
     uint32_t ftype = sf ? 1u : 0u;
-    return SF(sf) | 0x1e260000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | 0x1e260000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fmov_i2f(int sf, Arm64Reg rd, Arm64Reg rn) {
+void arm64_fmov_i2f(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn) {
     uint32_t ftype = sf ? 1u : 0u;
-    return SF(sf) | 0x1e270000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, SF(sf) | 0x1e270000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fmov_imm(int ftype, Arm64Reg rd, uint8_t imm8) {
-    return 0x1e201000u | BITS(23, 22, ftype) | BITS(20, 13, imm8) | BITS(4, 0, rd);
+void arm64_fmov_imm(SecBuf *s, int ftype, Arm64Reg rd, uint8_t imm8) {
+    secbuf_emit32le(s, 0x1e201000u | BITS(23, 22, ftype) | BITS(20, 13, imm8) | BITS(4, 0, rd));
 }
 static uint32_t fp3(int ftype, uint32_t op, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     return 0x1e200000u | BITS(23, 22, ftype) | op | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd);
 }
-uint32_t arm64_fadd(int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return fp3(ft, 0x002800u, rd, rn, rm); }
-uint32_t arm64_fsub(int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return fp3(ft, 0x003800u, rd, rn, rm); }
-uint32_t arm64_fmul(int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return fp3(ft, 0x000800u, rd, rn, rm); }
-uint32_t arm64_fdiv(int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { return fp3(ft, 0x001800u, rd, rn, rm); }
-uint32_t arm64_fneg(int ft, Arm64Reg rd, Arm64Reg rn) {
-    return 0x1e214000u | BITS(23, 22, ft) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_fadd(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, fp3(ft, 0x002800u, rd, rn, rm)); }
+void arm64_fsub(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, fp3(ft, 0x003800u, rd, rn, rm)); }
+void arm64_fmul(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, fp3(ft, 0x000800u, rd, rn, rm)); }
+void arm64_fdiv(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, fp3(ft, 0x001800u, rd, rn, rm)); }
+void arm64_fneg(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, 0x1e214000u | BITS(23, 22, ft) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fabs(int ft, Arm64Reg rd, Arm64Reg rn) {
-    return 0x1e20c000u | BITS(23, 22, ft) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_fabs(SecBuf *s, int ft, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, 0x1e20c000u | BITS(23, 22, ft) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fcmp(int ft, Arm64Reg rn, Arm64Reg rm) {
-    return 0x1e202000u | BITS(23, 22, ft) | BITS(20, 16, rm) | BITS(9, 5, rn);
+void arm64_fcmp(SecBuf *s, int ft, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, 0x1e202000u | BITS(23, 22, ft) | BITS(20, 16, rm) | BITS(9, 5, rn));
 }
-uint32_t arm64_fcvt(int opc, int ftype, Arm64Reg rd, Arm64Reg rn) {
-    return 0x1e224000u | BITS(23, 22, ftype) | BITS(16, 15, opc) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_fcvt(SecBuf *s, int opc, int ftype, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, 0x1e224000u | BITS(23, 22, ftype) | BITS(16, 15, opc) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_scvtf(int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
-    return SF(sf) | 0x1e220000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_scvtf(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, SF(sf) | 0x1e220000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_ucvtf(int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
-    return SF(sf) | 0x1e230000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_ucvtf(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, SF(sf) | 0x1e230000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fcvtzs(int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
-    return SF(sf) | 0x1e380000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_fcvtzs(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, SF(sf) | 0x1e380000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
-uint32_t arm64_fcvtzu(int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
-    return SF(sf) | 0x1e390000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd);
+void arm64_fcvtzu(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, SF(sf) | 0x1e390000u | BITS(23, 22, ftype) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // FP load/store unsigned offset: sz=2→S(32bit), sz=3→D(64bit), sz=4→Q(128bit)
 // LDR S: 0xBD400000, LDR D: 0xFD400000, LDR Q: 0x3DC00000
 // uimm is byte offset; auto-scaled to element size
-uint32_t arm64_ldr_fp(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
+void arm64_ldr_fp(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     switch (sz) {
-    case 2: return 0xBD400000u | BITS(21, 10, uimm / 4) | BITS(9, 5, rn) | BITS(4, 0, rt);
-    case 3: return 0xFD400000u | BITS(21, 10, uimm / 8) | BITS(9, 5, rn) | BITS(4, 0, rt);
-    default: return 0x3DC00000u | BITS(21, 10, uimm / 16) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    case 2: secbuf_emit32le(s, 0xBD400000u | BITS(21, 10, uimm / 4) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    case 3: secbuf_emit32le(s, 0xFD400000u | BITS(21, 10, uimm / 8) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    default: secbuf_emit32le(s, 0x3DC00000u | BITS(21, 10, uimm / 16) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
     }
 }
-uint32_t arm64_str_fp(int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
+void arm64_str_fp(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     switch (sz) {
-    case 2: return 0xBD000000u | BITS(21, 10, uimm / 4) | BITS(9, 5, rn) | BITS(4, 0, rt);
-    case 3: return 0xFD000000u | BITS(21, 10, uimm / 8) | BITS(9, 5, rn) | BITS(4, 0, rt);
-    default: return 0x3D800000u | BITS(21, 10, uimm / 16) | BITS(9, 5, rn) | BITS(4, 0, rt);
+    case 2: secbuf_emit32le(s, 0xBD000000u | BITS(21, 10, uimm / 4) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    case 3: secbuf_emit32le(s, 0xFD000000u | BITS(21, 10, uimm / 8) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    default: secbuf_emit32le(s, 0x3D800000u | BITS(21, 10, uimm / 16) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
     }
 }
-uint32_t arm64_ldp_fp(int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
+void arm64_ldp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
     uint32_t base = 0x2c400000u | BITS(31, 30, opc);
-    return ldp_stp(base, rt1, rt2, rn, imm7, pre, post);
+    secbuf_emit32le(s, ldp_stp(base, rt1, rt2, rn, imm7, pre, post));
 }
-uint32_t arm64_stp_fp(int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
+void arm64_stp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
     uint32_t base = 0x2c000000u | BITS(31, 30, opc);
-    return ldp_stp(base, rt1, rt2, rn, imm7, pre, post);
+    secbuf_emit32le(s, ldp_stp(base, rt1, rt2, rn, imm7, pre, post));
 }
 #endif /* ARCH_ARM64 */
