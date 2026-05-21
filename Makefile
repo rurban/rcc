@@ -31,13 +31,15 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/obj.c src/arm64_enc.c src/x86_enc.c src/asm.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/obj.c src/asm.c
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 INCDIR = $(PREFIX)/include/rcc
 LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
+
+MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
@@ -52,16 +54,17 @@ BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
+SRCS += src/x86_enc.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
-else
-ifeq ($(CC),x86_64-w64-mingw32-gcc)
+else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 MINGW_O = lib/mingw$(OBJ_EXT)
 OBJ_EXT = .obj
+SRCS += src/x86_enc.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
-endif
-ifeq ($(CC),aarch64-linux-gnu-gcc)
+else ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
+SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
@@ -70,7 +73,6 @@ ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
 ARM64_SYSROOT := /usr/aarch64-redhat-linux/sys-root/fc43
 endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
-endif
 endif
 endif
 
@@ -85,24 +87,26 @@ endif
 endif
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
-MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
+SRCS += src/macho_write.c src/arm64_enc.c
 DARWIN_O = lib/darwin.o
-TARGET_DEPS = $(OBJS) $(DARWIN_O) $(wildcard src/*.h)
-SRCS += src/macho_write.c
+OBJS += $(DARWIN_O)
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 SRCS += src/coff_write.c
-TARGET_DEPS = $(OBJS) $(MINGW_O) $(wildcard src/*.h)
+OBJS += $(MINGW_O)
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
-SRCS += src/elf_write.c
-TARGET_DEPS = $(OBJS) $(MINGW_O) $(wildcard src/*.h)
+SRCS += src/elf_write.c src/x86_enc.c
+OBJS += $(MINGW_O)
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 endif
 
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 $(TARGET): $(TARGET_DEPS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS)
 
 src/sysinc_paths.h:
 	RCC_CC="$(CC)"; \

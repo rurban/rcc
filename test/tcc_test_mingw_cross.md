@@ -67,7 +67,7 @@ Generated: May 2026
 | 51_static                   | EXEC_FAIL    | non-zero exit                 |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
-| 55_lshift_type              | MISMATCH     | Output does not match .expect |
+| 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
 | 60_errors_and_warnings      | SKIP         | Skipped                       |
 | 61_integers                 | PASS         | Output matches                |
 | 64_macro_nesting            | PASS         | Output matches                |
@@ -131,7 +131,7 @@ Generated: May 2026
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | EXEC_FAIL    | non-zero exit                 |
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
-| 129_scopes                  | MISMATCH     | Output does not match .expect |
+| 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
 | 130_large_argument          | MISMATCH     | Output does not match .expect |
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | PASS         | Output matches                |
