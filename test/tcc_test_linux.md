@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 144
-- **Failed**: 7
-- **Pass Rate**: 95%
+- **Passed**: 146
+- **Failed**: 5
+- **Pass Rate**: 96%
 
 ## Detailed Results
 
@@ -86,7 +86,7 @@ Generated: May 2026
 | 82_attribs_position         | PASS         | Output matches                |
 | 83_utf8_in_identifiers      | PASS         | Output matches                |
 | 84_hex-float                | PASS         | Output matches                |
-| 85_asm-outside-function     | COMPILE_FAIL | rcc returned non-zero         |
+| 85_asm-outside-function     | PASS         | Output matches                |
 | 86_memory-model             | PASS         | Output matches                |
 | 87_dead_code                | PASS         | Output matches                |
 | 88_codeopt                  | PASS         | Output matches                |
@@ -122,7 +122,7 @@ Generated: May 2026
 | 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | PASS         | Output matches                |
 | 119_random_stuff            | PASS         | Output matches                |
-| 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
+| 120_alias                   | PASS         | Output matches                |
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |

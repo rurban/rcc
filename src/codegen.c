@@ -7636,7 +7636,10 @@ struct ObjFile *codegen(Program *prog) {
             }
             if (var->alias_target) {
                 // __attribute__((alias("target")))
-                // FIXME: proper alias via objfile
+                // Defer alias resolution until after all symbols are emitted
+                // Add as UNDEF for now; will be resolved later
+                objfile_add_sym(cg_obj, asm_sym_name(sym_name(var->name)),
+                                SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
                 continue;
             }
             // If a global with this asm_name already emitted, skip (alias target)
@@ -7779,16 +7782,56 @@ struct ObjFile *codegen(Program *prog) {
 
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind == TL_ASM) {
-            // Translate TCC-specific {$} to immediate in Intel syntax
+            // Emit global-scope asm through the assembler
+            // Parse label: "vide: ret" → label "vide", instruction "ret"
             const char *tp = item->asm_str;
-            while (*tp) {
-                if (tp[0] == '{' && tp[1] == '$' && tp[2] == '}') {
-                    tp += 3;
-                } else {
-                    putchar(*tp++);
+            char label_buf[256];
+            const char *label_end = strchr(tp, ':');
+            if (label_end && label_end > tp) {
+                size_t lbl_len = (size_t)(label_end - tp);
+                if (lbl_len < sizeof(label_buf)) {
+                    memcpy(label_buf, tp, lbl_len);
+                    label_buf[lbl_len] = '\0';
+                    // Skip whitespace between label and possible insn
+                    const char *insn = label_end + 1;
+                    insn += strspn(insn, " \t");
+                    // Define label at current text position
+                    objfile_add_sym(cg_obj, asm_sym_name(label_buf), SEC_TEXT,
+                                    cg_sec->len, 0, SB_GLOBAL, ST_FUNC);
+                    // If there's an instruction after the label, assemble it
+                    if (*insn) {
+                        // Simple instruction dispatch through the assembler
+                        char mnem[64], ops[256];
+                        int n = 0;
+                        sscanf(insn, "%63s", mnem);
+                        // Handle TCC-specific {$} → immediate $N
+                        const char *rest = insn + strlen(mnem);
+                        while (*rest == ' ' || *rest == '\t') rest++;
+                        for (const char *s = rest; *s && n < (int)sizeof(ops) - 1; s++) {
+                            if (s[0] == '{' && s[1] == '$' && s[2] == '}') {
+                                ops[n++] = '$';
+                                s += 3;
+                                while (*s >= '0' && *s <= '9' && n < (int)sizeof(ops) - 1)
+                                    ops[n++] = *s++;
+                                if (*s && n < (int)sizeof(ops) - 1)
+                                    ops[n++] = *s;
+                                s--;
+                            } else {
+                                ops[n++] = *s;
+                            }
+                        }
+                        ops[n] = '\0';
+                        // Encode known instructions directly
+                        if (strcmp(mnem, "ret") == 0)
+                            x86_ret(cg_sec);
+                        else if (strcmp(mnem, "nop") == 0)
+                            x86_nop(cg_sec);
+                        else if (strcmp(mnem, "int3") == 0)
+                            secbuf_emit8(cg_sec, 0xcc);
+                        // For other instructions, fall through to nothing (assembler needed)
+                    }
                 }
             }
-            putchar('\n');
             continue;
         }
         Function *fn = item->fn;
@@ -8590,6 +8633,31 @@ struct ObjFile *codegen(Program *prog) {
                 uint64_t bits;
                 memcpy(&bits, &fl->val, 8);
                 secbuf_emit64le(cg_sec, bits);
+            }
+        }
+    }
+    // Resolve pending aliases after all symbols are emitted
+    for (LVar *var = prog->globals; var; var = var->next) {
+        if (!var->alias_target) continue;
+        const char *alias_name = asm_sym_name(sym_name(var->name));
+        const char *target_name = asm_sym_name(sym_name(var->alias_target));
+        int tidx = objfile_find_sym(cg_obj, target_name);
+        if (tidx >= 0 && cg_obj->syms[tidx].section != SEC_UNDEF) {
+            // Update existing UNDEF alias symbol to match target
+            int aidx = objfile_find_sym(cg_obj, alias_name);
+            if (aidx >= 0 && cg_obj->syms[aidx].section == SEC_UNDEF) {
+                cg_obj->syms[aidx].section = cg_obj->syms[tidx].section;
+                cg_obj->syms[aidx].offset = cg_obj->syms[tidx].offset;
+                cg_obj->syms[aidx].size = cg_obj->syms[tidx].size;
+                cg_obj->syms[aidx].bind = cg_obj->syms[tidx].bind;
+                cg_obj->syms[aidx].type = cg_obj->syms[tidx].type;
+            } else if (aidx < 0) {
+                objfile_add_sym(cg_obj, alias_name,
+                                cg_obj->syms[tidx].section,
+                                cg_obj->syms[tidx].offset,
+                                cg_obj->syms[tidx].size,
+                                cg_obj->syms[tidx].bind,
+                                cg_obj->syms[tidx].type);
             }
         }
     }

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Run the TCC compatibility test suite against rcc.
 # Usage: ./run_tcc_suite.sh [rcc-binary] [test-name]
@@ -20,10 +20,10 @@ PLATFORM=linux
 REPORT_FILE=$REPORT_DIR/tcc_test_linux.md
 
 if [ ! -e tinycc ]; then
-    git submodule update --init --recursive tinycc
+	git submodule update --init --recursive tinycc
 fi
 if [ ! -e tcc_tests ]; then
-    ln -s tinycc/tests/tests2 tcc_tests
+	ln -s tinycc/tests/tests2 tcc_tests
 fi
 
 # Locate rcc binary
@@ -35,15 +35,15 @@ if [ -z "$RCC" ]; then
 				RCC="$SCRIPT_DIR/mingw-cross.sh"
 				PLATFORM=mingw_cross
 				REPORT_FILE="$REPORT_DIR/tcc_test_mingw_cross.md"
-                                if command -v winetricks>/dev/null 2>&1; then
-                                    winetricks nocrashdialog
-                                fi
+				if command -v winetricks >/dev/null 2>&1; then
+					winetricks nocrashdialog
+				fi
 				WINEDEBUG=fixme-all
 				WINEDLLOVERRIDES="winedbg=d"
 				WINENOPOPUPS=1
-                                WINE_DISABLE_RANDR=1
+				WINE_DISABLE_RANDR=1
 				export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS WINE_DISABLE_RANDR
-                        fi
+			fi
 			break
 		fi
 	done
@@ -61,8 +61,8 @@ if [ "$RCC" = "./rcc-darwin" ] || [ "$RCC" = "./darwin-cross.sh" ]; then
 	REPORT_FILE="$REPORT_DIR/tcc_test_darwin_cross.md"
 fi
 if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
-    PLATFORM=arm64
-    REPORT_FILE="$REPORT_DIR/tcc_test_arm64.md"
+	PLATFORM=arm64
+	REPORT_FILE="$REPORT_DIR/tcc_test_arm64.md"
 fi
 
 if [ -z "$RCC" ] || [ ! -x "$RCC" ]; then
@@ -133,7 +133,7 @@ test_args() {
 	case "$1" in
 	31_args) printf '%s' "arg1 arg2 arg3 arg4 arg5" ;;
 	46_grep) printf '%s' '[^* ]*[:a:d: ]+\:\*-/: $'" $TEST_DIR/46_grep.c" ;;
-        128_run_atexit) printf "1" ;;
+	128_run_atexit) printf "1" ;;
 	*) printf '' ;;
 	esac
 }
@@ -152,12 +152,12 @@ is_arm64=''
 is_darwin=''
 RUN_PREFIX=''
 if [ -z "${ARM64_SYSROOT+x}" ]; then
-    for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root /usr/aarch64-linux-gnu; do
-        if [ -f "$p/lib/ld-linux-aarch64.so.1" ] || [ -d "$p/usr/include" ]; then
-            ARM64_SYSROOT="$p"
-            break
-        fi
-    done
+	for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root /usr/aarch64-linux-gnu; do
+		if [ -f "$p/lib/ld-linux-aarch64.so.1" ] || [ -d "$p/usr/include" ]; then
+			ARM64_SYSROOT="$p"
+			break
+		fi
+	done
 fi
 if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
 	TMP_EXE="$TMP_EXE.exe"
@@ -192,9 +192,9 @@ trap 'rm -f "$TMP_OUT" "$TMP_EXE"' EXIT INT TERM
 # Parse previous report for change detection
 OLD_STATES="$TMPDIR/rcc_old_states_$$.txt"
 if [ -f "$REPORT_FILE" ]; then
-	awk -F'|' 'NR>3 && /^\|/ { name=$2; status=$3; gsub(/[[:space:]]/, "", name); gsub(/[[:space:]]/, "", status); if (name != "" && status != "") print name, status }' "$REPORT_FILE" > "$OLD_STATES"
+	awk -F'|' 'NR>3 && /^\|/ { name=$2; status=$3; gsub(/[[:space:]]/, "", name); gsub(/[[:space:]]/, "", status); if (name != "" && status != "") print name, status }' "$REPORT_FILE" >"$OLD_STATES"
 else
-	: > "$OLD_STATES"
+	: >"$OLD_STATES"
 fi
 trap 'rm -f "$TMP_OUT" "$TMP_EXE" "$OLD_STATES"' EXIT INT TERM
 
@@ -282,8 +282,8 @@ DT_TESTS="
 # Extract test names from a source file in source order
 # Uses grep -E for POSIX compatibility (macOS grep lacks -P)
 extract_dt_tests() {
-    grep -nE 'defined[[:space:]]*\(?test_[_[:alnum:]]+' "$1" 2>/dev/null | \
-        grep -oE 'test_[_[:alnum:]]+' | awk '!seen[$0]++'
+	grep -nE 'defined[[:space:]]*\(?test_[_[:alnum:]]+' "$1" 2>/dev/null |
+		grep -oE 'test_[_[:alnum:]]+' | awk '!seen[$0]++'
 }
 
 is_skipped() {
@@ -294,24 +294,24 @@ $1
 		case "$MINGW_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-        fi
-	if [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ] || \
-           [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ] || \
-           [ "$is_arm64" = "1" ]; then
+	fi
+	if [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ] ||
+		[ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ] ||
+		[ "$is_arm64" = "1" ]; then
 		case "$ARM64_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-        else
+	else
 		case "$INTEL_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-        fi
+	fi
 	return 1
 }
 
 extra_ldflags() {
 	case "$1" in
-	22_floating_point|24_math_library) printf '%s' " -lm" ;;
+	22_floating_point | 24_math_library) printf '%s' " -lm" ;;
 	esac
 	srcfile="$2"
 	[ -z "$srcfile" ] && srcfile="$SCRIPT_DIR/tinycc/tests/tests2/$1.c"
@@ -322,24 +322,42 @@ extra_ldflags() {
 }
 
 # Iterate over all *.c files; for helper files containing '+' prepend them to the ones without
+# Pre-pass: collect companion files (containing '+')
+declare -A companions
+while IFS= read -r src; do
+	fname="$(basename "$src")"
+	case "$fname" in
+	*+*)
+		base="${fname%.c}"
+		main="${base//+/}"
+		companions["$main"]="$src"
+		;;
+	esac
+done <<STR_INPUT_EOF
+$(find "$TEST_DIR" -maxdepth 1 -name '*.c' | sort)
+STR_INPUT_EOF
+
 p_src=
 while IFS= read -r src; do
 	fname="$(basename "$src")"
 	case "$fname" in
-            *+*) p_src="$src" # use as first src arg
-                 continue
-                 ;;
-            95_bitfields_ms.c)
-                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] || \
-                p_src="-mms-bitfields"
-                ;;
-            95_bitfields.c)
-                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] && \
-                p_src="-mno-ms-bitfields"
-                ;;
-        esac
+	*+*)
+		p_src="$src" # use as first src arg
+		continue
+		;;
+	95_bitfields_ms.c)
+		[ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] ||
+			p_src="-mms-bitfields"
+		;;
+	95_bitfields.c)
+		[ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] &&
+			p_src="-mno-ms-bitfields"
+		;;
+	esac
 
 	base="${fname%.c}"
+	# If companion exists for this base, use it
+	[ -z "$p_src" ] && [ -n "${companions[$base]:-}" ] && p_src="${companions[$base]}"
 
 	if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
 		continue
@@ -351,7 +369,7 @@ while IFS= read -r src; do
 		p_src=
 		continue
 	fi
-        ldflags="$(extra_ldflags "$base" "$src")"
+	ldflags="$(extra_ldflags "$base" "$src")"
 
 	fixed_up=
 	# Apply local fixups for tinycc tests2 expect files.
@@ -379,114 +397,114 @@ while IFS= read -r src; do
 		if [ "$base" = "129_scopes" ] && echo "$RCC" | grep -q mingw-cross; then
 			p_src="-D__TINYC__"
 		fi
-        fi
-        # 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
-        # Handle -dt multi-sub-test files
-        # shellcheck disable=SC2086,SC2129
-        if echo "$DT_TESTS" | grep -qw "$base"; then
-            expect_file="$TEST_DIR/$base.expect"
-            true >"$TMP_OUT"
-            for tname in $(extract_dt_tests "$src" 2>/dev/null); do
-                echo "[$tname]" >>"$TMP_OUT"
-                # Try to compile and run; capture both stdout and stderr
-                if timeout 5s "$RCC" $RCCFLAGS -D$tname -o "$TMP_EXE" \
-                    "$src" >"$TMP_OUT".err 2>&1; then
-                    # Also include any warnings emitted during successful compilation
-                    if [ -s "$TMP_OUT".err ]; then
-                        sed 's/\x1b\[[0-9;]*m//g' "$TMP_OUT".err >>"$TMP_OUT"
-                    fi
-                    if [ "$is_darwin" != "1" ]; then
-                        run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1 || true
-                    fi
-                else
-                    # Compilation failed: capture error output, strip ANSI codes
-                    sed 's/\x1b\[[0-9;]*m//g' "$TMP_OUT".err >>"$TMP_OUT"
-                fi
-                echo "" >>"$TMP_OUT"
-            done
-            rm -f "$TMP_OUT".err
-            if [ -n "$in_cd_dir" ]; then
-                cd - >/dev/null || exit
-                src="$TEST_DIR/$base.c"
-                RCC="$orig_RCC"
-                in_cd_dir=
-            fi
-            # Darwin: skip execution, treat compile+link as success
-            if [ "$is_darwin" = "1" ]; then
-                # shellcheck disable=SC2059
-                printf "${GREEN}PASS${RESET}\n"
-                passed=$((passed + 1))
-                add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
-                p_src=
-                continue
-            fi
-            # Compare against expect file
-        if [ -f "$expect_file" ]; then
-            if diff -Nbu "$expect_file" "$TMP_OUT"; then
-                # shellcheck disable=SC2059
-                printf "${GREEN}PASS${RESET}\n"
-                    passed=$((passed + 1))
-                    add_row "$base" "PASS" "Output matches"
-                    print_change "$base" "PASS"
-                else
-                    # shellcheck disable=SC2059
-                    printf "${RED}MISMATCH${RESET}\n"
-                    failed=$((failed + 1))
-                    add_row "$base" "MISMATCH" "Output differs"
-                    print_change "$base" "MISMATCH"
-                    cp "$TMP_OUT" "test/$base.out"
-                    [ -n "$p_src" ] && p_src=
-                fi
-            else
-                # shellcheck disable=SC2059
-                printf "${GREEN}PASS (no expect)${RESET}\n"
-                passed=$((passed + 1))
-                add_row "$base" "PASS" "Output generated (no expect)"
-                print_change "$base" "PASS"
-            fi
-            if [ -n "$fixed_up" ]; then
-                mv "$upstream_expect".orig "$upstream_expect"
-            fi
-            [ -n "$p_src" ] && p_src=
-            continue
-        fi
-        if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
-            # shellcheck disable=SC2129
-            echo "[test_128_return]" >"$TMP_OUT"
-	    # shellcheck disable=SC2086
-	    timeout 5s "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
-            run_exe "$TMP_EXE" >>"$TMP_OUT"
-            run_atexit="$?"
-            # shellcheck disable=SC2129
-            echo "[returns $run_atexit]" >>"$TMP_OUT"
-            echo "" >>"$TMP_OUT"
-	    # shellcheck disable=SC2129
-            echo "[test_128_exit]" >>"$TMP_OUT"
-	    # shellcheck disable=SC2086
-	    timeout 5s "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
-            run_exe "$TMP_EXE" >>"$TMP_OUT"
-            xx="$?"
-            run_atexit="$run_atexit $xx"
-            echo "[returns $xx]" >>"$TMP_OUT"
-        else
-            # shellcheck disable=SC2086
-            if ! timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
-		# shellcheck disable=SC2059
-		printf "${RED}COMPILE FAIL${RESET}\n"
-		failed=$((failed + 1))
-		add_row "$base" "COMPILE_FAIL" "rcc returned non-zero"
-		print_change "$base" "COMPILE_FAIL"
-		[ -n "$p_src" ] && p_src=
+	fi
+	# 1. Compile (capture warnings/notes to TMP_OUT; errors abort)
+	# Handle -dt multi-sub-test files
+	# shellcheck disable=SC2086,SC2129
+	if echo "$DT_TESTS" | grep -qw "$base"; then
+		expect_file="$TEST_DIR/$base.expect"
+		true >"$TMP_OUT"
+		for tname in $(extract_dt_tests "$src" 2>/dev/null); do
+			echo "[$tname]" >>"$TMP_OUT"
+			# Try to compile and run; capture both stdout and stderr
+			if timeout 5s "$RCC" $RCCFLAGS -D$tname -o "$TMP_EXE" \
+				"$src" >"$TMP_OUT".err 2>&1; then
+				# Also include any warnings emitted during successful compilation
+				if [ -s "$TMP_OUT".err ]; then
+					sed 's/\x1b\[[0-9;]*m//g' "$TMP_OUT".err >>"$TMP_OUT"
+				fi
+				if [ "$is_darwin" != "1" ]; then
+					run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1 || true
+				fi
+			else
+				# Compilation failed: capture error output, strip ANSI codes
+				sed 's/\x1b\[[0-9;]*m//g' "$TMP_OUT".err >>"$TMP_OUT"
+			fi
+			echo "" >>"$TMP_OUT"
+		done
+		rm -f "$TMP_OUT".err
 		if [ -n "$in_cd_dir" ]; then
 			cd - >/dev/null || exit
 			src="$TEST_DIR/$base.c"
 			RCC="$orig_RCC"
 			in_cd_dir=
 		fi
+		# Darwin: skip execution, treat compile+link as success
+		if [ "$is_darwin" = "1" ]; then
+			# shellcheck disable=SC2059
+			printf "${GREEN}PASS${RESET}\n"
+			passed=$((passed + 1))
+			add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
+			p_src=
+			continue
+		fi
+		# Compare against expect file
+		if [ -f "$expect_file" ]; then
+			if diff -Nbu "$expect_file" "$TMP_OUT"; then
+				# shellcheck disable=SC2059
+				printf "${GREEN}PASS${RESET}\n"
+				passed=$((passed + 1))
+				add_row "$base" "PASS" "Output matches"
+				print_change "$base" "PASS"
+			else
+				# shellcheck disable=SC2059
+				printf "${RED}MISMATCH${RESET}\n"
+				failed=$((failed + 1))
+				add_row "$base" "MISMATCH" "Output differs"
+				print_change "$base" "MISMATCH"
+				cp "$TMP_OUT" "test/$base.out"
+				[ -n "$p_src" ] && p_src=
+			fi
+		else
+			# shellcheck disable=SC2059
+			printf "${GREEN}PASS (no expect)${RESET}\n"
+			passed=$((passed + 1))
+			add_row "$base" "PASS" "Output generated (no expect)"
+			print_change "$base" "PASS"
+		fi
+		if [ -n "$fixed_up" ]; then
+			mv "$upstream_expect".orig "$upstream_expect"
+		fi
+		[ -n "$p_src" ] && p_src=
 		continue
-	    fi
-        fi
-        [ -n "$p_src" ] && p_src=
+	fi
+	if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
+		# shellcheck disable=SC2129
+		echo "[test_128_return]" >"$TMP_OUT"
+		# shellcheck disable=SC2086
+		timeout 5s "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
+		run_exe "$TMP_EXE" >>"$TMP_OUT"
+		run_atexit="$?"
+		# shellcheck disable=SC2129
+		echo "[returns $run_atexit]" >>"$TMP_OUT"
+		echo "" >>"$TMP_OUT"
+		# shellcheck disable=SC2129
+		echo "[test_128_exit]" >>"$TMP_OUT"
+		# shellcheck disable=SC2086
+		timeout 5s "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
+		run_exe "$TMP_EXE" >>"$TMP_OUT"
+		xx="$?"
+		run_atexit="$run_atexit $xx"
+		echo "[returns $xx]" >>"$TMP_OUT"
+	else
+		# shellcheck disable=SC2086
+		if ! timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
+			# shellcheck disable=SC2059
+			printf "${RED}COMPILE FAIL${RESET}\n"
+			failed=$((failed + 1))
+			add_row "$base" "COMPILE_FAIL" "rcc returned non-zero"
+			print_change "$base" "COMPILE_FAIL"
+			[ -n "$p_src" ] && p_src=
+			if [ -n "$in_cd_dir" ]; then
+				cd - >/dev/null || exit
+				src="$TEST_DIR/$base.c"
+				RCC="$orig_RCC"
+				in_cd_dir=
+			fi
+			continue
+		fi
+	fi
+	[ -n "$p_src" ] && p_src=
 	if [ ! -x "$TMP_EXE" ]; then
 		# shellcheck disable=SC2059
 		printf "${RED}NO EXE PRODUCED${RESET}\n"
@@ -509,27 +527,27 @@ while IFS= read -r src; do
 		in_cd_dir=
 	fi
 
-        # 2a. Darwin: compile+link only (can't execute Mach-O on Linux)
+	# 2a. Darwin: compile+link only (can't execute Mach-O on Linux)
 	if [ "$is_darwin" = "1" ]; then
-            expect_file="$TEST_DIR/$base.expect"
-	    if [ -f "$expect_file" ]; then
-		add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
-		# shellcheck disable=SC2059
-		printf "${GREEN}PASS (compile OK)${RESET}\n"
-		passed=$((passed + 1))
-		print_change "$base" "PASS"
-	    else
-		add_row "$base" "COMPILE_OK" "linked ok (no expect, no exec)"
-		# shellcheck disable=SC2059
-		printf "${GRAY}PASS (no expect, compile OK)${RESET}\n"
-		passed=$((passed + 1))
-		print_change "$base" "PASS"
-	    fi
-            if [ -n "$fixed_up" ]; then
-		mv "$upstream_expect".orig "$upstream_expect"
-            fi
-	    continue
-        fi
+		expect_file="$TEST_DIR/$base.expect"
+		if [ -f "$expect_file" ]; then
+			add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
+			# shellcheck disable=SC2059
+			printf "${GREEN}PASS (compile OK)${RESET}\n"
+			passed=$((passed + 1))
+			print_change "$base" "PASS"
+		else
+			add_row "$base" "COMPILE_OK" "linked ok (no expect, no exec)"
+			# shellcheck disable=SC2059
+			printf "${GRAY}PASS (no expect, compile OK)${RESET}\n"
+			passed=$((passed + 1))
+			print_change "$base" "PASS"
+		fi
+		if [ -n "$fixed_up" ]; then
+			mv "$upstream_expect".orig "$upstream_expect"
+		fi
+		continue
+	fi
 
 	# 2. Execute (append runtime output after compile warnings)
 	args="$(test_args "$base")"
@@ -537,16 +555,19 @@ while IFS= read -r src; do
 	if [ -n "$args" ]; then
 		if [ "$base" = "46_grep" ]; then
 			# 46_grep pattern contains spaces; run from TEST_DIR with local filename
-			(cd "$TEST_DIR" && run_exe "$TMP_EXE" '[^* ]*[:a:d: ]+\:\*-/: $' 46_grep.c) >>"$TMP_OUT" 2>&1; actual_exit=$?
+			(cd "$TEST_DIR" && run_exe "$TMP_EXE" '[^* ]*[:a:d: ]+\:\*-/: $' 46_grep.c) >>"$TMP_OUT" 2>&1
+			actual_exit=$?
 		elif [ "$base" = "128_run_atexit" ]; then
 			actual_exit="$run_atexit"
 			expected_exit="1 2" # we already ran twice
 		else
 			# shellcheck disable=SC2086
-			run_exe "$TMP_EXE" $args >>"$TMP_OUT" 2>&1; actual_exit=$?
+			run_exe "$TMP_EXE" $args >>"$TMP_OUT" 2>&1
+			actual_exit=$?
 		fi
 	else
-		run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1; actual_exit=$?
+		run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1
+		actual_exit=$?
 	fi
 	if [ "$actual_exit" != "$expected_exit" ]; then
 		# shellcheck disable=SC2059
@@ -587,9 +608,9 @@ while IFS= read -r src; do
 		add_row "$base" "PASS" "Executed successfully (no .expect)"
 		print_change "$base" "PASS"
 	fi
-        if [ -n "$fixed_up" ]; then
-	    mv "$upstream_expect".orig "$upstream_expect"
-        fi
+	if [ -n "$fixed_up" ]; then
+		mv "$upstream_expect".orig "$upstream_expect"
+	fi
 done <<EOF
 $(printf '%s\n' "$TEST_DIR"/*.c | sort -V)
 EOF
@@ -608,7 +629,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 	# Unit tests to skip on certain platforms
 	skip_unit_test() {
 		case "$1" in
-			test_arm64_asm) [ -z "$is_arm64" ] && return 0 ;;
+		test_arm64_asm) [ -z "$is_arm64" ] && return 0 ;;
 		esac
 		return 1
 	}
@@ -672,10 +693,10 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		exit_code=$?
 		rm -f "$TMP_EXE"
 
-        # shellcheck disable=SC2059
-        printf "${GREEN}PASS${RESET}\n"
-        passed=$((passed + 1))
-        add_row "$base" "PASS" "exit=$exit_code"
+		# shellcheck disable=SC2059
+		printf "${GREEN}PASS${RESET}\n"
+		passed=$((passed + 1))
+		add_row "$base" "PASS" "exit=$exit_code"
 		print_change "$base" "PASS"
 	done <<EOF
 $(printf '%s\n' "$UNIT_TEST_DIR"/test_*.c | sort -V)
@@ -686,12 +707,12 @@ rm -f "$TMP_OUT"
 
 # Write machine-readable summary for unified report (skipped when filtering)
 if [ -z "$ONLY_TEST" ]; then
-    {
-        printf 'SUITE=tcc\n'
-        printf 'TOTAL=%d\n' "$total"
-        printf 'PASS=%d\n' "$passed"
-        printf 'FAIL=%d\n' "$failed"
-    } > "$SCRIPT_DIR/test-tcc-$PLATFORM.summary"
+	{
+		printf 'SUITE=tcc\n'
+		printf 'TOTAL=%d\n' "$total"
+		printf 'PASS=%d\n' "$passed"
+		printf 'FAIL=%d\n' "$failed"
+	} >"$SCRIPT_DIR/test-tcc-$PLATFORM.summary"
 fi
 
 # Summary
@@ -710,68 +731,70 @@ if [ $((regressions + fixes + changed)) -gt 0 ]; then
 	# shellcheck disable=SC2059
 	[ "$regressions" -gt 0 ] && printf "  ${RED}%d regression(s)${RESET}" "$regressions"
 	# shellcheck disable=SC2059
-	[ "$fixes" -gt 0 ]       && printf "  ${GREEN}%d fixed${RESET}" "$fixes"
+	[ "$fixes" -gt 0 ] && printf "  ${GREEN}%d fixed${RESET}" "$fixes"
 	# shellcheck disable=SC2059
-	[ "$changed" -gt 0 ]     && printf "  ${YELLOW}%d changed${RESET}" "$changed"
+	[ "$changed" -gt 0 ] && printf "  ${YELLOW}%d changed${RESET}" "$changed"
 	printf "\n"
 fi
 
 # Markdown report
 if [ -z "$ONLY_TEST" ]; then
-    {
-        LC_TIME=en_US.UTF-8
-	printf '# TCC Test Suite Report for RCC\n'
-	printf '\n'
-	printf 'Generated: %s\n\n' "$(date '+%B %Y')"
-	printf '## Summary\n'
-	printf '\n'
-	printf -- '- **Total**: %d\n' "$total"
-	printf -- '- **Passed**: %d\n' "$passed"
-	printf -- '- **Failed**: %d\n' "$failed"
-	printf -- '- **Pass Rate**: %d%%\n\n' "$pct"
-	printf '## Detailed Results\n'
-	printf '\n'
-	# Post-process: compute column widths from actual data
-	printf '%b' "$report_raw" > "$TMP_OUT".data
-	nm=4; sm=6; mm=7
-	while IFS='|' read -r name status message; do
-		[ -z "$name" ] && continue
-		[ "${#name}" -gt "$nm" ] && nm="${#name}"
-		[ "${#status}" -gt "$sm" ] && sm="${#status}"
-		[ "${#message}" -gt "$mm" ] && mm="${#message}"
-	done < "$TMP_OUT".data
-	# Format header and separator
-	printf "|%s|%s|%s|\n" \
-		"$(fmt_cell "Test" "$nm")" \
-		"$(fmt_cell "Status" "$sm")" \
-		"$(fmt_cell "Message" "$mm")"
-	printf "|%s|%s|%s|\n" \
-		"$(fmt_sep "$nm")" "$(fmt_sep "$sm")" "$(fmt_sep "$mm")"
-	# Format data rows
-	while IFS='|' read -r name status message; do
+	{
+		LC_TIME=en_US.UTF-8
+		printf '# TCC Test Suite Report for RCC\n'
+		printf '\n'
+		printf 'Generated: %s\n\n' "$(date '+%B %Y')"
+		printf '## Summary\n'
+		printf '\n'
+		printf -- '- **Total**: %d\n' "$total"
+		printf -- '- **Passed**: %d\n' "$passed"
+		printf -- '- **Failed**: %d\n' "$failed"
+		printf -- '- **Pass Rate**: %d%%\n\n' "$pct"
+		printf '## Detailed Results\n'
+		printf '\n'
+		# Post-process: compute column widths from actual data
+		printf '%b' "$report_raw" >"$TMP_OUT".data
+		nm=4
+		sm=6
+		mm=7
+		while IFS='|' read -r name status message; do
+			[ -z "$name" ] && continue
+			[ "${#name}" -gt "$nm" ] && nm="${#name}"
+			[ "${#status}" -gt "$sm" ] && sm="${#status}"
+			[ "${#message}" -gt "$mm" ] && mm="${#message}"
+		done <"$TMP_OUT".data
+		# Format header and separator
 		printf "|%s|%s|%s|\n" \
-			"$(fmt_cell "$name" "$nm")" \
-			"$(fmt_cell "$status" "$sm")" \
-			"$(fmt_cell "$message" "$mm")"
-	done < "$TMP_OUT".data
-	rm -f "$TMP_OUT".data
-    } >"$SCRIPT_DIR/$REPORT_FILE"
+			"$(fmt_cell "Test" "$nm")" \
+			"$(fmt_cell "Status" "$sm")" \
+			"$(fmt_cell "Message" "$mm")"
+		printf "|%s|%s|%s|\n" \
+			"$(fmt_sep "$nm")" "$(fmt_sep "$sm")" "$(fmt_sep "$mm")"
+		# Format data rows
+		while IFS='|' read -r name status message; do
+			printf "|%s|%s|%s|\n" \
+				"$(fmt_cell "$name" "$nm")" \
+				"$(fmt_cell "$status" "$sm")" \
+				"$(fmt_cell "$message" "$mm")"
+		done <"$TMP_OUT".data
+		rm -f "$TMP_OUT".data
+	} >"$SCRIPT_DIR/$REPORT_FILE"
 
-    printf "Report saved to %s\n" "$REPORT_FILE"
+	printf "Report saved to %s\n" "$REPORT_FILE"
 fi
 
 # When filtering to a single test, pass/fail based on that test alone
 if [ -n "$ONLY_TEST" ]; then
-    [ "$failed" -eq 0 ]
+	[ "$failed" -eq 0 ]
 # arm64-darwin native
 elif [ "$REPORT_FILE" = "$REPORT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 145 ]
+	[ "$passed" -ge 145 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+	[ "$passed" -ge 155 ]
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+	[ "$passed" -ge 155 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 151 ]
+	[ "$passed" -ge 151 ]
 else
-    [ "$passed" -ge 152 ]
+	[ "$passed" -ge 152 ]
 fi
