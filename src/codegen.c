@@ -7801,8 +7801,7 @@ struct ObjFile *codegen(Program *prog) {
         fn_struct_ret_off = 0;
         fn_struct_ret_total = 0;
 
-        // Pass 1: Generate function body to temp file to discover register usage
-        // Pass 1: Discover register usage (dry run to dummy buffer)
+        // Pass 1: Generate dummy function body to discover register usage
         SecBuf _dummy;
         secbuf_init(&_dummy);
         SecBuf *saved_sec = cg_sec;
@@ -8051,6 +8050,7 @@ struct ObjFile *codegen(Program *prog) {
         cg_sec = saved_sec;
         secbuf_free(&_dummy);
         cg_dry_run = false;
+        used_regs = 0;
         fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
         cg_label_ht_reset();
         asm_fixup_ht_reset();
