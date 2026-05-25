@@ -486,6 +486,39 @@ static void asm_mov_imm(SecBuf *s, VReg vr, int size, int64_t imm) {
 #endif
 }
 
+#ifdef ARCH_ARM64
+static void asm_mov_imm_phy(SecBuf *s, Arm64Reg r, int size, int64_t imm) {
+    size_t off = s->len;
+    //bool is_w = false; // always use 64-bit (x-reg) to match original printf codegen
+    uint64_t uval = (uint64_t)imm;
+    int sf = 1;
+    arm64_movz(s, sf, r, (uint16_t)(uval & 0xffff), 0);
+    size_t count = 1;
+    uint64_t v = uval >> 16;
+    int shift = 16;
+    int max_shift = 48;
+    while (v && shift <= max_shift) {
+        arm64_movk(s, sf, r, v & 0xffff, shift);
+        v >>= 16;
+        shift += 16;
+        count++;
+    }
+    asm_record(ASM_MOV_RI, off, count, r, -1, -1, size, imm, 0, NULL, 0, -1, false);
+}
+#else
+static void asm_mov_imm_phy(SecBuf *s, X86Reg r, int size, int64_t imm) {
+    size_t off = s->len;
+    if (size == 8 && imm >= INT32_MIN && imm <= INT32_MAX)
+        x86_mov_ri(s, 8, r, (int32_t)imm);
+    else if (size == 8)
+        x86_movabs(s, r, (uint64_t)imm);
+    else
+        x86_mov_ri(s, size, r, (int32_t)imm);
+    size_t count = s->len - off;
+    asm_record(ASM_MOV_RI, off, count, r, -1, -1, size, imm, 0, NULL, 0, -1, false);
+}
+#endif
+
 // Zero register via xor
 static void asm_xor_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
     size_t off = s->len;
@@ -795,6 +828,21 @@ static void asm_and_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
     x86_and_rr(s, size, rdst, rsrc);
     size_t count = s->len - off;
     asm_record(ASM_AND_RR, off, count, rdst, rsrc, -1, size, 0, 0, NULL, 0, -1, false);
+#endif
+}
+
+// and rr, %rax — used after asm_movabs_phy(X86_RAX, mask) for bitfield masking
+static void asm_and_rax(SecBuf *s, VReg r, int size) {
+#ifndef ARCH_ARM64
+    size_t off = s->len;
+    X86Reg rdst = REG(r);
+    x86_and_rr(s, size, rdst, X86_RAX);
+    size_t count = s->len - off;
+    asm_record(ASM_AND_RR, off, count, rdst, X86_RAX, -1, size, 0, 0, NULL, 0, -1, false);
+#else
+    (void)s;
+    (void)r;
+    (void)size;
 #endif
 }
 

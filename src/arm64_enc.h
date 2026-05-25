@@ -14,6 +14,8 @@
 
 // ARM64 physical register enum
 typedef enum {
+    ARM64_S0 = 0,
+    ARM64_D0 = 0,
     ARM64_X0 = 0,
     ARM64_X1,
     ARM64_X2,
