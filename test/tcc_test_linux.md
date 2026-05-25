@@ -146,7 +146,7 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | PASS         | Output matches                |
 | test_arm64_asm              | SKIP         | Skipped                       |
-| test_atomic_op              | PASS         | exit=132                      |
+| test_atomic_op              | PASS         | exit=139                      |
 | test_atomic_op2             | PASS         | exit=139                      |
 | test_bitfields              | PASS         | exit=0                        |
 | test_builtins               | PASS         | exit=0                        |
