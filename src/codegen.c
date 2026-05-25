@@ -6445,7 +6445,7 @@ static VReg gen(Node *node) {
             asm_mov_mem_reg(cg_sec, r_old, r_addr, sz); // mov (r_addr), r_old
             // Save old value before computing new (r_old may == r_new)
             asm_mov_rbp_spill(cg_sec, r_old, sz, spill_atomic_old); // mov r_old, -spill_atomic_old(%rbp)
-            asm_mov_reg_reg(cg_sec, r_old, r_new, sz > 4 ? 8 : 4); // mov r_old, r_new
+            asm_mov_reg_reg(cg_sec, r_new, r_old, sz > 4 ? 8 : 4); // mov r_old, r_new
             char sc = size_suffix(sz);
             (void)sc;
             switch (op) {
@@ -6458,12 +6458,12 @@ static VReg gen(Node *node) {
                 break;
             }
             // lock cmpxchg (r_addr), r_new  (rax=r_old loaded from spill_atomic_old)
-            asm_mov_spill_rbp(cg_sec, 0, sz, spill_atomic_old); // mov -spill_atomic_old(%rbp), %rax
+            asm_mov_rbp(cg_sec, X86_RAX, sz, spill_atomic_old); // mov -spill_atomic_old(%rbp), %rax
             {
                 size_t _cj = asm_lock_cmpxchg_rax(cg_sec, r_addr, r_new, sz);
-                asm_fixup_add(cg_sec, _cj, format(".L.atom_fop.%d", lbl2), 0);
+                asm_jcc_label(cg_sec, X86_NE); // emit JNE first so fixup can patch it
+                asm_fixup_add(cg_sec, _cj, format(".L.atom_fop.%d", lbl2), 1);
             }
-            (void)asm_jcc_label(cg_sec, X86_NE); // placeholder - fixup already done above
             if (node->atomic_ord == MEMORDER_SEQ_CST)
                 asm_mfence(cg_sec); // mfence
             free_reg(r_addr);

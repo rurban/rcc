@@ -1911,7 +1911,7 @@ static void asm_mov_spill_rbp(SecBuf *s, VReg r, int size, int rbp_off) {
 static size_t asm_lock_cmpxchg_rax(SecBuf *s, VReg r_addr, VReg r_new, int size) {
     size_t off = s->len;
     asm_lock_cmpxchg_mem(s, r_addr, r_new, size); // reuse the existing function
-    return s->len - off;
+    return s->len; // return END position (== start of JNE) for fixup patching
 }
 
 // add sz, -rbp_off(%rbp), reg  — add spill slot to reg (for add_fetch return)

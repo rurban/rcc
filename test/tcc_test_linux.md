@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 143
-- **Failed**: 8
-- **Pass Rate**: 94%
+- **Passed**: 144
+- **Failed**: 7
+- **Pass Rate**: 95%
 
 ## Detailed Results
 
@@ -127,7 +127,7 @@ Generated: May 2026
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
 | 124_atomic_counter          | EXEC_FAIL    | non-zero exit                 |
-| 125_atomic_misc             | MISMATCH     | Output differs                |
+| 125_atomic_misc             | PASS         | Output matches                |
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | EXEC_FAIL    | non-zero exit                 |
 | 128_run_atexit              | PASS         | Output matches                |
@@ -146,8 +146,8 @@ Generated: May 2026
 | 141_riscv_asm               | MISMATCH     | Output does not match .expect |
 | 142_int_conversion          | PASS         | Output matches                |
 | test_arm64_asm              | SKIP         | Skipped                       |
-| test_atomic_op              | PASS         | exit=139                      |
-| test_atomic_op2             | PASS         | exit=139                      |
+| test_atomic_op              | PASS         | exit=0                        |
+| test_atomic_op2             | PASS         | exit=0                        |
 | test_bitfields              | PASS         | exit=0                        |
 | test_builtins               | PASS         | exit=0                        |
 | test_elif2                  | PASS         | exit=0                        |
