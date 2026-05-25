@@ -2961,7 +2961,7 @@ static VReg gen_addr(Node *node) {
         }
         free_reg(cond);
         VReg then_r = gen_addr(node->then);
-        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rr -> rthen_r
+        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
         free_reg(then_r);
         {
             size_t o = asm_jmp_label(cg_sec); // je .L.else.%d
@@ -2969,7 +2969,7 @@ static VReg gen_addr(Node *node) {
         }
         cg_def_label(format(".L.else.%d", c));
         VReg else_r = gen_addr(node->els);
-        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov rr -> relse_r
+        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
         free_reg(else_r);
         cg_def_label(format(".L.end.%d", c));
 #endif
@@ -4160,7 +4160,7 @@ static VReg gen(Node *node) {
                 asm_mov_mem_reg(cg_sec, r2, r, 8); // movq (r), r2
             // Extract original bitfield value into r3 (for return)
             VReg r3 = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r2, r3, 8); // mov rr3 -> rr2
+            asm_mov_reg_reg(cg_sec, r3, r2, 8); // mov rr2 -> rr3
             if (bo > 0)
                 asm_shr_imm(cg_sec, r3, 8, (uint8_t)(bo)); // shr $(uint8_t)(bo), rr3
             int load_bits = eff_sz * 8;
@@ -4180,7 +4180,7 @@ static VReg gen(Node *node) {
             asm_and_rax(cg_sec, r2, 8); // andq %rax, rr2
             // Compute new field value in rn
             VReg rn = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r3, rn, 8); // mov rrn -> rr3
+            asm_mov_reg_reg(cg_sec, rn, r3, 8); // mov rr3 -> rrn
             asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs $(uint64_t)((1ULL << bw) - 1), rX86_RAX
             asm_and_rax(cg_sec, rn, 8); // andq %rax, rrn
             if (node->kind == ND_POST_INC)
@@ -4320,7 +4320,7 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
                 asm_mov_reg_reg(cg_sec, r_addr, r, 8); // mov rr -> rr_addr
 #else
-                asm_mov_reg_reg(cg_sec, r, r_addr, 8); // mov rr_addr -> rr
+                asm_mov_reg_reg(cg_sec, r_addr, r, 8); // mov rr -> rr_addr
 #endif
             }
 #ifdef ARCH_ARM64

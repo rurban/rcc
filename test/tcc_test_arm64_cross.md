@@ -4,8 +4,8 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 154
-- **Passed**: 101
+- **Total**: 155
+- **Passed**: 102
 - **Failed**: 53
 - **Pass Rate**: 65%
 
@@ -86,7 +86,7 @@ Generated: May 2026
 | 82_attribs_position         | PASS         | Output matches                |
 | 83_utf8_in_identifiers      | PASS         | Output matches                |
 | 84_hex-float                | PASS         | Output matches                |
-| 85_asm-outside-function     | COMPILE_FAIL | rcc returned non-zero         |
+| 85_asm-outside-function     | EXEC_FAIL    | non-zero exit                 |
 | 86_memory-model             | PASS         | Output matches                |
 | 87_dead_code                | EXEC_FAIL    | non-zero exit                 |
 | 88_codeopt                  | EXEC_FAIL    | non-zero exit                 |
@@ -122,7 +122,7 @@ Generated: May 2026
 | 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | PASS         | Output matches                |
 | 119_random_stuff            | COMPILE_FAIL | rcc returned non-zero         |
-| 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
+| 120_alias                   | PASS         | Output matches                |
 | 121_struct_return           | EXEC_FAIL    | non-zero exit                 |
 | 122_vla_reuse               | COMPILE_FAIL | rcc returned non-zero         |
 | 123_vla_bug                 | EXEC_FAIL    | non-zero exit                 |
@@ -141,13 +141,17 @@ Generated: May 2026
 | 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | EXEC_FAIL    | non-zero exit                 |
+| 138_narrow_return_promotion | COMPILE_FAIL | rcc returned non-zero         |
 | 139_arm64_errors            | PASS         | Output matches                |
+| 139_narrow_type_conversion  | MISMATCH     | Output does not match .expect |
 | 140_arm64_extasm            | COMPILE_FAIL | rcc returned non-zero         |
-| 141_riscv_asm               | MISMATCH     | Output does not match .expect |
-| 142_int_conversion          | COMPILE_FAIL | rcc returned non-zero         |
+| 140_int_sign_extension      | COMPILE_FAIL | rcc returned non-zero         |
+| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
+| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
+| 143_riscv_asm_farith        | SKIP         | Skipped                       |
 | test_arm64_asm              | PASS         | exit=132                      |
-| test_atomic_op              | PASS         | exit=139                      |
-| test_atomic_op2             | PASS         | exit=139                      |
+| test_atomic_op              | PASS         | exit=124                      |
+| test_atomic_op2             | PASS         | exit=124                      |
 | test_bitfields              | COMPILE_FAIL | rcc returned non-zero         |
 | test_builtins               | PASS         | exit=1                        |
 | test_elif2                  | PASS         | exit=0                        |
