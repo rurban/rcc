@@ -3154,11 +3154,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
 #endif
         } else {
             VReg r_rhs = gen(cond->rhs);
-#ifdef ARCH_ARM64
-            asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, 8); // cmp rr_rhs, rr_lhs
-#else
-            asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, 8); // cmp rr_rhs, rr_lhs
-#endif
+            asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
             free_reg(r_rhs);
         }
         free_reg(r_lhs);
@@ -6204,7 +6200,7 @@ static VReg gen(Node *node) {
             asm_mov_mem_reg(cg_sec, r, r_addr, 8); // movq (%r_addr), rr
         }
         if (ord == MEMORDER_SEQ_CST)
-            asm_nop(cg_sec); // mfence
+            asm_mfence(cg_sec); // mfence
 #endif
         free_reg(r_addr);
 #ifdef ARCH_ARM64
@@ -6236,7 +6232,7 @@ static VReg gen(Node *node) {
 #else
         asm_mov_reg_mem(cg_sec, r_val, r_addr, sz); // mov r_val, (r_addr)
         if (ord == MEMORDER_SEQ_CST)
-            asm_nop(cg_sec); // mfence
+            asm_mfence(cg_sec); // mfence
 #endif
         free_reg(r_val);
         free_reg(r_addr);
@@ -6260,13 +6256,13 @@ static VReg gen(Node *node) {
 #else
         asm_xchg_mem(cg_sec, r_addr, r_val, sz); // xchg (r_addr), r_val
         if (sz < 4) {
-            asm_mov_reg_reg(cg_sec, r_val, r_result, 8); // mov rr_result -> rr_val
+            asm_mov_reg_reg(cg_sec, r_result, r_val, 8); // mov rr_val -> rr_result
             if (use_unsigned(node->ty))
                 zero_extend_to(r_result, sz, 4);
             else
                 sign_extend_to(r_result, sz, 4);
         } else {
-            asm_mov_reg_reg(cg_sec, r_val, r_result, 8); // mov rr_result -> rr_val
+            asm_mov_reg_reg(cg_sec, r_result, r_val, 8); // mov rr_val -> rr_result
         }
 #endif
         free_reg(r_val);
@@ -6414,7 +6410,7 @@ static VReg gen(Node *node) {
                 asm_neg(cg_sec, r_val, sz); // neg rr_val
             // Save val to stack before xadd clobbers it
             asm_mov_rbp_spill(cg_sec, r_val, sz, spill_logand); // mov r_val, -spill_logand(%rbp)
-            asm_mov_reg_reg(cg_sec, r_val, r_old, sz > 4 ? 8 : 4); // mov rr_old -> rr_val
+            asm_mov_reg_reg(cg_sec, r_old, r_val, sz > 4 ? 8 : 4); // mov rr_val -> rr_old
             free_reg(r_val);
             if (r_old == r_addr && (spilled_regs & (1 << r_addr))) {
                 asm_mov_rbp_reg(cg_sec, r_addr, 8, spill_offset(r_addr)); // mov [rbp-8], rr_addr
@@ -6422,7 +6418,7 @@ static VReg gen(Node *node) {
             asm_lock_xadd_mem(cg_sec, r_addr, r_old, sz); // lock xadd (r_addr), r_old
             free_reg(r_addr);
             if (node->atomic_ord == MEMORDER_SEQ_CST)
-                asm_nop(cg_sec); // mfence would go here
+                asm_mfence(cg_sec); // mfence
             if (is_store) {
                 // add_fetch/sub_fetch: return new value = old + val
                 asm_add_spill_reg(cg_sec, r_old, sz, spill_logand); // add -spill_logand(%rbp), r_old
@@ -6469,7 +6465,7 @@ static VReg gen(Node *node) {
             }
             (void)asm_jcc_label(cg_sec, X86_NE); // placeholder - fixup already done above
             if (node->atomic_ord == MEMORDER_SEQ_CST)
-                asm_nop(cg_sec); // mfence
+                asm_mfence(cg_sec); // mfence
             free_reg(r_addr);
             if (is_store) {
                 free_reg(r_old);

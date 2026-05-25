@@ -120,8 +120,8 @@ static void rex_for_size(SecBuf *s, int size, X86Reg reg, X86Reg rm) {
         maybe_rex(s, 1, reg, 0, rm);
     else if (size == 4)
         maybe_rex(s, 0, reg, 0, rm);
-    else if (size == 1) {
-        // For 8-bit ops with registers >= R8, need REX; also for SPL/BPL/SIL/DIL
+    else if (size == 2 || size == 1) {
+        // For 16-bit and 8-bit ops with registers >= R8, need REX
         if (reg >= X86_R8 || rm >= X86_R8)
             maybe_rex(s, 0, reg, 0, rm);
     }

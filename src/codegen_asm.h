@@ -1979,6 +1979,16 @@ static void asm_nop(SecBuf *s) {
     asm_record(ASM_NOP, off, (size_t)(s->len - off), -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
 }
 
+static void asm_mfence(SecBuf *s) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    asm_dmb(s);
+#else
+    x86_mfence(s);
+#endif
+    asm_record(ASM_FENCE, off, (size_t)(s->len - off), -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
+}
+
 static void asm_and_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;

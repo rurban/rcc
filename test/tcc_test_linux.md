@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 140
-- **Failed**: 11
-- **Pass Rate**: 92%
+- **Passed**: 143
+- **Failed**: 8
+- **Pass Rate**: 94%
 
 ## Detailed Results
 
@@ -45,7 +45,7 @@ Generated: May 2026
 | 29_array_address            | PASS         | Output matches                |
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
-| 32_led                      | EXEC_FAIL    | non-zero exit                 |
+| 32_led                      | PASS         | Output matches                |
 | 33_ternary_op               | PASS         | Output matches                |
 | 34_array_assignment         | PASS         | Output matches                |
 | 35_sizeof                   | PASS         | Output matches                |
@@ -88,7 +88,7 @@ Generated: May 2026
 | 84_hex-float                | PASS         | Output matches                |
 | 85_asm-outside-function     | COMPILE_FAIL | rcc returned non-zero         |
 | 86_memory-model             | PASS         | Output matches                |
-| 87_dead_code                | EXEC_FAIL    | non-zero exit                 |
+| 87_dead_code                | PASS         | Output matches                |
 | 88_codeopt                  | PASS         | Output matches                |
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | PASS         | Output matches                |
@@ -97,7 +97,7 @@ Generated: May 2026
 | 93_integer_promotion        | PASS         | Output matches                |
 | 94_generic                  | PASS         | Output matches                |
 | 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
-| 95_bitfields_ms             | EXEC_FAIL    | non-zero exit                 |
+| 95_bitfields_ms             | PASS         | Output matches                |
 | 96_nodata_wanted            | SKIP         | Skipped                       |
 | 97_utf8_string_literal      | PASS         | Output matches                |
 | 98_al_ax_extend             | SKIP         | Skipped                       |
