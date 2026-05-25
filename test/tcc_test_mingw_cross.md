@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 107
-- **Failed**: 44
-- **Pass Rate**: 70%
+- **Passed**: 109
+- **Failed**: 42
+- **Pass Rate**: 72%
 
 ## Detailed Results
 
@@ -119,7 +119,7 @@ Generated: May 2026
 | 114_bound_signal            | SKIP         | Skipped                       |
 | 115_bound_setjmp            | SKIP         | Skipped                       |
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
-| 117_builtins                | MISMATCH     | Output does not match .expect |
+| 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | MISMATCH     | Output does not match .expect |
 | 119_random_stuff            | EXEC_FAIL    | non-zero exit                 |
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
@@ -138,7 +138,7 @@ Generated: May 2026
 | 133_old_func                | PASS         | Output matches                |
 | 134_double_to_signed        | PASS         | Output matches                |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
-| 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
+| 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | SKIP         | Skipped                       |
 | 139_arm64_errors            | SKIP         | Skipped                       |

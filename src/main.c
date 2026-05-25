@@ -384,7 +384,9 @@ int main(int argc, char **argv) {
                         free(triple);
                     }
                 }
-                snprintf(cmd, sizeof(cmd), "%s -D -r -s --no-show-raw-insn '%s' > '%s' && rm -f '%s'",
+                snprintf(cmd, sizeof(cmd), "%s -d -r --no-show-raw-insn '%s' > '%s' && "
+                                           "%s -s -j .data -j .rodata -j .bss '%s' >> '%s' && rm -f '%s'",
+                         objdump, tmp_obj_path, asm_path,
                          objdump, tmp_obj_path, asm_path, tmp_obj_path);
                 int status = system(cmd);
                 if (status != 0) {

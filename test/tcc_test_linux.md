@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 119
-- **Failed**: 32
-- **Pass Rate**: 78%
+- **Passed**: 124
+- **Failed**: 27
+- **Pass Rate**: 82%
 
 ## Detailed Results
 
@@ -35,7 +35,7 @@ Generated: May 2026
 | 19_pointer_arithmetic       | PASS         | Output matches                |
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
-| 22_floating_point           | MISMATCH     | Output does not match .expect |
+| 22_floating_point           | PASS         | Output matches                |
 | 23_type_coercion            | PASS         | Output matches                |
 | 24_math_library             | PASS         | Output matches                |
 | 25_quicksort                | PASS         | Output matches                |
@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP         | Skipped                       |
 | 99_fastcall                 | SKIP         | Skipped                       |
 | 100_c99array-decls          | PASS         | Output matches                |
-| 101_cleanup                 | MISMATCH     | Output does not match .expect |
+| 101_cleanup                 | PASS         | Output matches                |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
@@ -119,7 +119,7 @@ Generated: May 2026
 | 114_bound_signal            | SKIP         | Skipped                       |
 | 115_bound_setjmp            | SKIP         | Skipped                       |
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
-| 117_builtins                | MISMATCH     | Output does not match .expect |
+| 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | MISMATCH     | Output does not match .expect |
 | 119_random_stuff            | EXEC_FAIL    | non-zero exit                 |
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
@@ -131,14 +131,14 @@ Generated: May 2026
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | EXEC_FAIL    | non-zero exit                 |
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
-| 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
+| 129_scopes                  | PASS         | Output matches                |
 | 130_large_argument          | MISMATCH     | Output does not match .expect |
 | 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
 | 132_bound_test              | PASS         | Output matches                |
 | 133_old_func                | PASS         | Output matches                |
 | 134_double_to_signed        | PASS         | Output matches                |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
-| 136_atomic_gcc_style        | MISMATCH     | Output does not match .expect |
+| 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | SKIP         | Skipped                       |
 | 139_arm64_errors            | SKIP         | Skipped                       |

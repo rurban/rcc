@@ -67,6 +67,7 @@ typedef enum {
 // Dry-run guard: skip emission when cg_sec is NULL
 #define EMIT_GUARD if (!s || !s->data) return 0;
 
+/* very bad idea
 #ifdef ARCH_ARM64
 static VReg reg_to_vreg(Arm64Reg r) {
     for (int i = 0; i < 12; i++) {
@@ -84,6 +85,7 @@ static VReg reg_to_vreg(X86Reg r) {
     return R_NONE;
 }
 #endif
+*/
 
 // ============================================================================
 // Label + branch fixup fixed-size hashtables (chaining, FNV-1a hash)
@@ -568,6 +570,18 @@ static void asm_movzx(SecBuf *s, VReg dst, VReg src, int dst_sz, int src_sz) {
     asm_record(ASM_MOVZX, off, count, rdst, rsrc, -1, dst_sz, 0, 0, NULL, 0, -1, false);
 #endif
 }
+
+// movzx from a fixed (non-allocatable) physical register to VReg (x86 only)
+#ifndef ARCH_ARM64
+static void asm_movzx_phys(SecBuf *s, VReg dst, X86Reg src, int dst_sz, int src_sz) {
+    if (dst_sz <= src_sz) return;
+    size_t off = s->len;
+    X86Reg rdst = REG(dst);
+    x86_movzx(s, dst_sz, src_sz, rdst, src);
+    size_t count = s->len - off;
+    asm_record(ASM_MOVZX, off, count, rdst, src, -1, dst_sz, 0, 0, NULL, 0, -1, false);
+}
+#endif
 
 // ============================================================================
 // Arithmetic
