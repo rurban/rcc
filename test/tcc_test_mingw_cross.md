@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 151
-- **Passed**: 109
-- **Failed**: 42
-- **Pass Rate**: 72%
+- **Passed**: 115
+- **Failed**: 36
+- **Pass Rate**: 76%
 
 ## Detailed Results
 
@@ -47,8 +47,8 @@ Generated: May 2026
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | EXEC_FAIL    | non-zero exit                 |
 | 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
-| 34_array_assignment         | EXEC_FAIL    | non-zero exit                 |
-| 35_sizeof                   | EXEC_FAIL    | non-zero exit                 |
+| 34_array_assignment         | MISMATCH     | Output does not match .expect |
+| 35_sizeof                   | PASS         | Output matches                |
 | 36_array_initialisers       | PASS         | Output matches                |
 | 37_sprintf                  | PASS         | Output matches                |
 | 38_multiple_array_index     | PASS         | Output matches                |
@@ -81,7 +81,7 @@ Generated: May 2026
 | 77_push_pop_macro           | PASS         | Output matches                |
 | 78_vla_label                | PASS         | Output matches                |
 | 79_vla_continue             | PASS         | Output matches                |
-| 80_flexarray                | EXEC_FAIL    | non-zero exit                 |
+| 80_flexarray                | PASS         | Output matches                |
 | 81_types                    | PASS         | Output matches                |
 | 82_attribs_position         | PASS         | Output matches                |
 | 83_utf8_in_identifiers      | PASS         | Output matches                |
@@ -93,8 +93,8 @@ Generated: May 2026
 | 89_nocode_wanted            | PASS         | Output matches                |
 | 90_struct-init              | EXEC_FAIL    | non-zero exit                 |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
-| 92_enum_bitfield            | MISMATCH     | Output does not match .expect |
-| 93_integer_promotion        | MISMATCH     | Output does not match .expect |
+| 92_enum_bitfield            | PASS         | Output matches                |
+| 93_integer_promotion        | PASS         | Output matches                |
 | 94_generic                  | PASS         | Output matches                |
 | 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
 | 95_bitfields_ms             | EXEC_FAIL    | non-zero exit                 |
@@ -111,7 +111,7 @@ Generated: May 2026
 | 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | MISMATCH     | Output does not match .expect |
 | 108_constructor             | MISMATCH     | Output does not match .expect |
-| 109_float_struct_calling    | MISMATCH     | Output does not match .expect |
+| 109_float_struct_calling    | PASS         | Output matches                |
 | 110_average                 | PASS         | Output matches                |
 | 111_conversion              | PASS         | Output matches                |
 | 112_backtrace               | SKIP         | Skipped                       |
@@ -120,7 +120,7 @@ Generated: May 2026
 | 115_bound_setjmp            | SKIP         | Skipped                       |
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
 | 117_builtins                | PASS         | Output matches                |
-| 118_switch                  | MISMATCH     | Output does not match .expect |
+| 118_switch                  | PASS         | Output matches                |
 | 119_random_stuff            | EXEC_FAIL    | non-zero exit                 |
 | 120_alias                   | COMPILE_FAIL | rcc returned non-zero         |
 | 121_struct_return           | MISMATCH     | Output does not match .expect |
@@ -133,7 +133,7 @@ Generated: May 2026
 | 128_run_atexit              | MISMATCH     | Output does not match .expect |
 | 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
 | 130_large_argument          | MISMATCH     | Output does not match .expect |
-| 131_return_struct_in_reg    | EXEC_FAIL    | non-zero exit                 |
+| 131_return_struct_in_reg    | MISMATCH     | Output does not match .expect |
 | 132_bound_test              | PASS         | Output matches                |
 | 133_old_func                | PASS         | Output matches                |
 | 134_double_to_signed        | PASS         | Output matches                |

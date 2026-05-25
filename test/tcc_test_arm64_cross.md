@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 154
-- **Passed**: 99
-- **Failed**: 55
-- **Pass Rate**: 64%
+- **Passed**: 101
+- **Failed**: 53
+- **Pass Rate**: 65%
 
 ## Detailed Results
 
@@ -110,7 +110,7 @@ Generated: May 2026
 | 105_local_extern            | PASS         | Output matches                |
 | 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | PASS         | Output matches                |
-| 108_constructor             | MISMATCH     | Output does not match .expect |
+| 108_constructor             | PASS         | Output matches                |
 | 109_float_struct_calling    | MISMATCH     | Output does not match .expect |
 | 110_average                 | PASS         | Output matches                |
 | 111_conversion              | MISMATCH     | Output does not match .expect |
@@ -130,7 +130,7 @@ Generated: May 2026
 | 125_atomic_misc             | MISMATCH     | Output differs                |
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | SKIP         | Skipped                       |
-| 128_run_atexit              | MISMATCH     | Output does not match .expect |
+| 128_run_atexit              | PASS         | Output matches                |
 | 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | COMPILE_FAIL | rcc returned non-zero         |

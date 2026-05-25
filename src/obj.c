@@ -108,18 +108,24 @@ void objfile_init(ObjFile *obj) {
     secbuf_init(&obj->text);
     secbuf_init(&obj->data);
     secbuf_init(&obj->rodata);
+    secbuf_init(&obj->init_array);
+    secbuf_init(&obj->fini_array);
 }
 
 void objfile_free(ObjFile *obj) {
     secbuf_free(&obj->text);
     secbuf_free(&obj->data);
     secbuf_free(&obj->rodata);
+    secbuf_free(&obj->init_array);
+    secbuf_free(&obj->fini_array);
     for (int i = 0; i < obj->sym_count; i++)
         free(obj->syms[i].name);
     free(obj->syms);
     free(obj->text_relocs);
     free(obj->data_relocs);
     free(obj->rodata_relocs);
+    free(obj->init_array_relocs);
+    free(obj->fini_array_relocs);
     memset(obj, 0, sizeof(*obj));
 }
 
@@ -183,6 +189,16 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
         relocs = &obj->rodata_relocs;
         count = &obj->rodata_reloc_count;
         cap = &obj->rodata_reloc_cap;
+        break;
+    case SEC_INIT_ARRAY:
+        relocs = &obj->init_array_relocs;
+        count = &obj->init_array_reloc_count;
+        cap = &obj->init_array_reloc_cap;
+        break;
+    case SEC_FINI_ARRAY:
+        relocs = &obj->fini_array_relocs;
+        count = &obj->fini_array_reloc_count;
+        cap = &obj->fini_array_reloc_cap;
         break;
     default: return;
     }

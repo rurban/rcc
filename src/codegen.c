@@ -18,6 +18,8 @@ static void cg_set_section(int sec) {
     case SEC_TEXT: cg_sec = &cg_obj->text; break;
     case SEC_DATA: cg_sec = &cg_obj->data; break;
     case SEC_RODATA: cg_sec = &cg_obj->rodata; break;
+    case SEC_INIT_ARRAY: cg_sec = &cg_obj->init_array; break;
+    case SEC_FINI_ARRAY: cg_sec = &cg_obj->fini_array; break;
     default: cg_sec = &cg_obj->text; break;
     }
 }
@@ -2089,6 +2091,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     VReg r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
 #ifndef ARCH_ARM64
+        if (node->ty->kind == TY_FLOAT)
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
         asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, rr
 #endif
     } else {
@@ -8051,6 +8055,7 @@ struct ObjFile *codegen(Program *prog) {
         cg_sec = saved_sec;
         secbuf_free(&_dummy);
         cg_dry_run = false;
+        fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
         cg_label_ht_reset();
         asm_fixup_ht_reset();
 
@@ -8537,17 +8542,37 @@ struct ObjFile *codegen(Program *prog) {
         }
     }
     if (has_ctor) {
-        cg_set_section(SEC_DATA);
+        cg_set_section(SEC_INIT_ARRAY);
         for (TLItem *item = prog->items; item; item = item->next) {
-            if (item->kind == TL_FUNC && item->fn->is_constructor)
-                (void)0 /* directive: .quad */;
+            if (item->kind == TL_FUNC && item->fn->is_constructor) {
+                size_t off = cg_sec->len;
+                secbuf_emit64le(cg_sec, 0); // .quad %s
+                int sidx = objfile_find_sym(cg_obj, asm_sym_name(sym_name(item->fn->name)));
+                if (sidx < 0)
+                    sidx = objfile_add_sym(cg_obj, asm_sym_name(sym_name(item->fn->name)), SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+#ifdef ARCH_ARM64
+                objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, off, sidx, R_AARCH64_ABS64, 0);
+#else
+                objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, off, sidx, R_X86_64_64, 0);
+#endif
+            }
         }
     }
     if (has_dtor) {
-        cg_set_section(SEC_DATA);
+        cg_set_section(SEC_FINI_ARRAY);
         for (TLItem *item = prog->items; item; item = item->next) {
-            if (item->kind == TL_FUNC && item->fn->is_destructor)
-                (void)0 /* directive: .quad */;
+            if (item->kind == TL_FUNC && item->fn->is_destructor) {
+                size_t off = cg_sec->len;
+                secbuf_emit64le(cg_sec, 0); // .quad %s
+                int sidx = objfile_find_sym(cg_obj, asm_sym_name(sym_name(item->fn->name)));
+                if (sidx < 0)
+                    sidx = objfile_add_sym(cg_obj, asm_sym_name(sym_name(item->fn->name)), SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+#ifdef ARCH_ARM64
+                objfile_add_reloc(cg_obj, SEC_FINI_ARRAY, off, sidx, R_AARCH64_ABS64, 0);
+#else
+                objfile_add_reloc(cg_obj, SEC_FINI_ARRAY, off, sidx, R_X86_64_64, 0);
+#endif
+            }
         }
     }
 

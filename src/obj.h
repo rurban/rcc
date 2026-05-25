@@ -34,12 +34,14 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v);
 // ---------------------------------------------------------------------------
 // Section indices (logical IDs, mapped to ELF/Mach-O section indices later)
 // ---------------------------------------------------------------------------
-#define SEC_UNDEF  -1   // undefined / external symbol
-#define SEC_TEXT    0
-#define SEC_DATA    1
-#define SEC_BSS     2
-#define SEC_RODATA  3
-#define SEC_NUM     4   // number of sections
+#define SEC_UNDEF      -1  // undefined / external symbol
+#define SEC_TEXT        0
+#define SEC_DATA        1
+#define SEC_BSS         2
+#define SEC_RODATA      3
+#define SEC_INIT_ARRAY  4
+#define SEC_FINI_ARRAY  5
+#define SEC_NUM         6  // number of sections
 
 // ---------------------------------------------------------------------------
 // Symbol table
@@ -114,6 +116,8 @@ struct ObjFile {
     SecBuf text;
     SecBuf data;
     SecBuf rodata;
+    SecBuf init_array;
+    SecBuf fini_array;
     size_t bss_size; // .bss is zero-initialized; just track its size
 
     ObjSym *syms;
@@ -131,6 +135,14 @@ struct ObjFile {
     ObjReloc *rodata_relocs;
     int rodata_reloc_count;
     int rodata_reloc_cap;
+
+    ObjReloc *init_array_relocs;
+    int init_array_reloc_count;
+    int init_array_reloc_cap;
+
+    ObjReloc *fini_array_relocs;
+    int fini_array_reloc_count;
+    int fini_array_reloc_cap;
 };
 
 void objfile_init(ObjFile *obj);

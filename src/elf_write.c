@@ -22,12 +22,14 @@
 #define EM_X86_64    62
 #define EM_AARCH64  183
 
-#define SHT_NULL      0
-#define SHT_PROGBITS  1
-#define SHT_SYMTAB    2
-#define SHT_STRTAB    3
-#define SHT_RELA      4
-#define SHT_NOBITS    8
+#define SHT_NULL        0
+#define SHT_PROGBITS    1
+#define SHT_SYMTAB      2
+#define SHT_STRTAB      3
+#define SHT_RELA        4
+#define SHT_NOBITS      8
+#define SHT_INIT_ARRAY 14
+#define SHT_FINI_ARRAY 15
 
 #define SHF_WRITE     0x1
 #define SHF_ALLOC     0x2
@@ -195,9 +197,13 @@ int elf_write(ObjFile *obj, const char *path) {
     uint32_t shn_bss = strtab_add(&shstrtab, ".bss");
     uint32_t shn_rodata = strtab_add(&shstrtab, ".rodata");
     uint32_t shn_note = strtab_add(&shstrtab, ".note.GNU-stack");
+    uint32_t shn_init_array = strtab_add(&shstrtab, ".init_array");
+    uint32_t shn_fini_array = strtab_add(&shstrtab, ".fini_array");
     uint32_t shn_rela_txt = strtab_add(&shstrtab, ".rela.text");
     uint32_t shn_rela_dat = strtab_add(&shstrtab, ".rela.data");
     uint32_t shn_rela_rod = strtab_add(&shstrtab, ".rela.rodata");
+    uint32_t shn_rela_init = strtab_add(&shstrtab, ".rela.init_array");
+    uint32_t shn_rela_fini = strtab_add(&shstrtab, ".rela.fini_array");
     uint32_t shn_symtab = strtab_add(&shstrtab, ".symtab");
     uint32_t shn_strtab = strtab_add(&shstrtab, ".strtab");
     uint32_t shn_shstrtab = strtab_add(&shstrtab, ".shstrtab");
@@ -212,6 +218,9 @@ int elf_write(ObjFile *obj, const char *path) {
     // Index 0: null symbol
     ESym null_sym = {0};
     esym_push(&ea, null_sym);
+
+    bool has_init_array = obj->init_array.len > 0;
+    bool has_fini_array = obj->fini_array.len > 0;
 
     // Section symbols
     ESym ssym = {0};
@@ -266,19 +275,26 @@ int elf_write(ObjFile *obj, const char *path) {
     }
 
     // -----------------------------------------------------------------------
-    // Fixed section layout (section indices 0..5 always present)
-    // -----------------------------------------------------------------------
+    // Section layout:
     // 0=NULL, 1=.text, 2=.data, 3=.bss, 4=.rodata, 5=.note.GNU-stack
-    // then optional .rela.text, .rela.data, .rela.rodata
+    // then optional .init_array, .fini_array
+    // then optional .rela.text, .rela.data, .rela.rodata, .rela.init_array, .rela.fini_array
     // then .symtab, .strtab, .shstrtab
+    // -----------------------------------------------------------------------
     bool has_rela_text = obj->text_reloc_count > 0;
     bool has_rela_data = obj->data_reloc_count > 0;
     bool has_rela_rodata = obj->rodata_reloc_count > 0;
+    bool has_rela_init = obj->init_array_reloc_count > 0;
+    bool has_rela_fini = obj->fini_array_reloc_count > 0;
 
     int shidx = 6;
+    int sh_init_array_idx = has_init_array ? shidx++ : -1;
+    int sh_fini_array_idx = has_fini_array ? shidx++ : -1;
     int sh_rela_text_idx = has_rela_text ? shidx++ : -1;
     int sh_rela_data_idx = has_rela_data ? shidx++ : -1;
     int sh_rela_rodata_idx = has_rela_rodata ? shidx++ : -1;
+    int sh_rela_init_idx = has_rela_init ? shidx++ : -1;
+    int sh_rela_fini_idx = has_rela_fini ? shidx++ : -1;
     int sh_symtab_idx = shidx++;
     int sh_strtab_idx = shidx++;
     int sh_shstrtab_idx = shidx++;
@@ -298,14 +314,22 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t rodata_size = obj->rodata.len;
     uint64_t note_off = align16(rodata_off + rodata_size);
 
-    uint64_t rela_txt_off = align16(note_off); // .note is empty
+    uint64_t init_arr_off = align16(note_off); // .note is empty
+    uint64_t init_arr_size = obj->init_array.len;
+    uint64_t fini_arr_off = align16(init_arr_off + init_arr_size);
+    uint64_t fini_arr_size = obj->fini_array.len;
+    uint64_t rela_txt_off = align16(fini_arr_off + fini_arr_size);
     uint64_t rela_txt_size = (uint64_t)obj->text_reloc_count * 24;
     uint64_t rela_dat_off = align16(rela_txt_off + rela_txt_size);
     uint64_t rela_dat_size = (uint64_t)obj->data_reloc_count * 24;
     uint64_t rela_rod_off = align16(rela_dat_off + rela_dat_size);
     uint64_t rela_rod_size = (uint64_t)obj->rodata_reloc_count * 24;
+    uint64_t rela_ini_off = align16(rela_rod_off + rela_rod_size);
+    uint64_t rela_ini_size = (uint64_t)obj->init_array_reloc_count * 24;
+    uint64_t rela_fin_off = align16(rela_ini_off + rela_ini_size);
+    uint64_t rela_fin_size = (uint64_t)obj->fini_array_reloc_count * 24;
 
-    uint64_t symtab_off = align16(rela_rod_off + rela_rod_size);
+    uint64_t symtab_off = align16(rela_fin_off + rela_fin_size);
     uint64_t symtab_size = (uint64_t)ea.len * 24;
     uint64_t strtab_off = align16(symtab_off + symtab_size);
     uint64_t strtab_size = symstrtab.len;
@@ -333,7 +357,11 @@ int elf_write(ObjFile *obj, const char *path) {
     if (data_size) wbuf(f, obj->data.data, data_size);
     wzeros(f, rodata_off - (data_off + data_size));
     if (rodata_size) wbuf(f, obj->rodata.data, rodata_size);
-    wzeros(f, rela_txt_off - (rodata_off + rodata_size));
+    wzeros(f, init_arr_off - (rodata_off + rodata_size));
+    if (init_arr_size) wbuf(f, obj->init_array.data, init_arr_size);
+    wzeros(f, fini_arr_off - (init_arr_off + init_arr_size));
+    if (fini_arr_size) wbuf(f, obj->fini_array.data, fini_arr_size);
+    wzeros(f, rela_txt_off - (fini_arr_off + fini_arr_size));
 
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
@@ -360,7 +388,25 @@ int elf_write(ObjFile *obj, const char *path) {
         w64(f, ELF64_R_INFO((uint32_t)es, r->type));
         wi64(f, r->addend);
     }
-    wzeros(f, symtab_off - (rela_rod_off + rela_rod_size));
+    wzeros(f, rela_ini_off - (rela_rod_off + rela_rod_size));
+
+    for (int i = 0; i < obj->init_array_reloc_count; i++) {
+        ObjReloc *r = &obj->init_array_relocs[i];
+        int es = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
+        w64(f, r->offset);
+        w64(f, ELF64_R_INFO((uint32_t)es, r->type));
+        wi64(f, r->addend);
+    }
+    wzeros(f, rela_fin_off - (rela_ini_off + rela_ini_size));
+
+    for (int i = 0; i < obj->fini_array_reloc_count; i++) {
+        ObjReloc *r = &obj->fini_array_relocs[i];
+        int es = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
+        w64(f, r->offset);
+        w64(f, ELF64_R_INFO((uint32_t)es, r->type));
+        wi64(f, r->addend);
+    }
+    wzeros(f, symtab_off - (rela_fin_off + rela_fin_size));
 
     for (int i = 0; i < ea.len; i++)
         write_sym(f, ea.data[i].name, ea.data[i].info, ea.data[i].other,
@@ -386,6 +432,13 @@ int elf_write(ObjFile *obj, const char *path) {
                rodata_off, rodata_size, 0, 0, 1, 0);
     write_shdr(f, shn_note, SHT_PROGBITS, 0, note_off, 0, 0, 0, 1, 0);
 
+    if (has_init_array)
+        write_shdr(f, shn_init_array, SHT_INIT_ARRAY, SHF_ALLOC | SHF_WRITE,
+                   init_arr_off, init_arr_size, 0, 0, 8, 0);
+    if (has_fini_array)
+        write_shdr(f, shn_fini_array, SHT_FINI_ARRAY, SHF_ALLOC | SHF_WRITE,
+                   fini_arr_off, fini_arr_size, 0, 0, 8, 0);
+
     if (has_rela_text)
         write_shdr(f, shn_rela_txt, SHT_RELA, SHF_INFO_LINK,
                    rela_txt_off, rela_txt_size,
@@ -398,6 +451,14 @@ int elf_write(ObjFile *obj, const char *path) {
         write_shdr(f, shn_rela_rod, SHT_RELA, SHF_INFO_LINK,
                    rela_rod_off, rela_rod_size,
                    (uint32_t)sh_symtab_idx, 4 /* .rodata */, 8, 24);
+    if (has_rela_init)
+        write_shdr(f, shn_rela_init, SHT_RELA, SHF_INFO_LINK,
+                   rela_ini_off, rela_ini_size,
+                   (uint32_t)sh_symtab_idx, (uint32_t)sh_init_array_idx, 8, 24);
+    if (has_rela_fini)
+        write_shdr(f, shn_rela_fini, SHT_RELA, SHF_INFO_LINK,
+                   rela_fin_off, rela_fin_size,
+                   (uint32_t)sh_symtab_idx, (uint32_t)sh_fini_array_idx, 8, 24);
 
     write_shdr(f, shn_symtab, SHT_SYMTAB, 0,
                symtab_off, symtab_size,
