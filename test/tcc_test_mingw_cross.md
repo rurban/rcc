@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 135
-- **Failed**: 17
-- **Pass Rate**: 88%
+- **Passed**: 144
+- **Failed**: 8
+- **Pass Rate**: 94%
 
 ## Detailed Results
 
@@ -46,7 +46,7 @@ Generated: May 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | PASS         | Output matches                |
-| 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
+| 33_ternary_op               | PASS         | Output matches                |
 | 34_array_assignment         | PASS         | Output matches                |
 | 35_sizeof                   | PASS         | Output matches                |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -59,15 +59,15 @@ Generated: May 2026
 | 43_void_param               | PASS         | Output matches                |
 | 44_scoped_declarations      | PASS         | Output matches                |
 | 45_empty_for                | PASS         | Output matches                |
-| 46_grep                     | COMPILE_FAIL | rcc returned non-zero         |
+| 46_grep                     | PASS         | Output matches                |
 | 47_switch_return            | PASS         | Output matches                |
 | 48_nested_break             | PASS         | Output matches                |
 | 49_bracket_evaluation       | COMPILE_FAIL | rcc returned non-zero         |
 | 50_logical_second_arg       | PASS         | Output matches                |
-| 51_static                   | EXEC_FAIL    | non-zero exit                 |
+| 51_static                   | PASS         | Output matches                |
 | 52_unnamed_enum             | PASS         | Output matches                |
 | 54_goto                     | PASS         | Output matches                |
-| 55_lshift_type              | EXEC_FAIL    | non-zero exit                 |
+| 55_lshift_type              | PASS         | Output matches                |
 | 60_errors_and_warnings      | SKIP         | Skipped                       |
 | 61_integers                 | PASS         | Output matches                |
 | 64_macro_nesting            | PASS         | Output matches                |
@@ -91,7 +91,7 @@ Generated: May 2026
 | 87_dead_code                | PASS         | Output matches                |
 | 88_codeopt                  | PASS         | Output matches                |
 | 89_nocode_wanted            | PASS         | Output matches                |
-| 90_struct-init              | MISMATCH     | Output does not match .expect |
+| 90_struct-init              | PASS         | Output matches                |
 | 91_ptr_longlong_arith32     | PASS         | Output matches                |
 | 92_enum_bitfield            | PASS         | Output matches                |
 | 93_integer_promotion        | PASS         | Output matches                |
@@ -106,11 +106,11 @@ Generated: May 2026
 | 101_cleanup                 | EXEC_FAIL    | non-zero exit                 |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
-| 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
+| 104_inline                  | MISMATCH     | Output does not match .expect |
 | 105_local_extern            | PASS         | Output matches                |
 | 106_versym                  | MISMATCH     | Output does not match .expect |
 | 107_stack_safe              | PASS         | Output matches                |
-| 108_constructor             | COMPILE_FAIL | rcc returned non-zero         |
+| 108_constructor             | PASS         | Output matches                |
 | 109_float_struct_calling    | PASS         | Output matches                |
 | 110_average                 | PASS         | Output matches                |
 | 111_conversion              | PASS         | Output matches                |
@@ -125,13 +125,13 @@ Generated: May 2026
 | 120_alias                   | PASS         | Output matches                |
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
-| 123_vla_bug                 | EXEC_FAIL    | non-zero exit                 |
+| 123_vla_bug                 | PASS         | Output matches                |
 | 124_atomic_counter          | MISMATCH     | Output does not match .expect |
 | 125_atomic_misc             | PASS         | Output matches                |
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | PASS         | Output matches                |
-| 128_run_atexit              | COMPILE_FAIL | executable missing            |
-| 129_scopes                  | MISMATCH     | Output does not match .expect |
+| 128_run_atexit              | PASS         | Output matches                |
+| 129_scopes                  | PASS         | Output matches                |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | PASS         | Output matches                |
 | 132_bound_test              | PASS         | Output matches                |

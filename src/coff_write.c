@@ -442,7 +442,8 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number = (int16_t)coff_sec_idx[os->section];
+        es.section_number =
+            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = IMAGE_SYM_CLASS_STATIC;
         symarr_push(&syms, es);
@@ -458,7 +459,8 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number = (int16_t)coff_sec_idx[os->section];
+        es.section_number =
+            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = (os->bind == SB_WEAK) ? IMAGE_SYM_CLASS_WEAK_EXTERNAL
                                                  : IMAGE_SYM_CLASS_EXTERNAL;
@@ -505,6 +507,8 @@ int coff_write(ObjFile *obj, const char *path) {
     uint8_t *text_copy = NULL;
     uint8_t *data_copy = NULL;
     uint8_t *rodata_copy = NULL;
+    uint8_t *init_array_copy = NULL;
+    uint8_t *fini_array_copy = NULL;
     int text_idx = -1, data_idx = -1, rodata_idx = -1;
 
     // Find section indices
@@ -535,6 +539,18 @@ int coff_write(ObjFile *obj, const char *path) {
         patch_addends(rodata_copy, sections[rodata_idx].raw_size,
                       sections[rodata_idx].relocs, sections[rodata_idx].reloc_count);
     }
+    if (obj->init_array.len > 0) {
+        init_array_copy = malloc(obj->init_array.len);
+        memcpy(init_array_copy, obj->init_array.data, obj->init_array.len);
+        patch_addends(init_array_copy, obj->init_array.len, obj->init_array_relocs,
+                      obj->init_array_reloc_count);
+    }
+    if (obj->fini_array.len > 0) {
+        fini_array_copy = malloc(obj->fini_array.len);
+        memcpy(fini_array_copy, obj->fini_array.data, obj->fini_array.len);
+        patch_addends(fini_array_copy, obj->fini_array.len, obj->fini_array_relocs,
+                      obj->fini_array_reloc_count);
+    }
 
     // -------------------------------------------------------------------
     // Write file
@@ -548,6 +564,8 @@ int coff_write(ObjFile *obj, const char *path) {
         free(text_copy);
         free(data_copy);
         free(rodata_copy);
+        free(init_array_copy);
+        free(fini_array_copy);
         return -1;
     }
 
@@ -585,6 +603,10 @@ int coff_write(ObjFile *obj, const char *path) {
             wbuf(f, data_copy, sz);
         else if (sections[i].sec_id == SEC_RODATA)
             wbuf(f, rodata_copy, sz);
+        else if (sections[i].sec_id == SEC_INIT_ARRAY)
+            wbuf(f, init_array_copy, sz);
+        else if (sections[i].sec_id == SEC_FINI_ARRAY)
+            wbuf(f, fini_array_copy, sz);
         // .bss has raw_size 0, handled above
     }
 
@@ -628,6 +650,8 @@ int coff_write(ObjFile *obj, const char *path) {
     free(text_copy);
     free(data_copy);
     free(rodata_copy);
+    free(init_array_copy);
+    free(fini_array_copy);
     return 0;
 }
 #endif /* _WIN32 */
