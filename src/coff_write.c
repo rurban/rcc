@@ -25,6 +25,7 @@
 #define IMAGE_SCN_MEM_EXECUTE            0x20000000
 #define IMAGE_SCN_MEM_READ               0x40000000
 #define IMAGE_SCN_MEM_WRITE              0x80000000
+#define IMAGE_SCN_ALIGN_8BYTES           0x00400000
 #define IMAGE_SCN_ALIGN_16BYTES          0x00500000
 
 #define COFF_CHAR_TEXT  \
@@ -35,6 +36,8 @@
     (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES)
 #define COFF_CHAR_BSS   \
     (IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_ALIGN_16BYTES)
+#define COFF_CHAR_INIT_ARRAY \
+    (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_8BYTES)
 
 // x86-64 COFF relocation types
 #define IMAGE_REL_AMD64_ADDR64  1
@@ -75,25 +78,25 @@
 // Section descriptor
 // ---------------------------------------------------------------------------
 typedef struct {
-    char            short_name[8]; // zero-padded 8-byte section name
-    int             sec_id;        // SEC_TEXT / SEC_DATA / SEC_RODATA / SEC_BSS
-    uint32_t        characteristics;
-    size_t          raw_size;      // bytes in file
-    size_t          virt_size;     // virtual size (.bss: bss_size, others: raw_size)
-    ObjReloc       *relocs;
-    int             reloc_count;
+    char short_name[8]; // zero-padded 8-byte section name
+    int sec_id; // SEC_TEXT / SEC_DATA / SEC_RODATA / SEC_BSS
+    uint32_t characteristics;
+    size_t raw_size; // bytes in file
+    size_t virt_size; // virtual size (.bss: bss_size, others: raw_size)
+    ObjReloc *relocs;
+    int reloc_count;
     // computed during layout:
-    uint32_t        raw_data_ptr;
-    uint32_t        reloc_ptr;
+    uint32_t raw_data_ptr;
+    uint32_t reloc_ptr;
 } CoffSec;
 
 // ---------------------------------------------------------------------------
 // String table builder
 // ---------------------------------------------------------------------------
 typedef struct {
-    char   *data;
-    size_t  len;
-    size_t  cap;
+    char *data;
+    size_t len;
+    size_t cap;
 } CStrtab;
 
 static void cstrtab_init(CStrtab *t) {
@@ -123,14 +126,14 @@ static uint32_t cstrtab_add(CStrtab *t, const char *s) {
 // COFF symbol entry descriptor (used to build the symbol table in memory)
 // ---------------------------------------------------------------------------
 typedef struct {
-    char     short_name[8];   // inline name (zero-padded)
-    bool     long_name;       // true → short_name[4..7] = strtab offset
-    uint32_t strtab_off;      // valid only if long_name
+    char short_name[8]; // inline name (zero-padded)
+    bool long_name; // true → short_name[4..7] = strtab offset
+    uint32_t strtab_off; // valid only if long_name
     uint32_t value;
-    int16_t  section_number;
+    int16_t section_number;
     uint16_t type;
-    uint8_t  storage_class;
-    uint8_t  num_aux;         // 0 or 1
+    uint8_t storage_class;
+    uint8_t num_aux; // 0 or 1
     // aux section entry (valid only when num_aux > 0)
     uint32_t aux_length;
     uint16_t aux_num_relocs;
@@ -143,8 +146,8 @@ typedef struct {
 // ---------------------------------------------------------------------------
 typedef struct {
     CoffSymRec *data;
-    int         len;
-    int         cap;
+    int len;
+    int cap;
 } SymArr;
 
 static void symarr_push(SymArr *a, CoffSymRec s) {
@@ -158,7 +161,7 @@ static void symarr_push(SymArr *a, CoffSymRec s) {
 // ---------------------------------------------------------------------------
 // Low-level write helpers (little-endian)
 // ---------------------------------------------------------------------------
-static void w8(FILE *f, uint8_t v)  { fputc(v, f); }
+static void w8(FILE *f, uint8_t v) { fputc(v, f); }
 static void w16(FILE *f, uint16_t v) {
     w8(f, (uint8_t)v);
     w8(f, (uint8_t)(v >> 8));
@@ -171,7 +174,10 @@ static void wbuf(FILE *f, const void *buf, size_t n) { fwrite(buf, 1, n, f); }
 static void wzeros(FILE *f, size_t n) {
     uint8_t z[64];
     memset(z, 0, sizeof(z));
-    while (n >= 64) { fwrite(z, 1, 64, f); n -= 64; }
+    while (n >= 64) {
+        fwrite(z, 1, 64, f);
+        n -= 64;
+    }
     if (n) fwrite(z, 1, n, f);
 }
 
@@ -196,7 +202,7 @@ static void write_coff_aux_section(FILE *f, const CoffSymRec *s) {
     w16(f, s->aux_num_linenums);
     w32(f, 0); // checksum
     w16(f, s->aux_number);
-    w8(f, 0);  // selection
+    w8(f, 0); // selection
     wzeros(f, 3); // reserved
 }
 
@@ -205,33 +211,33 @@ static void write_coff_aux_section(FILE *f, const CoffSymRec *s) {
 // ---------------------------------------------------------------------------
 static uint16_t reloc_to_coff_x86_64(uint32_t elf_type) {
     switch (elf_type) {
-    case R_X86_64_64:        return IMAGE_REL_AMD64_ADDR64;
-    case R_X86_64_32:        return IMAGE_REL_AMD64_ADDR32;
-    case R_X86_64_32S:       return IMAGE_REL_AMD64_ADDR32;
-    case R_X86_64_PC32:      return IMAGE_REL_AMD64_REL32;
-    case R_X86_64_PLT32:     return IMAGE_REL_AMD64_REL32;
-    case R_X86_64_GOTPCREL:  return IMAGE_REL_AMD64_REL32;
-    case R_X86_64_GOT32:     return IMAGE_REL_AMD64_ADDR32;
-    case R_X86_64_PC64:      return IMAGE_REL_AMD64_ADDR64;
-    default:                 return 0;
+    case R_X86_64_64: return IMAGE_REL_AMD64_ADDR64;
+    case R_X86_64_32: return IMAGE_REL_AMD64_ADDR32;
+    case R_X86_64_32S: return IMAGE_REL_AMD64_ADDR32;
+    case R_X86_64_PC32: return IMAGE_REL_AMD64_REL32;
+    case R_X86_64_PLT32: return IMAGE_REL_AMD64_REL32;
+    case R_X86_64_GOTPCREL: return IMAGE_REL_AMD64_REL32;
+    case R_X86_64_GOT32: return IMAGE_REL_AMD64_ADDR32;
+    case R_X86_64_PC64: return IMAGE_REL_AMD64_ADDR64;
+    default: return 0;
     }
 }
 
 static uint16_t reloc_to_coff_arm64(uint32_t elf_type) {
     switch (elf_type) {
-    case R_AARCH64_ABS64:                  return IMAGE_REL_ARM64_ADDR64;
-    case R_AARCH64_ABS32:                  return IMAGE_REL_ARM64_ADDR32;
-    case R_AARCH64_JUMP26:                 return IMAGE_REL_ARM64_BRANCH26;
-    case R_AARCH64_CALL26:                 return IMAGE_REL_ARM64_BRANCH26;
-    case R_AARCH64_ADR_PREL_PG_HI21:       return IMAGE_REL_ARM64_PAGEBASE_REL21;
-    case R_AARCH64_ADD_ABS_LO12_NC:        return IMAGE_REL_ARM64_PAGEOFFSET_12A;
-    case R_AARCH64_LDST64_ABS_LO12_NC:     return IMAGE_REL_ARM64_PAGEOFFSET_12L;
-    case R_AARCH64_LDST32_ABS_LO12_NC:     return IMAGE_REL_ARM64_PAGEOFFSET_12L;
-    case R_AARCH64_LDST16_ABS_LO12_NC:     return IMAGE_REL_ARM64_PAGEOFFSET_12L;
-    case R_AARCH64_LDST8_ABS_LO12_NC:      return IMAGE_REL_ARM64_PAGEOFFSET_12L;
-    case R_AARCH64_ADR_GOT_PAGE:           return IMAGE_REL_ARM64_GOT_PAGE;
-    case R_AARCH64_LD64_GOT_LO12_NC:       return IMAGE_REL_ARM64_GOT_LD_PREL19;
-    default:                               return 0;
+    case R_AARCH64_ABS64: return IMAGE_REL_ARM64_ADDR64;
+    case R_AARCH64_ABS32: return IMAGE_REL_ARM64_ADDR32;
+    case R_AARCH64_JUMP26: return IMAGE_REL_ARM64_BRANCH26;
+    case R_AARCH64_CALL26: return IMAGE_REL_ARM64_BRANCH26;
+    case R_AARCH64_ADR_PREL_PG_HI21: return IMAGE_REL_ARM64_PAGEBASE_REL21;
+    case R_AARCH64_ADD_ABS_LO12_NC: return IMAGE_REL_ARM64_PAGEOFFSET_12A;
+    case R_AARCH64_LDST64_ABS_LO12_NC: return IMAGE_REL_ARM64_PAGEOFFSET_12L;
+    case R_AARCH64_LDST32_ABS_LO12_NC: return IMAGE_REL_ARM64_PAGEOFFSET_12L;
+    case R_AARCH64_LDST16_ABS_LO12_NC: return IMAGE_REL_ARM64_PAGEOFFSET_12L;
+    case R_AARCH64_LDST8_ABS_LO12_NC: return IMAGE_REL_ARM64_PAGEOFFSET_12L;
+    case R_AARCH64_ADR_GOT_PAGE: return IMAGE_REL_ARM64_GOT_PAGE;
+    case R_AARCH64_LD64_GOT_LO12_NC: return IMAGE_REL_ARM64_GOT_LD_PREL19;
+    default: return 0;
     }
 }
 
@@ -316,7 +322,7 @@ int coff_write(ObjFile *obj, const char *path) {
     // -------------------------------------------------------------------
     // Enumerate sections
     // -------------------------------------------------------------------
-    CoffSec sections[4];
+    CoffSec sections[6];
     int num_sec = 0;
 
     // .text
@@ -369,6 +375,32 @@ int coff_write(ObjFile *obj, const char *path) {
         num_sec++;
     }
 
+    // .ctors (constructor function pointers — MinGW convention)
+    if (obj->init_array.len > 0) {
+        memset(sections[num_sec].short_name, 0, 8);
+        memcpy(sections[num_sec].short_name, ".ctors", 6);
+        sections[num_sec].sec_id = SEC_INIT_ARRAY;
+        sections[num_sec].characteristics = COFF_CHAR_INIT_ARRAY;
+        sections[num_sec].raw_size = obj->init_array.len;
+        sections[num_sec].virt_size = obj->init_array.len;
+        sections[num_sec].relocs = obj->init_array_relocs;
+        sections[num_sec].reloc_count = obj->init_array_reloc_count;
+        num_sec++;
+    }
+
+    // .dtors (destructor function pointers — MinGW convention)
+    if (obj->fini_array.len > 0) {
+        memset(sections[num_sec].short_name, 0, 8);
+        memcpy(sections[num_sec].short_name, ".dtors", 6);
+        sections[num_sec].sec_id = SEC_FINI_ARRAY;
+        sections[num_sec].characteristics = COFF_CHAR_INIT_ARRAY;
+        sections[num_sec].raw_size = obj->fini_array.len;
+        sections[num_sec].virt_size = obj->fini_array.len;
+        sections[num_sec].relocs = obj->fini_array_relocs;
+        sections[num_sec].reloc_count = obj->fini_array_reloc_count;
+        num_sec++;
+    }
+
     // Build SEC_* → COFF section index (1-based) map
     int coff_sec_idx[SEC_NUM];
     memset(coff_sec_idx, 0, sizeof(coff_sec_idx));
@@ -410,7 +442,8 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number = (int16_t)coff_sec_idx[os->section];
+        es.section_number =
+            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = IMAGE_SYM_CLASS_STATIC;
         symarr_push(&syms, es);
@@ -426,7 +459,8 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number = (int16_t)coff_sec_idx[os->section];
+        es.section_number =
+            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = (os->bind == SB_WEAK) ? IMAGE_SYM_CLASS_WEAK_EXTERNAL
                                                  : IMAGE_SYM_CLASS_EXTERNAL;
@@ -447,9 +481,9 @@ int coff_write(ObjFile *obj, const char *path) {
     // Header (20) + section headers (40 * num_sec)
     uint32_t off = 20 + (uint32_t)num_sec * 40;
 
-    // Section raw data pointers
+    // Section raw data pointers (COFF: raw_data_ptr must be 0 when raw_size is 0)
     for (int i = 0; i < num_sec; i++) {
-        sections[i].raw_data_ptr = off;
+        sections[i].raw_data_ptr = (sections[i].raw_size > 0) ? off : 0;
         off += (uint32_t)sections[i].raw_size;
     }
 
@@ -473,6 +507,8 @@ int coff_write(ObjFile *obj, const char *path) {
     uint8_t *text_copy = NULL;
     uint8_t *data_copy = NULL;
     uint8_t *rodata_copy = NULL;
+    uint8_t *init_array_copy = NULL;
+    uint8_t *fini_array_copy = NULL;
     int text_idx = -1, data_idx = -1, rodata_idx = -1;
 
     // Find section indices
@@ -503,30 +539,44 @@ int coff_write(ObjFile *obj, const char *path) {
         patch_addends(rodata_copy, sections[rodata_idx].raw_size,
                       sections[rodata_idx].relocs, sections[rodata_idx].reloc_count);
     }
+    if (obj->init_array.len > 0) {
+        init_array_copy = malloc(obj->init_array.len);
+        memcpy(init_array_copy, obj->init_array.data, obj->init_array.len);
+        patch_addends(init_array_copy, obj->init_array.len, obj->init_array_relocs,
+                      obj->init_array_reloc_count);
+    }
+    if (obj->fini_array.len > 0) {
+        fini_array_copy = malloc(obj->fini_array.len);
+        memcpy(fini_array_copy, obj->fini_array.data, obj->fini_array.len);
+        patch_addends(fini_array_copy, obj->fini_array.len, obj->fini_array_relocs,
+                      obj->fini_array_reloc_count);
+    }
 
     // -------------------------------------------------------------------
     // Write file
     // -------------------------------------------------------------------
     FILE *f = fopen(path, "wb");
     if (!f) {
-    free(sym_map);
-    free(coff_sym_idx);
+        free(sym_map);
+        free(coff_sym_idx);
         free(syms.data);
         free(strtab.data);
         free(text_copy);
         free(data_copy);
         free(rodata_copy);
+        free(init_array_copy);
+        free(fini_array_copy);
         return -1;
     }
 
     // --- File header (20 bytes) ---
     w16(f, machine);
     w16(f, (uint16_t)num_sec);
-    w32(f, 0);            // timestamp
-    w32(f, symtab_off);   // symtab_offset
+    w32(f, 0); // timestamp
+    w32(f, symtab_off); // symtab_offset
     w32(f, (uint32_t)total_sym_count); // num_symbols (includes aux entries)
-    w16(f, 0);            // opt_hdr_size (0 for object files)
-    w16(f, 0);            // characteristics
+    w16(f, 0); // opt_hdr_size (0 for object files)
+    w16(f, 0); // characteristics
 
     // --- Section headers (40 bytes each) ---
     for (int i = 0; i < num_sec; i++) {
@@ -553,6 +603,10 @@ int coff_write(ObjFile *obj, const char *path) {
             wbuf(f, data_copy, sz);
         else if (sections[i].sec_id == SEC_RODATA)
             wbuf(f, rodata_copy, sz);
+        else if (sections[i].sec_id == SEC_INIT_ARRAY)
+            wbuf(f, init_array_copy, sz);
+        else if (sections[i].sec_id == SEC_FINI_ARRAY)
+            wbuf(f, fini_array_copy, sz);
         // .bss has raw_size 0, handled above
     }
 
@@ -561,7 +615,8 @@ int coff_write(ObjFile *obj, const char *path) {
         for (int j = 0; j < sections[i].reloc_count; j++) {
             ObjReloc *r = &sections[i].relocs[j];
             int sym_idx = (r->sym_idx >= 0 && r->sym_idx < obj->sym_count)
-                ? coff_sym_idx[sym_map[r->sym_idx]] : 0;
+                ? coff_sym_idx[sym_map[r->sym_idx]]
+                : 0;
             uint16_t coff_type;
 #ifdef ARCH_ARM64
             coff_type = reloc_to_coff_arm64(r->type);
@@ -595,6 +650,8 @@ int coff_write(ObjFile *obj, const char *path) {
     free(text_copy);
     free(data_copy);
     free(rodata_copy);
+    free(init_array_copy);
+    free(fini_array_copy);
     return 0;
 }
 #endif /* _WIN32 */

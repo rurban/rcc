@@ -1909,7 +1909,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         VReg r = gen(argv[i]);
-        int off = (i - reg_nargs) * 8;
+        int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
         if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // subq $%d, %rsp
         } else {
@@ -2019,8 +2019,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < reg_nargs; i++) {
         int argi = i + (has_hidden_retbuf ? 1 : 0);
         if (arg_is_float[i]) {
-            asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %xmm{fp_idx}
-            x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, 0(%rsp)
+            asm_movq_r_xmm(cg_sec, argi, arg_regs[i]); // movq arg_regs[i], %xmm{argi}
         } else if (arg_sizes[i] == 1) {
             if (argv[i]->ty && !argv[i]->ty->is_unsigned)
                 x86_movsx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, %s
@@ -3195,7 +3194,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
 #endif
 
-            // Emit conditional branch
+        // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
