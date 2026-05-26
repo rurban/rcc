@@ -31,25 +31,25 @@ if [ -z "$RCC" ]; then
 	for candidate in "$SCRIPT_DIR/rcc" "$SCRIPT_DIR/rcc.exe"; do
 		if [ -x "$candidate" ]; then
 			RCC="$candidate"
-			if [ "$RCC" = "$SCRIPT_DIR/rcc.exe" ]; then
-				RCC="$SCRIPT_DIR/mingw-cross.sh"
-				PLATFORM=mingw_cross
-				REPORT_FILE="$REPORT_DIR/tcc_test_mingw_cross.md"
-				if command -v winetricks >/dev/null 2>&1; then
-					winetricks nocrashdialog
-				fi
-				WINEDEBUG=fixme-all
-				WINEDLLOVERRIDES="winedbg=d"
-				WINENOPOPUPS=1
-				WINE_DISABLE_RANDR=1
-				export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS WINE_DISABLE_RANDR
-			fi
 			break
 		fi
 	done
 fi
 
 # If arm64-cross.sh is available and rcc not found natively, use arm64 cross
+if [ "$RCC" = "./rcc.exe" ] || [ "$RCC" = "./mingw-cross.sh" ]; then
+	RCC="$SCRIPT_DIR/mingw-cross.sh"
+	PLATFORM=mingw_cross
+	REPORT_FILE="$REPORT_DIR/tcc_test_mingw_cross.md"
+	if command -v winetricks >/dev/null 2>&1; then
+	    winetricks nocrashdialog
+	fi
+	WINEDEBUG=fixme-all
+	WINEDLLOVERRIDES="winedbg=d"
+	WINENOPOPUPS=1
+	WINE_DISABLE_RANDR=1
+	export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS WINE_DISABLE_RANDR
+fi
 if [ "$RCC" = "./rcc-arm64" ] || [ "$RCC" = "./arm64-cross.sh" ]; then
 	RCC="$SCRIPT_DIR/arm64-cross.sh"
 	PLATFORM=arm64_cross
