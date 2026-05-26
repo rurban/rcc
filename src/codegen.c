@@ -3,6 +3,7 @@
 // Binary codegen: asm_* wrappers emit bytes via secbuf_emit*() to ObjFile.
 #include "rcc.h"
 
+#include "asm.h"
 #include "codegen_asm.h"
 #include <ctype.h>
 #include <time.h>
@@ -48,6 +49,15 @@ static void cg_global_label(const char *name) {
 static void cg_weak_label(const char *name) {
     if (cg_dry_run) return;
     objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_WEAK, ST_FUNC);
+}
+
+static void cg_weak_declare(const char *name) {
+    if (cg_dry_run) return;
+    int sidx = objfile_find_sym(cg_obj, name);
+    if (sidx < 0)
+        objfile_add_sym(cg_obj, name, SEC_UNDEF, 0, 0, SB_WEAK, ST_NOTYPE);
+    else if (cg_obj->syms[sidx].section == SEC_UNDEF)
+        cg_obj->syms[sidx].bind = SB_WEAK;
 }
 
 #ifndef ARCH_ARM64
@@ -111,6 +121,17 @@ static size_t asm_mov_got_rip_reg(SecBuf *s, int r, const char *label) {
     return s->len - off;
 }
 #endif
+
+// Forward-fixup callback for assemble_inline: registers unresolved labels
+// into the codegen fixup table so cg_def_label can patch them later.
+// patch_off is the offset of the 4-byte REL32 operand in cg_obj->text.
+static void cg_inline_fixup_cb(size_t patch_off, const char *label, void *ctx) {
+    (void)ctx;
+    char *dup = arena_alloc(strlen(label) + 1);
+    strcpy(dup, label);
+    // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
+    asm_fixup_ht_add(patch_off - 1, dup, 0);
+}
 
 static uint64_t cg_now_us(void) {
     struct timespec ts;
@@ -2883,20 +2904,15 @@ static VReg gen_addr(Node *node) {
 #endif
             }
         } else {
-            if (node->var->is_weak) {
-#ifdef __APPLE__
-                (void)0 /* .weak symbol */;
-#else
-                (void)0 /* .weak symbol */;
-#endif
-            }
+            if (node->var->is_weak)
+                cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
             if (node->var->is_weak || var_needs_got(node->var))
                 emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
-            if (var_needs_got(node->var))
+            if (node->var->is_weak || var_needs_got(node->var))
                 asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
             else
                 asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
@@ -3179,7 +3195,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
 #endif
 
-        // Emit conditional branch
+            // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
@@ -3340,20 +3356,15 @@ static VReg gen(Node *node) {
                 asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
-            if (node->var->is_weak) {
-#ifdef __APPLE__
-                (void)0 /* .weak symbol */;
-#else
-                (void)0 /* .weak symbol */;
-#endif
-            }
+            if (node->var->is_weak)
+                cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
             if (node->var->is_weak || var_needs_got(node->var))
                 emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
-            if (var_needs_got(node->var))
+            if (node->var->is_weak || var_needs_got(node->var))
                 asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
             else
                 asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
@@ -5928,9 +5939,8 @@ static VReg gen(Node *node) {
             }
         }
         out[olen] = '\0';
-        if (olen > 0) {
-            secbuf_emitbuf(cg_sec, out, olen); // %s
-            secbuf_emit8(cg_sec, '\n'); // %s
+        if (olen > 0 && !cg_dry_run) {
+            assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
         // Store back register outputs ("=r", "+r") to their C variables

@@ -130,6 +130,10 @@ void x86_neg_r(SecBuf *s, int size, X86Reg r);
 void x86_not_r(SecBuf *s, int size, X86Reg r);
 void x86_inc_r(SecBuf *s, int size, X86Reg r);
 void x86_dec_r(SecBuf *s, int size, X86Reg r);
+void x86_inc_m(SecBuf *s, int size, X86Mem m);
+void x86_dec_m(SecBuf *s, int size, X86Mem m);
+void x86_neg_m(SecBuf *s, int size, X86Mem m);
+void x86_not_m(SecBuf *s, int size, X86Mem m);
 void x86_cdq(SecBuf *s); // sign-extend EAX to EDX:EAX
 void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX
 

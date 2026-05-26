@@ -448,6 +448,34 @@ void x86_dec_r(SecBuf *s, int sz, X86Reg r) {
     rex_for_size(s, sz, X86_NOREG, r);
     emit2(s, opsize(0xfe, sz), modrm(3, 1, r));
 }
+void x86_inc_m(SecBuf *s, int sz, X86Mem m) {
+    int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (sz == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, opsize(0xfe, sz));
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 0);
+}
+void x86_dec_m(SecBuf *s, int sz, X86Mem m) {
+    int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (sz == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, opsize(0xfe, sz));
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 1);
+}
+void x86_neg_m(SecBuf *s, int sz, X86Mem m) {
+    int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (sz == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, opsize(0xf6, sz));
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
+}
+void x86_not_m(SecBuf *s, int sz, X86Mem m) {
+    int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (sz == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, opsize(0xf6, sz));
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
+}
 void x86_cdq(SecBuf *s) { emit1(s, 0x99); }
 void x86_cqo(SecBuf *s) { emit2(s, 0x48, 0x99); }
 

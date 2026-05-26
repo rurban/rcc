@@ -1823,22 +1823,23 @@ static void asm_ldr_rd_rd(SecBuf *s, Arm64Reg rd) {
 // xchg sz, (r_addr), r_val  — atomic exchange mem↔reg
 static void asm_xchg_mem(SecBuf *s, VReg r_addr, VReg r_val, int size) {
     // XCHG always has implicit LOCK prefix
-    //X86Mem m = {REG(r_addr), X86_NOREG, 1, 0};
     // xchg r/m, r: opcode 87 /r (for 2/4/8), 86 /r (for 1)
     X86Reg rv = REG(r_val);
     X86Reg ra = REG(r_addr);
+    uint8_t rex = 0;
     if (size == 8)
-        secbuf_emit8(s, (uint8_t)(0x48 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0)));
-    else if (size == 4 && (rv >= 8 || ra >= 8))
-        secbuf_emit8(s, (uint8_t)(0x40 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0)));
-    else if (size == 2)
+        rex = (uint8_t)(0x48 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    else if (rv >= 8 || ra >= 8)
+        rex = (uint8_t)(0x40 | ((rv >= 8 ? 1 : 0) << 2) | (ra >= 8 ? 1 : 0));
+    if (size == 2)
         secbuf_emit8(s, 0x66);
+    if (rex)
+        secbuf_emit8(s, rex);
     secbuf_emit8(s, size == 1 ? 0x86 : 0x87);
-    uint8_t modrm = (uint8_t)(0x00 | ((rv & 7) << 3) | 4); // rm=4 for SIB
-    // Use [r_addr] directly (no SIB if not rsp)
-    if ((ra & 7) == 4) { // rsp needs SIB
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(0x24)); // SIB: base=rsp, no index
+    // Use [r_addr] directly (no SIB if not rsp/r12)
+    if ((ra & 7) == 4) { // rsp/r12 needs SIB
+        secbuf_emit8(s, (uint8_t)(0x00 | ((rv & 7) << 3) | 4));
+        secbuf_emit8(s, 0x24); // SIB: base=rsp/r12, no index
     } else {
         secbuf_emit8(s, (uint8_t)(0x00 | ((rv & 7) << 3) | (ra & 7)));
     }

@@ -716,7 +716,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 #define AREG(n)  parse_arm64_reg(ops[n], NULL)
 #define AREG32(n, w) parse_arm64_reg(ops[n], w)
 #define IMM(n)  parse_imm(ops[n])
-#define SF(r)   ((r) < 32 ? 1 : 0)  // always 1 for x-regs in context
+#define SF(r)   ((r) < 32 ? 1 : 0) // always 1 for x-regs in context
 
     bool is32_0 = false, is32_1 = false;
     int r0 = (nops > 0) ? parse_arm64_reg(ops[0], &is32_0) : -1;
@@ -1595,19 +1595,27 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // NEG / NOT
     if (!strncmp(mnem, "neg", 3)) {
-        x86_neg_r(buf, sz, R(0));
+        if (is_mem(0)) x86_neg_m(buf, sz, M(0));
+        else
+            x86_neg_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "not", 3)) {
-        x86_not_r(buf, sz, R(0));
+        if (is_mem(0)) x86_not_m(buf, sz, M(0));
+        else
+            x86_not_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "inc", 3)) {
-        x86_inc_r(buf, sz, R(0));
+        if (is_mem(0)) x86_inc_m(buf, sz, M(0));
+        else
+            x86_inc_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "dec", 3)) {
-        x86_dec_r(buf, sz, R(0));
+        if (is_mem(0)) x86_dec_m(buf, sz, M(0));
+        else
+            x86_dec_r(buf, sz, R(0));
         return true;
     }
 
@@ -2097,4 +2105,130 @@ int assemble_file(const char *asm_path, const char *obj_path) {
 
     objfile_free(&obj);
     return rc;
+}
+
+int assemble_inline(ObjFile *obj, const char *tmpl,
+                    inline_fixup_fn on_forward, void *ctx) {
+#ifdef ARCH_ARM64
+    bool is_arm64 = true;
+#else
+    bool is_arm64 = false;
+#endif
+    AsmState as = {0};
+    as.obj = obj;
+    as.cur_sec = SEC_TEXT;
+    as.filename = "<inline asm>";
+
+    // Work on a mutable copy of the template
+    size_t tlen = strlen(tmpl);
+    char *buf = malloc(tlen + 2);
+    if (!buf) return -1;
+    memcpy(buf, tmpl, tlen);
+    buf[tlen] = '\n';
+    buf[tlen + 1] = '\0';
+
+    char *line = buf;
+    while (*line) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+
+        as.lineno++;
+        char *p = skip_ws(line);
+        trim_end(p);
+
+        if (!*p || *p == '#' || *p == ';' || (p[0] == '/' && p[1] == '/')) {
+            line = nl ? nl + 1 : line + strlen(line);
+            continue;
+        }
+
+        char *colon = strchr(p, ':');
+        bool is_label = colon && (colon[1] == '\0' || colon[1] == ' ' || colon[1] == '\t');
+
+        if (!is_label && *p == '.') {
+            char *dir = p + 1;
+            char *sp = dir;
+            while (*sp && !isspace((unsigned char)*sp)) sp++;
+            char *args = *sp ? sp + 1 : sp;
+            *sp = 0;
+            for (char *d = dir; *d; d++) *d = tolower((unsigned char)*d);
+            handle_directive(&as, dir, args);
+            line = nl ? nl + 1 : line + strlen(line);
+            continue;
+        }
+
+        if (is_label) {
+            *colon = 0;
+            char *lbl = p;
+            int idx = objfile_find_sym(obj, lbl);
+            bool is_global = (idx >= 0 && obj->syms[idx].bind != SB_LOCAL);
+            bool is_weak = (idx >= 0 && obj->syms[idx].bind == SB_WEAK);
+            bool is_func = (idx >= 0 && obj->syms[idx].type == ST_FUNC);
+            define_label(&as, lbl, is_global, is_weak, is_func);
+            p = skip_ws(colon + 1);
+            if (!*p) {
+                line = nl ? nl + 1 : line + strlen(line);
+                continue;
+            }
+        }
+
+        if (as.cur_sec != SEC_TEXT) {
+            line = nl ? nl + 1 : line + strlen(line);
+            continue;
+        }
+
+        char insn_buf[512];
+        strncpy(insn_buf, p, 511);
+        insn_buf[511] = 0;
+        char *mnem = insn_buf;
+        char *ops_str = mnem;
+        while (*ops_str && !isspace((unsigned char)*ops_str)) ops_str++;
+        if (*ops_str) {
+            *ops_str++ = 0;
+            ops_str = skip_ws(ops_str);
+        }
+        for (char *m = mnem; *m; m++) *m = tolower((unsigned char)*m);
+        char *mc = strchr(mnem, ':');
+        if (mc) *mc = 0;
+        char *cmt = strstr(ops_str, " //");
+        if (!cmt) cmt = strstr(ops_str, " #");
+        if (cmt) *cmt = 0;
+        if (!*mnem) {
+            line = nl ? nl + 1 : line + strlen(line);
+            continue;
+        }
+
+        if (is_arm64)
+            encode_arm64(&as, mnem, ops_str);
+        else
+            encode_x86(&as, mnem, ops_str);
+
+        line = nl ? nl + 1 : line + strlen(line);
+    }
+
+    free(buf);
+
+    // Resolve forward fixups against existing symbols
+    for (int i = 0; i < as.nfixups; i++) {
+        struct Fixup *fx = &as.fixups[i];
+        int sec;
+        int64_t tgt = lookup_local(&as, fx->label, &sec);
+        if (tgt < 0) {
+            // Try global symbol table
+            int sidx = objfile_find_sym(obj, fx->label);
+            if (sidx >= 0 && obj->syms[sidx].section != SEC_UNDEF) {
+                tgt = (int64_t)obj->syms[sidx].offset;
+                sec = obj->syms[sidx].section;
+            }
+        }
+        if (tgt >= 0 && fx->kind == FIXUP_REL32) {
+            SecBuf *sb = &obj->text;
+            int32_t rel = (int32_t)(tgt - ((int64_t)fx->patch_off + 4) + fx->addend);
+            memcpy(sb->data + fx->patch_off, &rel, 4);
+        } else if (fx->kind == FIXUP_REL32 && on_forward) {
+            // Forward reference: delegate to caller
+            on_forward(fx->patch_off, fx->label, ctx);
+        }
+    }
+
+    return 0;
 }
