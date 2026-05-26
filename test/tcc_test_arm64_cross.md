@@ -106,7 +106,7 @@ Generated: May 2026
 | 101_cleanup                 | COMPILE_FAIL | rcc returned non-zero         |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
-| 104_inline                  | COMPILE_FAIL | rcc returned non-zero         |
+| 104_inline                  | EXEC_FAIL    | non-zero exit                 |
 | 105_local_extern            | PASS         | Output matches                |
 | 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | PASS         | Output matches                |

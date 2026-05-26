@@ -228,7 +228,8 @@ static int parse_arm64_reg(const char *s, bool *is32) {
     if (!s) return -1;
     s = skip_ws((char *)s);
     bool w = false;
-    if (s[0] == 'x') w = false;
+    if (s[0] == 'x')
+        w = false;
     else if (s[0] == 'w')
         w = true;
     else if (strcmp(s, "sp") == 0) {
@@ -458,7 +459,8 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         as->cur_sec = SEC_RODATA;
     } else if (!strncmp(dir, "section", 7)) {
         // .section .note.GNU-stack or similar — check for specific sections
-        if (strstr(args, ".rodata") || strstr(args, "__const")) as->cur_sec = SEC_RODATA;
+        if (strstr(args, ".rodata") || strstr(args, "__const"))
+            as->cur_sec = SEC_RODATA;
         else if (strstr(args, ".data"))
             as->cur_sec = SEC_DATA;
         else if (strstr(args, ".bss"))
@@ -943,21 +945,24 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     // Shifts
     if (!strcmp(mnem, "lsl")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) arm64_lsl_imm(buf, sf, r0, r1, (int)IMM(2));
+        if (imm)
+            arm64_lsl_imm(buf, sf, r0, r1, (int)IMM(2));
         else
             arm64_lsl_reg(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "lsr")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) arm64_lsr_imm(buf, sf, r0, r1, (int)IMM(2));
+        if (imm)
+            arm64_lsr_imm(buf, sf, r0, r1, (int)IMM(2));
         else
             arm64_lsr_reg(buf, sf, r0, r1, r2);
         return true;
     }
     if (!strcmp(mnem, "asr")) {
         bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
-        if (imm) arm64_asr_imm(buf, sf, r0, r1, (int)IMM(2));
+        if (imm)
+            arm64_asr_imm(buf, sf, r0, r1, (int)IMM(2));
         else
             arm64_asr_reg(buf, sf, r0, r1, r2);
         return true;
@@ -1201,43 +1206,51 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         if (is_byte) {
             uint32_t uoff = simm >= 0 ? (uint32_t)simm : 0;
             if (is_load) {
-                if (simm >= 0) arm64_ldrb_uoff(buf, rt, rn, uoff);
+                if (simm >= 0)
+                    arm64_ldrb_uoff(buf, rt, rn, uoff);
                 else
                     arm64_ldrb_imm(buf, rt, rn, simm);
             } else {
-                if (simm >= 0) arm64_strb_uoff(buf, rt, rn, uoff);
+                if (simm >= 0)
+                    arm64_strb_uoff(buf, rt, rn, uoff);
                 else
                     arm64_strb_imm(buf, rt, rn, simm);
             }
         } else if (is_half) {
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / 2) : 0;
             if (is_load) {
-                if (simm >= 0) arm64_ldrh_uoff(buf, rt, rn, uoff);
+                if (simm >= 0)
+                    arm64_ldrh_uoff(buf, rt, rn, uoff);
                 else
                     arm64_ldrh_imm(buf, rt, rn, simm);
             } else {
-                if (simm >= 0) arm64_strh_uoff(buf, rt, rn, uoff);
+                if (simm >= 0)
+                    arm64_strh_uoff(buf, rt, rn, uoff);
                 else
                     arm64_strh_imm(buf, rt, rn, simm);
             }
         } else if (is_sw) {
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / 4) : 0;
-            if (simm >= 0) arm64_ldrsw_uoff(buf, rt, rn, uoff);
+            if (simm >= 0)
+                arm64_ldrsw_uoff(buf, rt, rn, uoff);
             else
                 arm64_ldrsw_imm(buf, rt, rn, simm);
         } else {
             int sz = sf ? 3 : 2;
             uint32_t uoff = simm >= 0 ? (uint32_t)(simm / (sf ? 8 : 4)) : 0;
             if (pre || post) {
-                if (is_load) arm64_ldr_imm(buf, sf, rt, rn, simm, pre);
+                if (is_load)
+                    arm64_ldr_imm(buf, sf, rt, rn, simm, pre);
                 else
                     arm64_str_imm(buf, sf, rt, rn, simm, pre);
             } else if (simm >= 0) {
-                if (is_load) arm64_ldr_uoff(buf, sz, rt, rn, uoff);
+                if (is_load)
+                    arm64_ldr_uoff(buf, sz, rt, rn, uoff);
                 else
                     arm64_str_uoff(buf, sz, rt, rn, uoff);
             } else {
-                if (is_load) arm64_ldur(buf, sf, rt, rn, simm);
+                if (is_load)
+                    arm64_ldur(buf, sf, rt, rn, simm);
                 else
                     arm64_stur(buf, sf, rt, rn, simm);
             }
@@ -1483,7 +1496,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // PUSH/POP
     if (!strncmp(mnem, "push", 4)) {
-        if (is_imm(0)) x86_push_imm(buf, (int32_t)IMM(0));
+        if (is_imm(0))
+            x86_push_imm(buf, (int32_t)IMM(0));
         else
             x86_push(buf, R(0));
         return true;
@@ -1502,7 +1516,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         bool is_movs = !is_movsx && !is_movzx && (strstr(mnem, "sbl") || strstr(mnem, "sbq") || strstr(mnem, "swl") || strstr(mnem, "swq") || strstr(mnem, "slq"));
 
         int src_sz = sz, dst_sz = sz;
-        if (strstr(mnem, "bl") || strstr(mnem, "bq")) src_sz = 1;
+        if (strstr(mnem, "bl") || strstr(mnem, "bq"))
+            src_sz = 1;
         else if (strstr(mnem, "wl") || strstr(mnem, "wq"))
             src_sz = 2;
         else if (strstr(mnem, "lq"))
@@ -1514,13 +1529,15 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         if (is_movs || is_movsx) {
             // MOVSBL, MOVSBQ, etc.
-            if (is_reg(0) && is_reg(1)) x86_movsx(buf, dst_sz, src_sz, R(1), R(0));
+            if (is_reg(0) && is_reg(1))
+                x86_movsx(buf, dst_sz, src_sz, R(1), R(0));
             else if (is_mem(0))
                 x86_movsx_rm(buf, dst_sz, src_sz, R(1), M(0));
             return true;
         }
         if (is_movzx) {
-            if (is_reg(0) && is_reg(1)) x86_movzx(buf, dst_sz, src_sz, R(1), R(0));
+            if (is_reg(0) && is_reg(1))
+                x86_movzx(buf, dst_sz, src_sz, R(1), R(0));
             else if (is_mem(0))
                 x86_movzx_rm(buf, dst_sz, src_sz, R(1), M(0));
             return true;
@@ -1556,7 +1573,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // LEA
     if (!strncmp(mnem, "lea", 3)) {
-        if (is_mem(0) && is_reg(1)) x86_lea(buf, sz, R(1), M(0));
+        if (is_mem(0) && is_reg(1))
+            x86_lea(buf, sz, R(1), M(0));
         return true;
     }
 
@@ -1577,7 +1595,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // IMUL
     if (!strncmp(mnem, "imul", 4)) {
-        if (nops == 2 && is_reg(0) && is_reg(1)) x86_imul_rr(buf, sz, R(1), R(0));
+        if (nops == 2 && is_reg(0) && is_reg(1))
+            x86_imul_rr(buf, sz, R(1), R(0));
         else if (nops == 3 && is_imm(2))
             x86_imul_rri(buf, sz, R(1), R(0), (int32_t)IMM(2));
         else if (nops == 1)
@@ -1595,25 +1614,29 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // NEG / NOT
     if (!strncmp(mnem, "neg", 3)) {
-        if (is_mem(0)) x86_neg_m(buf, sz, M(0));
+        if (is_mem(0))
+            x86_neg_m(buf, sz, M(0));
         else
             x86_neg_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "not", 3)) {
-        if (is_mem(0)) x86_not_m(buf, sz, M(0));
+        if (is_mem(0))
+            x86_not_m(buf, sz, M(0));
         else
             x86_not_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "inc", 3)) {
-        if (is_mem(0)) x86_inc_m(buf, sz, M(0));
+        if (is_mem(0))
+            x86_inc_m(buf, sz, M(0));
         else
             x86_inc_r(buf, sz, R(0));
         return true;
     }
     if (!strncmp(mnem, "dec", 3)) {
-        if (is_mem(0)) x86_dec_m(buf, sz, M(0));
+        if (is_mem(0))
+            x86_dec_m(buf, sz, M(0));
         else
             x86_dec_r(buf, sz, R(0));
         return true;
@@ -1621,13 +1644,15 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // SHIFTS (AT&T: count, r/m)
     if (!strncmp(mnem, "shl", 3) || !strncmp(mnem, "sal", 3)) {
-        if (is_imm(0)) x86_shl_ri(buf, sz, R(1), (uint8_t)IMM(0));
+        if (is_imm(0))
+            x86_shl_ri(buf, sz, R(1), (uint8_t)IMM(0));
         else
             x86_shl_rcl(buf, sz, R(1));
         return true;
     }
     if (!strncmp(mnem, "shr", 3)) {
-        if (is_imm(0)) x86_shr_ri(buf, sz, R(1), (uint8_t)IMM(0));
+        if (is_imm(0))
+            x86_shr_ri(buf, sz, R(1), (uint8_t)IMM(0));
         else
             x86_shr_rcl(buf, sz, R(1));
         return true;
@@ -1650,7 +1675,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // CMP / TEST
     if (!strncmp(mnem, "cmp", 3)) {
-        if (is_imm(0) && is_reg(1)) x86_cmp_ri(buf, sz, R(1), (int32_t)IMM(0));
+        if (is_imm(0) && is_reg(1))
+            x86_cmp_ri(buf, sz, R(1), (int32_t)IMM(0));
         else if (is_reg(0) && is_reg(1))
             x86_cmp_rr(buf, sz, R(1), R(0));
         else if (is_mem(0) && is_reg(1))
@@ -1660,7 +1686,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strncmp(mnem, "test", 4)) {
-        if (is_imm(0) && is_reg(1)) x86_test_ri(buf, sz, R(1), (int32_t)IMM(0));
+        if (is_imm(0) && is_reg(1))
+            x86_test_ri(buf, sz, R(1), (int32_t)IMM(0));
         else if (is_reg(0) && is_reg(1))
             x86_test_rr(buf, sz, R(1), R(0));
         return true;
@@ -1670,7 +1697,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (!strncmp(mnem, "set", 3)) {
         const char *cc_s = mnem + 3;
         X86Cond cc = X86_E;
-        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z")) cc = X86_E;
+        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z"))
+            cc = X86_E;
         else if (!strcmp(cc_s, "ne") || !strcmp(cc_s, "nz"))
             cc = X86_NE;
         else if (!strcmp(cc_s, "l") || !strcmp(cc_s, "nge"))
@@ -1705,11 +1733,13 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (!strncmp(mnem, "cmov", 4)) {
         const char *cc_s = mnem + 4;
         X86Cond cc = X86_NE;
-        if (!strcmp(cc_s, "nz") || !strcmp(cc_s, "ne")) cc = X86_NE;
+        if (!strcmp(cc_s, "nz") || !strcmp(cc_s, "ne"))
+            cc = X86_NE;
         else if (!strcmp(cc_s, "z") || !strcmp(cc_s, "e"))
             cc = X86_E;
         // others...
-        if (is_reg(0) && is_reg(1)) x86_cmovcc(buf, sz, cc, R(1), R(0));
+        if (is_reg(0) && is_reg(1))
+            x86_cmovcc(buf, sz, cc, R(1), R(0));
         return true;
     }
 
@@ -1738,7 +1768,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     if (mnem[0] == 'j' && strlen(mnem) <= 6) {
         const char *cc_s = mnem + 1;
         X86Cond cc = X86_E;
-        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z")) cc = X86_E;
+        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z"))
+            cc = X86_E;
         else if (!strcmp(cc_s, "ne") || !strcmp(cc_s, "nz"))
             cc = X86_NE;
         else if (!strcmp(cc_s, "l") || !strcmp(cc_s, "nge"))
@@ -1857,7 +1888,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // SSE
     if (!strcmp(mnem, "movsd")) {
-        if (is_reg(0) && is_reg(1)) x86_movsd_rr(buf, (X86XmmReg)parse_x86_reg64(ops[0]), (X86XmmReg)parse_x86_reg64(ops[1]));
+        if (is_reg(0) && is_reg(1))
+            x86_movsd_rr(buf, (X86XmmReg)parse_x86_reg64(ops[0]), (X86XmmReg)parse_x86_reg64(ops[1]));
         else if (is_mem(0) && is_reg(1))
             x86_movsd_rm(buf, (X86XmmReg)R(1), M(0));
         else if (is_reg(0) && is_mem(1))
@@ -1865,7 +1897,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "movss")) {
-        if (is_reg(0) && is_reg(1)) x86_movss_rr(buf, (X86XmmReg)R(0), (X86XmmReg)R(1));
+        if (is_reg(0) && is_reg(1))
+            x86_movss_rr(buf, (X86XmmReg)R(0), (X86XmmReg)R(1));
         else if (is_mem(0) && is_reg(1))
             x86_movss_rm(buf, (X86XmmReg)R(1), M(0));
         return true;
