@@ -1909,7 +1909,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         VReg r = gen(argv[i]);
-        int off = (i - reg_nargs) * 8;
+        int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
         if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // subq $%d, %rsp
         } else {
