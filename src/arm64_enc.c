@@ -543,6 +543,15 @@ void arm64_str_fp(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     default: secbuf_emit32le(s, 0x3D800000u | BITS(21, 10, uimm / 16) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
     }
 }
+// Unscaled FP/SIMD store (negative offsets). sz: 2=S, 3=D, default=Q
+void arm64_stur_fp(SecBuf *s, int sz, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    uint32_t imm = (uint32_t)imm9 & 0x1ff;
+    switch (sz) {
+    case 2: secbuf_emit32le(s, 0xBC000000u | BITS(20, 12, imm) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    case 3: secbuf_emit32le(s, 0xFC000000u | BITS(20, 12, imm) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    default: secbuf_emit32le(s, 0x3C800000u | BITS(20, 12, imm) | BITS(9, 5, rn) | BITS(4, 0, rt)); break;
+    }
+}
 void arm64_ldp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post) {
     uint32_t base = 0x2c400000u | BITS(31, 30, opc);
     secbuf_emit32le(s, ldp_stp(base, rt1, rt2, rn, imm7, pre, post));

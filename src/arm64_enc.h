@@ -253,6 +253,7 @@ void arm64_fcvtzs(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
 void arm64_fcvtzu(SecBuf *s, int sf, int ftype, Arm64Reg rd, Arm64Reg rn);
 void arm64_ldr_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
 void arm64_str_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, uint32_t uimm);
+void arm64_stur_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
 void arm64_ldp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 void arm64_stp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 

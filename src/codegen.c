@@ -1512,8 +1512,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // Apple ARM64: variadic args always on the stack
                 arg_stack_idx[i] = stack_args++;
 #else
-                // Linux AAPCS64: variadic floats in FP regs only
+                // Linux AAPCS64: variadic floats promoted to double, in FP regs only
                 // (GP copy for unnamed FP args is optional; glibc does not require it)
+                if (arg_sizes[i] == 4) arg_sizes[i] = 8; // float -> double promotion for variadic
                 if (fp_reg_args < max_fp_args)
                     arg_fp_idx[i] = fp_reg_args++;
                 else if (gp_reg_args < max_gp_args)

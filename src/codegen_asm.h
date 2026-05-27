@@ -2731,13 +2731,12 @@ static void asm_str_d_x16_off(SecBuf *s, int fp_reg, int32_t off_bytes) {
 // str s{fp_param}, [x29, #-offset]  — store float parameter to frame
 static void asm_str_s_fp_neg(SecBuf *s, int fp_reg, int32_t offset) {
     // stur s{fp_reg}, [x29, #-offset]  (unscaled for negative)
-    // or str s{fp_reg}, [x29, #-offset] using pre-index? Use STUR
-    arm64_stur(s, 0, fp_reg, ARM64_X29, -offset); // stur s{fp_reg}, [x29, #-offset]
+    arm64_stur_fp(s, 2, fp_reg, ARM64_X29, -offset); // stur s{fp_reg}, [x29, #-offset]
 }
 
 // str d{fp_param}, [x29, #-offset]  — store double parameter to frame
 static void asm_str_d_fp_neg(SecBuf *s, int fp_reg, int32_t offset) {
-    arm64_stur(s, 1, fp_reg, ARM64_X29, -offset); // stur d{fp_reg}, [x29, #-offset]
+    arm64_stur_fp(s, 3, fp_reg, ARM64_X29, -offset); // stur d{fp_reg}, [x29, #-offset]
 }
 
 // fcvt s0, d{fp_param}  — double to single conversion (for oldstyle float params)
@@ -2748,7 +2747,7 @@ static void asm_fcvt_s0_d(SecBuf *s, Arm64Reg fp_src) {
 
 // str s0, [x29, #-offset]  — store s0 (after fcvt)
 static void asm_str_s0_fp_neg(SecBuf *s, int32_t offset) {
-    arm64_stur(s, 0, 0, ARM64_X29, -offset); // stur s0, [x29, #-offset]
+    arm64_stur_fp(s, 2, 0, ARM64_X29, -offset); // stur s0, [x29, #-offset]
 }
 
 // ldr s0, [x29, #spoff]  — load float from stack
