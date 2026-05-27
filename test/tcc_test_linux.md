@@ -4,8 +4,8 @@ Generated: June 2026
 
 ## Summary
 
-- **Total**: 154
-- **Passed**: 154
+- **Total**: 153
+- **Passed**: 153
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -147,7 +147,7 @@ Generated: June 2026
 | 142_int_conversion          | PASS   | Output matches            |
 | 143_void_expr               | PASS   | Output matches            |
 | 144_tls                     | PASS   | Output matches            |
-| 145_winarm64_interlocked    | PASS   | Output matches            |
+| 145_winarm64_interlocked    | SKIP   | Skipped                   |
 | test_arm64_asm              | SKIP   | Skipped                   |
 | test_atomic_op              | PASS   |                           |
 | test_atomic_op2             | PASS   |                           |

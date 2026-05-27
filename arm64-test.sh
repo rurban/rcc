@@ -33,9 +33,9 @@ if [ -n "${1:-}" ]; then
     fi
     rm -f "$TMP_OUT" "$TMP_EXE"
 else
-    make clean
+    make leanclean
     make -s CC=aarch64-linux-gnu-gcc
-    trap './gen-test-report.sh arm64_cross; make clean; make -s' EXIT   # restore host build after cross-test
+    trap 'make leanclean; make -s' EXIT   # restore host build after cross-test
     ./run_tcc_suite.sh ./rcc-arm64
     test/torture/capture.sh ../../arm64-cross.sh
     ./gen-test-report.sh arm64_cross

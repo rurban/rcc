@@ -3388,11 +3388,18 @@ static bool try_const_int(Node *n, int64_t *val) {
 }
 #endif // ARCH_ARM64
 
-#ifndef ARCH_ARM64
 // Emit code to load the address of a global variable into reg r.
 // Handles TLS (%fs:-relative), GOT (PIC), and direct RIP-relative addressing.
 // Note: ARM64 uses inline address computation at call sites instead.
 static void emit_global_addr(int r, LVar *var) {
+#ifdef ARCH_ARM64
+    if (var->is_tls)
+        emit_tls_addr(reg64[r], var);
+    else if (var->is_weak || var_needs_got(var))
+        emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(var)));
+    else
+        emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(var)));
+#else
     if (var->is_tls) {
 #ifdef _WIN32
         // Windows/MinGW: __emutls emulated TLS
@@ -3422,8 +3429,8 @@ static void emit_global_addr(int r, LVar *var) {
     } else {
         printf("  lea %s(%%rip), %s\n", var_label(var), reg64[r]);
     }
-}
 #endif
+}
 
 // Generate code to compute the absolute address of an lvalue.
 static int gen_addr(Node *node) {
@@ -3466,16 +3473,7 @@ static int gen_addr(Node *node) {
                 printf(".weak %s\n", asm_sym_name(var_sym_label(node->var)));
 #endif
             }
-#ifdef ARCH_ARM64
-            if (node->var->is_tls)
-                emit_tls_addr(reg64[r], node->var);
-            else if (node->var->is_weak || var_needs_got(node->var))
-                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
-            else
-                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
-#else
             emit_global_addr(r, node->var);
-#endif
         }
         return r;
     }
@@ -4740,16 +4738,7 @@ static int gen(Node *node) {
                 printf("  lea -%d(%%rbp), %s\n", node->var->offset, reg64[r]);
 #endif
             else
-#ifdef ARCH_ARM64
-                if (node->var->is_tls)
-                emit_tls_addr(reg64[r], node->var);
-            else if (var_needs_got(node->var))
-                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
-            else
-                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
-#else
                 emit_global_addr(r, node->var);
-#endif
         } else if (!node->var->is_local && node->var->is_function) {
             if (node->var->is_weak) {
 #ifdef __APPLE__
@@ -4758,14 +4747,7 @@ static int gen(Node *node) {
                 printf(".weak %s\n", asm_sym_name(var_sym_label(node->var)));
 #endif
             }
-#ifdef ARCH_ARM64
-            if (node->var->is_weak || var_needs_got(node->var))
-                emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
-            else
-                emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
-#else
             emit_global_addr(r, node->var);
-#endif
         } else if (is_flonum(node->var->ty)) {
             {
                 if (node->var->is_local) {
