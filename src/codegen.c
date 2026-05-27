@@ -1794,7 +1794,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
         if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
             // Move float bits from virtual int reg to FP arg register
-            asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], 1); // fmov d{fp_idx}, x{arg_reg}
+            int sf = (arg_sizes[i] == 4) ? 0 : 1; // 0=S-reg (32-bit float), 1=D-reg (64-bit double)
+            asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], sf); // fmov s/d{fp_idx}, x/w{arg_reg}
             // For variadic float args, also pass in GP register (printf-style)
             if (arg_gp_idx[i] >= 0)
                 asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
@@ -3195,7 +3196,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
 #endif
 
-            // Emit conditional branch
+        // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
@@ -3282,11 +3283,17 @@ static VReg gen(Node *node) {
     }
     case ND_FNUM: {
         VReg r = alloc_reg();
-        int id = add_float_literal(node->fval, 8); // Always store as double for computations
+#ifdef ARCH_ARM64
+        int fsize = (node->ty && node->ty->kind == TY_FLOAT) ? 4 : 8;
+#else
+        int fsize = 8; // Always store as double; movsd loads 8 bytes
+#endif
+        int id = add_float_literal(node->fval, fsize);
 #ifdef ARCH_ARM64
         emit_adrp_add(r, format(".LF%d", id));
-        asm_ldr_fp(cg_sec, 0, r, 8); // ldr d0, [x{r}]
-        asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
+        asm_ldr_fp(cg_sec, 0, r, fsize); // ldr s0/d0, [x{r}]
+        int sf = (fsize == 8) ? 1 : 0;
+        asm_fmov_f2i(cg_sec, r, 0, sf); // fmov x/w{r}, s0/d0
 #else
         asm_movsd_rip_xmm(cg_sec, format(".LF%d", id)); // movsd .LF%d(%rip), %%xmm0
         asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %%xmm0, %s
