@@ -6135,7 +6135,7 @@ static VReg gen(Node *node) {
             x86_cmp_mi(cg_sec, 4, x86_mem(xr, 4), limit); // cmpl $160, 4(r)
             {
                 size_t _cj = asm_jcc_label(cg_sec, X86_A);
-                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 0);
+                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
             }
             x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(xr, 4)); // movl 4(r), %ecx
             x86_add_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 16)); // addq 16(r), %rcx
@@ -6148,7 +6148,7 @@ static VReg gen(Node *node) {
             x86_cmp_mi(cg_sec, 4, x86_mem(xr, 0), limit); // cmpl $40, (r)
             {
                 size_t _cj = asm_jcc_label(cg_sec, X86_A);
-                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 0);
+                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
             }
             x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(xr, 0)); // movl (r), %ecx
             x86_add_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 16)); // addq 16(r), %rcx
@@ -6162,7 +6162,7 @@ static VReg gen(Node *node) {
             x86_cmp_mi(cg_sec, 4, x86_mem(xr, 0), limit); // cmpl $40, (r)
             {
                 size_t _cj = asm_jcc_label(cg_sec, X86_A);
-                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 0);
+                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
             }
             x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(xr, 0)); // movl (r), %ecx
             x86_add_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 16)); // addq 16(r), %rcx
@@ -7737,14 +7737,14 @@ struct ObjFile *codegen(Program *prog) {
                         for (; pos < rel->offset; pos++)
                             secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]); // .set %s, %s
                         size_t rel_off = cg_sec->len;
-                        secbuf_emit64le(cg_sec, (uint64_t)rel->addend); // .byte %u
+                        secbuf_emit64le(cg_sec, 0); // .quad 0 (addend in reloc)
                         int sidx = objfile_find_sym(cg_obj, rel->label);
                         if (sidx < 0)
                             sidx = objfile_add_sym(cg_obj, rel->label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
 #ifdef ARCH_ARM64
-                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, 0);
+                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
 #else
-                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_X86_64_64, 0);
+                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_X86_64_64, (int64_t)rel->addend);
 #endif
                         pos += 8;
                     }
@@ -7851,12 +7851,21 @@ struct ObjFile *codegen(Program *prog) {
                         }
                         ops[n] = '\0';
                         // Encode known instructions directly
+#ifdef ARCH_ARM64
+                        if (strcmp(mnem, "ret") == 0)
+                            arm64_ret(cg_sec, ARM64_X30);
+                        else if (strcmp(mnem, "nop") == 0)
+                            arm64_nop(cg_sec);
+                        else if (strcmp(mnem, "brk") == 0)
+                            secbuf_emit32le(cg_sec, 0xd4200000u); // brk #0
+#else
                         if (strcmp(mnem, "ret") == 0)
                             x86_ret(cg_sec);
                         else if (strcmp(mnem, "nop") == 0)
                             x86_nop(cg_sec);
                         else if (strcmp(mnem, "int3") == 0)
                             secbuf_emit8(cg_sec, 0xcc);
+#endif
                         // For other instructions, fall through to nothing (assembler needed)
                     }
                 }
@@ -8454,6 +8463,27 @@ struct ObjFile *codegen(Program *prog) {
                 asm_push(cg_sec, REG(j + 2)); // push rREG(j + 2)
         }
         asm_sub_rsp_imm(cg_sec, sub_amount); // subq $sub_amount, %rsp
+
+        // Save variadic argument registers to the reg_save_area
+        // (must happen before param saves, which may clobber xmm0 via cvtsd2ss)
+        if (fn->is_variadic) {
+            // Save all 6 GP registers: rdi, rsi, rdx, rcx, r8, r9
+            asm_mov_phyreg_rbp(cg_sec, X86_RDI, 8, va_reg_save_ofs);
+            asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, va_reg_save_ofs - 8);
+            asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 16);
+            asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs - 24);
+            asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 32);
+            asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 40);
+            // Save all 8 XMM registers: xmm0-xmm7
+            asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 48);
+            asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 64);
+            asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 80);
+            asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 96);
+            asm_movaps_rbp_xmm(cg_sec, 4, va_reg_save_ofs - 112);
+            asm_movaps_rbp_xmm(cg_sec, 5, va_reg_save_ofs - 128);
+            asm_movaps_rbp_xmm(cg_sec, 6, va_reg_save_ofs - 144);
+            asm_movaps_rbp_xmm(cg_sec, 7, va_reg_save_ofs - 160);
+        }
 
         // Save incoming params from ABI regs to stack slots
         {

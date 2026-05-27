@@ -4,8 +4,8 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 152
-- **Passed**: 152
+- **Total**: 149
+- **Passed**: 149
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -122,7 +122,7 @@ Generated: May 2026
 | 117_builtins                | PASS   | Output matches            |
 | 118_switch                  | PASS   | Output matches            |
 | 119_random_stuff            | PASS   | Output matches            |
-| 120_alias                   | PASS   | Output matches            |
+| 120_alias                   | SKIP   | Skipped                   |
 | 121_struct_return           | PASS   | Output matches            |
 | 122_vla_reuse               | PASS   | Output matches            |
 | 123_vla_bug                 | PASS   | Output matches            |
@@ -141,14 +141,10 @@ Generated: May 2026
 | 136_atomic_gcc_style        | PASS   | Output matches            |
 | 137_funcall_struct_args     | PASS   | Output matches            |
 | 138_arm64_encoding          | SKIP   | Skipped                   |
-| 138_narrow_return_promotion | PASS   | Output matches            |
 | 139_arm64_errors            | SKIP   | Skipped                   |
-| 139_narrow_type_conversion  | PASS   | Output matches            |
 | 140_arm64_extasm            | SKIP   | Skipped                   |
-| 140_int_sign_extension      | PASS   | Output matches            |
-| 141_riscv_asm_pseudo        | SKIP   | Skipped                   |
-| 142_riscv_asm_longlong      | SKIP   | Skipped                   |
-| 143_riscv_asm_farith        | SKIP   | Skipped                   |
+| 141_riscv_asm               | SKIP   | Skipped                   |
+| 142_int_conversion          | PASS   | Output matches            |
 | test_arm64_asm              | SKIP   | Skipped                   |
 | test_atomic_op              | PASS   | exit=0                    |
 | test_atomic_op2             | PASS   | exit=0                    |

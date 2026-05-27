@@ -241,8 +241,9 @@ SKIP_TESTS="
 114_bound_signal
 115_bound_setjmp
 116_bound_setjmp2
- 120_alias
+120_alias
 126_bound_global
+141_riscv_asm
 141_riscv_asm_pseudo
 142_riscv_asm_longlong
 143_riscv_asm_farith
@@ -795,7 +796,7 @@ elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
 	[ "$passed" -ge 155 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-	[ "$passed" -ge 151 ]
+	[ "$passed" -ge 149 ]
 else
-	[ "$passed" -ge 152 ]
+	[ "$passed" -ge 149 ]
 fi

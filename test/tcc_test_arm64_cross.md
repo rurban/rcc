@@ -4,10 +4,10 @@ Generated: May 2026
 
 ## Summary
 
-- **Total**: 155
-- **Passed**: 122
-- **Failed**: 33
-- **Pass Rate**: 78%
+- **Total**: 152
+- **Passed**: 121
+- **Failed**: 31
+- **Pass Rate**: 79%
 
 ## Detailed Results
 
@@ -86,7 +86,7 @@ Generated: May 2026
 | 82_attribs_position         | PASS         | Output matches                |
 | 83_utf8_in_identifiers      | PASS         | Output matches                |
 | 84_hex-float                | PASS         | Output matches                |
-| 85_asm-outside-function     | EXEC_FAIL    | non-zero exit                 |
+| 85_asm-outside-function     | PASS         | Output matches                |
 | 86_memory-model             | PASS         | Output matches                |
 | 87_dead_code                | EXEC_FAIL    | non-zero exit                 |
 | 88_codeopt                  | EXEC_FAIL    | non-zero exit                 |
@@ -96,7 +96,7 @@ Generated: May 2026
 | 92_enum_bitfield            | MISMATCH     | Output does not match .expect |
 | 93_integer_promotion        | PASS         | Output matches                |
 | 94_generic                  | PASS         | Output matches                |
-| 95_bitfields                | MISMATCH     | Output does not match .expect |
+| 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
 | 95_bitfields_ms             | SKIP         | Skipped                       |
 | 96_nodata_wanted            | SKIP         | Skipped                       |
 | 97_utf8_string_literal      | PASS         | Output matches                |
@@ -122,7 +122,7 @@ Generated: May 2026
 | 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | PASS         | Output matches                |
 | 119_random_stuff            | MISMATCH     | Output does not match .expect |
-| 120_alias                   | PASS         | Output matches                |
+| 120_alias                   | SKIP         | Skipped                       |
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | EXEC_FAIL    | non-zero exit                 |
 | 123_vla_bug                 | EXEC_FAIL    | non-zero exit                 |
@@ -141,14 +141,10 @@ Generated: May 2026
 | 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | EXEC_FAIL    | non-zero exit                 |
-| 138_narrow_return_promotion | EXEC_FAIL    | non-zero exit                 |
 | 139_arm64_errors            | PASS         | Output matches                |
-| 139_narrow_type_conversion  | MISMATCH     | Output does not match .expect |
 | 140_arm64_extasm            | EXEC_FAIL    | non-zero exit                 |
-| 140_int_sign_extension      | PASS         | Output matches                |
-| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
-| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
-| 143_riscv_asm_farith        | SKIP         | Skipped                       |
+| 141_riscv_asm               | SKIP         | Skipped                       |
+| 142_int_conversion          | EXEC_FAIL    | non-zero exit                 |
 | test_arm64_asm              | PASS         | exit=132                      |
 | test_atomic_op              | PASS         | exit=124                      |
 | test_atomic_op2             | PASS         | exit=124                      |
