@@ -1380,13 +1380,13 @@ static void asm_sub_fp_imm(SecBuf *s, Arm64Reg rd, int32_t imm) {
 static void asm_sub_fp_reg(SecBuf *s, Arm64Reg rd, Arm64Reg rs) {
     arm64_sub_reg(s, 1, rd, CG_ARM_FP, rs, ARM64_LSL, 0);
 }
-// ldr rd, [rs] — load from register
+// ldr x{rd}, [x{rs}] — load 64-bit from register
 static void asm_ldr_reg(SecBuf *s, Arm64Reg rd, Arm64Reg rs) {
-    arm64_ldr_uoff(s, 1, rd, rs, 0);
+    arm64_ldr_uoff(s, 3, rd, rs, 0);
 }
-// str rd, [rs] — store to register
+// str x{rd}, [x{rs}] — store 64-bit to register
 static void asm_str_reg(SecBuf *s, Arm64Reg rd, Arm64Reg rs) {
-    arm64_str_uoff(s, 1, rd, rs, 0);
+    arm64_str_uoff(s, 3, rd, rs, 0);
 }
 // ldur rd, [x29, #-off] — unscaled load from frame
 static void asm_ldur_fp_phy(SecBuf *s, Arm64Reg rd, int32_t off) {
@@ -1798,7 +1798,8 @@ static void asm_asr_rd_reg_63(SecBuf *s, Arm64Reg rd, VReg src) {
 }
 // ldr w/x{dst}, [x{src}] — load GP from reg (sf=0→32bit, 1→64bit)
 static void asm_ldr_phy_reg(SecBuf *s, Arm64Reg dst_phy, VReg src, int sf) {
-    arm64_ldr_uoff(s, sf, dst_phy, REG(src), 0); // ldr w/x{dst}, [x{src}]
+    int sz = sf ? 3 : 2; // sf=1→64-bit(sz=3), sf=0→32-bit(sz=2)
+    arm64_ldr_uoff(s, sz, dst_phy, REG(src), 0); // ldr w/x{dst}, [x{src}]
 }
 // mov x{dst_phy}, x{src_vreg} — move vreg to physical GP register (via orr xd, xzr, xs)
 static void asm_mov_phy_reg(SecBuf *s, Arm64Reg dst_phy, VReg src, int sf) {
@@ -1828,7 +1829,7 @@ static void asm_add_rd_rd_0(SecBuf *s, Arm64Reg rd) {
 }
 // ldr xrd, [xrd] — load pointer from self (GOT indirection)
 static void asm_ldr_rd_rd(SecBuf *s, Arm64Reg rd) {
-    arm64_ldr_uoff(s, 1, rd, rd, 0); // ldr x{rd}, [x{rd}]
+    arm64_ldr_uoff(s, 3, rd, rd, 0); // ldr x{rd}, [x{rd}]
 }
 #endif
 
