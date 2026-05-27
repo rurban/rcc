@@ -8251,7 +8251,7 @@ struct ObjFile *codegen(Program *prog) {
                 } else if (gp_param < 8) {
                     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
                         int c = ++rcc_label_count;
-                        arm64_add_imm(cg_sec, 1, ARM64_X16, REG(gp_param), 0, 0); // mov x16, x{gp_param}
+                        arm64_add_imm(cg_sec, 1, ARM64_X16, gp_param, 0, 0); // mov x16, x{gp_param}
                         if (var->offset <= 4095)
                             arm64_sub_imm(cg_sec, 1, ARM64_X17, ARM64_X29, var->offset, 0); // sub x17, x29, #var->offset
                         else {
