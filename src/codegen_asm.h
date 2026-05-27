@@ -1643,7 +1643,7 @@ static void asm_cvtss2sd(SecBuf *s) {
 }
 static void asm_cvtsd2ss(SecBuf *s) {
 #ifdef ARCH_ARM64
-    arm64_fcvt(s, 3, 0, 0, 0); // fcvt s0, d0
+    arm64_fcvt(s, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest, ftype=1=double src)
 #else
     x86_cvtsd2ss(s, X86_XMM0, X86_XMM0);
 #endif
@@ -2742,8 +2742,8 @@ static void asm_str_d_fp_neg(SecBuf *s, int fp_reg, int32_t offset) {
 
 // fcvt s0, d{fp_param}  — double to single conversion (for oldstyle float params)
 static void asm_fcvt_s0_d(SecBuf *s, Arm64Reg fp_src) {
-    // fcvt sd, dn: opc=3 (single), ftype=1 (double), rd=0, rn=fp_src
-    arm64_fcvt(s, 3, 1, 0, fp_src); // fcvt s0, d{fp_src}
+    // fcvt s0, d{fp_src}: opc=0 (single dest), ftype=1 (double src)
+    arm64_fcvt(s, 0, 1, 0, fp_src); // fcvt s0, d{fp_src}
 }
 
 // str s0, [x29, #-offset]  — store s0 (after fcvt)

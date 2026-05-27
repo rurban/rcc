@@ -4547,8 +4547,10 @@ static VReg gen(Node *node) {
                 asm_ucvtf(cg_sec, 0, r, sf); // ucvtf d0, w/x{r}
             else
                 asm_scvtf(cg_sec, 0, r, sf); // scvtf d0, w/x{r}
-            if (to->kind == TY_FLOAT)
-                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt s0, d0 then back to d0
+            if (to->kind == TY_FLOAT) {
+                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double→single, round to float)
+                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (single→double, back to GP-friendly)
+            }
             asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (store as int bits)
 #else
             if (from->is_unsigned && from->size == 8) {
@@ -4584,7 +4586,7 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
             if (to->kind == TY_FLOAT && from->kind != TY_FLOAT) {
                 asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                asm_fcvt(cg_sec, 3, 1, 0, 0); // fcvt s0, d0 (opc=3=s, ftype=1=d)
+                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest, ftype=1=double src)
                 asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (opc=1=d, ftype=0=s)
                 asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
             }
@@ -4744,7 +4746,7 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
                         asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
                         if (ret_ty->kind == TY_FLOAT)
-                            asm_fcvt(cg_sec, 3, 1, 0, 0); // fcvt s0, d0
+                            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest)
 #else
                         asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
                         if (ret_ty->kind == TY_FLOAT)
