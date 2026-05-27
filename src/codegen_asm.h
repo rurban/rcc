@@ -830,6 +830,15 @@ static void asm_and_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
     asm_record(ASM_AND_RR, off, count, rdst, rsrc, -1, size, 0, 0, NULL, 0, -1, false);
 #endif
 }
+#ifdef ARCH_ARM64
+static void asm_and_reg_phy(SecBuf *s, VReg dst, Arm64Reg src, int size) {
+    size_t off = s->len;
+    Arm64Reg rdst = REG(dst);
+    int sf = (size == 8) ? 1 : 0;
+    arm64_and_reg(s, sf, rdst, rdst, src, ARM64_LSL, 0);
+    asm_record(ASM_AND_RR, off, 1, rdst, src, -1, size, 0, 0, NULL, 0, -1, false);
+}
+#endif
 
 // and rr, %rax — used after asm_movabs_phy(X86_RAX, mask) for bitfield masking
 static void asm_and_rax(SecBuf *s, VReg r, int size) {
@@ -889,7 +898,7 @@ static void asm_shl_imm(SecBuf *s, VReg vr, int size, uint8_t shift) {
 #ifdef ARCH_ARM64
     Arm64Reg r = REG(vr);
     int sf = (size == 8) ? 1 : 0;
-    arm64_lsl_imm(s, sf, REG(r), REG(r), shift);
+    arm64_lsl_imm(s, sf, r, r, shift);
     asm_record(ASM_SHL_RI, off, 1, r, -1, -1, size, shift, 0, NULL, 0, -1, false);
 #else
     X86Reg r = REG(vr);
@@ -1010,6 +1019,14 @@ static void asm_cmp_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
     asm_record(ASM_CMP_RR, off, count, REG(a), REG(b), -1, size, 0, 0, NULL, 0, -1, false);
 #endif
 }
+#ifdef ARCH_ARM64
+static void asm_cmp_reg_phy(SecBuf *s, VReg a, Arm64Reg b, int size) {
+    size_t off = s->len;
+    int sf = (size == 8) ? 1 : 0;
+    arm64_subs_reg(s, sf, ARM64_XZR, REG(a), b, ARM64_LSL, 0);
+    asm_record(ASM_CMP_RR, off, 1, REG(a), b, -1, size, 0, 0, NULL, 0, -1, false);
+}
+#endif
 
 static void asm_cmp_zero(SecBuf *s, VReg r, int size) {
     size_t off = s->len;
@@ -1440,6 +1457,10 @@ static void asm_sub_reg_fp_imm(SecBuf *s, VReg r, int32_t imm) {
 static void asm_sub_reg_fp_reg(SecBuf *s, int dst, int src, int size) {
     int sf = (size == 8) ? 1 : 0;
     arm64_sub_reg(s, sf, REG(dst), CG_ARM_FP, REG(src), ARM64_LSL, 0);
+}
+static void asm_sub_reg_fp_phy(SecBuf *s, VReg dst, Arm64Reg src, int size) {
+    int sf = (size == 8) ? 1 : 0;
+    arm64_sub_reg(s, sf, REG(dst), CG_ARM_FP, src, ARM64_LSL, 0);
 }
 static void asm_stur_fp(SecBuf *s, VReg r, int off) {
     arm64_stur(s, 1, REG(r), CG_ARM_FP, -off); // stur x{r}, [x29, #-off]
