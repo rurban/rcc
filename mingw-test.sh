@@ -2,7 +2,7 @@
 # Cross-build Windows rcc and run the TCC test suite against it.
 set -e
 trap 'rm src/sysinc_paths.h src/gcc_predefined.h' EXIT
-make clean
+make leanclean
 make -s CC=x86_64-w64-mingw32-gcc
 WINE_DISABLE_RANDR=1
 export WINE_DISABLE_RANDR

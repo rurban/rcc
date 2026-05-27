@@ -181,11 +181,13 @@ endif
 test check: $(TARGET)
 	@$(TEST_RUNNER)
 
-test-torture: $(TARGET)
+test-extra check-extra: check lint test-torture
+
+test-torture check-torture: $(TARGET)
 	test/torture/capture.sh
 	./gen-test-report.sh
 
-test-full: $(TARGET)
+test-full check-full: $(TARGET)
 	$(MAKE) clean
 	$(MAKE)
 	@$(TEST_RUNNER)
@@ -240,6 +242,12 @@ else
 endif
 	rm -rf rcc-$(VERSION)-src
 
+leanclean:
+	rm -f src/sysinc_paths.h src/gcc_predefined.h fred.txt qemu*.core
+	if command -v git > /dev/null 2>&1; then \
+	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
+	  cd c-testsuite && git clean -dxf . && cd ..; \
+	fi
 clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe rcc_prof src/sysinc_paths.h src/gcc_predefined.h \
               fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o lib/darwin.o \
@@ -254,4 +262,5 @@ TAGS: $(SRCS) src/rcc.h
 
 FORCE:
 
-.PHONY: clean test check test-full test-torture lint bench install dist bench prof FORCE
+.PHONY: clean leanclean test check test-extra check-extra check-full check-torture \
+	test-full test-torture lint bench install dist bench prof FORCE
