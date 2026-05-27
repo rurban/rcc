@@ -1794,9 +1794,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         }
         if (arg_is_float[i] && arg_fp_idx[i] >= 0) {
-            // Move float bits from virtual int reg to FP arg register
-            int sf = (arg_sizes[i] == 4) ? 0 : 1; // 0=S-reg (32-bit float), 1=D-reg (64-bit double)
-            asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], sf); // fmov s/d{fp_idx}, x/w{arg_reg}
+            // Float values are always stored as double in GP regs (see ND_LVAR with is_flonum).
+            // Move as double to FP arg register, then convert to float if callee expects float.
+            asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], 1); // fmov d{fp_idx}, x{arg_reg}
+            // For non-variadic float args, convert double->float (callee expects float in s-reg)
+            if (arg_sizes[i] == 4 && !(is_variadic && i >= named_count))
+                asm_fcvt(cg_sec, 0, 1, arg_fp_idx[i], arg_fp_idx[i]); // fcvt s{fp_idx}, d{fp_idx}  (opc=0: double->single)
             // For variadic float args, also pass in GP register (printf-style)
             if (arg_gp_idx[i] >= 0)
                 asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
@@ -1870,7 +1873,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
         if (node->ty->kind == TY_FLOAT)
-            asm_fcvt(cg_sec, 3, 0, 0, 0); // fcvt d0, s0 (widen float return to double)
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (widen float return to double, opc=1=single->double)
         asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (store float return as int bits)
     } else {
         int sz = node->ty ? (node->ty->size < 8 ? 4 : 8) : 8;
@@ -3292,9 +3295,13 @@ static VReg gen(Node *node) {
         int id = add_float_literal(node->fval, fsize);
 #ifdef ARCH_ARM64
         emit_adrp_add(r, format(".LF%d", id));
-        asm_ldr_fp(cg_sec, 0, r, fsize); // ldr s0/d0, [x{r}]
-        int sf = (fsize == 8) ? 1 : 0;
-        asm_fmov_f2i(cg_sec, r, 0, sf); // fmov x/w{r}, s0/d0
+        if (fsize == 4) {
+            asm_ldr_fp(cg_sec, 0, r, 4); // ldr s0, [x{r}]
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (promote to double for GP storage)
+        } else {
+            asm_ldr_fp(cg_sec, 0, r, 8); // ldr d0, [x{r}]
+        }
+        asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (always 64-bit)
 #else
         asm_movsd_rip_xmm(cg_sec, format(".LF%d", id)); // movsd .LF%d(%rip), %%xmm0
         asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %%xmm0, %s
@@ -3679,7 +3686,7 @@ static VReg gen(Node *node) {
             VReg r1 = gen_addr(node->lhs);
             asm_fmov_i2f(cg_sec, 0, r2, 1); // fmov d0, x{r2}
             if (node->lhs->ty->size == 4) {
-                asm_fcvt(cg_sec, 3, 0, 0, 0); // fcvt s0, d0
+                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=double->single)
                 asm_str_fp(cg_sec, 0, r1, 4); // str s0, [x{r1}]
             } else {
                 asm_str_fp(cg_sec, 0, r1, 8); // str d0, [x{r1}]
@@ -6534,7 +6541,7 @@ static VReg gen(Node *node) {
         else if (node->kind == ND_DIV)
             asm_fdiv(cg_sec, 1); // asm_fdiv(1)
         if (node->ty->kind == TY_FLOAT) {
-            asm_fcvt(cg_sec, 3, 0, 0, 0); // asm_fcvt(3, 0, 0, 0)
+            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=double->single)
             asm_fcvt(cg_sec, 1, 0, 0, 0); // asm_fcvt(1, 0, 0, 0)
         }
         asm_fmov_f2i(cg_sec, r_lhs, 0, 1); // asm_fmov_f2i(r_lhs, 0, 1)
