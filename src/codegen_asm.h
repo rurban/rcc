@@ -2719,15 +2719,13 @@ static void asm_sub_x16_fp_x16(SecBuf *s) {
 
 // str s{fp_param}, [x16, #off]  — store float parameter to stack
 static void asm_str_s_x16_off(SecBuf *s, int fp_reg, int32_t off_bytes) {
-    // str s{fp_reg}, [x16, #off_bytes]: opc=0 (single), imm offset in units of 4
-    uint32_t uimm = (uint32_t)(off_bytes / 4);
-    arm64_str_fp(s, 0, fp_reg, ARM64_X16, uimm); // str s{fp_reg}, [x16, #off_bytes]
+    // str s{fp_reg}, [x16, #off_bytes]: sz=2 (single), arm64_str_fp handles /4 scaling
+    arm64_str_fp(s, 2, fp_reg, ARM64_X16, (uint32_t)off_bytes); // str s{fp_reg}, [x16, #off_bytes]
 }
 
 // str d{fp_param}, [x16, #off]  — store double parameter to stack
 static void asm_str_d_x16_off(SecBuf *s, int fp_reg, int32_t off_bytes) {
-    uint32_t uimm = (uint32_t)(off_bytes / 8);
-    arm64_str_fp(s, 1, fp_reg, ARM64_X16, uimm); // str d{fp_reg}, [x16, #off_bytes]
+    arm64_str_fp(s, 3, fp_reg, ARM64_X16, (uint32_t)off_bytes); // str d{fp_reg}, [x16, #off_bytes]
 }
 
 // str s{fp_param}, [x29, #-offset]  — store float parameter to frame
@@ -2755,12 +2753,12 @@ static void asm_str_s0_fp_neg(SecBuf *s, int32_t offset) {
 
 // ldr s0, [x29, #spoff]  — load float from stack
 static void asm_ldr_s0_fp_off(SecBuf *s, int32_t spoff) {
-    arm64_ldr_fp(s, 0, 0, ARM64_X29, (uint32_t)(spoff / 4)); // ldr s0, [x29, #spoff]
+    arm64_ldr_fp(s, 2, 0, ARM64_X29, (uint32_t)spoff); // ldr s0, [x29, #spoff]
 }
 
 // ldr d0, [x29, #spoff]  — load double from stack
 static void asm_ldr_d0_fp_off(SecBuf *s, int32_t spoff) {
-    arm64_ldr_fp(s, 1, 0, ARM64_X29, (uint32_t)(spoff / 8)); // ldr d0, [x29, #spoff]
+    arm64_ldr_fp(s, 3, 0, ARM64_X29, (uint32_t)spoff); // ldr d0, [x29, #spoff]
 }
 
 // ldrb w11, [x29, #spoff]  — load byte from stack slot (stack param)
