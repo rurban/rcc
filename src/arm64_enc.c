@@ -208,17 +208,20 @@ void arm64_lsl_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int immr = (-shift) & (w - 1);
     int imms = w - 1 - shift;
-    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, immr) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
+    uint32_t opc = sf ? 0xd3400000u : 0x53000000u;
+    secbuf_emit32le(s, opc | BITS(21, 16, immr) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 void arm64_lsr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int imms = w - 1;
-    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x66 : 0x26) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
+    uint32_t opc = sf ? 0xd3400000u : 0x53000000u;
+    secbuf_emit32le(s, opc | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 void arm64_asr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift) {
     int w = sf ? 64 : 32;
     int imms = w - 1;
-    secbuf_emit32le(s, SF(sf) | BITS(29, 23, sf ? 0x7e : 0x1e) | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
+    uint32_t opc = sf ? 0x93400000u : 0x13000000u;
+    secbuf_emit32le(s, opc | BITS(21, 16, shift) | BITS(15, 10, imms) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 
 // Unary operations

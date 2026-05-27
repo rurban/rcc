@@ -2485,7 +2485,7 @@ static void emit_store_offset(Type *ty, VReg r, Arm64Reg base, int offset) {
     int v = abs_off >> 16;
     int s = 16;
     while (v) {
-        asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s); // movk ta, #v, lsl #s
+        asm_movk(cg_sec, REG(ta), 1, (uint16_t)(v & 0xffff), s); // movk ta, #v, lsl #s
         v >>= 16;
         s += 16;
     }
@@ -2518,7 +2518,7 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
             int v = off >> 16;
             int s = 16;
             while (v) {
-                asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s);
+                asm_movk(cg_sec, REG(ta), 1, (uint16_t)(v & 0xffff), s);
                 v >>= 16;
                 s += 16;
             }
@@ -2893,7 +2893,7 @@ static VReg gen_addr(Node *node) {
                     v >>= 16;
                     int s = 16;
                     while (v) {
-                        asm_movk(cg_sec, r, 1, (uint16_t)(v & 0xffff), s); // movk r, #v, lsl #s
+                        asm_movk(cg_sec, REG(r), 1, (uint16_t)(v & 0xffff), s); // movk r, #v, lsl #s
                         v >>= 16;
                         s += 16;
                     }
@@ -3259,14 +3259,14 @@ static VReg gen(Node *node) {
             asm_mov_imm(cg_sec, r, 4, v & 0xffff); // mov $v & 0xffff, rr
             v >>= 16;
             if (v) {
-                asm_movk(cg_sec, r, 0, (uint16_t)(v), 16); // movk w{r}, #v, lsl #16
+                asm_movk(cg_sec, REG(r), 0, (uint16_t)(v), 16); // movk w{r}, #v, lsl #16
             }
         } else {
             asm_mov_imm(cg_sec, r, 8, v & 0xffff); // mov $v & 0xffff, rr
             v >>= 16;
             int shift = 16;
             while (v) {
-                asm_movk(cg_sec, r, 1, (uint16_t)(v & 0xffff), shift); // movk x{r}, #v, lsl #shift
+                asm_movk(cg_sec, REG(r), 1, (uint16_t)(v & 0xffff), shift); // movk x{r}, #v, lsl #shift
                 v >>= 16;
                 shift += 16;
             }
@@ -3334,7 +3334,7 @@ static VReg gen(Node *node) {
                     v >>= 16;
                     int s = 16;
                     while (v) {
-                        asm_movk(cg_sec, r, 1, (uint16_t)(v & 0xffff), s); // movk r, #v, lsl #s
+                        asm_movk(cg_sec, REG(r), 1, (uint16_t)(v & 0xffff), s); // movk r, #v, lsl #s
                         v >>= 16;
                         s += 16;
                     }
@@ -4680,7 +4680,7 @@ static VReg gen(Node *node) {
                 }
 #ifdef ARCH_ARM64
                 if (retbuf_offset <= 4095)
-                    asm_ldur_phy(cg_sec, 11, 29, 1, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
+                    asm_ldur_phy(cg_sec, ARM64_X11, ARM64_X29, 3, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
                 else {
                     emit_mov_imm64(ARM64_X16, (uint64_t)retbuf_offset); // mov x16, #retbuf_offset
                     asm_sub_x11_fp_x16(cg_sec); // sub x11, x29, x16
@@ -4694,13 +4694,13 @@ static VReg gen(Node *node) {
                 }
                 arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                 asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
-                asm_strb_w16_x9(cg_sec, 11); // strb w16, [x11, x9]
+                asm_strb_w16_x9_phy(cg_sec, ARM64_X11); // strb w16, [x11, x9]
                 {
                     size_t _jmp = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, _jmp, format(".L.retcopy.%d", c), 0);
                 }
                 cg_def_label(format(".L.retcopy_end.%d", c));
-                asm_mov_x0_reg(cg_sec, REG(11)); // mov x0, x11
+                asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
 #else
                 asm_mov_rbp(cg_sec, X86_R11, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R11
                 x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %rcx

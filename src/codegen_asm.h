@@ -2868,6 +2868,9 @@ static void asm_ldrb_w16_x9(SecBuf *s, int base) {
 static void asm_strb_w16_x9(SecBuf *s, int dst) {
     arm64_str_reg(s, 0, 16, REG(dst), 9, false, 0); // strb w16, [x{dst}, x9]
 }
+static void asm_strb_w16_x9_phy(SecBuf *s, Arm64Reg dst) {
+    arm64_str_reg(s, 0, 16, dst, 9, false, 0); // strb w16, [x{dst}, x9]
+}
 
 // ============================================================================
 // ARM64: strb/wzr and ldrb/scaled patterns
