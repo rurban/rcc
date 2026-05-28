@@ -934,36 +934,39 @@ static void asm_sar_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 #endif
 }
 
-static void asm_shl_cl(SecBuf *s, VReg r, int size) {
+static void asm_shl_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_lsl_reg(s, sf, REG(r), REG(r), REG(r));
+    arm64_lsl_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    (void)shift_reg;
     x86_shl_rcl(s, size, REG(r));
     size_t count = s->len - off;
     asm_record(ASM_SHL_CL, off, count, REG(r), -1, -1, size, 0, 0, NULL, 0, -1, false);
 #endif
 }
 
-static void asm_shr_cl(SecBuf *s, VReg r, int size) {
+static void asm_shr_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_lsr_reg(s, sf, REG(r), REG(r), REG(r));
+    arm64_lsr_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    (void)shift_reg;
     x86_shr_rcl(s, size, REG(r));
     size_t count = s->len - off;
     asm_record(ASM_SHR_CL, off, count, REG(r), -1, -1, size, 0, 0, NULL, 0, -1, false);
 #endif
 }
 
-static void asm_sar_cl(SecBuf *s, VReg r, int size) {
+static void asm_sar_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_asr_reg(s, sf, REG(r), REG(r), REG(r));
+    arm64_asr_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    (void)shift_reg;
     x86_sar_rcl(s, size, REG(r));
     size_t count = s->len - off;
     asm_record(ASM_SAR_CL, off, count, REG(r), -1, -1, size, 0, 0, NULL, 0, -1, false);
@@ -2898,6 +2901,10 @@ static void asm_ldrb_w16_x9(SecBuf *s, int base) {
 }
 static void asm_strb_w16_x9(SecBuf *s, int dst) {
     arm64_str_reg(s, 0, 16, REG(dst), 9, false, 0); // strb w16, [x{dst}, x9]
+}
+// strb wzr, [x{dst}, x9] — store zero byte using x9 index
+static void asm_strb_wzr_x9(SecBuf *s, int dst) {
+    arm64_str_reg(s, 0, ARM64_XZR, REG(dst), 9, false, 0); // strb wzr, [x{dst}, x9]
 }
 static void asm_strb_w16_x9_phy(SecBuf *s, Arm64Reg dst) {
     arm64_str_reg(s, 0, 16, dst, 9, false, 0); // strb w16, [x{dst}, x9]

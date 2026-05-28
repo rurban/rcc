@@ -3605,7 +3605,7 @@ static VReg gen(Node *node) {
                         asm_fixup_add(cg_sec, o, format(".L.strzero_end.%d", c2), 1);
                     }
                     arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
-                    asm_strb_w16_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
+                    asm_strb_wzr_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
                     {
                         size_t o = asm_jmp_label(cg_sec); // b .L.strzero.c2
                         asm_fixup_add(cg_sec, o, format(".L.strzero.%d", c2), 0);
@@ -3844,8 +3844,8 @@ static VReg gen(Node *node) {
                 VReg rv = alloc_reg();
                 asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
                 asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
-                if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(reg64[rv])); // shl $(uint8_t)(reg64[rv]), rrv
-                asm_or_reg_reg(cg_sec, rt, rv, 8); // or rrt, rrv (merge new value into old)
+                if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(bo)); // lsl x{rv}, x{rv}, #bo
+                asm_or_reg_reg(cg_sec, rt, rv, 8); // orr x{rt}, x{rt}, x{rv} (merge new value into old)
                 BF_STORE(eff_sz_rhs, ra, rt);
                 free_reg(rv);
                 // Reload stored bitfield value for assignment expression result
@@ -3860,15 +3860,15 @@ static VReg gen(Node *node) {
                     else
                         asm_ldr_reg_off(cg_sec, rt, ra, 8, 0); // ldr x{rt}, [x{ra}]
                     if (bo > 0)
-                        asm_shr_imm(cg_sec, rt, 8, (uint8_t)(reg64[rt])); // shr $(uint8_t)(reg64[rt]), rrt
+                        asm_shr_imm(cg_sec, rt, 8, (uint8_t)(bo)); // lsr x{rt}, x{rt}, #bo
                     if (bw < new_eff_sz_rhs * 8) {
                         if (node->lhs->member->ty->is_unsigned || node->lhs->member->ty->is_enum) {
                             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
-                            asm_and_reg_phy(cg_sec, rt, ARM64_X16, 8); // and rrt, r16
+                            asm_and_reg_phy(cg_sec, rt, ARM64_X16, 8); // and x{rt}, x{rt}, x16
                         } else {
                             int shift = 64 - bw;
-                            asm_shl_imm(cg_sec, rt, 8, (uint8_t)(reg64[rt])); // shl $(uint8_t)(reg64[rt]), rrt
-                            asm_sar_imm(cg_sec, rt, 8, (uint8_t)(reg64[rt])); // sar $(uint8_t)(reg64[rt]), rrt
+                            asm_shl_imm(cg_sec, rt, 8, (uint8_t)(shift)); // lsl x{rt}, x{rt}, #shift
+                            asm_sar_imm(cg_sec, rt, 8, (uint8_t)(shift)); // asr x{rt}, x{rt}, #shift
                         }
                     }
                     free_reg(r2);
@@ -3890,8 +3890,8 @@ static VReg gen(Node *node) {
             VReg rv = alloc_reg();
             asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
             asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
-            if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(reg64[rv])); // shl $(uint8_t)(reg64[rv]), rrv
-            asm_or_reg_reg(cg_sec, rt, rv, 8); // or rrt, rrv (merge new value into old)
+            if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(bo)); // lsl x{rv}, x{rv}, #bo
+            asm_or_reg_reg(cg_sec, rt, rv, 8); // orr x{rt}, x{rt}, x{rv} (merge new value into old)
             BF_STORE(eff_sz, ra, rt);
             if (unit_sz > 8 && bo + bw > 64) {
                 int overflow = bo + bw - 64;
@@ -4000,8 +4000,8 @@ static VReg gen(Node *node) {
                         asm_and_reg_phy(cg_sec, rt, ARM64_X16, 8); // and rrt, r16
                     } else {
                         int shift = 64 - bw;
-                        asm_shl_imm(cg_sec, rt, 8, (uint8_t)(reg64[rt])); // shl $(uint8_t)(reg64[rt]), rrt
-                        asm_sar_imm(cg_sec, rt, 8, (uint8_t)(reg64[rt])); // sar $(uint8_t)(reg64[rt]), rrt
+                        asm_shl_imm(cg_sec, rt, 8, (uint8_t)(shift)); // lsl x{rt}, x{rt}, #shift
+                        asm_sar_imm(cg_sec, rt, 8, (uint8_t)(shift)); // asr x{rt}, x{rt}, #shift
                     }
                 }
                 free_reg(r2);
@@ -4185,16 +4185,16 @@ static VReg gen(Node *node) {
             VReg r3 = alloc_reg();
             asm_mov_reg_reg(cg_sec, r3, r2, 8); // mov rr2 -> rr3
             if (bo > 0)
-                asm_shr_imm(cg_sec, r3, 8, (uint8_t)(reg64[r3])); // shr $(uint8_t)(reg64[r3]), rr3
+                asm_shr_imm(cg_sec, r3, 8, (uint8_t)(bo)); // lsr x{r3}, x{r3}, #bo
             int load_bits = eff_sz * 8;
             if (bw < load_bits) {
                 if (mem->ty->is_unsigned || mem->ty->is_enum) {
                     emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
-                    asm_and_reg_phy(cg_sec, r3, ARM64_X16, 8); // and rr3, r16
+                    asm_and_reg_phy(cg_sec, r3, ARM64_X16, 8); // and x{r3}, x{r3}, x16
                 } else {
                     int shift = 64 - bw;
-                    asm_shl_imm(cg_sec, r3, 8, (uint8_t)(reg64[r3])); // shl $(uint8_t)(reg64[r3]), rr3
-                    asm_sar_imm(cg_sec, r3, 8, (uint8_t)(reg64[r3])); // sar $(uint8_t)(reg64[r3]), rr3
+                    asm_shl_imm(cg_sec, r3, 8, (uint8_t)(shift)); // lsl x{r3}, x{r3}, #shift
+                    asm_sar_imm(cg_sec, r3, 8, (uint8_t)(shift)); // asr x{r3}, x{r3}, #shift
                 }
             }
             // Clear the field bits in container word (r2)
@@ -4212,8 +4212,8 @@ static VReg gen(Node *node) {
             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
             asm_and_reg_phy(cg_sec, rn, ARM64_X16, 8); // and rrn, r16
             if (bo > 0)
-                asm_shl_imm(cg_sec, rn, 8, (uint8_t)(reg64[rn])); // shl $(uint8_t)(reg64[rn]), rrn
-            asm_or_reg_reg(cg_sec, r2, r2, 8); // or rr2, rr2
+                asm_shl_imm(cg_sec, rn, 8, (uint8_t)(bo)); // lsl x{rn}, x{rn}, #bo
+            asm_or_reg_reg(cg_sec, r2, rn, 8); // orr x{r2}, x{r2}, x{rn}
             // Store
             if (eff_sz == 1)
                 asm_strb_uoff(cg_sec, r2, r, 0); // strb w{r2}, [x{r}]
@@ -4434,8 +4434,8 @@ static VReg gen(Node *node) {
                     asm_and_reg_phy(cg_sec, r, ARM64_X16, 8); // and rr, r16
                 } else {
                     int shift = 64 - bw;
-                    asm_shl_imm(cg_sec, r, 8, (uint8_t)(reg64[r])); // shl $(uint8_t)(reg64[r]), rr
-                    asm_sar_imm(cg_sec, r, 8, (uint8_t)(reg64[r])); // sar $(uint8_t)(reg64[r]), rr
+                    asm_shl_imm(cg_sec, r, 8, (uint8_t)(shift)); // lsl x{r}, x{r}, #shift
+                    asm_sar_imm(cg_sec, r, 8, (uint8_t)(shift)); // asr x{r}, x{r}, #shift
                 }
             }
             return r;
@@ -4486,16 +4486,16 @@ static VReg gen(Node *node) {
                 : node->member->ty->size * 8;
 #ifdef ARCH_ARM64
             if (bo > 0)
-                asm_shr_imm(cg_sec, r, 8, (uint8_t)(reg64[r])); // shr $(uint8_t)(reg64[r]), rr
+                asm_shr_imm(cg_sec, r, 8, (uint8_t)(bo)); // lsr x{r}, x{r}, #bo
             if (bw < load_bits) {
                 if (node->member->ty->is_unsigned || node->member->ty->is_enum) {
                     unsigned long long mask = (1ULL << bw) - 1;
                     emit_mov_imm64(ARM64_X16, mask);
-                    asm_and_reg_phy(cg_sec, r, ARM64_X16, 8); // and rr, r16
+                    asm_and_reg_phy(cg_sec, r, ARM64_X16, 8); // and x{r}, x{r}, x16
                 } else {
                     int shift = 64 - bw;
-                    asm_shl_imm(cg_sec, r, 8, (uint8_t)(reg64[r])); // shl $(uint8_t)(reg64[r]), rr
-                    asm_sar_imm(cg_sec, r, 8, (uint8_t)(reg64[r])); // sar $(uint8_t)(reg64[r]), rr
+                    asm_shl_imm(cg_sec, r, 8, (uint8_t)(shift)); // lsl x{r}, x{r}, #shift
+                    asm_sar_imm(cg_sec, r, 8, (uint8_t)(shift)); // asr x{r}, x{r}, #shift
                 }
             }
 #else
@@ -5836,9 +5836,8 @@ static VReg gen(Node *node) {
         next_char:;
         }
         out[olen] = '\0';
-        if (olen > 0) {
-            secbuf_emitbuf(cg_sec, out, olen); // %s
-            secbuf_emit8(cg_sec, '\n'); // %s
+        if (olen > 0 && !cg_dry_run) {
+            assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
         // Store back output register operands to their C variables
@@ -6737,11 +6736,11 @@ static VReg gen(Node *node) {
         } else {
             VReg r_rhs = gen(node->rhs);
             if (node->kind == ND_SHL)
-                asm_shl_cl(cg_sec, r_lhs, sf ? 8 : 4); // lsl r_lhs, r_lhs, r_rhs
+                asm_shl_cl(cg_sec, r_lhs, sf ? 8 : 4, r_rhs); // lsl r_lhs, r_lhs, r_rhs
             else if (use_unsigned(node->ty))
-                asm_shr_cl(cg_sec, r_lhs, sf ? 8 : 4); // lsr r_lhs, r_lhs, r_rhs
+                asm_shr_cl(cg_sec, r_lhs, sf ? 8 : 4, r_rhs); // lsr r_lhs, r_lhs, r_rhs
             else
-                asm_sar_cl(cg_sec, r_lhs, sf ? 8 : 4); // asr r_lhs, r_lhs, r_rhs
+                asm_sar_cl(cg_sec, r_lhs, sf ? 8 : 4, r_rhs); // asr r_lhs, r_lhs, r_rhs
             free_reg(r_rhs);
         }
 #else
@@ -6757,11 +6756,11 @@ static VReg gen(Node *node) {
             VReg r_rhs = gen(node->rhs);
             x86_mov_rr(cg_sec, 4, X86_RCX, REG(r_rhs)); // movl %s, %ecx
             if (node->kind == ND_SHL)
-                asm_shl_cl(cg_sec, r_lhs, sz); // shl cl, rr_lhs
+                asm_shl_cl(cg_sec, r_lhs, sz, r_rhs); // shl cl, rr_lhs
             else if (use_unsigned(node->ty))
-                asm_shr_cl(cg_sec, r_lhs, sz);
+                asm_shr_cl(cg_sec, r_lhs, sz, r_rhs);
             else
-                asm_sar_cl(cg_sec, r_lhs, sz);
+                asm_sar_cl(cg_sec, r_lhs, sz, r_rhs);
             free_reg(r_rhs);
         }
 #endif
