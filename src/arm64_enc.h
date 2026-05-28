@@ -118,6 +118,10 @@ void arm64_orr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm
 void arm64_eor_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
 void arm64_ands_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
 void arm64_bic_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int imm6);
+
+// Extended register (supports SP register, e.g. sub sp, sp, x16)
+void arm64_add_extreg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Ext option, int imm3);
+void arm64_sub_extreg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Ext option, int imm3);
 void arm64_mul(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // MADD xd,xn,xm,xzr
 void arm64_smull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // SMADDL
 void arm64_umull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm); // UMADDL

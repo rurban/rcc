@@ -1,13 +1,13 @@
 # TCC Test Suite Report for RCC
 
-Generated on: 05/27/2026 11:06:55
+Generated on: 05/28/2026 16:07:57
 
 ## Summary
 
-- **Total Tests**: 115
-- **Passed**: 108
-- **Failed**: 7
-- **Pass Rate**: 93.91%
+- **Total Tests**: 114
+- **Passed**: 106
+- **Failed**: 8
+- **Pass Rate**: 92.98%
 
 ## Detailed Results
 
@@ -141,11 +141,7 @@ Generated on: 05/27/2026 11:06:55
 | 136_atomic_gcc_style        | PASS         | Output matches                |
 | 137_funcall_struct_args     | MISMATCH     | Output does not match .expect |
 | 138_arm64_encoding          | SKIP         | Skipped                       |
-| 138_narrow_return_promotion | PASS         | Output matches                |
 | 139_arm64_errors            | SKIP         | Skipped                       |
-| 139_narrow_type_conversion  | PASS         | Output matches                |
 | 140_arm64_extasm            | SKIP         | Skipped                       |
-| 140_int_sign_extension      | PASS         | Output matches                |
-| 141_riscv_asm_pseudo        | SKIP         | Skipped                       |
-| 142_riscv_asm_longlong      | SKIP         | Skipped                       |
-| 143_riscv_asm_farith        | SKIP         | Skipped                       |
+| 141_riscv_asm               | MISMATCH     | Output does not match .expect |
+| 142_int_conversion          | PASS         | Output matches                |

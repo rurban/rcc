@@ -52,10 +52,10 @@ static bool try_encode_logic_imm(int sf, uint64_t val, int *N_out, int *immr_out
             ctz_inv++;
             t >>= 1;
         }
-        // Rotation amount = ctz_inv
-        int immr = ctz_inv % e;
-        // Rotate elem right by immr so the 1-run starts at bit 0
-        uint64_t rotated = ((elem >> immr) | (elem << (e - immr))) & mask;
+        // Rotation amount = (e - ctz_inv) % e  -- rotate in correct direction
+        int immr = (e - ctz_inv) % e;
+        // Rotate elem right by ctz_inv so the 1-run starts at bit 0
+        uint64_t rotated = ((elem >> ctz_inv) | (elem << (e - ctz_inv))) & mask;
         int cto = 0; // count trailing ones of rotated element
         t = rotated;
         while (t & 1) {
@@ -167,6 +167,26 @@ void arm64_ands_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Ar
 }
 void arm64_bic_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Shift sh, int i6) {
     secbuf_emit32le(s, dp_reg(sf, 0x0a200000u, rd, rn, rm, sh, i6));
+}
+
+// Extended register encoding (supports SP register)
+// ADD/SUB (extended register): sf | op<<30 | 0<<29 | 0x0B<<24 | 1<<21 | Rm | option<<13 | 0 | 0 | Rn | Rd
+// option encoding: UXTB=0, UXTH=1, UXTW=2, UXTX=3
+static uint32_t extreg_enc(int sf, int is_sub, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm,
+                           Arm64Ext option, int imm3) {
+    (void)imm3;
+    uint32_t op_bit = is_sub ? (1u << 30) : 0;
+    return SF(sf) | op_bit | (0x0Bu << 24) | (1u << 21) |
+        BITS(20, 16, rm) | BITS(15, 13, (uint32_t)option) |
+        BITS(9, 5, rn) | BITS(4, 0, rd);
+}
+
+void arm64_add_extreg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Ext option, int imm3) {
+    secbuf_emit32le(s, extreg_enc(sf, 0, rd, rn, rm, option, imm3));
+}
+
+void arm64_sub_extreg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, Arm64Ext option, int imm3) {
+    secbuf_emit32le(s, extreg_enc(sf, 1, rd, rn, rm, option, imm3));
 }
 
 // 3-register

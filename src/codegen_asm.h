@@ -648,7 +648,7 @@ static void asm_add_imm(SecBuf *s, VReg vr, int size, int32_t imm) {
         arm64_add_imm(s, sf, r, r, imm >> 12, 1); // shifted
     } else {
         // large imm: load into x16, then add
-        int v = imm < 0 ? -imm : imm;
+        int64_t v = imm < 0 ? -(int64_t)imm : (int64_t)imm;
         arm64_movz(s, 1, 16, (uint16_t)(v & 0xffff), 0);
         if (v >> 16) arm64_movk(s, 1, 16, (uint16_t)((v >> 16) & 0xffff), 16);
         if (v >> 32) arm64_movk(s, 1, 16, (uint16_t)((v >> 32) & 0xffff), 32);
@@ -710,7 +710,7 @@ static void asm_sub_imm(SecBuf *s, VReg vr, int size, int32_t imm) {
     } else if (imm > 0 && imm < 4096 * 4096 && (imm & 0xfff) == 0) {
         arm64_sub_imm(s, sf, r, r, imm >> 12, 1); // shifted
     } else {
-        int v = imm < 0 ? -imm : imm;
+        int64_t v = imm < 0 ? -(int64_t)imm : (int64_t)imm;
         arm64_movz(s, 1, ARM64_X16, (uint16_t)(v & 0xffff), 0);
         if (v >> 16) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 16) & 0xffff), 16);
         if (v >> 32) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 32) & 0xffff), 32);
@@ -1143,7 +1143,7 @@ static void asm_ret(SecBuf *s) {
 static void asm_leave(SecBuf *s) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
-    arm64_add_reg(s, 1, CG_ARM_SP, CG_ARM_FP, ARM64_XZR, ARM64_LSL, 0);
+    arm64_add_extreg(s, 1, CG_ARM_SP, CG_ARM_FP, ARM64_XZR, ARM64_UXTX, 0); // mov sp, fp
     arm64_ldp(s, 1, CG_ARM_FP, CG_ARM_LR, CG_ARM_SP, 0, false, true);
 #else
     x86_leave(s);
@@ -1302,7 +1302,7 @@ static void asm_add_fp_imm(SecBuf *s, Arm64Reg rd, int imm) {
         else
             arm64_sub_imm(s, 1, rd, CG_ARM_FP, -imm, 0);
     } else {
-        int v = abs_imm;
+        int64_t v = abs_imm;
         arm64_movz(s, 1, ARM64_X16, (uint16_t)(v & 0xffff), 0);
         if (v >> 16) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 16) & 0xffff), 16);
         if (v >> 32) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 32) & 0xffff), 32);
@@ -1326,10 +1326,10 @@ static void asm_and_self_imm(SecBuf *s, Arm64Reg rd, uint64_t imm) {
     arm64_and_imm(s, 1, rd, rd, imm);
 }
 static void asm_sub_sp_sp_reg(SecBuf *s, Arm64Reg rs) {
-    arm64_sub_reg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_LSL, 0);
+    arm64_sub_extreg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_UXTX, 0); // sub sp, sp, rs
 }
 static void asm_add_sp_sp_reg(SecBuf *s, Arm64Reg rs) {
-    arm64_add_reg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_LSL, 0);
+    arm64_add_extreg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_UXTX, 0); // add sp, sp, rs
 }
 // mov rd, sp
 static void asm_mov_reg_sp(SecBuf *s, Arm64Reg rd) {
@@ -1366,7 +1366,7 @@ static void asm_sub_fp_imm(SecBuf *s, Arm64Reg rd, int32_t imm) {
     if (imm >= 0 && imm < 4096) {
         arm64_sub_imm(s, 1, rd, CG_ARM_FP, imm, 0);
     } else {
-        int v = imm < 0 ? -imm : imm;
+        int64_t v = imm < 0 ? -(int64_t)imm : (int64_t)imm;
         arm64_movz(s, 1, ARM64_X16, (uint16_t)(v & 0xffff), 0);
         if (v >> 16) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 16) & 0xffff), 16);
         if (v >> 32) arm64_movk(s, 1, ARM64_X16, (uint16_t)((v >> 32) & 0xffff), 32);
@@ -2017,9 +2017,19 @@ static void asm_mfence(SecBuf *s) {
 static void asm_and_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_and_imm(s, sf, REG(r), REG(r), (uint64_t)(int64_t)imm);
+    // Use union to avoid sign-extension ambiguity
+    arm64_and_imm(s, sf, REG(r), REG(r),
+                  size == 8 ? (uint64_t)(int64_t)imm : (uint64_t)(uint32_t)imm);
 #else
     x86_and_ri(s, size, REG(r), imm);
+#endif
+}
+// 64-bit AND immediate (for mask values like ~15 that need full 64 bits)
+static void asm_and64_imm(SecBuf *s, VReg r, uint64_t imm64) {
+#ifdef ARCH_ARM64
+    arm64_and_imm(s, 1, REG(r), REG(r), imm64);
+#else
+    x86_and_ri(s, 8, REG(r), (int32_t)imm64);
 #endif
 }
 static void asm_or_imm(SecBuf *s, VReg r, int size, int32_t imm) {
@@ -2943,7 +2953,7 @@ static void asm_sub_x11_fp_x16(SecBuf *s) {
     arm64_sub_reg(s, 1, ARM64_X11, ARM64_X29, ARM64_X16, ARM64_LSL, 0); // sub x11, x29, x16
 }
 static void asm_sub_sp_sp_x16_v2(SecBuf *s) {
-    arm64_sub_reg(s, 1, CG_ARM_SP, CG_ARM_SP, ARM64_X16, ARM64_LSL, 0); // sub sp, sp, x16
+    arm64_sub_extreg(s, 1, CG_ARM_SP, CG_ARM_SP, ARM64_X16, ARM64_UXTX, 0); // sub sp, sp, x16
 }
 static void asm_sub_x11_fp_imm(SecBuf *s, int32_t offset) {
     arm64_sub_imm(s, 1, ARM64_X11, ARM64_X29, offset, 0); // sub x11, x29, #offset
@@ -2953,7 +2963,18 @@ static void asm_sub_x11_fp_imm(SecBuf *s, int32_t offset) {
 // ARM64: subs x16, x16, #imm
 // ============================================================================
 static void asm_subs_x16_imm(SecBuf *s, int32_t imm12) {
-    arm64_subs_imm(s, 1, ARM64_X16, ARM64_X16, imm12, 0); // subs x16, x16, #imm12
+    // Handle large immediate: split into imm12 << (12 * sh) for values > 4095
+    if (imm12 >= 0 && imm12 < 4096) {
+        arm64_subs_imm(s, 1, ARM64_X16, ARM64_X16, imm12, 0); // subs x16, x16, #imm12
+    } else if (imm12 % 4096 == 0) {
+        arm64_subs_imm(s, 1, ARM64_X16, ARM64_X16, imm12 / 4096, 1); // subs x16, x16, #imm12
+    } else {
+        // General case: mov immediate into scratch, then subs reg-style
+        arm64_movz(s, 1, ARM64_X12, (uint16_t)(imm12 & 0xffff), 0);
+        if (imm12 >> 16) arm64_movk(s, 1, ARM64_X12, (uint16_t)((imm12 >> 16) & 0xffff), 16);
+        if ((int64_t)imm12 >> 32) arm64_movk(s, 1, ARM64_X12, (uint16_t)(((int64_t)imm12 >> 32) & 0xffff), 32);
+        arm64_subs_reg(s, 1, ARM64_X16, ARM64_X16, ARM64_X12, ARM64_LSL, 0);
+    }
 }
 
 // ============================================================================

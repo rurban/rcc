@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP         | Skipped                       |
 | 99_fastcall                 | SKIP         | Skipped                       |
 | 100_c99array-decls          | PASS         | Output matches                |
-| 101_cleanup                 | COMPILE_FAIL | rcc returned non-zero         |
+| 101_cleanup                 | EXEC_FAIL    | non-zero exit                 |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | MISMATCH     | Output does not match .expect |
@@ -173,7 +173,7 @@ Generated: May 2026
 | test_ptr                    | PASS         | exit=0                        |
 | test_real                   | PASS         | exit=0                        |
 | test_self_include2          | PASS         | exit=1                        |
-| test_signextend             | PASS         | exit=1                        |
+| test_signextend             | PASS         | exit=0                        |
 | test_simple                 | PASS         | exit=1                        |
 | test_simple2                | PASS         | exit=1                        |
 | test_str                    | PASS         | exit=0                        |

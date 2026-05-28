@@ -3227,7 +3227,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
 #endif
 
-            // Emit conditional branch
+        // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
@@ -4962,7 +4962,7 @@ static VReg gen(Node *node) {
         arm64_store_to_fp_minus(node->var->offset);
         // Round size up to 16-byte alignment, keep in x16 (scratch, not in pool)
         asm_add_imm(cg_sec, r, 8, 15); // add r, r, #15
-        asm_and_imm(cg_sec, r, 8, -16); // and r, r, #-16
+        asm_and64_imm(cg_sec, r, ~(uint64_t)15); // and r, r, #-16
         asm_mov_x16_vreg(cg_sec, r); // mov x16, x{r}
         free_reg(r);
         asm_sub_sp_sp_x16_v2(cg_sec); // sub sp, sp, x16
@@ -8243,7 +8243,7 @@ struct ObjFile *codegen(Program *prog) {
             arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, frame_size, 0); // sub sp, sp, #frame_size
         else {
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-            arm64_sub_reg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0); // sub sp, sp, x16
+            arm64_sub_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // sub sp, sp, x16
         }
 
         // Save variadic argument registers at the bottom of the frame (sp)
@@ -8432,7 +8432,7 @@ struct ObjFile *codegen(Program *prog) {
             else {
                 int fs = frame_size;
                 emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-                arm64_sub_reg(cg_sec, 1, ARM64_SP, ARM64_X29, ARM64_X16, ARM64_LSL, 0); // sub sp, x29, x16
+                arm64_sub_extreg(cg_sec, 1, ARM64_SP, ARM64_X29, ARM64_X16, ARM64_UXTX, 0); // sub sp, x29, x16
             }
         }
 
@@ -8450,7 +8450,7 @@ struct ObjFile *codegen(Program *prog) {
         else {
             int fs = frame_size;
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-            arm64_add_reg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0); // add sp, sp, x16
+            arm64_add_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // add sp, sp, x16
         }
         asm_ldp_fp_lr(cg_sec); // ldp x29, x30, [sp], #16
         asm_ret(cg_sec); // ret

@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 139
-- **Failed**: 13
-- **Pass Rate**: 91%
+- **Passed**: 142
+- **Failed**: 10
+- **Pass Rate**: 93%
 
 ## Detailed Results
 
@@ -79,8 +79,8 @@ Generated: May 2026
 | 75_array_in_struct_init     | PASS         | Output matches                |
 | 76_dollars_in_identifiers   | PASS         | Output matches                |
 | 77_push_pop_macro           | PASS         | Output matches                |
-| 78_vla_label                | EXEC_FAIL    | non-zero exit                 |
-| 79_vla_continue             | EXEC_FAIL    | non-zero exit                 |
+| 78_vla_label                | PASS         | Output matches                |
+| 79_vla_continue             | PASS         | Output matches                |
 | 80_flexarray                | PASS         | Output matches                |
 | 81_types                    | PASS         | Output matches                |
 | 82_attribs_position         | PASS         | Output matches                |
@@ -96,7 +96,7 @@ Generated: May 2026
 | 92_enum_bitfield            | PASS         | Output matches                |
 | 93_integer_promotion        | MISMATCH     | Output does not match .expect |
 | 94_generic                  | PASS         | Output matches                |
-| 95_bitfields                | MISMATCH     | Output does not match .expect |
+| 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
 | 95_bitfields_ms             | SKIP         | Skipped                       |
 | 96_nodata_wanted            | SKIP         | Skipped                       |
 | 97_utf8_string_literal      | PASS         | Output matches                |
@@ -124,7 +124,7 @@ Generated: May 2026
 | 119_random_stuff            | PASS         | Output matches                |
 | 120_alias                   | SKIP         | Skipped                       |
 | 121_struct_return           | PASS         | Output matches                |
-| 122_vla_reuse               | EXEC_FAIL    | non-zero exit                 |
+| 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
 | 124_atomic_counter          | EXEC_FAIL    | non-zero exit                 |
 | 125_atomic_misc             | MISMATCH     | Output differs                |
