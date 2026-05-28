@@ -2419,7 +2419,18 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
             Member *mem = ty->members;
             while (!equalc(tok, "}")) {
-                if (mem) {
+                if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                    char *name = tok->next->name;
+                    tok = tok->next->next;
+                    tok = skip(tok, "=");
+                    Member *m = find_member_by_name(ty, name);
+                    if (m) {
+                        tok = global_init_member(tok, var, m, offset);
+                        mem = m->next;
+                    } else {
+                        tok = skip_initializer(tok);
+                    }
+                } else if (mem) {
                     tok = global_init_member(tok, var, mem, offset);
                     mem = mem->next;
                 } else {
@@ -4684,7 +4695,7 @@ static Node *unary(Token **rest, Token *tok) {
                 // Struct compound literal: assign each member
                 // Support designated initializers: .member = value
                 Member *mem = ty->members;
-                while (!equalc(tok, "}") && mem) {
+                while (!equalc(tok, "}") && (mem || (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))) {
                     // Designated initializer: .member[.sub]... [= value]
                     if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                         Member *found = NULL;
