@@ -1805,8 +1805,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], 1); // fmov d{fp_idx}, x{arg_reg}
             // Don't convert double->float for old-style, variadic, or unknown prototypes
             // (default argument promotions: float→double)
-            bool keep_double = (is_variadic && i >= named_count)
-                || (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
+            bool keep_double = (is_variadic && i >= named_count) || (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
             // Check if the CALLEE parameter expects float (size 4), not the caller argument
             bool callee_expects_float = false;
             if (!keep_double && fn_type && fn_type->param_types && i < named_count) {
@@ -2565,6 +2564,10 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
 #endif
     // x86_64: base >= 0 = virtual reg, X86_BASE_RBP = rbp-relative /* ldr %s, [%s]\n */
     int sz = op_size(ty);
+    // Struct/union of 5-7 bytes: no x86 instruction loads exactly 5-7 bytes;
+    // round up to 8 (64-bit load) so all bytes reach the register.
+    if (sz > 4 && sz < 8)
+        sz = 8;
     if (base == X86_BASE_RBP) {
         if (ty->size == 1) {
             if (ty->is_unsigned)
@@ -3227,7 +3230,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
 #endif
 
-        // Emit conditional branch
+            // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
