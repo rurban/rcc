@@ -43,9 +43,12 @@ rcc_flags=""
 ld_flags=""
 inputs=""
 output=""
+emit_asm=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
+    -S)
+        emit_asm=1; shift ;;
     -o)
         output="$2"; shift 2 ;;
     -l*|-L*)
@@ -75,6 +78,15 @@ if [ -z "$inputs" ]; then
     echo "arm64-cross.sh: no input files" >&2
     exit 1
 fi
+
+if [ "$emit_asm" -eq 1 ]; then
+    if [ -z "$output" ]; then
+        output="$(echo "$inputs" | sed 's/\.c$/.s/')"
+    fi
+    # shellcheck disable=SC2086
+    exec "$ARM64_QEMU" ${ARM64_SYSROOT:+-L "$ARM64_SYSROOT"} "$rcc_bin" $rcc_flags -S -o "$output" $inputs
+fi
+
 if [ -z "$output" ]; then
     output="a.arm64"
 fi
