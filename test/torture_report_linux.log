@@ -48,7 +48,7 @@ PASS: 20000717-4
 PASS: 20000717-5
 PASS: 20000722-1
 PASS: 20000726-1
-FAIL(runtime): 20000731-1
+PASS: 20000731-1
 PASS: 20000731-2
 PASS: 20000801-1
 PASS: 20000801-2
@@ -91,8 +91,7 @@ PASS: 20010114-1
 PASS: 20010116-1
 PASS: 20010118-1
 PASS: 20010119-1
-./test/torture/run.sh: line 65: 1062916 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 20010122-1
+PASS: 20010122-1
 PASS: 20010123-1
 PASS: 20010129-1
 PASS: 20010206-1
@@ -136,8 +135,7 @@ PASS: 20011217-1
 PASS: 20011219-1
 PASS: 20011223-1
 PASS: 20020103-1
-./test/torture/run.sh: line 65: 1063642 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 20020107-1
+PASS: 20020107-1
 PASS: 20020108-1
 PASS: 20020118-1
 PASS: 20020127-1
@@ -202,8 +200,7 @@ PASS: 20021119-1
 PASS: 20021120-1
 PASS: 20021120-2
 PASS: 20021120-3
-./test/torture/run.sh: line 65: 1064726 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 20021127-1
+PASS: 20021127-1
 PASS: 20021204-1
 PASS: 20021219-1
 PASS: 20030105-1
@@ -218,8 +215,7 @@ PASS: 20030209-1
 PASS: 20030216-1
 PASS: 20030218-1
 PASS: 20030221-1
-./test/torture/run.sh: line 65: 1065005 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 20030222-1
+PASS: 20030222-1
 PASS: 20030224-2
 PASS: 20030307-1
 PASS: 20030313-1
@@ -307,8 +303,7 @@ PASS: 20041112-1
 PASS: 20041113-1
 PASS: 20041114-1
 SKIP(complex): 20041124-1
-./test/torture/run.sh: line 65: 1066464 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 20041126-1
+PASS: 20041126-1
 SKIP(complex): 20041201-1
 PASS: 20041210-1
 PASS: 20041212-1
@@ -500,13 +495,12 @@ PASS: 920501-9
 PASS: 920506-1
 PASS: 920520-1
 PASS: 920603-1
-FAIL(compile): 920604-1
+PASS: 920604-1
 PASS: 920612-1
 SKIP(trampolines): 920612-2
 PASS: 920618-1
 PASS: 920625-1
-./test/torture/run.sh: line 65: 1069627 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): 920710-1
+PASS: 920710-1
 PASS: 920711-1
 PASS: 920721-1
 PASS: 920721-2
@@ -559,7 +553,7 @@ PASS: 930408-1
 PASS: 930429-1
 PASS: 930429-2
 PASS: 930513-1
-FAIL(compile): 930513-2
+PASS: 930513-2
 PASS: 930518-1
 PASS: 930526-1
 PASS: 930527-1
@@ -803,8 +797,7 @@ PASS: bitops-1
 PASS: bswap-1
 PASS: bswap-2
 PASS: bswap-3
-./test/torture/run.sh: line 65: 1074736 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): builtin-bitops-1
+PASS: builtin-bitops-1
 PASS: builtin-constant
 PASS: builtin-prefetch-1
 PASS: builtin-prefetch-2
@@ -834,8 +827,7 @@ SKIP(complex): complex-6
 SKIP(complex): complex-7
 SKIP(nested-func): compndlit-1
 PASS: const-addr-expr-1
-./test/torture/run.sh: line 65: 1075299 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): conversion
+PASS: conversion
 PASS: cvt-1
 PASS: dbra-1
 PASS: divcmp-1
@@ -861,14 +853,13 @@ PASS: floatunsisf-1
 PASS: fprintf-1
 PASS: fprintf-2
 PASS: fprintf-chk-1
-./test/torture/run.sh: line 65: 1075747 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): frame-address
+PASS: frame-address
 PASS: func-ptr-1
 PASS: gofast
 PASS: ifcvt-onecmpl-abs-1
 PASS: index-1
 PASS: inst-check
-FAIL(compile): int-compare
+PASS: int-compare
 PASS: ipa-sra-1
 PASS: ipa-sra-2
 PASS: longlong
@@ -956,11 +947,9 @@ PASS: pr104814
 PASS: pr104839
 SKIP(vector_size): pr105613
 SKIP(missing-include): pr105777
-./test/torture/run.sh: line 65: 1077943 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): pr105984
+PASS: pr105984
 PASS: pr106032
-./test/torture/run.sh: line 65: 1077991 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): pr106523
+PASS: pr106523
 PASS: pr107131
 PASS: pr107879
 PASS: pr107881-1
@@ -968,8 +957,7 @@ PASS: pr108064
 SKIP(vector_size): pr108292
 PASS: pr108498-1
 PASS: pr108498-2
-./test/torture/run.sh: line 65: 1078119 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
-FAIL(runtime): pr108789
+PASS: pr108789
 SKIP(nested-func): pr109040
 PASS: pr109778
 PASS: pr109925
@@ -1006,11 +994,5 @@ PASS: pr114207
 PASS: pr114396
 PASS: pr114552
 
-=== TOTAL=995 PASS=908 FAIL_COMPILE=3 FAIL_RUNTIME=13 SKIP=71 ===
-Pass rate (excl. skip): 98%
-
-Compile failures: 920604-1 930513-2 int-compare
-
-Runtime failures: 20000731-1 20010122-1 20020107-1 20021127-1 20030222-1 
-20041126-1 920710-1 builtin-bitops-1 conversion frame-address pr105984 pr106523 
-pr108789
+=== TOTAL=995 PASS=924 FAIL_COMPILE=0 FAIL_RUNTIME=0 SKIP=71 ===
+Pass rate (excl. skip): 100%
