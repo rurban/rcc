@@ -1894,6 +1894,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     } else {
         int sz = node->ty ? (node->ty->size < 8 ? 4 : 8) : 8;
         asm_mov_retval(cg_sec, r, sz); // mov x{r}, x0 (return value)
+#ifdef ARCH_ARM64
+        // AAPCS64: narrow return values sign/zero-extend to full register width
+        if (node->ty && node->ty->size < sz && node->ty->size < 4) {
+            if (node->ty->is_unsigned)
+                zero_extend_to(r, node->ty->size, 8);
+            else
+                sign_extend_to(r, node->ty->size, 8);
+        }
+#endif
     }
     return r;
 #else
