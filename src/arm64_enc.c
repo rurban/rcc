@@ -498,6 +498,24 @@ void arm64_nop(SecBuf *s) { secbuf_emit32le(s, 0xd503201fu); }
 void arm64_dmb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd50330bfu | BITS(11, 8, opt)); }
 void arm64_dsb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd503309fu | BITS(11, 8, opt)); }
 void arm64_isb(SecBuf *s) { secbuf_emit32le(s, 0xd5033fdfu); }
+// MRS: move system register to general register.
+// sys_reg is the packed op0:op1:CRn:CRm:op2 field.
+// Encoding: 1101 0101 0011 1 oooo oooo oooo oooo + Rt (bits 4:0)
+// Note: full sys_reg is 15 bits (op0:2, op1:3, CRn:4, CRm:4, op2:3) packed as:
+//   op0<<14 | op1<<11 | CRn<<7 | CRm<<3 | op2
+void arm64_mrs(SecBuf *s, Arm64Reg rt, uint32_t sys_reg) {
+    // MRS: D53B_<sys_reg>_<Rt>
+    // op0 goes into bits 20:19, rest into bits 18:5 then shifted
+    uint32_t op0 = (sys_reg >> 14) & 3;
+    uint32_t rest = sys_reg & 0x3FFF;
+    secbuf_emit32le(s, 0xd5300000u | (op0 << 19) | (rest << 5) | (rt & 31));
+}
+// MSR: move general register to system register.
+void arm64_msr(SecBuf *s, uint32_t sys_reg, Arm64Reg rt) {
+    uint32_t op0 = (sys_reg >> 14) & 3;
+    uint32_t rest = sys_reg & 0x3FFF;
+    secbuf_emit32le(s, 0xd5100000u | (op0 << 19) | (rest << 5) | (rt & 31));
+}
 void arm64_prfm_imm(SecBuf *s, int prfop, Arm64Reg rn, uint32_t uimm) {
     secbuf_emit32le(s, 0xf9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, prfop));
 }

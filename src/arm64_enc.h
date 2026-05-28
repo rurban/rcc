@@ -235,6 +235,8 @@ void arm64_nop(SecBuf *s);
 void arm64_dmb(SecBuf *s, int opt); // opt=0xb=ish
 void arm64_dsb(SecBuf *s, int opt);
 void arm64_isb(SecBuf *s);
+void arm64_mrs(SecBuf *s, Arm64Reg rt, uint32_t sys_reg);
+void arm64_msr(SecBuf *s, uint32_t sys_reg, Arm64Reg rt);
 void arm64_prfm_imm(SecBuf *s, int prfop, Arm64Reg rn, uint32_t uimm);
 
 // ---------------------------------------------------------------------------

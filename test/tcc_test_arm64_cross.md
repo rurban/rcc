@@ -145,7 +145,7 @@ Generated: May 2026
 | 140_arm64_extasm            | EXEC_FAIL    | non-zero exit             |
 | 141_riscv_asm               | SKIP         | Skipped                   |
 | 142_int_conversion          | PASS         | Output matches            |
-| test_arm64_asm              | PASS         | exit=1                    |
+| test_arm64_asm              | PASS         | exit=0                    |
 | test_atomic_op              | PASS         | exit=139                  |
 | test_atomic_op2             | PASS         | exit=139                  |
 | test_bitfields              | PASS         | exit=0                    |

@@ -4,6 +4,10 @@
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
+// Auto-detect target architecture from host (must be before rcc.h or standalone)
+#if defined(__aarch64__) && !defined(ARCH_ARM64)
+#define ARCH_ARM64
+#endif
 #include "asm.h"
 #include "obj.h"
 #include "arm64_enc.h"
@@ -1374,6 +1378,46 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         arm64_nop(buf);
         return true;
     } // vector insert
+    // System instructions (DMB, DSB, ISB)
+    if (!strcmp(mnem, "dmb")) {
+        int opt = (nops > 0 && !strcmp(ops[0], "sy")) ? 0xf : 0xb; // sy=0xf, ish=0xb default
+        arm64_dmb(buf, opt);
+        return true;
+    }
+    if (!strcmp(mnem, "dsb")) {
+        int opt = (nops > 0 && !strcmp(ops[0], "sy")) ? 0xf : 0xb;
+        arm64_dsb(buf, opt);
+        return true;
+    }
+    if (!strcmp(mnem, "isb")) {
+        arm64_isb(buf);
+        return true;
+    }
+    // MRS / MSR (system register access)
+    if (!strcmp(mnem, "mrs")) {
+        int rt = r0;
+        char *regname = (nops > 1) ? ops[1] : "";
+        uint32_t sys_reg = 0;
+        if (!strcmp(regname, "fpcr")) sys_reg = 0xDA20u; // op0=3,op1=3,CRn=4,CRm=4,op2=0 → 0b11_011_0100_0100_000
+        else if (!strcmp(regname, "fpsr"))
+            sys_reg = 0xDA29u; // op0=3,op1=3,CRn=4,CRm=5,op2=1 → 0b11_011_0100_0101_001
+        else if (!strcmp(regname, "nzcv"))
+            sys_reg = 0xDA10u; // op0=3,op1=3,CRn=4,CRm=2,op2=0
+        arm64_mrs(buf, rt, sys_reg);
+        return true;
+    }
+    if (!strcmp(mnem, "msr")) {
+        char *regname = ops[0];
+        int rt = (nops > 1) ? parse_arm64_reg(ops[1], NULL) : -1;
+        uint32_t sys_reg = 0;
+        if (!strcmp(regname, "fpcr")) sys_reg = 0xDA20u;
+        else if (!strcmp(regname, "fpsr"))
+            sys_reg = 0xDA29u;
+        else if (!strcmp(regname, "nzcv"))
+            sys_reg = 0xDA10u;
+        arm64_msr(buf, sys_reg, rt);
+        return true;
+    }
 
     // Unknown — emit NOP as fallback and warn
     fprintf(stderr, "warning: unknown arm64 instruction: %s\n", mnem);
