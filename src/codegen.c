@@ -1803,8 +1803,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             // Float values are always stored as double in GP regs (see ND_LVAR with is_flonum).
             // Move as double to FP arg register, then convert to float if callee expects float.
             asm_fmov_i2f(cg_sec, arg_fp_idx[i], arg_regs[i], 1); // fmov d{fp_idx}, x{arg_reg}
-            // For non-variadic float args, convert double->float (callee expects float in s-reg)
-            if (arg_sizes[i] == 4 && !(is_variadic && i >= named_count))
+            // Don't convert double->float for old-style, variadic, or unknown prototypes
+            // (default argument promotions: float→double)
+            bool keep_double = (is_variadic && i >= named_count)
+                || (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
+            if (arg_sizes[i] == 4 && !keep_double)
                 asm_fcvt(cg_sec, 0, 1, arg_fp_idx[i], arg_fp_idx[i]); // fcvt s{fp_idx}, d{fp_idx}  (opc=0: double->single)
             // For variadic float args, also pass in GP register (printf-style)
             if (arg_gp_idx[i] >= 0)
