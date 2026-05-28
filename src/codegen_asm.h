@@ -1622,14 +1622,14 @@ static void asm_cvtsi2ss(SecBuf *s, X86Reg src, int size) {
 
 static void asm_cvtsi2sd(SecBuf *s, VReg src_r, int size) {
 #ifdef ARCH_ARM64
-    arm64_scvtf(s, size == 8, 0, 0, REG(src_r));
+    arm64_scvtf(s, size == 8, 1, 0, REG(src_r)); // scvtf d0, w/x{src_r} (ftype=1=double dst)
 #else
     x86_cvtsi2sd(s, size, X86_XMM0, REG(src_r));
 #endif
 }
 static void asm_cvttsd2si(SecBuf *s, VReg dst_r, int size) {
 #ifdef ARCH_ARM64
-    arm64_fcvtzs(s, size == 8, 0, REG(dst_r), 0);
+    arm64_fcvtzs(s, size == 8, 1, REG(dst_r), 0); // fcvtzs w/x{dst_r}, d0 (ftype=1=double src)
 #else
     x86_cvttsd2si(s, size, REG(dst_r), X86_XMM0);
 #endif
