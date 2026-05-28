@@ -480,12 +480,12 @@ static void arm64_load_from_fp_minus(int offset, Arm64Reg dst) {
         asm_ldur_fp_phy(cg_sec, dst, offset); // ldr dst, [x29, #-offset]
     else if (offset <= 4095) {
         asm_sub_fp_imm(cg_sec, ARM64_X17, offset); // sub x17, x29, #offset
-        asm_ldr_reg(cg_sec, ARM64_X16, ARM64_X17); // ldr dst, [x17]
+        asm_ldr_reg(cg_sec, dst, ARM64_X17); // ldr dst, [x17]
     } else {
         unsigned v = offset;
         emit_mov_imm64(ARM64_X17, (uint64_t)v); // mov r17, #v
         asm_sub_fp_reg(cg_sec, ARM64_X17, ARM64_X17); // sub x17, x29, x17
-        asm_ldr_reg(cg_sec, ARM64_X16, ARM64_X17); // ldr dst, [x17]
+        asm_ldr_reg(cg_sec, dst, ARM64_X17); // ldr dst, [x17]
     }
 }
 
