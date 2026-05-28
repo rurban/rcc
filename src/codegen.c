@@ -5050,6 +5050,7 @@ static VReg gen(Node *node) {
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
         asm_cset(cg_sec, r, ARM64_NE);
         free_reg(rhs);
+        cg_def_label(format(".L.end.%d", c));
 #else
         VReg lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
@@ -5084,6 +5085,7 @@ static VReg gen(Node *node) {
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size); // cmp $0, rrhs
         asm_cset(cg_sec, r, ARM64_NE); // cset rr
         free_reg(rhs);
+        cg_def_label(format(".L.end.%d", c));
 #else
         VReg lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size); // cmp $0, rlhs

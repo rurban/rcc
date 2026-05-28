@@ -1044,6 +1044,29 @@ static void asm_cmp_zero(SecBuf *s, VReg r, int size) {
 // ============================================================================
 
 #ifdef ARCH_ARM64
+// Map X86Cond → Arm64Cond (enums have different numeric values)
+static inline Arm64Cond x86_to_arm64_cond(int x86_cond) {
+    static const Arm64Cond map[] = {
+        [0] = ARM64_VS,  // X86_O  → overflow
+        [1] = ARM64_VC,  // X86_NO → no overflow
+        [2] = ARM64_CS,  // X86_B  → below/carry
+        [3] = ARM64_CC,  // X86_AE → above or equal
+        [4] = ARM64_EQ,  // X86_E  → equal
+        [5] = ARM64_NE,  // X86_NE → not equal
+        [6] = ARM64_LS,  // X86_BE → below or equal
+        [7] = ARM64_HI,  // X86_A  → above
+        [8] = ARM64_MI,  // X86_S  → sign
+        [9] = ARM64_PL,  // X86_NS → no sign
+        [10]= ARM64_AL,  // X86_P  → parity (always true on ARM64)
+        [11]= ARM64_NV,  // X86_NP → no parity (always false)
+        [12]= ARM64_LT,  // X86_L  → less
+        [13]= ARM64_GE,  // X86_GE → greater or equal
+        [14]= ARM64_LE,  // X86_LE → less or equal
+        [15]= ARM64_GT,  // X86_G  → greater
+    };
+    return map[x86_cond & 15];
+}
+
 static void asm_cset(SecBuf *s, VReg r, Arm64Cond cond) {
     size_t off = s->len;
     arm64_cset(s, 0, REG(r), cond);
@@ -2417,7 +2440,7 @@ static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, Arm64Cond cond) {
     int sf = (size == 8) ? 1 : 0;
     // csel dst, src, dst, inverse(cond): if cond true, dst=src, else dst=dst
     // To mimic cmovCC (move if condition true): csel dst, src, dst, cond
-    arm64_csel(s, sf, rdst, rsrc, rdst, (Arm64Cond)cond);
+    arm64_csel(s, sf, rdst, rsrc, rdst, x86_to_arm64_cond(cond));
 }
 #else
 static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, X86Cond cond) {
