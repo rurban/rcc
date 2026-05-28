@@ -2381,13 +2381,13 @@ static void sign_extend_to(VReg r, int from_size, int to_size) {
 #endif
         else if (from_size == 2)
 #ifdef ARCH_ARM64
-            asm_movsx(cg_sec, r, r, 4, 2); // movsx4->r rr, rr
+            asm_movsx(cg_sec, r, r, 8, 2); // movsx8->r rr, rr
 #else
             asm_movsx(cg_sec, r, r, 8, 2); // movsx8->r rr, rr
 #endif
         else if (from_size == 1)
 #ifdef ARCH_ARM64
-            asm_movsx(cg_sec, r, r, 4, 1); // movsx4->r rr, rr
+            asm_movsx(cg_sec, r, r, 8, 1); // movsx8->r rr, rr
 #else
             asm_movsx(cg_sec, r, r, 8, 1); // movsx8->r rr, rr
 #endif
@@ -2423,13 +2423,13 @@ static void zero_extend_to(VReg r, int from_size, int to_size) {
             asm_mov_reg_reg(cg_sec, r, r, 4); // mov rr -> rr
         else if (from_size == 2)
 #ifdef ARCH_ARM64
-            asm_movzx(cg_sec, r, r, 4, 2); // movzx4->r rr, rr
+            asm_movzx(cg_sec, r, r, 8, 2); // movzx8->r rr, rr
 #else
             asm_movzx(cg_sec, r, r, 4, 2); // movzx4->r rr, rr
 #endif
         else if (from_size == 1)
 #ifdef ARCH_ARM64
-            asm_movzx(cg_sec, r, r, 4, 1); // movzx4->r rr, rr
+            asm_movzx(cg_sec, r, r, 8, 1); // movzx8->r rr, rr
 #else
             asm_movzx(cg_sec, r, r, 4, 1); // movzx4->r rr, rr
 #endif
@@ -3504,11 +3504,13 @@ static VReg gen(Node *node) {
                 }
 #endif
             }
-            // Sign-extend narrow signed types to int (emit_load does unsigned loads)
+#ifdef ARCH_ARM64
+            // Sign-extend narrow signed types to full register width (emit_load does unsigned loads)
             if (!use_unsigned(node->ty) && node->ty->size < 4)
-                sign_extend_to(r, node->ty->size, 4);
+                sign_extend_to(r, node->ty->size, 8);
             else if (use_unsigned(node->ty) && node->ty->size < 4)
-                zero_extend_to(r, node->ty->size, 4);
+                zero_extend_to(r, node->ty->size, 8);
+#endif
         }
         return r;
     }
