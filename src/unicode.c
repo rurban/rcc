@@ -20,7 +20,7 @@ struct ctx_t *ctxp = NULL; // if more than 5 contexts
 
 // ===== Context management =====
 
-u8id_ctx_t u8ident_new_ctx(void) {
+static u8id_ctx_t u8ident_new_ctx(void) {
     // thread-safety later
     u8id_ctx_t i = i_ctx + 1;
     i_ctx++;
@@ -37,12 +37,12 @@ u8id_ctx_t u8ident_new_ctx(void) {
 }
 
 /* Changes to the context previously generated with `u8ident_new_ctx`. */
-struct ctx_t *u8ident_ctx(void) {
+static struct ctx_t *u8ident_ctx(void) {
     return (i_ctx < U8ID_CTX_TRESH) ? &ctx[i_ctx] : &ctxp[i_ctx];
 }
 
 // search in linear vector of scripts per ctx
-bool u8ident_has_script_ctx(const uint8_t scr, const struct ctx_t *c) {
+static bool u8ident_has_script_ctx(const uint8_t scr, const struct ctx_t *c) {
     if (!c->count)
         return false;
     const uint8_t *u8p = (c->count > 8) ? c->u8p : c->scr8;
@@ -53,7 +53,7 @@ bool u8ident_has_script_ctx(const uint8_t scr, const struct ctx_t *c) {
     return false;
 }
 
-int u8ident_add_script_ctx(const uint8_t scr, struct ctx_t *c) {
+static int u8ident_add_script_ctx(const uint8_t scr, struct ctx_t *c) {
     if (scr < 2 || scr >= FIRST_LIMITED_USE_SCRIPT)
         return -1;
     int i = c->count;
@@ -166,18 +166,18 @@ static uint8_t u8ident_get_script(const uint32_t cp) {
 bool u8ident_is_MARK(uint32_t cp) {
     return range_bool_search(cp, mark_list, ARRAY_SIZE(mark_list));
 }
-bool u8ident_is_tr39_MEDIAL(uint32_t cp) {
+static bool u8ident_is_tr39_MEDIAL(uint32_t cp) {
     return range_bool_search(cp, tr39_medial_list, ARRAY_SIZE(tr39_medial_list));
 }
-bool u8ident_is_bidi(const uint32_t cp) {
+static bool u8ident_is_bidi(const uint32_t cp) {
     return linear_search(cp, bidi_list, ARRAY_SIZE(bidi_list));
 }
-const struct sc_tr39 *isTR39_start(const uint32_t cp) {
+static const struct sc_tr39 *isTR39_start(const uint32_t cp) {
     return (const struct sc_tr39 *)binary_search(
         cp, (char *)tr39_start_list, ARRAY_SIZE(tr39_start_list),
         sizeof(*tr39_start_list));
 }
-const struct sc_tr39 *isTR39_cont(const uint32_t cp) {
+static const struct sc_tr39 *isTR39_cont(const uint32_t cp) {
     return (const struct sc_tr39 *)binary_search(
         cp, (char *)tr39_cont_list, ARRAY_SIZE(tr39_cont_list),
         sizeof(*tr39_cont_list));
@@ -190,21 +190,21 @@ static inline int compar32(const void *a, const void *b) {
                                    : 1;
 }
 
-bool u8ident_is_greek_latin_confus(const uint32_t cp) {
+static bool u8ident_is_greek_latin_confus(const uint32_t cp) {
     return bsearch(&cp, greek_confus_list, ARRAY_SIZE(greek_confus_list), 4,
                    compar32) != NULL
         ? true
         : false;
 }
 
-const char *u8ident_script_name(const int scr) {
+static const char *u8ident_script_name(const int scr) {
     if (scr < 0 || scr > LAST_SCRIPT)
         return NULL;
     assert(scr >= 0 && scr <= LAST_SCRIPT);
     return all_scripts[scr];
 }
 
-uint32_t u8ident_failed_char(const u8id_ctx_t i) {
+static uint32_t u8ident_failed_char(const u8id_ctx_t i) {
     if (i <= i_ctx) {
         const struct ctx_t *c = (i_ctx < U8ID_CTX_TRESH) ? &ctx[i] : &ctxp[i];
         return c->last_cp;
@@ -213,7 +213,7 @@ uint32_t u8ident_failed_char(const u8id_ctx_t i) {
     }
 }
 /* returns the constant script name, which failed in the last check. */
-const char *u8ident_failed_script_name(const u8id_ctx_t i) {
+static const char *u8ident_failed_script_name(const u8id_ctx_t i) {
     if (i <= i_ctx) {
         const struct ctx_t *c = (i_ctx < U8ID_CTX_TRESH) ? &ctx[i] : &ctxp[i];
         const uint32_t cp = c->last_cp;
@@ -222,10 +222,10 @@ const char *u8ident_failed_script_name(const u8id_ctx_t i) {
     }
     return NULL;
 }
-int u8ident_add_script(uint8_t scr) {
+static int u8ident_add_script(uint8_t scr) {
     return u8ident_add_script_ctx(scr, u8ident_ctx());
 }
-int u8ident_free_ctx(u8id_ctx_t i) {
+static int u8ident_free_ctx(u8id_ctx_t i) {
     if (i_ctx < U8ID_CTX_TRESH)
         ctxp = &ctx[0];
     if (i <= i_ctx) {
@@ -242,7 +242,7 @@ int u8ident_free_ctx(u8id_ctx_t i) {
 }
 
 /* End this library, cleaning up all internal structures. */
-void u8ident_free(void) {
+static void u8ident_free(void) {
     for (u8id_ctx_t i = 0; i <= i_ctx; i++) {
         u8ident_free_ctx(i);
     }
@@ -250,16 +250,11 @@ void u8ident_free(void) {
         free(ctxp);
     }
 }
-bool u8ident_maybe_normalized(const uint32_t cp) {
-    if (range_bool_search(cp, NFC_N_list, ARRAY_SIZE(NFC_N_list)))
-        return true;
-    return range_bool_search(cp, NFC_M_list, ARRAY_SIZE(NFC_M_list));
-}
 
 
 // ===== Core identifier checking API =====
 
-int u8ident_init(void) {
+static int u8ident_init(void) {
     u8ident_free(); // clear and reset the ctx
     return 0;
 }
@@ -300,12 +295,10 @@ bool nsm_check(const uint32_t base_cp, const uint32_t cp) {
     return true;
 }
 
-enum u8id_errors u8ident_check_buf(const char *buf, const int bufsz,
-                                   char **outnorm) {
+enum u8id_errors u8ident_check_buf(const char *buf, const int bufsz) {
     int ret = U8ID_EOK;
     char *s = (char *)buf;
     const char *e = (char *)&buf[bufsz];
-    bool need_normalize = false;
     struct ctx_t *ctx = u8ident_ctx();
     enum u8id_sc scr;
     enum u8id_sc basesc = SC_Unknown;
@@ -333,9 +326,6 @@ enum u8id_errors u8ident_check_buf(const char *buf, const int bufsz,
         if (unlikely(!ctx->is_rtl && u8ident_is_bidi(cp))) {
             ctx->last_cp = cp;
             return U8ID_ERR_SCRIPT;
-        }
-        if (!need_normalize) {
-            need_normalize = u8ident_maybe_normalized(cp);
         }
 
         bool is_new = false;
@@ -544,23 +534,11 @@ enum u8id_errors u8ident_check_buf(const char *buf, const int bufsz,
         }
     } while (s <= e);
 
-    if (need_normalize) {
-        char *norm = u8ident_normalize((char *)buf, bufsz);
-        if (!norm || strcmp(norm, buf)) {
-            ctx->last_cp = 0;
-            ret = U8ID_EOK_NORM | ret;
-        }
-        if (outnorm)
-            *outnorm = norm;
-        else
-            free(norm);
-    }
     return ret;
 }
 
 // ===== UTF-8 normalization =====
 
-char tmp_stack[128];
 
 #define _UNICODE_MAX 0x10ffff
 
@@ -605,24 +583,9 @@ static int utf8_byte_len(const unsigned char ch) {
     return len;
 }
 
-static int cp_len(const uint32_t cp) {
-    int len = 0;
-    for (_utf_t **u = (_utf_t **)utf; *u; ++u) {
-        if ((cp >= (*u)->beg) && (cp <= (*u)->end)) {
-            break;
-        }
-        ++len;
-    }
-#if 0 /* error handled in caller */
-    if (len > 4) { /* Malformed leading byte */
-        // "illegal UTF-8 character" EILSEQ
-    }
-#endif
-    return len;
-}
 
 /* convert utf8 to unicode codepoint (to_cp) */
-uint32_t dec_utf8(char **strp) {
+static uint32_t dec_utf8(char **strp) {
     const unsigned char *str = (const unsigned char *)*strp;
     int bytes = utf8_byte_len(*str);
     int shift;
@@ -645,33 +608,6 @@ uint32_t dec_utf8(char **strp) {
 }
 
 /* convert unicode codepoint to utf8 (to_utf8) */
-char *enc_utf8(char *dest, size_t *lenp, const uint32_t cp) {
-    if (cp > _UNICODE_MAX) {
-        errno = EILSEQ;
-        *lenp = 0;
-        return NULL;
-    }
-    const int bytes = cp_len(cp);
-
-    if (bytes > 4) {
-        errno = EILSEQ;
-        *lenp = 0;
-        return NULL;
-    } else {
-        int shift = utf[0]->bits_stored * (bytes - 1);
-        assert(shift >= 0);
-        dest[0] = (cp >> shift & utf[bytes]->mask) | utf[bytes]->lead;
-        shift -= utf[0]->bits_stored;
-        for (int i = 1; i < bytes; ++i) {
-            assert(shift >= 0);
-            dest[i] = (cp >> shift & utf[0]->mask) | utf[0]->lead;
-            shift -= utf[0]->bits_stored;
-        }
-        *lenp = bytes;
-        dest[bytes] = '\0';
-        return dest;
-    }
-}
 
 /* size of array for combining characters */
 /* enough as an initial value? */
@@ -682,621 +618,6 @@ char *enc_utf8(char *dest, size_t *lenp, const uint32_t cp) {
 #define ERR_NOSPACE -2
 #define ERR_INVAL -1
 #define EOK 0
-
-static inline int _bsearch_exc(const void *ptr1, const void *ptr2) {
-    UN8IF_canon_exc_t *e1 = (UN8IF_canon_exc_t *)ptr1;
-    UN8IF_canon_exc_t *e2 = (UN8IF_canon_exc_t *)ptr2;
-    return e1->cp > e2->cp ? 1 : e1->cp == e2->cp ? 0
-                                                  : -1;
-}
-
-/* Note that we can generate two versions of the tables.  The old format as
- * used in Unicode::Normalize, and the new 3x smaller NORMALIZE_IND_TBL cperl
- * variant, as used here and in cperl core since 5.27.2.
- * Return values:
- *   errors < 1 (see the ERR_* definitions)
- *   0: ok, passthru (not in table)
- *   >0: len of the returned utf-8 sequence
- */
-static int _decomp_canonical_s(char *dest, size_t dmax, uint32_t cp) {
-    /* the new format generated with cperl Unicode-Normalize/mkheader -uni -ind
-   * -std
-   */
-    const UN8IF_canon_PLANE_T **plane, *row;
-    if (unlikely(dmax < 8)) {
-        *dest = 0;
-        return ERR_NOSPACE;
-    }
-    plane = UN8IF_canon[cp >> 16];
-    if (!plane) { /* Only the first 3 of 16 are filled */
-        return EOK;
-    }
-    row = plane[(cp >> 8) & 0xff];
-    if (row) { /* the first row is pretty filled, the rest very sparse */
-        const UN8IF_canon_PLANE_T vi = row[cp & 0xff];
-        if (!vi)
-            return EOK;
-#if UN8IF_canon_exc_size > 0
-        /* overlong: search in extra list */
-        else if (unlikely(vi == (uint16_t)-1)) {
-            UN8IF_canon_exc_t *e;
-            assert(UN8IF_canon_exc_size);
-            e = (UN8IF_canon_exc_t *)bsearch(
-                &cp, &UN8IF_canon_exc, UN8IF_canon_exc_size,
-                sizeof(UN8IF_canon_exc[0]), _bsearch_exc);
-            if (e) {
-                size_t l = strlen(e->v);
-                if (l + 1 > dmax) {
-                    *dest = 0;
-                    return ERR_NOSPACE;
-                }
-                memcpy(dest, e->v, l + 1); /* incl \0 */
-                return (int)l;
-            }
-            return EOK;
-        }
-#endif
-        else {
-            /* value => length-index and offset */
-            const int l = UN8IF_canon_LEN(vi);
-            const int i = UN8IF_canon_IDX(vi);
-            const char *tbl = (const char *)UN8IF_canon_tbl[l - 1];
-            const int len = l;
-#if defined(__DEBUG)
-            printf("U+%04X vi=0x%x (>>12, &fff) => TBL(%d)|%d\n", cp, vi, l, i);
-#endif
-            assert(l > 0 && l <= UN8IF_canon_MAXLEN);
-#if 0
-            /* 13.0: tbl sizes: (917,763,227,36) */
-            /* l: 1-4 */
-            assert((l == 1 && i < 917) || (l == 2 && i < 763) ||
-                   (l == 3 && i < 227) || (l == 4 && i < 36) || 0);
-            assert(dmax > 4);
-#endif
-            memcpy(dest, &tbl[i * len], len); /* 33% perf */
-            dest[len] = '\0';
-            return len;
-        }
-    } else {
-        return EOK;
-    }
-}
-
-static int _decomp_hangul_s(char *dest, size_t dmax, uint32_t cp) {
-    uint32_t sindex = cp - Hangul_SBase;
-    uint32_t lindex = sindex / Hangul_NCount;
-    uint32_t vindex = (sindex % Hangul_NCount) / Hangul_TCount;
-    uint32_t tindex = sindex % Hangul_TCount;
-    size_t dlen;
-
-    if (unlikely(dmax < 4)) {
-        return ERR_NOSPACE;
-    }
-
-    // encode to UTF-8
-    enc_utf8(dest, &dlen, lindex + Hangul_LBase);
-    enc_utf8(&dest[1], &dlen, vindex + Hangul_VBase);
-    if (tindex) {
-        enc_utf8(&dest[2], &dlen, tindex + Hangul_TBase);
-        return 3;
-    }
-    return 2;
-}
-
-/* codepoint canonical or compatible decomposition.
-   dmax should be > 4,
-   19 with the single arabic outlier U+FDFA for compat accepted
-*/
-static int _decomp_s(char *restrict dest, size_t dmax, const uint32_t cp,
-                     const bool iscompat) {
-    assert(dmax > 0);
-    /* The costly is_HANGUL_cp_high(cp) checks also all composing chars.
-     Hangul_IsS only for the valid start points. Which we can do here. */
-    if (Hangul_IsS(cp)) {
-        return _decomp_hangul_s(dest, dmax, cp);
-    } else {
-        (void)iscompat;
-        assert(!iscompat);
-        return _decomp_canonical_s(dest, dmax, cp);
-    }
-}
-
-/**
- * @def u8id_decompose_s(dest,dmax,src,lenp,iscompat)
- * @brief
- *    Converts the UTF-8 string to the NFD or NFKD normalization,
- *    as defined in the latest Unicode standard. The conversion
- *    stops at the first null or after dmax characters.
- *
- * @details
- *    Composed characters are checked for the left-hand-size of the
- *    Decomposition_Mapping Unicode property, which means the codepoint will
- *    be normalized if the sequence is composed.
- *    This is equivalent to all 1963 combining mark characters, plus some
- *    remaining 869 non-mark and non-hangul normalizables.  Hangul has some
- *    special normalization logic.
- */
-int u8id_decompose_s(char *restrict dest, long dmax, char *restrict src,
-                     size_t *restrict lenp, const bool iscompat) {
-    size_t orig_dmax;
-    const char *overlap_bumper;
-    uint32_t cp;
-    int c;
-
-    if (lenp)
-        *lenp = 0;
-    if (unlikely(dest == NULL)) {
-        return ERR_INVAL;
-    }
-    if (unlikely(src == NULL || dest == NULL || dmax == 0 || dmax < 2 ||
-                 (unsigned)dmax > s_maxlen)) {
-        *dest = 0;
-        return ERR_INVAL;
-    }
-    if (unlikely(dest == src)) {
-        return ERR_INVAL;
-    }
-    if (unlikely(iscompat && dmax < 19)) {
-        *dest = 0;
-        return ERR_INVAL;
-    }
-
-    /* hold base of dest in case src was not copied */
-    orig_dmax = (size_t)dmax;
-
-    if (dest < src) {
-        overlap_bumper = src;
-
-        while (dmax > 0 && *src != 0) {
-            const char *p = src;
-            cp = dec_utf8((char **)&src);
-            if (!cp)
-                goto done;
-            if (unlikely(dest == overlap_bumper)) {
-                return ERR_INVAL;
-            }
-            if (unlikely(_UNICODE_MAX < cp)) {
-                return ERR_ILSEQ;
-            }
-
-            c = _decomp_s(dest, dmax, cp, iscompat);
-            if (c > 0) {
-                dest += c;
-                dmax -= c;
-            } else if (c == 0) {
-                if (cp < 128) {
-                    *dest++ = cp;
-                    dmax--;
-                } else {
-                    long len = src - p;
-                    if (len > dmax) {
-                        *dest = 0;
-                        return ERR_NOSPACE;
-                    }
-                    memcpy(dest, p, len);
-                    dest += len;
-                    dmax -= len;
-                }
-            } else {
-                return c;
-            }
-        }
-    } else {
-        overlap_bumper = dest;
-
-        while (dmax > 0 && *src != 0) {
-            const char *p = src;
-            cp = dec_utf8((char **)&src);
-            if (!cp)
-                goto done;
-            if (unlikely(src == overlap_bumper)) {
-                return ERR_INVAL;
-            }
-            if (unlikely(_UNICODE_MAX < cp)) {
-                return ERR_ILSEQ;
-            }
-
-            c = _decomp_s(dest, dmax, cp, iscompat);
-            if (c > 0) {
-                dest += c;
-                dmax -= c;
-            } else if (c == 0) {
-                if (cp < 128) {
-                    *dest++ = cp;
-                    dmax--;
-                } else {
-                    long len = src - p;
-                    if (len > dmax) {
-                        *dest = 0;
-                        return ERR_NOSPACE;
-                    }
-                    memcpy(dest, p, len);
-                    dest += len;
-                    dmax -= len;
-                }
-            } else {
-                return c;
-            }
-        }
-    }
-
-done:
-    if (lenp)
-        *lenp = (size_t)((long)orig_dmax - dmax);
-    if (dmax > 0) {
-        *dest = 0;
-        return 0;
-    } else {
-        return ERR_NOSPACE;
-    }
-}
-
-#if !defined U8ID_NORM || U8ID_NORM != FCD
-
-/* canonical ordering of combining characters (c.c.). */
-typedef struct {
-    uint8_t cc; /* combining class */
-    uint32_t cp; /* codepoint */
-    size_t pos; /* position */
-} UN8IF_cc;
-
-/* rc = u8id_reorder_s(tmp, len+1, dest); */
-static inline int _compare_cc(const void *a, const void *b) {
-    int ret_cc;
-    ret_cc = ((UN8IF_cc *)a)->cc - ((UN8IF_cc *)b)->cc;
-    if (ret_cc)
-        return ret_cc;
-
-    return (((UN8IF_cc *)a)->pos > ((UN8IF_cc *)b)->pos) -
-        (((UN8IF_cc *)a)->pos < ((UN8IF_cc *)b)->pos);
-}
-
-static inline uint8_t _combin_class(uint32_t cp) {
-    const char **plane, *row;
-    plane = UN8IF_combin[cp >> 16];
-    if (!plane)
-        return 0;
-    row = plane[(cp >> 8) & 0xff];
-    if (row)
-        return row[cp & 0xff];
-    else
-        return 0;
-}
-
-/**
- * @def u8id_reorder_s(dest,dmax,src,len)
- *    Reorder all decomposed sequences in a UTF-8 string to NFD,
- *    as defined in the latest Unicode standard. The conversion
- *    stops at the first null or after dmax characters.
- */
-static int u8id_reorder_s(unsigned char *restrict dest, long dmax,
-                          const char *restrict src, const size_t len) {
-    UN8IF_cc seq_ary[CC_SEQ_SIZE];
-    UN8IF_cc *seq_ptr = (UN8IF_cc *)seq_ary; /* start with stack */
-    UN8IF_cc *seq_ext = NULL; /* heap when needed */
-    size_t seq_max = CC_SEQ_SIZE;
-    size_t cc_pos = 0;
-    char *p = (char *)src;
-    const char *e = p + len;
-    unsigned char *orig_dest = dest;
-    size_t orig_dmax = dmax;
-
-    while (p < e) {
-        uint8_t cur_cc;
-        uint32_t cp = dec_utf8(&p);
-        size_t dlen;
-        cur_cc = _combin_class(cp);
-        if (cur_cc != 0) {
-            if (seq_max < cc_pos + 1) { /* extend if need */
-                seq_max = cc_pos + CC_SEQ_STEP; /* new size */
-                if (CC_SEQ_SIZE == cc_pos) { /* seq_ary full */
-                    seq_ext = (UN8IF_cc *)malloc(seq_max * sizeof(UN8IF_cc));
-                    memcpy(seq_ext, seq_ary, cc_pos * sizeof(UN8IF_cc));
-                } else {
-                    UN8IF_cc *tmp = (UN8IF_cc *)realloc(seq_ext, seq_max * sizeof(UN8IF_cc));
-                    if (tmp) seq_ext = tmp;
-                }
-                seq_ptr = seq_ext; /* use seq_ext from now */
-            }
-
-            seq_ptr[cc_pos].cc = cur_cc;
-            seq_ptr[cc_pos].cp = cp;
-            seq_ptr[cc_pos].pos = cc_pos;
-            ++cc_pos;
-
-            if (p < e)
-                continue;
-        }
-
-        /* output */
-        if (cc_pos) {
-            if (unlikely(dmax - cc_pos <= 0)) {
-                return ERR_NOSPACE;
-            }
-
-            if (cc_pos > 1) /* reorder if there are two Combining Classes */
-                qsort((void *)seq_ptr, cc_pos, sizeof(UN8IF_cc), _compare_cc);
-
-            for (size_t i = 0; i < cc_pos; i++) {
-                enc_utf8((char *)dest, &dlen, seq_ptr[i].cp);
-                dest += dlen;
-                dmax -= dlen;
-            }
-            cc_pos = 0;
-        }
-
-        if (cur_cc == 0) {
-            enc_utf8((char *)dest, &dlen, cp);
-            dest += dlen;
-            dmax -= dlen;
-        }
-        if (unlikely(dmax <= 0)) {
-            memset(orig_dest, 0, orig_dmax);
-            return ERR_NOSPACE;
-        }
-    }
-    if (seq_ext)
-        free(seq_ext);
-    *dest = 0;
-    // memset(dest, 0, dmax); // clear the slack?
-    return 0;
-}
-#endif // != FCD
-
-static uint32_t _composite_cp(uint32_t cp, uint32_t cp2) {
-    const UN8IF_complist_s ***plane, **row, *cell;
-
-    if (unlikely(!cp2)) {
-        return EOK;
-    }
-    if (unlikely((_UNICODE_MAX < cp) || (_UNICODE_MAX < cp2))) {
-        return ERR_ILSEQ;
-    }
-
-    if (Hangul_IsL(cp) && Hangul_IsV(cp2)) {
-        uint32_t lindex = cp - Hangul_LBase;
-        uint32_t vindex = cp2 - Hangul_VBase;
-        return (Hangul_SBase + (lindex * Hangul_VCount + vindex) * Hangul_TCount);
-    }
-    if (Hangul_IsLV(cp) && Hangul_IsT(cp2)) {
-        uint32_t tindex = cp2 - Hangul_TBase;
-        return (cp + tindex);
-    }
-    plane = UN8IF_compos[cp >> 16];
-    if (!plane) { /* only 3 of 16 are defined */
-        return 0;
-    }
-    row = plane[(cp >> 8) & 0xff];
-    if (!row) { /* the zero plane is pretty filled, the others sparse */
-        return 0;
-    }
-    cell = row[cp & 0xff];
-    if (!cell) {
-        return 0;
-    }
-    /* no indirection here, but search in the composition lists */
-    /* only 16 lists 011099-01d1bc need uint32, the rest can be short, uint16 */
-    /* TODO: above which length is bsearch faster?
-     But then we'd need to store the lengths also */
-    if (likely(cp < UN8IF_COMPLIST_FIRST_LONG)) {
-        UN8IF_complist_s *i;
-        for (i = (UN8IF_complist_s *)cell; i->nextchar; i++) {
-            if ((uint16_t)cp2 == i->nextchar) {
-                return (uint32_t)(i->composite);
-            } else if ((uint16_t)cp2 < i->nextchar) { /* nextchar is sorted */
-                break;
-            }
-        }
-    } else {
-        UN8IF_complist *i;
-        // GCC_DIAG_IGNORE(-Wcast-align)
-        for (i = (UN8IF_complist *)cell; i->nextchar; i++) {
-            // GCC_DIAG_RESTORE
-            if (cp2 == i->nextchar) {
-                return i->composite;
-            } else if (cp2 < i->nextchar) { /* nextchar is sorted */
-                break;
-            }
-        }
-    }
-    return 0;
-}
-
-/**
- * @def u8id_compose_s(dest,dmax,src,lenp,iscontig)
- *    Combine all decomposed sequences in a wide string to NFC,
- *    as defined in the latest Unicode standard. The conversion
- *    stops at the first null or after dmax characters. */
-/* combine decomposed sequences to NFC. */
-/* iscontig = false; composeContiguous? FCC if true */
-static int u8id_compose_s(char *restrict dest, long dmax,
-                          const char *restrict src, size_t *restrict lenp,
-                          const bool iscontig) {
-    char *p = (char *)src;
-    const char *e = p + *lenp;
-    uint32_t cpS = 0; /* starter code point */
-    bool valid_cpS = false; /* if false, cpS isn't initialized yet */
-    uint8_t pre_cc = 0;
-
-    uint32_t seq_ary[CC_SEQ_SIZE];
-    uint32_t *seq_ptr = (uint32_t *)seq_ary; /* either stack or heap */
-    uint32_t *seq_ext = NULL; /* heap */
-    size_t seq_max = CC_SEQ_SIZE;
-    size_t cc_pos = 0;
-    // char *orig_dest = dest;
-    const long orig_dmax = dmax;
-
-    if (unlikely((unsigned)dmax > s_maxlen)) {
-        *lenp = 0;
-        return ERR_INVAL;
-    }
-
-    while (p < e) {
-        uint8_t cur_cc;
-        uint32_t cp = dec_utf8(&p);
-        size_t dlen;
-        cur_cc = _combin_class(cp);
-
-        if (!valid_cpS) {
-            if (cur_cc == 0) {
-                cpS = cp; /* found the first Starter */
-                valid_cpS = true;
-                if (p < e)
-                    continue;
-            } else {
-                enc_utf8(dest, &dlen, cp);
-                dest += dlen;
-                dmax -= dlen;
-                if (unlikely(dmax <= 0)) {
-                    return ERR_NOSPACE;
-                }
-                continue;
-            }
-        } else {
-            bool composed;
-
-            /* blocked */
-            if ((iscontig && cc_pos) || /* discontiguous combination (FCC) */
-                (cur_cc != 0 && pre_cc == cur_cc) || /* blocked by same CC */
-                (pre_cc > cur_cc)) /* blocked by higher CC: revised D2 */
-                composed = false;
-
-            /* not blocked:
-           iscontig && cc_pos == 0      -- contiguous combination
-           cur_cc == 0 && pre_cc == 0     -- starter + starter
-           cur_cc != 0 && pre_cc < cur_cc  -- lower CC */
-            else {
-                /* try composition */
-                uint32_t cpComp = _composite_cp(cpS, cp);
-                if (cpComp && !isExclusion(cpComp)) {
-                    cpS = cpComp;
-                    composed = true;
-                    /* pre_cc should not be changed to cur_cc */
-                    /* e.g. 1E14 = 0045 0304 0300 where CC(0304) == CC(0300) */
-                    if (p < e)
-                        continue;
-                } else
-                    composed = false;
-            }
-
-            if (!composed) {
-                pre_cc = cur_cc;
-                if (cur_cc != 0 || !(p < e)) {
-                    if (seq_max < cc_pos + 1) { /* extend if need */
-                        seq_max = cc_pos + CC_SEQ_STEP; /* new size */
-                        if (CC_SEQ_SIZE == cc_pos) { /* seq_ary full */
-                            seq_ext = (uint32_t *)malloc(seq_max * sizeof(uint32_t));
-                            memcpy(seq_ext, seq_ary, cc_pos * sizeof(uint32_t));
-                        } else {
-                            uint32_t *tmp = (uint32_t *)realloc(seq_ext, seq_max * sizeof(uint32_t));
-                            if (tmp) seq_ext = tmp;
-                        }
-                        seq_ptr = seq_ext; /* use seq_ext from now */
-                    }
-                    seq_ptr[cc_pos] = cp;
-                    ++cc_pos;
-                }
-                if (cur_cc != 0 && p < e)
-                    continue;
-            }
-        }
-
-        /* output */
-        enc_utf8(dest, &dlen, cpS); /* starter (composed or not) */
-        dest += dlen;
-        dmax -= dlen;
-        if (unlikely(dmax <= 0)) {
-            return ERR_NOSPACE;
-        }
-
-        if (cc_pos == 1) {
-            enc_utf8(dest, &dlen, *seq_ptr);
-            dest += dlen;
-            dmax -= dlen;
-            cc_pos = 0;
-        } else if (cc_pos > 1) {
-            memcpy(dest, seq_ptr, cc_pos);
-            dest += cc_pos;
-            dmax -= cc_pos;
-            cc_pos = 0;
-        }
-
-        cpS = cp;
-    }
-    if (seq_ext)
-        free(seq_ext);
-
-    // memset(dest, 0, dmax); // clear the slack?
-    *lenp = orig_dmax - dmax;
-    return 0;
-}
-
-/* Returns a freshly allocated normalized string, in the option defined at
- * `u8ident_init`. */
-/* TODO: more stack allocations for dest throughout */
-// clang-format off
-GCC_DIAG_IGNORE(-Wreturn-local-addr)
-// clang-format on
-char *u8ident_normalize(const char *src, int srcsz) {
-    char *tmp_ptr;
-    char *tmp = NULL;
-    size_t tmp_size;
-    //const enum u8id_norm mode = U8ID_NORM_NFC;
-    const bool iscompat = false;
-
-    size_t dmax = srcsz;
-    char *dest = NULL;
-    size_t destlen;
-    int err;
-    if (iscompat && dmax < 19)
-        dmax = 10;
-
-    do {
-        dmax *= 2;
-        char *tmp = realloc(dest, dmax);
-        if (!tmp) {
-            free(dest);
-            return NULL;
-        }
-        dest = tmp;
-        memset(dest, 0, dmax); // not really needed.
-        err = u8id_decompose_s(dest, dmax, (char *)src, &destlen, iscompat);
-    } while (err == ERR_NOSPACE);
-    if (err) {
-        free(dest);
-        return NULL;
-    }
-
-    /* temp. scratch space, on stack or heap */
-    if (destlen + 2 < 128) {
-        tmp_ptr = tmp_stack;
-        tmp_size = 128;
-    } else {
-        tmp_size = destlen + 2;
-        tmp_ptr = tmp = (char *)malloc(tmp_size);
-    }
-    // now reorder for some canonalization (if required)
-    err = u8id_reorder_s((unsigned char *)tmp_ptr, tmp_size, dest, destlen);
-    while (err == ERR_NOSPACE) {
-        tmp_size *= 2;
-        if (tmp)
-            tmp_ptr = tmp = (char *)realloc(tmp_ptr, tmp_size);
-        else
-            tmp_ptr = tmp = (char *)malloc(tmp_size);
-        memset(tmp_ptr, 0, tmp_size); // not really needed
-        err = u8id_reorder_s((unsigned char *)tmp_ptr, tmp_size, dest, destlen);
-    }
-
-    // now compose to a shorter sequence
-    err = u8id_compose_s(dest, dmax, tmp_ptr, &destlen, false);
-    if (tmp)
-        free(tmp);
-    if (err) {
-        free(dest);
-        return NULL;
-    }
-    return dest;
-}
 
 
 // ===== Compiler-facing Unicode API =====
@@ -1503,7 +824,7 @@ void u8ident_allow_script(const char *name) {
 
 const char *u8ident_check_ident(const char *name, int len) {
     ensure_u8ident_init();
-    enum u8id_errors ret = u8ident_check_buf(name, len, NULL);
+    enum u8id_errors ret = u8ident_check_buf(name, len);
     switch (ret) {
     case U8ID_ERR_SCRIPT:
     case U8ID_ERR_SCRIPTS: {
@@ -1520,7 +841,6 @@ const char *u8ident_check_ident(const char *name, int len) {
     case U8ID_ERR_COMBINE: return "identifier has invalid combining mark sequence";
     case U8ID_ERR_CONFUS: return "identifier contains confusable characters";
     case U8ID_EOK_WARN_CONFUS:
-    case U8ID_EOK_NORM_WARN_CONFUS:
         return "identifier may contain confusable characters";
     default: return NULL;
     }
