@@ -1401,7 +1401,8 @@ static void asm_asr_63(SecBuf *s, Arm64Reg rd, VReg src) {
     arm64_asr_imm(s, 1, rd, REG(src), 63); // asr rd, x{src}, #63
 }
 static void asm_cmn_imm(SecBuf *s, VReg r, int sf, int imm) {
-    arm64_subs_imm(s, sf, ARM64_X31, REG(r), -imm, 0);
+    // CMN = ADDS xzr, r, #imm (compare negative: flags set by r+imm)
+    arm64_adds_imm(s, sf, ARM64_X31, REG(r), imm, 0);
 }
 // r = x29 + imm  (handles large |imm| via scratch x16)
 static void asm_add_reg_fp_imm(SecBuf *s, VReg r, int32_t imm) {
@@ -1807,7 +1808,8 @@ static void asm_mov_phy_reg(SecBuf *s, Arm64Reg dst_phy, VReg src, int sf) {
 }
 // cmn vreg, #imm — compare negative (subs xzr, reg, imm)
 static void asm_cmn_vreg_imm(SecBuf *s, VReg r, int sz, int32_t imm) {
-    arm64_subs_imm(s, sz == 8 ? 1 : 0, ARM64_XZR, REG(r), imm, 0); // cmn x{r}, #imm
+    // CMN = ADDS xzr, r, #imm (compare negative: flags set by r+imm)
+    arm64_adds_imm(s, sz == 8 ? 1 : 0, ARM64_XZR, REG(r), imm, 0); // cmn x{r}, #imm
 }
 // fcvtzu w/x{r}, d0 — float→unsigned int conversion
 static void asm_fcvtzu(SecBuf *s, VReg r, int sz) {
