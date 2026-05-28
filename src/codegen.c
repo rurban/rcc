@@ -3504,6 +3504,11 @@ static VReg gen(Node *node) {
                 }
 #endif
             }
+            // Sign-extend narrow signed types to int (emit_load does unsigned loads)
+            if (!use_unsigned(node->ty) && node->ty->size < 4)
+                sign_extend_to(r, node->ty->size, 4);
+            else if (use_unsigned(node->ty) && node->ty->size < 4)
+                zero_extend_to(r, node->ty->size, 4);
         }
         return r;
     }

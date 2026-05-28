@@ -19,9 +19,11 @@
 // Based on ARM reference: an immediate is a replicated bitmask.
 // Returns 0 if not encodable, else packs N:immr:imms into bits 22:10.
 // ---------------------------------------------------------------------------
-static bool try_encode_logic_imm(int sf, uint64_t val,
-                                 int *N_out, int *immr_out, int *imms_out) {
-    if (val == 0 || val == (uint64_t)-1) return false;
+static bool try_encode_logic_imm(int sf, uint64_t val, int *N_out, int *immr_out, int *imms_out) {
+    // For 32-bit ops, only the lower 32 bits matter per ARM64 W-register semantics
+    if (!sf) val &= 0xFFFFFFFFull;
+    if (val == 0 || val == ~0ull) return false;
+    int max_e = sf ? 64 : 32;
     int len;
     uint64_t mask;
     // Try each rotation length (2,4,8,16,32,64)
@@ -30,9 +32,10 @@ static bool try_encode_logic_imm(int sf, uint64_t val,
         if (e > 64) break;
         mask = (e == 64) ? (uint64_t)-1 : ((uint64_t)1 << e) - 1;
         uint64_t elem = val & mask;
-        // Check if val is a repetition of elem
+        // Check if val is a repetition of elem across the register width
         bool ok = true;
-        for (int s = e; s < 64; s += e) {
+        int reg_bits = sf ? 64 : 32;
+        for (int s = e; s < reg_bits; s += e) {
             if (((val >> s) & mask) != elem) {
                 ok = false;
                 break;
