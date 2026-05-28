@@ -1482,6 +1482,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         ? node->lhs->ty->base
         : NULL;
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
+    bool is_oldstyle = !fn_type || (fn_type->kind == TY_FUNC && fn_type->is_oldstyle);
     int named_count = 0;
     if (fn_type && fn_type->kind == TY_FUNC)
         for (Type *t = fn_type->param_types; t; t = t->param_next)
@@ -1489,6 +1490,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = argv[i]->ty->size;
+        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
+            arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
@@ -1573,6 +1576,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         ? node->lhs->ty->base
         : NULL;
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
+    bool is_oldstyle = !fn_type || (fn_type->kind == TY_FUNC && fn_type->is_oldstyle);
     int named_count = 0;
     if (fn_type && fn_type->kind == TY_FUNC)
         for (Type *t = fn_type->param_types; t; t = t->param_next)
@@ -1580,6 +1584,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
+        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
+            arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
@@ -1906,6 +1912,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         else
             arg_regs[i] = gen(argv[i]);
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
+        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
+            arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
     }
 
