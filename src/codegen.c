@@ -3389,7 +3389,14 @@ static VReg gen(Node *node) {
                 if (node->var->is_local) {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        arm64_load_from_fp_minus(node->var->offset, ARM64_S0);
+                        if (node->var->offset <= 4095) {
+                            asm_sub_fp_imm(cg_sec, ARM64_X17, node->var->offset);
+                            arm64_ldr_fp(cg_sec, 2, ARM64_S0, ARM64_X17, 0); // ldr s0, [x17]
+                        } else {
+                            emit_mov_imm64(ARM64_X17, (uint64_t)node->var->offset);
+                            asm_sub_fp_reg(cg_sec, ARM64_X17, ARM64_X17);
+                            arm64_ldr_fp(cg_sec, 2, ARM64_S0, ARM64_X17, 0); // ldr s0, [x17]
+                        }
                         asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0
 #else
                         asm_movss_rm_rbp(cg_sec, 0, node->var->offset); // movss -off(%rbp), %xmm0
@@ -3397,7 +3404,14 @@ static VReg gen(Node *node) {
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        arm64_load_from_fp_minus(node->var->offset, ARM64_D0);
+                        if (node->var->offset <= 4095) {
+                            asm_sub_fp_imm(cg_sec, ARM64_X17, node->var->offset);
+                            arm64_ldr_fp(cg_sec, 3, ARM64_D0, ARM64_X17, 0); // ldr d0, [x17]
+                        } else {
+                            emit_mov_imm64(ARM64_X17, (uint64_t)node->var->offset);
+                            asm_sub_fp_reg(cg_sec, ARM64_X17, ARM64_X17);
+                            arm64_ldr_fp(cg_sec, 3, ARM64_D0, ARM64_X17, 0); // ldr d0, [x17]
+                        }
 #else
                         asm_movsd_rm_rbp(cg_sec, 0, node->var->offset); // movsd -off(%rbp), %xmm0
 #endif
