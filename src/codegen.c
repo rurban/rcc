@@ -3797,7 +3797,7 @@ static VReg gen(Node *node) {
                 asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
                 asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
                 if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(reg64[rv])); // shl $(uint8_t)(reg64[rv]), rrv
-                asm_or_reg_reg(cg_sec, rt, rt, 8); // or rrt, rrt
+                asm_or_reg_reg(cg_sec, rt, rv, 8); // or rrt, rrv (merge new value into old)
                 BF_STORE(eff_sz_rhs, ra, rt);
                 free_reg(rv);
                 // Reload stored bitfield value for assignment expression result
@@ -3843,7 +3843,7 @@ static VReg gen(Node *node) {
             asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
             asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
             if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(reg64[rv])); // shl $(uint8_t)(reg64[rv]), rrv
-            asm_or_reg_reg(cg_sec, rt, rt, 8); // or rrt, rrt
+            asm_or_reg_reg(cg_sec, rt, rv, 8); // or rrt, rrv (merge new value into old)
             BF_STORE(eff_sz, ra, rt);
             if (unit_sz > 8 && bo + bw > 64) {
                 int overflow = bo + bw - 64;
