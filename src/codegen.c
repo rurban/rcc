@@ -1807,7 +1807,14 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             // (default argument promotions: float→double)
             bool keep_double = (is_variadic && i >= named_count)
                 || (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
-            if (arg_sizes[i] == 4 && !keep_double)
+            // Check if the CALLEE parameter expects float (size 4), not the caller argument
+            bool callee_expects_float = false;
+            if (!keep_double && fn_type && fn_type->param_types && i < named_count) {
+                Type *pt = fn_type->param_types;
+                for (int j = 0; j < i && pt; j++) pt = pt->param_next;
+                if (pt && pt->kind == TY_FLOAT) callee_expects_float = true;
+            }
+            if ((arg_sizes[i] == 4 || callee_expects_float) && !keep_double)
                 asm_fcvt(cg_sec, 0, 1, arg_fp_idx[i], arg_fp_idx[i]); // fcvt s{fp_idx}, d{fp_idx}  (opc=0: double->single)
             // For variadic float args, also pass in GP register (printf-style)
             if (arg_gp_idx[i] >= 0)
