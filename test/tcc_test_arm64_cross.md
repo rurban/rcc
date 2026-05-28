@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 133
-- **Failed**: 19
-- **Pass Rate**: 87%
+- **Passed**: 139
+- **Failed**: 13
+- **Pass Rate**: 91%
 
 ## Detailed Results
 
@@ -36,7 +36,7 @@ Generated: May 2026
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
 | 22_floating_point           | PASS         | Output matches                |
-| 23_type_coercion            | MISMATCH     | Output does not match .expect |
+| 23_type_coercion            | PASS         | Output matches                |
 | 24_math_library             | PASS         | Output matches                |
 | 25_quicksort                | PASS         | Output matches                |
 | 26_character_constants      | PASS         | Output matches                |
@@ -46,7 +46,7 @@ Generated: May 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | PASS         | Output matches                |
-| 33_ternary_op               | MISMATCH     | Output does not match .expect |
+| 33_ternary_op               | PASS         | Output matches                |
 | 34_array_assignment         | PASS         | Output matches                |
 | 35_sizeof                   | PASS         | Output matches                |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -96,7 +96,7 @@ Generated: May 2026
 | 92_enum_bitfield            | PASS         | Output matches                |
 | 93_integer_promotion        | MISMATCH     | Output does not match .expect |
 | 94_generic                  | PASS         | Output matches                |
-| 95_bitfields                | EXEC_FAIL    | non-zero exit                 |
+| 95_bitfields                | MISMATCH     | Output does not match .expect |
 | 95_bitfields_ms             | SKIP         | Skipped                       |
 | 96_nodata_wanted            | SKIP         | Skipped                       |
 | 97_utf8_string_literal      | PASS         | Output matches                |
@@ -121,11 +121,11 @@ Generated: May 2026
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
 | 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | PASS         | Output matches                |
-| 119_random_stuff            | MISMATCH     | Output does not match .expect |
+| 119_random_stuff            | PASS         | Output matches                |
 | 120_alias                   | SKIP         | Skipped                       |
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | EXEC_FAIL    | non-zero exit                 |
-| 123_vla_bug                 | EXEC_FAIL    | non-zero exit                 |
+| 123_vla_bug                 | PASS         | Output matches                |
 | 124_atomic_counter          | EXEC_FAIL    | non-zero exit                 |
 | 125_atomic_misc             | MISMATCH     | Output differs                |
 | 126_bound_global            | SKIP         | Skipped                       |
@@ -135,7 +135,7 @@ Generated: May 2026
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | MISMATCH     | Output does not match .expect |
 | 132_bound_test              | PASS         | Output matches                |
-| 133_old_func                | MISMATCH     | Output does not match .expect |
+| 133_old_func                | PASS         | Output matches                |
 | 134_double_to_signed        | PASS         | Output matches                |
 | 135_func_arg_struct_compare | PASS         | Output matches                |
 | 136_atomic_gcc_style        | PASS         | Output matches                |
@@ -144,12 +144,12 @@ Generated: May 2026
 | 139_arm64_errors            | PASS         | Output matches                |
 | 140_arm64_extasm            | EXEC_FAIL    | non-zero exit                 |
 | 141_riscv_asm               | SKIP         | Skipped                       |
-| 142_int_conversion          | EXEC_FAIL    | non-zero exit                 |
+| 142_int_conversion          | PASS         | Output matches                |
 | test_arm64_asm              | PASS         | exit=132                      |
 | test_atomic_op              | PASS         | exit=139                      |
 | test_atomic_op2             | PASS         | exit=139                      |
 | test_bitfields              | PASS         | exit=0                        |
-| test_builtins               | PASS         | exit=1                        |
+| test_builtins               | PASS         | exit=0                        |
 | test_elif2                  | PASS         | exit=0                        |
 | test_elif_simple            | PASS         | exit=0                        |
 | test_err                    | PASS         | compile error as expected     |
@@ -173,7 +173,7 @@ Generated: May 2026
 | test_ptr                    | PASS         | exit=0                        |
 | test_real                   | PASS         | exit=0                        |
 | test_self_include2          | PASS         | exit=1                        |
-| test_signextend             | PASS         | exit=11                       |
+| test_signextend             | PASS         | exit=0                        |
 | test_simple                 | PASS         | exit=1                        |
 | test_simple2                | PASS         | exit=1                        |
 | test_str                    | PASS         | exit=0                        |

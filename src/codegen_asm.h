@@ -2017,7 +2017,7 @@ static void asm_mfence(SecBuf *s) {
 static void asm_and_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
-    arm64_and_imm(s, sf, REG(r), REG(r), (uint64_t)(uint32_t)imm);
+    arm64_and_imm(s, sf, REG(r), REG(r), (uint64_t)(int64_t)imm);
 #else
     x86_and_ri(s, size, REG(r), imm);
 #endif
