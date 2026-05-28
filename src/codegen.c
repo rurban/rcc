@@ -8421,11 +8421,11 @@ struct ObjFile *codegen(Program *prog) {
         // before reading callee-saved regs (stored at sp+16..sp+n at frame entry)
         if (fn->dealloc_vla || fn_uses_alloca) {
             if (frame_size <= 4095)
-                arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, frame_size, 0); // sub sp, sp, #frame_size
+                arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_X29, frame_size, 0); // sub sp, x29, #frame_size
             else {
                 int fs = frame_size;
                 emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
-                arm64_sub_reg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_LSL, 0); // sub sp, sp, x16
+                arm64_sub_reg(cg_sec, 1, ARM64_SP, ARM64_X29, ARM64_X16, ARM64_LSL, 0); // sub sp, x29, x16
             }
         }
 
