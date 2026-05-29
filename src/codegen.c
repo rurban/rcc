@@ -4418,7 +4418,7 @@ static VReg gen(Node *node) {
             if (r_addr >= 0) {
                 int overflow = bo + bw - 64;
                 int tmp = alloc_reg();
-                asm_ldrb_uoff(cg_sec, tmp, r_addr + 1, 0); // ldrb w{tmp}, [x{r_addr+8}] approx
+                asm_ldrb_uoff(cg_sec, tmp, r_addr, 8); // ldrb w{tmp}, [x{r_addr}, #8]
                 int ovf_mask = (1 << overflow) - 1;
                 asm_and_imm(cg_sec, tmp, 4, ovf_mask); // and w{tmp}, w{tmp}, #ovf_mask
                 asm_shl_imm(cg_sec, tmp, 8, (uint8_t)(64 - bo)); // lsl x{tmp}, x{tmp}, #(64-bo)
