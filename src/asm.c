@@ -2153,8 +2153,9 @@ int assemble_file(const char *asm_path, const char *obj_path) {
         if (mc) *mc = 0;
 
         // Strip comment from ops
+        // Strip comments: "//" for ARM64, "//" and " #" for x86
         char *cmt = strstr(ops_str, " //");
-        if (!cmt) cmt = strstr(ops_str, " #");
+        if (!cmt && !is_arm64) cmt = strstr(ops_str, " #");
         if (cmt) *cmt = 0;
 
         if (!*mnem) continue;
@@ -2266,8 +2267,9 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
         for (char *m = mnem; *m; m++) *m = tolower((unsigned char)*m);
         char *mc = strchr(mnem, ':');
         if (mc) *mc = 0;
+        // Strip comments: "//" for ARM64, "//" and " #" for x86
         char *cmt = strstr(ops_str, " //");
-        if (!cmt) cmt = strstr(ops_str, " #");
+        if (!cmt && !is_arm64) cmt = strstr(ops_str, " #");
         if (cmt) *cmt = 0;
         if (!*mnem) {
             line = nl ? nl + 1 : line + strlen(line);
