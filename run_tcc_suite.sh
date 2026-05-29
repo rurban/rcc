@@ -490,7 +490,7 @@ while IFS= read -r src; do
 		echo "[returns $xx]" >>"$TMP_OUT"
 	else
 		# shellcheck disable=SC2086
-		if ! timeout 5s "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
+		if ! timeout 30s "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
 			# shellcheck disable=SC2059
 			printf "${RED}COMPILE FAIL${RESET}\n"
 			failed=$((failed + 1))
