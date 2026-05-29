@@ -782,8 +782,8 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // MOV (immediate) → MOVZ
-    if (!strcmp(mnem, "mov") && nops == 2) {
+    // MOV (register/immediate)
+    if (!strcmp(mnem, "mov") && nops >= 2) {
         if (ops[1][0] == '#' || isdigit((unsigned char)ops[1][0]) || ops[1][0] == '-') {
             // Immediate: emit movz (and possibly movk if > 16 bits)
             uint64_t val = (uint64_t)(int64_t)IMM(1);

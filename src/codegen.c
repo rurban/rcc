@@ -5851,7 +5851,16 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
-            assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
+            // Split on ';' for multi-instruction inline asm (e.g. "mov %0, #1; mov %1, #2")
+            char *inst = out;
+            while (*inst) {
+                char *semi = strchr(inst, ';');
+                if (semi) *semi = '\0';
+                assemble_inline(cg_obj, inst, cg_inline_fixup_cb, NULL);
+                if (!semi) break;
+                inst = semi + 1;
+                inst += strspn(inst, " \t");
+            }
         }
 
         // Store back output register operands to their C variables
