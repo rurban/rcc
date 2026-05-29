@@ -918,7 +918,26 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
                         arm64_add_imm(buf, sf, r0, r1, (int32_t)imm, shift);
                     }
                 }
+            } else {
+                // Register operand
+                if (is_sub) {
+                    if (set_flags)
+                        arm64_subs_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+                    else
+                        arm64_sub_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+                } else {
+                    if (set_flags)
+                        arm64_adds_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+                    else
+                        arm64_add_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+                }
             }
+        } else {
+            // 2-operand form: add/sub rd, rn  (rd = rd +/- rn)
+            if (is_sub)
+                arm64_sub_reg(buf, sf, r0, r0, r1, ARM64_LSL, 0);
+            else
+                arm64_add_reg(buf, sf, r0, r0, r1, ARM64_LSL, 0);
         }
         return true;
     }
