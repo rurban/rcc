@@ -2963,7 +2963,7 @@ static VReg gen_addr(Node *node) {
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
-            if (node->var->is_weak || var_needs_got(node->var))
+            if (node->var->is_weak)
                 emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
@@ -3425,7 +3425,7 @@ static VReg gen(Node *node) {
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
-            if (node->var->is_weak || var_needs_got(node->var))
+            if (node->var->is_weak)
                 emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
