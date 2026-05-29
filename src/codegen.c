@@ -2300,12 +2300,22 @@ static void emit_adrp_add(VReg r, const char *label) {
 static void emit_adrp_got(VReg r, const char *label) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
-    emit_adrp_add(r, label);
-    size_t ldr_off = cg_sec->len;
-    asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}] (GOT indirection)
     int sidx = objfile_find_sym(cg_obj, label);
-    if (sidx >= 0)
+    if (sidx < 0)
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+    if (sidx >= 0 && cg_obj->syms[sidx].bind == SB_WEAK) {
+        // Weak symbols: use GOT indirection so undefined weak resolves to NULL
+        size_t adrp_off = cg_sec->len;
+        asm_adrp(cg_sec, rd); // adrp x{rd}, :got:label
+        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+        size_t ldr_off = cg_sec->len;
+        asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}, #:got_lo12:label]
         objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+    } else {
+        // Non-weak (global data): compute absolute address then load from it
+        emit_adrp_add(r, label);
+        asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}] (load value from address)
+    }
 }
 #endif
 
