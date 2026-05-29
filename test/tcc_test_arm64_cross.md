@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 146
-- **Failed**: 6
-- **Pass Rate**: 96%
+- **Passed**: 148
+- **Failed**: 4
+- **Pass Rate**: 97%
 
 ## Detailed Results
 
@@ -140,9 +140,9 @@ Generated: May 2026
 | 135_func_arg_struct_compare | PASS      | Output matches                |
 | 136_atomic_gcc_style        | PASS      | Output matches                |
 | 137_funcall_struct_args     | PASS      | Output matches                |
-| 138_arm64_encoding          | EXEC_FAIL | non-zero exit                 |
+| 138_arm64_encoding          | PASS      | Output matches                |
 | 139_arm64_errors            | PASS      | Output matches                |
-| 140_arm64_extasm            | EXEC_FAIL | non-zero exit                 |
+| 140_arm64_extasm            | PASS      | Output matches                |
 | 141_riscv_asm               | SKIP      | Skipped                       |
 | 142_int_conversion          | PASS      | Output matches                |
 | test_arm64_asm              | PASS      | exit=0                        |

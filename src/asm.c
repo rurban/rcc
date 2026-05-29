@@ -265,8 +265,8 @@ static int64_t parse_imm(const char *s) {
     if (!s) return 0;
     s = skip_ws((char *)s);
     if (*s == '#') s++;
-    if (*s == '-') return -strtoll(s + 1, NULL, 0);
-    return strtoll(s, NULL, 0);
+    if (*s == '-') return -(int64_t)strtoull(s + 1, NULL, 0);
+    return (int64_t)strtoull(s, NULL, 0);
 }
 
 // Parse ARM64 memory operand like "[x29, #-8]" or "[sp, #16]!" or "[sp], #16"
@@ -1497,7 +1497,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         uint32_t sys_reg = 0;
         if (!strcmp(regname, "fpcr")) sys_reg = 0xDA20u; // op0=3,op1=3,CRn=4,CRm=4,op2=0 → 0b11_011_0100_0100_000
         else if (!strcmp(regname, "fpsr"))
-            sys_reg = 0xDA29u; // op0=3,op1=3,CRn=4,CRm=5,op2=1 → 0b11_011_0100_0101_001
+            sys_reg = 0xDA21u; // op0=3,op1=3,CRn=4,CRm=4,op2=1 → 0b11_011_0100_0100_001
         else if (!strcmp(regname, "nzcv"))
             sys_reg = 0xDA10u; // op0=3,op1=3,CRn=4,CRm=2,op2=0
         arm64_mrs(buf, rt, sys_reg);
@@ -1509,7 +1509,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         uint32_t sys_reg = 0;
         if (!strcmp(regname, "fpcr")) sys_reg = 0xDA20u;
         else if (!strcmp(regname, "fpsr"))
-            sys_reg = 0xDA29u;
+            sys_reg = 0xDA21u; // op0=3,op1=3,CRn=4,CRm=4,op2=1
         else if (!strcmp(regname, "nzcv"))
             sys_reg = 0xDA10u;
         arm64_msr(buf, sys_reg, rt);
