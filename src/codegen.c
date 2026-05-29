@@ -504,17 +504,32 @@ static void emit_alloca(void) {
            "  ret\n",
            sym_name("__rcc_alloca"));
 #else
-    printf("\n%s:\n  popq %%rdx\n", sym_name("__rcc_alloca"));
+    printf("\n%s:\n"
+           "  popq %%rdx\n",
+           sym_name("__rcc_alloca"));
 #ifdef _WIN32
     printf("  movq %%rcx, %%rax\n");
 #else
     printf("  movq %%rdi, %%rax\n");
 #endif
-    printf("  addq $15, %%rax\n  andq $-16, %%rax\n  jz .Lalloca3\n");
+    printf("  addq $15, %%rax\n"
+           "  andq $-16, %%rax\n"
+           "  jz .Lalloca3\n");
 #ifdef _WIN32
-    printf(".Lalloca1:\n  cmpq $4096, %%rax\n  jb .Lalloca2\n  testq %%rax, -4096(%%rsp)\n  subq $4096, %%rsp\n  subq $4096, %%rax\n  jmp .Lalloca1\n");
+    printf(".Lalloca1:\n"
+           "  cmpq $4096, %%rax\n"
+           "  jb .Lalloca2\n"
+           "  testq %%rax, -4096(%%rsp)\n"
+           "  subq $4096, %%rsp\n"
+           "  subq $4096, %%rax\n"
+           "  jmp .Lalloca1\n");
 #endif
-    printf(".Lalloca2:\n  subq %%rax, %%rsp\n  movq %%rsp, %%rax\n.Lalloca3:\n  pushq %%rdx\n  ret\n");
+    printf(".Lalloca2:\n"
+           "  subq %%rax, %%rsp\n"
+           "  movq %%rsp, %%rax\n"
+           ".Lalloca3:\n"
+           "  pushq %%rdx\n"
+           "  ret\n");
 #endif
 }
 
@@ -1697,7 +1712,9 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         // must hold the VALUE (va_arg reads it directly, not via pointer).
         if (arg_hfa_count[i] > 0 && arg_gp_idx[i] >= 0 && arg_fp_idx[i] < 0 && arg_sizes[i] <= 8) {
             if (arg_sizes[i] == 4)
-                printf("  ldr w16, [%s]\n  mov %s, x16\n", reg64[arg_regs[i]], argreg64[arg_gp_idx[i]]);
+                printf("  ldr w16, [%s]\n"
+                       "  mov %s, x16\n",
+                       reg64[arg_regs[i]], argreg64[arg_gp_idx[i]]);
             else
                 printf("  ldr %s, [%s]\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
             free_reg(arg_regs[i]);
@@ -3026,7 +3043,9 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
             printf("  fmov d1, %s\n", reg64[r_rhs]);
             printf("  fcmp d0, d1\n");
             if (cond->kind == ND_EQ)
-                printf("  b.ne %s\n  b.vs %s\n", label, label);
+                printf("  b.ne %s\n"
+                       "  b.vs %s\n",
+                       label, label);
             else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
                 printf("  b.vs .L.fc.skip.%d\n", c);
@@ -3041,16 +3060,22 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
             printf("  movq %s, %%xmm1\n", reg64[r_rhs]);
             printf("  ucomisd %%xmm1, %%xmm0\n");
             if (cond->kind == ND_EQ)
-                printf("  jne %s\n  jp %s\n", label, label);
+                printf("  jne %s\n"
+                       "  jp %s\n",
+                       label, label);
             else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
                 printf("  jp .L.fc.skip.%d\n", c);
                 printf("  je %s\n", label);
                 printf(".L.fc.skip.%d:\n", c);
             } else if (cond->kind == ND_LT)
-                printf("  jae %s\n  jp %s\n", label, label);
+                printf("  jae %s\n"
+                       "  jp %s\n",
+                       label, label);
             else if (cond->kind == ND_LE)
-                printf("  ja %s\n  jp %s\n", label, label);
+                printf("  ja %s\n"
+                       "  jp %s\n",
+                       label, label);
 #endif
             free_reg(r_rhs);
             free_reg(r_lhs);
