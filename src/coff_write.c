@@ -483,8 +483,12 @@ int coff_write(ObjFile *obj, const char *path) {
 
     // Section raw data pointers
     for (int i = 0; i < num_sec; i++) {
-        sections[i].raw_data_ptr = off;
-        off += (uint32_t)sections[i].raw_size;
+        if (sections[i].raw_size == 0) {
+            sections[i].raw_data_ptr = 0; // BSS: no data in file, pointer must be 0
+        } else {
+            sections[i].raw_data_ptr = off;
+            off += (uint32_t)sections[i].raw_size;
+        }
     }
 
     // Relocation pointers

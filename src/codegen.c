@@ -390,11 +390,15 @@ static void emit_cleanup_var(LVar *var) {
             asm_sub_x0_fp_x16(cg_sec); // sub x0, x29, x16
         }
 #elif defined(_WIN32)
-        asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset); // lea -offset(%rpb), %rcx
+        asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset); // lea -offset(%rbp), %rcx
+        asm_sub_rsp_imm(cg_sec, 32); // sub rsp, 32 (Win64 shadow space)
 #else
-        asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset); // lea -offset(%rpb), %rdi
+        asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset); // lea -offset(%rbp), %rdi
 #endif
         emit_direct_call(var->cleanup_func);
+#ifdef _WIN32
+        asm_add_rsp_imm(cg_sec, 32); // add rsp, 32 (restore shadow space)
+#endif
         return;
     }
     // Array whose element type carries __cleanup__: call per element, LIFO
@@ -419,11 +423,15 @@ static void emit_cleanup_var(LVar *var) {
             asm_sub_x0_fp_x16(cg_sec); // sub x0, x29, x16
         }
 #elif defined(_WIN32)
-        asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset - i * elem_size); // lea [rbp-8], rcx
+        asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset - i * elem_size); // lea [rbp-off], rcx
+        asm_sub_rsp_imm(cg_sec, 32); // sub rsp, 32 (Win64 shadow space)
 #else
-        asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset - i * elem_size); // lea [rbp-8], rdi
+        asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset - i * elem_size); // lea [rbp-off], rdi
 #endif
         emit_direct_call(func);
+#ifdef _WIN32
+        asm_add_rsp_imm(cg_sec, 32); // add rsp, 32 (restore shadow space)
+#endif
     }
 }
 
@@ -1464,7 +1472,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int fixed_reg_args = nargs + (has_hidden_retbuf ? 1 : 0);
     int stack_args = fixed_reg_args > max_gp_args ? fixed_reg_args - max_gp_args : 0;
     int stack_pad = (stack_args & 1) ? 8 : 0;
-    int stack_reserve = stack_args > 0 ? shadow_space + stack_args * 8 + stack_pad : 0;
+    // Win64 ABI: caller must always allocate 32-byte shadow space, even with no stack args
+    int stack_reserve = shadow_space + stack_args * 8 + stack_pad;
 #elif defined(ARCH_ARM64)
     // AAPCS64: 8 GP + 8 FP arg registers
     // Linux: variadic floats go in both FP and GP regs
@@ -1931,6 +1940,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
             arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
+        // Win64: XMM register N matches GP register N (rcx/xmm0, rdx/xmm1, r8/xmm2, r9/xmm3)
+        arg_fp_idx[i] = i + (has_hidden_retbuf ? 1 : 0);
     }
 
     if (stack_reserve > 0)
