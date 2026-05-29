@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 152
-- **Passed**: 148
-- **Failed**: 4
-- **Pass Rate**: 97%
+- **Passed**: 149
+- **Failed**: 3
+- **Pass Rate**: 98%
 
 ## Detailed Results
 
@@ -103,7 +103,7 @@ Generated: May 2026
 | 98_al_ax_extend             | SKIP      | Skipped                       |
 | 99_fastcall                 | SKIP      | Skipped                       |
 | 100_c99array-decls          | PASS      | Output matches                |
-| 101_cleanup                 | EXEC_FAIL | non-zero exit                 |
+| 101_cleanup                 | PASS      | Output matches                |
 | 102_alignas                 | PASS      | Output matches                |
 | 103_implicit_memmove        | PASS      | Output matches                |
 | 104_inline                  | MISMATCH  | Output does not match .expect |

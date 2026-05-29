@@ -8231,6 +8231,18 @@ struct ObjFile *codegen(Program *prog) {
         // === ARM64 prologue ===
         // Callee-saved: x19-x28 are callee-saved among our 12 allocatable regs
         // x19-x24 = indices 6-11 in our reg arrays
+        // If the function has cleanup vars and returns non-void, we use x19 to
+        // preserve the return value across cleanup calls; mark x19 as used now
+        // so the prologue saves/restores it correctly.
+        bool fn_ret_nonvoid = fn->ty->return_ty && fn->ty->return_ty->kind != TY_VOID;
+        {
+            for (LVar *var = fn->locals; var; var = var->next) {
+                if (var_has_cleanup(var) && fn_ret_nonvoid) {
+                    ever_used_regs |= (1 << 6); // x19 will be used in cleanup section
+                    break;
+                }
+            }
+        }
         int callee_mask = ((ever_used_regs >> 6) & 63);
         int n_callee_saved = 0;
         for (int j = 0; j < 6; j++)
@@ -8444,14 +8456,15 @@ struct ObjFile *codegen(Program *prog) {
                 has_cleanup = true;
                 break;
             }
-        if (has_cleanup) {
-            // Save x0 (return value) to x19 (callee-saved) before cleanup calls
+        if (has_cleanup && fn_ret_nonvoid) {
+            // Save x0 (return value) to x19 (callee-saved) before cleanup calls.
+            // x19 is guaranteed saved/restored by the prologue (see ever_used_regs |= above).
             asm_mov_phy_phy(cg_sec, ARM64_X19, ARM64_X0, 1); // mov x19, x0 (save return value)
         }
         for (LVar *var = fn->locals; var; var = var->next)
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
-        if (has_cleanup) {
+        if (has_cleanup && fn_ret_nonvoid) {
             // Restore x0 from x19 after cleanup calls
             asm_mov_phy_phy(cg_sec, ARM64_X0, ARM64_X19, 1); // mov x0, x19 (restore return value)
         }
