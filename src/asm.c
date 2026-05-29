@@ -782,8 +782,56 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // MOV (register/immediate)
+    // MOV (register/immediate/memory)
     if (!strcmp(mnem, "mov") && nops >= 2) {
+        // Memory source: mov rd, [rn] → ldr rd, [rn]
+        if (r0 >= 0 && r1 < 0 && ops[1][0] == '[') {
+            int base, rn2 = -1;
+            int64_t imm = 0;
+            bool pre = false, post = false;
+            base = parse_arm64_mem(ops[1], &imm, &pre, &post, &rn2);
+            if (base >= 0) {
+                int sz = sf ? 3 : 2;
+                if (rn2 >= 0) {
+                    // Register offset: ldr rt, [rn, rm]
+                    arm64_ldr_reg(buf, sz, r0, base, rn2, false, 0);
+                } else if (post) {
+                    arm64_ldr_imm(buf, sf, r0, base, (int32_t)imm, true);
+                } else if (pre) {
+                    arm64_ldr_imm(buf, sf, r0, base, (int32_t)imm, true);
+                } else {
+                    // Simple: ldr rt, [rn] or ldur rt, [rn, #imm]
+                    if (imm == 0)
+                        arm64_ldr_uoff(buf, sz, r0, base, 0);
+                    else
+                        arm64_ldur(buf, sf, r0, base, (int32_t)imm);
+                }
+                return true;
+            }
+        }
+        // Memory destination: mov [rn], rs → str rs, [rn]
+        if (r0 < 0 && r1 >= 0 && ops[0][0] == '[') {
+            int base, rn2 = -1;
+            int64_t imm = 0;
+            bool pre = false, post = false;
+            base = parse_arm64_mem(ops[0], &imm, &pre, &post, &rn2);
+            if (base >= 0) {
+                int sz = sf ? 3 : 2;
+                if (rn2 >= 0) {
+                    arm64_str_reg(buf, sz, r1, base, rn2, false, 0);
+                } else if (post) {
+                    arm64_str_imm(buf, sf, r1, base, (int32_t)imm, true);
+                } else if (pre) {
+                    arm64_str_imm(buf, sf, r1, base, (int32_t)imm, true);
+                } else {
+                    if (imm == 0)
+                        arm64_str_uoff(buf, sz, r1, base, 0);
+                    else
+                        arm64_stur(buf, sf, r1, base, (int32_t)imm);
+                }
+                return true;
+            }
+        }
         if (ops[1][0] == '#' || isdigit((unsigned char)ops[1][0]) || ops[1][0] == '-') {
             // Immediate: emit movz (and possibly movk if > 16 bits)
             uint64_t val = (uint64_t)(int64_t)IMM(1);
@@ -800,8 +848,11 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             return true;
         }
         // Register: MOV rd, rn → ORR rd, xzr, rn
-        arm64_orr_reg(buf, sf, r0, 31, r1, ARM64_LSL, 0);
-        return true;
+        if (r0 >= 0 && r1 >= 0) {
+            arm64_orr_reg(buf, sf, r0, 31, r1, ARM64_LSL, 0);
+            return true;
+        }
+        // Fall through to unknown
     }
 
     if (!strcmp(mnem, "movz")) {
