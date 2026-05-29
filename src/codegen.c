@@ -2535,6 +2535,13 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
     }
     if (off > -256 && off < 256) {
         asm_ldur_sz(cg_sec, r, arm64_base_phys(base), ty->size, off); // ldur r, [base, #off]
+        // Sign-extend narrow signed types (ARM64 ldur{b,h} zero-extend)
+        if (!ty->is_unsigned) {
+            if (ty->size == 1)
+                arm64_sxtb(cg_sec, 1, REG(r), REG(r)); // sxtb x{r}, w{r}
+            else if (ty->size == 2)
+                arm64_sxth(cg_sec, 1, REG(r), REG(r)); // sxth x{r}, w{r}
+        }
     } else {
         Arm64Reg bp = arm64_base_phys(base);
         int ta = alloc_reg();
@@ -2553,6 +2560,13 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
             arm64_add_reg(cg_sec, 1, REG(ta), REG(ta), bp, ARM64_LSL, 0); // add ta, ta, base
         }
         asm_ldr_reg_off(cg_sec, r, ta, ty->size, 0); // ldr r, [ta]
+        // Sign-extend narrow signed types (ARM64 ldr{b,h} zero-extend)
+        if (!ty->is_unsigned) {
+            if (ty->size == 1)
+                arm64_sxtb(cg_sec, 1, REG(r), REG(r)); // sxtb x{r}, w{r}
+            else if (ty->size == 2)
+                arm64_sxth(cg_sec, 1, REG(r), REG(r)); // sxth x{r}, w{r}
+        }
         free_reg(ta);
     }
 #else
