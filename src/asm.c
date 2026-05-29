@@ -993,17 +993,29 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Logic register
+    // Logic (register or immediate)
     if (!strcmp(mnem, "and")) {
-        arm64_and_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+        bool is_imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
+        if (is_imm)
+            arm64_and_imm(buf, sf, r0, r1, (uint64_t)IMM(2));
+        else
+            arm64_and_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "orr")) {
-        arm64_orr_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+        bool is_imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
+        if (is_imm)
+            arm64_orr_imm(buf, sf, r0, r1, (uint64_t)IMM(2));
+        else
+            arm64_orr_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "eor")) {
-        arm64_eor_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+        bool is_imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
+        if (is_imm)
+            arm64_eor_imm(buf, sf, r0, r1, (uint64_t)IMM(2));
+        else
+            arm64_eor_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     if (!strcmp(mnem, "bic")) {
@@ -1011,7 +1023,11 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "ands")) {
-        arm64_ands_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
+        bool is_imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
+        if (is_imm)
+            arm64_ands_imm(buf, sf, r0, r1, (uint64_t)IMM(2));
+        else
+            arm64_ands_reg(buf, sf, r0, r1, r2, ARM64_LSL, 0);
         return true;
     }
     // TST → ANDS xzr, rn, rm
