@@ -858,8 +858,12 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     if (!strcmp(mnem, "movz")) {
         // movz reg, #imm [, lsl #shift]
         int64_t imm = IMM(1);
-        int shift = (nops > 2) ? (int)IMM(2) : 0; // e.g. "lsl #16"
-        if (nops > 2 && strstr(ops[2], "lsl")) shift = (int)IMM(2);
+        int shift = 0;
+        if (nops > 2) {
+            char *p = ops[2];
+            while (*p && !isdigit((unsigned char)*p)) p++;
+            shift = atoi(p);
+        }
         arm64_movz(buf, sf, r0, (uint16_t)imm, shift);
         return true;
     }
@@ -1042,7 +1046,14 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "ror")) {
-        arm64_ror_reg(buf, sf, r0, r1, r2);
+        bool imm = (nops > 2 && (ops[2][0] == '#' || isdigit((unsigned char)ops[2][0])));
+        if (imm) {
+            // ROR immediate → EXTR rd, rn, rn, #shift
+            int shift = (int)IMM(2);
+            arm64_extr(buf, sf, r0, r1, r1, shift);
+        } else {
+            arm64_ror_reg(buf, sf, r0, r1, r2);
+        }
         return true;
     }
 

@@ -224,6 +224,13 @@ void arm64_lsl_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { s
 void arm64_lsr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02400u, rd, rn, rm)); }
 void arm64_asr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02800u, rd, rn, rm)); }
 void arm64_ror_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) { secbuf_emit32le(s, dp2(sf, 0x1ac02c00u, rd, rn, rm)); }
+// EXTR: extract field. ROR immediate is EXTR rd, rn, rn, #shift.
+// Encoding: 1 00 11111 0 0 sf Rm imm6 Rn Rd
+void arm64_extr(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, int lsb) {
+    uint32_t opc = sf ? 0x93c00000u : 0x13800000u;
+    uint32_t imm = (uint32_t)(lsb & (sf ? 63 : 31));
+    secbuf_emit32le(s, opc | BITS(20, 16, rm) | BITS(15, 10, imm) | BITS(9, 5, rn) | BITS(4, 0, rd));
+}
 
 // Immediate shifts use UBFM/SBFM with appropriate fields
 // LSL #shift: UBFM rd, rn, #(-shift mod bitwidth), #(bitwidth-1-shift)

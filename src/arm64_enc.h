@@ -133,6 +133,7 @@ void arm64_lsl_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 void arm64_lsr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 void arm64_asr_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 void arm64_ror_reg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_extr(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm, int lsb);
 void arm64_lsl_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
 void arm64_lsr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
 void arm64_asr_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int shift);
