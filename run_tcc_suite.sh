@@ -42,7 +42,7 @@ if [ "$RCC" = "./rcc.exe" ] || [ "$RCC" = "./mingw-cross.sh" ]; then
 	PLATFORM=mingw_cross
 	REPORT_FILE="$REPORT_DIR/tcc_test_mingw_cross.md"
 	if command -v winetricks >/dev/null 2>&1; then
-	    winetricks nocrashdialog
+		winetricks nocrashdialog
 	fi
 	WINEDEBUG=fixme-all
 	WINEDLLOVERRIDES="winedbg=d"
@@ -322,21 +322,12 @@ extra_ldflags() {
 	printf ''
 }
 
-# Iterate over all *.c files; for helper files containing '+' prepend them to the ones without
-# Pre-pass: collect companion files (containing '+')
-declare -A companions
-while IFS= read -r src; do
-	fname="$(basename "$src")"
-	case "$fname" in
-	*+*)
-		base="${fname%.c}"
-		main="${base//+/}"
-		companions["$main"]="$src"
-		;;
-	esac
-done <<STR_INPUT_EOF
-$(find "$TEST_DIR" -maxdepth 1 -name '*.c' | sort)
-STR_INPUT_EOF
+# Companion helper: find a '+'-containing companion file for the given base name
+get_companion() {
+	local base="$1"
+	set -- "$TEST_DIR/${base}+"*.c
+	[ -f "$1" ] && printf '%s\n' "$1"
+}
 
 p_src=
 while IFS= read -r src; do
@@ -358,7 +349,7 @@ while IFS= read -r src; do
 
 	base="${fname%.c}"
 	# If companion exists for this base, use it
-	[ -z "$p_src" ] && [ -n "${companions[$base]:-}" ] && p_src="${companions[$base]}"
+	[ -z "$p_src" ] && p_src="$(get_companion "$base")"
 
 	if [ -n "$ONLY_TEST" ] && [ "$base" != "$ONLY_TEST" ]; then
 		p_src=
