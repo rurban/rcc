@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 149
-- **Passed**: 144
-- **Failed**: 5
-- **Pass Rate**: 96%
+- **Passed**: 146
+- **Failed**: 3
+- **Pass Rate**: 97%
 
 ## Detailed Results
 
@@ -108,7 +108,7 @@ Generated: May 2026
 | 103_implicit_memmove        | PASS      | Output matches                |
 | 104_inline                  | MISMATCH  | Output does not match .expect |
 | 105_local_extern            | PASS      | Output matches                |
-| 106_versym                  | MISMATCH  | Output does not match .expect |
+| 106_versym                  | PASS      | Output matches                |
 | 107_stack_safe              | PASS      | Output matches                |
 | 108_constructor             | PASS      | Output matches                |
 | 109_float_struct_calling    | PASS      | Output matches                |
@@ -126,7 +126,7 @@ Generated: May 2026
 | 121_struct_return           | PASS      | Output matches                |
 | 122_vla_reuse               | PASS      | Output matches                |
 | 123_vla_bug                 | PASS      | Output matches                |
-| 124_atomic_counter          | MISMATCH  | Output does not match .expect |
+| 124_atomic_counter          | PASS      | Output matches                |
 | 125_atomic_misc             | PASS      | Output matches                |
 | 126_bound_global            | SKIP      | Skipped                       |
 | 127_asm_goto                | PASS      | Output matches                |

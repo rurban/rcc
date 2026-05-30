@@ -194,6 +194,7 @@ void x86_jcc_rel8(SecBuf *s, X86Cond cc, int8_t rel8);
 void x86_ret(SecBuf *s);
 void x86_leave(SecBuf *s);
 void x86_nop(SecBuf *s);
+void x86_int(SecBuf *s, uint8_t imm8);
 
 // Misc
 void x86_xchg_rr(SecBuf *s, int size, X86Reg a, X86Reg b);

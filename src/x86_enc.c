@@ -34,7 +34,10 @@ static uint8_t rex(int W, int R, int X, int B) {
 #define REX_WRB 0x4d
 
 // ModRM byte
-static uint8_t modrm(int mod, X86Reg reg, int rm) {
+static uint8_t modrm(int mod, X86Reg reg, X86Reg rm) {
+    return (uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7));
+}
+static uint8_t modrxmm(int mod, X86XmmReg reg, X86XmmReg rm) {
     return (uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7));
 }
 
@@ -590,6 +593,14 @@ void x86_jcc_rel8(SecBuf *s, X86Cond cc, int8_t rel8) {
 void x86_ret(SecBuf *s) { emit1(s, 0xc3); }
 void x86_leave(SecBuf *s) { emit1(s, 0xc9); }
 void x86_nop(SecBuf *s) { emit1(s, 0x90); }
+void x86_int(SecBuf *s, uint8_t imm8) {
+    if (imm8 == 3)
+        emit1(s, 0xCC);
+    else {
+        emit1(s, 0xCD);
+        emit1(s, imm8);
+    }
+}
 
 // Misc
 void x86_xchg_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) {
@@ -615,19 +626,19 @@ void x86_cpuid(SecBuf *s) { emit2(s, 0x0f, 0xa2); }
 static void sse_rr(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, pfx);
     maybe_rex(s, 0, d, 0, sr);
-    emit3(s, 0x0f, op, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 static void sse_rm(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86Mem m) {
     emit1(s, pfx);
     maybe_rex(s, 0, d, m.index > X86_RDI ? m.index : 0, m.base);
     emit2(s, 0x0f, op);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)d);
 }
 static void sse_mr(SecBuf *s, uint8_t pfx, uint8_t op, X86Mem m, X86XmmReg sr) {
     emit1(s, pfx);
     maybe_rex(s, 0, (int)sr, m.index > X86_RDI ? m.index : 0, m.base);
     emit2(s, 0x0f, op);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)sr);
 }
 
 void x86_movsd_rr(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf2, 0x10, d, sr); }
@@ -648,43 +659,43 @@ void x86_movq_r_xmm(SecBuf *s, X86XmmReg d, X86Reg sr) {
     // movq %r64, %xmm: 66 REX.W 0F 6E /r (reg=d, rm=sr)
     emit1(s, 0x66);
     emit1(s, rex(1, (int)d > 7, 0, sr > X86_RDI));
-    emit3(s, 0x0f, 0x6e, modrm(3, d, sr));
+    emit3(s, 0x0f, 0x6e, modrm(3, (X86Reg)d, sr));
 }
 void x86_movq_xmm_r(SecBuf *s, X86Reg d, X86XmmReg sr) {
     // movq %xmm, %r64: 66 REX.W 0F 7E /r (reg=sr, rm=d)
     emit1(s, 0x66);
     emit1(s, rex(1, (int)sr > 7, 0, d > X86_RDI));
-    emit3(s, 0x0f, 0x7e, modrm(3, sr, d));
+    emit3(s, 0x0f, 0x7e, modrxmm(3, sr, (X86XmmReg)d));
 }
 void x86_ucomisd(SecBuf *s, X86XmmReg a, X86XmmReg b) {
     emit1(s, 0x66);
     maybe_rex(s, 0, a, 0, b);
-    emit3(s, 0x0f, 0x2e, modrm(3, a, b));
+    emit3(s, 0x0f, 0x2e, modrxmm(3, a, b));
 }
 void x86_ucomiss(SecBuf *s, X86XmmReg a, X86XmmReg b) {
     maybe_rex(s, 0, a, 0, b);
-    emit3(s, 0x0f, 0x2e, modrm(3, a, b));
+    emit3(s, 0x0f, 0x2e, modrxmm(3, a, b));
 }
 void x86_comisd(SecBuf *s, X86XmmReg a, X86XmmReg b) {
     emit1(s, 0x66);
     maybe_rex(s, 0, a, 0, b);
-    emit3(s, 0x0f, 0x2f, modrm(3, a, b));
+    emit3(s, 0x0f, 0x2f, modrxmm(3, a, b));
 }
 void x86_cvtsi2sd(SecBuf *s, int srcsz, X86XmmReg d, X86Reg sr) {
-    emit2(s, 0xf2, rex(srcsz == 8, (int)d > 7, 0, (int)sr > X86_RDI));
-    emit3(s, 0x0f, 0x2a, modrm(3, (int)d, (int)sr));
+    emit2(s, 0xf2, rex(srcsz == 8, (int)d > 7, 0, sr > X86_RDI));
+    emit3(s, 0x0f, 0x2a, modrxmm(3, d, (X86XmmReg)sr));
 }
 void x86_cvtsi2ss(SecBuf *s, int srcsz, X86XmmReg d, X86Reg sr) {
     emit2(s, 0xf3, rex(srcsz == 8, (int)d > 7, 0, sr > X86_RDI));
-    emit3(s, 0x0f, 0x2a, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0x2a, modrxmm(3, d, (X86XmmReg)sr));
 }
 void x86_cvttsd2si(SecBuf *s, int dstsz, X86Reg d, X86XmmReg sr) {
     emit2(s, 0xf2, rex(dstsz == 8, d > X86_RDI, 0, (int)sr > 7));
-    emit3(s, 0x0f, 0x2c, modrm(3, d, (int)sr));
+    emit3(s, 0x0f, 0x2c, modrxmm(3, (X86XmmReg)d, sr));
 }
 void x86_cvttss2si(SecBuf *s, int dstsz, X86Reg d, X86XmmReg sr) {
     emit2(s, 0xf3, rex(dstsz == 8, d > X86_RDI, 0, (int)sr > 7));
-    emit3(s, 0x0f, 0x2c, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0x2c, modrxmm(3, (X86XmmReg)d, sr));
 }
 void x86_cvtsd2ss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf2, 0x5a, d, sr); }
 void x86_cvtss2sd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf3, 0x5a, d, sr); }
@@ -692,17 +703,17 @@ void x86_xorpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // xorpd: 66 0F 57 /r
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x57, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0x57, modrxmm(3, d, sr));
 }
 void x86_xorps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // xorps: 0F 57 /r (no mandatory prefix)
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x57, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0x57, modrxmm(3, d, sr));
 }
 void x86_movaps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // movaps: 0F 28 /r
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x28, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0x28, modrxmm(3, d, sr));
 }
 void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     // movaps: 0F 29 /r (store)
@@ -714,7 +725,7 @@ void x86_pxor(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // pxor: 66 0F EF /r
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0xef, modrm(3, (int)d, (int)sr));
+    emit3(s, 0x0f, 0xef, modrxmm(3, d, sr));
 }
 
 // x87

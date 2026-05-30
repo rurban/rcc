@@ -53,6 +53,7 @@ static void cg_weak_label(const char *name) {
 
 static void cg_weak_declare(const char *name) {
     if (cg_dry_run) return;
+    //fprintf(stderr, "DEBUG cg_weak_declare: %s\n", name);
     int sidx = objfile_find_sym(cg_obj, name);
     if (sidx < 0)
         objfile_add_sym(cg_obj, name, SEC_UNDEF, 0, 0, SB_WEAK, ST_NOTYPE);
@@ -391,14 +392,10 @@ static void emit_cleanup_var(LVar *var) {
         }
 #elif defined(_WIN32)
         asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset); // lea -offset(%rbp), %rcx
-        asm_sub_rsp_imm(cg_sec, 32); // sub rsp, 32 (Win64 shadow space)
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset); // lea -offset(%rbp), %rdi
 #endif
         emit_direct_call(var->cleanup_func);
-#ifdef _WIN32
-        asm_add_rsp_imm(cg_sec, 32); // add rsp, 32 (restore shadow space)
-#endif
         return;
     }
     // Array whose element type carries __cleanup__: call per element, LIFO
@@ -424,14 +421,10 @@ static void emit_cleanup_var(LVar *var) {
         }
 #elif defined(_WIN32)
         asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset - i * elem_size); // lea [rbp-off], rcx
-        asm_sub_rsp_imm(cg_sec, 32); // sub rsp, 32 (Win64 shadow space)
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset - i * elem_size); // lea [rbp-off], rdi
 #endif
         emit_direct_call(func);
-#ifdef _WIN32
-        asm_add_rsp_imm(cg_sec, 32); // add rsp, 32 (restore shadow space)
-#endif
     }
 }
 
@@ -1618,7 +1611,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
     int stack_pad = (stack_args & 1) ? 8 : 0;
-    int stack_reserve = stack_args > 0 ? shadow_space + stack_args * 8 + stack_pad : 0;
+    int stack_reserve = shadow_space + stack_args * 8 + stack_pad;
 #endif
 
 #ifdef ARCH_ARM64
@@ -1936,6 +1929,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             arg_regs[i] = gen_addr(argv[i]);
         else
             arg_regs[i] = gen(argv[i]);
+#ifdef _WIN32
+        // For struct-returning function used as arg: gen returns buffer address;
+        // for structs ≤8 bytes, load the value from it.
+        if (argv[i]->kind == ND_FUNCALL && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8 && argv[i]->ty->size > 0) {
+            x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
+        }
+#endif
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
         if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
             arg_sizes[i] = 8; // old-style float -> double promotion
@@ -2053,6 +2053,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             hidden_ret_reg = temp_ret_reg;
         }
         x86_mov_rr(cg_sec, 8, cg_x86_argreg[0], REG(hidden_ret_reg)); // mov hidden_ret_reg, argreg64[0]
+#ifdef _WIN32
+        // Store hidden retbuf register to shadow space so variadic callees can find it
+        if (!call_target || strcmp(call_target, "alloca") != 0)
+            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, 0), cg_x86_argreg[0]); // movq %rcx, 0(%rsp)
+#endif
     }
 
 #ifdef _WIN32
@@ -2079,6 +2084,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         } else {
             x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // mov %s, %s
         }
+        // Also store to shadow space so variadic callees can find args via va_list
+        if (!call_target || strcmp(call_target, "alloca") != 0)
+            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, argi * 8), cg_x86_argreg[argi]); // movq %reg, argi*8(%rsp)
         free_reg(arg_regs[i]);
     }
 #else
@@ -2941,6 +2949,8 @@ static bool try_const_int(Node *n, int64_t *val) {
 static VReg gen_addr(Node *node) {
     switch (node->kind) {
     case ND_LVAR: {
+        //fprintf(stderr, "DEBUG ND_LVAR: %s is_local=%d is_function=%d is_weak=%d\n",
+        //        node->var->name, node->var->is_local, node->var->is_function, node->var->is_weak);
         VReg r = alloc_reg();
         if (opt_W) reg_owner[r] = node->var->name;
         if (node->var->is_local) {
@@ -3433,6 +3443,7 @@ static VReg gen(Node *node) {
                 asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
+            //fprintf(stderr, "DEBUG ND_LVAR func: %s is_weak=%d\n", node->var->name, node->var->is_weak);
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64

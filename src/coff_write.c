@@ -464,6 +464,11 @@ int coff_write(ObjFile *obj, const char *path) {
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = (os->bind == SB_WEAK) ? IMAGE_SYM_CLASS_WEAK_EXTERNAL
                                                  : IMAGE_SYM_CLASS_EXTERNAL;
+        if (strcmp(os->name, "inline_inline_2decl_only") == 0 ||
+            strcmp(os->name, "inline_inline_undeclared") == 0 ||
+            strcmp(os->name, "check_exports") == 0)
+            fprintf(stderr, "DEBUG coff_write: name=%s section=%d bind=%d -> sec_num=%d scl=%d\n",
+                    os->name, os->section, os->bind, es.section_number, es.storage_class);
         symarr_push(&syms, es);
     }
 

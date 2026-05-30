@@ -2026,6 +2026,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_repne_prefix(buf);
         return true;
     }
+    if (!strcmp(mnem, "int")) {
+        if (is_imm(0))
+            x86_int(buf, (uint8_t)IMM(0));
+        return true;
+    }
 
     // SSE
     if (!strcmp(mnem, "movsd")) {
