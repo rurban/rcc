@@ -5,9 +5,9 @@ Generated: May 2026
 ## Summary
 
 - **Total**: 149
-- **Passed**: 146
-- **Failed**: 3
-- **Pass Rate**: 97%
+- **Passed**: 147
+- **Failed**: 2
+- **Pass Rate**: 98%
 
 ## Detailed Results
 
@@ -121,7 +121,7 @@ Generated: May 2026
 | 116_bound_setjmp2           | SKIP      | Skipped                       |
 | 117_builtins                | PASS      | Output matches                |
 | 118_switch                  | PASS      | Output matches                |
-| 119_random_stuff            | EXEC_FAIL | non-zero exit                 |
+| 119_random_stuff            | PASS      | Output matches                |
 | 120_alias                   | SKIP      | Skipped                       |
 | 121_struct_return           | PASS      | Output matches                |
 | 122_vla_reuse               | PASS      | Output matches                |

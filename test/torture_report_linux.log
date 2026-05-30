@@ -875,8 +875,8 @@ PASS: loop-2
 PASS: loop-2c
 PASS: loop-2d
 PASS: loop-2e
-PASS: loop-2f
-PASS: loop-2g
+SKIP(missing-include): loop-2f
+SKIP(missing-include): loop-2g
 PASS: loop-3b
 PASS: loop-3
 PASS: loop-3c
@@ -994,5 +994,5 @@ PASS: pr114207
 PASS: pr114396
 PASS: pr114552
 
-=== TOTAL=995 PASS=924 FAIL_COMPILE=0 FAIL_RUNTIME=0 SKIP=71 ===
+=== TOTAL=995 PASS=922 FAIL_COMPILE=0 FAIL_RUNTIME=0 SKIP=73 ===
 Pass rate (excl. skip): 100%

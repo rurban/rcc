@@ -1948,16 +1948,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         x86_sub_ri(cg_sec, 8, X86_RSP, stack_reserve); // subq $stack_reserve, %rsp
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
-        VReg r = gen(argv[i]);
+        // Win64: large structs (>8 bytes) are passed by pointer on the stack
+        VReg r = ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+            ? gen_addr(argv[i])
+            : gen(argv[i]);
         int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
         if (is_flonum(argv[i]->ty)) {
-            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // subq $%d, %rsp
+            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
         } else {
             if (argv[i]->ty->size == 1)
                 asm_movzx(cg_sec, r, r, 4, 1); // movzx4->r rr, rr
             else if (argv[i]->ty->size == 4)
                 asm_mov_reg_reg(cg_sec, r, r, 4); // mov rr -> rr
-            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movzbl %s, %s
+            x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
         }
         free_reg(r);
     }
@@ -6095,8 +6098,8 @@ static VReg gen(Node *node) {
 #endif
     }
     case ND_VA_START: {
-        VReg r = gen(node->lhs);
 #ifdef ARCH_ARM64
+        VReg r = gen(node->lhs);
         // AArch64 ABI va_list: [__stack(8), __gr_top(8), __vr_top(8), __gr_offs(4), __vr_offs(4)]
         // __stack: pointer to first stack overflow argument
         asm_add_x16_fp_imm(cg_sec, va_st_start); // add x16, x29, #va_st_start
@@ -6115,7 +6118,14 @@ static VReg gen(Node *node) {
         // __vr_offs: -(8 - fp_param) * 16
         emit_mov_imm64(ARM64_X16, (uint64_t)va_fp_start); // mov w16, #va_fp_start
         asm_str_w16_uoff(cg_sec, r, 7); // str w16, [x{r}, #28]
+#elif defined(_WIN32)
+        // Windows x64: va_list is char *. Point to first variadic arg in caller's
+        // shadow space (rbp+16 = return addr + saved rbp; 8-byte slots).
+        VReg r = gen_addr(node->lhs); // va_list is char *, need its address to write
+        asm_lea_rbp(cg_sec, X86_RDX, 8, -(16 + va_gp_start)); // leaq (16+va_gp_start)(%rbp), %rdx
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 0), X86_RDX); // movq %rdx, (%r)
 #else
+        VReg r = gen(node->lhs);
         x86_mov_mi(cg_sec, 4, x86_mem(REG(r), 0), va_gp_start); // movl $va_gp_start, (r)
         x86_mov_mi(cg_sec, 4, x86_mem(REG(r), 4), va_fp_start); // movl $va_fp_start, 4(r)
         asm_lea_rbp(cg_sec, X86_RDX, 8, -va_st_start); // leaq va_st_start(%rbp), %rdx
@@ -6155,10 +6165,10 @@ static VReg gen(Node *node) {
         return -1;
     }
     case ND_VA_ARG: {
-        VReg r = gen(node->lhs);
         Type *ty = node->ty->base;
         bool is_fp = is_flonum(ty);
 #ifdef ARCH_ARM64
+        VReg r = gen(node->lhs);
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 16;
         // rcc passes ALL structs >8 bytes by pointer (not by value).
         // va_arg must read 8-byte pointer from reg save area, then dereference.
@@ -6237,7 +6247,25 @@ static VReg gen(Node *node) {
         cg_def_label(format(".L.va_done_x.%d", rcc_label_count)); // extra for jmp fixup compatibility
         // mov x{r}, x12
         asm_mov_vreg_x12(cg_sec, r); // mov x{r}, x12
+#elif defined(_WIN32)
+        // Windows x64: va_list is char *. Read arg from current ap, advance by 8.
+        VReg r = gen_addr(node->lhs); // va_list is char *, need its address to advance
+        bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
+        (void)is_fp;
+        if (is_ptr_struct) {
+            // Struct >8 bytes passed by pointer: slot holds struct pointer
+            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(r), 0)); // movq (%r), %rcx  [rcx = ap]
+            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RCX, 0)); // movq (%rcx), %rcx [rcx = struct ptr]
+            x86_add_mi(cg_sec, 8, x86_mem(REG(r), 0), 8); // addq $8, (%r) [ap += 8]
+            x86_mov_rr(cg_sec, 8, REG(r), X86_RCX); // movq %rcx, r
+        } else {
+            // Return old ap (address of arg slot), then advance
+            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(r), 0)); // movq (%r), %rcx  [rcx = ap]
+            x86_add_mi(cg_sec, 8, x86_mem(REG(r), 0), 8); // addq $8, (%r) [ap += 8]
+            x86_mov_rr(cg_sec, 8, REG(r), X86_RCX); // movq %rcx, r  [result = old ap]
+        }
 #else
+        VReg r = gen(node->lhs);
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
         // va_arg x86: r points to va_list struct {gr_offs, fp_offs, overflow_arg_area, reg_save_area}
         X86Reg xr = REG(r);
@@ -7852,7 +7880,7 @@ struct ObjFile *codegen(Program *prog) {
             emitted_syms[emitted_count++] = (char *)canon;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
-            int is_bss = (!var->init_data && !var->relocs && !var->has_init && var->ty->size > 0);
+            int is_bss = (!var->init_data && !var->relocs && !var->has_init);
             const char *sym_name_str = asm_sym_name(sym_name(safe_label)); // .balign %d
             if (is_bss) {
                 size_t align = var->ty->align > 1 ? var->ty->align : 1;
@@ -8086,6 +8114,17 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     param_index++;
                     param_xmm_index++;
+                } else {
+                    // Float on stack (arg position >= 4 in Win64)
+                    int stack_off = 48 + stack_param_index * 8;
+                    if (var->ty->size == 4) {
+                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
+                        asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
+                    } else {
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
+                        asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd xmm0, -(off)(%rbp)
+                    }
+                    stack_param_index++;
                 }
             } else if (param_index < max_param_regs) {
                 X86Reg preg = win_gp_regs[param_index];
@@ -8208,37 +8247,56 @@ struct ObjFile *codegen(Program *prog) {
         if (fn->is_variadic) {
             int gp_count = param_index;
             int va_fp = param_xmm_index;
+#ifdef _WIN32
+            // Windows x64 ABI: 4 GP regs (rcx,rdx,r8,r9), 4 XMM regs (xmm0-3)
+            va_reg_save_ofs = current_fn_stack_size + 96;
+            va_gp_start = gp_count * 8;
+            va_fp_start = va_fp * 16 + 32;
+            va_st_start = 48 + stack_param_index * 8;
+            switch (gp_count) {
+            case 0: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
+            case 1: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rdx, -%d(%rbp) */
+            case 2: asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 16); /* fallthrough */ /* movq %r8, -%d(%rbp) */
+            case 3: asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 24); /* movq %r9, -%d(%rbp) */
+            }
+            // Save all 4 xmm regs unconditionally (caller puts FP in both GP and XMM)
+            asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 32); /* movaps %xmm0, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 48); /* movaps %xmm1, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 64); /* movaps %xmm2, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 80); /* movaps %xmm3, -%d(%rbp) */
+#else
             va_reg_save_ofs = current_fn_stack_size + 176;
             va_gp_start = gp_count * 8;
             va_fp_start = va_fp * 16 + 48;
             va_st_start = 16 + stack_param_index * 8;
 
             switch (gp_count) {
-            case 0: asm_mov_phyreg_rbp(cg_sec, X86_RDI, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp)\n */
-            case 1: asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rdx, -%d(%rbp)\n */
-            case 2: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 16); /* fallthrough */ /* movq %r8, -%d(%rbp)\n */
-            case 3: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs - 24); /* fallthrough */ /* movq %r9, -%d(%rbp)\n */
-            case 4: asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 32); /* fallthrough */ /* movaps %%xmm0, -%d(%rbp)\n */
-            case 5: asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 40); // mov [rbp-va_reg_save_ofs - 40], X86_R9
+            case 0: asm_mov_phyreg_rbp(cg_sec, X86_RDI, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rdi, -%d(%rbp) */
+            case 1: asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rsi, -%d(%rbp) */
+            case 2: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 16); /* fallthrough */ /* movq %rdx, -%d(%rbp) */
+            case 3: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs - 24); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
+            case 4: asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 32); /* fallthrough */ /* movq %r8, -%d(%rbp) */
+            case 5: asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 40); /* movq %r9, -%d(%rbp) */
             }
             if (va_fp < 8) {
-                x86_test_rr(cg_sec, 1, X86_RAX, X86_RAX); // movaps %%xmm2, -%d(%rbp)
+                x86_test_rr(cg_sec, 1, X86_RAX, X86_RAX); // testb %%al, %%al
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_E); // jcc label
                     asm_fixup_add(cg_sec, o, format(".L.x%d", rcc_label_count), 1);
                 }
                 switch (va_fp) {
-                case 0: asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 48); /* fallthrough */ /* movq %rdi, -%d(%rbp)\n */
-                case 1: asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 64); /* fallthrough */ /* movq %rsi, -%d(%rbp)\n */
-                case 2: asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 80); /* fallthrough */ /* movq %rdx, -%d(%rbp)\n */
-                case 3: asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 96); /* fallthrough */ /* movq %rcx, -%d(%rbp)\n */
-                case 4: asm_movaps_rbp_xmm(cg_sec, 4, va_reg_save_ofs - 112); /* fallthrough */ /* movq %r8, -%d(%rbp)\n */
-                case 5: asm_movaps_rbp_xmm(cg_sec, 5, va_reg_save_ofs - 128); /* fallthrough */ /* movq %r9, -%d(%rbp)\n */
-                case 6: asm_movaps_rbp_xmm(cg_sec, 6, va_reg_save_ofs - 144); /* fallthrough */ /* testb %%al, %%al\n */
-                case 7: asm_movaps_rbp_xmm(cg_sec, 7, va_reg_save_ofs - 160); // movaps [rbp-va_reg_save_ofs - 160], xmm7
+                case 0: asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 48); /* fallthrough */ /* movaps %xmm0, -%d(%rbp) */
+                case 1: asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 64); /* fallthrough */ /* movaps %xmm1, -%d(%rbp) */
+                case 2: asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 80); /* fallthrough */ /* movaps %xmm2, -%d(%rbp) */
+                case 3: asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 96); /* fallthrough */ /* movaps %xmm3, -%d(%rbp) */
+                case 4: asm_movaps_rbp_xmm(cg_sec, 4, va_reg_save_ofs - 112); /* fallthrough */ /* movaps %xmm4, -%d(%rbp) */
+                case 5: asm_movaps_rbp_xmm(cg_sec, 5, va_reg_save_ofs - 128); /* fallthrough */ /* movaps %xmm5, -%d(%rbp) */
+                case 6: asm_movaps_rbp_xmm(cg_sec, 6, va_reg_save_ofs - 144); /* fallthrough */ /* movaps %xmm6, -%d(%rbp) */
+                case 7: asm_movaps_rbp_xmm(cg_sec, 7, va_reg_save_ofs - 160); /* movaps %xmm7, -%d(%rbp) */
                 }
-                cg_def_label(format(".L.x%d", rcc_label_count++)); // movaps %%xmm0, -%d(%rbp)
+                cg_def_label(format(".L.x%d", rcc_label_count++)); // .L.x%d:
             }
+#endif
         }
 #else
         // Compute va_list init values for ARM64 (register saves are in Pass 2)
@@ -8627,22 +8685,37 @@ struct ObjFile *codegen(Program *prog) {
         // Save variadic argument registers to the reg_save_area
         // (must happen before param saves, which may clobber xmm0 via cvtsd2ss)
         if (fn->is_variadic) {
-            // Save all 6 GP registers: rdi, rsi, rdx, rcx, r8, r9
-            asm_mov_phyreg_rbp(cg_sec, X86_RDI, 8, va_reg_save_ofs);
-            asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, va_reg_save_ofs - 8);
-            asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 16);
-            asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs - 24);
-            asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 32);
-            asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 40);
+#ifdef _WIN32
+            // Windows x64 ABI: save rcx, rdx, r8, r9 and xmm0-xmm3
+            int gp_count = va_gp_start / 8;
+            switch (gp_count) {
+            case 0: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
+            case 1: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rdx, -%d(%rbp) */
+            case 2: asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 16); /* fallthrough */ /* movq %r8, -%d(%rbp) */
+            case 3: asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 24); /* movq %r9, -%d(%rbp) */
+            }
+            asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 32); /* movaps %xmm0, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 48); /* movaps %xmm1, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 64); /* movaps %xmm2, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 80); /* movaps %xmm3, -%d(%rbp) */
+#else
+            // Linux: save all 6 GP registers: rdi, rsi, rdx, rcx, r8, r9
+            asm_mov_phyreg_rbp(cg_sec, X86_RDI, 8, va_reg_save_ofs); /* movq %rdi, -%d(%rbp) */
+            asm_mov_phyreg_rbp(cg_sec, X86_RSI, 8, va_reg_save_ofs - 8); /* movq %rsi, -%d(%rbp) */
+            asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 16); /* movq %rdx, -%d(%rbp) */
+            asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs - 24); /* movq %rcx, -%d(%rbp) */
+            asm_mov_phyreg_rbp(cg_sec, X86_R8, 8, va_reg_save_ofs - 32); /* movq %r8, -%d(%rbp) */
+            asm_mov_phyreg_rbp(cg_sec, X86_R9, 8, va_reg_save_ofs - 40); /* movq %r9, -%d(%rbp) */
             // Save all 8 XMM registers: xmm0-xmm7
-            asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 48);
-            asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 64);
-            asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 80);
-            asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 96);
-            asm_movaps_rbp_xmm(cg_sec, 4, va_reg_save_ofs - 112);
-            asm_movaps_rbp_xmm(cg_sec, 5, va_reg_save_ofs - 128);
-            asm_movaps_rbp_xmm(cg_sec, 6, va_reg_save_ofs - 144);
-            asm_movaps_rbp_xmm(cg_sec, 7, va_reg_save_ofs - 160);
+            asm_movaps_rbp_xmm(cg_sec, 0, va_reg_save_ofs - 48); /* movaps %xmm0, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 1, va_reg_save_ofs - 64); /* movaps %xmm1, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 2, va_reg_save_ofs - 80); /* movaps %xmm2, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 3, va_reg_save_ofs - 96); /* movaps %xmm3, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 4, va_reg_save_ofs - 112); /* movaps %xmm4, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 5, va_reg_save_ofs - 128); /* movaps %xmm5, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 6, va_reg_save_ofs - 144); /* movaps %xmm6, -%d(%rbp) */
+            asm_movaps_rbp_xmm(cg_sec, 7, va_reg_save_ofs - 160); /* movaps %xmm7, -%d(%rbp) */
+#endif
         }
 
         // Save incoming params from ABI regs to stack slots
@@ -8662,14 +8735,28 @@ struct ObjFile *codegen(Program *prog) {
                     int sz = var->ty->size <= 4 ? 4 : 8;
                     x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -var->offset), greg[gp]); // %s:
                     gp++;
-                } else if (is_flonum(var->ty) && xfp < 8) {
-                    // Save float/double param from xmm{xfp} to stack
+                } else if (is_flonum(var->ty) &&
+#ifdef _WIN32
+                           gp < max_gp // Win64: float and int share the same 4-reg slots
+#else
+                           xfp < 8
+#endif
+                ) {
+                    // Save float/double param from xmm register to stack slot
+#ifdef _WIN32
+                    int xmm_idx = gp; // Win64: float uses slot gp (combined counter)
+#else
+                    int xmm_idx = xfp;
+#endif
                     if (var->ty->size <= 4) {
-                        x86_cvtsd2ss(cg_sec, X86_XMM0, (X86XmmReg)xfp); // cvtsd2ss %xmm{xfp}, %xmm0
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, (X86XmmReg)xmm_idx); // cvtsd2ss %xmm{n}, %xmm0
                         x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss %xmm0, -off(%rbp)
                     } else {
-                        x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp); // movsd %xmm{xfp}, -off(%rbp)
+                        x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xmm_idx); // movsd %xmm{n}, -off(%rbp)
                     }
+#ifdef _WIN32
+                    gp++; // Win64: advance combined position counter
+#endif
                     xfp++;
                 } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8 && gp < max_gp) {
                     int c = ++rcc_label_count;
