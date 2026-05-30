@@ -6376,7 +6376,9 @@ static VReg gen(Node *node) {
         asm_ldxr(cg_sec, r_result, r_addr, sz); // ldxr[b/h] r_result, [r_addr]
         asm_stxr(cg_sec, r_val, r_addr, sz); // stxr[b/h] w9, r_val, [r_addr]
         {
-            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
+            size_t _cj = cg_sec->len;
+            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_xchg.lbl
+            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_xchg.%d", lbl), 1);
         }
         (void)(sz == sz); // suppress unused variable warnings for sz-specific paths
@@ -6421,10 +6423,14 @@ static VReg gen(Node *node) {
         }
         asm_stxr(cg_sec, r_desired, r_addr, sz); // stxr[b/h] w9, r_desired, [r_addr]
         if (node->atomic_weak) {
-            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
+            size_t _cj = cg_sec->len;
+            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas_fail.lbl
+            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_cas_fail.%d", lbl), 1);
         } else {
-            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
+            size_t _cj = cg_sec->len;
+            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas.lbl
+            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_cas.%d", lbl), 1);
         }
         asm_mov_imm(cg_sec, r_result, 8, 1); // mov $1, rr_result
@@ -6490,36 +6496,64 @@ static VReg gen(Node *node) {
         int op = node->atomic_fetch_op;
         bool is_store = node->atomic_is_store;
 #ifdef ARCH_ARM64
-        VReg r_value = alloc_reg();
-        asm_mov_reg_reg(cg_sec, r_value, r_val, 8); // mov rr_val -> rr_value
-        free_reg(r_val);
         int old_dummy = alloc_reg();
         int old_slot = spill_offset(old_dummy);
         free_reg(old_dummy);
         VReg r_tmp = alloc_reg();
+        int sf = (sz == 8) ? 1 : 0;
+        // Move r_val to physical w9/x9 for the operation
+        asm_mov_x9_from_vreg(cg_sec, r_val, sf == 1 ? 8 : 4); // mov w9/x9, r_val
+        free_reg(r_val);
         int lbl = rcc_label_count++;
         cg_def_label(format(".L.atom_fop.%d", lbl));
         asm_ldxr(cg_sec, r_tmp, r_addr, sz); // ldxr[b/h] r_tmp, [r_addr]
         asm_stur_fp(cg_sec, r_tmp, old_slot); // str x(r_tmp), [x29, #-old_slot]
-        int sf = (sz == 8) ? 1 : 0;
-        // Move r_val to physical w9/x9 for the operation
-        asm_mov_x9_from_vreg(cg_sec, r_value, sf == 1 ? 8 : 4); // mov w9/x9, r_value
         switch (op) {
-        case 0: asm_add_reg_reg(cg_sec, r_tmp, 9, sz); break; // add r_tmp, r_tmp, x9
-        case 1: asm_sub_reg_reg(cg_sec, r_tmp, 9, sz); break; // sub r_tmp, r_tmp, x9
-        case 2: asm_or_reg_reg(cg_sec, r_tmp, 9, sz); break; // orr r_tmp, r_tmp, x9
-        case 3: asm_eor_reg_reg(cg_sec, r_tmp, 9, sz); break; // eor r_tmp, r_tmp, x9
-        case 4: asm_and_reg_reg(cg_sec, r_tmp, 9, sz); break; // and r_tmp, r_tmp, x9
-        case 5:
-            asm_and_reg_reg(cg_sec, r_tmp, r_tmp, sz); // and rr_tmp, rr_tmp, x9
-            asm_not(cg_sec, r_tmp, sz); // mvn rr_tmp, rr_tmp
+        case 0: { // add r_tmp, r_tmp, x9
+            size_t _off = cg_sec->len;
+            arm64_add_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_ADD_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
             break;
         }
+        case 1: { // sub r_tmp, r_tmp, x9
+            size_t _off = cg_sec->len;
+            arm64_sub_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_SUB_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
+            break;
+        }
+        case 2: { // orr r_tmp, r_tmp, x9
+            size_t _off = cg_sec->len;
+            arm64_orr_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_OR_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
+            break;
+        }
+        case 3: { // eor r_tmp, r_tmp, x9
+            size_t _off = cg_sec->len;
+            arm64_eor_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_XOR_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
+            break;
+        }
+        case 4: { // and r_tmp, r_tmp, x9
+            size_t _off = cg_sec->len;
+            arm64_and_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_AND_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
+            break;
+        }
+        case 5: { // and r_tmp, r_tmp, x9; mvn r_tmp, r_tmp
+            size_t _off = cg_sec->len;
+            arm64_and_reg(cg_sec, sf, REG(r_tmp), REG(r_tmp), ARM64_X9, ARM64_LSL, 0);
+            asm_record(ASM_AND_RR, _off, 1, REG(r_tmp), ARM64_X9, -1, sz, 0, 0, NULL, 0, -1, false);
+            asm_not(cg_sec, r_tmp, sz);
+            break;
+        }
+        }
         // stxr w8, r_tmp, [r_addr]
-        asm_stxr_8(cg_sec, r_tmp, r_addr, sf == 1 ? 8 : 4); // stxr w8, r_tmp, [r_addr]
+        asm_stxr_8(cg_sec, r_tmp, r_addr, sz); // stxr[b/h] w8, r_tmp, [r_addr]
         // cbnz w8, .L.atom_fop.lbl
         {
-            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
+            size_t _cj = cg_sec->len;
+            arm64_cbnz(cg_sec, 0, ARM64_X8, 0); // cbnz w8, .L.atom_fop.lbl
+            asm_record(ASM_JCC, _cj, 1, ARM64_X8, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_fop.%d", lbl), 1);
         }
         if (node->atomic_ord == MEMORDER_SEQ_CST)

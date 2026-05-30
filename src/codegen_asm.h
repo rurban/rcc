@@ -3051,8 +3051,12 @@ static void asm_and_x12_imm(SecBuf *s, uint64_t imm_enc) {
 // ARM64: stxr (atomic)
 // ============================================================================
 static void asm_stxr_8(SecBuf *s, VReg r_tmp, VReg r_addr, int size) {
-    int sf = (size == 8) ? 1 : 0;
-    arm64_stxr(s, sf, 8, REG(r_tmp), REG(r_addr)); // stxr w8, r_tmp, [r_addr]
+    if (size == 1)
+        arm64_stxrb(s, 8, REG(r_tmp), REG(r_addr)); // stxrb w8, w{r_tmp}, [x{r_addr}]
+    else if (size == 2)
+        arm64_stxrh(s, 8, REG(r_tmp), REG(r_addr)); // stxrh w8, w{r_tmp}, [x{r_addr}]
+    else
+        arm64_stxr(s, size == 8 ? 1 : 0, 8, REG(r_tmp), REG(r_addr)); // stxr w8, w/x{r_tmp}, [x{r_addr}]
 }
 #endif // ARCH_ARM64
 
