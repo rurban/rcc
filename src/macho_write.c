@@ -124,6 +124,17 @@ static uint32_t mstrtab_add(MachoStrtab *t, const char *s) {
     return idx;
 }
 
+// Map obj section to Mach-O section ordinal (1-based)
+static uint8_t obj_section_to_macho(int section) {
+    switch (section) {
+    case SEC_TEXT: return 1;
+    case SEC_DATA: return 2;
+    case SEC_BSS: return 3;
+    case SEC_RODATA: return 4;
+    default: return 0;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Convert ELF reloc type → Mach-O reloc type (best-effort)
 // ---------------------------------------------------------------------------
@@ -342,7 +353,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, text_size); // addr (after __text)
+        w64(f, 0); // addr
         w64(f, data_size);
         w32(f, (uint32_t)data_off);
         w32(f, 3); // align (2^3=8)
@@ -359,7 +370,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__DATA";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, text_size + data_size);
+        w64(f, 0); // addr
         w64(f, obj->bss_size);
         w32(f, (uint32_t)bss_off); // no file content
         w32(f, 3);
@@ -376,7 +387,7 @@ int macho_write(ObjFile *obj, const char *path) {
         const char sg[16] = "__TEXT";
         wbuf(f, sn, 16);
         wbuf(f, sg, 16);
-        w64(f, text_size + data_size + obj->bss_size);
+        w64(f, 0); // addr
         w64(f, rodata_size);
         w32(f, (uint32_t)rodata_off);
         w32(f, 0);
@@ -420,38 +431,56 @@ int macho_write(ObjFile *obj, const char *path) {
     wzeros(f, reloc_text_off - (rodata_off + rodata_size));
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
-        int s = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
         bool pcrel = (r->type == R_X86_64_PC32 || r->type == R_X86_64_PLT32 ||
                       r->type == R_AARCH64_CALL26 || r->type == R_AARCH64_JUMP26 ||
                       r->type == R_AARCH64_ADR_PREL_PG_HI21);
+        uint32_t sym_num;
+        // ARM64 ADRP/GOT page + pageoff12 relocs require r_extern=1 (symbol index)
+        if (is_arm64 && (r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE || r->type == R_AARCH64_ADD_ABS_LO12_NC || r->type == R_AARCH64_LD64_GOT_LO12_NC)) {
+            ext = true;
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        } else if (!ext && r->sym_idx >= 0) {
+            // Local relocation: symbolnum = section ordinal of target
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        } else {
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        }
         // r_address (4), then packed field (symbolnum:24, pcrel:1, length:2, ext:1, type:4)
         w32(f, (uint32_t)r->offset);
-        uint32_t pack = ((uint32_t)s & 0xffffff) |
+        uint32_t pack = (sym_num & 0xffffff) |
             ((uint32_t)pcrel << 24) |
-            (2 << 25) | // length=3 → 8 bytes (for 64-bit) or 2 → 4 bytes
+            (2 << 25) |
             ((uint32_t)(ext ? 1 : 0) << 27) |
             ((uint32_t)mtype << 28);
         w32(f, pack);
     }
     for (int i = 0; i < obj->data_reloc_count; i++) {
         ObjReloc *r = &obj->data_relocs[i];
-        int s = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
+        uint32_t sym_num;
+        if (!ext && r->sym_idx >= 0)
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        else
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         w32(f, (uint32_t)r->offset);
-        uint32_t pack = ((uint32_t)s & 0xffffff) | (3 << 25) |
+        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
             ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
         w32(f, pack);
     }
     for (int i = 0; i < obj->rodata_reloc_count; i++) {
         ObjReloc *r = &obj->rodata_relocs[i];
-        int s = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
+        uint32_t sym_num;
+        if (!ext && r->sym_idx >= 0)
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        else
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         w32(f, (uint32_t)r->offset);
-        uint32_t pack = ((uint32_t)s & 0xffffff) | (3 << 25) |
+        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
             ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
         w32(f, pack);
     }
