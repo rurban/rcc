@@ -4985,7 +4985,10 @@ static VReg gen(Node *node) {
         }
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         char *ret_lbl = format(".L.return.%s", current_fn_def->name);
-        size_t ret_off = asm_jmp_label_to(cg_sec, ret_lbl); /* jmp/b .L.return.%s */
+        // Create forward symbol so ld64 sees a relocation reference to the epilogue
+        int ret_sidx = objfile_add_sym(cg_obj, ret_lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
+        size_t ret_off = asm_jmp_label(cg_sec); /* jmp/b .L.return.%s */
+        objfile_add_reloc(cg_obj, SEC_TEXT, ret_off, ret_sidx, R_AARCH64_JUMP26, 0);
         asm_fixup_add(cg_sec, ret_off, ret_lbl, 0); // fixup add for forward branch
         return -1;
     }
