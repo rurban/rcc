@@ -8398,6 +8398,7 @@ struct ObjFile *codegen(Program *prog) {
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
+        asm_bti_c(cg_sec); // bti c
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
         asm_mov_fp_sp(cg_sec); // mov x29, sp
         if (frame_size <= 4095)

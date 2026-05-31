@@ -1132,6 +1132,12 @@ static void asm_adr_x16_label(SecBuf *s, const char *label) {
 }
 #endif
 
+#ifdef ARCH_ARM64
+static void asm_bti_c(SecBuf *s) {
+    arm64_bti_c(s); // hint #34 = bti c
+}
+#endif
+
 static void asm_ret(SecBuf *s) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
