@@ -296,9 +296,8 @@ int macho_write(ObjFile *obj, const char *path) {
     uint32_t strtab_size = (uint32_t)mst.len;
 
     // segment vm size = from text_off to end of last section (including BSS padding)
-    uint64_t seg_vmsize = align(bss_off + obj->bss_size, 8) - text_off;
-    // file size of segment = up to end of rodata (BSS uses no file space)
-    uint64_t seg_filesize = (rodata_off + rodata_size) - text_off;
+    uint64_t seg_vmsize = (rodata_off + rodata_size) - text_off;
+    uint64_t seg_filesize = seg_vmsize; // .o files: vmsize == filesize (no zero-fill)
 
     // -----------------------------------------------------------------------
     // Write file
