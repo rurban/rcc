@@ -4984,8 +4984,8 @@ static VReg gen(Node *node) {
             }
         }
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
-        size_t ret_off = asm_jmp_label(cg_sec); /* jmp/b .L.return.%s */ /* andl $%d, %eax\n */
         char *ret_lbl = format(".L.return.%s", current_fn_def->name);
+        size_t ret_off = asm_jmp_label_to(cg_sec, ret_lbl); /* jmp/b .L.return.%s */
         asm_fixup_add(cg_sec, ret_off, ret_lbl, 0); // fixup add for forward branch
         return -1;
     }

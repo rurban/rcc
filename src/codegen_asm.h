@@ -1099,6 +1099,20 @@ static size_t asm_jcc_label(SecBuf *s, int cond) {
 #endif
 }
 
+static size_t asm_jmp_label_to(SecBuf *s, const char *label) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    arm64_b(s, 0);
+    asm_record(ASM_JMP, off, 1, -1, -1, -1, 0, 0, 0, (char *)label, 0, -1, false);
+    return off;
+#else
+    x86_jmp_rel32(s, 0);
+    size_t count = s->len - off;
+    asm_record(ASM_JMP, off, count, -1, -1, -1, 0, 0, 0, (char *)label, 0, -1, false);
+    return off;
+#endif
+}
+
 static size_t asm_jmp_label(SecBuf *s) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
