@@ -52,6 +52,7 @@ repos:
         args:
           [
             -j4,
+            -DRCC_INCDIR=/usr/local/include/rcc,
             --inline-suppr,
             #--check-level=exhaustive,
             --suppress=unusedFunction,

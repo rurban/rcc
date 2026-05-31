@@ -4615,7 +4615,7 @@ static VReg gen(Node *node) {
                 }
                 asm_subsd(cg_sec); // subsd %xmm1, %xmm0
                 asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
-                asm_add_imm(cg_sec, r, 4, 1 << 31); // addl $0x80000000, rr
+                asm_add_imm(cg_sec, r, 4, (int)(1U << 31)); // addl $0x80000000, rr
                 {
                     size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast32_end.c
                     asm_fixup_add(cg_sec, o, format(".L.ucast32_end.%d", c), 0);
@@ -7214,6 +7214,7 @@ static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
     p = comma + 1;
     while (*p == ' ' || *p == '\t') p++;
     int n;
+    // cppcheck-suppress wrongPrintfScanfArgNum -- %rbp is literal AT&T register text, not a format specifier
     if (sscanf(p, "-%d(%rbp)", &n) == 1) {
         *off = n;
         return 1;
@@ -7235,12 +7236,14 @@ static int peep_mov_reg_rbp(char *line, char *dst, int dst_sz, char *szword, int
         return 0;
     if (*p != ' ') return 0;
     p++;
+    // cppcheck-suppress wrongPrintfScanfArgNum -- %rbp is literal AT&T register text, not a format specifier
     if (sscanf(p, "-%d(%rbp), %s", off, dst) == 2)
         return 1;
     return 0;
 }
 static int peep_mov_rbp_imm(char *line, int *off, int *val) {
     // AT&T: movl $imm, -N(%rbp)
+    // cppcheck-suppress wrongPrintfScanfArgNum -- %rbp is literal AT&T register text, not a format specifier
     if (sscanf(line, "  movl $%d, -%d(%rbp)", val, off) == 2) return 1;
     return 0;
 }

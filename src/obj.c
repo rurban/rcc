@@ -204,11 +204,12 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
     }
     if (*count == *cap) {
         *cap = *cap ? *cap * 2 : 8;
-        *relocs = realloc(*relocs, (size_t)*cap * sizeof(ObjReloc));
-        if (!*relocs) {
+        ObjReloc *tmp = realloc(*relocs, (size_t)*cap * sizeof(ObjReloc));
+        if (!tmp) {
             fprintf(stderr, "objfile: out of memory\n");
             exit(1);
         }
+        *relocs = tmp;
     }
     ObjReloc *r = &(*relocs)[(*count)++];
     r->offset = offset;
