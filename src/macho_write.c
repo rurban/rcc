@@ -26,6 +26,10 @@
 #define LC_SEGMENT_64   0x19
 #define LC_SYMTAB       0x2
 #define LC_DYSYMTAB     0xb
+#define LC_BUILD_VERSION 0x32
+
+#define PLATFORM_MACOS  1
+#define MINOS_VERSION   0x000c0000 // macOS 12.0
 
 // Section flags
 #define S_REGULAR             0x0
@@ -264,10 +268,11 @@ int macho_write(ObjFile *obj, const char *path) {
     // LC_SEGMENT_64 = 72 + nsections*80
     // LC_SYMTAB = 24
     // LC_DYSYMTAB = 80
-    uint32_t seg_lc_size = 72 + (uint32_t)nsections * 80;
+    uint32_t segment_lc_size = 72 + (uint32_t)nsections * 80;
     uint32_t symtab_lc_size = 24;
     uint32_t dysymtab_lc_size = 80;
-    uint32_t header_size = 32 + seg_lc_size + symtab_lc_size + dysymtab_lc_size;
+    uint32_t build_version_lc_size = 24; // LC_BUILD_VERSION = 24 bytes
+    uint32_t header_size = 32 + segment_lc_size + symtab_lc_size + dysymtab_lc_size + build_version_lc_size;
 
     uint64_t text_off = align(header_size, 16);
     uint64_t text_size = obj->text.len;
@@ -311,14 +316,14 @@ int macho_write(ObjFile *obj, const char *path) {
     w32(f, cpu_type);
     w32(f, cpu_subtype);
     w32(f, MH_OBJECT);
-    w32(f, 3); // ncmds
-    w32(f, seg_lc_size + symtab_lc_size + dysymtab_lc_size); // sizeofcmds
+    w32(f, 4); // ncmds (segment, build_version, symtab, dysymtab)
+    w32(f, segment_lc_size + build_version_lc_size + symtab_lc_size + dysymtab_lc_size); // sizeofcmds
     w32(f, MH_SUBSECTIONS_VIA_SYMBOLS); // flags
     w32(f, 0); // reserved
 
     // LC_SEGMENT_64
     w32(f, LC_SEGMENT_64);
-    w32(f, seg_lc_size);
+    w32(f, segment_lc_size);
     // segname (16 bytes, null-padded) = "" (empty for .o files)
     wzeros(f, 16);
     w64(f, 0); // vmaddr = 0
@@ -398,6 +403,14 @@ int macho_write(ObjFile *obj, const char *path) {
         w32(f, 0);
         w32(f, 0);
     }
+
+    // LC_BUILD_VERSION
+    w32(f, LC_BUILD_VERSION);
+    w32(f, build_version_lc_size);
+    w32(f, PLATFORM_MACOS); // platform
+    w32(f, MINOS_VERSION); // minos (12.0)
+    w32(f, 0); // sdk (unspecified)
+    w32(f, 0); // ntools
 
     // LC_SYMTAB
     w32(f, LC_SYMTAB);
