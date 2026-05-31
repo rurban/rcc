@@ -450,8 +450,9 @@ int macho_write(ObjFile *obj, const char *path) {
                       r->type == R_AARCH64_CALL26 || r->type == R_AARCH64_JUMP26 ||
                       r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE);
         uint32_t sym_num;
-        // ARM64 ADRP/GOT page + pageoff12 relocs require r_extern=1 (symbol index)
-        if (is_arm64 && (r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE || r->type == R_AARCH64_ADD_ABS_LO12_NC || r->type == R_AARCH64_LD64_GOT_LO12_NC)) {
+        // ARM64 relocs must use r_extern=1 (symbol index), not section ordinals.
+        // ld64 rejects r_extern=0 for branch/page/pcrel types.
+        if (is_arm64) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
@@ -471,13 +472,17 @@ int macho_write(ObjFile *obj, const char *path) {
     }
     for (int i = 0; i < obj->data_reloc_count; i++) {
         ObjReloc *r = &obj->data_relocs[i];
-        bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
+        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
         uint32_t sym_num;
-        if (!ext && r->sym_idx >= 0)
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
-        else
+        if (is_arm64) {
+            ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        } else if (!ext && r->sym_idx >= 0) {
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        } else {
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        }
         w32(f, (uint32_t)r->offset);
         uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
             ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
@@ -485,13 +490,17 @@ int macho_write(ObjFile *obj, const char *path) {
     }
     for (int i = 0; i < obj->rodata_reloc_count; i++) {
         ObjReloc *r = &obj->rodata_relocs[i];
-        bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
+        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
         uint32_t sym_num;
-        if (!ext && r->sym_idx >= 0)
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
-        else
+        if (is_arm64) {
+            ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        } else if (!ext && r->sym_idx >= 0) {
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        } else {
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        }
         w32(f, (uint32_t)r->offset);
         uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
             ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
