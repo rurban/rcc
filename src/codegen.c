@@ -4987,14 +4987,19 @@ static VReg gen(Node *node) {
         char *ret_lbl = format(".L.return.%s", current_fn_def->name);
         size_t ret_off;
         if (!cg_dry_run) {
-            // Create forward symbol so ld64 sees a relocation reference to the epilogue
+            // Create forward symbol so ld64 sees a relocation reference to the epilogue.
+            // The linker resolves the branch offset; don't fixup locally (addend=0).
             int ret_sidx = objfile_add_sym(cg_obj, ret_lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
             ret_off = asm_jmp_label(cg_sec); /* jmp/b .L.return.%s */
+#ifdef __APPLE__
             objfile_add_reloc(cg_obj, SEC_TEXT, ret_off, ret_sidx, R_AARCH64_JUMP26, 0);
+#endif
         } else {
             ret_off = asm_jmp_label(cg_sec); /* jmp/b .L.return.%s (dry run) */
         }
+#ifndef __APPLE__
         asm_fixup_add(cg_sec, ret_off, ret_lbl, 0); // fixup add for forward branch
+#endif
         return -1;
     }
     case ND_NULL:
