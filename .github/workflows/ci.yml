@@ -116,6 +116,19 @@ jobs:
           /tmp/test00_exe 2>&1; echo "exit=$?"
           echo "=== lldb backtrace (test00_exe) ==="
           lldb -b -o "run" -o "bt" -o "quit" -- /tmp/test00_exe 2>&1 || true
+
+          echo "=== Test 2b: atomics .o inspection ==="
+          cat > /tmp/test_cas.c << 'TEOF'
+          #include <stdatomic.h>
+          int printf(const char*,...);
+          int main(){_Atomic int a=12;int b=77,r;r=atomic_compare_exchange_strong(&a,&b,99);printf("%d %d %d\n",r,a,b);return 0;}
+          TEOF
+          ./rcc -O1 -c -o /tmp/test_cas.o /tmp/test_cas.c 2>&1 || true
+          echo "=== CAS .o relocs ==="
+          otool -rv /tmp/test_cas.o 2>&1 || true
+          echo "=== CAS .o full objdump ==="
+          objdump -D /tmp/test_cas.o 2>&1 || true
+
           echo "=== Test 3: compile from test dir (like CD_TESTS) ==="
           (cd tinycc/tests/tests2 && "$PWD"/rcc -O1 -Dtest_atomic_warn_2 -o /tmp/test_dt_exe 125_atomic_misc.c 2>&1 || true)
           /tmp/test_dt_exe 2>&1; echo "exit=$?"
