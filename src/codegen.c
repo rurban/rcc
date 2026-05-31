@@ -6424,14 +6424,19 @@ static VReg gen(Node *node) {
         VReg r_result = alloc_reg();
 #ifdef ARCH_ARM64
         int lbl = rcc_label_count++;
-        cg_def_label(format(".L.atom_xchg.%d", lbl));
+        char *atom_lbl = format(".L.atom_xchg.%d", lbl);
+        cg_def_label(atom_lbl);
         asm_ldxr(cg_sec, r_result, r_addr, sz); // ldxr[b/h] r_result, [r_addr]
         asm_stxr(cg_sec, r_val, r_addr, sz); // stxr[b/h] w9, r_val, [r_addr]
         {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_xchg.lbl
-            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
-            asm_fixup_add(cg_sec, _cj, format(".L.atom_xchg.%d", lbl), 1);
+            if (!cg_dry_run) {
+                int sidx = objfile_find_sym(cg_obj, atom_lbl);
+                if (sidx >= 0)
+                    objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _cj, atom_lbl, 1);
         }
         (void)(sz == sz); // suppress unused variable warnings for sz-specific paths
 #else
@@ -6466,34 +6471,53 @@ static VReg gen(Node *node) {
         emit_load(elem_ty, r_expected, r_expectedaddr, 0);
         VReg r_old = alloc_reg();
         int lbl = rcc_label_count++;
-        cg_def_label(format(".L.atom_cas.%d", lbl));
+        char *cas_lbl = format(".L.atom_cas.%d", lbl);
+        char *cas_fail = format(".L.atom_cas_fail.%d", lbl);
+        char *cas_done = format(".L.atom_cas_done.%d", lbl);
+        cg_def_label(cas_lbl);
         asm_ldxr(cg_sec, r_old, r_addr, sz); // ldxr[b/h] r_old, [r_addr]
         asm_cmp_reg_reg(cg_sec, r_old, r_expected, sz > 4 ? 8 : 4); // cmp r_old, r_expected
         {
             size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
-            asm_fixup_add(cg_sec, _cj, format(".L.atom_cas_fail.%d", lbl), 1);
+            if (!cg_dry_run) {
+                int sidx = objfile_add_sym(cg_obj, cas_fail, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
+                objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _cj, cas_fail, 1);
         }
         asm_stxr(cg_sec, r_desired, r_addr, sz); // stxr[b/h] w9, r_desired, [r_addr]
         if (node->atomic_weak) {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas_fail.lbl
-            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
-            asm_fixup_add(cg_sec, _cj, format(".L.atom_cas_fail.%d", lbl), 1);
+            if (!cg_dry_run) {
+                int sidx = objfile_find_sym(cg_obj, cas_fail);
+                if (sidx >= 0)
+                    objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _cj, cas_fail, 1);
         } else {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas.lbl
-            asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
-            asm_fixup_add(cg_sec, _cj, format(".L.atom_cas.%d", lbl), 1);
+            if (!cg_dry_run) {
+                int sidx = objfile_find_sym(cg_obj, cas_lbl);
+                if (sidx >= 0)
+                    objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _cj, cas_lbl, 1);
         }
         asm_mov_imm(cg_sec, r_result, 8, 1); // mov $1, rr_result
         {
             size_t _jmp = asm_jmp_label(cg_sec);
-            asm_fixup_add(cg_sec, _jmp, format(".L.atom_cas_done.%d", lbl), 0);
+            if (!cg_dry_run) {
+                int sidx = objfile_add_sym(cg_obj, cas_done, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
+                objfile_add_reloc(cg_obj, SEC_TEXT, _jmp, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _jmp, cas_done, 0);
         }
-        cg_def_label(format(".L.atom_cas_fail.%d", lbl));
+        cg_def_label(cas_fail);
         asm_movq_zero(cg_sec, r_result); // xor rr_result, rr_result
         emit_store(elem_ty, r_old, r_expectedaddr, 0);
-        cg_def_label(format(".L.atom_cas_done.%d", lbl));
+        cg_def_label(cas_done);
         free_reg(r_old);
         free_reg(r_expected);
 #else
@@ -6557,7 +6581,8 @@ static VReg gen(Node *node) {
         asm_mov_x9_from_vreg(cg_sec, r_val, sf == 1 ? 8 : 4); // mov w9/x9, r_val
         free_reg(r_val);
         int lbl = rcc_label_count++;
-        cg_def_label(format(".L.atom_fop.%d", lbl));
+        char *fop_lbl = format(".L.atom_fop.%d", lbl);
+        cg_def_label(fop_lbl);
         asm_ldxr(cg_sec, r_tmp, r_addr, sz); // ldxr[b/h] r_tmp, [r_addr]
         asm_stur_fp(cg_sec, r_tmp, old_slot); // str x(r_tmp), [x29, #-old_slot]
         switch (op) {
@@ -6605,8 +6630,12 @@ static VReg gen(Node *node) {
         {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X8, 0); // cbnz w8, .L.atom_fop.lbl
-            asm_record(ASM_JCC, _cj, 1, ARM64_X8, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
-            asm_fixup_add(cg_sec, _cj, format(".L.atom_fop.%d", lbl), 1);
+            if (!cg_dry_run) {
+                int sidx = objfile_find_sym(cg_obj, fop_lbl);
+                if (sidx >= 0)
+                    objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+            }
+            asm_fixup_add(cg_sec, _cj, fop_lbl, 1);
         }
         if (node->atomic_ord == MEMORDER_SEQ_CST)
             asm_dmb(cg_sec); // stxrh w8, %s, [%s]
