@@ -295,9 +295,9 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
 
-    // segment vm size = sum of all section sizes
-    uint64_t seg_vmsize = text_size + data_size + obj->bss_size + rodata_size;
-    // file size of segment = up to end of rodata
+    // segment vm size = from text_off to end of last section (including BSS padding)
+    uint64_t seg_vmsize = align(bss_off + obj->bss_size, 8) - text_off;
+    // file size of segment = up to end of rodata (BSS uses no file space)
     uint64_t seg_filesize = (rodata_off + rodata_size) - text_off;
 
     // -----------------------------------------------------------------------

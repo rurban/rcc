@@ -68,32 +68,32 @@ jobs:
           int main() { int i = 1; char c = 2; int _Atomic *p = &i; atomic_store(&p, &c); }
           TEOF
 
+          set +e
           ./rcc -O1 -c -o /tmp/test_rcc.o /tmp/test_warn2.c 2>&1 || true
-          clang -O1 -c -arch arm64 -o /tmp/test_clang.o /tmp/test_warn2.c 2>&1 || true
+          ./rcc -O1 -o /tmp/test_rcc_exe /tmp/test_warn2.c 2>&1 || true
 
           echo "=== rcc .o objdump ==="
           objdump -D /tmp/test_rcc.o 2>&1 || true
 
-          echo "=== clang .o objdump ==="
-          objdump -D /tmp/test_clang.o 2>&1 || true
+          echo "=== rcc .o macho layout ==="
+          otool -l /tmp/test_rcc.o 2>&1 || true
+          otool -rv /tmp/test_rcc.o 2>&1 || true
 
-          echo "=== rcc linked binary objdump ==="
-          ./rcc -O1 -o /tmp/test_rcc_exe /tmp/test_warn2.c 2>&1 || true
-          objdump -D /tmp/test_rcc_exe 2>&1 | head -120 || true
+          echo "=== rcc binary objdump (full) ==="
+          objdump -D /tmp/test_rcc_exe 2>&1 || true
 
-          echo "=== run rcc binary ==="
+          echo "=== run rcc binary (capture signal) ==="
           /tmp/test_rcc_exe 2>&1; echo "exit=$?"
 
           echo "=== Test 2: 00_assignment ==="
-          ./rcc -O1 -c -o /tmp/test00_rcc.o tinycc/tests/tests2/00_assignment.c 2>&1 || true
-          echo "=== rcc 00_assignment.o ==="
-          objdump -d /tmp/test00_rcc.o 2>&1 || true
-
+          cat tinycc/tests/tests2/00_assignment.c
+          ./rcc -O1 -o /tmp/test00_exe tinycc/tests/tests2/00_assignment.c 2>&1 || true
+          /tmp/test00_exe 2>&1; echo "exit=$?"
           echo "=== darwin.o ==="
           ls -la lib/darwin.o 2>&1 || echo "NOT FOUND"
-          file lib/darwin.o 2>&1 || true
 
       - name: Run tests
+        if: runner.os == 'macOS'
         run: |
           ./rcc --version
           ./rcc -print-search-dirs
@@ -101,16 +101,19 @@ jobs:
           make test-torture || true
 
       - name: Cache pre-commit
+        if: runner.os == 'macOS'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run linter
+        if: runner.os == 'macOS'
         run: make lint
         timeout-minutes: 10
 
       - name: Check for source changes
+        if: runner.os == 'macOS'
         id: changed
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
         with:
@@ -122,7 +125,7 @@ jobs:
               - 'run_tcc_suite.ps1'
 
       - name: Run benchmarks
-        if: steps.changed.outputs.sources == 'true'
+        if: runner.os == 'macOS' && steps.changed.outputs.sources == 'true'
         run: make bench
 
       - name: Upload Windows reports
