@@ -6429,7 +6429,7 @@ static VReg gen(Node *node) {
         asm_ldxr(cg_sec, r_result, r_addr, sz); // ldxr[b/h] r_result, [r_addr]
         asm_stxr(cg_sec, r_val, r_addr, sz); // stxr[b/h] w9, r_val, [r_addr]
         {
-            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X9, 0, 0); // cmp w9, #0
+            arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X9, 0, 0); // cmp w9, #0
             size_t _cj = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.atom_xchg.lbl
             if (!cg_dry_run) {
 #ifdef __APPLE__
@@ -6492,7 +6492,7 @@ static VReg gen(Node *node) {
         asm_stxr(cg_sec, r_desired, r_addr, sz); // stxr[b/h] w9, r_desired, [r_addr]
         // cmp w9, #0; b.ne cas_fail / b.ne cas (replaces cbnz for ld64 reloc)
         {
-            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X9, 0, 0); // cmp w9, #0
+            arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X9, 0, 0); // cmp w9, #0
             size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
             if (!cg_dry_run) {
 #ifdef __APPLE__
@@ -6629,7 +6629,7 @@ static VReg gen(Node *node) {
         asm_stxr_8(cg_sec, r_tmp, r_addr, sz); // stxr[b/h] w8, r_tmp, [r_addr]
         // cmp w8, #0; b.ne fop_lbl (replaces cbnz w8, fop_lbl for ld64 reloc)
         {
-            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X8, 0, 0); // cmp w8, #0
+            arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X8, 0, 0); // cmp w8, #0
             size_t _cj = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.atom_fop.lbl
             if (!cg_dry_run) {
 #ifdef __APPLE__
