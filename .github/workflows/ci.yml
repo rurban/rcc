@@ -82,6 +82,23 @@ jobs:
           echo "=== rcc binary objdump (full) ==="
           objdump -D /tmp/test_rcc_exe 2>&1 || true
 
+          echo "=== rcc binary segment layout ==="
+          otool -l /tmp/test_rcc_exe 2>&1 || true
+          otool -lV /tmp/test_rcc_exe 2>&1 | grep -A20 "LC_SEGMENT_64\|sectname\|segname\|addr\|size\|offset\|filesize\|vmsize" | head -40 || true
+
+          echo "=== rcc binary segment layout ==="
+          otool -l /tmp/test_rcc_exe 2>&1 | grep -B2 -A15 "LC_SEGMENT_64\|__text\|filesize\|vmsize" | head -50 || true
+          codesign -dvvv /tmp/test_rcc_exe 2>&1 || true
+
+          echo "=== clang reference binary ==="
+          cat > /tmp/test_nolib.c << 'TEOF'
+          int main() { int i = 1; char c = 2; int *p = &i; *p = (int)&c; return 0; }
+          TEOF
+          clang -O1 -arch arm64 -o /tmp/test_clang_exe /tmp/test_nolib.c 2>&1 || true
+          /tmp/test_clang_exe 2>&1; echo "clang exit=$?"
+          otool -l /tmp/test_clang_exe 2>&1 | grep -B2 -A15 "LC_SEGMENT_64\|__text\|filesize\|vmsize" | head -50 || true
+          objdump -D /tmp/test_clang_exe 2>&1 | grep -A30 "<_main>:" | head -35 || true
+
           echo "=== run rcc binary (capture signal) ==="
           /tmp/test_rcc_exe 2>&1; echo "exit=$?"
 
