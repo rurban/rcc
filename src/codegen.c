@@ -6432,9 +6432,11 @@ static VReg gen(Node *node) {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_xchg.lbl
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, atom_lbl);
                 if (sidx >= 0)
                     objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _cj, atom_lbl, 1);
         }
@@ -6480,8 +6482,10 @@ static VReg gen(Node *node) {
         {
             size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_add_sym(cg_obj, cas_fail, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
                 objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _cj, cas_fail, 1);
         }
@@ -6490,18 +6494,22 @@ static VReg gen(Node *node) {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas_fail.lbl
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, cas_fail);
                 if (sidx >= 0)
                     objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _cj, cas_fail, 1);
         } else {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas.lbl
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, cas_lbl);
                 if (sidx >= 0)
                     objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _cj, cas_lbl, 1);
         }
@@ -6509,8 +6517,10 @@ static VReg gen(Node *node) {
         {
             size_t _jmp = asm_jmp_label(cg_sec);
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_add_sym(cg_obj, cas_done, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
                 objfile_add_reloc(cg_obj, SEC_TEXT, _jmp, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _jmp, cas_done, 0);
         }
@@ -6631,9 +6641,11 @@ static VReg gen(Node *node) {
             size_t _cj = cg_sec->len;
             arm64_cbnz(cg_sec, 0, ARM64_X8, 0); // cbnz w8, .L.atom_fop.lbl
             if (!cg_dry_run) {
+#ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, fop_lbl);
                 if (sidx >= 0)
                     objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
+#endif
             }
             asm_fixup_add(cg_sec, _cj, fop_lbl, 1);
         }
