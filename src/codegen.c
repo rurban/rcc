@@ -6429,8 +6429,8 @@ static VReg gen(Node *node) {
         asm_ldxr(cg_sec, r_result, r_addr, sz); // ldxr[b/h] r_result, [r_addr]
         asm_stxr(cg_sec, r_val, r_addr, sz); // stxr[b/h] w9, r_val, [r_addr]
         {
-            size_t _cj = cg_sec->len;
-            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_xchg.lbl
+            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X9, 0, 0); // cmp w9, #0
+            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.atom_xchg.lbl
             if (!cg_dry_run) {
 #ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, atom_lbl);
@@ -6490,28 +6490,19 @@ static VReg gen(Node *node) {
             asm_fixup_add(cg_sec, _cj, cas_fail, 1);
         }
         asm_stxr(cg_sec, r_desired, r_addr, sz); // stxr[b/h] w9, r_desired, [r_addr]
-        if (node->atomic_weak) {
-            size_t _cj = cg_sec->len;
-            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas_fail.lbl
+        // cmp w9, #0; b.ne cas_fail / b.ne cas (replaces cbnz for ld64 reloc)
+        {
+            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X9, 0, 0); // cmp w9, #0
+            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE);
             if (!cg_dry_run) {
 #ifdef __APPLE__
-                int sidx = objfile_find_sym(cg_obj, cas_fail);
+                const char *target = node->atomic_weak ? cas_fail : cas_lbl;
+                int sidx = objfile_find_sym(cg_obj, target);
                 if (sidx >= 0)
                     objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
 #endif
             }
-            asm_fixup_add(cg_sec, _cj, cas_fail, 1);
-        } else {
-            size_t _cj = cg_sec->len;
-            arm64_cbnz(cg_sec, 0, ARM64_X9, 0); // cbnz w9, .L.atom_cas.lbl
-            if (!cg_dry_run) {
-#ifdef __APPLE__
-                int sidx = objfile_find_sym(cg_obj, cas_lbl);
-                if (sidx >= 0)
-                    objfile_add_reloc(cg_obj, SEC_TEXT, _cj, sidx, R_AARCH64_JUMP26, 0);
-#endif
-            }
-            asm_fixup_add(cg_sec, _cj, cas_lbl, 1);
+            asm_fixup_add(cg_sec, _cj, node->atomic_weak ? cas_fail : cas_lbl, 1);
         }
         asm_mov_imm(cg_sec, r_result, 8, 1); // mov $1, rr_result
         {
@@ -6636,10 +6627,10 @@ static VReg gen(Node *node) {
         }
         // stxr w8, r_tmp, [r_addr]
         asm_stxr_8(cg_sec, r_tmp, r_addr, sz); // stxr[b/h] w8, r_tmp, [r_addr]
-        // cbnz w8, .L.atom_fop.lbl
+        // cmp w8, #0; b.ne fop_lbl (replaces cbnz w8, fop_lbl for ld64 reloc)
         {
-            size_t _cj = cg_sec->len;
-            arm64_cbnz(cg_sec, 0, ARM64_X8, 0); // cbnz w8, .L.atom_fop.lbl
+            arm64_subs_imm(cg_sec, 0, ARM64_WZR, ARM64_X8, 0, 0); // cmp w8, #0
+            size_t _cj = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.atom_fop.lbl
             if (!cg_dry_run) {
 #ifdef __APPLE__
                 int sidx = objfile_find_sym(cg_obj, fop_lbl);
