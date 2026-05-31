@@ -448,7 +448,7 @@ int macho_write(ObjFile *obj, const char *path) {
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
         bool pcrel = (r->type == R_X86_64_PC32 || r->type == R_X86_64_PLT32 ||
                       r->type == R_AARCH64_CALL26 || r->type == R_AARCH64_JUMP26 ||
-                      r->type == R_AARCH64_ADR_PREL_PG_HI21);
+                      r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE);
         uint32_t sym_num;
         // ARM64 ADRP/GOT page + pageoff12 relocs require r_extern=1 (symbol index)
         if (is_arm64 && (r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE || r->type == R_AARCH64_ADD_ABS_LO12_NC || r->type == R_AARCH64_LD64_GOT_LO12_NC)) {
