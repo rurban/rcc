@@ -116,6 +116,13 @@ jobs:
           /tmp/test00_exe 2>&1; echo "exit=$?"
           echo "=== lldb backtrace (test00_exe) ==="
           lldb -b -o "run" -o "bt" -o "quit" -- /tmp/test00_exe 2>&1 || true
+          echo "=== Test 3: compile from test dir (like CD_TESTS) ==="
+          (cd tinycc/tests/tests2 && ../../../../rcc -O1 -Dtest_atomic_warn_2 -o /tmp/test_dt_exe 125_atomic_misc.c 2>&1 || true)
+          /tmp/test_dt_exe 2>&1; echo "exit=$?"
+          echo "=== dt binary objdump ==="
+          objdump -D /tmp/test_dt_exe 2>&1 | grep -A40 "<_main>:" | head -45 || true
+          otool -l /tmp/test_dt_exe 2>&1 | grep -A15 "LC_SEGMENT.*__TEXT" | head -20 || true
+
           echo "=== darwin.o ==="
           ls -la lib/darwin.o 2>&1 || echo "NOT FOUND"
 

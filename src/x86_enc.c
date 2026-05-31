@@ -676,6 +676,14 @@ void x86_ucomiss(SecBuf *s, X86XmmReg a, X86XmmReg b) {
     maybe_rex(s, 0, a, 0, b);
     emit3(s, 0x0f, 0x2e, modrxmm(3, a, b));
 }
+// SSE compare (ucomisd/ucomiss) — fix the encoding above:
+// ucomisd is: 66 0F 2E /r (compare, no prefix for ucomiss)
+// Above implementation has a bug; let me fix:
+// Actually SSE helper needs to be refactored. The above sse_rr takes pfx as first byte,
+// but ucomisd needs 66 0F 2E, not F2 0F 2E. Let me just emit directly:
+// (these overwrite the implementations above)
+// They're already correctly using the `emit1(s,0x66)` + sse_rr(0x0f,...) pattern which works.
+
 void x86_comisd(SecBuf *s, X86XmmReg a, X86XmmReg b) {
     emit1(s, 0x66);
     maybe_rex(s, 0, a, 0, b);
@@ -740,11 +748,4 @@ void x86_fstpt_m(SecBuf *s, X86Mem m) {
     emit_mem(s, m.base, m.index, m.scale, m.disp, 7);
 }
 
-// SSE compare (ucomisd/ucomiss) — fix the encoding above:
-// ucomisd is: 66 0F 2E /r (compare, no prefix for ucomiss)
-// Above implementation has a bug; let me fix:
-// Actually SSE helper needs to be refactored. The above sse_rr takes pfx as first byte,
-// but ucomisd needs 66 0F 2E, not F2 0F 2E. Let me just emit directly:
-// (these overwrite the implementations above)
-// They're already correctly using the `emit1(s,0x66)` + sse_rr(0x0f,...) pattern which works.
 #endif /* !ARCH_ARM64 */
