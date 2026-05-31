@@ -85,10 +85,20 @@ jobs:
           echo "=== run rcc binary (capture signal) ==="
           /tmp/test_rcc_exe 2>&1; echo "exit=$?"
 
+          echo "=== lldb backtrace (test_rcc_exe) ==="
+          which lldb 2>&1 || true
+          lldb -b -o "run" -o "bt" -o "quit" -- /tmp/test_rcc_exe 2>&1 || true
+
+          echo "=== gdb backtrace (test_rcc_exe) ==="
+          which gdb 2>&1 || true
+          gdb -batch -ex "run" -ex "bt" -ex "quit" /tmp/test_rcc_exe 2>&1 || true
+
           echo "=== Test 2: 00_assignment ==="
           cat tinycc/tests/tests2/00_assignment.c
           ./rcc -O1 -o /tmp/test00_exe tinycc/tests/tests2/00_assignment.c 2>&1 || true
           /tmp/test00_exe 2>&1; echo "exit=$?"
+          echo "=== lldb backtrace (test00_exe) ==="
+          lldb -b -o "run" -o "bt" -o "quit" -- /tmp/test00_exe 2>&1 || true
           echo "=== darwin.o ==="
           ls -la lib/darwin.o 2>&1 || echo "NOT FOUND"
 
