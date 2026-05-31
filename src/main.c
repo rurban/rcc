@@ -470,15 +470,15 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
         {
             struct stat libst;
-            if (stat("lib/darwin.o", &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
+            // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
 #ifdef RCC_INCDIR
-            else {
-                const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
-                if (stat(rcc_darwin, &libst) == 0)
-                    snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
-            }
+            const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
+            if (stat(rcc_darwin, &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
+            else
 #endif
+                if (stat("lib/darwin.o", &libst) == 0)
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
         }
 #endif
 
