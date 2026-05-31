@@ -58,6 +58,41 @@ jobs:
       - name: Build
         run: make
 
+      - name: Diagnostics (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -x
+          echo "=== Test 1: simple atomic store ==="
+          cat > /tmp/test_warn2.c << 'TEOF'
+          #include <stdatomic.h>
+          int main() { int i = 1; char c = 2; int _Atomic *p = &i; atomic_store(&p, &c); }
+          TEOF
+
+          ./rcc -O1 -c -o /tmp/test_rcc.o /tmp/test_warn2.c 2>&1 || true
+          clang -O1 -c -arch arm64 -o /tmp/test_clang.o /tmp/test_warn2.c 2>&1 || true
+
+          echo "=== rcc .o objdump ==="
+          objdump -D /tmp/test_rcc.o 2>&1 || true
+
+          echo "=== clang .o objdump ==="
+          objdump -D /tmp/test_clang.o 2>&1 || true
+
+          echo "=== rcc linked binary objdump ==="
+          ./rcc -O1 -o /tmp/test_rcc_exe /tmp/test_warn2.c 2>&1 || true
+          objdump -D /tmp/test_rcc_exe 2>&1 | head -120 || true
+
+          echo "=== run rcc binary ==="
+          /tmp/test_rcc_exe 2>&1; echo "exit=$?"
+
+          echo "=== Test 2: 00_assignment ==="
+          ./rcc -O1 -c -o /tmp/test00_rcc.o tinycc/tests/tests2/00_assignment.c 2>&1 || true
+          echo "=== rcc 00_assignment.o ==="
+          objdump -d /tmp/test00_rcc.o 2>&1 || true
+
+          echo "=== darwin.o ==="
+          ls -la lib/darwin.o 2>&1 || echo "NOT FOUND"
+          file lib/darwin.o 2>&1 || true
+
       - name: Run tests
         run: |
           ./rcc --version
