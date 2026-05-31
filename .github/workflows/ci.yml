@@ -65,8 +65,15 @@ jobs:
           make check
           make test-torture || true
 
+      - name: Cache pre-commit
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
       - name: Run linter
         run: make lint
+        timeout-minutes: 10
 
       - name: Check for source changes
         id: changed
