@@ -30,3 +30,4 @@ AttributeMacros:
   - bitor
 WhitespaceSensitiveMacros:
   - SZ
+SpacesBeforeTrailingComments: 1
