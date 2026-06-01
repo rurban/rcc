@@ -31,10 +31,10 @@ fi
 FMT=""
 
 # Some distros just call it clang-format. Others (e.g. Ubuntu) are insistent
-# that the version number be part of the command. We prefer clang-format if
-# that's present, otherwise we work backwards from highest version to lowest
-# version. macports adds an -mp suffix and has newer versions, so prefer that.
-for clangfmt in clang-format{-mp,}{-devel,-{22,21,20,19,18,15,8,7,6,5,4,3}{,.9,.8,.7,.6,.5,.4,.3,.2,.1,.0},}; do
+# that the version number be part of the command. We prefer the bare
+# clang-format first (picks up the pre-commit-installed binary when running
+# via pre-commit), then fall back to versioned and macports variants.
+for clangfmt in clang-format clang-format{-mp,}{-devel,-{22,21,20,19,18,15,8,7,6,5,4,3}{,.9,.8,.7,.6,.5,.4,.3,.2,.1,.0},}; do
 	if which "$clangfmt" &>/dev/null; then
 		FMT="$clangfmt"
 		break
