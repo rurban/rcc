@@ -232,6 +232,7 @@ void arm64_tbnz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14);
 // ---------------------------------------------------------------------------
 // System / Misc
 // ---------------------------------------------------------------------------
+void arm64_bti_c(SecBuf *s); // BTI C hint
 void arm64_nop(SecBuf *s);
 void arm64_dmb(SecBuf *s, int opt); // opt=0xb=ish
 void arm64_dsb(SecBuf *s, int opt);

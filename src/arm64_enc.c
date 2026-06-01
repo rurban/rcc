@@ -501,6 +501,7 @@ void arm64_tbnz(SecBuf *s, Arm64Reg rt, int imm6, int32_t imm14) {
 // ---------------------------------------------------------------------------
 // System / Misc
 // ---------------------------------------------------------------------------
+void arm64_bti_c(SecBuf *s) { secbuf_emit32le(s, 0xd503241fu); } // hint #34
 void arm64_nop(SecBuf *s) { secbuf_emit32le(s, 0xd503201fu); }
 void arm64_dmb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd50330bfu | BITS(11, 8, opt)); }
 void arm64_dsb(SecBuf *s, int opt) { secbuf_emit32le(s, 0xd503309fu | BITS(11, 8, opt)); }

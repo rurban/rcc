@@ -1099,6 +1099,20 @@ static size_t asm_jcc_label(SecBuf *s, int cond) {
 #endif
 }
 
+static size_t asm_jmp_label_to(SecBuf *s, const char *label) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    arm64_b(s, 0);
+    asm_record(ASM_JMP, off, 1, -1, -1, -1, 0, 0, 0, (char *)label, 0, -1, false);
+    return off;
+#else
+    x86_jmp_rel32(s, 0);
+    size_t count = s->len - off;
+    asm_record(ASM_JMP, off, count, -1, -1, -1, 0, 0, 0, (char *)label, 0, -1, false);
+    return off;
+#endif
+}
+
 static size_t asm_jmp_label(SecBuf *s) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
@@ -1129,6 +1143,12 @@ static void asm_adr_x16_label(SecBuf *s, const char *label) {
     size_t off = s->len;
     arm64_adr(s, 16, 0); // adr x16, 0 (placeholder)
     asm_fixup_add(s, off, label, 2); // type=2 = ADR fixup
+}
+#endif
+
+#ifdef ARCH_ARM64
+static void asm_bti_c(SecBuf *s) {
+    arm64_bti_c(s); // hint #34 = bti c
 }
 #endif
 
