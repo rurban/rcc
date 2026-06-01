@@ -2336,25 +2336,45 @@ static void emit_mov_imm(const char *reg, int imm) {
     }
 }
 
-// Emit adrp+add pair for label address, with platform-appropriate syntax
-// Linux: adrp reg, label / add reg, reg, :lo12:label
-// Darwin: adrp reg, label@PAGE / add reg, reg, label@PAGEOFF
+// Emit adrp+add pair for label address, with platform-appropriate relocations.
+// Linux:         R_AARCH64_ADR_PREL_PG_HI21 + R_AARCH64_ADD_ABS_LO12_NC  (ADRP+ADD)
+// Darwin local:  same (labels starting with '.' are always in this .o)
+// Darwin C syms: R_AARCH64_ADR_GOT_PAGE + R_AARCH64_LD64_GOT_LO12_NC    (ADRP+LDR via GOT)
+//   Labels starting with '.' are assembler-local (.LC*, .LF*, .L.label.*) — always
+//   defined in the current .o, so ADRP+ADD is correct regardless of forward refs.
+//   Labels starting with '_' are C-level symbols. They may be:
+//     - undefined dylib symbols: ld64 rejects ARM64_RELOC_PAGEOFF12 for these
+//     - locally defined C globals: ld64 synthesises a GOT entry when GOT relocs used
+//   In both cases GOT access is correct on Darwin.
 static void emit_adrp_add(VReg r, const char *label) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
-    size_t adrp_off = cg_sec->len;
-    asm_adrp(cg_sec, rd); // adrp xrd, label
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+#ifdef __APPLE__
+    // Local assembler labels start with '.'; C-level symbols start with '_'.
+    // Use GOT for all C-level symbols so ld64 can resolve both dylib and local-defined.
+    if (label[0] != '.') {
+        size_t adrp_off = cg_sec->len;
+        asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
+        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+        size_t ldr_off = cg_sec->len;
+        asm_ldr_rd_rd(cg_sec, rd); // ldr xrd, [xrd, label@GOTPAGEOFF]
+        objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+        return;
+    }
+#endif
+    size_t adrp_off = cg_sec->len;
+    asm_adrp(cg_sec, rd); // adrp xrd, label
     objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
     size_t add_off = cg_sec->len;
     asm_add_rd_rd_0(cg_sec, rd); // add x{rd}, x{rd}, #0 (reloc placeholder)
     objfile_add_reloc(cg_obj, SEC_TEXT, add_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
 }
 
-// GOT-based address load for weak symbols: undefined weak → NULL, defined → address.
-// Required on Linux ARM64; Darwin already uses GOT in emit_adrp_add.
+// GOT-based address load: undefined weak → NULL, defined → address.
+// On Darwin, emit_adrp_add already uses GOT for undefined external symbols.
 static void emit_adrp_got(VReg r, const char *label) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
