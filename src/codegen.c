@@ -61,6 +61,42 @@ static void cg_weak_declare(const char *name) {
         cg_obj->syms[sidx].bind = SB_WEAK;
 }
 
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
+    size_t off = asm_jmp_label(s);
+    if (!cg_dry_run) {
+        int sidx = objfile_find_sym(cg_obj, label);
+        if (sidx < 0)
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
+        objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_JUMP26, 0);
+    }
+    asm_fixup_add(s, off, label, 0);
+    return off;
+}
+static size_t cg_emit_jcc_reloc(SecBuf *s, Arm64Cond cond, const char *label) {
+    size_t off = asm_jcc_label(s, cond);
+    if (!cg_dry_run) {
+        int sidx = objfile_find_sym(cg_obj, label);
+        if (sidx < 0)
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
+        objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_JUMP26, 0);
+    }
+    asm_fixup_add(s, off, label, 1);
+    return off;
+}
+#elif defined(ARCH_ARM64)
+static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
+    size_t off = asm_jmp_label(s);
+    asm_fixup_add(s, off, label, 0);
+    return off;
+}
+static size_t cg_emit_jcc_reloc(SecBuf *s, Arm64Cond cond, const char *label) {
+    size_t off = asm_jcc_label(s, cond);
+    asm_fixup_add(s, off, label, 1);
+    return off;
+}
+#endif
+
 #ifndef ARCH_ARM64
 static size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
     size_t off = s->len;
