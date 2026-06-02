@@ -5718,6 +5718,8 @@ Program *parse(Token *tok) {
                 }
 
                 if (equalc(tok, ";")) {
+                    pending_asm_name = NULL;
+                    pending_alias_target = NULL;
                     tok = tok->next;
                     break;
                 }

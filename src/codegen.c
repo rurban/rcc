@@ -620,7 +620,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         call_target = format(".L_rcc_%s", call_target);
     if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
         node->lhs->var && node->lhs->var->is_function)
-        call_target = var_label(node->lhs->var);
+        call_target = node->lhs->var->name;
 
 #ifdef _WIN32
     char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
@@ -7254,9 +7254,9 @@ void codegen(Program *prog) {
         char **emitted_syms = NULL;
         int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
-            if (var->is_extern)
+            if (var->is_extern && !var->alias_target && !var->asm_name)
                 continue;
-            char *label = var->asm_name ? var->asm_name : var->name;
+            const char *label = var_sym_label(var);
             if (var->is_function && !var->alias_target && !var->asm_name)
                 continue;
             // Handle function aliases (__attribute__((alias)) or __asm__ renaming)
@@ -7269,14 +7269,14 @@ void codegen(Program *prog) {
             }
             if (var->alias_target) {
                 if (!var->is_static)
-                    printf(".globl %s\n", asm_sym_name(sym_name(label)));
-                printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
+                    printf(".globl %s\n", asm_sym_name(label));
+                printf(".set %s, %s\n", asm_sym_name(label),
                        asm_sym_name(sym_name(var->alias_target)));
                 continue;
             }
             // If a global with this asm_name already emitted, skip (alias target)
             bool sym_already_emitted = false;
-            const char *canon = asm_sym_name(sym_name(label));
+            const char *canon = asm_sym_name(label);
             for (int i = 0; i < emitted_count; i++) {
                 if (strcmp(emitted_syms[i], canon) == 0) {
                     sym_already_emitted = true;
@@ -7290,7 +7290,7 @@ void codegen(Program *prog) {
                 LVar *existing = NULL;
                 for (LVar *g = prog->globals; g; g = g->next) {
                     if (g != var && !g->is_extern && !g->is_function &&
-                        strcmp(g->name, var->asm_name) == 0 &&
+                        strcmp(sym_name(g->name), var->asm_name) == 0 &&
                         (g->has_init || g->init_data)) {
                         existing = g;
                         break;
@@ -7315,10 +7315,10 @@ void codegen(Program *prog) {
             if (var->ty->align > 1)
                 printf("  .balign %d\n", var->ty->align);
             if (!var->is_static)
-                printf(".globl %s\n", asm_sym_name(sym_name(label)));
-            printf("%s:\n", asm_sym_name(sym_name(safe_label)));
+                printf(".globl %s\n", asm_sym_name(label));
+            printf("%s:\n", asm_sym_name(safe_label));
             if (reserved)
-                printf(".set %s, %s\n", asm_sym_name(sym_name(label)), asm_sym_name(sym_name(safe_label)));
+                printf(".set %s, %s\n", asm_sym_name(label), asm_sym_name(safe_label));
             if (var->init_data || var->relocs) {
                 int pos = 0;
                 for (Reloc *rel = var->relocs; rel; rel = rel->next) {
@@ -7729,7 +7729,7 @@ void codegen(Program *prog) {
         if (fn_label != fn->name)
             printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(fn->asm_name));
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), fn->asm_name);
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
@@ -7850,10 +7850,12 @@ void codegen(Program *prog) {
                     else {
                         int v = var->offset;
                         printf("  mov x13, #%d\n", v & 0xffff);
-                        v >>= 16; int s = 16;
+                        v >>= 16;
+                        int s = 16;
                         while (v) {
                             printf("  movk x13, #%d, lsl #%d\n", v & 0xffff, s);
-                            v >>= 16; s += 16;
+                            v >>= 16;
+                            s += 16;
                         }
                         printf("  sub x13, %s, x13\n", FRAME_PTR);
                     }
@@ -8095,7 +8097,7 @@ void codegen(Program *prog) {
         if (fn_label != fn->name)
             printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn->asm_name)));
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), fn->asm_name);
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
@@ -8196,7 +8198,7 @@ void codegen(Program *prog) {
 #elif defined(__APPLE__)
         printf("\n.section __DATA,__mod_init_func,mod_init_funcs\n");
 #else
-                printf("\n.section .init_array,\"aw\",@init_array\n");
+            printf("\n.section .init_array,\"aw\",@init_array\n");
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_constructor)
@@ -8210,7 +8212,7 @@ void codegen(Program *prog) {
         printf("\n.section __DATA,__mod_term_func,mod_term_funcs\n");
         printf("  .balign 8\n");
 #else
-                printf("\n.section .fini_array,\"aw\",@fini_array\n");
+        printf("\n.section .fini_array,\"aw\",@fini_array\n");
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor)
@@ -8228,7 +8230,7 @@ void codegen(Program *prog) {
 #elif defined(__APPLE__)
         printf("\n.section __TEXT,__const\n");
 #else
-                printf("\n.section .rodata\n");
+            printf("\n.section .rodata\n");
 #endif
         printf("  .balign 8\n");
         for (FloatLit *fl = float_lits; fl; fl = fl->next) {
