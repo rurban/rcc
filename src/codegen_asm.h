@@ -166,6 +166,7 @@ static CgFwdList *asm_fwd_push(CgFwdList *head, size_t instr_off, int type) {
 // Patch all fixups in the list to point to target_off
 static void asm_fwd_patch_all(SecBuf *s, CgFwdList *head, size_t target_off) {
     while (head) {
+#ifdef ARCH_ARM64
         uint32_t insn = *(uint32_t *)(s->data + head->instr_off);
         int64_t delta = (int64_t)((int64_t)target_off - (int64_t)head->instr_off);
         if (head->type == 0) {
@@ -183,6 +184,14 @@ static void asm_fwd_patch_all(SecBuf *s, CgFwdList *head, size_t target_off) {
             insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
         }
         secbuf_patch32le(s, head->instr_off, insn);
+#else
+        int32_t disp;
+        if (head->type == 0)
+            disp = (int32_t)(target_off - (head->instr_off + 5));
+        else
+            disp = (int32_t)(target_off - (head->instr_off + 6));
+        secbuf_patch32le(s, head->type == 0 ? head->instr_off + 1 : head->instr_off + 2, (uint32_t)disp);
+#endif
         head = head->next;
     }
 }
