@@ -28,13 +28,7 @@ static void cg_set_section(int sec) {
 static void cg_def_label(const char *name) {
     if (cg_dry_run) return;
 #ifdef __APPLE__
-    // MH_SUBSECTIONS_VIA_SYMBOLS treats every symbol as a subsection boundary.
-    // Flow-control labels (.L.xxx) have no outgoing relocations referencing them
-    // (branches use offset-encoded B/BL with no reloc), so the linker dead-strips
-    // their subsection — dropping the epilogue and placing stubs in its place.
-    // These labels are resolved purely in-memory via asm_fixup_resolve; they must
-    // NOT appear in the Mach-O symbol table.
-    if (name[0] == '.' && name[1] == 'L' && name[2] == '.') {
+    if (name[0] == '.' && name[1] == 'L') {
         cg_label_ht_add(name, cg_sec->len);
         asm_fixup_resolve(cg_sec, name, cg_sec->len);
         return;
@@ -77,7 +71,7 @@ static void cg_weak_declare(const char *name) {
 #if defined(__APPLE__) && defined(ARCH_ARM64)
 static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
     size_t off = asm_jmp_label(s);
-    if (!cg_dry_run) {
+    if (!cg_dry_run && !(label[0] == '.' && label[1] == 'L')) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0)
             sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
@@ -88,7 +82,7 @@ static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
 }
 static size_t cg_emit_jcc_reloc(SecBuf *s, Arm64Cond cond, const char *label) {
     size_t off = asm_jcc_label(s, cond);
-    if (!cg_dry_run) {
+    if (!cg_dry_run && !(label[0] == '.' && label[1] == 'L')) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0)
             sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
@@ -7985,9 +7979,10 @@ struct ObjFile *codegen(Program *prog) {
                             secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]); // .set %s, %s
                         size_t rel_off = cg_sec->len;
                         secbuf_emit64le(cg_sec, 0); // .quad 0 (addend in reloc)
-                        int sidx = objfile_find_sym(cg_obj, rel->label);
+                        const char *rlabel = sym_name(rel->label);
+                        int sidx = objfile_find_sym(cg_obj, rlabel);
                         if (sidx < 0)
-                            sidx = objfile_add_sym(cg_obj, rel->label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+                            sidx = objfile_add_sym(cg_obj, rlabel, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
 #ifdef ARCH_ARM64
                         objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
 #else
