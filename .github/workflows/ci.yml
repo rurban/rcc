@@ -63,28 +63,12 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
-          ./rcc -o /tmp/smoke.o -c /tmp/smoke.c
-          echo "=== .o relocations ==="
-          otool -r /tmp/smoke.o || true
-          echo "=== .o symbols ==="
-          nm /tmp/smoke.o || true
-          echo "=== .o disasm ==="
-          otool -tVv /tmp/smoke.o 2>/dev/null | head -50 || true
-          echo "=== clang reference ==="
-          clang -O0 -c /tmp/smoke.c -o /tmp/smoke_clang.o 2>/dev/null || true
-          otool -r /tmp/smoke_clang.o 2>/dev/null || true
-          otool -tVv /tmp/smoke_clang.o 2>/dev/null | head -30 || true
-          echo "=== link ==="
-          ./rcc -v -o /tmp/smoke /tmp/smoke.c || true
-          echo "=== final binary disasm ==="
-          otool -tVv /tmp/smoke 2>/dev/null | head -60 || true
-          echo "=== run ==="
-          (lldb --batch -o "run" -o "bt" -- /tmp/smoke 2>/dev/null) || /tmp/smoke || echo "exit=$?"
+          ./rcc -o /tmp/smoke /tmp/smoke.c
+          /tmp/smoke
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
-          ./rcc -o /tmp/smoke2 /tmp/smoke2.c || true
-          /tmp/smoke2 || echo "smoke2 exit=$?"
-          rm -f /tmp/smoke /tmp/smoke.o /tmp/smoke.c /tmp/smoke_clang.o /tmp/smoke2 /tmp/smoke2.c
-          exit 0
+          ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+          /tmp/smoke2
+          rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
       - name: Run tests
         run: |
           ./rcc --version

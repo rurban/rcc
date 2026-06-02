@@ -27,6 +27,19 @@ static void cg_set_section(int sec) {
 
 static void cg_def_label(const char *name) {
     if (cg_dry_run) return;
+#ifdef __APPLE__
+    // MH_SUBSECTIONS_VIA_SYMBOLS treats every symbol as a subsection boundary.
+    // Flow-control labels (.L.xxx) have no outgoing relocations referencing them
+    // (branches use offset-encoded B/BL with no reloc), so the linker dead-strips
+    // their subsection — dropping the epilogue and placing stubs in its place.
+    // These labels are resolved purely in-memory via asm_fixup_resolve; they must
+    // NOT appear in the Mach-O symbol table.
+    if (name[0] == '.' && name[1] == 'L' && name[2] == '.') {
+        cg_label_ht_add(name, cg_sec->len);
+        asm_fixup_resolve(cg_sec, name, cg_sec->len);
+        return;
+    }
+#endif
     objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_LOCAL, ST_FUNC);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
