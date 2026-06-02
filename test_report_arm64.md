@@ -2,21 +2,21 @@
 
 **Platform**: macOS ARM64 (native)
 
-Generated: June 02 2026 21:13
+Generated: June 03 2026 05:02
 
 ## Overall Summary
 
-- **Total**: 171
-- **Passed**: 162
-- **Failed**: 9
-- **Overall Pass Rate**: 94%
+- **Total**: 1166
+- **Passed**: 1084
+- **Failed**: 11
+- **Overall Pass Rate**: 92%
 
 ## TCC Compatibility Tests
 
 - **Total**: 156
-- **Passed**: 148
-- **Failed**: 8
-- **Pass Rate**: 94%
+- **Passed**: 152
+- **Failed**: 4
+- **Pass Rate**: 97%
 
 ## Compliance Tests (vs GCC)
 
@@ -24,3 +24,12 @@ Generated: June 02 2026 21:13
 - **Passed**: 14
 - **Failed**: 1
 - **Pass Rate**: 93%
+
+## GCC Torture Tests
+
+- **Total**: 995
+- **Passed**: 918
+- **Failed**: 6
+- **Skipped**: 71
+- **FAIL RUNTIME**: 6
+- **Pass Rate (excl. skip)**: 99%

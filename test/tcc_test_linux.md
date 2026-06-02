@@ -1,6 +1,6 @@
 # TCC Test Suite Report for RCC
 
-Generated: May 2026
+Generated: June 2026
 
 ## Summary
 
@@ -177,7 +177,7 @@ Generated: May 2026
 | test_ptr                    | PASS   | exit=0                    |
 | test_real                   | PASS   | exit=0                    |
 | test_self_include2          | PASS   | exit=1                    |
-| test_signextend             | PASS   | exit=1                    |
+| test_signextend             | PASS   | exit=0                    |
 | test_simple                 | PASS   | exit=1                    |
 | test_simple2                | PASS   | exit=1                    |
 | test_str                    | PASS   | exit=0                    |

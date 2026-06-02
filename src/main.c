@@ -495,7 +495,25 @@ int main(int argc, char **argv) {
                 snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
         } else {
 #ifdef __APPLE__
-            snprintf(cmd, sizeof(cmd), "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup", out_path);
+            // Prefer lib/darwin.dylib (provides on_exit with exit-code capture
+            // via dyld interposing).  Fall back to RCC_INCDIR path for installs.
+            struct stat libst_darwin;
+            char darwin_link[512] = "";
+            if (stat("lib/darwin.dylib", &libst_darwin) == 0) {
+                char cwd[256];
+                getcwd(cwd, sizeof(cwd));
+                snprintf(darwin_link, sizeof(darwin_link),
+                         "lib/darwin.dylib -Wl,-rpath,%s/lib", cwd);
+            }
+#ifdef RCC_INCDIR
+            else if (stat(RCC_INCDIR "/../lib/darwin.dylib", &libst_darwin) == 0)
+                snprintf(darwin_link, sizeof(darwin_link),
+                         "%s/../lib/darwin.dylib -Wl,-rpath,%s/../lib",
+                         RCC_INCDIR, RCC_INCDIR);
+#endif
+            snprintf(cmd, sizeof(cmd),
+                     "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup %s",
+                     out_path, darwin_link);
 #else
             if (opt_pic) {
                 snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
@@ -538,19 +556,6 @@ int main(int argc, char **argv) {
 #endif
             if (stat("lib/mingw.obj", &libst) == 0)
             snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
-#endif
-#ifdef __APPLE__
-        // Link Darwin runtime lib (provides on_exit etc. on macOS)
-        if (stat("lib/darwin.o", &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/darwin.o");
-#ifdef RCC_INCDIR
-        else {
-            // cppcheck-suppress syntaxError
-            const char *rcc_darwin = RCC_INCDIR "/../lib/darwin.o";
-            if (stat(rcc_darwin, &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
-        }
-#endif
 #endif
 
         if (libs_len)
