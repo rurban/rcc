@@ -7256,7 +7256,7 @@ void codegen(Program *prog) {
         for (LVar *var = prog->globals; var; var = var->next) {
             if (var->is_extern && !var->alias_target && !var->asm_name)
                 continue;
-            const char *label = var_sym_label(var);
+            char *label = var->asm_name ? var->asm_name : var->name;
             if (var->is_function && !var->alias_target && !var->asm_name)
                 continue;
             // Handle function aliases (__attribute__((alias)) or __asm__ renaming)
@@ -7272,14 +7272,14 @@ void codegen(Program *prog) {
             }
             if (var->alias_target) {
                 if (!var->is_static)
-                    printf(".globl %s\n", asm_sym_name(label));
-                printf(".set %s, %s\n", asm_sym_name(label),
+                    printf(".globl %s\n", asm_sym_name(sym_name(label)));
+                printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
                        asm_sym_name(sym_name(var->alias_target)));
                 continue;
             }
             // If a global with this asm_name already emitted, skip (alias target)
             bool sym_already_emitted = false;
-            const char *canon = asm_sym_name(label);
+            const char *canon = asm_sym_name(var_sym_label(var));
             for (int i = 0; i < emitted_count; i++) {
                 if (strcmp(emitted_syms[i], canon) == 0) {
                     sym_already_emitted = true;
@@ -7318,10 +7318,10 @@ void codegen(Program *prog) {
             if (var->ty->align > 1)
                 printf("  .balign %d\n", var->ty->align);
             if (!var->is_static)
-                printf(".globl %s\n", asm_sym_name(label));
-            printf("%s:\n", asm_sym_name(safe_label));
+                printf(".globl %s\n", asm_sym_name(sym_name(label)));
+            printf("%s:\n", asm_sym_name(sym_name(safe_label)));
             if (reserved)
-                printf(".set %s, %s\n", asm_sym_name(label), asm_sym_name(safe_label));
+                printf(".set %s, %s\n", asm_sym_name(sym_name(label)), asm_sym_name(safe_label));
             if (var->init_data || var->relocs) {
                 int pos = 0;
                 for (Reloc *rel = var->relocs; rel; rel = rel->next) {
