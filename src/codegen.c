@@ -2361,15 +2361,19 @@ static void emit_adrp_add(VReg r, const char *label) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
 #ifdef __APPLE__
     // Local assembler labels start with '.'; C-level symbols start with '_'.
-    // Use GOT for all C-level symbols so ld64 can resolve both dylib and local-defined.
+    // Use GOT for global/weak/undefined C symbols so ld64 can resolve dylib refs.
+    // Local symbols (SB_LOCAL) must use ADRP+ADD — ld64 rejects GOT for them.
     if (label[0] != '.') {
-        size_t adrp_off = cg_sec->len;
-        asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
-        objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
-        size_t ldr_off = cg_sec->len;
-        asm_ldr_rd_rd(cg_sec, rd); // ldr xrd, [xrd, label@GOTPAGEOFF]
-        objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
-        return;
+        bool is_local = (sidx >= 0 && cg_obj->syms[sidx].bind == SB_LOCAL);
+        if (!is_local) {
+            size_t adrp_off = cg_sec->len;
+            asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
+            objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+            size_t ldr_off = cg_sec->len;
+            asm_ldr_rd_rd(cg_sec, rd); // ldr xrd, [xrd, label@GOTPAGEOFF]
+            objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
+            return;
+        }
     }
 #endif
     size_t adrp_off = cg_sec->len;
@@ -2381,55 +2385,37 @@ static void emit_adrp_add(VReg r, const char *label) {
 }
 
 // GOT-based address load: undefined weak → NULL, defined → address.
-// On Darwin, emit_adrp_add already uses GOT for undefined external symbols.
+// On Darwin, local symbols bypass GOT (ld64 rejects GOT for them).
 static void emit_adrp_got(VReg r, const char *label) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+    // Local symbols can't use GOT on Darwin (ld64 rejects them) — just ADRP+ADD.
+    bool is_local = (sidx >= 0 && cg_obj->syms[sidx].section != SEC_UNDEF
+                     && cg_obj->syms[sidx].bind == SB_LOCAL);
+    if (is_local) {
+        emit_adrp_add(r, label);
+        return;
+    }
+    // Weak symbols: use GOT indirection so undefined weak resolves to NULL
     if (sidx >= 0 && cg_obj->syms[sidx].bind == SB_WEAK) {
-        // Weak symbols: use GOT indirection so undefined weak resolves to NULL
         size_t adrp_off = cg_sec->len;
         asm_adrp(cg_sec, rd); // adrp x{rd}, :got:label
         objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
         size_t ldr_off = cg_sec->len;
         asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}, #:got_lo12:label]
         objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
-    } else {
-        // Non-weak (global data): compute absolute address then load from it
-        emit_adrp_add(r, label);
-        asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}] (load value from address)
+        return;
     }
-}
-#endif
-
-// Emit load/store-safe address for [x29, #-offset] when offset > 255
-// Returns register holding the address (must be freed by caller)
-#if 0
-static int emit_stack_addr(int offset) {
-#ifdef ARCH_ARM64
-    int ta = alloc_reg();
-    if (offset <= 4095)
-        asm_sub_reg_fp_imm(cg_sec, ta, offset); // sub ta, x29, #offset
-    else {
-        int v = offset;
-        asm_mov_imm(cg_sec, ta, 8, v & 0xffff); // mov $v & 0xffff, rta
-        v >>= 16;
-        int s = 16;
-        while (v) {
-            asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s); // movk x{ta}, #v, lsl #s
-            v >>= 16;
-            s += 16;
-        }
-        asm_sub_reg3(cg_sec, ta, 29, ta, 8); // sub ta, x29, ta
-    }
-    return ta;
-#else
-    int ta = alloc_reg();
-    asm_lea_rbp_reg(cg_sec, ta, 8, offset); // lea [rbp-8], rta
-    return ta;
-#endif
+    // Non-weak undefined/global: use GOT (Darwin linker can synthesize GOT entries)
+    size_t adrp_off = cg_sec->len;
+    asm_adrp(cg_sec, rd); // adrp x{rd}, :got:label
+    objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
+    size_t ldr_off = cg_sec->len;
+    asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}, #:got_lo12:label]
+    objfile_add_reloc(cg_obj, SEC_TEXT, ldr_off, sidx, R_AARCH64_LD64_GOT_LO12_NC, 0);
 }
 #endif
 
@@ -4864,10 +4850,10 @@ static VReg gen(Node *node) {
                 }
 #ifdef ARCH_ARM64
                 if (retbuf_offset <= 4095)
-                    asm_ldur_phy(cg_sec, ARM64_X11, ARM64_X29, 3, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
+                    asm_ldur_phy(cg_sec, ARM64_X17, ARM64_X29, 3, -retbuf_offset); // ldur x17, [x29, #-retbuf_offset]
                 else {
                     emit_mov_imm64(ARM64_X16, (uint64_t)retbuf_offset); // mov x16, #retbuf_offset
-                    asm_sub_x11_fp_x16(cg_sec); // sub x11, x29, x16
+                    arm64_sub_reg(cg_sec, 1, ARM64_X17, ARM64_X29, ARM64_X16, ARM64_LSL, 0); // sub x17, x29, x16
                 }
                 emit_mov_imm64(ARM64_X9, (uint64_t)node->lhs->ty->size); // mov x9, #size
                 cg_def_label(format(".L.retcopy.%d", c));
@@ -4878,13 +4864,13 @@ static VReg gen(Node *node) {
                 }
                 arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                 asm_ldrb_w16_x9(cg_sec, src); // ldrb w16, [x{src}, x9]
-                asm_strb_w16_x9_phy(cg_sec, ARM64_X11); // strb w16, [x11, x9]
+                asm_strb_w16_x9_phy(cg_sec, ARM64_X17); // strb w16, [x17, x9]
                 {
                     size_t _jmp = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, _jmp, format(".L.retcopy.%d", c), 0);
                 }
                 cg_def_label(format(".L.retcopy_end.%d", c));
-                asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
+                asm_mov_x0_reg(cg_sec, ARM64_X17); // mov x0, x17
 #else
                 asm_mov_rbp(cg_sec, X86_R11, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R11
                 x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %rcx
@@ -6513,7 +6499,12 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
         VReg r_expected = alloc_reg();
         Type *elem_ty = node->lhs->ty && node->lhs->ty->base ? node->lhs->ty->base : ty_int;
-        emit_load(elem_ty, r_expected, r_expectedaddr, 0);
+        // Use zero-extending load for expected value — LDXR zero-extends, so the
+        // compare operand must match.  emit_load would sign-extend for signed types.
+        if (sz == 1) arm64_ldrb_uoff(cg_sec, REG(r_expected), REG(r_expectedaddr), 0); // ldrb w{r_expected}, [x{r_expectedaddr}]
+        else if (sz == 2) arm64_ldrh_uoff(cg_sec, REG(r_expected), REG(r_expectedaddr), 0); // ldrh w{r_expected}, [x{r_expectedaddr}]
+        else if (sz == 4) arm64_ldr_uoff(cg_sec, 2, REG(r_expected), REG(r_expectedaddr), 0); // ldr w{r_expected}, [x{r_expectedaddr}]
+        else arm64_ldr_uoff(cg_sec, 3, REG(r_expected), REG(r_expectedaddr), 0); // ldr x{r_expected}, [x{r_expectedaddr}]
         VReg r_old = alloc_reg();
         int lbl = rcc_label_count++;
         cg_def_label(format(".L.atom_cas.%d", lbl));
