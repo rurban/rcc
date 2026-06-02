@@ -8186,7 +8186,6 @@ void codegen(Program *prog) {
         printf("  ret\n");
 #endif
     }
-
     // Emit constructor/destructor entries
     bool has_ctor = false, has_dtor = false;
     for (TLItem *item = prog->items; item; item = item->next) {
@@ -8195,7 +8194,34 @@ void codegen(Program *prog) {
             if (item->fn->is_destructor) has_dtor = true;
         }
     }
+    if (has_dtor) {
+#if defined(__APPLE__)
+        // On macOS, destructors must be registered via __cxa_atexit at startup.
+        // Emit hidden initializer stubs that call __cxa_atexit.
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor) {
+                printf("\n.text\n");
+                printf("  .p2align 2\n");
+                printf("___GLOBAL_dtor_%s:\n", item->fn->name);
+                printf("  stp x29, x30, [sp, #-16]!\n");
+                printf("  mov x29, sp\n");
+                printf("  adrp x0, %s@GOTPAGE\n", asm_sym_name(sym_name(item->fn->name)));
+                printf("  ldr x0, [x0, %s@GOTPAGEOFF]\n", asm_sym_name(sym_name(item->fn->name)));
+                printf("  mov x1, #0\n");
+                printf("  adrp x2, ___dso_handle@GOTPAGE\n");
+                printf("  ldr x2, [x2, ___dso_handle@GOTPAGEOFF]\n");
+                printf("  bl ___cxa_atexit\n");
+                printf("  ldp x29, x30, [sp], #16\n");
+                printf("  ret\n");
+            }
+        }
+#endif
+    }
+#if defined(__APPLE__)
+    if (has_ctor || has_dtor) {
+#else
     if (has_ctor) {
+#endif
 #ifdef _WIN32
         printf("\n.section .ctors,\"w\"\n");
 #elif defined(__APPLE__)
@@ -8207,13 +8233,18 @@ void codegen(Program *prog) {
             if (item->kind == TL_FUNC && item->fn->is_constructor)
                 printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
+#if defined(__APPLE__)
+        // Register destructor stubs in __mod_init_func too
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor)
+                printf("  .quad ___GLOBAL_dtor_%s\n", item->fn->name);
+        }
+#endif
     }
+#if !defined(__APPLE__)
     if (has_dtor) {
 #ifdef _WIN32
         printf("\n.section .dtors,\"w\"\n");
-#elif defined(__APPLE__)
-        printf("\n.section __DATA,__mod_term_func,mod_term_funcs\n");
-        printf("  .balign 8\n");
 #else
         printf("\n.section .fini_array,\"aw\",@fini_array\n");
 #endif
@@ -8222,7 +8253,7 @@ void codegen(Program *prog) {
                 printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
     }
-
+#endif
     if (alloca_needed)
         emit_alloca();
 
