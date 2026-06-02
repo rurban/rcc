@@ -294,10 +294,14 @@ int macho_write(ObjFile *obj, const char *path) {
     uint32_t symtab_size = (uint32_t)nsyms * 16; // sizeof nlist_64 = 16
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
-
-    // segment vm size = from text_off to end of last section (including BSS padding)
-    uint64_t seg_vmsize = (rodata_off + rodata_size) - text_off;
-    uint64_t seg_filesize = seg_vmsize; // .o files: vmsize == filesize (no zero-fill)
+    // segment vmsize must be >= filesize and cover all sections (at addr 0)
+    uint64_t seg_filesize = (rodata_off + rodata_size) - text_off;
+    uint64_t max_section_size = text_size;
+    if (data_size > max_section_size) max_section_size = data_size;
+    if (obj->bss_size > max_section_size) max_section_size = obj->bss_size;
+    if (rodata_size > max_section_size) max_section_size = rodata_size;
+    uint64_t seg_vmsize = max_section_size;
+    if (seg_filesize > seg_vmsize) seg_vmsize = seg_filesize;
 
     // -----------------------------------------------------------------------
     // Write file

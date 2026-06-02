@@ -1898,7 +1898,7 @@ static void asm_fcmp(SecBuf *s, int ftype) {
 // str d{fp_r}, [sp, #uimm] — store float/double to SP-relative slot
 static void asm_str_fp_sp_off(SecBuf *s, int fp_r, uint32_t uimm) {
     int opc = (uimm % 8 == 0) ? 3 : 2; // 3=64-bit (d), 2=32-bit (s) stride
-    arm64_str_fp(s, opc, fp_r, 31, uimm / (opc == 3 ? 8 : 4)); // str d{fp_r}, [sp, #uimm]
+    arm64_str_fp(s, opc, fp_r, 31, uimm); // str d{fp_r}, [sp, #uimm] — arm64_str_fp does /8 internally
 }
 // asr rd, x{src}, #63 — arithmetic shift right by 63 (sign-extend)
 static void asm_asr_rd_reg_63(SecBuf *s, Arm64Reg rd, VReg src) {

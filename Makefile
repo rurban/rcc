@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
+PATH := $(HOME)/bin:$(PATH)
 CC     := gcc
 CFLAGS = -std=c11 -Wall -Wextra -O3 -g
 TARGET = rcc
