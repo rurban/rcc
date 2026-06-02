@@ -29,6 +29,16 @@ static void cg_def_label(const char *name) {
     if (cg_dry_run) return;
 #ifdef __APPLE__
     if (name[0] == '.' && name[1] == 'L') {
+        // .L labels used for flow control are resolved via asm_fixup_resolve and
+        // should NOT appear in the Mach-O symbol table (dead-strip risk).
+        // BUT: if a relocation already references this label (e.g. ADRP+ADD for
+        // computed goto, or data-section init array), update the symbol from
+        // UNDEF to SEC_TEXT so the linker can resolve it.
+        int sidx = objfile_find_sym(cg_obj, name);
+        if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_UNDEF) {
+            cg_obj->syms[sidx].section = SEC_TEXT;
+            cg_obj->syms[sidx].offset = cg_sec->len;
+        }
         cg_label_ht_add(name, cg_sec->len);
         asm_fixup_resolve(cg_sec, name, cg_sec->len);
         return;
