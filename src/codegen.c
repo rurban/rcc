@@ -5449,58 +5449,54 @@ static VReg gen(Node *node) {
         return -1;
     }
     case ND_FOR: {
-        CgFwdList *end_fwd = NULL;
-        CgFwdList *cont_fwd = NULL;
+        break_stack[ctrl_depth] = NULL;
+        continue_stack[ctrl_depth] = NULL;
 
         if (node->init) {
             VReg r = gen(node->init);
             if (r != -1) free_reg(r);
         }
         size_t begin_pos = cg_sec->len; // begin label
-        break_stack[ctrl_depth] = end_fwd;
-        continue_stack[ctrl_depth] = cont_fwd;
         ctrl_depth++;
         if (node->cond) {
-            gen_cond_branch_inv(node->cond, &end_fwd);
+            gen_cond_branch_inv(node->cond, &break_stack[ctrl_depth - 1]);
         }
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_fwd_def(&cont_fwd); // cont label
+        cg_fwd_def(&continue_stack[ctrl_depth - 1]); // cont label
         if (node->inc) {
             VReg r_inc = gen(node->inc);
             if (r_inc != -1) free_reg(r_inc);
         }
         asm_b_back(cg_sec, begin_pos); // b begin
-        cg_fwd_def(&end_fwd); // end label
+        cg_fwd_def(&break_stack[ctrl_depth - 1]); // end label
         ctrl_depth--;
         return -1;
     }
     case ND_DO: {
-        CgFwdList *end_fwd = NULL;
-        CgFwdList *cont_fwd = NULL;
+        break_stack[ctrl_depth] = NULL;
+        continue_stack[ctrl_depth] = NULL;
         size_t begin_pos = cg_sec->len; // begin label
-        break_stack[ctrl_depth] = end_fwd;
-        continue_stack[ctrl_depth] = cont_fwd;
         ctrl_depth++;
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_fwd_def(&cont_fwd); // cont label
+        cg_fwd_def(&continue_stack[ctrl_depth - 1]); // cont label
         VReg r = gen(node->cond);
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, node->cond->ty->size);
         free_reg(r);
         asm_bcond_back(cg_sec, ARM64_NE, begin_pos); // b.ne begin
 #else
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, node->cond->ty->size);
         free_reg(r);
         asm_bcond_back(cg_sec, X86_NE, begin_pos); // jne begin
 #endif
-        cg_fwd_def(&end_fwd); // end label
+        cg_fwd_def(&break_stack[ctrl_depth - 1]); // end label
         ctrl_depth--;
         return -1;
     }
     case ND_SWITCH: {
-        CgFwdList *sw_end_fwd = NULL;
+        break_stack[ctrl_depth] = NULL;
         int c = ++rcc_label_count;
         VReg cond = gen(node->cond);
         int sz = op_size(node->cond->ty);
@@ -5600,16 +5596,15 @@ static VReg gen(Node *node) {
             asm_fixup_add(cg_sec, sw_jmp, format(".L.case.%d", node->default_case->label_id), 0); // fixup label
         } else {
             size_t sw_jmp = asm_jmp_label(cg_sec); // cmp %s, #%lld
-            sw_end_fwd = asm_fwd_push(sw_end_fwd, sw_jmp, 0);
+            break_stack[ctrl_depth] = asm_fwd_push(break_stack[ctrl_depth], sw_jmp, 0);
         }
         free_reg(cond);
-        break_stack[ctrl_depth] = sw_end_fwd;
         continue_stack[ctrl_depth] = ctrl_depth > 0 ? continue_stack[ctrl_depth - 1] : NULL;
         ctrl_depth++;
         VReg r_body = gen(node->then);
         if (r_body != -1) free_reg(r_body);
         ctrl_depth--;
-        cg_fwd_def(&sw_end_fwd); // end label
+        cg_fwd_def(&break_stack[ctrl_depth]); // end label
         return -1;
     }
     case ND_CASE: {
