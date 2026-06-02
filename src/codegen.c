@@ -1473,7 +1473,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 fp_reg_args += arg_hfa_count[i];
             } else {
                 arg_stack_idx[i] = stack_args;
-                stack_args += arg_hfa_count[i];
+                stack_args += (argv[i]->ty->size + 7) / 8;
             }
             continue;
         }
@@ -1548,7 +1548,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #ifdef ARCH_ARM64
     // ARM64: evaluate args for register passing, track stack args
     for (int i = 0; i < nargs; i++) {
-        if (arg_stack_idx[i] >= 0)
+        // Skip regular stack args, but evaluate HFAs on stack for data copying
+        if (arg_stack_idx[i] >= 0 && arg_hfa_count[i] <= 0)
             continue;
         if (arg_hfa_count[i] > 0 || ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)) {
             int addr = gen_addr(argv[i]);
@@ -1610,6 +1611,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_stack_idx[i] < 0)
             continue;
         int r;
+        if (arg_hfa_count[i] > 0 && arg_stack_idx[i] >= 0) {
+            // HFA struct overflowed V registers — copy struct data to stack
+            int addr = arg_regs[i];
+            int sz = argv[i]->ty->size;
+            for (int off = 0; off < sz; off += 8) {
+                printf("  ldr x16, [%s, #%d]\n", reg64[addr], off);
+                printf("  str x16, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8 + off);
+            }
+            free_reg(addr);
+            continue;
+        }
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
         else
@@ -5463,9 +5475,27 @@ static int gen(Node *node) {
         next_char:;
         }
         out[olen] = '\0';
+        // Apple ARM64 assembler treats ';' as comment — split on semicolons
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+        {
+            char *semi_out = arena_alloc(olen * 2 + 16);
+            int so = 0;
+            for (int k = 0; k < olen; k++) {
+                if (out[k] == ';') {
+                    semi_out[so++] = '\n';
+                    semi_out[so++] = ' ';
+                    semi_out[so++] = ' ';
+                } else {
+                    semi_out[so++] = out[k];
+                }
+            }
+            semi_out[so] = '\0';
+            printf("%s\n", semi_out);
+        }
+#else
         printf("%s\n", out);
+#endif
 
-        // Store back output register operands to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
             AsmOperand *op = &node->asm_ops[i];
             if (op_addr[i] < 0) continue;
@@ -7224,7 +7254,7 @@ void codegen(Program *prog) {
         char **emitted_syms = NULL;
         int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
-            if (var->is_extern && !var->alias_target && !var->asm_name)
+            if (var->is_extern)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
             if (var->is_function && !var->alias_target && !var->asm_name)
@@ -7809,6 +7839,36 @@ void codegen(Program *prog) {
                             printf("  str d%d, [x16, #%d]\n", fp_param + j, off);
                     }
                     fp_param += hfa_count;
+                } else if (hfa_count > 0) {
+                    // HFA struct overflowed V registers — copy from caller's stack frame
+                    int spoff = 16 + stack_param * 8;
+                    int sz = var->ty->size;
+                    // Use byte-copy from caller's stack to local slot
+                    int c = ++rcc_label_count;
+                    if (var->offset <= 4095)
+                        printf("  sub x13, %s, #%d\n", FRAME_PTR, var->offset);
+                    else {
+                        int v = var->offset;
+                        printf("  mov x13, #%d\n", v & 0xffff);
+                        v >>= 16; int s = 16;
+                        while (v) {
+                            printf("  movk x13, #%d, lsl #%d\n", v & 0xffff, s);
+                            v >>= 16; s += 16;
+                        }
+                        printf("  sub x13, %s, x13\n", FRAME_PTR);
+                    }
+                    // x11 = source (caller's stack)
+                    printf("  add x11, %s, #%d\n", FRAME_PTR, spoff);
+                    printf("  mov x9, #%d\n", sz);
+                    printf(".L.pcopy.%d:\n", c);
+                    printf("  cmp x9, #0\n");
+                    printf("  b.eq .L.pcopy_end.%d\n", c);
+                    printf("  sub x9, x9, #1\n");
+                    printf("  ldrb w16, [x11, x9]\n");
+                    printf("  strb w16, [x13, x9]\n");
+                    printf("  b .L.pcopy.%d\n", c);
+                    printf(".L.pcopy_end.%d:\n", c);
+                    stack_param += (sz + 7) / 8;
                 } else if (is_flonum(var->ty)) {
                     if (fp_param < 8) {
                         if (var->ty->size == 4) {
@@ -8134,8 +8194,7 @@ void codegen(Program *prog) {
 #ifdef _WIN32
         printf("\n.section .ctors,\"w\"\n");
 #elif defined(__APPLE__)
-        printf("\n.section __DATA,__mod_init_func\n");
-        printf("  .balign 8\n");
+        printf("\n.section __DATA,__mod_init_func,mod_init_funcs\n");
 #else
                 printf("\n.section .init_array,\"aw\",@init_array\n");
 #endif
@@ -8148,7 +8207,7 @@ void codegen(Program *prog) {
 #ifdef _WIN32
         printf("\n.section .dtors,\"w\"\n");
 #elif defined(__APPLE__)
-        printf("\n.section __DATA,__mod_term_func\n");
+        printf("\n.section __DATA,__mod_term_func,mod_term_funcs\n");
         printf("  .balign 8\n");
 #else
                 printf("\n.section .fini_array,\"aw\",@fini_array\n");
