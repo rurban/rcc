@@ -719,7 +719,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         call_target = format(".L_rcc_%s", call_target);
     if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
         node->lhs->var && node->lhs->var->is_function)
-        call_target = var_label(node->lhs->var);
+        call_target = node->lhs->var->name;
 
 #ifdef _WIN32
     //char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
@@ -1582,7 +1582,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 fp_reg_args += arg_hfa_count[i];
             } else {
                 arg_stack_idx[i] = stack_args;
-                stack_args += arg_hfa_count[i];
+                stack_args += (argv[i]->ty->size + 7) / 8;
             }
             continue;
         }
@@ -1727,6 +1727,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (arg_stack_idx[i] < 0)
             continue;
         int off = arg_stack_idx[i] * 8;
+        if (arg_hfa_count[i] > 0 && arg_stack_idx[i] >= 0) {
+            // HFA struct overflowed V registers — copy struct data to stack
+            int addr = arg_regs[i];
+            int sz = argv[i]->ty->size;
+            for (int boff = 0; boff < sz; boff += 8) {
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), (uint32_t)(boff / 8)); // ldr x16, [x{addr}, #boff]
+                arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)((off + boff) / 8)); // str x16, [sp, #(off+boff)]
+            }
+            free_reg(addr);
+            continue;
+        }
         VReg r;
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
