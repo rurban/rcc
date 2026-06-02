@@ -142,6 +142,51 @@ static size_t cg_label_ht_get(const char *name) {
     return (size_t)-1;
 }
 
+// ---------------------------------------------------------------------------
+// Forward-fixup chain for local flow-control labels (.L.*)
+// Faster than hash table: no strcmp, no hash, just a linked list of
+// instruction offsets. Each loop/if stores its own chain.
+// ---------------------------------------------------------------------------
+typedef struct CgFwdList CgFwdList;
+struct CgFwdList {
+    size_t instr_off; // offset of the branch instruction in the section buffer
+    int type; // 0=jmp (B), 1=jcc (B.cond), 2=adr
+    CgFwdList *next;
+};
+
+// Push a fixup onto the front of the list
+static CgFwdList *asm_fwd_push(CgFwdList *head, size_t instr_off, int type) {
+    CgFwdList *n = arena_alloc(sizeof(CgFwdList));
+    n->instr_off = instr_off;
+    n->type = type;
+    n->next = head;
+    return n;
+}
+
+// Patch all fixups in the list to point to target_off
+static void asm_fwd_patch_all(SecBuf *s, CgFwdList *head, size_t target_off) {
+    while (head) {
+        uint32_t insn = *(uint32_t *)(s->data + head->instr_off);
+        int64_t delta = (int64_t)((int64_t)target_off - (int64_t)head->instr_off);
+        if (head->type == 0) {
+            // B: 26-bit signed word offset in bits [25:0]
+            int64_t imm = delta / 4;
+            insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
+        } else if (head->type == 2) {
+            // ADR: 21-bit byte offset, immhi[23:5] | immlo[30:29]
+            int32_t immlo = (int32_t)(delta & 3);
+            int32_t immhi = (int32_t)(delta >> 2);
+            insn = (insn & ~0x60FFFFE0U) | (uint32_t)((immhi & 0x7FFFF) << 5) | (uint32_t)((immlo & 3) << 29);
+        } else {
+            // B.cond: 19-bit signed word offset in bits [23:5]
+            int64_t imm = delta / 4;
+            insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
+        }
+        secbuf_patch32le(s, head->instr_off, insn);
+        head = head->next;
+    }
+}
+
 // Fixup hashtable: bucketed by label hash
 typedef struct AsmFixupNode {
     size_t instr_off;
@@ -1126,6 +1171,45 @@ static size_t asm_jmp_label(SecBuf *s) {
     return off;
 #endif
 }
+
+// Emit B to a known target position (backward branch — no fixup needed)
+static size_t asm_b_back(SecBuf *s, size_t target_off) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    arm64_b(s, 0);
+    int64_t delta = (int64_t)((int64_t)target_off - (int64_t)off);
+    uint32_t insn = *(uint32_t *)(s->data + off);
+    int64_t imm = delta / 4;
+    insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
+    secbuf_patch32le(s, off, insn);
+#else
+    x86_jmp_rel32(s, 0);
+    int32_t disp = (int32_t)(target_off - (off + 5));
+    secbuf_patch32le(s, off + 1, (uint32_t)disp);
+#endif
+    asm_record(ASM_JMP, off, 1, -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
+    return off;
+}
+
+// Emit B.cond to a known target position (backward — no fixup needed)
+static size_t asm_bcond_back(SecBuf *s, int cond, size_t target_off) {
+    size_t off = s->len;
+#ifdef ARCH_ARM64
+    arm64_bcond(s, (Arm64Cond)cond, 0);
+    int64_t delta = (int64_t)((int64_t)target_off - (int64_t)off);
+    uint32_t insn = *(uint32_t *)(s->data + off);
+    int64_t imm = delta / 4;
+    insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
+    secbuf_patch32le(s, off, insn);
+#else
+    x86_jcc_rel32(s, (X86Cond)cond, 0);
+    int32_t disp = (int32_t)(target_off - (off + 6));
+    secbuf_patch32le(s, off + 2, (uint32_t)disp);
+#endif
+    asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, NULL, cond, -1, false);
+    return off;
+}
+
 
 static void asm_jmp_reg(SecBuf *s, VReg r) {
     size_t off = s->len;
