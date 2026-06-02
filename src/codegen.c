@@ -45,6 +45,12 @@ static void cg_def_label(const char *name) {
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
 }
 
+static void cg_fwd_def(CgFwdList **fwd) {
+    if (cg_dry_run) return;
+    if (*fwd)
+        asm_fwd_patch_all(cg_sec, *fwd, cg_sec->len);
+}
+
 static void cg_def_label_sec(const char *name, int sec) {
     if (cg_dry_run) return;
     objfile_add_sym(cg_obj, name, sec, cg_sec->len, 0, SB_LOCAL, ST_OBJECT);
@@ -236,8 +242,8 @@ static int va_st_start;
 #ifndef ARCH_ARM64
 static int va_reg_save_ofs;
 #endif
-static int break_stack[128];
-static int continue_stack[128];
+static CgFwdList *break_stack[128];
+static CgFwdList *continue_stack[128];
 static int ctrl_depth = 0;
 static int float_lit_count = 0;
 
@@ -3191,29 +3197,29 @@ static VReg gen_addr(Node *node) {
     }
 }
 
-static void gen_cond_branch_inv(Node *cond, const char *label) {
+static void gen_cond_branch_inv(Node *cond, CgFwdList **fwd) {
     if (cond->kind == ND_LOGAND) {
-        gen_cond_branch_inv(cond->lhs, label);
-        gen_cond_branch_inv(cond->rhs, label);
+        gen_cond_branch_inv(cond->lhs, fwd);
+        gen_cond_branch_inv(cond->rhs, fwd);
         return;
     }
     if (cond->kind == ND_LOGOR) {
         int c = ++rcc_label_count;
-        const char *skip_label = format(".L.or_skip.%d", c);
         // If lhs is true, skip to end (don't branch to label)
         VReg lhs = gen(cond->lhs);
         asm_cmp_zero(cg_sec, lhs, cond->lhs->ty->size); // cmp $0, rlhs
         free_reg(lhs);
 #ifdef ARCH_ARM64
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-        asm_fixup_add(cg_sec, o, skip_label, 1); // fcmp d0, d1
+        CgFwdList *skip_fwd = asm_fwd_push(NULL, o, 1); // fcmp d0, d1
 #else
         size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-        asm_fixup_add(cg_sec, o, skip_label, 1); // fixup add for forward branch
+        CgFwdList *skip_fwd = asm_fwd_push(NULL, o, 1); // fixup add for forward branch
 #endif
         // If lhs was false, check rhs; if rhs is also false, branch to label
-        gen_cond_branch_inv(cond->rhs, label);
-        cg_def_label(skip_label); // b.eq %s
+        gen_cond_branch_inv(cond->rhs, fwd);
+        size_t skip_pos = cg_sec->len;
+        asm_fwd_patch_all(cg_sec, skip_fwd, skip_pos); // b.eq
         return;
     }
     if (cond->kind == ND_EQ || cond->kind == ND_NE || cond->kind == ND_LT || cond->kind == ND_LE) {
@@ -3227,29 +3233,27 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             if (cond->kind == ND_EQ) {
                 {
                     size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, ARM64_VS); // b.vs label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
             } else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
-                {
-                    size_t _cj = asm_jcc_label(cg_sec, ARM64_VS);
-                    asm_fixup_add(cg_sec, _cj, format(".L.fc.skip.%d", c), 1);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
-                    asm_fixup_add(cg_sec, o, label, 1);
-                }
-                cg_def_label(format(".L.fc.skip.%d", c));
+                CgFwdList *fc_skip = NULL;
+                size_t _cj = asm_jcc_label(cg_sec, ARM64_VS);
+                fc_skip = asm_fwd_push(fc_skip, _cj, 1);
+                size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
+                *fwd = asm_fwd_push(*fwd, o, 1);
+                size_t fc_skip_pos = cg_sec->len;
+                asm_fwd_patch_all(cg_sec, fc_skip, fc_skip_pos);
             } else if (cond->kind == ND_LT) {
                 size_t o = asm_jcc_label(cg_sec, ARM64_PL); // b.pl label
-                asm_fixup_add(cg_sec, o, label, 1);
+                *fwd = asm_fwd_push(*fwd, o, 1);
             } else if (cond->kind == ND_LE) {
                 size_t o = asm_jcc_label(cg_sec, ARM64_HI); // b.hi label
-                asm_fixup_add(cg_sec, o, label, 1);
+                *fwd = asm_fwd_push(*fwd, o, 1);
             }
 #else
             asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq X86_XMM0, r_lhs
@@ -3258,40 +3262,38 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             if (cond->kind == ND_EQ) {
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_NE); // jne label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
             } else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_P); // jp .L.fc.skip.c
-                    asm_fixup_add(cg_sec, o, format(".L.fc.skip.%d", c), 1);
-                }
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_E); // je label
-                    asm_fixup_add(cg_sec, o, label, 1);
-                }
-                cg_def_label(format(".L.fc.skip.%d", c));
+                CgFwdList *fc_skip = NULL;
+                size_t o = asm_jcc_label(cg_sec, X86_P); // jp .L.fc.skip.c
+                fc_skip = asm_fwd_push(fc_skip, o, 1);
+                size_t o2 = asm_jcc_label(cg_sec, X86_E); // je label
+                *fwd = asm_fwd_push(*fwd, o2, 1);
+                size_t fc_skip_pos = cg_sec->len;
+                asm_fwd_patch_all(cg_sec, fc_skip, fc_skip_pos);
             } else if (cond->kind == ND_LT) {
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_AE); // jae label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
             } else if (cond->kind == ND_LE) {
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_A); // ja label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    *fwd = asm_fwd_push(*fwd, o, 1);
                 }
             }
 #endif
@@ -3348,30 +3350,30 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            *fwd = asm_fwd_push(*fwd, o, 1); // fixup add for forward branch
         } else if (cond->kind == ND_NE) {
             size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            *fwd = asm_fwd_push(*fwd, o, 1); // fixup add for forward branch
         } else if (cond->kind == ND_LT) {
             size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HS : ARM64_GE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            *fwd = asm_fwd_push(*fwd, o, 1); // fixup add for forward branch
         } else if (cond->kind == ND_LE) {
             size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HI : ARM64_GT); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            *fwd = asm_fwd_push(*fwd, o, 1); // fixup add for forward branch
         }
 #else
         if (cond->kind == ND_EQ) {
             size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            *fwd = asm_fwd_push(*fwd, o, 1); // fixup add for forward branch
         } else if (cond->kind == ND_NE) {
             size_t o = asm_jcc_label(cg_sec, X86_E);
-            asm_fixup_add(cg_sec, o, label, 1);
+            *fwd = asm_fwd_push(*fwd, o, 1);
         } else if (cond->kind == ND_LT) {
             size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_AE : X86_GE);
-            asm_fixup_add(cg_sec, o, label, 1);
+            *fwd = asm_fwd_push(*fwd, o, 1);
         } else if (cond->kind == ND_LE) {
             size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_A : X86_G);
-            asm_fixup_add(cg_sec, o, label, 1);
+            *fwd = asm_fwd_push(*fwd, o, 1);
         }
 #endif
         return;
@@ -3382,12 +3384,12 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     asm_cmp_zero(cg_sec, r, cond->ty->size);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, ARM64_EQ);
-    asm_fixup_add(cg_sec, cond_off, label, 1);
+    *fwd = asm_fwd_push(*fwd, cond_off, 1);
 #else
     asm_cmp_zero(cg_sec, r, cond->ty->size);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, X86_E);
-    asm_fixup_add(cg_sec, cond_off, label, 1);
+    *fwd = asm_fwd_push(*fwd, cond_off, 1);
 #endif
 }
 
@@ -5425,97 +5427,80 @@ static VReg gen(Node *node) {
                 }
             }
         }
-        int c = ++rcc_label_count;
-        const char *end_label = format(".L.end.%d", c);
-        const char *else_label = format(".L.else.%d", c);
+        CgFwdList *end_fwd = NULL;
+        CgFwdList *else_fwd = NULL;
 
         if (node->els) {
-            gen_cond_branch_inv(node->cond, else_label);
+            gen_cond_branch_inv(node->cond, &else_fwd);
             VReg r1 = gen(node->then);
             if (r1 != -1) free_reg(r1);
-#ifdef ARCH_ARM64
-            size_t if_jmp_off = asm_jmp_label(cg_sec); // b %s
-            asm_fixup_add(cg_sec, if_jmp_off, end_label, 0); // fixup add for forward branch
-#else
-            size_t if_jmp_off = asm_jmp_label(cg_sec); // %s:
-            asm_fixup_add(cg_sec, if_jmp_off, end_label, 0); // fixup add for forward branch
-#endif
-            cg_def_label(else_label); // %s:
+            size_t if_jmp_off = asm_jmp_label(cg_sec); // b end
+            end_fwd = asm_fwd_push(end_fwd, if_jmp_off, 0);
+            cg_fwd_def(&else_fwd); // else label
             VReg r2 = gen(node->els);
             if (r2 != -1) free_reg(r2);
-            cg_def_label(end_label); // b %s
+            cg_fwd_def(&end_fwd); // end label
         } else {
-            gen_cond_branch_inv(node->cond, end_label);
+            gen_cond_branch_inv(node->cond, &end_fwd);
             VReg r1 = gen(node->then);
             if (r1 != -1) free_reg(r1);
-            cg_def_label(end_label); // jmp %s
+            cg_fwd_def(&end_fwd); // end label
         }
         return -1;
     }
     case ND_FOR: {
-        int c = ++rcc_label_count;
-        const char *begin_label = format(".L.begin.%d", c);
-        const char *end_label = format(".L.end.%d", c);
-        const char *cont_label = format(".L.continue.%d", c);
+        CgFwdList *end_fwd = NULL;
+        CgFwdList *cont_fwd = NULL;
 
         if (node->init) {
             VReg r = gen(node->init);
             if (r != -1) free_reg(r);
         }
-        break_stack[ctrl_depth] = c;
-        continue_stack[ctrl_depth] = c;
+        size_t begin_pos = cg_sec->len; // begin label
+        break_stack[ctrl_depth] = end_fwd;
+        continue_stack[ctrl_depth] = cont_fwd;
         ctrl_depth++;
-        cg_def_label(begin_label); // %s:
         if (node->cond) {
-            gen_cond_branch_inv(node->cond, end_label);
+            gen_cond_branch_inv(node->cond, &end_fwd);
         }
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_def_label(cont_label); // %s:
+        cg_fwd_def(&cont_fwd); // cont label
         if (node->inc) {
             VReg r_inc = gen(node->inc);
             if (r_inc != -1) free_reg(r_inc);
         }
-#ifdef ARCH_ARM64
-        size_t for_jmp_off = asm_jmp_label(cg_sec); // b %s
-        asm_fixup_add(cg_sec, for_jmp_off, begin_label, 0); // fixup add for forward branch
-#else
-        size_t for_jmp_off = asm_jmp_label(cg_sec); // %s:
-        asm_fixup_add(cg_sec, for_jmp_off, begin_label, 0); // fixup add for forward branch
-#endif
-        cg_def_label(end_label); // .L.continue.%d:
+        asm_b_back(cg_sec, begin_pos); // b begin
+        cg_fwd_def(&end_fwd); // end label
         ctrl_depth--;
         return -1;
     }
     case ND_DO: {
-        int c = ++rcc_label_count;
-        const char *begin_label = format(".L.begin.%d", c);
-        const char *end_label = format(".L.end.%d", c);
-        const char *cont_label = format(".L.continue.%d", c);
-        cg_def_label(begin_label); // cmp %s, #0
-        break_stack[ctrl_depth] = c;
-        continue_stack[ctrl_depth] = c;
+        CgFwdList *end_fwd = NULL;
+        CgFwdList *cont_fwd = NULL;
+        size_t begin_pos = cg_sec->len; // begin label
+        break_stack[ctrl_depth] = end_fwd;
+        continue_stack[ctrl_depth] = cont_fwd;
         ctrl_depth++;
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_def_label(cont_label); // b.ne .L.begin.%d
+        cg_fwd_def(&cont_fwd); // cont label
         VReg r = gen(node->cond);
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
         free_reg(r);
-        size_t do_j = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-        asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
+        asm_bcond_back(cg_sec, ARM64_NE, begin_pos); // b.ne begin
 #else
         asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
         free_reg(r);
-        size_t do_j = asm_jcc_label(cg_sec, X86_NE); // jcc label
-        asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
+        asm_bcond_back(cg_sec, X86_NE, begin_pos); // jne begin
 #endif
-        cg_def_label(end_label); // jmp %s
+        cg_fwd_def(&end_fwd); // end label
         ctrl_depth--;
         return -1;
     }
     case ND_SWITCH: {
+        CgFwdList *sw_end_fwd = NULL;
         int c = ++rcc_label_count;
         VReg cond = gen(node->cond);
         int sz = op_size(node->cond->ty);
@@ -5615,16 +5600,16 @@ static VReg gen(Node *node) {
             asm_fixup_add(cg_sec, sw_jmp, format(".L.case.%d", node->default_case->label_id), 0); // fixup label
         } else {
             size_t sw_jmp = asm_jmp_label(cg_sec); // cmp %s, #%lld
-            asm_fixup_add(cg_sec, sw_jmp, format(".L.end.%d", c), 0); // fixup label
+            sw_end_fwd = asm_fwd_push(sw_end_fwd, sw_jmp, 0);
         }
         free_reg(cond);
-        break_stack[ctrl_depth] = c;
-        continue_stack[ctrl_depth] = ctrl_depth > 0 ? continue_stack[ctrl_depth - 1] : c;
+        break_stack[ctrl_depth] = sw_end_fwd;
+        continue_stack[ctrl_depth] = ctrl_depth > 0 ? continue_stack[ctrl_depth - 1] : NULL;
         ctrl_depth++;
         VReg r_body = gen(node->then);
         if (r_body != -1) free_reg(r_body);
         ctrl_depth--;
-        cg_def_label(format(".L.end.%d", c)); // .L.end.%d:
+        cg_fwd_def(&sw_end_fwd); // end label
         return -1;
     }
     case ND_CASE: {
@@ -5640,7 +5625,7 @@ static VReg gen(Node *node) {
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
         {
             size_t brk_off = asm_jmp_label(cg_sec); // b .L.end.%d
-            asm_fixup_add(cg_sec, brk_off, format(".L.end.%d", break_stack[ctrl_depth - 1]), 0); // fixup label
+            break_stack[ctrl_depth - 1] = asm_fwd_push(break_stack[ctrl_depth - 1], brk_off, 0); /* break */
         }
         return -1;
     case ND_CONTINUE:
@@ -5650,7 +5635,7 @@ static VReg gen(Node *node) {
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
         {
             size_t cont_off = asm_jmp_label(cg_sec); // b .L.continue.%d
-            asm_fixup_add(cg_sec, cont_off, format(".L.continue.%d", continue_stack[ctrl_depth - 1]), 0); // fixup add for forward branch
+            continue_stack[ctrl_depth - 1] = asm_fwd_push(continue_stack[ctrl_depth - 1], cont_off, 0); /* continue */
         }
         return -1;
     case ND_GOTO:
