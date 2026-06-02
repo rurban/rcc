@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 156
-- **Passed**: 149
-- **Failed**: 7
-- **Pass Rate**: 95%
+- **Passed**: 151
+- **Failed**: 5
+- **Pass Rate**: 96%
 
 ## Detailed Results
 
@@ -108,7 +108,7 @@ Generated: June 2026
 | 103_implicit_memmove        | PASS         | Output matches                |
 | 104_inline                  | PASS         | Output matches                |
 | 105_local_extern            | PASS         | Output matches                |
-| 106_versym                  | COMPILE_FAIL | executable missing            |
+| 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | PASS         | Output matches                |
 | 108_constructor             | MISMATCH     | Output does not match .expect |
 | 109_float_struct_calling    | PASS         | Output matches                |
@@ -121,12 +121,12 @@ Generated: June 2026
 | 116_bound_setjmp2           | SKIP         | Skipped                       |
 | 117_builtins                | PASS         | Output matches                |
 | 118_switch                  | PASS         | Output matches                |
-| 119_random_stuff            | COMPILE_FAIL | executable missing            |
+| 119_random_stuff            | MISMATCH     | Output does not match .expect |
 | 120_alias                   | PASS         | Output matches                |
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
-| 124_atomic_counter          | COMPILE_FAIL | executable missing            |
+| 124_atomic_counter          | PASS         | Output matches                |
 | 125_atomic_misc             | PASS         | Output matches                |
 | 126_bound_global            | SKIP         | Skipped                       |
 | 127_asm_goto                | SKIP         | Skipped                       |

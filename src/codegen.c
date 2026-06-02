@@ -7261,6 +7261,9 @@ void codegen(Program *prog) {
                 continue;
             // Handle function aliases (__attribute__((alias)) or __asm__ renaming)
             if (var->is_function && !var->alias_target && var->asm_name) {
+                // Skip if asm_name resolves to same symbol as C name (circular)
+                if (strcmp(sym_name(var->name), var_sym_label(var)) == 0)
+                    continue;
                 // __asm__("target") on a function: alias the C name to the asm_name
                 printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)),
