@@ -134,7 +134,7 @@ src/gcc_predefined.h:
 	rm -f $$tmp
 
 $(DARWIN_O): lib/darwin.c
-	$(CC) -arch arm64 -dynamiclib -o $@ lib/darwin.c
+	$(CC) -arch arm64 -dynamiclib -install_name @rpath/darwin.dylib -o $@ lib/darwin.c
 $(MINGW_O): lib/mingw.c
 	$(CC) $(CFLAGS) -c $< -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
