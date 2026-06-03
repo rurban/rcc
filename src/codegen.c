@@ -1527,9 +1527,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int gp_reg_args = 0;
     int fp_reg_args = 0;
     int stack_args = 0;
-    Type *fn_type = (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_PTR)
-        ? node->lhs->ty->base
-        : NULL;
+    Type *fn_type = NULL;
+    if (node->lhs && node->lhs->ty) {
+        if (node->lhs->ty->kind == TY_PTR)
+            fn_type = node->lhs->ty->base;
+        else if (node->lhs->ty->kind == TY_FUNC && node->lhs->kind != ND_LVAR)
+            fn_type = node->lhs->ty;
+    }
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
     bool is_oldstyle = !fn_type || (fn_type->kind == TY_FUNC && fn_type->is_oldstyle);
     int named_count = 0;
@@ -1621,9 +1625,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int gp_reg_args = has_hidden_retbuf ? 1 : 0;
     int fp_reg_args = 0;
     int stack_args = 0;
-    Type *fn_type = (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_PTR)
-        ? node->lhs->ty->base
-        : NULL;
+    Type *fn_type = NULL;
+    if (node->lhs && node->lhs->ty) {
+        if (node->lhs->ty->kind == TY_PTR)
+            fn_type = node->lhs->ty->base;
+        else if (node->lhs->ty->kind == TY_FUNC && node->lhs->kind != ND_LVAR)
+            fn_type = node->lhs->ty;
+    }
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
     bool is_oldstyle = !fn_type || (fn_type->kind == TY_FUNC && fn_type->is_oldstyle);
     int named_count = 0;
