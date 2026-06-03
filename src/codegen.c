@@ -1416,7 +1416,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (node->lhs && node->lhs->ty) {
         if (node->lhs->ty->kind == TY_PTR)
             fn_type = node->lhs->ty->base;
-        else if (node->lhs->ty->kind == TY_FUNC && node->lhs->kind != ND_LVAR)
+        else if (node->lhs->ty->kind == TY_FUNC && (node->lhs->kind != ND_LVAR || node->lhs->ty->is_variadic))
             fn_type = node->lhs->ty;
     }
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
@@ -1483,7 +1483,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         }
 #if defined(__APPLE__)
         if (is_variadic && !is_named) {
-            arg_stack_idx[i] = stack_args++;
+            arg_stack_idx[i] = stack_args;
+            if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
+                stack_args += (argv[i]->ty->size + 7) / 8;
+            else
+                stack_args++;
             continue;
         }
 #endif
@@ -1626,10 +1630,23 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             free_reg(addr);
             continue;
         }
-        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) {
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+            if (is_variadic && !(i < named_count)) {
+                int vaddr = gen_addr(argv[i]);
+                int vsz = argv[i]->ty->size;
+                for (int voff = 0; voff < vsz; voff += 8) {
+                    printf("  ldr x16, [%s, #%d]\n", reg64[vaddr], voff);
+                    printf("  str x16, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8 + voff);
+                }
+                free_reg(vaddr);
+                continue;
+            }
+#endif
             r = gen_addr(argv[i]);
-        else
+        } else {
             r = gen(argv[i]);
+        }
         printf("  str %s, [%s, #%d]\n", reg64[r], STACK_REG, arg_stack_idx[i] * 8);
         free_reg(r);
     }
@@ -5822,7 +5839,17 @@ static int gen(Node *node) {
 
         printf(".L.va_overflow.%d:\n", rcc_label_count);
         printf("  ldr x12, [%s]\n", reg64[r]); // __stack (overflow_arg_area at [ap+0])
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+        if (is_ptr_val_struct) {
+            // Apple ARM64: variadic struct by value on overflow stack — no ptr deref
+            int ovf_sz = (ty->size + 7) & ~7;
+            printf("  mov x16, x12\n");
+            printf("  add x16, x16, #%d\n", ovf_sz);
+            printf("  str x16, [%s]\n", reg64[r]);
+        } else if (is_ptr_struct || false) {
+#else
         if (is_ptr_struct || is_ptr_val_struct) {
+#endif
             // Pointer-passed struct: load pointer from stack, advance by 8
             printf("  ldr x16, [x12]\n");
             printf("  add x12, x12, #8\n");
@@ -7269,6 +7296,9 @@ void codegen(Program *prog) {
                 if (strcmp(sym_name(var->name), var_sym_label(var)) == 0)
                     continue;
                 // __asm__("target") on a function: alias the C name to the asm_name
+#ifdef __APPLE__
+                printf("  .balign 8\n");
+#endif
                 printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)),
                        asm_sym_name(var->asm_name));
@@ -7276,6 +7306,9 @@ void codegen(Program *prog) {
             }
             if (var->alias_target) {
                 if (!var->is_static)
+#ifdef __APPLE__
+                    printf("  .balign 8\n");
+#endif
                     printf(".globl %s\n", asm_sym_name(sym_name(label)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
                        asm_sym_name(sym_name(var->alias_target)));
@@ -7305,6 +7338,9 @@ void codegen(Program *prog) {
                 }
                 if (existing) {
                     // This is an alias via __asm__ — emit .set instead of data
+#ifdef __APPLE__
+                    printf("  .balign 8\n");
+#endif
                     printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                     printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)), canon);
                     continue;
@@ -7321,6 +7357,9 @@ void codegen(Program *prog) {
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
             if (var->ty->align > 1)
                 printf("  .balign %d\n", var->ty->align);
+#ifdef __APPLE__
+            printf("  .balign 8\n");
+#endif
             if (!var->is_static)
                 printf(".globl %s\n", asm_sym_name(sym_name(label)));
             printf("%s:\n", asm_sym_name(sym_name(safe_label)));
