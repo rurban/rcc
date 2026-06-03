@@ -193,6 +193,7 @@ extern Type *ty_double;
 extern Type *ty_ldouble;
 
 extern bool opt_O0;
+extern bool opt_O1;
 extern bool opt_W;
 extern bool opt_Werror;
 extern bool opt_Wno_homoglyph;

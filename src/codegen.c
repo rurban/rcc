@@ -16,6 +16,7 @@ static uint64_t cg_now_us(void) {
 static Function *current_fn_def;
 static TLItem *all_items;
 static StrLit *all_strs;
+static bool cg_discard_result;
 static void cg_emit(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -621,6 +622,47 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
         node->lhs->var && node->lhs->var->is_function)
         call_target = node->lhs->var->name;
+
+    // Optimize (void)printf("%s\n", arg) → puts(arg)
+    //          (void)fprintf(fp, "%s", arg) → fputs(arg, fp)
+    // puts/fputs return values differ from printf/fprintf, so only when unused.
+    bool discard_result = cg_discard_result;
+    cg_discard_result = false;
+    if (discard_result && opt_O1 && call_target &&
+        !(node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION))) {
+        if (nargs == 2 && strcmp(call_target, "printf") == 0) {
+            Node *fmt = node->args;
+            if (fmt && fmt->kind == ND_STR) {
+                for (StrLit *s = all_strs; s; s = s->next) {
+                    if (s->id == fmt->str_id && s->prefix == 0 && strcmp(s->str, "%s\n") == 0) {
+                        call_target = "puts";
+                        node->args = fmt->next;
+                        nargs = 1;
+                        argv[0] = node->args;
+                        break;
+                    }
+                }
+            }
+        } else if (nargs == 3 && strcmp(call_target, "fprintf") == 0) {
+            Node *fp_arg = node->args;
+            Node *fmt = fp_arg ? fp_arg->next : NULL;
+            if (fmt && fmt->kind == ND_STR) {
+                for (StrLit *s = all_strs; s; s = s->next) {
+                    if (s->id == fmt->str_id && s->prefix == 0 && strcmp(s->str, "%s") == 0) {
+                        call_target = "fputs";
+                        Node *str_arg = fmt->next;
+                        node->args = str_arg;
+                        str_arg->next = fp_arg;
+                        fp_arg->next = NULL;
+                        nargs = 2;
+                        argv[0] = node->args;
+                        argv[1] = fp_arg;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
 #ifdef _WIN32
     char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
@@ -4814,6 +4856,17 @@ static int gen(Node *node) {
         return result;
     }
     case ND_EXPR_STMT: {
+        // Only optimize direct funcall child — nested calls keep results.
+        Node *call = node->lhs;
+        if (call && call->kind == ND_CAST && call->ty && call->ty->kind == TY_VOID)
+            call = call->lhs;
+        if (call && call->kind == ND_FUNCALL) {
+            cg_discard_result = true;
+            int r = gen_funcall(call, -1);
+            cg_discard_result = false;
+            if (r != -1) free_reg(r);
+            return -1;
+        }
         int r = gen(node->lhs);
         if (r != -1) free_reg(r);
         return -1;
