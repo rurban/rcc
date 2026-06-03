@@ -1746,8 +1746,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         int off = arg_stack_idx[i] * 8;
         if (arg_hfa_count[i] > 0 && arg_stack_idx[i] >= 0) {
-            // HFA struct overflowed V registers — copy struct data to stack
-            int addr = arg_regs[i];
+            // HFA struct overflowed V registers — copy struct data to stack.
+            // Evaluate the arg to get its address (arg_regs[i] is -1 for stack args).
+            int addr = gen_addr(argv[i]);
             int sz = argv[i]->ty->size;
             for (int boff = 0; boff < sz; boff += 8) {
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), (uint32_t)(boff / 8)); // ldr x16, [x{addr}, #boff]
