@@ -149,38 +149,38 @@ Generated: June 2026
 | 141_riscv_asm_pseudo        | SKIP   | Skipped                   |
 | 142_riscv_asm_longlong      | SKIP   | Skipped                   |
 | 143_riscv_asm_farith        | SKIP   | Skipped                   |
-| test_arm64_asm              | PASS   | exit=0                    |
-| test_atomic_op              | PASS   | exit=0                    |
-| test_atomic_op2             | PASS   | exit=0                    |
-| test_bitfields              | PASS   | exit=0                    |
-| test_builtins               | PASS   | exit=0                    |
-| test_elif2                  | PASS   | exit=0                    |
-| test_elif_simple            | PASS   | exit=0                    |
+| test_arm64_asm              | PASS   |                           |
+| test_atomic_op              | PASS   |                           |
+| test_atomic_op2             | PASS   |                           |
+| test_bitfields              | PASS   |                           |
+| test_builtins               | PASS   |                           |
+| test_elif2                  | PASS   |                           |
+| test_elif_simple            | PASS   |                           |
 | test_err                    | PASS   | compile error as expected |
-| test_fallthrough            | PASS   | exit=0                    |
-| test_func                   | PASS   | exit=0                    |
-| test_gperf                  | PASS   | exit=0                    |
-| test_if                     | PASS   | exit=0                    |
-| test_if2                    | PASS   | exit=0                    |
-| test_if3                    | PASS   | exit=0                    |
-| test_if4                    | PASS   | exit=0                    |
-| test_if5                    | PASS   | exit=0                    |
-| test_if6                    | PASS   | exit=0                    |
-| test_if_nested              | PASS   | exit=0                    |
-| test_if_simple              | PASS   | exit=0                    |
-| test_include                | PASS   | exit=42                   |
-| test_include2               | PASS   | exit=10                   |
-| test_loop                   | PASS   | exit=0                    |
-| test_macro                  | PASS   | exit=0                    |
-| test_minimal                | PASS   | exit=0                    |
-| test_nested_if              | PASS   | exit=0                    |
-| test_ptr                    | PASS   | exit=0                    |
-| test_real                   | PASS   | exit=0                    |
-| test_self_include2          | PASS   | exit=1                    |
-| test_signextend             | PASS   | exit=0                    |
-| test_simple                 | PASS   | exit=1                    |
-| test_simple2                | PASS   | exit=1                    |
-| test_str                    | PASS   | exit=0                    |
-| test_struct                 | PASS   | exit=0                    |
-| test_unicode                | PASS   | exit=0                    |
-| test_with_comment           | PASS   | exit=0                    |
+| test_fallthrough            | PASS   |                           |
+| test_func                   | PASS   |                           |
+| test_gperf                  | PASS   |                           |
+| test_if                     | PASS   |                           |
+| test_if2                    | PASS   |                           |
+| test_if3                    | PASS   |                           |
+| test_if4                    | PASS   |                           |
+| test_if5                    | PASS   |                           |
+| test_if6                    | PASS   |                           |
+| test_if_nested              | PASS   |                           |
+| test_if_simple              | PASS   |                           |
+| test_include                | PASS   |                           |
+| test_include2               | PASS   |                           |
+| test_loop                   | PASS   |                           |
+| test_macro                  | PASS   |                           |
+| test_minimal                | PASS   |                           |
+| test_nested_if              | PASS   |                           |
+| test_ptr                    | PASS   |                           |
+| test_real                   | PASS   |                           |
+| test_self_include2          | PASS   |                           |
+| test_signextend             | PASS   |                           |
+| test_simple                 | PASS   |                           |
+| test_simple2                | PASS   |                           |
+| test_str                    | PASS   |                           |
+| test_struct                 | PASS   |                           |
+| test_unicode                | PASS   |                           |
+| test_with_comment           | PASS   |                           |
