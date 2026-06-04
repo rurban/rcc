@@ -5816,11 +5816,12 @@ static int gen(Node *node) {
             printf("  ldr w16, [%s, #28]\n", reg64[r]); // __vr_offs (negative)
             printf("  cmp w16, #0\n");
             printf("  b.ge .L.va_overflow.%d\n", rcc_label_count);
-            printf("  ldr x12, [%s, #16]\n", reg64[r]); // __vr_top
-            printf("  sxtw x17, w16\n");
+            // Store new vr_offs BEFORE loading vr_top (may clobber reg64[r])
+            printf("  add w17, w16, #%d\n", fp_size);
+            printf("  str w17, [%s, #28]\n", reg64[r]);
+            printf("  ldr x12, [%s, #16]\n", reg64[r]); // __vr_top (safe to clobber)
+            printf("  sxtw x17, w16\n");               // x17 = old vr_offs
             printf("  add x12, x12, x17\n");
-            printf("  add w16, w16, #%d\n", fp_size);
-            printf("  str w16, [%s, #28]\n", reg64[r]);
             printf("  b .L.va_done.%d\n", rcc_label_count);
         } else {
             // Pointer-passed structs use gp_size=8 (the pointer fits in one register);
@@ -5830,26 +5831,29 @@ static int gen(Node *node) {
             printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs (negative)
             printf("  cmp w16, #0\n");
             printf("  b.ge .L.va_overflow.%d\n", rcc_label_count);
-            printf("  ldr x12, [%s, #8]\n", reg64[r]); // __gr_top
-            printf("  sxtw x17, w16\n");
+            // Store new gr_offs BEFORE loading gr_top (may clobber reg64[r])
+            printf("  add w17, w16, #%d\n", gp_size);
+            printf("  str w17, [%s, #24]\n", reg64[r]);
+            printf("  ldr x12, [%s, #8]\n", reg64[r]);  // __gr_top (safe to clobber)
+            printf("  sxtw x17, w16\n");               // x17 = old gr_offs
             printf("  add x12, x12, x17\n");
             if (is_ptr_val_struct) {
                 printf("  ldr x12, [x12]\n");
             }
-            printf("  add w16, w16, #%d\n", gp_size);
-            printf("  str w16, [%s, #24]\n", reg64[r]);
             printf("  b .L.va_done.%d\n", rcc_label_count);
         }
 
         printf(".L.va_overflow.%d:\n", rcc_label_count);
-        printf("  ldr x12, [%s]\n", reg64[r]); // __stack (overflow_arg_area at [ap+0])
+        // Load ap->__stack into x16.  Compute new __stack in x17, store via
+        // reg64[r] (still valid, not clobbered), then move result to x12.
+        printf("  ldr x16, [%s]\n", reg64[r]); // x16 = ap->__stack (old value)
 #if defined(__APPLE__) && defined(ARCH_ARM64)
         if (is_ptr_val_struct) {
             // Apple ARM64: variadic struct by value on overflow stack — no ptr deref
             int ovf_sz = (ty->size + 7) & ~7;
-            printf("  mov x16, x12\n");
-            printf("  add x16, x16, #%d\n", ovf_sz);
-            printf("  str x16, [%s]\n", reg64[r]);
+            printf("  add x17, x16, #%d\n", ovf_sz);
+            printf("  str x17, [%s]\n", reg64[r]);
+            printf("  mov x12, x16\n"); // result = old __stack
         } else if (is_ptr_struct || false) {
 #else
         if (is_ptr_struct || is_ptr_val_struct) {
@@ -5862,13 +5866,16 @@ static int gen(Node *node) {
         } else {
             int align = ty->align;
             int ovf_size = ty->size <= 8 ? 8 : (ty->size + 7) & ~7;
+            // x16 = old __stack.  Compute new in x17, store to ap, then
+            // move old __stack to x12 (result).
             if (align > 8) {
-                printf("  add x12, x12, #%d\n", align - 1);
-                printf("  and x12, x12, #-%d\n", align);
+                printf("  add x17, x16, #%d\n", align - 1);
+                printf("  and x17, x17, #-%d\n", align);
+            } else {
+                printf("  add x17, x16, #%d\n", ovf_size);
             }
-            printf("  mov x16, x12\n");
-            printf("  add x16, x16, #%d\n", ovf_size);
-            printf("  str x16, [%s]\n", reg64[r]);
+            printf("  str x17, [%s]\n", reg64[r]);
+            printf("  mov x12, x16\n"); // result = old __stack
         }
 
         printf(".L.va_done.%d:\n", rcc_label_count);
@@ -7299,7 +7306,7 @@ void codegen(Program *prog) {
                 // Skip if asm_name resolves to same symbol as C name (circular)
                 if (strcmp(sym_name(var->name), var_sym_label(var)) == 0)
                     continue;
-                // __asm__("target") on a function: alias the C name to the asm_name
+                    // __asm__("target") on a function: alias the C name to the asm_name
 #ifdef __APPLE__
                 printf("  .balign 8\n");
 #endif
