@@ -38,10 +38,13 @@ DOCDIR = $(PREFIX)/share/doc/rcc
 TARGET_DEPS = $(OBJS) src/rcc.h
 TARGET_EXT = $(OBJS)
 
+DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
+VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
+MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
+
 ifneq ($(findstring apple,$(MACHINE)),)
 DARWIN_O = lib/darwin.dylib
 TARGET_DEPS += $(DARWIN_O)
-TARGET_EXT += $(DARWIN_O)
 else
 TARGET_DEPS += $(MINGW_O)
 TARGET_EXT += $(MINGW_O)
@@ -92,9 +95,6 @@ ifneq ($(IS_CLANG),0)
 CFLAGS += -march=native
 endif
 endif
-DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
-VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
-MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)

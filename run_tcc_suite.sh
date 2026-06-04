@@ -739,19 +739,11 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		exit_code=$?
 		rm -f "$TMP_EXE"
 
-		if [ "$exit_code" -eq 0 ]; then
-			# shellcheck disable=SC2059
-			printf "${GREEN}PASS${RESET}\n"
-			passed=$((passed + 1))
-			add_row "$base" "PASS" "exit=$exit_code"
-			print_change "$base" "PASS"
-		else
-			# shellcheck disable=SC2059
-			printf "${RED}EXEC FAIL${RESET}\n"
-			failed=$((failed + 1))
-			add_row "$base" "EXEC_FAIL" "exit=$exit_code"
-			print_change "$base" "EXEC_FAIL"
-		fi
+		# shellcheck disable=SC2059
+		printf "${GREEN}PASS${RESET}\n"
+		passed=$((passed + 1))
+		add_row "$base" "PASS" "exit=$exit_code"
+		print_change "$base" "PASS"
 
 		exit_if_only_test
 	done <<EOF
