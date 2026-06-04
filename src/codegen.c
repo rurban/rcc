@@ -5820,7 +5820,7 @@ static int gen(Node *node) {
             printf("  add w17, w16, #%d\n", fp_size);
             printf("  str w17, [%s, #28]\n", reg64[r]);
             printf("  ldr x12, [%s, #16]\n", reg64[r]); // __vr_top (safe to clobber)
-            printf("  sxtw x17, w16\n");               // x17 = old vr_offs
+            printf("  sxtw x17, w16\n"); // x17 = old vr_offs
             printf("  add x12, x12, x17\n");
             printf("  b .L.va_done.%d\n", rcc_label_count);
         } else {
@@ -5834,8 +5834,8 @@ static int gen(Node *node) {
             // Store new gr_offs BEFORE loading gr_top (may clobber reg64[r])
             printf("  add w17, w16, #%d\n", gp_size);
             printf("  str w17, [%s, #24]\n", reg64[r]);
-            printf("  ldr x12, [%s, #8]\n", reg64[r]);  // __gr_top (safe to clobber)
-            printf("  sxtw x17, w16\n");               // x17 = old gr_offs
+            printf("  ldr x12, [%s, #8]\n", reg64[r]); // __gr_top (safe to clobber)
+            printf("  sxtw x17, w16\n"); // x17 = old gr_offs
             printf("  add x12, x12, x17\n");
             if (is_ptr_val_struct) {
                 printf("  ldr x12, [x12]\n");
@@ -6020,6 +6020,8 @@ static int gen(Node *node) {
             printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         }
         printf("  cbnz w9, .L.atom_xchg.%d\n", lbl);
+        if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
+            printf("  dmb ish\n");
 #else
         printf("  xchg%c %s, (%s)\n", size_suffix(sz), reg(r_val, sz), reg64[r_addr]);
         if (sz < 4) {
@@ -6076,6 +6078,8 @@ static int gen(Node *node) {
         else
             printf("  cbnz w9, .L.atom_cas.%d\n", lbl);
         printf("  mov %s, #1\n", reg64[r_result]);
+        if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
+            printf("  dmb ish\n");
         printf("  b .L.atom_cas_done.%d\n", lbl);
         printf(".L.atom_cas_fail.%d:\n", lbl);
         printf("  mov %s, #0\n", reg64[r_result]);
@@ -7320,7 +7324,7 @@ void codegen(Program *prog) {
 #ifdef __APPLE__
                     printf("  .balign 8\n");
 #endif
-                    printf(".globl %s\n", asm_sym_name(sym_name(label)));
+                printf(".globl %s\n", asm_sym_name(sym_name(label)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
                        asm_sym_name(sym_name(var->alias_target)));
                 continue;
