@@ -3961,7 +3961,7 @@ static int gen(Node *node) {
         if (var->ty->size <= 4095) {
             printf("  mov x9, #%d\n", var->ty->size);
         } else {
-            emit_mov_imm64("x12", (uint64_t)var->ty->size);
+            emit_mov_imm64("x9", (uint64_t)var->ty->size);
         }
         printf(".L.zero.%d:\n", c);
         printf("  cmp x9, #0\n");
@@ -4120,9 +4120,13 @@ static int gen(Node *node) {
             printf("  fmov d0, %s\n", reg64[r3]);
             if (sz == 4) {
                 printf("  ldr s1, .LF%d\n", id);
-                printf("  %s s0, s0, s1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
+                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  ldr s1, [x16]\n");
             } else {
-                printf("  ldr d1, .LF%d\n", id);
+                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
+                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  ldr d1, [x16]\n");
                 printf("  %s d0, d0, d1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
             }
             printf("  fmov %s, d0\n", reg64[r3]);
