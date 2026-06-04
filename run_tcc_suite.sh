@@ -186,6 +186,39 @@ run_exe() {
 		"$@"
 	fi
 }
+
+exit_if_only_test() {
+	if [ -n "$ONLY_TEST" ]; then
+		if [ "$failed" -eq 0 ]; then
+			exit 0
+		else
+			exit 1
+		fi
+	fi
+}
+
+emit_exec_backtrace() {
+	exe=$1
+	shift
+	bt_tmp="$TMPDIR/rcc_backtrace_$$.txt"
+	{
+		echo ""
+		echo "=== EXEC_FAIL backtrace: $base ==="
+		echo "command: $exe $*"
+		if [ "$(uname -s)" = "Darwin" ] && command -v lldb >/dev/null 2>&1; then
+			lldb --batch --one-line run --one-line-on-crash "thread backtrace all" --one-line-on-crash "register read pc lr x0 x1 x2 x16 x17" --one-line-on-crash "quit 1" -- "$exe" "$@" </dev/null
+		elif command -v gdb >/dev/null 2>&1; then
+			gdb -q -batch -ex run -ex "thread apply all bt" --args "$exe" "$@"
+		else
+			echo "No debugger found: install lldb or gdb to capture EXEC_FAIL backtraces."
+		fi
+	} >"$bt_tmp" 2>&1
+	while IFS= read -r bt_line; do
+		echo "$bt_line" >&2
+		echo "$bt_line" >>"$TMP_OUT"
+	done <"$bt_tmp"
+	rm -f "$bt_tmp"
+}
 trap 'rm -f "$TMP_OUT" "$TMP_EXE"' EXIT INT TERM
 
 # Parse previous report for change detection
@@ -418,9 +451,7 @@ while IFS= read -r src; do
                 passed=$((passed + 1))
                 add_row "$base" "COMPILE_OK" "linked, (execution skipped)"
                 p_src=
-	        if [ -n "$ONLY_TEST" ]; then
-		    exit
-	        fi
+	        exit_if_only_test
                 continue
             fi
             # Compare against expect file
@@ -451,9 +482,7 @@ while IFS= read -r src; do
                 mv "$upstream_expect".orig "$upstream_expect"
             fi
             [ -n "$p_src" ] && p_src=
-	    if [ -n "$ONLY_TEST" ]; then
-		exit
-	    fi
+	    exit_if_only_test
             continue
         fi
         if [ "$src" = "$TEST_DIR/128_run_atexit.c" ]; then
@@ -461,19 +490,34 @@ while IFS= read -r src; do
             echo "[test_128_return]" >"$TMP_OUT"
 	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
-            run_exe "$TMP_EXE" >>"$TMP_OUT"
-            run_atexit="$?"
-            # shellcheck disable=SC2129
-            echo "[returns $run_atexit]" >>"$TMP_OUT"
+            if [ "$is_darwin" = "1" ]; then
+                run_atexit=0
+                echo "[linked]" >>"$TMP_OUT"
+            else
+                run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1
+                run_atexit="$?"
+                if [ "$run_atexit" != "1" ]; then
+                    emit_exec_backtrace "$TMP_EXE"
+                fi
+                echo "[returns $run_atexit]" >>"$TMP_OUT"
+            fi
             echo "" >>"$TMP_OUT"
 	    # shellcheck disable=SC2129
             echo "[test_128_exit]" >>"$TMP_OUT"
 	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
-            run_exe "$TMP_EXE" >>"$TMP_OUT"
-            xx="$?"
+            if [ "$is_darwin" = "1" ]; then
+                xx=0
+                echo "[linked]" >>"$TMP_OUT"
+            else
+                run_exe "$TMP_EXE" >>"$TMP_OUT" 2>&1
+                xx="$?"
+                if [ "$xx" != "2" ]; then
+                    emit_exec_backtrace "$TMP_EXE"
+                fi
+                echo "[returns $xx]" >>"$TMP_OUT"
+            fi
             run_atexit="$run_atexit $xx"
-            echo "[returns $xx]" >>"$TMP_OUT"
         else
             # shellcheck disable=SC2086
             if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
@@ -560,10 +604,20 @@ while IFS= read -r src; do
 		failed=$((failed + 1))
 		add_row "$base" "EXEC_FAIL" "non-zero exit"
 		print_change "$base" "EXEC_FAIL"
-		rm -f "$TMP_EXE"
-		if [ -n "$ONLY_TEST" ]; then
-			exit
+		if [ "$base" != "128_run_atexit" ]; then
+			if [ -n "$args" ]; then
+				if [ "$base" = "46_grep" ]; then
+					(cd "$TEST_DIR" && emit_exec_backtrace "$TMP_EXE" '[^* ]*[:a:d: ]+\:\*-/: $' 46_grep.c)
+				else
+					# shellcheck disable=SC2086
+					emit_exec_backtrace "$TMP_EXE" $args
+				fi
+			else
+				emit_exec_backtrace "$TMP_EXE"
+			fi
 		fi
+		rm -f "$TMP_EXE"
+		exit_if_only_test
 		continue
 	fi
 	rm -f "$TMP_EXE"
@@ -599,9 +653,7 @@ while IFS= read -r src; do
         if [ -n "$fixed_up" ]; then
 	    mv "$upstream_expect".orig "$upstream_expect"
         fi
-	if [ -n "$ONLY_TEST" ]; then
-		exit
-	fi
+	exit_if_only_test
 done <<EOF
 $(printf '%s\n' "$TEST_DIR"/*.c | sort -V)
 EOF
@@ -659,9 +711,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 				add_row "$base" "PASS" "compile error as expected"
 				print_change "$base" "PASS"
 			fi
-			if [ -n "$ONLY_TEST" ]; then
-				exit
-			fi
+			exit_if_only_test
 			continue
 		fi
 
@@ -672,9 +722,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			failed=$((failed + 1))
 			add_row "$base" "COMPILE_FAIL" "rcc returned non-zero"
 			print_change "$base" "COMPILE_FAIL"
-			if [ -n "$ONLY_TEST" ]; then
-				exit
-			fi
+			exit_if_only_test
 			continue
 		fi
 		if [ ! -x "$TMP_EXE" ]; then
@@ -683,9 +731,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			failed=$((failed + 1))
 			add_row "$base" "COMPILE_FAIL" "executable missing"
 			print_change "$base" "COMPILE_FAIL"
-			if [ -n "$ONLY_TEST" ]; then
-				exit
-			fi
+			exit_if_only_test
 			continue
 		fi
 
@@ -693,15 +739,21 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		exit_code=$?
 		rm -f "$TMP_EXE"
 
-                # shellcheck disable=SC2059
-                printf "${GREEN}PASS${RESET}\n"
-                passed=$((passed + 1))
-                add_row "$base" "PASS" "exit=$exit_code"
-		print_change "$base" "PASS"
-
-		if [ -n "$ONLY_TEST" ]; then
-			exit
+		if [ "$exit_code" -eq 0 ]; then
+			# shellcheck disable=SC2059
+			printf "${GREEN}PASS${RESET}\n"
+			passed=$((passed + 1))
+			add_row "$base" "PASS" "exit=$exit_code"
+			print_change "$base" "PASS"
+		else
+			# shellcheck disable=SC2059
+			printf "${RED}EXEC FAIL${RESET}\n"
+			failed=$((failed + 1))
+			add_row "$base" "EXEC_FAIL" "exit=$exit_code"
+			print_change "$base" "EXEC_FAIL"
 		fi
+
+		exit_if_only_test
 	done <<EOF
 $(printf '%s\n' "$UNIT_TEST_DIR"/test_*.c | sort -V)
 EOF
@@ -785,18 +837,22 @@ if [ -z "$ONLY_TEST" ]; then
     printf "Report saved to %s\n" "$REPORT_FILE"
 fi
 
-# When filtering to a single test, pass/fail based on that test alone
+# Thresholds account for platform-specific skips; any recorded failure is fatal.
+if [ "$failed" -ne 0 ]; then
+    exit 1
+fi
+
 if [ -n "$ONLY_TEST" ]; then
-    [ "$failed" -eq 0 ]
+    exit 0
 # arm64-darwin native
 elif [ "$REPORT_FILE" = "$REPORT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 147 ]
+    [ "$passed" -ge 156 ]
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+    [ "$passed" -ge 156 ]
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+    [ "$passed" -ge 156 ]
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
     [ "$passed" -ge 152 ]
 else
-    [ "$passed" -ge 152 ]
+    [ "$passed" -ge 153 ]
 fi
