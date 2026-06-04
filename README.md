@@ -168,10 +168,12 @@ This fork passes now:
 - [153/153 tcc tests](test_report_mingw_cross.md) on mingw-cross (x86-64)
 - [156/156 tcc tests](test_report_arm64_cross.md) on arm64-cross (ELF)
 - [156/156 tcc tests](test_report_darwin_cross.md) on darwin-cross (Mach-O, compile+link only)
-- [148/156 tcc tests](test_report_arm64.md) on arm64-darwin native
+- [152/156 tcc tests](test_report_arm64.md) on arm64-darwin native
 - [113/115 tcc tests](test_report_mingw.md) on windows native via powershell testing. (ps1 test artefacts)
 - The c-testsuite pass 220/220 tests on all platforms.
 - The gcc-torture tests pass all on linux, mingw-cross and arm64-cross.
+  On darwin it fails: 20000731-1 20011217-1 20040313-1 920625-1 fprintf-2
+  fprintf-chk-1
 - The ncc/compliance tests pass 15/15 tests on all platforms.
 
 ## Old Known Limitations

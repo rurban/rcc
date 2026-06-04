@@ -39,7 +39,7 @@ TARGET_DEPS = $(OBJS) src/rcc.h
 TARGET_EXT = $(OBJS)
 
 ifneq ($(findstring apple,$(MACHINE)),)
-DARWIN_O = lib/darwin.o
+DARWIN_O = lib/darwin.dylib
 TARGET_DEPS += $(DARWIN_O)
 TARGET_EXT += $(DARWIN_O)
 else
@@ -134,7 +134,7 @@ src/gcc_predefined.h:
 	rm -f $$tmp
 
 $(DARWIN_O): lib/darwin.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) -arch arm64 -dynamiclib -install_name @rpath/darwin.dylib -o $@ lib/darwin.c
 $(MINGW_O): lib/mingw.c
 	$(CC) $(CFLAGS) -c $< -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h

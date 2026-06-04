@@ -6,7 +6,7 @@
 cd "$(dirname "$0")/../.." || exit 1
 tmpf=$(mktemp /tmp/torture_capture.XXXXXX)
 ./test/torture/run.sh "$@" 2>&1 | tee "$tmpf"; rc=${PIPESTATUS[0]}
-plat=$(find . -maxdepth 1 -name 'test-torture-*.summary' -printf '%f\n' 2>/dev/null | head -1 | sed 's/^test-torture-//;s/\.summary$//')
+plat=$(for f in test-torture-*.summary; do [ -f "$f" ] && { f="${f#test-torture-}"; echo "${f%.summary}"; break; }; done)
 if [ -n "$plat" ]; then
     mv "$tmpf" "test/torture_report_${plat}.log"
 else

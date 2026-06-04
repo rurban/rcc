@@ -620,7 +620,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         call_target = format(".L_rcc_%s", call_target);
     if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
         node->lhs->var && node->lhs->var->is_function)
-        call_target = var_label(node->lhs->var);
+        call_target = node->lhs->var->name;
 
 #ifdef _WIN32
     char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
@@ -1412,9 +1412,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int gp_reg_args = 0;
     int fp_reg_args = 0;
     int stack_args = 0;
-    Type *fn_type = (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_PTR)
-        ? node->lhs->ty->base
-        : NULL;
+    Type *fn_type = NULL;
+    if (node->lhs && node->lhs->ty) {
+        if (node->lhs->ty->kind == TY_PTR)
+            fn_type = node->lhs->ty->base;
+        else if (node->lhs->ty->kind == TY_FUNC && (node->lhs->kind != ND_LVAR || node->lhs->ty->is_variadic))
+            fn_type = node->lhs->ty;
+    }
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
     int named_count = 0;
     if (fn_type && fn_type->kind == TY_FUNC)
@@ -1473,13 +1477,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 fp_reg_args += arg_hfa_count[i];
             } else {
                 arg_stack_idx[i] = stack_args;
-                stack_args += arg_hfa_count[i];
+                stack_args += (argv[i]->ty->size + 7) / 8;
             }
             continue;
         }
 #if defined(__APPLE__)
         if (is_variadic && !is_named) {
-            arg_stack_idx[i] = stack_args++;
+            arg_stack_idx[i] = stack_args;
+            if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
+                stack_args += (argv[i]->ty->size + 7) / 8;
+            else
+                stack_args++;
             continue;
         }
 #endif
@@ -1548,7 +1556,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #ifdef ARCH_ARM64
     // ARM64: evaluate args for register passing, track stack args
     for (int i = 0; i < nargs; i++) {
-        if (arg_stack_idx[i] >= 0)
+        // Skip regular stack args, but evaluate HFAs on stack for data copying
+        if (arg_stack_idx[i] >= 0 && arg_hfa_count[i] <= 0)
             continue;
         if (arg_hfa_count[i] > 0 || ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)) {
             int addr = gen_addr(argv[i]);
@@ -1610,10 +1619,34 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_stack_idx[i] < 0)
             continue;
         int r;
-        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+        if (arg_hfa_count[i] > 0 && arg_stack_idx[i] >= 0) {
+            // HFA struct overflowed V registers — copy struct data to stack
+            int addr = arg_regs[i];
+            int sz = argv[i]->ty->size;
+            for (int off = 0; off < sz; off += 8) {
+                printf("  ldr x16, [%s, #%d]\n", reg64[addr], off);
+                printf("  str x16, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8 + off);
+            }
+            free_reg(addr);
+            continue;
+        }
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) {
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+            if (is_variadic && !(i < named_count)) {
+                int vaddr = gen_addr(argv[i]);
+                int vsz = argv[i]->ty->size;
+                for (int voff = 0; voff < vsz; voff += 8) {
+                    printf("  ldr x16, [%s, #%d]\n", reg64[vaddr], voff);
+                    printf("  str x16, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8 + voff);
+                }
+                free_reg(vaddr);
+                continue;
+            }
+#endif
             r = gen_addr(argv[i]);
-        else
+        } else {
             r = gen(argv[i]);
+        }
         printf("  str %s, [%s, #%d]\n", reg64[r], STACK_REG, arg_stack_idx[i] * 8);
         free_reg(r);
     }
@@ -3928,7 +3961,7 @@ static int gen(Node *node) {
         if (var->ty->size <= 4095) {
             printf("  mov x9, #%d\n", var->ty->size);
         } else {
-            emit_mov_imm64("x12", (uint64_t)var->ty->size);
+            emit_mov_imm64("x9", (uint64_t)var->ty->size);
         }
         printf(".L.zero.%d:\n", c);
         printf("  cmp x9, #0\n");
@@ -4087,9 +4120,13 @@ static int gen(Node *node) {
             printf("  fmov d0, %s\n", reg64[r3]);
             if (sz == 4) {
                 printf("  ldr s1, .LF%d\n", id);
-                printf("  %s s0, s0, s1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
+                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  ldr s1, [x16]\n");
             } else {
-                printf("  ldr d1, .LF%d\n", id);
+                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
+                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  ldr d1, [x16]\n");
                 printf("  %s d0, d0, d1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
             }
             printf("  fmov %s, d0\n", reg64[r3]);
@@ -5463,9 +5500,27 @@ static int gen(Node *node) {
         next_char:;
         }
         out[olen] = '\0';
+        // Apple ARM64 assembler treats ';' as comment — split on semicolons
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+        {
+            char *semi_out = arena_alloc(olen * 2 + 16);
+            int so = 0;
+            for (int k = 0; k < olen; k++) {
+                if (out[k] == ';') {
+                    semi_out[so++] = '\n';
+                    semi_out[so++] = ' ';
+                    semi_out[so++] = ' ';
+                } else {
+                    semi_out[so++] = out[k];
+                }
+            }
+            semi_out[so] = '\0';
+            printf("%s\n", semi_out);
+        }
+#else
         printf("%s\n", out);
+#endif
 
-        // Store back output register operands to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
             AsmOperand *op = &node->asm_ops[i];
             if (op_addr[i] < 0) continue;
@@ -5761,11 +5816,12 @@ static int gen(Node *node) {
             printf("  ldr w16, [%s, #28]\n", reg64[r]); // __vr_offs (negative)
             printf("  cmp w16, #0\n");
             printf("  b.ge .L.va_overflow.%d\n", rcc_label_count);
-            printf("  ldr x12, [%s, #16]\n", reg64[r]); // __vr_top
-            printf("  sxtw x17, w16\n");
+            // Store new vr_offs BEFORE loading vr_top (may clobber reg64[r])
+            printf("  add w17, w16, #%d\n", fp_size);
+            printf("  str w17, [%s, #28]\n", reg64[r]);
+            printf("  ldr x12, [%s, #16]\n", reg64[r]); // __vr_top (safe to clobber)
+            printf("  sxtw x17, w16\n"); // x17 = old vr_offs
             printf("  add x12, x12, x17\n");
-            printf("  add w16, w16, #%d\n", fp_size);
-            printf("  str w16, [%s, #28]\n", reg64[r]);
             printf("  b .L.va_done.%d\n", rcc_label_count);
         } else {
             // Pointer-passed structs use gp_size=8 (the pointer fits in one register);
@@ -5775,20 +5831,33 @@ static int gen(Node *node) {
             printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs (negative)
             printf("  cmp w16, #0\n");
             printf("  b.ge .L.va_overflow.%d\n", rcc_label_count);
-            printf("  ldr x12, [%s, #8]\n", reg64[r]); // __gr_top
-            printf("  sxtw x17, w16\n");
+            // Store new gr_offs BEFORE loading gr_top (may clobber reg64[r])
+            printf("  add w17, w16, #%d\n", gp_size);
+            printf("  str w17, [%s, #24]\n", reg64[r]);
+            printf("  ldr x12, [%s, #8]\n", reg64[r]); // __gr_top (safe to clobber)
+            printf("  sxtw x17, w16\n"); // x17 = old gr_offs
             printf("  add x12, x12, x17\n");
             if (is_ptr_val_struct) {
                 printf("  ldr x12, [x12]\n");
             }
-            printf("  add w16, w16, #%d\n", gp_size);
-            printf("  str w16, [%s, #24]\n", reg64[r]);
             printf("  b .L.va_done.%d\n", rcc_label_count);
         }
 
         printf(".L.va_overflow.%d:\n", rcc_label_count);
-        printf("  ldr x12, [%s]\n", reg64[r]); // __stack (overflow_arg_area at [ap+0])
+        // Load ap->__stack into x16.  Compute new __stack in x17, store via
+        // reg64[r] (still valid, not clobbered), then move result to x12.
+        printf("  ldr x16, [%s]\n", reg64[r]); // x16 = ap->__stack (old value)
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+        if (is_ptr_val_struct) {
+            // Apple ARM64: variadic struct by value on overflow stack — no ptr deref
+            int ovf_sz = (ty->size + 7) & ~7;
+            printf("  add x17, x16, #%d\n", ovf_sz);
+            printf("  str x17, [%s]\n", reg64[r]);
+            printf("  mov x12, x16\n"); // result = old __stack
+        } else if (is_ptr_struct || false) {
+#else
         if (is_ptr_struct || is_ptr_val_struct) {
+#endif
             // Pointer-passed struct: load pointer from stack, advance by 8
             printf("  ldr x16, [x12]\n");
             printf("  add x12, x12, #8\n");
@@ -5797,13 +5866,16 @@ static int gen(Node *node) {
         } else {
             int align = ty->align;
             int ovf_size = ty->size <= 8 ? 8 : (ty->size + 7) & ~7;
+            // x16 = old __stack.  Compute new in x17, store to ap, then
+            // move old __stack to x12 (result).
             if (align > 8) {
-                printf("  add x12, x12, #%d\n", align - 1);
-                printf("  and x12, x12, #-%d\n", align);
+                printf("  add x17, x16, #%d\n", align - 1);
+                printf("  and x17, x17, #-%d\n", align);
+            } else {
+                printf("  add x17, x16, #%d\n", ovf_size);
             }
-            printf("  mov x16, x12\n");
-            printf("  add x16, x16, #%d\n", ovf_size);
-            printf("  str x16, [%s]\n", reg64[r]);
+            printf("  str x17, [%s]\n", reg64[r]);
+            printf("  mov x12, x16\n"); // result = old __stack
         }
 
         printf(".L.va_done.%d:\n", rcc_label_count);
@@ -5948,6 +6020,8 @@ static int gen(Node *node) {
             printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         }
         printf("  cbnz w9, .L.atom_xchg.%d\n", lbl);
+        if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
+            printf("  dmb ish\n");
 #else
         printf("  xchg%c %s, (%s)\n", size_suffix(sz), reg(r_val, sz), reg64[r_addr]);
         if (sz < 4) {
@@ -6004,6 +6078,8 @@ static int gen(Node *node) {
         else
             printf("  cbnz w9, .L.atom_cas.%d\n", lbl);
         printf("  mov %s, #1\n", reg64[r_result]);
+        if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
+            printf("  dmb ish\n");
         printf("  b .L.atom_cas_done.%d\n", lbl);
         printf(".L.atom_cas_fail.%d:\n", lbl);
         printf("  mov %s, #0\n", reg64[r_result]);
@@ -7231,7 +7307,13 @@ void codegen(Program *prog) {
                 continue;
             // Handle function aliases (__attribute__((alias)) or __asm__ renaming)
             if (var->is_function && !var->alias_target && var->asm_name) {
-                // __asm__("target") on a function: alias the C name to the asm_name
+                // Skip if asm_name resolves to same symbol as C name (circular)
+                if (strcmp(sym_name(var->name), var_sym_label(var)) == 0)
+                    continue;
+                    // __asm__("target") on a function: alias the C name to the asm_name
+#ifdef __APPLE__
+                printf("  .balign 8\n");
+#endif
                 printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)),
                        asm_sym_name(var->asm_name));
@@ -7239,14 +7321,17 @@ void codegen(Program *prog) {
             }
             if (var->alias_target) {
                 if (!var->is_static)
-                    printf(".globl %s\n", asm_sym_name(sym_name(label)));
+#ifdef __APPLE__
+                    printf("  .balign 8\n");
+#endif
+                printf(".globl %s\n", asm_sym_name(sym_name(label)));
                 printf(".set %s, %s\n", asm_sym_name(sym_name(label)),
                        asm_sym_name(sym_name(var->alias_target)));
                 continue;
             }
             // If a global with this asm_name already emitted, skip (alias target)
             bool sym_already_emitted = false;
-            const char *canon = asm_sym_name(sym_name(label));
+            const char *canon = asm_sym_name(var_sym_label(var));
             for (int i = 0; i < emitted_count; i++) {
                 if (strcmp(emitted_syms[i], canon) == 0) {
                     sym_already_emitted = true;
@@ -7260,7 +7345,7 @@ void codegen(Program *prog) {
                 LVar *existing = NULL;
                 for (LVar *g = prog->globals; g; g = g->next) {
                     if (g != var && !g->is_extern && !g->is_function &&
-                        strcmp(g->name, var->asm_name) == 0 &&
+                        strcmp(sym_name(g->name), var->asm_name) == 0 &&
                         (g->has_init || g->init_data)) {
                         existing = g;
                         break;
@@ -7268,6 +7353,9 @@ void codegen(Program *prog) {
                 }
                 if (existing) {
                     // This is an alias via __asm__ — emit .set instead of data
+#ifdef __APPLE__
+                    printf("  .balign 8\n");
+#endif
                     printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
                     printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)), canon);
                     continue;
@@ -7284,11 +7372,14 @@ void codegen(Program *prog) {
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
             if (var->ty->align > 1)
                 printf("  .balign %d\n", var->ty->align);
+#ifdef __APPLE__
+            printf("  .balign 8\n");
+#endif
             if (!var->is_static)
                 printf(".globl %s\n", asm_sym_name(sym_name(label)));
             printf("%s:\n", asm_sym_name(sym_name(safe_label)));
             if (reserved)
-                printf(".set %s, %s\n", asm_sym_name(sym_name(label)), asm_sym_name(sym_name(safe_label)));
+                printf(".set %s, %s\n", asm_sym_name(sym_name(label)), asm_sym_name(safe_label));
             if (var->init_data || var->relocs) {
                 int pos = 0;
                 for (Reloc *rel = var->relocs; rel; rel = rel->next) {
@@ -7699,7 +7790,7 @@ void codegen(Program *prog) {
         if (fn_label != fn->name)
             printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(fn->asm_name));
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), fn->asm_name);
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
@@ -7809,6 +7900,38 @@ void codegen(Program *prog) {
                             printf("  str d%d, [x16, #%d]\n", fp_param + j, off);
                     }
                     fp_param += hfa_count;
+                } else if (hfa_count > 0) {
+                    // HFA struct overflowed V registers — copy from caller's stack frame
+                    int spoff = 16 + stack_param * 8;
+                    int sz = var->ty->size;
+                    // Use byte-copy from caller's stack to local slot
+                    int c = ++rcc_label_count;
+                    if (var->offset <= 4095)
+                        printf("  sub x13, %s, #%d\n", FRAME_PTR, var->offset);
+                    else {
+                        int v = var->offset;
+                        printf("  mov x13, #%d\n", v & 0xffff);
+                        v >>= 16;
+                        int s = 16;
+                        while (v) {
+                            printf("  movk x13, #%d, lsl #%d\n", v & 0xffff, s);
+                            v >>= 16;
+                            s += 16;
+                        }
+                        printf("  sub x13, %s, x13\n", FRAME_PTR);
+                    }
+                    // x11 = source (caller's stack)
+                    printf("  add x11, %s, #%d\n", FRAME_PTR, spoff);
+                    printf("  mov x9, #%d\n", sz);
+                    printf(".L.pcopy.%d:\n", c);
+                    printf("  cmp x9, #0\n");
+                    printf("  b.eq .L.pcopy_end.%d\n", c);
+                    printf("  sub x9, x9, #1\n");
+                    printf("  ldrb w16, [x11, x9]\n");
+                    printf("  strb w16, [x13, x9]\n");
+                    printf("  b .L.pcopy.%d\n", c);
+                    printf(".L.pcopy_end.%d:\n", c);
+                    stack_param += (sz + 7) / 8;
                 } else if (is_flonum(var->ty)) {
                     if (fp_param < 8) {
                         if (var->ty->size == 4) {
@@ -8035,7 +8158,7 @@ void codegen(Program *prog) {
         if (fn_label != fn->name)
             printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn_label)));
         else if (fn->asm_name && (fn_exported || fn->is_weak))
-            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), asm_sym_name(sym_name(fn->asm_name)));
+            printf("%s = %s\n", asm_sym_name(sym_name(fn->name)), fn->asm_name);
 #if defined(__APPLE__)
         printf("  .p2align 2\n");
 #endif
@@ -8121,7 +8244,6 @@ void codegen(Program *prog) {
         printf("  ret\n");
 #endif
     }
-
     // Emit constructor/destructor entries
     bool has_ctor = false, has_dtor = false;
     for (TLItem *item = prog->items; item; item = item->next) {
@@ -8130,35 +8252,66 @@ void codegen(Program *prog) {
             if (item->fn->is_destructor) has_dtor = true;
         }
     }
+    if (has_dtor) {
+#if defined(__APPLE__)
+        // On macOS, destructors must be registered via __cxa_atexit at startup.
+        // Emit hidden initializer stubs that call __cxa_atexit.
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor) {
+                printf("\n.text\n");
+                printf("  .p2align 2\n");
+                printf("___GLOBAL_dtor_%s:\n", item->fn->name);
+                printf("  stp x29, x30, [sp, #-16]!\n");
+                printf("  mov x29, sp\n");
+                printf("  adrp x0, %s@GOTPAGE\n", asm_sym_name(sym_name(item->fn->name)));
+                printf("  ldr x0, [x0, %s@GOTPAGEOFF]\n", asm_sym_name(sym_name(item->fn->name)));
+                printf("  mov x1, #0\n");
+                printf("  adrp x2, ___dso_handle@GOTPAGE\n");
+                printf("  ldr x2, [x2, ___dso_handle@GOTPAGEOFF]\n");
+                printf("  bl ___cxa_atexit\n");
+                printf("  ldp x29, x30, [sp], #16\n");
+                printf("  ret\n");
+            }
+        }
+#endif
+    }
+#if defined(__APPLE__)
+    if (has_ctor || has_dtor) {
+#else
     if (has_ctor) {
+#endif
 #ifdef _WIN32
         printf("\n.section .ctors,\"w\"\n");
 #elif defined(__APPLE__)
-        printf("\n.section __DATA,__mod_init_func\n");
-        printf("  .balign 8\n");
+        printf("\n.section __DATA,__mod_init_func,mod_init_funcs\n");
 #else
-                printf("\n.section .init_array,\"aw\",@init_array\n");
+            printf("\n.section .init_array,\"aw\",@init_array\n");
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_constructor)
                 printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
+#if defined(__APPLE__)
+        // Register destructor stubs in __mod_init_func too
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor)
+                printf("  .quad ___GLOBAL_dtor_%s\n", item->fn->name);
+        }
+#endif
     }
+#if !defined(__APPLE__)
     if (has_dtor) {
 #ifdef _WIN32
         printf("\n.section .dtors,\"w\"\n");
-#elif defined(__APPLE__)
-        printf("\n.section __DATA,__mod_term_func\n");
-        printf("  .balign 8\n");
 #else
-                printf("\n.section .fini_array,\"aw\",@fini_array\n");
+        printf("\n.section .fini_array,\"aw\",@fini_array\n");
 #endif
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor)
                 printf("  .quad %s\n", asm_sym_name(sym_name(item->fn->name)));
         }
     }
-
+#endif
     if (alloca_needed)
         emit_alloca();
 
@@ -8169,7 +8322,7 @@ void codegen(Program *prog) {
 #elif defined(__APPLE__)
         printf("\n.section __TEXT,__const\n");
 #else
-                printf("\n.section .rodata\n");
+            printf("\n.section .rodata\n");
 #endif
         printf("  .balign 8\n");
         for (FloatLit *fl = float_lits; fl; fl = fl->next) {
