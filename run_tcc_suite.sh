@@ -144,6 +144,18 @@ test_expected_exit() {
 	esac
 }
 
+# Expected exit codes for unit tests (test/test_*.c)
+test_unit_expected_exit() {
+	case "$1" in
+	test_include)       echo 42 ;;
+	test_include2)      echo 10 ;;
+	test_self_include2) echo 1 ;;
+	test_simple)        echo 1 ;;
+	test_simple2)       echo 1 ;;
+	*)                  echo 0 ;;
+	esac
+}
+
 TMPDIR="${TMPDIR:-/tmp}"
 TMP_OUT="$TMPDIR/rcc_test_$$.out"
 TMP_EXE="$TMPDIR/rcc_test_$$"
@@ -668,7 +680,6 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		case "$1" in test_err) return 0 ;; esac
 		return 1
 	}
-
 	# Unit tests to skip on certain platforms
 	skip_unit_test() {
 		case "$1" in
@@ -696,7 +707,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		printf "  %-${max_name_len}s " "$base..."
 
 		if expect_compile_fail "$base"; then
-			# shellcheck disable=SC2086
+			expected_exit=1
 			if "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 				# shellcheck disable=SC2059
 				printf "${RED}SHOULD FAIL (compiled ok)${RESET}\n"
@@ -704,7 +715,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 				add_row "$base" "FAIL" "expected compile error but succeeded"
 				print_change "$base" "FAIL"
 				rm -f "$TMP_EXE"
-			else
+                       else
 				# shellcheck disable=SC2059
 				printf "${GREEN}PASS (expected compile error)${RESET}\n"
 				passed=$((passed + 1))
@@ -713,6 +724,8 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			fi
 			exit_if_only_test
 			continue
+		else
+			expected_exit=$(test_unit_expected_exit "$base")
 		fi
 
 		# shellcheck disable=SC2086
@@ -736,14 +749,21 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 		fi
 
 		run_exe "$TMP_EXE" >"$TMP_OUT" 2>&1
-		exit_code=$?
+		exit_code="$?"
 		rm -f "$TMP_EXE"
-
-		# shellcheck disable=SC2059
-		printf "${GREEN}PASS${RESET}\n"
-		passed=$((passed + 1))
-		add_row "$base" "PASS" "exit=$exit_code"
-		print_change "$base" "PASS"
+		if [ "$exit_code" != "$expected_exit" ]; then
+			# shellcheck disable=SC2059
+			printf "${RED}EXEC FAIL${RESET}\n"
+			failed=$((failed + 1))
+			add_row "$base" "EXEC_FAIL" "exit=$exit_code"
+			print_change "$base" "EXEC_FAIL"
+		else
+			# shellcheck disable=SC2059
+			printf "${GREEN}PASS${RESET}\n"
+			passed=$((passed + 1))
+			add_row "$base" "PASS" ""
+			print_change "$base" "PASS"
+		fi
 
 		exit_if_only_test
 	done <<EOF
