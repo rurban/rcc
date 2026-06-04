@@ -1,5 +1,9 @@
 name: CI
-on: [ push, pull_request]
+on: [push, pull_request]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
