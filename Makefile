@@ -99,39 +99,42 @@ MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 
-src/sysinc_paths.h:
+src/sysinc_paths.h: FORCE
+	@tmp=$$(mktemp); \
 	RCC_CC="$(CC)"; \
 	if [ "$(CC)" = "aarch64-linux-gnu-gcc" ] || [ -n "$(ARM64_SYSROOT)" ]; then \
-		./tools/get-sysinc-paths.sh "$(CC) --sysroot=$(ARM64_SYSROOT)" > $@; \
+		./tools/get-sysinc-paths.sh "$(CC) --sysroot=$(ARM64_SYSROOT)" > $$tmp; \
 	else \
-		./tools/get-sysinc-paths.sh $(CC) > $@; \
-	fi
+		./tools/get-sysinc-paths.sh $(CC) > $$tmp; \
+	fi; \
+	if [ -f $@ ] && cmp -s $$tmp $@; then rm -f $$tmp; else mv $$tmp $@; fi
 
-src/gcc_predefined.h:
-	@tmp=$$(mktemp); \
+src/gcc_predefined.h: FORCE
+	@tmp=$$(mktemp); out=$$(mktemp); \
 	$(CC) -dM -E - < /dev/null > $$tmp; \
 	if grep -q '__APPLE__' $$tmp; then \
-		echo '#ifdef __APPLE__' > $@; \
+		echo '#ifdef __APPLE__' > $$out; \
 	elif grep -q '_WIN32' $$tmp; then \
-		echo '#ifdef _WIN32' > $@; \
+		echo '#ifdef _WIN32' > $$out; \
 	elif grep -q '__linux__' $$tmp; then \
-		echo '#ifdef __linux__' > $@; \
+		echo '#ifdef __linux__' > $$out; \
 	elif grep -q '__FreeBSD__' $$tmp; then \
-		echo '#ifdef __FreeBSD__' > $@; \
+		echo '#ifdef __FreeBSD__' > $$out; \
 	elif grep -q '__OpenBSD__' $$tmp; then \
-		echo '#ifdef __OpenBSD__' > $@; \
+		echo '#ifdef __OpenBSD__' > $$out; \
 	elif grep -q '__NetBSD__' $$tmp; then \
-		echo '#ifdef __NetBSD__' > $@; \
+		echo '#ifdef __NetBSD__' > $$out; \
 	elif grep -q '__DragonFly__' $$tmp; then \
-		echo '#ifdef __DragonFly__' > $@; \
+		echo '#ifdef __DragonFly__' > $$out; \
 	else \
-		: > $@; \
+		: > $$out; \
 	fi; \
-	awk -f tools/get-gcc-predefined.awk $$tmp >> $@; \
+	awk -f tools/get-gcc-predefined.awk $$tmp >> $$out; \
 	if grep -qE '__APPLE__|_WIN32|__linux__|__FreeBSD__|__OpenBSD__|__NetBSD__|__DragonFly__' $$tmp; then \
-		echo '#endif' >> $@; \
+		echo '#endif' >> $$out; \
 	fi; \
-	rm -f $$tmp
+	rm -f $$tmp; \
+	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
 $(DARWIN_O): lib/darwin.c
 	$(CC) -arch arm64 -dynamiclib -install_name @rpath/darwin.dylib -o $@ lib/darwin.c
@@ -244,4 +247,6 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-.PHONY: clean test check test-full test-torture lint bench install dist bench prof -lpthread
+FORCE:
+
+.PHONY: clean test check test-full test-torture lint bench install dist bench prof -lpthread FORCE

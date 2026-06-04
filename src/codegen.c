@@ -2295,13 +2295,25 @@ static void emit_mov_imm(const char *reg, int imm) {
     }
 }
 
-// Emit adrp+add pair for label address, with platform-appropriate syntax
+// Emit an address load for an ordinary C object/function reference.
 // Linux: adrp reg, label / add reg, reg, :lo12:label
-// Darwin: adrp reg, label@PAGE / add reg, reg, label@PAGEOFF
+// Darwin currently uses a GOT load for ordinary symbol addresses.
 static void emit_adrp_add(const char *reg, const char *label) {
 #if defined(__APPLE__)
     printf("  adrp %s, %s@GOTPAGE\n", reg, label);
     printf("  ldr %s, [%s, %s@GOTPAGEOFF]\n", reg, reg, label);
+#else
+    printf("  adrp %s, %s\n", reg, label);
+    printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
+#endif
+}
+
+// Emit a direct page+offset address materialization.  Darwin needs this for
+// pseudo-symbols and local destructor registration where there is no GOT slot.
+static void emit_adrp_page_add(const char *reg, const char *label) {
+#if defined(__APPLE__)
+    printf("  adrp %s, %s@PAGE\n", reg, label);
+    printf("  add %s, %s, %s@PAGEOFF\n", reg, reg, label);
 #else
     printf("  adrp %s, %s\n", reg, label);
     printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
@@ -4157,21 +4169,21 @@ static int gen(Node *node) {
         int r3 = alloc_reg();
         emit_load(node->lhs->ty, r3, format("[%s]", reg64[r]));
         if (is_flonum(node->lhs->ty)) {
-            // Float post-inc/dec: use fp arithmetic via d0/d1
+            // Float post-inc/dec: use fp arithmetic and store the updated bit pattern.
             int id = add_float_literal(1.0, sz);
-            printf("  fmov d0, %s\n", reg64[r3]);
             if (sz == 4) {
-                printf("  ldr s1, .LF%d\n", id);
-                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
-                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  fmov s0, %s\n", reg(r3, 4));
+                emit_adrp_add("x16", format(".LF%d", id));
                 printf("  ldr s1, [x16]\n");
+                printf("  %s s0, s0, s1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  fmov %s, s0\n", reg(r3, 4));
             } else {
-                printf("  adrp x16, .LF%d@GOTPAGE\n", id);
-                printf("  ldr x16, [x16, .LF%d@GOTPAGEOFF]\n", id);
+                printf("  fmov d0, %s\n", reg64[r3]);
+                emit_adrp_add("x16", format(".LF%d", id));
                 printf("  ldr d1, [x16]\n");
                 printf("  %s d0, d0, d1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  fmov %s, d0\n", reg64[r3]);
             }
-            printf("  fmov %s, d0\n", reg64[r3]);
         } else {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
@@ -8311,16 +8323,14 @@ void codegen(Program *prog) {
         // Emit hidden initializer stubs that call __cxa_atexit.
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor) {
-                printf("\n.text\n");
+                printf("\n.section __TEXT,__StaticInit,regular,pure_instructions\n");
                 printf("  .p2align 2\n");
                 printf("___GLOBAL_dtor_%s:\n", item->fn->name);
                 printf("  stp x29, x30, [sp, #-16]!\n");
                 printf("  mov x29, sp\n");
-                printf("  adrp x0, %s@GOTPAGE\n", asm_sym_name(sym_name(item->fn->name)));
-                printf("  ldr x0, [x0, %s@GOTPAGEOFF]\n", asm_sym_name(sym_name(item->fn->name)));
+                emit_adrp_page_add("x0", asm_sym_name(sym_name(item->fn->name)));
                 printf("  mov x1, #0\n");
-                printf("  adrp x2, ___dso_handle@GOTPAGE\n");
-                printf("  ldr x2, [x2, ___dso_handle@GOTPAGEOFF]\n");
+                emit_adrp_page_add("x2", "___dso_handle");
                 printf("  bl ___cxa_atexit\n");
                 printf("  ldp x29, x30, [sp], #16\n");
                 printf("  ret\n");
@@ -8337,6 +8347,7 @@ void codegen(Program *prog) {
         printf("\n.section .ctors,\"w\"\n");
 #elif defined(__APPLE__)
         printf("\n.section __DATA,__mod_init_func,mod_init_funcs\n");
+        printf("  .p2align 3, 0x0\n");
 #else
             printf("\n.section .init_array,\"aw\",@init_array\n");
 #endif
