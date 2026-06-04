@@ -75,6 +75,13 @@ run_test() {
         return
     fi
 
+    # tmpnam() is deprecated on macOS, skip tests that use it on arm64
+    if [ "$PLATFORM" = "arm64" ] && grep -q '#include "gcc_tmpnam.h"' "$src" 2>/dev/null; then
+        SKIP=$((SKIP+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(tmpnam-macOS): $name"
+        return
+    fi
+
     if grep -qE '(__complex__|[[:space:]_]Complex)' "$src" 2>/dev/null; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(complex): $name"
