@@ -501,9 +501,9 @@ int main(int argc, char **argv) {
             char darwin_link[512] = "";
             if (stat("lib/darwin.dylib", &libst_darwin) == 0) {
                 char cwd[256];
-                getcwd(cwd, sizeof(cwd));
+                const char *rpath = getcwd(cwd, sizeof(cwd)) ? cwd : ".";
                 snprintf(darwin_link, sizeof(darwin_link),
-                         "lib/darwin.dylib -Wl,-rpath,%s/lib", cwd);
+                         "lib/darwin.dylib -Wl,-rpath,%s/lib", rpath);
             }
 #ifdef RCC_INCDIR
             else if (stat(RCC_INCDIR "/../lib/darwin.dylib", &libst_darwin) == 0)
@@ -541,7 +541,7 @@ int main(int argc, char **argv) {
             }
         }
 
-#if defined(_WIN32) || defined(__MINGW32__) || defined(__APPLE__)
+#if defined(_WIN32) || defined(__MINGW32__)
         struct stat libst;
 #endif
 #if defined(_WIN32) || defined(__MINGW32__)

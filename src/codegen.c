@@ -534,9 +534,6 @@ static void emit_alloca(void) {
 #endif
 }
 
-static char *var_label(LVar *var);
-
-
 bool va_arg_need_copy(Type *ty) {
     if (ty->size > 8 && ty->size <= 16) {
         if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
@@ -2245,11 +2242,13 @@ static bool is_asm_reserved(const char *name) {
     return false;
 }
 
+#ifndef ARCH_ARM64
 static char *var_label(LVar *var) {
     if (var->asm_name) return var->asm_name;
     if (is_asm_reserved(var->name)) return format(".L_rcc_%s", var->name);
     return var->name;
 }
+#endif
 
 static char *reg(int r, int size) {
 #ifdef ARCH_ARM64
@@ -2308,17 +2307,19 @@ static void emit_adrp_add(const char *reg, const char *label) {
 #endif
 }
 
+#if defined(__APPLE__)
 // Emit a direct page+offset address materialization.  Darwin needs this for
 // pseudo-symbols and local destructor registration where there is no GOT slot.
 static void emit_adrp_page_add(const char *reg, const char *label) {
 #if defined(__APPLE__)
     printf("  adrp %s, %s@PAGE\n", reg, label);
     printf("  add %s, %s, %s@PAGEOFF\n", reg, reg, label);
-#else
+#else // TODO
     printf("  adrp %s, %s\n", reg, label);
     printf("  add %s, %s, :lo12:%s\n", reg, reg, label);
 #endif
 }
+#endif
 
 // GOT-based address load for weak symbols: undefined weak → NULL, defined → address.
 // Required on Linux ARM64; Darwin already uses GOT in emit_adrp_add.
