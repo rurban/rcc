@@ -4455,17 +4455,15 @@ static int gen_int128(Node *node) {
     case ND_FUNCALL:
         return gen_funcall(node, -1);
 
-#if 0
-    // dead-code. already handled in gen_int128
+#ifdef ARCH_ARM64
     case ND_VA_ARG: {
         // va_arg(ap, __int128) on ARM64: 2 consecutive GP register slots
         int r = gen(node->lhs); // va_list pointer
         int addr = alloc_int128_addr();
-#ifdef ARCH_ARM64
         int c = ++rcc_label_count;
-        // Check for 2 register slots available (gr_offs < -8 = at least 2 slots)
+        // Check for 2 register slots available (gr_offs <= -16 = at least 2 slots)
         printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs
-        printf("  cmp w16, #-8\n");
+        printf("  cmp w16, #-16\n");
         printf("  b.gt .L.va128_stk.%d\n", c);
         // Register save area: load both 64-bit halves
         printf("  add w17, w16, #16\n"); // advance by 2 slots
@@ -4488,10 +4486,39 @@ static int gen_int128(Node *node) {
         printf("  str x16, [%s]\n", reg64[addr]);
         printf("  str x17, [%s, #8]\n", reg64[addr]);
         printf(".L.va128_d.%d:\n", c);
+        free_reg(r);
+        return addr;
+    }
 #else
-        // x86-64 va_arg for int128
-        error("int128: va_arg not yet implemented for x86-64");
-#endif
+    case ND_VA_ARG: {
+        // va_arg(ap, __int128) on x86-64: 2 consecutive GP register slots
+        int r = gen(node->lhs); // va_list pointer
+        int addr = alloc_int128_addr();
+        int c = ++rcc_label_count;
+        // gp_offset + 16 <= 48 means <= 32 (2+ register slots available)
+        printf("  cmpl $32, (%s)\n", reg64[r]);
+        printf("  ja .L.va128_stk.%d\n", c);
+        // Register save area: load both 64-bit halves
+        printf("  movl (%s), %%ecx\n", reg64[r]);
+        printf("  addq 16(%s), %%rcx\n", reg64[r]); // rcx = reg_save_area + gp_offset
+        printf("  addl $16, (%s)\n", reg64[r]); // consume 2 GP slots
+        printf("  movq (%%rcx), %%rax\n");
+        printf("  movq %%rax, (%s)\n", reg64[addr]);
+        printf("  movq 8(%%rcx), %%rax\n");
+        printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+        printf("  jmp .L.va128_d.%d\n", c);
+        // Overflow stack: 16-byte aligned, advance by 16
+        printf(".L.va128_stk.%d:\n", c);
+        printf("  movq 8(%s), %%rcx\n", reg64[r]); // rcx = overflow_arg_area
+        printf("  addq $15, %%rcx\n");
+        printf("  andq $-16, %%rcx\n"); // align to 16
+        printf("  leaq 16(%%rcx), %%rdx\n");
+        printf("  movq %%rdx, 8(%s)\n", reg64[r]); // advance overflow_arg_area
+        printf("  movq (%%rcx), %%rax\n");
+        printf("  movq %%rax, (%s)\n", reg64[addr]);
+        printf("  movq 8(%%rcx), %%rax\n");
+        printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+        printf(".L.va128_d.%d:\n", c);
         free_reg(r);
         return addr;
     }
@@ -7298,10 +7325,11 @@ static int gen(Node *node) {
             printf("  b .L.va_done.%d\n", rcc_label_count);
         } else if (ty->kind == TY_INT128) {
             // int128: needs 2 register slots (gr_offs increment by 16)
-            // or 16-byte aligned overflow stack slot
+            // or 16-byte aligned overflow stack slot.
+            // NOTE: dead code — TY_INT128 VA_ARG dispatched to gen_int128() above.
             int c2 = ++rcc_label_count;
             printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs
-            printf("  cmp w16, #-8\n"); // need at least 2 slots (<= -16)
+            printf("  cmp w16, #-16\n"); // need at least 2 slots
             printf("  b.gt .L.va_int128_stk.%d\n", c2);
             // Register save area: advance by 2 slots, load from gr_top+gr_offs
             printf("  add w17, w16, #16\n");
@@ -7403,7 +7431,8 @@ static int gen(Node *node) {
             printf("  addl $16, 4(%s)\n", reg64[r]);
             printf("  jmp .L.va_done.%d\n", rcc_label_count);
         } else if (ty->kind == TY_INT128) {
-            // int128 needs 2 consecutive GP reg slots (16 bytes)
+            // int128 needs 2 consecutive GP reg slots (16 bytes).
+            // NOTE: dead code — TY_INT128 VA_ARG dispatched to gen_int128() above.
             printf("  cmpl $32, (%s)\n", reg64[r]); // gp_offset + 16 <= 48 means <= 32
             printf("  ja .L.va_overflow.%d\n", rcc_label_count);
             printf("  movl (%s), %%ecx\n", reg64[r]);
