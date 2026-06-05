@@ -1120,53 +1120,209 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             int ra = gen(arga);
             int rb = gen(argb);
             int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
-            bool is_unsigned = arga && arga->ty && arga->ty->is_unsigned;
+            // Result type determines overflow check signedness and store width
+            int res_sz = sz;
+            bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
+            if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
+                res_sz = argres->ty->base->size > 4 ? 8 : 4;
+                res_unsigned = argres->ty->base->is_unsigned;
+            }
             int r_result = alloc_reg();
             if (is_add_overflow) {
-                printf("  adds %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
-                // cs = unsigned carry, vs = signed overflow
-                printf("  cset %s, %s\n", reg32[r_result], is_unsigned ? "cs" : "vs");
-            } else if (is_sub_overflow) {
-                printf("  subs %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
-                printf("  cset %s, %s\n", reg32[r_result], is_unsigned ? "cc" : "vs");
-            } else { // mul_overflow / mul_overflow_p
-                int r2 = alloc_reg();
-                if (sz == 8) {
-                    if (is_unsigned) {
-                        printf("  umulh %s, %s, %s\n", reg64[r2], reg64[ra], reg64[rb]);
-                        printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
-                        printf("  cmp %s, #0\n", reg64[r2]);
-                        printf("  cset %s, ne\n", reg32[r_result]);
+                if (res_sz == sz) {
+                    printf("  adds %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
+                    printf("  cset %s, %s\n", reg32[r_result], res_unsigned ? "cs" : "vs");
+                } else if (res_sz < sz) {
+                    // Narrowing: do operation at sz, range-check for res_sz
+                    printf("  adds %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
+                    if (res_unsigned) {
+                        if (res_sz == 2) {
+                            printf("  ubfx %s, %s, #16, #16\n", reg32[r_result], reg32[ra]);
+                            printf("  cmp %s, #0\n", reg32[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else if (res_sz == 1) {
+                            printf("  ubfx %s, %s, #8, #24\n", reg32[r_result], reg32[ra]);
+                            printf("  cmp %s, #0\n", reg32[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else {
+                            printf("  lsr %s, %s, #%d\n", reg64[r_result], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, #0\n", reg64[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        }
                     } else {
-                        int r3 = alloc_reg();
-                        printf("  smulh %s, %s, %s\n", reg64[r2], reg64[ra], reg64[rb]);
-                        printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
-                        printf("  asr %s, %s, #63\n", reg64[r3], reg64[ra]);
-                        printf("  cmp %s, %s\n", reg64[r2], reg64[r3]);
+                        int rt = alloc_reg();
+                        printf("  sxt%c %s, %s\n", res_sz == 2 ? 'h' : 'b', reg32[rt], reg32[ra]);
+                        printf("  cmp %s, %s\n", reg(rt, sz), reg(ra, sz));
                         printf("  cset %s, ne\n", reg32[r_result]);
-                        free_reg(r3);
+                        free_reg(rt);
                     }
                 } else {
-                    if (is_unsigned) {
-                        printf("  umull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
-                        printf("  lsr %s, %s, #32\n", reg64[r2], reg64[ra]);
-                        printf("  cmp %s, #0\n", reg64[r2]);
-                        printf("  cset %s, ne\n", reg32[r_result]);
+                    // Widening: sign/zero-extend operands, do wider add
+                    if (sz == 4) {
+                        if (arga->ty && arga->ty->is_unsigned)
+                            printf("  uxtw %s, %s\n", reg64[ra], reg32[ra]);
+                        else
+                            printf("  sxtw %s, %s\n", reg64[ra], reg32[ra]);
+                        if (argb->ty && argb->ty->is_unsigned)
+                            printf("  uxtw %s, %s\n", reg64[rb], reg32[rb]);
+                        else
+                            printf("  sxtw %s, %s\n", reg64[rb], reg32[rb]);
+                    }
+                    printf("  adds %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                    // For unsigned result with signed operands, negative values overflow
+                    if (res_unsigned && (!arga->ty || !arga->ty->is_unsigned || !argb->ty || !argb->ty->is_unsigned)) {
+                        printf("  tst %s, %s\n", reg64[ra], reg64[ra]);
+                        printf("  cset %s, mi\n", reg32[r_result]);
                     } else {
-                        int r3 = alloc_reg();
-                        printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
-                        printf("  asr %s, %s, #31\n", reg64[r2], reg64[ra]);
-                        printf("  lsr %s, %s, #32\n", reg64[r3], reg64[ra]);
-                        printf("  cmp %s, %s\n", reg64[r2], reg64[r3]);
-                        printf("  cset %s, ne\n", reg32[r_result]);
-                        free_reg(r3);
+                        printf("  cset %s, %s\n", reg32[r_result], res_unsigned ? "cs" : "vs");
                     }
                 }
-                free_reg(r2);
+            } else if (is_sub_overflow) {
+                if (res_sz == sz) {
+                    printf("  subs %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
+                    printf("  cset %s, %s\n", reg32[r_result], res_unsigned ? "cc" : "vs");
+                } else if (res_sz < sz) {
+                    // Narrowing: do operation at sz, range-check for res_sz
+                    printf("  subs %s, %s, %s\n", reg(ra, sz), reg(ra, sz), reg(rb, sz));
+                    if (res_unsigned) {
+                        if (res_sz == 2) {
+                            printf("  ubfx %s, %s, #16, #16\n", reg32[r_result], reg32[ra]);
+                            printf("  cmp %s, #0\n", reg32[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else if (res_sz == 1) {
+                            printf("  ubfx %s, %s, #8, #24\n", reg32[r_result], reg32[ra]);
+                            printf("  cmp %s, #0\n", reg32[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else {
+                            printf("  lsr %s, %s, #%d\n", reg64[r_result], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, #0\n", reg64[r_result]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        }
+                    } else {
+                        int rt = alloc_reg();
+                        printf("  sxt%c %s, %s\n", res_sz == 2 ? 'h' : 'b', reg32[rt], reg32[ra]);
+                        printf("  cmp %s, %s\n", reg(rt, sz), reg(ra, sz));
+                        printf("  cset %s, ne\n", reg32[r_result]);
+                        free_reg(rt);
+                    }
+                } else {
+                    // Widening
+                    if (sz == 4) {
+                        if (arga->ty && arga->ty->is_unsigned)
+                            printf("  uxtw %s, %s\n", reg64[ra], reg32[ra]);
+                        else
+                            printf("  sxtw %s, %s\n", reg64[ra], reg32[ra]);
+                        if (argb->ty && argb->ty->is_unsigned)
+                            printf("  uxtw %s, %s\n", reg64[rb], reg32[rb]);
+                        else
+                            printf("  sxtw %s, %s\n", reg64[rb], reg32[rb]);
+                    }
+                    printf("  subs %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                    if (res_unsigned && (!arga->ty || !arga->ty->is_unsigned || !argb->ty || !argb->ty->is_unsigned)) {
+                        printf("  tst %s, %s\n", reg64[ra], reg64[ra]);
+                        printf("  cset %s, mi\n", reg32[r_result]);
+                    } else {
+                        printf("  cset %s, %s\n", reg32[r_result], res_unsigned ? "cc" : "vs");
+                    }
+                }
+            } else { // mul_overflow / mul_overflow_p
+                // Multiply always produces double-width result (sz*2 bits).
+                // Overflow check: does the double-width product fit in res_sz bits?
+                if (res_sz >= sz * 2) {
+                    // Result wider than or equal to double-width product.
+                    // Overflow possible only if result is unsigned and product is negative.
+                    if (sz == 8) {
+                        printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                    } else {
+                        printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
+                    }
+                    if (res_unsigned) {
+                        printf("  cmp %s, #0\n", reg64[ra]);
+                        printf("  cset %s, lt\n", reg32[r_result]);
+                    } else {
+                        printf("  mov %s, #0\n", reg32[r_result]);
+                    }
+                } else if (res_sz == sz) {
+                    // Same width: check overflow using result signedness
+                    int r2 = alloc_reg();
+                    if (sz == 8) {
+                        if (res_unsigned) {
+                            printf("  umulh %s, %s, %s\n", reg64[r2], reg64[ra], reg64[rb]);
+                            printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                            printf("  cmp %s, #0\n", reg64[r2]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else {
+                            int r3 = alloc_reg();
+                            printf("  smulh %s, %s, %s\n", reg64[r2], reg64[ra], reg64[rb]);
+                            printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                            printf("  asr %s, %s, #63\n", reg64[r3], reg64[ra]);
+                            printf("  cmp %s, %s\n", reg64[r2], reg64[r3]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                            free_reg(r3);
+                        }
+                    } else {
+                        if (res_unsigned) {
+                            printf("  umull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
+                            printf("  lsr %s, %s, #32\n", reg64[r2], reg64[ra]);
+                            printf("  cmp %s, #0\n", reg64[r2]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        } else {
+                            // sxtw sign-extends the 32-bit result; compare to full 64-bit product
+                            printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
+                            printf("  sxtw %s, %s\n", reg64[r2], reg32[ra]);
+                            printf("  cmp %s, %s\n", reg64[r2], reg64[ra]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        }
+                    }
+                    free_reg(r2);
+                } else {
+                    // Narrowing: res_sz < sz.  Multiply, then range-check.
+                    int r2 = alloc_reg();
+                    if (sz == 8) {
+                        // 64-bit multiply produces 128-bit product in r2(hi):ra(lo)
+                        printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
+                        printf("  smulh %s, %s, %s\n", reg64[r2], reg64[ra], reg64[rb]);
+                    } else {
+                        // 32-bit multiply produces 64-bit product in ra (already double-width)
+                        printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
+                    }
+                    // Range-check the product against res_sz
+                    if (res_unsigned) {
+                        if (sz == 8) {
+                            printf("  cmp %s, #0\n", reg64[r2]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                            printf("  lsr %s, %s, #%d\n", reg64[r2], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, #0\n", reg64[r2]);
+                            printf("  cinc %s, %s, ne\n", reg32[r_result], reg32[r_result]);
+                        } else {
+                            printf("  lsr %s, %s, #%d\n", reg64[r2], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, #0\n", reg64[r2]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        }
+                    } else {
+                        int r3 = alloc_reg();
+                        if (sz == 8) {
+                            printf("  asr %s, %s, #%d\n", reg64[r3], reg64[ra], res_sz * 8 - 1);
+                            printf("  cmp %s, %s\n", reg64[r2], reg64[r3]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                            printf("  sbfx %s, %s, #0, #%d\n", reg64[r3], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, %s\n", reg64[r3], reg64[ra]);
+                            printf("  cinc %s, %s, ne\n", reg32[r_result], reg32[r_result]);
+                        } else {
+                            printf("  asr %s, %s, #%d\n", reg64[r2], reg64[ra], res_sz * 8 - 1);
+                            printf("  lsr %s, %s, #%d\n", reg64[r3], reg64[ra], res_sz * 8);
+                            printf("  cmp %s, %s\n", reg64[r2], reg64[r3]);
+                            printf("  cset %s, ne\n", reg32[r_result]);
+                        }
+                        free_reg(r3);
+                    }
+                    if (sz == 8)
+                        free_reg(r2);
+                }
             }
             if (argres && !is_mul_overflow_p) {
-                int rr = gen_addr(argres);
-                printf("  str %s, [%s]\n", reg(ra, sz), reg64[rr]);
+                int rr = gen(argres);
+                printf("  str %s, [%s]\n", reg(ra, res_sz), reg64[rr]);
                 free_reg(rr);
             }
             free_reg(ra);
@@ -1179,50 +1335,153 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             Node *arga = node->args;
             Node *argb = arga ? arga->next : NULL;
             Node *argres = argb ? argb->next : NULL;
-            // x86-64: use add/sub/mul tracking unsigned overflow (carry flag)
             int ra = gen(arga);
             int rb = gen(argb);
+            // sz: operation size from the operands (at least 4).
+            // sz_store: result pointer's pointed-to type (may differ).
+            // sz_op: compute in max(sz, sz_store) so we can range-check the result.
             int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
-            if (is_add_overflow) {
-                printf("  %s %s, %s\n", sz == 8 ? "add" : "add", reg(ra, sz), reg(rb, sz));
-                printf("  setc %%al\n");
-                if (argres) {
-                    int rr = gen_addr(argres);
-                    printf("  mov %s, (%s)\n", reg(ra, sz), reg64[rr]);
-                    free_reg(rr);
-                }
-            } else if (is_sub_overflow) {
-                printf("  sub %s, %s\n", reg(rb, sz), reg(ra, sz));
-                printf("  setc %%al\n");
-                if (argres) {
-                    int rr = gen_addr(argres);
-                    printf("  mov %s, (%s)\n", reg(ra, sz), reg64[rr]);
-                    free_reg(rr);
-                }
-            } else if (is_mul_overflow || is_mul_overflow_p) {
-                int r2 = alloc_reg();
-                if (sz == 8) {
-                    printf("  movq %s, %%rax\n", reg(ra, sz));
-                    printf("  mul %s\n", reg(rb, sz));
-                    printf("  movq %%rax, %s\n", reg64[ra]);
-                    printf("  movq %%rdx, %s\n", reg64[r2]);
+            int sz_store = sz;
+            bool is_unsigned_store = arga && arga->ty && arga->ty->is_unsigned;
+            // is_unsigned_op: true only when BOTH operands are unsigned (affects mul instruction
+            // choice and widening strategy; mixed signed/unsigned must use signed arithmetic).
+            bool ra_unsigned = arga && arga->ty && arga->ty->is_unsigned;
+            bool rb_unsigned = argb && argb->ty && argb->ty->is_unsigned;
+            bool is_unsigned_op = ra_unsigned && rb_unsigned;
+            if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
+                sz_store = argres->ty->base->size > 4 ? 8 : 4;
+                is_unsigned_store = argres->ty->base->is_unsigned;
+            }
+            int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
+            // If operands are narrower than sz_op, widen them per-operand signedness.
+            if (sz_op > sz && sz == 4) {
+                if (ra_unsigned)
+                    printf("  movl %s, %s\n", reg32[ra], reg32[ra]); // zero-ext (implicit)
+                else
+                    printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                if (rb_unsigned)
+                    printf("  movl %s, %s\n", reg32[rb], reg32[rb]);
+                else
+                    printf("  movslq %s, %s\n", reg32[rb], reg64[rb]);
+            }
+            if (is_add_overflow || is_sub_overflow) {
+                if (is_add_overflow)
+                    printf("  add %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                else
+                    printf("  sub %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                // Detect overflow into sz_store bits.
+                if (sz_op == sz_store && sz_op == sz) {
+                    // Same-size, same-type: use hardware flag directly.
+                    printf("  %s %%al\n", is_unsigned_store ? "setc" : "seto");
+                } else if (sz_op == sz_store && sz_op > sz) {
+                    // Widened signed ops into target type: check if mathematical
+                    // result fits.  For unsigned target a negative result overflows;
+                    // for signed target the 64-bit operation cannot itself overflow
+                    // (small inputs), so seto would always be 0 — use range check.
+                    if (is_unsigned_store) {
+                        // negative result can't fit in unsigned
+                        printf("  sets %%al\n");
+                    } else {
+                        // signed: result fits in sz_op bits already; range-check to sz_store
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        printf("  movslq %%ecx, %%rcx\n");
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    }
                 } else {
-                    printf("  movl %s, %%eax\n", reg(ra, 4));
-                    printf("  mul %s\n", reg(rb, 4));
-                    printf("  movl %%eax, %s\n", reg(ra, 4));
-                    printf("  movl %%edx, %s\n", reg(r2, 4));
+                    // sz_op > sz_store: result is in full precision, range-check.
+                    if (is_unsigned_store) {
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        // movl zero-extends implicitly; compare full result vs trunc
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    } else {
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        printf("  movslq %%ecx, %%rcx\n");
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    }
                 }
-                printf("  cmp $0, %s\n", reg(r2, sz));
-                printf("  setne %%al\n");
+                if (argres) {
+                    int rr = gen(argres);
+                    printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    free_reg(rr);
+                }
+            } else { // mul_overflow / mul_overflow_p
+                int r2 = alloc_reg();
+                if (sz_op == 8) {
+                    printf("  movq %s, %%rax\n", reg64[ra]);
+                    if (is_unsigned_op && sz == sz_op) {
+                        // Native unsigned 64-bit: mulq gives rdx:rax
+                        printf("  mulq %s\n", reg64[rb]);
+                        printf("  movq %%rax, %s\n", reg64[ra]);
+                        printf("  movq %%rdx, %s\n", reg64[r2]);
+                        printf("  testq %s, %s\n", reg64[r2], reg64[r2]);
+                        printf("  setne %%al\n");
+                    } else {
+                        // Signed 64-bit (including sign-extended small operands):
+                        // imulq gives rdx:rax; overflow if rdx != sign_ext(rax)
+                        printf("  imulq %s\n", reg64[rb]);
+                        printf("  movq %%rax, %s\n", reg64[ra]);
+                        printf("  movq %%rdx, %s\n", reg64[r2]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  cmpq %s, %%rax\n", reg64[r2]);
+                        printf("  setne %%al\n");
+                        // For unsigned target with negative result: also signal overflow.
+                        if (is_unsigned_store && !is_unsigned_op) {
+                            // OR in the sign bit of the 64-bit result
+                            printf("  testq %s, %s\n", reg64[ra], reg64[ra]);
+                            printf("  sets %%cl\n");
+                            printf("  orb %%cl, %%al\n");
+                        }
+                    }
+                } else {
+                    // 32-bit operands
+                    if (is_unsigned_op) {
+                        printf("  movl %s, %%eax\n", reg32[ra]);
+                        printf("  mull %s\n", reg32[rb]);
+                        printf("  movl %%eax, %s\n", reg32[ra]);
+                        printf("  movl %%edx, %s\n", reg32[r2]);
+                        printf("  testl %s, %s\n", reg32[r2], reg32[r2]);
+                        printf("  setne %%al\n");
+                    } else {
+                        // Mixed or signed operands: extend each per its own signedness,
+                        // then signed 64-bit multiply (exact for 32-bit inputs).
+                        if (ra_unsigned)
+                            printf("  movl %s, %%eax\n", reg32[ra]); // zero-ext
+                        else
+                            printf("  movslq %s, %%rax\n", reg32[ra]); // sign-ext
+                        if (rb_unsigned)
+                            printf("  movl %s, %%ecx\n", reg32[rb]); // zero-ext
+                        else
+                            printf("  movslq %s, %%rcx\n", reg32[rb]); // sign-ext
+                        printf("  imulq %%rcx, %%rax\n");
+                        printf("  movl %%eax, %s\n", reg32[ra]);
+                        if (is_unsigned_store && sz_store == 8) {
+                            // Negative result doesn't fit in unsigned 64-bit
+                            printf("  testq %%rax, %%rax\n");
+                            printf("  sets %%al\n");
+                            printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                        } else {
+                            // Range check: sign-extend or zero-extend truncated result back
+                            if (is_unsigned_store)
+                                printf("  movl %s, %%ecx\n", reg32[ra]); // zero-ext implicit
+                            else
+                                printf("  movslq %s, %%rcx\n", reg32[ra]);
+                            printf("  cmpq %%rcx, %%rax\n");
+                            printf("  setne %%al\n");
+                        }
+                    }
+                }
                 free_reg(r2);
                 if (argres && !is_mul_overflow_p) {
-                    int rr = gen_addr(argres);
-                    printf("  mov %s, (%s)\n", reg(ra, sz), reg64[rr]);
+                    int rr = gen(argres);
+                    printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
                     free_reg(rr);
                 }
             }
             int r_result = alloc_reg();
-            printf("  movzbl %%al, %s\n", reg(r_result, 4));
+            printf("  movzbl %%al, %s\n", reg32[r_result]);
             free_reg(ra);
             free_reg(rb);
             return r_result;
