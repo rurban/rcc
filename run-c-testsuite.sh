@@ -2,12 +2,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 cd "$(dirname "$0")" || exit
 
-# c-testsuite not yet supported on macOS (arm64-darwin)
-if [ "$(uname -s)" = "Darwin" ]; then
-    echo "SKIP: c-testsuite not yet supported on macOS"
-    exit 0
-fi
-
 if [ ! -f c-testsuite/single-exec ]; then
     git submodule update --init --recursive
 fi
@@ -28,7 +22,14 @@ if ! command -v timeout >/dev/null 2>&1; then
         TO_TMP=$(mktemp -d)
         cat > "$TO_TMP/timeout" << 'WRAPPER'
 #!/bin/sh
-dur="${1%s}"; shift
+# Emulate GNU timeout: convert duration suffix to seconds
+dur="${1}"; shift
+case "$dur" in
+    *s) dur="${dur%s}" ;;
+    *m) dur=$(( ${dur%m} * 60 )) ;;
+    *h) dur=$(( ${dur%h} * 3600 )) ;;
+    *d) dur=$(( ${dur%d} * 86400 )) ;;
+esac
 "$@" &
 pid=$!
 (sleep "$dur" && kill -TERM "$pid" 2>/dev/null && sleep 1 && kill -KILL "$pid" 2>/dev/null) &
@@ -40,16 +41,11 @@ WRAPPER
 fi
 
 cd c-testsuite || exit
-echo "c-testsuite with ../rcc -O1 -lm"
+echo "Start c-testsuite with ../rcc -O1 -lm"
 env CC="../rcc" CFLAGS="-O1 -lm" ./single-exec posix | scripts/tapsummary | tee ../c-testsuite.tap.txt
 
-# TODO: 00204
+# TODO: 00124 on macOS
 MAX_FAILS=1
-if [ "$(uname -s)" = "Darwin" ]; then
-    echo "SKIP: failure limit not enforced on macOS"
-    exit 0
-fi
-
 fails=$(grep -m1 '^fail ' ../c-testsuite.tap.txt | awk '{print $2}')
 if [ -z "$fails" ]; then
     echo "ERROR: could not determine test fail count"
