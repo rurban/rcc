@@ -44,8 +44,7 @@ cd c-testsuite || exit
 echo "Start c-testsuite with ../rcc -O1 -lm"
 env CC="../rcc" CFLAGS="-O1 -lm" ./single-exec posix | scripts/tapsummary | tee ../c-testsuite.tap.txt
 
-# TODO: 00124 on macOS
-MAX_FAILS=1
+MAX_FAILS=0
 fails=$(grep -m1 '^fail ' ../c-testsuite.tap.txt | awk '{print $2}')
 if [ -z "$fails" ]; then
     echo "ERROR: could not determine test fail count"

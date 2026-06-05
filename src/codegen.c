@@ -2166,6 +2166,35 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(arg_regs[i]);
     }
 
+    // For indirect calls: save arg registers before evaluating the callee,
+    // since gen(node->lhs) may call functions that clobber x0-x8 / d0-d7.
+    // (x86_64 avoids this by evaluating the callee first; ARM64 evaluates args first.)
+    int indirect_gp_mask = 0;
+    int indirect_fp_mask = 0;
+    bool indirect_save_x8 = false;
+    int indirect_save_size = 0;
+    if (!call_target) {
+        for (int i = 0; i < nargs; i++) {
+            if (arg_gp_idx[i] >= 0) indirect_gp_mask |= (1 << arg_gp_idx[i]);
+            if (arg_fp_idx[i] >= 0) indirect_fp_mask |= (1 << arg_fp_idx[i]);
+        }
+        indirect_save_x8 = has_hidden_retbuf;
+        int n_save = __builtin_popcount(indirect_gp_mask) + __builtin_popcount(indirect_fp_mask) + (indirect_save_x8 ? 1 : 0);
+        if (n_save > 0) {
+            indirect_save_size = (n_save * 8 + 15) & ~15;
+            printf("  sub %s, %s, #%d\n", STACK_REG, STACK_REG, indirect_save_size);
+            int slot = 0;
+            if (indirect_save_x8)
+                printf("  str x8, [%s, #%d]\n", STACK_REG, (slot++) * 8);
+            for (int j = 0; j < 8; j++)
+                if (indirect_gp_mask & (1 << j))
+                    printf("  str %s, [%s, #%d]\n", argreg64[j], STACK_REG, (slot++) * 8);
+            for (int j = 0; j < 8; j++)
+                if (indirect_fp_mask & (1 << j))
+                    printf("  str %s, [%s, #%d]\n", argxmm[j], STACK_REG, (slot++) * 8);
+        }
+    }
+
     if (call_target) {
         if (strcmp(call_target, "alloca") == 0) {
             alloca_needed = true;
@@ -2176,6 +2205,18 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         }
     } else {
         int callee = gen(node->lhs);
+        if (indirect_save_size > 0) {
+            int slot = 0;
+            if (indirect_save_x8)
+                printf("  ldr x8, [%s, #%d]\n", STACK_REG, (slot++) * 8);
+            for (int j = 0; j < 8; j++)
+                if (indirect_gp_mask & (1 << j))
+                    printf("  ldr %s, [%s, #%d]\n", argreg64[j], STACK_REG, (slot++) * 8);
+            for (int j = 0; j < 8; j++)
+                if (indirect_fp_mask & (1 << j))
+                    printf("  ldr %s, [%s, #%d]\n", argxmm[j], STACK_REG, (slot++) * 8);
+            printf("  add %s, %s, #%d\n", STACK_REG, STACK_REG, indirect_save_size);
+        }
         printf("  blr %s\n", reg64[callee]);
         free_reg(callee);
     }
@@ -4414,7 +4455,8 @@ static int gen_int128(Node *node) {
     case ND_FUNCALL:
         return gen_funcall(node, -1);
 
-
+#if 0
+    // dead-code. already handled in gen_int128
     case ND_VA_ARG: {
         // va_arg(ap, __int128) on ARM64: 2 consecutive GP register slots
         int r = gen(node->lhs); // va_list pointer
@@ -4447,12 +4489,13 @@ static int gen_int128(Node *node) {
         printf("  str x17, [%s, #8]\n", reg64[addr]);
         printf(".L.va128_d.%d:\n", c);
 #else
-        // x86-64 va_arg for int128: TODO
+        // x86-64 va_arg for int128
         error("int128: va_arg not yet implemented for x86-64");
 #endif
         free_reg(r);
         return addr;
     }
+#endif
     default:
         error("int128: unsupported node kind %d", node->kind);
         return -1;
@@ -4479,8 +4522,6 @@ static int gen(Node *node) {
             // int128 → float: load lo word, convert
             printf("  ldr %s, [%s]\n", reg64[r], reg64[addr]);
             free_reg(addr);
-            int id = 0;
-            (void)id;
             printf("  fmov d0, %s\n", reg64[r]);
             printf("  scvtf d0, d0\n"); // signed approx; use lo 64 bits
             printf("  fmov %s, d0\n", reg64[r]);
