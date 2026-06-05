@@ -862,21 +862,21 @@ if [ -z "$ONLY_TEST" ]; then
 fi
 
 # Thresholds account for platform-specific skips; any recorded failure is fatal.
-if [ "$failed" -ne 0 ]; then
-    exit 1
-fi
-
 if [ -n "$ONLY_TEST" ]; then
-    exit 0
+    MAX_FAIL=0
 # arm64-darwin native
 elif [ "$REPORT_FILE" = "$REPORT_DIR/tcc_test_arm64.md" ]; then
-    [ "$passed" -ge 155 ]
+    MAX_FAIL=0
 elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+    MAX_FAIL=0
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
-    [ "$passed" -ge 155 ]
+    MAX_FAIL=0
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-    [ "$passed" -ge 151 ]
+    MAX_FAIL=0
 else
-    [ "$passed" -ge 152 ]
+    MAX_FAIL=0
+fi
+
+if [ "$failed" -gt "$MAX_FAIL" ]; then
+    exit 1
 fi

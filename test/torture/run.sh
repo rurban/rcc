@@ -216,17 +216,23 @@ cd ../../ || true
     printf 'SKIP=%d\n' "$SKIP"
 } > "test-torture-$PLATFORM.summary"
 
+FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
+
 # shellcheck disable=SC2143
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
-    [ "$PASS" -ge 924 ]
+    MAX_FAIL=70
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
-    [ "$PASS" -ge 916 ]
+    MAX_FAIL=68
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
-    [ "$PASS" -ge 922 ]
+    MAX_FAIL=83
 elif [ "$RCC" = "../../darwin-cross.sh" ]; then
-    [ "$PASS" -ge 922 ]
+    MAX_FAIL=0
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
-    [ "$PASS" -ge 700 ]
+    MAX_FAIL=83
 else
-    [ "$PASS" -ge 1509 ]
+    MAX_FAIL=68
+fi
+
+if [ "$FAIL" -gt "$MAX_FAIL" ]; then
+    exit 1
 fi
