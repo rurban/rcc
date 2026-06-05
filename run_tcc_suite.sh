@@ -292,8 +292,9 @@ SKIP_TESTS="
 145_winarm64_interlocked
 "
 
-# Tests skipped only when using mingw-cross.sh (Windows cross-compilation)
-MINGW_SKIP_TESTS="
+# Tests skipped on non-windows
+NON_WINDOWS_SKIP_TESTS="
+145_winarm64_interlocked
 "
 
 INTEL_SKIP_TESTS="
@@ -334,8 +335,8 @@ is_skipped() {
 	case "$SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-	if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
-		case "$MINGW_SKIP_TESTS" in *"
+	if [ "$RCC" != "$SCRIPT_DIR/mingw-cross.sh" ] && [ -z "$is_mingw_native" ]; then
+		case "$NON_WINDOWS_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
         fi

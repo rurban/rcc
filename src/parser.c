@@ -12,6 +12,7 @@ struct VarAttr {
     bool is_static;
     bool is_inline;
     bool is_weak;
+    bool is_tls;
     bool has_type;
     bool is_packed;
     unsigned char bitfield_mode;
@@ -491,6 +492,7 @@ static bool is_storage_class(Token *tok) {
     return equalc(tok, "typedef") || equalc(tok, "extern") || equalc(tok, "static") ||
         equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__") ||
         equalc(tok, "register") || equalc(tok, "auto") ||
+        equalc(tok, "__thread") || equalc(tok, "_Thread_local") ||
         equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
         equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
         equalc(tok, "restrict") ||
@@ -1613,6 +1615,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             continue;
         }
         if (equalc(tok, "register") || equalc(tok, "auto")) {
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "__thread") || equalc(tok, "_Thread_local")) {
+            attr->is_tls = true;
             tok = tok->next;
             continue;
         }
@@ -2948,7 +2955,7 @@ static Node *declaration(Token **rest, Token *tok) {
             if (pending_asm_name)
                 var->asm_name = pending_asm_name;
             var->cleanup_func = cleanup ? cleanup : ty->cleanup_func;
-
+            var->is_tls = attr.is_tls;
             // VLA: compute size and allocate stack space
             if (ty->kind == TY_VLA) {
                 Node *vla_node = new_node(ND_ALLOCA, tok);

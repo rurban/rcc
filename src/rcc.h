@@ -246,6 +246,7 @@ struct LVar {
     int init_size;
     Reloc *relocs;
     char *cleanup_func; // __attribute__((__cleanup__(func)))
+    bool is_tls; // __thread / _Thread_local
 };
 
 typedef struct Node Node;
