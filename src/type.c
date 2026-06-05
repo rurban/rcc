@@ -20,6 +20,8 @@ Type *ty_ulong   = &(Type){.kind=TY_LONG,    .size=8,  .align=8,  .is_unsigned=t
 #endif
 Type *ty_llong   = &(Type){.kind=TY_LLONG,   .size=8,  .align=8};
 Type *ty_ullong  = &(Type){.kind=TY_LLONG,   .size=8,  .align=8,  .is_unsigned=true};
+Type *ty_int128  = &(Type){.kind=TY_INT128,  .size=16, .align=16};
+Type *ty_uint128 = &(Type){.kind=TY_INT128,  .size=16, .align=16, .is_unsigned=true};
 Type *ty_float   = &(Type){.kind=TY_FLOAT,   .size=4,  .align=4};
 Type *ty_double  = &(Type){.kind=TY_DOUBLE,  .size=8,  .align=8};
 // Apple ARM64: long double is 64-bit (same as double).
@@ -33,7 +35,8 @@ Type *ty_ldouble = &(Type){.kind=TY_LDOUBLE, .size=16, .align=16};
 
 bool is_integer(Type *ty) {
     return ty->kind == TY_BOOL || ty->kind == TY_CHAR || ty->kind == TY_SHORT ||
-        ty->kind == TY_INT || ty->kind == TY_LONG || ty->kind == TY_LLONG;
+        ty->kind == TY_INT || ty->kind == TY_LONG || ty->kind == TY_LLONG ||
+        ty->kind == TY_INT128;
 }
 
 bool is_flonum(Type *ty) {
@@ -51,7 +54,9 @@ Type *get_integer_type(int size, bool is_unsigned) {
         return is_unsigned ? ty_ushort : ty_short;
     if (size <= 4)
         return is_unsigned ? ty_uint : ty_int;
-    return is_unsigned ? ty_ullong : ty_llong;
+    if (size <= 8)
+        return is_unsigned ? ty_ullong : ty_llong;
+    return is_unsigned ? ty_uint128 : ty_int128;
 }
 
 Type *pointer_to(Type *base) {
@@ -109,6 +114,7 @@ static int int_rank(Type *ty) {
     case TY_INT: return 3;
     case TY_LONG: return 4;
     case TY_LLONG: return 5;
+    case TY_INT128: return 6;
     default: return 3;
     }
 }
@@ -288,6 +294,16 @@ static void add_type_internal(Node *node) {
                 node->rhs = cast;
             } else if (!lf && !rf && is_integer(node->lhs->ty) && is_integer(node->rhs->ty) &&
                        node->lhs->ty->size > node->rhs->ty->size) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
+            } else if (!lf && !rf && is_integer(node->lhs->ty) && is_integer(node->rhs->ty) &&
+                       node->rhs->ty->kind == TY_INT128 && node->lhs->ty->kind != TY_INT128) {
+                // Truncation from int128 to smaller: insert explicit cast so codegen
+                // knows to extract the value from the 128-bit slot.
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;

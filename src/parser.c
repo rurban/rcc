@@ -545,7 +545,7 @@ static bool is_typename(Token *tok) {
         return true;
     tok = skip_attributes(tok);
     if (equalc(tok, "int") || equalc(tok, "char") || equalc(tok, "void") ||
-        equalc(tok, "float") || equalc(tok, "double") ||
+        equalc(tok, "float") || equalc(tok, "double") || equalc(tok, "__int128") ||
         equalc(tok, "_Bool") || equalc(tok, "struct") || equalc(tok, "union") || equalc(tok, "enum") ||
         equalc(tok, "typeof") || equalc(tok, "__typeof") || equalc(tok, "__typeof__") ||
         equalc(tok, "_Atomic"))
@@ -1580,6 +1580,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     bool is_double = false;
     bool is_bool = false;
     bool is_void = false;
+    bool is_int128 = false;
     int attr_align = 0;
     unsigned char quals = 0;
     memset(attr, 0, sizeof(*attr));
@@ -1698,6 +1699,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "__int128")) {
+            is_int128 = true;
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "void")) {
             is_void = true;
             tok = tok->next;
@@ -1729,7 +1735,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             // or another typedef/struct/enum type, stop: the typedef name is
             // likely the variable name, not a type specifier.
             if (is_int || is_char || is_short || long_count > 0 || is_float ||
-                is_double || is_bool || is_void || is_signed || is_unsigned || ty)
+                is_double || is_bool || is_void || is_signed || is_unsigned || is_int128 || ty)
                 break;
             ty = td->ty;
             tok = tok->next;
@@ -1769,6 +1775,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             }
         } else if (is_short) {
             ty = is_unsigned ? ty_ushort : ty_short;
+        } else if (is_int128) {
+            ty = is_unsigned ? ty_uint128 : ty_int128;
         } else if (long_count >= 2) {
             ty = is_unsigned ? ty_ullong : ty_llong;
         } else if (long_count == 1) {

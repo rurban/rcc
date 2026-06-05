@@ -250,6 +250,12 @@ static int gen_addr(Node *node);
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(int r, int from_size, int to_size);
 static void zero_extend_to(int r, int from_size, int to_size);
+static int alloc_int128_slot(void);
+static int alloc_int128_addr(void);
+static int widen_to_int128(int val, bool is_unsigned);
+static int gen_to_int128(Node *operand);
+static void gen_int128_nonzero(int addr, int result);
+static int gen_int128(Node *node);
 
 static bool var_needs_got(LVar *var) {
     if (var->is_local) return false;
@@ -1349,9 +1355,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             bool rb_unsigned = argb && argb->ty && argb->ty->is_unsigned;
             bool is_unsigned_op = ra_unsigned && rb_unsigned;
             if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
-                sz_store = argres->ty->base->size > 4 ? 8 : 4;
-                is_unsigned_store = argres->ty->base->is_unsigned;
+                if (argres->ty->base->kind == TY_INT128) {
+                    // Treat as 8-byte for computation; store 128-bit separately below
+                    sz_store = 8;
+                    is_unsigned_store = argres->ty->base->is_unsigned;
+                } else {
+                    sz_store = argres->ty->base->size > 4 ? 8 : 4;
+                    is_unsigned_store = argres->ty->base->is_unsigned;
+                }
             }
+            bool store_to_int128 = argres && argres->ty && argres->ty->kind == TY_PTR &&
+                argres->ty->base && argres->ty->base->kind == TY_INT128;
             int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
             // If operands are narrower than sz_op, widen them per-operand signedness.
             if (sz_op > sz && sz == 4) {
@@ -1404,7 +1418,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 }
                 if (argres) {
                     int rr = gen(argres);
-                    printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    if (store_to_int128) {
+                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
+                        printf("  movq %s, %%rax\n", reg64[ra]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                    } else {
+                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    }
                     free_reg(rr);
                 }
             } else { // mul_overflow / mul_overflow_p
@@ -1476,7 +1497,15 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 free_reg(r2);
                 if (argres && !is_mul_overflow_p) {
                     int rr = gen(argres);
-                    printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    if (store_to_int128) {
+                        // Sign-extend 64-bit result to 128 bits and store
+                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
+                        printf("  movq %s, %%rax\n", reg64[ra]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                    } else {
+                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    }
                     free_reg(rr);
                 }
             }
@@ -1788,13 +1817,29 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #if defined(__APPLE__)
         if (is_variadic && !is_named) {
             arg_stack_idx[i] = stack_args;
-            if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
+            if (argv[i]->ty->kind == TY_INT128) {
+                if (stack_args & 1) stack_args++;
+                arg_stack_idx[i] = stack_args;
+                stack_args += 2;
+            } else if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
                 stack_args += (argv[i]->ty->size + 7) / 8;
             else
                 stack_args++;
             continue;
         }
 #endif
+        // int128: two consecutive GP register slots or 16-byte stack
+        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+            if (gp_reg_args + 1 < max_gp_args) {
+                arg_gp_idx[i] = gp_reg_args;
+                gp_reg_args += 2;
+            } else {
+                if (stack_args & 1) stack_args++;
+                arg_stack_idx[i] = stack_args;
+                stack_args += 2;
+            }
+            continue;
+        }
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) {
             // Large struct > 8 bytes passed by pointer via GP reg or stack
             if (gp_reg_args < max_gp_args)
@@ -1847,6 +1892,19 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             continue;
         }
 
+        // int128: needs two consecutive GP register slots
+        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+            if (gp_reg_args + 1 < max_gp_args) {
+                arg_gp_idx[i] = gp_reg_args;
+                gp_reg_args += 2;
+            } else {
+                // Align to 16 bytes on stack
+                if (stack_args & 1) stack_args++;
+                arg_stack_idx[i] = stack_args;
+                stack_args += 2;
+            }
+            continue;
+        }
         if (gp_reg_args < max_gp_args)
             arg_gp_idx[i] = gp_reg_args++;
         else
@@ -1948,6 +2006,15 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             }
 #endif
             r = gen_addr(argv[i]);
+        } else if (argv[i]->ty->kind == TY_INT128) {
+            // int128 on stack: store two 64-bit values into consecutive slots
+            int addr = gen_int128(argv[i]);
+            printf("  ldr x16, [%s]\n", reg64[addr]);
+            printf("  ldr x17, [%s, #8]\n", reg64[addr]);
+            printf("  str x16, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8);
+            printf("  str x17, [%s, #%d]\n", STACK_REG, arg_stack_idx[i] * 8 + 8);
+            free_reg(addr);
+            continue;
         } else {
             r = gen(argv[i]);
         }
@@ -2086,6 +2153,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 printf("  mov %s, %s\n", argreg32[arg_gp_idx[i]], reg32[arg_regs[i]]);
             else
                 printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
+        } else if (argv[i]->ty->kind == TY_INT128) {
+            // int128: load two 64-bit values into consecutive arg registers
+            int addr = arg_regs[i];
+            printf("  ldr x16, [%s]\n", reg64[addr]);
+            printf("  ldr x17, [%s, #8]\n", reg64[addr]);
+            printf("  mov %s, x16\n", argreg64[arg_gp_idx[i]]);
+            printf("  mov %s, x17\n", argreg64[arg_gp_idx[i] + 1]);
         } else {
             printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
         }
@@ -2142,6 +2216,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             }
         }
         return temp_ret_reg != -1 ? temp_ret_reg : hidden_ret_reg;
+    }
+    // int128 return: spill x0:x1 to a 16-byte slot
+    if (node->ty && node->ty->kind == TY_INT128) {
+        int addr = alloc_int128_addr();
+        printf("  str x0, [%s]\n", reg64[addr]);
+        printf("  str x1, [%s, #8]\n", reg64[addr]);
+        return addr;
     }
 
     int r = alloc_reg();
@@ -2259,6 +2340,16 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             continue;
         }
         int r;
+        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+            r = gen(argv[i]); // returns address of 16-byte slot
+            printf("  movq (%s), %%rax\n", reg64[r]);
+            printf("  movq 8(%s), %%rdx\n", reg64[r]);
+            printf("  movq %%rax, %d(%%rsp)\n", shadow_space + arg_stack_idx[i] * 8);
+            printf("  movq %%rdx, %d(%%rsp)\n", shadow_space + (arg_stack_idx[i] + 1) * 8);
+            free_reg(r);
+            used_regs |= reg_arg_mask;
+            continue;
+        }
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
         else
@@ -2347,7 +2438,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
             if (pass == 0 && !rsi_src) continue;
             if (pass == 1 && rsi_src) continue;
-            if (arg_is_float[i]) {
+            if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+                // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
+                printf("  movq (%s), %s\n", reg64[arg_regs[i]], argreg64[arg_gp_idx[i]]);
+                printf("  movq 8(%s), %s\n", reg64[arg_regs[i]], argreg64[arg_gp_idx[i] + 1]);
+            } else if (arg_is_float[i]) {
                 printf("  movq %s, %s\n", reg64[arg_regs[i]], argxmm[arg_fp_idx[i]]);
             } else if (arg_sizes[i] == 1) {
                 if (argv[i]->ty && !argv[i]->ty->is_unsigned)
@@ -2416,6 +2511,18 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         return ret;
     }
 
+    // int128 return: spill rax:rdx (x86-64) or x0:x1 (ARM64) to a 16-byte slot
+    if (node->ty && node->ty->kind == TY_INT128) {
+        int addr = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        printf("  str x0, [%s]\n", reg64[addr]);
+        printf("  str x1, [%s, #8]\n", reg64[addr]);
+#else
+        printf("  movq %%rax, (%s)\n", reg64[addr]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[addr]);
+#endif
+        return addr;
+    }
     int r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
 #ifndef ARCH_ARM64
@@ -3387,6 +3494,20 @@ static int gen_addr(Node *node) {
 
 
 static void gen_cond_branch_inv(Node *cond, char *label) {
+    // Int128 comparison: gen() returns a 0/1 register; branch on that
+    if (cond->lhs && cond->lhs->ty && cond->lhs->ty->kind == TY_INT128 &&
+        (cond->kind == ND_EQ || cond->kind == ND_NE ||
+         cond->kind == ND_LT || cond->kind == ND_LE)) {
+        int r = gen(cond); // dispatches to gen_int128 → returns 0/1 in GP reg
+#ifdef ARCH_ARM64
+        printf("  cbz %s, %s\n", reg64[r], label);
+#else
+        printf("  testl %s, %s\n", reg32[r], reg32[r]);
+        printf("  je %s\n", label);
+#endif
+        free_reg(r);
+        return;
+    }
     if (cond->kind == ND_EQ || cond->kind == ND_NE || cond->kind == ND_LT || cond->kind == ND_LE) {
         if (is_flonum(cond->lhs->ty)) {
             int r_lhs = gen(cond->lhs);
@@ -3499,12 +3620,902 @@ static void gen_cond_branch_inv(Node *cond, char *label) {
 #endif
 }
 
+// ===== __int128 support =====
+// Convention: all TY_INT128 values live in a 16-byte stack slot.
+// gen_int128(node) returns a GP register holding the slot address.
+// lo word is at [addr+0], hi word at [addr+8].
+
+// Allocate a fresh 16-byte-aligned int128 scratch slot in the struct-ret area.
+static int alloc_int128_slot(void) {
+    fn_struct_ret_off = (fn_struct_ret_off + 15) & ~15;
+    fn_struct_ret_off += 16;
+    if (fn_struct_ret_off > fn_struct_ret_total)
+        fn_struct_ret_total = fn_struct_ret_off;
+    return current_fn_stack_size + fn_struct_ret_off;
+}
+
+// Return a GP register holding the address of a fresh 16-byte scratch slot.
+static int alloc_int128_addr(void) {
+    int slot = alloc_int128_slot();
+    int r = alloc_reg();
+#ifdef ARCH_ARM64
+    if (slot <= 4095) {
+        printf("  sub %s, %s, #%d\n", reg64[r], FRAME_PTR, slot);
+    } else {
+        int v = slot;
+        printf("  mov %s, #%d\n", reg64[r], v & 0xffff);
+        v >>= 16;
+        int s = 16;
+        while (v) {
+            printf("  movk %s, #%d, lsl #%d\n", reg64[r], v & 0xffff, s);
+            v >>= 16;
+            s += 16;
+        }
+        printf("  sub %s, %s, %s\n", reg64[r], FRAME_PTR, reg64[r]);
+    }
+#else
+    printf("  lea -%d(%%rbp), %s\n", slot, reg64[r]);
+#endif
+    return r;
+}
+
+// Widen val (64-bit GP register) to a fresh 128-bit slot; frees val.
+static int widen_to_int128(int val, bool is_unsigned) {
+    int addr = alloc_int128_addr();
+#ifdef ARCH_ARM64
+    printf("  str %s, [%s]\n", reg64[val], reg64[addr]);
+    if (is_unsigned) {
+        printf("  str xzr, [%s, #8]\n", reg64[addr]);
+    } else {
+        printf("  asr x16, %s, #63\n", reg64[val]);
+        printf("  str x16, [%s, #8]\n", reg64[addr]);
+    }
+#else
+    printf("  movq %s, (%s)\n", reg64[val], reg64[addr]);
+    if (is_unsigned) {
+        printf("  movq $0, 8(%s)\n", reg64[addr]);
+    } else {
+        printf("  movq %s, %%rax\n", reg64[val]);
+        printf("  sarq $63, %%rax\n");
+        printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+    }
+#endif
+    free_reg(val);
+    return addr;
+}
+
+// Ensure operand is available as an int128 slot address.
+static int gen_to_int128(Node *operand) {
+    if (operand->ty && operand->ty->kind == TY_INT128)
+        return gen_int128(operand);
+    int val = gen(operand);
+    Type *ty = operand->ty ? operand->ty : ty_llong;
+    // Extend to 64-bit first if narrower
+    if (ty->size < 8) {
+        if (ty->is_unsigned)
+            zero_extend_to(val, ty->size, 8);
+        else
+            sign_extend_to(val, ty->size, 8);
+    }
+    return widen_to_int128(val, ty->is_unsigned);
+}
+
+// Check whether an int128 value at addr is nonzero; result in `result` reg (0 or 1).
+static void gen_int128_nonzero(int addr, int result) {
+#ifdef ARCH_ARM64
+    int t = alloc_reg();
+    printf("  ldr %s, [%s]\n", reg64[t], reg64[addr]);
+    printf("  ldr x16, [%s, #8]\n", reg64[addr]);
+    printf("  orr %s, %s, x16\n", reg64[t], reg64[t]);
+    printf("  cmp %s, #0\n", reg64[t]);
+    printf("  cset %s, ne\n", reg32[result]);
+    free_reg(t);
+#else
+    printf("  movq (%s), %%rax\n", reg64[addr]);
+    printf("  orq 8(%s), %%rax\n", reg64[addr]);
+    printf("  setne %%al\n");
+    printf("  movzbl %%al, %s\n", reg32[result]);
+#endif
+}
+
+static int gen_int128(Node *node) {
+    if (!node) return -1;
+    if (opt_g) emit_loc(node);
+
+    switch (node->kind) {
+
+    case ND_NUM: {
+        long long lo = node->val;
+        long long hi = (lo < 0 && !(node->ty && node->ty->is_unsigned)) ? -1LL : 0LL;
+        int addr = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t = alloc_reg();
+        if (lo >= -65536 && lo <= 65535) {
+            printf("  mov %s, #%lld\n", reg64[t], lo);
+        } else {
+            uint64_t v = (uint64_t)lo;
+            printf("  mov %s, #%llu\n", reg64[t], v & 0xffff);
+            v >>= 16;
+            int s = 16;
+            while (v) {
+                printf("  movk %s, #%llu, lsl #%d\n", reg64[t], v & 0xffff, s);
+                v >>= 16;
+                s += 16;
+            }
+        }
+        printf("  str %s, [%s]\n", reg64[t], reg64[addr]);
+        if (hi == 0) {
+            printf("  str xzr, [%s, #8]\n", reg64[addr]);
+        } else {
+            printf("  mov %s, #-1\n", reg64[t]);
+            printf("  str %s, [%s, #8]\n", reg64[t], reg64[addr]);
+        }
+        free_reg(t);
+#else
+        if (lo == (int32_t)lo)
+            printf("  movq $%lld, (%s)\n", lo, reg64[addr]);
+        else {
+            printf("  movabsq $%lld, %%rax\n", lo);
+            printf("  movq %%rax, (%s)\n", reg64[addr]);
+        }
+        if (hi == 0)
+            printf("  movq $0, 8(%s)\n", reg64[addr]);
+        else {
+            printf("  movabsq $%lld, %%rax\n", hi);
+            printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+        }
+#endif
+        return addr;
+    }
+
+    case ND_LVAR:
+    case ND_MEMBER:
+        return gen_addr(node);
+
+    case ND_DEREF:
+        // *ptr where ptr → 128-bit value: the pointer value IS the address
+        return gen(node->lhs);
+
+    case ND_ADDR:
+        // & of something: gen_addr gives the address (result is pointer, not int128)
+        return gen_addr(node->lhs);
+
+    case ND_COMMA:
+    case ND_CHAIN: {
+        int r = gen(node->lhs);
+        if (r >= 0) free_reg(r);
+        return gen_int128(node->rhs);
+    }
+
+    case ND_ASSIGN: {
+#ifdef ARCH_ARM64
+        int rhs_a = gen_to_int128(node->rhs);
+        int lhs_a = gen_addr(node->lhs);
+        int t1 = alloc_reg(), t2 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[rhs_a]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[rhs_a]);
+        printf("  str %s, [%s]\n", reg64[t1], reg64[lhs_a]);
+        printf("  str %s, [%s, #8]\n", reg64[t2], reg64[lhs_a]);
+        free_reg(t1);
+        free_reg(t2);
+#else
+        int lhs_a = gen_addr(node->lhs);
+        int rhs_a = gen_to_int128(node->rhs);
+        printf("  movq (%s), %%rax\n", reg64[rhs_a]);
+        printf("  movq 8(%s), %%rdx\n", reg64[rhs_a]);
+        printf("  movq %%rax, (%s)\n", reg64[lhs_a]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[lhs_a]);
+#endif
+        free_reg(rhs_a);
+        return lhs_a;
+    }
+
+    case ND_CAST: {
+        Type *from = node->lhs->ty;
+        Type *to = node->ty;
+        // from int128 to int128 (e.g. signed ↔ unsigned, or same)
+        if (from && from->kind == TY_INT128)
+            return gen_int128(node->lhs);
+        // from float to int128
+        if (from && is_flonum(from)) {
+            int r = gen(node->lhs);
+            int addr = alloc_int128_addr();
+#ifdef ARCH_ARM64
+            printf("  fmov d0, %s\n", reg64[r]);
+            free_reg(r);
+            if (to->is_unsigned)
+                printf("  fcvtzu x16, d0\n");
+            else
+                printf("  fcvtzs x16, d0\n");
+            printf("  str x16, [%s]\n", reg64[addr]);
+            if (to->is_unsigned) {
+                printf("  str xzr, [%s, #8]\n", reg64[addr]);
+            } else {
+                printf("  asr x16, x16, #63\n");
+                printf("  str x16, [%s, #8]\n", reg64[addr]);
+            }
+#else
+            printf("  movq %s, %%xmm0\n", reg64[r]);
+            free_reg(r);
+            if (to->is_unsigned) {
+                // Unsigned float→int128: handle values >= 2^63 via the 2-step trick
+                int c = ++rcc_label_count;
+                printf("  movq $0x43e0000000000000, %%rax\n"); // 2^63 as double
+                printf("  movq %%rax, %%xmm1\n");
+                printf("  comisd %%xmm1, %%xmm0\n");
+                printf("  jb .L.f2i128u.%d\n", c);
+                printf("  subsd %%xmm1, %%xmm0\n");
+                printf("  cvttsd2si %%xmm0, %%rax\n");
+                printf("  movq $0x8000000000000000, %%rdx\n");
+                printf("  xorq %%rdx, %%rax\n"); // add 2^63 back
+                printf("  jmp .L.f2i128u_lo.%d\n", c);
+                printf(".L.f2i128u.%d:\n", c);
+                printf("  cvttsd2si %%xmm0, %%rax\n");
+                printf(".L.f2i128u_lo.%d:\n", c);
+                printf("  movq %%rax, (%s)\n", reg64[addr]);
+                printf("  movq $0, 8(%s)\n", reg64[addr]);
+            } else {
+                printf("  cvttsd2si %%xmm0, %%rax\n");
+                printf("  movq %%rax, (%s)\n", reg64[addr]);
+                printf("  sarq $63, %%rax\n");
+                printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+            }
+#endif
+            return addr;
+        }
+        // from smaller integer to int128
+        int val = gen(node->lhs);
+        if (from && from->size < 8) {
+            if (from->is_unsigned)
+                zero_extend_to(val, from->size, 8);
+            else
+                sign_extend_to(val, from->size, 8);
+        }
+        return widen_to_int128(val, from ? from->is_unsigned : false);
+    }
+
+    case ND_NEG: {
+        int src = gen_to_int128(node->lhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t], reg64[src]);
+        printf("  negs %s, %s\n", reg64[t], reg64[t]);
+        printf("  str %s, [%s]\n", reg64[t], reg64[dst]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t], reg64[src]);
+        printf("  ngc %s, %s\n", reg64[t], reg64[t]);
+        printf("  str %s, [%s, #8]\n", reg64[t], reg64[dst]);
+        free_reg(t);
+#else
+        printf("  movq (%s), %%rax\n", reg64[src]);
+        printf("  movq 8(%s), %%rdx\n", reg64[src]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+        printf("  negq (%s)\n", reg64[dst]);
+        printf("  adcq $0, 8(%s)\n", reg64[dst]);
+        printf("  negq 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(src);
+        return dst;
+    }
+
+    case ND_BITNOT: {
+        int src = gen_to_int128(node->lhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t], reg64[src]);
+        printf("  mvn %s, %s\n", reg64[t], reg64[t]);
+        printf("  str %s, [%s]\n", reg64[t], reg64[dst]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t], reg64[src]);
+        printf("  mvn %s, %s\n", reg64[t], reg64[t]);
+        printf("  str %s, [%s, #8]\n", reg64[t], reg64[dst]);
+        free_reg(t);
+#else
+        printf("  movq (%s), %%rax\n", reg64[src]);
+        printf("  movq 8(%s), %%rdx\n", reg64[src]);
+        printf("  notq %%rax\n");
+        printf("  notq %%rdx\n");
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(src);
+        return dst;
+    }
+
+    case ND_ADD: {
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t1 = alloc_reg(), t2 = alloc_reg(), t3 = alloc_reg(), t4 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs]);
+        printf("  ldr %s, [%s]\n", reg64[t3], reg64[rhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t4], reg64[rhs]);
+        printf("  adds %s, %s, %s\n", reg64[t1], reg64[t1], reg64[t3]);
+        printf("  adc %s, %s, %s\n", reg64[t2], reg64[t2], reg64[t4]);
+        printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+        printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+        free_reg(t1);
+        free_reg(t2);
+        free_reg(t3);
+        free_reg(t4);
+#else
+        printf("  movq (%s), %%rax\n", reg64[lhs]);
+        printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+        printf("  addq (%s), %%rax\n", reg64[rhs]);
+        printf("  adcq 8(%s), %%rdx\n", reg64[rhs]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(lhs);
+        free_reg(rhs);
+        return dst;
+    }
+
+    case ND_SUB: {
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t1 = alloc_reg(), t2 = alloc_reg(), t3 = alloc_reg(), t4 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs]);
+        printf("  ldr %s, [%s]\n", reg64[t3], reg64[rhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t4], reg64[rhs]);
+        printf("  subs %s, %s, %s\n", reg64[t1], reg64[t1], reg64[t3]);
+        printf("  sbc %s, %s, %s\n", reg64[t2], reg64[t2], reg64[t4]);
+        printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+        printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+        free_reg(t1);
+        free_reg(t2);
+        free_reg(t3);
+        free_reg(t4);
+#else
+        printf("  movq (%s), %%rax\n", reg64[lhs]);
+        printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+        printf("  subq (%s), %%rax\n", reg64[rhs]);
+        printf("  sbbq 8(%s), %%rdx\n", reg64[rhs]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(lhs);
+        free_reg(rhs);
+        return dst;
+    }
+
+    case ND_MUL: {
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+#ifdef ARCH_ARM64
+        int dst = alloc_int128_addr();
+        // (alo:ahi) * (blo:bhi): result_lo = alo*blo.lo; result_hi = alo*blo.hi + ahi*blo.lo + alo*bhi.lo
+        int a_lo = alloc_reg(), a_hi = alloc_reg(), b_lo = alloc_reg(), b_hi = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[a_lo], reg64[lhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[a_hi], reg64[lhs]);
+        printf("  ldr %s, [%s]\n", reg64[b_lo], reg64[rhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[b_hi], reg64[rhs]);
+        int r_lo = alloc_reg(), r_hi = alloc_reg(), tmp = alloc_reg();
+        printf("  mul %s, %s, %s\n", reg64[r_lo], reg64[a_lo], reg64[b_lo]);
+        printf("  umulh %s, %s, %s\n", reg64[r_hi], reg64[a_lo], reg64[b_lo]);
+        printf("  mul %s, %s, %s\n", reg64[tmp], reg64[a_hi], reg64[b_lo]);
+        printf("  add %s, %s, %s\n", reg64[r_hi], reg64[r_hi], reg64[tmp]);
+        printf("  mul %s, %s, %s\n", reg64[tmp], reg64[a_lo], reg64[b_hi]);
+        printf("  add %s, %s, %s\n", reg64[r_hi], reg64[r_hi], reg64[tmp]);
+        free_reg(tmp);
+        free_reg(a_lo);
+        free_reg(a_hi);
+        free_reg(b_lo);
+        free_reg(b_hi);
+        printf("  str %s, [%s]\n", reg64[r_lo], reg64[dst]);
+        printf("  str %s, [%s, #8]\n", reg64[r_hi], reg64[dst]);
+        free_reg(r_lo);
+        free_reg(r_hi);
+#else
+        // Load all values first using alloc_reg(), then release lhs/rhs, then allocate dst.
+        // This avoids using hardcoded registers that might alias lhs/rhs address regs.
+        int a_lo = alloc_reg(), a_hi = alloc_reg(), b_lo = alloc_reg(), b_hi = alloc_reg();
+        printf("  movq (%s), %s\n", reg64[lhs], reg64[a_lo]);
+        printf("  movq 8(%s), %s\n", reg64[lhs], reg64[a_hi]);
+        printf("  movq (%s), %s\n", reg64[rhs], reg64[b_lo]);
+        printf("  movq 8(%s), %s\n", reg64[rhs], reg64[b_hi]);
+        free_reg(lhs);
+        free_reg(rhs);
+        int dst = alloc_int128_addr();
+        // rdx:rax = a_lo * b_lo (unsigned)
+        printf("  movq %s, %%rax\n", reg64[a_lo]);
+        printf("  mulq %s\n", reg64[b_lo]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]); // result lo
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]); // result hi = (a_lo*b_lo).hi
+        // result_hi += a_hi * b_lo
+        printf("  imulq %s, %s\n", reg64[b_lo], reg64[a_hi]); // a_hi *= b_lo (2-op imulq)
+        printf("  addq %s, 8(%s)\n", reg64[a_hi], reg64[dst]);
+        // result_hi += a_lo * b_hi
+        printf("  imulq %s, %s\n", reg64[b_hi], reg64[a_lo]); // a_lo *= b_hi
+        printf("  addq %s, 8(%s)\n", reg64[a_lo], reg64[dst]);
+        free_reg(a_lo);
+        free_reg(a_hi);
+        free_reg(b_lo);
+        free_reg(b_hi);
+#endif
+        // lhs and rhs freed inside the #else block above (x86-64) or after ARM64 block
+#ifdef ARCH_ARM64
+        free_reg(lhs);
+        free_reg(rhs);
+#endif
+        return dst;
+    }
+
+    case ND_DIV:
+    case ND_MOD: {
+        bool is_mod = (node->kind == ND_MOD);
+        bool is_unsigned = node->ty && node->ty->is_unsigned;
+        char *fn = (char *)(is_unsigned ? (is_mod ? "__umodti3" : "__udivti3")
+                                        : (is_mod ? "__modti3" : "__divti3"));
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        printf("  ldr x0, [%s]\n", reg64[lhs]);
+        printf("  ldr x1, [%s, #8]\n", reg64[lhs]);
+        printf("  ldr x2, [%s]\n", reg64[rhs]);
+        printf("  ldr x3, [%s, #8]\n", reg64[rhs]);
+        printf("  sub %s, %s, #32\n", STACK_REG, STACK_REG);
+        printf("  str %s, [%s, #16]\n", reg64[dst], STACK_REG);
+        printf("  bl %s\n", sym_name(fn));
+        printf("  ldr x9, [%s, #16]\n", STACK_REG);
+        printf("  str x0, [x9]\n");
+        printf("  str x1, [x9, #8]\n");
+        printf("  ldr %s, [%s, #16]\n", reg64[dst], STACK_REG);
+        printf("  add %s, %s, #32\n", STACK_REG, STACK_REG);
+#else
+        printf("  movq (%s), %%rdi\n", reg64[lhs]);
+        printf("  movq 8(%s), %%rsi\n", reg64[lhs]);
+        printf("  movq (%s), %%rdx\n", reg64[rhs]);
+        printf("  movq 8(%s), %%rcx\n", reg64[rhs]);
+        emit_direct_call(fn);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(lhs);
+        free_reg(rhs);
+        return dst;
+    }
+
+    case ND_SHL:
+    case ND_SHR: {
+        bool is_shl = (node->kind == ND_SHL);
+        bool is_unsigned = node->ty && node->ty->is_unsigned;
+        int lhs = gen_to_int128(node->lhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        bool is_rhs_const = (node->rhs->kind == ND_NUM);
+        if (is_rhs_const) {
+            int shift = (int)(node->rhs->val & 127);
+            int t1 = alloc_reg(), t2 = alloc_reg();
+            printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs]);
+            printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs]);
+            free_reg(lhs);
+            if (shift == 0) {
+                // no-op
+            } else if (is_shl) {
+                if (shift < 64) {
+                    // hi = (hi<<shift) | (lo>>(64-shift)), lo = lo<<shift
+                    printf("  lsl x16, %s, #%d\n", reg64[t2], shift);
+                    printf("  lsr x17, %s, #%d\n", reg64[t1], 64 - shift);
+                    printf("  orr %s, x16, x17\n", reg64[t2]);
+                    printf("  lsl %s, %s, #%d\n", reg64[t1], reg64[t1], shift);
+                } else if (shift == 64) {
+                    printf("  mov %s, %s\n", reg64[t2], reg64[t1]);
+                    printf("  mov %s, xzr\n", reg64[t1]);
+                } else {
+                    printf("  lsl %s, %s, #%d\n", reg64[t2], reg64[t1], shift - 64);
+                    printf("  mov %s, xzr\n", reg64[t1]);
+                }
+            } else {
+                if (shift < 64) {
+                    // lo = (lo>>shift) | (hi<<(64-shift)), hi >>= shift
+                    printf("  lsr x16, %s, #%d\n", reg64[t1], shift);
+                    printf("  lsl x17, %s, #%d\n", reg64[t2], 64 - shift);
+                    printf("  orr %s, x16, x17\n", reg64[t1]);
+                    printf("  %s %s, %s, #%d\n", is_unsigned ? "lsr" : "asr",
+                           reg64[t2], reg64[t2], shift);
+                } else if (shift == 64) {
+                    printf("  mov %s, %s\n", reg64[t1], reg64[t2]);
+                    if (is_unsigned)
+                        printf("  mov %s, xzr\n", reg64[t2]);
+                    else
+                        printf("  asr %s, %s, #63\n", reg64[t2], reg64[t2]);
+                } else {
+                    printf("  %s %s, %s, #%d\n", is_unsigned ? "lsr" : "asr",
+                           reg64[t1], reg64[t2], shift - 64);
+                    if (is_unsigned)
+                        printf("  mov %s, xzr\n", reg64[t2]);
+                    else
+                        printf("  asr %s, %s, #63\n", reg64[t2], reg64[t2]);
+                }
+            }
+            printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+            printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+            free_reg(t1);
+            free_reg(t2);
+        } else {
+            // Variable shift: call libgcc
+            int r_shift = gen(node->rhs);
+            const char *fn = is_shl ? "__ashlti3"
+                                    : (is_unsigned ? "__lshrti3" : "__ashrti3");
+            printf("  ldr x0, [%s]\n", reg64[lhs]);
+            printf("  ldr x1, [%s, #8]\n", reg64[lhs]);
+            printf("  mov x2, %s\n", reg64[r_shift]);
+            free_reg(r_shift);
+            free_reg(lhs);
+            printf("  sub %s, %s, #32\n", STACK_REG, STACK_REG);
+            printf("  str %s, [%s, #16]\n", reg64[dst], STACK_REG);
+            printf("  bl %s\n", sym_name(fn));
+            printf("  ldr x9, [%s, #16]\n", STACK_REG);
+            printf("  str x0, [x9]\n");
+            printf("  str x1, [x9, #8]\n");
+            printf("  ldr %s, [%s, #16]\n", reg64[dst], STACK_REG);
+            printf("  add %s, %s, #32\n", STACK_REG, STACK_REG);
+        }
+#else
+        // x86-64: rax=lo, rdx=hi; use shldq/shrdq
+        printf("  movq (%s), %%rax\n", reg64[lhs]);
+        printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+        free_reg(lhs);
+        if (node->rhs->kind == ND_NUM) {
+            int shift = (int)node->rhs->val;
+            if (shift == 0) {
+                // no-op
+            } else if (is_shl) {
+                if (shift < 64) {
+                    printf("  shldq $%d, %%rax, %%rdx\n", shift);
+                    printf("  shlq $%d, %%rax\n", shift);
+                } else if (shift == 64) {
+                    printf("  movq %%rax, %%rdx\n");
+                    printf("  xorl %%eax, %%eax\n");
+                } else if (shift < 128) {
+                    printf("  shlq $%d, %%rax\n", shift - 64);
+                    printf("  movq %%rax, %%rdx\n");
+                    printf("  xorl %%eax, %%eax\n");
+                } else {
+                    printf("  xorl %%eax, %%eax\n");
+                    printf("  xorl %%edx, %%edx\n");
+                }
+            } else {
+                if (shift < 64) {
+                    printf("  shrdq $%d, %%rdx, %%rax\n", shift);
+                    printf("  %s $%d, %%rdx\n", is_unsigned ? "shrq" : "sarq", shift);
+                } else if (shift == 64) {
+                    printf("  movq %%rdx, %%rax\n");
+                    if (is_unsigned)
+                        printf("  xorl %%edx, %%edx\n");
+                    else
+                        printf("  sarq $63, %%rdx\n");
+                } else if (shift < 128) {
+                    printf("  movq %%rdx, %%rax\n");
+                    printf("  %s $%d, %%rax\n", is_unsigned ? "shrq" : "sarq", shift - 64);
+                    if (is_unsigned)
+                        printf("  xorl %%edx, %%edx\n");
+                    else
+                        printf("  sarq $63, %%rdx\n");
+                } else {
+                    if (is_unsigned) {
+                        printf("  xorl %%eax, %%eax\n");
+                        printf("  xorl %%edx, %%edx\n");
+                    } else {
+                        printf("  sarq $63, %%rdx\n");
+                        printf("  movq %%rdx, %%rax\n");
+                    }
+                }
+            }
+        } else {
+            int r_shift = gen(node->rhs);
+            printf("  movl %s, %%ecx\n", reg32[r_shift]);
+            free_reg(r_shift);
+            if (is_shl) {
+                printf("  shldq %%cl, %%rax, %%rdx\n");
+                printf("  shlq %%cl, %%rax\n");
+                printf("  testb $64, %%cl\n");
+                printf("  jz .L.shl128.%d\n", rcc_label_count);
+                printf("  movq %%rax, %%rdx\n");
+                printf("  xorl %%eax, %%eax\n");
+                printf(".L.shl128.%d:\n", rcc_label_count++);
+            } else {
+                printf("  shrdq %%cl, %%rdx, %%rax\n");
+                printf("  %s %%cl, %%rdx\n", is_unsigned ? "shrq" : "sarq");
+                printf("  testb $64, %%cl\n");
+                printf("  jz .L.shr128.%d\n", rcc_label_count);
+                printf("  movq %%rdx, %%rax\n");
+                if (is_unsigned)
+                    printf("  xorl %%edx, %%edx\n");
+                else
+                    printf("  sarq $63, %%rdx\n");
+                printf(".L.shr128.%d:\n", rcc_label_count++);
+            }
+        }
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        return dst;
+    }
+
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR: {
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        const char *op = node->kind == ND_BITAND ? "and"
+            : node->kind == ND_BITOR             ? "orr"
+                                                 : "eor";
+        int t1 = alloc_reg(), t2 = alloc_reg(), t3 = alloc_reg(), t4 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs]);
+        printf("  ldr %s, [%s]\n", reg64[t3], reg64[rhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t4], reg64[rhs]);
+        printf("  %s %s, %s, %s\n", op, reg64[t1], reg64[t1], reg64[t3]);
+        printf("  %s %s, %s, %s\n", op, reg64[t2], reg64[t2], reg64[t4]);
+        printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+        printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+        free_reg(t1);
+        free_reg(t2);
+        free_reg(t3);
+        free_reg(t4);
+#else
+        const char *op = node->kind == ND_BITAND ? "andq"
+            : node->kind == ND_BITOR             ? "orq"
+                                                 : "xorq";
+        printf("  movq (%s), %%rax\n", reg64[lhs]);
+        printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+        printf("  %s (%s), %%rax\n", op, reg64[rhs]);
+        printf("  %s 8(%s), %%rdx\n", op, reg64[rhs]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(lhs);
+        free_reg(rhs);
+        return dst;
+    }
+
+    // Comparisons: result is int (0 or 1)
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE: {
+        int lhs = gen_to_int128(node->lhs);
+        int rhs = gen_to_int128(node->rhs);
+        bool is_unsigned_cmp = node->lhs->ty && node->lhs->ty->is_unsigned;
+        int result = alloc_reg();
+        int c = ++rcc_label_count;
+#ifdef ARCH_ARM64
+        int t1 = alloc_reg(), t2 = alloc_reg(), t3 = alloc_reg(), t4 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs]);
+        printf("  ldr %s, [%s]\n", reg64[t3], reg64[rhs]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t4], reg64[rhs]);
+        free_reg(lhs);
+        free_reg(rhs);
+        if (node->kind == ND_EQ || node->kind == ND_NE) {
+            printf("  cmp %s, %s\n", reg64[t1], reg64[t3]);
+            printf("  ccmp %s, %s, #0, eq\n", reg64[t2], reg64[t4]);
+            printf("  cset %s, %s\n", reg32[result], node->kind == ND_EQ ? "eq" : "ne");
+        } else {
+            // LT or LE: compare hi first (signed or unsigned), then lo (unsigned)
+            const char *hicond_lt = is_unsigned_cmp ? "lo" : "lt";
+            const char *hicond_gt = is_unsigned_cmp ? "hi" : "gt";
+            const char *locond = node->kind == ND_LT ? "lo" : "ls";
+            printf("  mov %s, #0\n", reg32[result]);
+            printf("  cmp %s, %s\n", reg64[t2], reg64[t4]); // hi compare
+            printf("  b.%s .L.cmp128y.%d\n", hicond_lt, c);
+            printf("  b.%s .L.cmp128n.%d\n", hicond_gt, c);
+            printf("  cmp %s, %s\n", reg64[t1], reg64[t3]); // lo compare (always unsigned)
+            printf("  b.%s .L.cmp128y.%d\n", locond, c);
+            printf("  b .L.cmp128n.%d\n", c);
+            printf(".L.cmp128y.%d:\n", c);
+            printf("  mov %s, #1\n", reg32[result]);
+            printf(".L.cmp128n.%d:\n", c);
+        }
+        free_reg(t1);
+        free_reg(t2);
+        free_reg(t3);
+        free_reg(t4);
+#else
+        if (node->kind == ND_EQ || node->kind == ND_NE) {
+            printf("  movq (%s), %%rax\n", reg64[lhs]);
+            printf("  xorq (%s), %%rax\n", reg64[rhs]);
+            printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+            printf("  xorq 8(%s), %%rdx\n", reg64[rhs]);
+            printf("  orq %%rdx, %%rax\n");
+            printf("  %s %%al\n", node->kind == ND_EQ ? "sete" : "setne");
+            printf("  movzbl %%al, %s\n", reg32[result]);
+        } else {
+            const char *hicmp_lt = is_unsigned_cmp ? "jb" : "jl";
+            const char *hicmp_gt = is_unsigned_cmp ? "ja" : "jg";
+            const char *locmp = node->kind == ND_LT ? "jb" : "jbe";
+            printf("  movq 8(%s), %%rdx\n", reg64[lhs]);
+            printf("  cmpq 8(%s), %%rdx\n", reg64[rhs]);
+            printf("  %s .L.cmp128y.%d\n", hicmp_lt, c);
+            printf("  %s .L.cmp128n.%d\n", hicmp_gt, c);
+            printf("  movq (%s), %%rax\n", reg64[lhs]);
+            printf("  cmpq (%s), %%rax\n", reg64[rhs]);
+            printf("  %s .L.cmp128y.%d\n", locmp, c);
+            printf(".L.cmp128n.%d:\n", c);
+            printf("  xorl %s, %s\n", reg32[result], reg32[result]);
+            printf("  jmp .L.cmp128e.%d\n", c);
+            printf(".L.cmp128y.%d:\n", c);
+            printf("  movl $1, %s\n", reg32[result]);
+            printf(".L.cmp128e.%d:\n", c);
+        }
+        free_reg(lhs);
+        free_reg(rhs);
+#endif
+        return result;
+    }
+
+    case ND_COND: {
+        // ternary with int128 result
+        int c = ++rcc_label_count;
+        int cond_r = gen(node->cond);
+        int dst = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        printf("  cmp %s, #0\n", reg(cond_r, node->cond->ty ? node->cond->ty->size : 4));
+        printf("  b.eq .L.else.%d\n", c);
+#else
+        printf("  cmp $0, %s\n", reg(cond_r, node->cond->ty ? node->cond->ty->size : 4));
+        printf("  je .L.else.%d\n", c);
+#endif
+        free_reg(cond_r);
+        int then_a = gen_to_int128(node->then);
+#ifdef ARCH_ARM64
+        {
+            int t1 = alloc_reg(), t2 = alloc_reg();
+            printf("  ldr %s, [%s]\n", reg64[t1], reg64[then_a]);
+            printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[then_a]);
+            printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+            printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+            free_reg(t1);
+            free_reg(t2);
+        }
+        printf("  b .L.end.%d\n", c);
+#else
+        printf("  movq (%s), %%rax\n", reg64[then_a]);
+        printf("  movq 8(%s), %%rdx\n", reg64[then_a]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+        printf("  jmp .L.end.%d\n", c);
+#endif
+        free_reg(then_a);
+        printf(".L.else.%d:\n", c);
+        int else_a = gen_to_int128(node->els);
+#ifdef ARCH_ARM64
+        {
+            int t1 = alloc_reg(), t2 = alloc_reg();
+            printf("  ldr %s, [%s]\n", reg64[t1], reg64[else_a]);
+            printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[else_a]);
+            printf("  str %s, [%s]\n", reg64[t1], reg64[dst]);
+            printf("  str %s, [%s, #8]\n", reg64[t2], reg64[dst]);
+            free_reg(t1);
+            free_reg(t2);
+        }
+#else
+        printf("  movq (%s), %%rax\n", reg64[else_a]);
+        printf("  movq 8(%s), %%rdx\n", reg64[else_a]);
+        printf("  movq %%rax, (%s)\n", reg64[dst]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
+        free_reg(else_a);
+        printf(".L.end.%d:\n", c);
+        return dst;
+    }
+
+    case ND_FUNCALL:
+        return gen_funcall(node, -1);
+
+
+    case ND_VA_ARG: {
+        // va_arg(ap, __int128) on ARM64: 2 consecutive GP register slots
+        int r = gen(node->lhs); // va_list pointer
+        int addr = alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int c = ++rcc_label_count;
+        // Check for 2 register slots available (gr_offs < -8 = at least 2 slots)
+        printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs
+        printf("  cmp w16, #-8\n");
+        printf("  b.gt .L.va128_stk.%d\n", c);
+        // Register save area: load both 64-bit halves
+        printf("  add w17, w16, #16\n"); // advance by 2 slots
+        printf("  str w17, [%s, #24]\n", reg64[r]);
+        printf("  ldr x9, [%s, #8]\n", reg64[r]); // __gr_top
+        printf("  sxtw x17, w16\n");
+        printf("  add x9, x9, x17\n");
+        printf("  ldp x16, x17, [x9]\n");
+        printf("  str x16, [%s]\n", reg64[addr]);
+        printf("  str x17, [%s, #8]\n", reg64[addr]);
+        printf("  b .L.va128_d.%d\n", c);
+        // Overflow stack: 16-byte aligned
+        printf(".L.va128_stk.%d:\n", c);
+        printf("  ldr x16, [%s]\n", reg64[r]); // __stack
+        printf("  add x17, x16, #15\n");
+        printf("  and x17, x17, #-16\n"); // align to 16
+        printf("  add x9, x17, #16\n");
+        printf("  str x9, [%s]\n", reg64[r]); // advance __stack
+        printf("  ldp x16, x17, [x17]\n");
+        printf("  str x16, [%s]\n", reg64[addr]);
+        printf("  str x17, [%s, #8]\n", reg64[addr]);
+        printf(".L.va128_d.%d:\n", c);
+#else
+        // x86-64 va_arg for int128: TODO
+        error("int128: va_arg not yet implemented for x86-64");
+#endif
+        free_reg(r);
+        return addr;
+    }
+    default:
+        error("int128: unsupported node kind %d", node->kind);
+        return -1;
+    }
+}
+
 // Generate code for a given node.
 static int gen(Node *node) {
     if (!node) return -1;
 
     if (opt_g)
         emit_loc(node);
+
+    // Dispatch int128 nodes to gen_int128()
+    if (node->ty && node->ty->kind == TY_INT128)
+        return gen_int128(node);
+    // Cast from int128 to a smaller type: extract value from 16-byte slot
+    if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&
+        node->lhs->ty->kind == TY_INT128 && node->ty && node->ty->kind != TY_INT128) {
+        int addr = gen_int128(node->lhs);
+        int r = alloc_reg();
+#ifdef ARCH_ARM64
+        if (is_flonum(node->ty)) {
+            // int128 → float: load lo word, convert
+            printf("  ldr %s, [%s]\n", reg64[r], reg64[addr]);
+            free_reg(addr);
+            int id = 0;
+            (void)id;
+            printf("  fmov d0, %s\n", reg64[r]);
+            printf("  scvtf d0, d0\n"); // signed approx; use lo 64 bits
+            printf("  fmov %s, d0\n", reg64[r]);
+        } else {
+            printf("  ldr %s, [%s]\n", reg64[r], reg64[addr]);
+            free_reg(addr);
+            if (node->ty->size < 8) {
+                if (!node->ty->is_unsigned) sign_extend_to(r, node->ty->size, 8);
+                else
+                    zero_extend_to(r, node->ty->size, 8);
+            }
+        }
+#else
+        printf("  movq (%s), %s\n", reg64[addr], reg64[r]);
+        free_reg(addr);
+        if (node->ty->size < 8) {
+            if (!node->ty->is_unsigned) sign_extend_to(r, node->ty->size, 8);
+            else
+                zero_extend_to(r, node->ty->size, 8);
+        }
+#endif
+        return r;
+    }
+    // Comparisons where the operand is int128 (result is int)
+    if (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+        switch (node->kind) {
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+            return gen_int128(node);
+        default: break;
+        }
+    }
+
 
     switch (node->kind) {
     case ND_NUM: {
@@ -4237,6 +5248,19 @@ static int gen(Node *node) {
         return r;
     }
     case ND_NOT: {
+        if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+            int addr = gen_int128(node->lhs);
+            int r = alloc_reg();
+            gen_int128_nonzero(addr, r);
+            free_reg(addr);
+            // NOT of nonzero check: r has 1 if nonzero, we want 0; 0 if zero, we want 1
+#ifdef ARCH_ARM64
+            printf("  eor %s, %s, #1\n", reg32[r], reg32[r]);
+#else
+            printf("  xorl $1, %s\n", reg32[r]);
+#endif
+            return r;
+        }
         int r = gen(node->lhs);
         if (is_flonum(node->lhs->ty)) {
 #ifdef ARCH_ARM64
@@ -4841,7 +5865,18 @@ static int gen(Node *node) {
     }
     case ND_RETURN: {
         if (node->lhs) {
-            if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION)) {
+            if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+                // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
+                int src = gen_int128(node->lhs);
+#ifdef ARCH_ARM64
+                printf("  ldr x0, [%s]\n", reg64[src]);
+                printf("  ldr x1, [%s, #8]\n", reg64[src]);
+#else
+                printf("  movq (%s), %%rax\n", reg64[src]);
+                printf("  movq 8(%s), %%rdx\n", reg64[src]);
+#endif
+                free_reg(src);
+            } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION)) {
                 int src = gen_addr(node->lhs);
                 int c = ++rcc_label_count;
                 int retbuf_offset = 0;
@@ -5156,26 +6191,59 @@ static int gen(Node *node) {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         int r = alloc_reg();
-        int lhs = gen(node->lhs);
-        printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
+        if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+            int lhs = gen_int128(node->lhs);
+            gen_int128_nonzero(lhs, r);
+            free_reg(lhs);
+            printf("  cbz %s, .L.end.%d\n", reg64[r], c);
+        } else {
+            int lhs = gen(node->lhs);
+            printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
+            free_reg(lhs);
+            printf("  mov %s, #0\n", reg(r, 4));
+            printf("  b.eq .L.end.%d\n", c);
+        }
         printf("  mov %s, #0\n", reg(r, 4));
-        printf("  b.eq .L.end.%d\n", c);
-        free_reg(lhs);
-        int rhs = gen(node->rhs);
-        printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
-        printf("  cset %s, ne\n", reg(r, 4));
+        if (node->rhs->ty && node->rhs->ty->kind == TY_INT128) {
+            int rhs = gen_int128(node->rhs);
+            gen_int128_nonzero(rhs, r);
+            free_reg(rhs);
+        } else {
+            int rhs = gen(node->rhs);
+            printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
+            printf("  cset %s, ne\n", reg(r, 4));
+            free_reg(rhs);
+        }
 #else
-        int lhs = gen(node->lhs);
-        printf("  cmp $0, %s\n", reg(lhs, node->lhs->ty->size));
+        if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+            int lhs = gen_int128(node->lhs);
+            int tmp = alloc_reg();
+            gen_int128_nonzero(lhs, tmp);
+            free_reg(lhs);
+            printf("  cmp $0, %s\n", reg(tmp, 4));
+            free_reg(tmp);
+        } else {
+            int lhs = gen(node->lhs);
+            printf("  cmp $0, %s\n", reg(lhs, node->lhs->ty->size));
+            free_reg(lhs);
+        }
         printf("  movb $0, -%d(%%rbp)\n", spill_logand);
         printf("  je .L.end.%d\n", c);
-        free_reg(lhs);
-        int rhs = gen(node->rhs);
-        printf("  cmp $0, %s\n", reg(rhs, node->rhs->ty->size));
+        if (node->rhs->ty && node->rhs->ty->kind == TY_INT128) {
+            int rhs = gen_int128(node->rhs);
+            int tmp = alloc_reg();
+            gen_int128_nonzero(rhs, tmp);
+            free_reg(rhs);
+            printf("  cmp $0, %s\n", reg(tmp, 4));
+            free_reg(tmp);
+        } else {
+            int rhs = gen(node->rhs);
+            printf("  cmp $0, %s\n", reg(rhs, node->rhs->ty->size));
+            free_reg(rhs);
+        }
         printf("  setne %%al\n");
         printf("  movb %%al, -%d(%%rbp)\n", spill_logand);
 #endif
-        free_reg(rhs);
         printf(".L.end.%d:\n", c);
 #ifdef ARCH_ARM64
 #else
@@ -5188,26 +6256,59 @@ static int gen(Node *node) {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         int r = alloc_reg();
-        int lhs = gen(node->lhs);
-        printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
+        if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+            int lhs = gen_int128(node->lhs);
+            gen_int128_nonzero(lhs, r);
+            free_reg(lhs);
+            printf("  cbnz %s, .L.end.%d\n", reg64[r], c);
+        } else {
+            int lhs = gen(node->lhs);
+            printf("  cmp %s, #0\n", reg(lhs, node->lhs->ty->size));
+            free_reg(lhs);
+            printf("  mov %s, #1\n", reg(r, 4));
+            printf("  b.ne .L.end.%d\n", c);
+        }
         printf("  mov %s, #1\n", reg(r, 4));
-        printf("  b.ne .L.end.%d\n", c);
-        free_reg(lhs);
-        int rhs = gen(node->rhs);
-        printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
-        printf("  cset %s, ne\n", reg(r, 4));
+        if (node->rhs->ty && node->rhs->ty->kind == TY_INT128) {
+            int rhs = gen_int128(node->rhs);
+            gen_int128_nonzero(rhs, r);
+            free_reg(rhs);
+        } else {
+            int rhs = gen(node->rhs);
+            printf("  cmp %s, #0\n", reg(rhs, node->rhs->ty->size));
+            printf("  cset %s, ne\n", reg(r, 4));
+            free_reg(rhs);
+        }
 #else
-        int lhs = gen(node->lhs);
-        printf("  cmp $0, %s\n", reg(lhs, node->lhs->ty->size));
+        if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
+            int lhs = gen_int128(node->lhs);
+            int tmp = alloc_reg();
+            gen_int128_nonzero(lhs, tmp);
+            free_reg(lhs);
+            printf("  cmp $0, %s\n", reg(tmp, 4));
+            free_reg(tmp);
+        } else {
+            int lhs = gen(node->lhs);
+            printf("  cmp $0, %s\n", reg(lhs, node->lhs->ty->size));
+            free_reg(lhs);
+        }
         printf("  movb $1, -%d(%%rbp)\n", spill_logand);
         printf("  jne .L.end.%d\n", c);
-        free_reg(lhs);
-        int rhs = gen(node->rhs);
-        printf("  cmp $0, %s\n", reg(rhs, node->rhs->ty->size));
+        if (node->rhs->ty && node->rhs->ty->kind == TY_INT128) {
+            int rhs = gen_int128(node->rhs);
+            int tmp = alloc_reg();
+            gen_int128_nonzero(rhs, tmp);
+            free_reg(rhs);
+            printf("  cmp $0, %s\n", reg(tmp, 4));
+            free_reg(tmp);
+        } else {
+            int rhs = gen(node->rhs);
+            printf("  cmp $0, %s\n", reg(rhs, node->rhs->ty->size));
+            free_reg(rhs);
+        }
         printf("  setne %%al\n");
         printf("  movb %%al, -%d(%%rbp)\n", spill_logand);
 #endif
-        free_reg(rhs);
         printf(".L.end.%d:\n", c);
 #ifdef ARCH_ARM64
 #else
@@ -6154,6 +7255,30 @@ static int gen(Node *node) {
             printf("  sxtw x17, w16\n"); // x17 = old vr_offs
             printf("  add x12, x12, x17\n");
             printf("  b .L.va_done.%d\n", rcc_label_count);
+        } else if (ty->kind == TY_INT128) {
+            // int128: needs 2 register slots (gr_offs increment by 16)
+            // or 16-byte aligned overflow stack slot
+            int c2 = ++rcc_label_count;
+            printf("  ldr w16, [%s, #24]\n", reg64[r]); // __gr_offs
+            printf("  cmp w16, #-8\n"); // need at least 2 slots (<= -16)
+            printf("  b.gt .L.va_int128_stk.%d\n", c2);
+            // Register save area: advance by 2 slots, load from gr_top+gr_offs
+            printf("  add w17, w16, #16\n");
+            printf("  str w17, [%s, #24]\n", reg64[r]);
+            printf("  ldr x12, [%s, #8]\n", reg64[r]); // __gr_top
+            printf("  sxtw x17, w16\n");
+            printf("  add x12, x12, x17\n");
+            printf("  b .L.va_int128_d.%d\n", c2);
+            // Overflow stack: 16-byte aligned
+            printf(".L.va_int128_stk.%d:\n", c2);
+            printf("  ldr x16, [%s]\n", reg64[r]); // __stack
+            printf("  add x17, x16, #15\n");
+            printf("  and x17, x17, #-16\n"); // align to 16
+            printf("  add x12, x17, #16\n");
+            printf("  str x12, [%s]\n", reg64[r]); // advance __stack
+            printf("  mov x12, x17\n"); // result = aligned value
+            printf(".L.va_int128_d.%d:\n", c2);
+            printf("  b .L.va_done.%d\n", rcc_label_count);
         } else {
             // Pointer-passed structs use gp_size=8 (the pointer fits in one register);
             // after reading from the reg save area we must dereference it.
@@ -6236,13 +7361,13 @@ static int gen(Node *node) {
             printf("  addq 16(%s), %%rcx\n", reg64[r]);
             printf("  addl $16, 4(%s)\n", reg64[r]);
             printf("  jmp .L.va_done.%d\n", rcc_label_count);
-        } else if (is_ptr_struct) {
-            printf("  cmpl $40, (%s)\n", reg64[r]);
+        } else if (ty->kind == TY_INT128) {
+            // int128 needs 2 consecutive GP reg slots (16 bytes)
+            printf("  cmpl $32, (%s)\n", reg64[r]); // gp_offset + 16 <= 48 means <= 32
             printf("  ja .L.va_overflow.%d\n", rcc_label_count);
             printf("  movl (%s), %%ecx\n", reg64[r]);
             printf("  addq 16(%s), %%rcx\n", reg64[r]);
-            printf("  movq (%%rcx), %%rcx\n");
-            printf("  addl $8, (%s)\n", reg64[r]);
+            printf("  addl $16, (%s)\n", reg64[r]); // consume 2 GP slots
             printf("  jmp .L.va_done.%d\n", rcc_label_count);
         } else {
             printf("  cmpl $40, (%s)\n", reg64[r]);
@@ -6250,14 +7375,24 @@ static int gen(Node *node) {
             printf("  movl (%s), %%ecx\n", reg64[r]);
             printf("  addq 16(%s), %%rcx\n", reg64[r]);
             printf("  addl $8, (%s)\n", reg64[r]);
+            if (is_ptr_struct)
+                printf("  movq (%%rcx), %%rcx\n"); // deref ptr-passed struct to get struct addr
             printf("  jmp .L.va_done.%d\n", rcc_label_count);
         }
         printf(".L.va_overflow.%d:\n", rcc_label_count);
         printf("  movq 8(%s), %%rcx\n", reg64[r]);
-        printf("  leaq 8(%%rcx), %%rdx\n");
-        printf("  movq %%rdx, 8(%s)\n", reg64[r]);
-        if (is_ptr_struct)
-            printf("  movq (%%rcx), %%rcx\n");
+        if (ty->kind == TY_INT128) {
+            // int128 overflow: must be 16-byte aligned, advance by 16
+            printf("  addq $15, %%rcx\n");
+            printf("  andq $-16, %%rcx\n");
+            printf("  leaq 16(%%rcx), %%rdx\n");
+            printf("  movq %%rdx, 8(%s)\n", reg64[r]);
+        } else {
+            printf("  leaq 8(%%rcx), %%rdx\n");
+            printf("  movq %%rdx, 8(%s)\n", reg64[r]);
+            if (is_ptr_struct)
+                printf("  movq (%%rcx), %%rcx\n");
+        }
         printf(".L.va_done.%d:\n", rcc_label_count);
         printf("  movq %%rcx, %s\n", reg64[r]);
 #endif
@@ -7934,6 +9069,21 @@ void codegen(Program *prog) {
                     }
                     stack_param_index++;
                 }
+            } else if (var->ty->kind == TY_INT128) {
+                // int128: lo in param_regs64[param_index], hi in param_regs64[param_index+1]
+                if (param_index + 1 < max_param_regs) {
+                    printf("  movq %s, -%d(%%rbp)\n", param_regs64[param_index], var->offset);
+                    printf("  movq %s, -%d(%%rbp)\n", param_regs64[param_index + 1], var->offset - 8);
+                    param_index += 2;
+                } else {
+                    // On stack: two consecutive 8-byte slots at [rbp + 16 + k*8]
+                    int stack_off = 16 + stack_param_index * 8;
+                    printf("  movq %d(%%rbp), %%rax\n", stack_off);
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset);
+                    printf("  movq %d(%%rbp), %%rax\n", stack_off + 8);
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset - 8);
+                    stack_param_index += 2;
+                }
             } else if (param_index < max_param_regs) {
                 char *preg = var->ty->size == 1 ? param_regs8[param_index]
                     : var->ty->size == 2        ? param_regs16[param_index]
@@ -8275,6 +9425,21 @@ void codegen(Program *prog) {
                         } else
                             printf("  str %s, [%s, #-%d]\n", fpreg[fp_param], FRAME_PTR, var->offset);
                         fp_param++;
+                    }
+                } else if (var->ty->kind == TY_INT128) {
+                    // int128: two consecutive GP registers
+                    if (gp_param + 1 < 8) {
+                        printf("  str %s, [%s, #-%d]\n", gpreg[gp_param], FRAME_PTR, var->offset);
+                        printf("  str %s, [%s, #-%d]\n", gpreg[gp_param + 1], FRAME_PTR, var->offset - 8);
+                        gp_param += 2;
+                    } else {
+                        // int128 on stack: two 8-byte slots from caller's frame
+                        int spoff = 16 + stack_param * 8;
+                        printf("  ldr x11, [%s, #%d]\n", FRAME_PTR, spoff);
+                        printf("  str x11, [%s, #-%d]\n", FRAME_PTR, var->offset);
+                        printf("  ldr x11, [%s, #%d]\n", FRAME_PTR, spoff + 8);
+                        printf("  str x11, [%s, #-%d]\n", FRAME_PTR, var->offset - 8);
+                        stack_param += 2;
                     }
                 } else if (gp_param < 8) {
                     char *preg = var->ty->size <= 4 ? wpreg[gp_param] : gpreg[gp_param];

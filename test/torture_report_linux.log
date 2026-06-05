@@ -997,7 +997,7 @@ PASS: pr114965
 PASS: pr115033
 PASS: pr115277
 PASS: pr116799
-FAIL(compile): pr117095
+PASS: pr117095
 FAIL(compile): pr117432
 PASS: pr117498
 PASS: pr118623
@@ -1031,7 +1031,7 @@ PASS: pr20621-1
 PASS: pr21173
 PASS: pr21331
 PASS: pr21964-1
-./test/torture/run.sh: line 65: 583367 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 28013 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr22061-1
 PASS: pr22061-2
 FAIL(compile): pr22061-3
@@ -1086,7 +1086,7 @@ PASS: pr31169
 PASS: pr31448-2
 PASS: pr31448
 PASS: pr31605
-./test/torture/run.sh: line 65: 584268 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 28969 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr32244-1
 PASS: pr32500
 PASS: pr33142
@@ -1109,7 +1109,7 @@ PASS: pr34415
 PASS: pr34456
 PASS: pr34768-1
 PASS: pr34768-2
-./test/torture/run.sh: line 65: 584661 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 29406 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr34971
 PASS: pr34982
 PASS: pr35163
@@ -1148,7 +1148,7 @@ PASS: pr39100
 PASS: pr39120
 FAIL(compile): pr39228
 PASS: pr39233
-./test/torture/run.sh: line 65: 585296 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 30382 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr39240
 PASS: pr39339
 PASS: pr39501
@@ -1194,16 +1194,16 @@ PASS: pr43629
 FAIL(compile): pr43784
 PASS: pr43835
 PASS: pr43987
-./test/torture/run.sh: line 65: 586058 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 31301 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr44164
 PASS: pr44202-1
 PASS: pr44468
 PASS: pr44555
 PASS: pr44575
 FAIL(compile): pr44683
-./test/torture/run.sh: line 65: 586172 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 31419 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr44828
-./test/torture/run.sh: line 65: 586199 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 31447 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr44852
 PASS: pr44858
 PASS: pr44942
@@ -1236,7 +1236,7 @@ PASS: pr49073
 PASS: pr49123
 PASS: pr49161
 PASS: pr49186
-FAIL(compile): pr49218
+PASS: pr49218
 PASS: pr49279
 PASS: pr49281
 PASS: pr49390
@@ -1266,7 +1266,7 @@ PASS: pr53465
 FAIL(compile): pr53645-2
 FAIL(compile): pr53645
 PASS: pr53688
-FAIL(compile): pr54471
+PASS: pr54471
 PASS: pr54937
 PASS: pr54985
 PASS: pr55137
@@ -1299,9 +1299,9 @@ PASS: pr57875
 PASS: pr57876
 PASS: pr57877
 PASS: pr58209
-./test/torture/run.sh: line 65: 587789 Segmentation fault         timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 33471 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr58277-1
-./test/torture/run.sh: line 65: 587816 Segmentation fault         timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 33499 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr58277-2
 PASS: pr58364
 PASS: pr58365
@@ -1317,7 +1317,7 @@ PASS: pr58640
 PASS: pr58662
 PASS: pr58726
 PASS: pr58831
-./test/torture/run.sh: line 65: 588090 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 33800 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr58943
 PASS: pr58984
 PASS: pr59014-2
@@ -1341,14 +1341,14 @@ FAIL(compile): pr60960
 PASS: pr61306-1
 PASS: pr61306-2
 PASS: pr61306-3
-FAIL(compile): pr61375
+PASS: pr61375
 PASS: pr61517
 PASS: pr61673
 PASS: pr61682
 PASS: pr61725
 PASS: pr62151
 PASS: pr63209
-FAIL(compile): pr63302
+PASS: pr63302
 PASS: pr63641
 PASS: pr63659
 PASS: pr63843
@@ -1363,7 +1363,7 @@ PASS: pr64957
 PASS: pr64979
 PASS: pr65053-1
 PASS: pr65053-2
-FAIL(compile): pr65170
+PASS: pr65170
 PASS: pr65215-1
 PASS: pr65215-2
 PASS: pr65215-3
@@ -1413,7 +1413,7 @@ PASS: pr69403
 PASS: pr69447
 PASS: pr69691
 PASS: pr70005
-./test/torture/run.sh: line 65: 589709 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 35853 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr70127
 PASS: pr70222-1
 PASS: pr70222-2
@@ -1461,7 +1461,7 @@ PASS: pr79737-1
 PASS: pr79737-2
 PASS: pr80153
 PASS: pr80421
-./test/torture/run.sh: line 65: 590497 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 36793 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr80501
 FAIL(compile): pr80692
 PASS: pr81281
@@ -1472,7 +1472,7 @@ PASS: pr81556
 PASS: pr81588
 PASS: pr81913
 PASS: pr82192
-./test/torture/run.sh: line 65: 590679 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 36983 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr82210
 PASS: pr82387
 PASS: pr82388
@@ -1483,22 +1483,22 @@ PASS: pr83298
 PASS: pr83362
 PASS: pr83383
 PASS: pr83477
-FAIL(compile): pr84169
+PASS: pr84169
 PASS: pr84339
 PASS: pr84478
 PASS: pr84521
 PASS: pr84524
-FAIL(compile): pr84748
+PASS: pr84748
 PASS: pr85095
-./test/torture/run.sh: line 65: 590978 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 37406 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr85156
 FAIL(compile): pr85169
 FAIL(compile): pr85331
 PASS: pr85529-1
 PASS: pr85529-2
 PASS: pr85582-1
-FAIL(compile): pr85582-2
-FAIL(compile): pr85582-3
+PASS: pr85582-2
+PASS: pr85582-3
 PASS: pr85756
 PASS: pr86231
 PASS: pr86492
@@ -1531,8 +1531,9 @@ PASS: pr91632
 PASS: pr91635
 PASS: pr92140
 SKIP(vector_size): pr92618
-FAIL(compile): pr92904
-FAIL(compile): pr93213
+./test/torture/run.sh: line 65: 38330 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+FAIL(runtime): pr92904
+PASS: pr93213
 PASS: pr93249
 PASS: pr93402
 PASS: pr93434
@@ -1572,7 +1573,7 @@ SKIP(missing-include): pr98304-2
 FAIL(compile): pr98366
 FAIL(compile): pr98474
 PASS: pr98681
-./test/torture/run.sh: line 65: 592260 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 39146 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr98727
 PASS: pr98736
 PASS: pr98853-1
@@ -1604,9 +1605,9 @@ SKIP(vector_size): simd-4
 SKIP(vector_size): simd-5
 SKIP(vector_size): simd-6
 PASS: ssad-run
-./test/torture/run.sh: line 65: 592751 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 39717 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): stdarg-1
-./test/torture/run.sh: line 65: 592778 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 39772 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): stdarg-2
 PASS: stdarg-3
 PASS: stdarg-4
@@ -1625,9 +1626,9 @@ PASS: string-opt-18
 PASS: string-opt-5
 PASS: strlen-1
 PASS: strlen-2
-./test/torture/run.sh: line 65: 593103 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 40180 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): strlen-3
-./test/torture/run.sh: line 65: 593130 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 40250 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): strlen-4
 PASS: strlen-5
 PASS: strlen-6
@@ -1648,33 +1649,33 @@ PASS: usad-run
 PASS: user-printf
 PASS: usmul
 PASS: va-arg-1
-./test/torture/run.sh: line 65: 593488 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 40824 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-10
 PASS: va-arg-11
 PASS: va-arg-12
 PASS: va-arg-13
-./test/torture/run.sh: line 65: 593566 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 40993 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-14
-./test/torture/run.sh: line 65: 593599 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41065 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-15
 PASS: va-arg-16
-./test/torture/run.sh: line 65: 593647 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41145 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-17
-./test/torture/run.sh: line 65: 593676 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41191 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-18
 PASS: va-arg-19
 PASS: va-arg-2
 PASS: va-arg-20
 PASS: va-arg-21
-./test/torture/run.sh: line 65: 593780 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41319 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-22
 PASS: va-arg-23
 PASS: va-arg-24
 PASS: va-arg-26
 PASS: va-arg-4
-./test/torture/run.sh: line 65: 593878 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41433 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-5
-./test/torture/run.sh: line 65: 593907 Aborted                    timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 41471 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-6
 PASS: va-arg-7
 PASS: va-arg-8
@@ -1702,18 +1703,16 @@ PASS: zero-struct-2
 PASS: zerolen-1
 PASS: zerolen-2
 
-=== TOTAL=1676 PASS=1502 FAIL_COMPILE=51 FAIL_RUNTIME=28 SKIP=95 ===
+=== TOTAL=1676 PASS=1513 FAIL_COMPILE=39 FAIL_RUNTIME=29 SKIP=95 ===
 Pass rate (excl. skip): 95%
 
-Compile failures: pr117095 pr117432 pr19449 pr22061-3 pr22061-4 pr22098-1 
-pr22098-2 pr22098-3 pr23135 pr39228 pr41935 pr43784 pr44683 pr47237 pr49218 
-pr51447 pr53084 pr53645-2 pr53645 pr54471 pr57568 pr60960 pr61375 pr63302 
-pr65170 pr65427 pr68249 pr70460 pr70903 pr71494 pr71626-2 pr77767 pr78622 
-pr80692 pr84169 pr84748 pr85169 pr85331 pr85582-2 pr85582-3 pr88739 pr92904 
-pr93213 pr98366 pr98474 simd-1 simd-2 struct-ini-4 va-arg-pack-1 wchar_t-1 
-widechar-2
+Compile failures: pr117432 pr19449 pr22061-3 pr22061-4 pr22098-1 pr22098-2 
+pr22098-3 pr23135 pr39228 pr41935 pr43784 pr44683 pr47237 pr51447 pr53084 
+pr53645-2 pr53645 pr57568 pr60960 pr65427 pr68249 pr70460 pr70903 pr71494 
+pr71626-2 pr77767 pr78622 pr80692 pr85169 pr85331 pr88739 pr98366 pr98474 
+simd-1 simd-2 struct-ini-4 va-arg-pack-1 wchar_t-1 widechar-2
 
 Runtime failures: pr22061-1 pr32244-1 pr34971 pr39240 pr42269-2 pr44164 pr44828 
-pr44852 pr58277-1 pr58277-2 pr58943 pr70127 pr80501 pr82210 pr85156 pr98727 
-stdarg-1 stdarg-2 strlen-3 strlen-4 va-arg-10 va-arg-14 va-arg-15 va-arg-17 
-va-arg-18 va-arg-22 va-arg-5 va-arg-6
+pr44852 pr58277-1 pr58277-2 pr58943 pr70127 pr80501 pr82210 pr85156 pr92904 
+pr98727 stdarg-1 stdarg-2 strlen-3 strlen-4 va-arg-10 va-arg-14 va-arg-15 
+va-arg-17 va-arg-18 va-arg-22 va-arg-5 va-arg-6

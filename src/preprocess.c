@@ -1961,6 +1961,8 @@ char *preprocess(char *filename, char *p) {
         if (!find_macro("__LP64__"))
             define_pre("__LP64__", "1");
 #endif
+        define_pre("__INT128_TYPE__", "__int128");
+        define_pre("__UINT128_TYPE__", "unsigned __int128");
         define_macro("__builtin_expect", true, builtin_expect_params, 2, "x");
         /* those are detected and replaced by builtins. TODO: vice-versa */
         define_pre("__builtin_memcpy", "memcpy");
