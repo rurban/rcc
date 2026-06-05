@@ -2745,6 +2745,26 @@ static void emit_adrp_got(const char *reg, const char *label) {
     printf("  ldr %s, [%s, :got_lo12:%s]\n", reg, reg, label);
 #endif
 }
+
+// TLS address load. Linux uses tpidr_el0 + IE offsets; Darwin uses TLV descriptors.
+static void emit_tls_addr(const char *reg, LVar *var) {
+    const char *label = asm_sym_name(var_sym_label(var));
+#if defined(__APPLE__)
+    // Darwin ARM64: TLV descriptor access via __tlv_bootstrap.
+    // x0 = descriptor address (arg to thunk); x16 = thunk pointer from descriptor[0]
+    printf("  adrp x0, %s@TLVPPAGE\n", label);
+    printf("  ldr x0, [x0, %s@TLVPPAGEOFF]\n", label);
+    printf("  ldr x16, [x0]\n");
+    printf("  blr x16\n");
+    if (strcmp(reg, "x0"))
+        printf("  mov %s, x0\n", reg);
+#else
+    // Linux ARM64: Local Exec model via tpidr_el0
+    printf("  mrs %s, tpidr_el0\n", reg);
+    printf("  add %s, %s, #:tprel_hi12:%s\n", reg, reg, label);
+    printf("  add %s, %s, #:tprel_lo12_nc:%s\n", reg, reg, label);
+#endif
+}
 #endif
 
 // Emit load/store-safe address for [x29, #-offset] when offset > 255
@@ -3368,6 +3388,43 @@ static bool try_const_int(Node *n, int64_t *val) {
 }
 #endif // ARCH_ARM64
 
+#ifndef ARCH_ARM64
+// Emit code to load the address of a global variable into reg r.
+// Handles TLS (%fs:-relative), GOT (PIC), and direct RIP-relative addressing.
+// Note: ARM64 uses inline address computation at call sites instead.
+static void emit_global_addr(int r, LVar *var) {
+    if (var->is_tls) {
+#ifdef _WIN32
+        // Windows/MinGW: __emutls emulated TLS
+        int tmp = alloc_reg();
+        printf("  leaq __emutls_v.%s(%%rip), %s\n", var_label(var), reg64[tmp]);
+        printf("  movq %s, %%rcx\n", reg64[tmp]);
+        free_reg(tmp);
+        printf("  call __emutls_get_address\n");
+        printf("  movq %%rax, %s\n", reg64[r]);
+#elif defined(__APPLE__)
+        // Darwin: TLV descriptor
+        int base = alloc_reg();
+        printf("  movq ___tlv_bootstrap@GOTPCREL(%%rip), %s\n", reg64[base]);
+        printf("  leaq %s(%%rip), %%rdi\n", var_label(var));
+        printf("  call *(%s)\n", reg64[base]);
+        free_reg(base);
+        printf("  movq %%rax, %s\n", reg64[r]);
+#else
+        // Linux: Local Exec model
+        int base = alloc_reg();
+        printf("  movq %%fs:0, %s\n", reg64[base]);
+        printf("  leaq %s@TPOFF(%s), %s\n", var_label(var), reg64[base], reg64[r]);
+        free_reg(base);
+#endif
+    } else if (var_needs_got(var)) {
+        printf("  mov %s@GOTPCREL(%%rip), %s\n", var_label(var), reg64[r]);
+    } else {
+        printf("  lea %s(%%rip), %s\n", var_label(var), reg64[r]);
+    }
+}
+#endif
+
 // Generate code to compute the absolute address of an lvalue.
 static int gen_addr(Node *node) {
     switch (node->kind) {
@@ -3410,15 +3467,14 @@ static int gen_addr(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            if (node->var->is_weak || var_needs_got(node->var))
+            if (node->var->is_tls)
+                emit_tls_addr(reg64[r], node->var);
+            else if (node->var->is_weak || var_needs_got(node->var))
                 emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
-            if (var_needs_got(node->var))
-                printf("  mov %s@GOTPCREL(%%rip), %s\n", var_label(node->var), reg64[r]);
-            else
-                printf("  lea %s(%%rip), %s\n", var_label(node->var), reg64[r]);
+            emit_global_addr(r, node->var);
 #endif
         }
         return r;
@@ -4644,13 +4700,18 @@ static int gen(Node *node) {
 #endif
             } else {
 #ifdef ARCH_ARM64
-                if (var_needs_got(node->var))
+                if (node->var->is_tls) {
+                    emit_tls_addr(reg64[r], node->var);
+                } else if (var_needs_got(node->var))
                     emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                 printf("  ldr %s, [%s]\n", reg64[r], reg64[r]);
 #else
-                if (var_needs_got(node->var)) {
+                if (node->var->is_tls) {
+                    emit_global_addr(r, node->var);
+                    emit_load(node->ty, r, format("(%s)", reg64[r]));
+                } else if (var_needs_got(node->var)) {
                     printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
                     printf("  mov (%s), %s\n", reg64[r], reg64[r]);
                 } else {
@@ -4680,15 +4741,14 @@ static int gen(Node *node) {
 #endif
             else
 #ifdef ARCH_ARM64
-                if (var_needs_got(node->var))
+                if (node->var->is_tls)
+                emit_tls_addr(reg64[r], node->var);
+            else if (var_needs_got(node->var))
                 emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
-                if (var_needs_got(node->var))
-                printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
-            else
-                printf("  lea %s(%%rip), %s\n", label, reg64[r]);
+                emit_global_addr(r, node->var);
 #endif
         } else if (!node->var->is_local && node->var->is_function) {
             if (node->var->is_weak) {
@@ -4704,10 +4764,7 @@ static int gen(Node *node) {
             else
                 emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
 #else
-            if (var_needs_got(node->var))
-                printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
-            else
-                printf("  lea %s(%%rip), %s\n", label, reg64[r]);
+            emit_global_addr(r, node->var);
 #endif
         } else if (is_flonum(node->var->ty)) {
             {
@@ -4730,14 +4787,19 @@ static int gen(Node *node) {
                 } else {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        if (var_needs_got(node->var))
+                        if (node->var->is_tls)
+                            emit_tls_addr(reg64[r], node->var);
+                        else if (var_needs_got(node->var))
                             emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         else
                             emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr s0, [%s]\n", reg64[r]);
                         printf("  fcvt d0, s0\n");
 #else
-                        if (var_needs_got(node->var)) {
+                        if (node->var->is_tls) {
+                            emit_global_addr(r, node->var);
+                            printf("  movss (%s), %%xmm0\n", reg64[r]);
+                        } else if (var_needs_got(node->var)) {
                             printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
                             printf("  movss (%s), %%xmm0\n", reg64[r]);
                         } else {
@@ -4747,13 +4809,18 @@ static int gen(Node *node) {
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        if (var_needs_got(node->var))
+                        if (node->var->is_tls)
+                            emit_tls_addr(reg64[r], node->var);
+                        else if (var_needs_got(node->var))
                             emit_adrp_got(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         else
                             emit_adrp_add(reg64[r], asm_sym_name(var_sym_label(node->var)));
                         printf("  ldr d0, [%s]\n", reg64[r]);
 #else
-                        if (var_needs_got(node->var)) {
+                        if (node->var->is_tls) {
+                            emit_global_addr(r, node->var);
+                            printf("  movsd (%s), %%xmm0\n", reg64[r]);
+                        } else if (var_needs_got(node->var)) {
                             printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
                             printf("  movsd (%s), %%xmm0\n", reg64[r]);
                         } else {
@@ -4777,16 +4844,21 @@ static int gen(Node *node) {
 #endif
             else {
 #ifdef ARCH_ARM64
-                // Global variable: load address via ADRP+ADD, then deref
+                // Global variable: load address, then deref
                 int ta = alloc_reg();
-                if (var_needs_got(node->var))
+                if (node->var->is_tls) {
+                    emit_tls_addr(reg64[ta], node->var);
+                } else if (var_needs_got(node->var))
                     emit_adrp_got(reg64[ta], asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(reg64[ta], asm_sym_name(var_sym_label(node->var)));
                 emit_load(node->ty, r, format("[%s]", reg64[ta]));
                 free_reg(ta);
 #else
-                if (var_needs_got(node->var)) {
+                if (node->var->is_tls) {
+                    emit_global_addr(r, node->var);
+                    emit_load(node->ty, r, format("(%s)", reg64[r]));
+                } else if (var_needs_got(node->var)) {
                     printf("  mov %s@GOTPCREL(%%rip), %s\n", label, reg64[r]);
                     emit_load(node->ty, r, format("(%s)", reg64[r]));
                 } else {
@@ -7553,7 +7625,7 @@ static int gen(Node *node) {
             printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
         } else {
             printf("  ldxr %s, [%s]\n", reg64[r_result], reg64[r_addr]);
-            printf("  stxr w9, %s, [%s]\n", reg32[r_val], reg64[r_addr]);
+            printf("  stxr w9, %s, [%s]\n", reg64[r_val], reg64[r_addr]);
         }
         printf("  cbnz w9, .L.atom_xchg.%d\n", lbl);
         if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
@@ -8829,6 +8901,174 @@ void codegen(Program *prog) {
 #endif
 #endif
 
+    // Emit TLS data sections for thread-local variables.
+    if (prog->globals) {
+#if defined(__APPLE__)
+        bool has_tls_init = false;
+        // Darwin Mach-O: initialized data in __thread_data, zero-init in .tbss,
+        // TLV descriptors in __thread_vars.
+        // Pass 1: emit __thread_data entries for initialized TLS vars.
+        for (LVar *var = prog->globals; var; var = var->next) {
+            if (!var->is_tls || var->is_extern) continue;
+            char *label = var->asm_name ? var->asm_name : var->name;
+            char *tlv_init_label = format("%s$tlv$init", asm_sym_name(sym_name(label)));
+            bool has_real_init = (var->init_data || var->relocs || var->has_init);
+            if (has_real_init) {
+                if (!has_tls_init) {
+                    printf(".section __DATA,__thread_data,thread_local_regular\n");
+                    has_tls_init = true;
+                }
+                if (var->ty->align > 1)
+                    printf("  .p2align %d\n", var->ty->align > 3 ? 3 : var->ty->align > 2 ? 2
+                                                                                          : var->ty->align);
+                printf("%s:\n", tlv_init_label);
+                if (var->init_data || var->relocs) {
+                    int pos = 0;
+                    for (Reloc *rel = var->relocs; rel; rel = rel->next) {
+                        for (; pos < rel->offset; pos++)
+                            printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                        if (rel->addend)
+                            printf("  .quad %s%+d\n", rel->label, rel->addend);
+                        else
+                            printf("  .quad %s\n", rel->label);
+                        pos += 8;
+                    }
+                    for (; pos < var->init_size; pos++)
+                        printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                    if (var->ty->size > var->init_size)
+                        printf("  .space %d\n", var->ty->size - var->init_size);
+                } else if (var->has_init) {
+                    if (var->ty->size == 8)
+                        printf("  .quad %lld\n", (long long)var->init_val);
+                    else if (var->ty->size == 4)
+                        printf("  .long %u\n", (unsigned)var->init_val);
+                    else
+                        printf("  .space %d\n", var->ty->size);
+                }
+            }
+        }
+        // Emit .tbss entries for zero-initialized TLS vars.
+        for (LVar *var = prog->globals; var; var = var->next) {
+            if (!var->is_tls || var->is_extern) continue;
+            char *label = var->asm_name ? var->asm_name : var->name;
+            char *tlv_init_label = format("%s$tlv$init", asm_sym_name(sym_name(label)));
+            bool has_real_init = (var->init_data || var->relocs || var->has_init);
+            if (!has_real_init && var->ty->size > 0) {
+                int align = var->ty->align > 3 ? 3 : var->ty->align > 1 ? var->ty->align
+                                                                        : 1;
+                printf(".tbss %s, %d, %d\n", tlv_init_label, var->ty->size, align);
+            }
+        }
+        // Pass 2: emit __thread_vars entries (TLV descriptors) for all TLS vars.
+        bool has_tlv = false;
+        for (LVar *var = prog->globals; var; var = var->next) {
+            if (!var->is_tls || var->is_extern) continue;
+            if (!has_tlv) {
+                printf(".section __DATA,__thread_vars,thread_local_variables\n");
+                has_tlv = true;
+            }
+            char *label = var->asm_name ? var->asm_name : var->name;
+            const char *sym = asm_sym_name(sym_name(label));
+            char *tlv_init_label = format("%s$tlv$init", sym);
+            if (!var->is_static)
+                printf(".globl %s\n", sym);
+            printf("%s:\n", sym);
+            printf("  .quad __tlv_bootstrap\n");
+            printf("  .quad 0\n");
+            printf("  .quad %s\n", tlv_init_label);
+        }
+#elif defined(_WIN32)
+        // Windows/MinGW: __emutls emulated TLS (control block + template in .rdata)
+        for (LVar *var = prog->globals; var; var = var->next) {
+            if (var->is_tls && !var->is_extern) {
+                char *label = var->asm_name ? var->asm_name : var->name;
+                int align = var->ty->align > 1 ? var->ty->align : 1;
+                // Emit emutls control variable in .data
+                printf("\n.data\n");
+                printf(".globl __emutls_v.%s\n", label);
+                printf("  .align 32\n");
+                printf("__emutls_v.%s:\n", label);
+                printf("  .quad %d\n", var->ty->size);
+                printf("  .quad %d\n", align);
+                printf("  .quad 0\n");
+                printf("  .quad __emutls_t.%s\n", label);
+                // Emit template data in .rdata
+                printf("  .section .rdata,\"dr\"\n");
+                if (align > 1)
+                    printf("  .align %d\n", align);
+                printf("__emutls_t.%s:\n", label);
+                if (var->init_data || var->relocs) {
+                    int pos = 0;
+                    for (Reloc *rel = var->relocs; rel; rel = rel->next) {
+                        for (; pos < rel->offset; pos++)
+                            printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                        if (rel->addend)
+                            printf("  .quad %s%+d\n", rel->label, rel->addend);
+                        else
+                            printf("  .quad %s\n", rel->label);
+                        pos += 8;
+                    }
+                    for (; pos < var->init_size; pos++)
+                        printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                    if (var->ty->size > var->init_size)
+                        printf("  .zero %d\n", var->ty->size - var->init_size);
+                } else if (var->has_init) {
+                    if (var->ty->size == 8)
+                        printf("  .quad %lld\n", (long long)var->init_val);
+                    else if (var->ty->size == 4)
+                        printf("  .long %u\n", (unsigned)var->init_val);
+                    else
+                        printf("  .zero %d\n", var->ty->size);
+                } else if (var->ty->size > 0) {
+                    printf("  .zero %d\n", var->ty->size);
+                }
+            }
+        }
+#else
+                // Linux ELF: .tdata section with tp-relative offsets.
+                bool has_tls = false;
+                for (LVar *var = prog->globals; var; var = var->next) {
+                    if (var->is_tls && !var->is_extern) {
+                        if (!has_tls) {
+                            printf(".section .tdata,\"awT\",@progbits\n");
+                            has_tls = true;
+                        }
+                        char *label = var->asm_name ? var->asm_name : var->name;
+                        if (var->ty->align > 1)
+                            printf("  .balign %d\n", var->ty->align);
+                        if (!var->is_static)
+                            printf(".globl %s\n", asm_sym_name(sym_name(label)));
+                        printf("%s:\n", asm_sym_name(sym_name(label)));
+                        if (var->init_data || var->relocs) {
+                            int pos = 0;
+                            for (Reloc *rel = var->relocs; rel; rel = rel->next) {
+                                for (; pos < rel->offset; pos++)
+                                    printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                                if (rel->addend)
+                                    printf("  .quad %s%+d\n", rel->label, rel->addend);
+                                else
+                                    printf("  .quad %s\n", rel->label);
+                                pos += 8;
+                            }
+                            for (; pos < var->init_size; pos++)
+                                printf("  .byte %u\n", (unsigned char)var->init_data[pos]);
+                            if (var->ty->size > var->init_size)
+                                printf("  .zero %d\n", var->ty->size - var->init_size);
+                        } else if (var->has_init) {
+                            if (var->ty->size == 8)
+                                printf("  .quad %lld\n", (long long)var->init_val);
+                            else if (var->ty->size == 4)
+                                printf("  .long %u\n", (unsigned)var->init_val);
+                            else
+                                printf("  .zero %d\n", var->ty->size);
+                        } else if (var->ty->size > 0) {
+                            printf("  .zero %d\n", var->ty->size);
+                        }
+                    }
+                }
+#endif
+    }
+
     // Emit data section for strings
     if (prog->globals || prog->strs || float_lits) {
         printf("\n.data\n");
@@ -8837,6 +9077,8 @@ void codegen(Program *prog) {
         int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
             if (var->is_extern && !var->alias_target && !var->asm_name)
+                continue;
+            if (var->is_tls)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
             if (var->is_function && !var->alias_target && !var->asm_name)

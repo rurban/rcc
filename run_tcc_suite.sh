@@ -288,8 +288,6 @@ SKIP_TESTS="
  120_alias
 126_bound_global
 141_riscv_asm
-144_tls
-145_winarm64_interlocked
 "
 
 # Tests skipped on non-windows
