@@ -46,21 +46,20 @@ if (-not $RCC) {
 $SkipTests = @(
     "60_errors_and_warnings", # no main; TCC -dt mode
     "96_nodata_wanted",       # no main; TCC -dt mode
-    "104_inline",             # needs multi-file 104+_inline.c
-    "112_backtrace",
-    "113_btdll",
-    "114_bound_signal",
-    "115_bound_setjmp",
-    "116_bound_setjmp2",
-    "120_alias",              # TCC extension, GCC/CLANG fail. GNU alias
-    "125_atomic_misc",        # Requires -dt
-    "126_bound_global",
     "98_al_ax_extend",        # x86-32bit specific, skipped by TCC on x86_64
     "99_fastcall",            # x86-32bit specific, skipped by TCC on x86_64
+    "104_inline",             # needs multi-file 104+_inline.c
+    "112_backtrace",          # TCC extension
+    "113_btdll",              # TCC extension
+    "114_bound_signal",       # TCC extension
+    "115_bound_setjmp",       # TCC extension
+    "116_bound_setjmp2",      # TCC extension
+    "120_alias",              # TCC extension, GCC/CLANG fail. GNU alias
+    "125_atomic_misc",        # Requires -dt
+    "126_bound_global",       # TCC extension
     "128_run_atexit",         # needs TCC-specific -dt multi-snippet runner
-    "141_riscv_asm_pseudo",
-    "142_riscv_asm_longlong",
-    "143_riscv_asm_farith"
+    "141_riscv_asm",          # no riscv
+    "145_winarm64_interlocked" # no winarm64 planned
 )
 
 # Tests skipped on Intel hosts (arm64-specific tests)

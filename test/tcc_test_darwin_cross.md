@@ -4,8 +4,8 @@ Generated: June 2026
 
 ## Summary
 
-- **Total**: 156
-- **Passed**: 156
+- **Total**: 155
+- **Passed**: 155
 - **Failed**: 0
 - **Pass Rate**: 100%
 
@@ -141,46 +141,45 @@ Generated: June 2026
 | 136_atomic_gcc_style        | COMPILE_OK | linked, (execution skipped) |
 | 137_funcall_struct_args     | COMPILE_OK | linked, (execution skipped) |
 | 138_arm64_encoding          | COMPILE_OK | linked, (execution skipped) |
-| 138_narrow_return_promotion | COMPILE_OK | linked, (execution skipped) |
 | 139_arm64_errors            | COMPILE_OK | linked, (execution skipped) |
-| 139_narrow_type_conversion  | COMPILE_OK | linked, (execution skipped) |
 | 140_arm64_extasm            | COMPILE_OK | linked, (execution skipped) |
-| 140_int_sign_extension      | COMPILE_OK | linked, (execution skipped) |
-| 141_riscv_asm_pseudo        | SKIP       | Skipped                     |
-| 142_riscv_asm_longlong      | SKIP       | Skipped                     |
-| 143_riscv_asm_farith        | SKIP       | Skipped                     |
-| test_arm64_asm              | PASS       | exit=126                    |
-| test_atomic_op              | PASS       | exit=126                    |
-| test_atomic_op2             | PASS       | exit=126                    |
-| test_bitfields              | PASS       | exit=126                    |
-| test_builtins               | PASS       | exit=126                    |
-| test_elif2                  | PASS       | exit=126                    |
-| test_elif_simple            | PASS       | exit=126                    |
+| 141_riscv_asm               | SKIP       | Skipped                     |
+| 142_int_conversion          | COMPILE_OK | linked, (execution skipped) |
+| 143_void_expr               | COMPILE_OK | linked, (execution skipped) |
+| 144_tls                     | SKIP       | Skipped                     |
+| 145_winarm64_interlocked    | SKIP       | Skipped                     |
+| test_arm64_asm              | COMPILE_OK | linked, (execution skipped) |
+| test_atomic_op              | COMPILE_OK | linked, (execution skipped) |
+| test_atomic_op2             | COMPILE_OK | linked, (execution skipped) |
+| test_bitfields              | COMPILE_OK | linked, (execution skipped) |
+| test_builtins               | COMPILE_OK | linked, (execution skipped) |
+| test_elif2                  | COMPILE_OK | linked, (execution skipped) |
+| test_elif_simple            | COMPILE_OK | linked, (execution skipped) |
 | test_err                    | PASS       | compile error as expected   |
-| test_fallthrough            | PASS       | exit=126                    |
-| test_func                   | PASS       | exit=126                    |
-| test_gperf                  | PASS       | exit=126                    |
-| test_if                     | PASS       | exit=126                    |
-| test_if2                    | PASS       | exit=126                    |
-| test_if3                    | PASS       | exit=126                    |
-| test_if4                    | PASS       | exit=126                    |
-| test_if5                    | PASS       | exit=126                    |
-| test_if6                    | PASS       | exit=126                    |
-| test_if_nested              | PASS       | exit=126                    |
-| test_if_simple              | PASS       | exit=126                    |
-| test_include                | PASS       | exit=126                    |
-| test_include2               | PASS       | exit=126                    |
-| test_loop                   | PASS       | exit=126                    |
-| test_macro                  | PASS       | exit=126                    |
-| test_minimal                | PASS       | exit=126                    |
-| test_nested_if              | PASS       | exit=126                    |
-| test_ptr                    | PASS       | exit=126                    |
-| test_real                   | PASS       | exit=126                    |
-| test_self_include2          | PASS       | exit=126                    |
-| test_signextend             | PASS       | exit=126                    |
-| test_simple                 | PASS       | exit=126                    |
-| test_simple2                | PASS       | exit=126                    |
-| test_str                    | PASS       | exit=126                    |
-| test_struct                 | PASS       | exit=126                    |
-| test_unicode                | PASS       | exit=126                    |
-| test_with_comment           | PASS       | exit=126                    |
+| test_fallthrough            | COMPILE_OK | linked, (execution skipped) |
+| test_func                   | COMPILE_OK | linked, (execution skipped) |
+| test_gperf                  | COMPILE_OK | linked, (execution skipped) |
+| test_if                     | COMPILE_OK | linked, (execution skipped) |
+| test_if2                    | COMPILE_OK | linked, (execution skipped) |
+| test_if3                    | COMPILE_OK | linked, (execution skipped) |
+| test_if4                    | COMPILE_OK | linked, (execution skipped) |
+| test_if5                    | COMPILE_OK | linked, (execution skipped) |
+| test_if6                    | COMPILE_OK | linked, (execution skipped) |
+| test_if_nested              | COMPILE_OK | linked, (execution skipped) |
+| test_if_simple              | COMPILE_OK | linked, (execution skipped) |
+| test_include                | COMPILE_OK | linked, (execution skipped) |
+| test_include2               | COMPILE_OK | linked, (execution skipped) |
+| test_loop                   | COMPILE_OK | linked, (execution skipped) |
+| test_macro                  | COMPILE_OK | linked, (execution skipped) |
+| test_minimal                | COMPILE_OK | linked, (execution skipped) |
+| test_nested_if              | COMPILE_OK | linked, (execution skipped) |
+| test_ptr                    | COMPILE_OK | linked, (execution skipped) |
+| test_real                   | COMPILE_OK | linked, (execution skipped) |
+| test_self_include2          | COMPILE_OK | linked, (execution skipped) |
+| test_signextend             | COMPILE_OK | linked, (execution skipped) |
+| test_simple                 | COMPILE_OK | linked, (execution skipped) |
+| test_simple2                | COMPILE_OK | linked, (execution skipped) |
+| test_str                    | COMPILE_OK | linked, (execution skipped) |
+| test_struct                 | COMPILE_OK | linked, (execution skipped) |
+| test_unicode                | COMPILE_OK | linked, (execution skipped) |
+| test_with_comment           | COMPILE_OK | linked, (execution skipped) |
