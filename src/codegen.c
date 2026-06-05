@@ -1418,6 +1418,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             }
         }
     }
+    // Unsupported __builtin_* → error at compile time rather than silent linker failure.
+    // Known builtins are either macro-expanded in preprocess.c, parsed specially in parser.c,
+    // or handled above; anything still named __builtin_* here is unimplemented.
+    if (call_target && strncmp(call_target, "__builtin_", 10) == 0)
+        error_tok(node->tok, "use of unknown builtin '%s'", call_target);
+
 
 #ifdef ARCH_ARM64
     // Inline alloca: directly adjust sp without any register save/restore
@@ -7376,7 +7382,7 @@ void codegen(Program *prog) {
                 // Skip if asm_name resolves to same symbol as C name (circular)
                 if (strcmp(sym_name(var->name), var_sym_label(var)) == 0)
                     continue;
-                    // __asm__("target") on a function: alias the C name to the asm_name
+                // __asm__("target") on a function: alias the C name to the asm_name
 #ifdef __APPLE__
                 printf("  .balign 8\n");
 #endif
