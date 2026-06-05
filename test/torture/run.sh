@@ -109,7 +109,7 @@ run_test() {
         return
     fi
 
-    # Nested functions / statement expressions (not implemented)
+    # Nested functions / statement expressions (not yet implemented)
     if grep -qE 'dg-require-effective-target nested' "$src" 2>/dev/null || \
        [ "$name" = "20061220-1" ] || \
        [ "$name" = "nest-align-1" ] || \
@@ -119,8 +119,14 @@ run_test() {
         return
     fi
 
-    # __attribute__((__vector_size__(N))) — vector types not implemented
+    # __attribute__((__vector_size__(N))) — vector types not iyet mplemented
     if grep -q '__vector_size__' "$src" 2>/dev/null; then
+        SKIP=$((SKIP+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(vector_size): $name"
+        return
+    fi
+    # __attribute__((vector_size(N))) — vector types not iyet mplemented
+    if grep -q '((vector_size(' "$src" 2>/dev/null; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(vector_size): $name"
         return
