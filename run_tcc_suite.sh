@@ -63,6 +63,18 @@ if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
     PLATFORM=arm64
     REPORT_FILE="$REPORT_DIR/tcc_test_arm64.md"
 fi
+# Detect mingw-native: user passed rcc.exe directly (not replaced by mingw-cross.sh)
+if echo "$RCC" | grep -qE '\.exe$'; then
+    PLATFORM=mingw
+    REPORT_FILE="$REPORT_DIR/tcc_test_mingw.md"
+    if command -v winetricks >/dev/null 2>&1; then
+        winetricks nocrashdialog 2>/dev/null || true
+    fi
+    WINEDEBUG=fixme-all
+    WINEDLLOVERRIDES="winedbg=d"
+    WINENOPOPUPS=1
+    export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS
+fi
 
 if [ -z "$RCC" ] || [ ! -x "$RCC" ]; then
 	echo "rcc binary not found. Build it first or pass the path as \$1." >&2
@@ -161,6 +173,7 @@ TMP_OUT="$TMPDIR/rcc_test_$$.out"
 TMP_EXE="$TMPDIR/rcc_test_$$"
 is_arm64=''
 is_darwin=''
+is_mingw_native=''
 RUN_PREFIX=''
 if [ -z "${ARM64_SYSROOT+x}" ]; then
     for p in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root /usr/aarch64-linux-gnu; do
@@ -175,6 +188,13 @@ if [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
 	WINEDEBUG=fixme-all
 	WINEDLLOVERRIDES="winedbg=d"
 	export WINEDEBUG WINEDLLOVERRIDES
+elif [ "$PLATFORM" = "mingw" ]; then
+	is_mingw_native=1
+	TMP_EXE="$TMP_EXE.exe"
+	# On Linux, run compiled Windows executables through Wine
+	case "$(uname -s)" in
+		Linux*) command -v wine >/dev/null 2>&1 && RUN_PREFIX="wine" ;;
+	esac
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
 	if [ -d "$ARM64_SYSROOT" ]; then
 		RUN_PREFIX="qemu-aarch64 -L $ARM64_SYSROOT"
@@ -337,7 +357,7 @@ $1
 		case "$NON_WINDOWS_SKIP_TESTS" in *"
 $1
 "*) return 0 ;; esac
-        fi
+	fi
 	if [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ] || \
            [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ] || \
            [ "$is_arm64" = "1" ]; then
@@ -373,11 +393,11 @@ while IFS= read -r src; do
                  continue
                  ;;
             95_bitfields_ms.c)
-                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] || \
+                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] || [ -n "$is_mingw_native" ] || \
                 p_src="-mms-bitfields"
                 ;;
             95_bitfields.c)
-                [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] && \
+                { [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ] || [ -n "$is_mingw_native" ]; } && \
                 p_src="-mno-ms-bitfields"
                 ;;
         esac
@@ -420,7 +440,7 @@ while IFS= read -r src; do
 		cd "$TEST_DIR" || exit
 		src="$base.c"
 		in_cd_dir=1
-		if [ "$base" = "129_scopes" ] && echo "$RCC" | grep -q mingw-cross; then
+		if [ "$base" = "129_scopes" ] && { echo "$RCC" | grep -q mingw-cross || [ -n "$is_mingw_native" ]; }; then
 			p_src="-D__TINYC__"
 		fi
         fi
@@ -871,6 +891,8 @@ elif [ "$RCC" = "$SCRIPT_DIR/darwin-cross.sh" ]; then
 elif [ "$RCC" = "$SCRIPT_DIR/arm64-cross.sh" ]; then
     MAX_FAIL=0
 elif [ "$RCC" = "$SCRIPT_DIR/mingw-cross.sh" ]; then
+    MAX_FAIL=0
+elif [ "$PLATFORM" = "mingw" ]; then
     MAX_FAIL=0
 else
     MAX_FAIL=0
