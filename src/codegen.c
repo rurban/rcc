@@ -8892,8 +8892,8 @@ void codegen(Program *prog) {
         // Pass 1: emit __thread_data entries for initialized TLS vars.
         for (LVar *var = prog->globals; var; var = var->next) {
             if (!var->is_tls || var->is_extern) continue;
-            char *label = var->asm_name ? var->asm_name : var->name;
-            char *tlv_init_label = format("%s$tlv$init", asm_sym_name(sym_name(label)));
+            const char *sym = asm_sym_name(var_sym_label(var));
+            char *tlv_init_label = format("%s$tlv$init", sym);
             bool has_real_init = (var->init_data || var->relocs || var->has_init);
             if (has_real_init) {
                 if (!has_tls_init) {
@@ -8901,8 +8901,7 @@ void codegen(Program *prog) {
                     has_tls_init = true;
                 }
                 if (var->ty->align > 1)
-                    printf("  .p2align %d\n", var->ty->align > 3 ? 3 : var->ty->align > 2 ? 2
-                                                                                          : var->ty->align);
+                    printf("  .balign %d\n", var->ty->align);
                 printf("%s:\n", tlv_init_label);
                 if (var->init_data || var->relocs) {
                     int pos = 0;
@@ -8932,13 +8931,15 @@ void codegen(Program *prog) {
         // Emit .tbss entries for zero-initialized TLS vars.
         for (LVar *var = prog->globals; var; var = var->next) {
             if (!var->is_tls || var->is_extern) continue;
-            char *label = var->asm_name ? var->asm_name : var->name;
-            char *tlv_init_label = format("%s$tlv$init", asm_sym_name(sym_name(label)));
+            const char *sym = asm_sym_name(var_sym_label(var));
+            char *tlv_init_label = format("%s$tlv$init", sym);
             bool has_real_init = (var->init_data || var->relocs || var->has_init);
             if (!has_real_init && var->ty->size > 0) {
-                int align = var->ty->align > 3 ? 3 : var->ty->align > 1 ? var->ty->align
-                                                                        : 1;
-                printf(".tbss %s, %d, %d\n", tlv_init_label, var->ty->size, align);
+                int align_log2 = var->ty->align > 8 ? 4 : var->ty->align > 4 ? 3
+                    : var->ty->align > 2                                     ? 2
+                    : var->ty->align > 1                                     ? 1
+                                                                             : 0;
+                printf(".tbss %s, %d, %d\n", tlv_init_label, var->ty->size, align_log2);
             }
         }
         // Pass 2: emit __thread_vars entries (TLV descriptors) for all TLS vars.
@@ -8949,8 +8950,7 @@ void codegen(Program *prog) {
                 printf(".section __DATA,__thread_vars,thread_local_variables\n");
                 has_tlv = true;
             }
-            char *label = var->asm_name ? var->asm_name : var->name;
-            const char *sym = asm_sym_name(sym_name(label));
+            const char *sym = asm_sym_name(var_sym_label(var));
             char *tlv_init_label = format("%s$tlv$init", sym);
             if (!var->is_static)
                 printf(".globl %s\n", sym);
@@ -9015,12 +9015,12 @@ void codegen(Program *prog) {
                             printf(".section .tdata,\"awT\",@progbits\n");
                             has_tls = true;
                         }
-                        char *label = var->asm_name ? var->asm_name : var->name;
+                        const char *sym = asm_sym_name(var_sym_label(var));
                         if (var->ty->align > 1)
                             printf("  .balign %d\n", var->ty->align);
                         if (!var->is_static)
-                            printf(".globl %s\n", asm_sym_name(sym_name(label)));
-                        printf("%s:\n", asm_sym_name(sym_name(label)));
+                            printf(".globl %s\n", sym);
+                        printf("%s:\n", sym);
                         if (var->init_data || var->relocs) {
                             int pos = 0;
                             for (Reloc *rel = var->relocs; rel; rel = rel->next) {

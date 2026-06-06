@@ -2955,6 +2955,8 @@ static Node *declaration(Token **rest, Token *tok) {
             if (pending_asm_name)
                 var->asm_name = pending_asm_name;
             var->cleanup_func = cleanup ? cleanup : ty->cleanup_func;
+            if (attr.is_tls)
+                error_tok(tok, "'__thread'/'_Thread_local' at block scope requires 'static' or 'extern'");
             var->is_tls = attr.is_tls;
             // VLA: compute size and allocate stack space
             if (ty->kind == TY_VLA) {
