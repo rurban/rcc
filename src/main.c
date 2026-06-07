@@ -39,7 +39,7 @@ struct OutPath {
 };
 static OutPath *out_paths;
 static OutPath *obj_paths;
-static OutPath *input_paths;
+
 
 OutPath *reverse(OutPath *head) {
     OutPath *prev = NULL;
@@ -485,7 +485,7 @@ int main(int argc, char **argv) {
             return status;
         }
         // Linking: codegen already produced .o files; add them to linker command
-        char cmd[4096];
+        char cmd[4096] = "";
         int status = 0;
         if (obj_paths) {
             obj_paths = reverse(obj_paths);

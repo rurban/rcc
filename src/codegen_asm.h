@@ -1157,38 +1157,103 @@ static size_t asm_jmp_label_to(SecBuf *s, const char *label) {
     return off;
 #endif
 }
-// Conditional branch wrappers with label strings (forward-fixup) — x86 only
-#ifndef ARCH_ARM64
-static size_t asm_jb_label_to(SecBuf *s, const char *label) {
+// Conditional branch wrappers with label strings (forward-fixup)
+// Generic conditional branch to label (cross-platform via asm_record fixup)
+static size_t asm_bcond_label_to(SecBuf *s, int cond, const char *label) {
     size_t off = s->len;
-    x86_jcc_rel32(s, X86_B, 0);
-    size_t count = s->len - off;
-    asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, X86_B, -1, false);
+#ifdef ARCH_ARM64
+    arm64_bcond(s, (Arm64Cond)cond, 0);
+    asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, (char *)label, cond, -1, false);
     return off;
+#else
+    x86_jcc_rel32(s, (X86Cond)cond, 0);
+    size_t count = s->len - off;
+    asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, cond, -1, false);
+    return off;
+#endif
+}
+// Convenience wrappers (x86-compatible names; works on ARM64 too via bcond_label_to)
+static size_t asm_jb_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_LO,
+#else
+                              X86_B,
+#endif
+                              label);
 }
 static size_t asm_jz_label_to(SecBuf *s, const char *label) {
-    size_t off = s->len;
-    x86_jcc_rel32(s, X86_Z, 0);
-    size_t count = s->len - off;
-    asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, X86_Z, -1, false);
-    return off;
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_EQ,
+#else
+                              X86_Z,
+#endif
+                              label);
 }
 static size_t asm_je_label_to(SecBuf *s, const char *label) {
-    size_t off = s->len;
-    x86_jcc_rel32(s, X86_E, 0);
-    size_t count = s->len - off;
-    asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, X86_E, -1, false);
-    return off;
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_EQ,
+#else
+                              X86_E,
+#endif
+                              label);
 }
 static size_t asm_ja_label_to(SecBuf *s, const char *label) {
-    size_t off = s->len;
-    x86_jcc_rel32(s, X86_A, 0);
-    size_t count = s->len - off;
-    asm_record(ASM_JCC, off, count, -1, -1, -1, 0, 0, 0, (char *)label, X86_A, -1, false);
-    return off;
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_HI,
+#else
+                              X86_A,
+#endif
+                              label);
 }
-#endif // !ARCH_ARM64
-
+static size_t asm_jg_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_GT,
+#else
+                              X86_G,
+#endif
+                              label);
+}
+static size_t asm_jl_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_LT,
+#else
+                              X86_L,
+#endif
+                              label);
+}
+static size_t asm_jbe_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_LS,
+#else
+                              X86_BE,
+#endif
+                              label);
+}
+static size_t asm_jle_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_LE,
+#else
+                              X86_LE,
+#endif
+                              label);
+}
+static size_t asm_jge_label_to(SecBuf *s, const char *label) {
+    return asm_bcond_label_to(s,
+#ifdef ARCH_ARM64
+                              ARM64_GE,
+#else
+                              X86_GE,
+#endif
+                              label);
+}
 
 static size_t asm_jmp_label(SecBuf *s) {
     size_t off = s->len;
@@ -3452,15 +3517,15 @@ static void asm_mov_mem8_rcx_rax(SecBuf *s) {
     X86Mem m = {X86_RCX, X86_NOREG, 1, 8};
     x86_mov_rm(s, 8, X86_RAX, m); // movq 8(%rcx), %rax
 }
-#endif // !ARCH_ARM64
-#ifndef ARCH_ARM64
 // adcq $0, 8(rd)  — add-with-carry 0 to high 64-bit (x86 encoding: REX.W 83 /2 ib)
 static void asm_adcq_mem8_0(SecBuf *s, VReg rd) {
     X86Reg r = REG(rd);
-    // REX.W + R bit for dst > 7
+    // REX.W + REX.B for reg > 7
     secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x01 : 0)));
-    secbuf_emit16le(s, 0x5083); // 83 /2 with disp8, mod=01 (/2 = reg field = 2<<3 = 0x10)
-    secbuf_emit8(s, (uint8_t)(8)); // disp8 = 8
+    secbuf_emit8(s, 0x83); // opcode 83 /2 ib (ADC r/m64, imm8)
+    // ModRM: mod=01 (disp8), reg=010 (/2 for ADC), r/m = r & 7
+    secbuf_emit8(s, (uint8_t)(0x50 | (r & 7))); // 0x40 | (2<<3) | (r&7)
+    secbuf_emit8(s, 8); // disp8 = 8
     secbuf_emit8(s, 0); // imm8 = 0
 }
 // adcq 8(rs), %rdx  — add-with-carry (x86: REX.W 13 /r)
@@ -3499,10 +3564,12 @@ static void asm_notq_rdx(SecBuf *s) {
 // mulq r{rs}  — unsigned multiply (x86: REX.W F7 /4)
 static void asm_mulq(SecBuf *s, VReg rs) {
     X86Reg r = REG(rs);
-    // mul r/m64: REX.W + F7 /4 (reg field = 4 << 3 = 0x20)
-    secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x04 : 0))); // REX.W + R
+    // mul r/m64: REX.W + F7 /4.  Operand in r/m field → needs REX.B, NOT REX.R!
+    // The original used 0x04 (REX.R) which extends the /4 opcode extension field,
+    // not the operand register.  Fixed to 0x01 (REX.B) which extends r/m.
+    secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x01 : 0))); // REX.W + REX.B
     secbuf_emit8(s, 0xF7);
-    secbuf_emit8(s, (uint8_t)(0xE0 | (r & 7))); // mod=11, reg=4, r/m=r&7
+    secbuf_emit8(s, (uint8_t)(0xE0 | (r & 7))); // mod=11, reg=4(/4), r/m=r&7
 }
 // imulq r{rs}, r{rd}  — signed multiply rd *= rs
 static void asm_imulq_reg_reg(SecBuf *s, VReg rd, VReg rs) {
@@ -3617,5 +3684,56 @@ static void asm_setcc_al(SecBuf *s, X86Cond cond) {
 
 // "xorl r, r" — zero a virtual register (already exists as asm_xor_reg_reg)
 // but also need the specific "xorl %s, %s" form for int128 compare epilogue
+
 #endif // !ARCH_ARM64
+
+// ============================================================================
+// x86-64: int128 helpers — store zero/hi-word to [addr+8]
+// ============================================================================
+#ifndef ARCH_ARM64
+// movq $0, 8(rd)  — store immediate 0 to virtual reg's high memory
+static void asm_movq_zero_mem8(SecBuf *s, VReg rd) {
+    X86Mem m = {REG(rd), X86_NOREG, 1, 8};
+    x86_mov_mi(s, 8, m, 0); // movq $0, 8(rd)
+}
+// movl $imm, reg  — move 32-bit immediate to virtual reg (for int128 compare epilogue)
+static void asm_movl_imm(SecBuf *s, VReg rd, int32_t imm) {
+    x86_mov_ri(s, 4, REG(rd), imm); // movl $imm, reg32
+}
+// addq %rsrc, 8(rd)  — add register to memory at [rd+8] (int128 multiply helper)
+// x86 encoding: REX.W + 01 /r  (ADD r/m64, r64)
+static void asm_add_reg_mem8(SecBuf *s, VReg rd, VReg rsrc) {
+    X86Reg r = REG(rd);
+    X86Reg src = REG(rsrc);
+    uint8_t rex = 0x48 | ((src & 8) ? 0x04 : 0) | ((r & 8) ? 0x01 : 0); // REX.W + R + B
+    secbuf_emit8(s, rex);
+    secbuf_emit8(s, 0x01); // ADD r/m64, r64
+    // ModRM: mod=01 (disp8), reg=src, r/m=base
+    secbuf_emit8(s, (uint8_t)(0x40 | ((src & 7) << 3) | (r & 7)));
+    secbuf_emit8(s, 8); // disp8 = 8
+}
+#endif
+
+// ============================================================================
+// ARM64: int128 helpers — ldp/stp for va_arg, fmov d0/x16 for float-to-int128
+// ============================================================================
+#ifdef ARCH_ARM64
+// fmov d0, x{rs}  — move GP int64 to d0 (for float-to-int128)
+static void asm_fmov_d0_x(SecBuf *s, VReg rs) {
+    arm64_fmov_i2f(s, 1, ARM64_D0, REG(rs)); // fmov d0, x{rs}
+}
+// fmov x{rd}, d0  — move d0 to GP int64 (for float-to-int128)
+static void asm_fmov_x_d0(SecBuf *s, VReg rd) {
+    arm64_fmov_f2i(s, 1, REG(rd), ARM64_D0); // fmov x{rd}, d0
+}
+// ldp x{t1}, x{t2}, [x{base}]  — load pair (va_arg helper)
+static void asm_ldp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
+    arm64_ldp(s, 1, REG(t1), REG(t2), REG(base), 0, false, false); // ldp x{t1}, x{t2}, [x{base}]
+}
+// stp x{t1}, x{t2}, [x{base}]  — store pair (va_arg helper)
+static void asm_stp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
+    arm64_stp(s, 1, REG(t1), REG(t2), REG(base), 0, false, false); // stp x{t1}, x{t2}, [x{base}]
+}
+#endif
+
 #endif // CODEGEN_ASM_H
