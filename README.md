@@ -72,10 +72,11 @@ rcc -O1 -time:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), unicode identifiers and strings, minimal `"wchar.h"`, inline, weak, gcc, enum and ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, \_\_int128.
 
-Not yet: complex, nested functions, C23, TLS, scalar_storage_order, trampolines,
-finstrument, vector_size.
+Not yet: complex, nested functions, C23, trampolines, finstrument, vector_size, remaining gcc builtins, custom clang compile-time warnings.
+
+Unplanned: scalar_storage_order
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
@@ -171,10 +172,19 @@ This fork passes now:
 - [155/155 tcc tests](test_report_arm64.md) on arm64-darwin native
 - [112/115 tcc tests](test_report_mingw.md) on windows native via powershell testing. (ps1 test artefacts)
 - The c-testsuite pass 220/220 tests on all platforms.
+- The ncc/compliance tests pass 15/15 tests on all platforms.
 - The old gcc-torture tests pass all on linux, mingw-cross and arm64-cross.
   On darwin it fails: fprintf-chk-1
-  New test fails in work (See GH #21)
-- The ncc/compliance tests pass 15/15 tests on all platforms.
+  New gcc torture test fails in work (See GH #21).
+  Failing: pr117432 pr19449 pr22061-3 pr22061-4 pr22098-1
+  pr22098-2 pr22098-3 pr23135 pr39228 pr41935 pr43784 pr44683 pr47237 pr51447 pr53084
+  pr53645-2 pr53645 pr57568 pr60960 pr65427 pr68249 pr70460 pr70903 pr71494
+  pr71626-2 pr77767 pr78622 pr80692 pr85169 pr85331 pr88739 pr98366 pr98474
+  simd-1 simd-2 struct-ini-4 va-arg-pack-1 wchar_t-1 widechar-2
+  fprintf-chk-1 pr20621-1 pr22061-1 pr32244-1 pr34971 pr39240
+  pr42269-2 pr44164 pr44852 pr58277-1 pr58943 pr60822 pr70127 pr78586 pr79327
+  pr82210 pr84169 pr85156 pr98727 printf-chk-1 string-opt-18 strlen-3 strlen-4
+  strlen-7 va-arg-22 vfprintf-1 vfprintf-chk-1 vprintf-1 vprintf-chk-1
 
 ## Old Known Limitations
 
