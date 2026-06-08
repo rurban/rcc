@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 
 char buf[256];
 char *pp;
@@ -26,15 +27,21 @@ int main(int argc, char **argv) {
         // Under the old code this emitted movsx reg64,reg64.
         unsigned char arr[7];
         char *p = (char *)arr;
-        // cast of the scalar array (decayed to pointer) to long
-        long l = (long)arr;
+        // cast of the scalar array (decayed to pointer) to a pointer-width
+        // integer.  Use int64_t/uint64_t rather than long/unsigned long: on
+        // LLP64 (Windows/mingw) long is only 32 bits, so casting a 64-bit
+        // stack address to it truncates and can yield a negative or zero
+        // value, making this check spuriously fail.  int64_t/uint64_t are
+        // 64 bits on both LP64 and LLP64, matching pointer width, so the
+        // cast is lossless.
+        int64_t l = (int64_t)arr;
         if (l <= 0)
             return 1;
         (void)p;
 
         // longer array — also non-integer size
         short arr2[3]; // size=6
-        unsigned long ul = (unsigned long)arr2;
+        uint64_t ul = (uint64_t)arr2;
         if (ul == 0)
             return 2;
     }
