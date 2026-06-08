@@ -7,7 +7,7 @@
 void abort (void);
 void exit (int);
 
-typedef int __attribute__((mode(SI))) __attribute__((vector_size (16))) vecint;
+typedef int __attribute__((mode(SI))) __attribute__((vector_size(16))) vecint;
 typedef int __attribute__((mode(SI))) siint;
 
 vecint i = { 150, 100, 150, 200 };

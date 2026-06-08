@@ -209,13 +209,20 @@ foreach ($file in $TestFiles) {
         $inGrepDir = $true
     }
 
+    # Some tests deliberately exit with a non-zero status (e.g. 101_cleanup
+    # returns 105 from main); mirror run_tcc_suite.sh's test_expected_exit().
+    $expectedExit = switch ($base) {
+        "101_cleanup" { 105 }
+        default       { 0 }
+    }
+
     $execFailed = $false
     $execFailMsg = ""
     try {
         $actualOutput = & $exe @ExtraArgs 2>&1 | Out-String
-        # Non-zero exit code means the test program itself crashed/failed.
+        # Unexpected exit code means the test program itself crashed/failed.
         # & $exe never throws for non-zero exit; check $LASTEXITCODE explicitly.
-        if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -ne $expectedExit) {
             $execFailed = $true
             $execFailMsg = "exited with code $LASTEXITCODE"
         }

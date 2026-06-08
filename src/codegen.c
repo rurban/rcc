@@ -10138,7 +10138,19 @@ void codegen(Program *prog) {
             if (callee_mask & (1 << j))
                 printf("  push %s\n", reg64[j + 2]);
         }
-        printf("  subq $%d, %%rsp\n", sub_amount);
+#ifdef _WIN32
+        // Windows requires probing the stack one page at a time when growing
+        // it by more than a page: a single large `sub %rsp` can jump over the
+        // guard page straight into unmapped memory and fault with
+        // STATUS_ACCESS_VIOLATION instead of growing the stack. mingw-w64
+        // (and MSVC) call ___chkstk_ms / __chkstk to touch each page in turn.
+        if (sub_amount >= 4096) {
+            printf("  movl $%d, %%eax\n", sub_amount);
+            printf("  call ___chkstk_ms\n");
+            printf("  subq %%rax, %%rsp\n");
+        } else
+#endif
+            printf("  subq $%d, %%rsp\n", sub_amount);
 
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)) {
             int retbuf_offset = 0;

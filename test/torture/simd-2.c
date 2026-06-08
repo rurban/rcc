@@ -1,4 +1,4 @@
-/* 
+/*
    Purpose: Test generic SIMD support, V8HImode.  This test should work
    regardless of if the target has SIMD instructions.
 */
@@ -6,7 +6,7 @@
 void abort (void);
 void exit (int);
 
-typedef short __attribute__((vector_size (16))) vecint;
+typedef short __attribute__((vector_size(16))) vecint;
 
 vecint i = { 150, 100, 150, 200, 0, 0, 0, 0 };
 vecint j = { 10, 13, 20, 30, 1, 1, 1, 1 };

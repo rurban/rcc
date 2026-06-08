@@ -217,8 +217,16 @@ fi
 
 run_exe() {
 	if [ -n "$RUN_PREFIX" ]; then
+		# Wine's RPC/wineserver pipe handshake can stall under load
+		# (rpcrt4_protseq_np_get_wait_array pipe listen errors), causing
+		# otherwise-correct programs to hit the timeout intermittently.
+		# Give wine more headroom than other run prefixes (qemu etc).
+		case "$RUN_PREFIX" in
+			wine*) run_timeout=20s ;;
+			*) run_timeout=5s ;;
+		esac
 		# shellcheck disable=SC2086
-		timeout 5s $RUN_PREFIX "$@"
+		timeout $run_timeout $RUN_PREFIX "$@"
 	else
 		"$@"
 	fi

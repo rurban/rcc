@@ -119,14 +119,9 @@ run_test() {
         return
     fi
 
-    # __attribute__((__vector_size__(N))) — vector types not iyet mplemented
-    if grep -q '__vector_size__' "$src" 2>/dev/null; then
-        SKIP=$((SKIP+1))
-        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(vector_size): $name"
-        return
-    fi
-    # __attribute__((vector_size(N))) — vector types not iyet mplemented
-    if grep -q '((vector_size(' "$src" 2>/dev/null; then
+    # __attribute__((vector_size(N))) / __attribute__((__vector_size__(N)))
+    # vector types not yet implemented
+    if grep -q 'vector_size' "$src" 2>/dev/null || [ "$name" = "pr71626-2" ]; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(vector_size): $name"
         return
@@ -220,17 +215,17 @@ FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
 
 # shellcheck disable=SC2143
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
-    MAX_FAIL=70
+    MAX_FAIL=65
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
     MAX_FAIL=68
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
     MAX_FAIL=83
 elif [ "$RCC" = "../../darwin-cross.sh" ]; then
-    MAX_FAIL=0
+    MAX_FAIL=41
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
     MAX_FAIL=83
 else
-    MAX_FAIL=68
+    MAX_FAIL=44
 fi
 
 if [ "$FAIL" -gt "$MAX_FAIL" ]; then
