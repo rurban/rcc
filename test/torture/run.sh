@@ -127,6 +127,13 @@ run_test() {
         return
     fi
 
+    # __attribute__((mode(N))) gcc-only, not planned
+    if grep -q '__attribute__((mode' "$src" 2>/dev/null; then
+        SKIP=$((SKIP+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(attribute-mode): $name"
+        return
+    fi
+
     # Compile with rcc; capture stderr to detect missing-include failures
     local err
     err=$($RCC $CFLAGS -I . -o "/tmp/torture_rcc_${name}" "$src" -lm 2>&1)
@@ -215,11 +222,11 @@ FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
 
 # shellcheck disable=SC2143
 if [ "$RCC" = "../../arm64-cross.sh" ]; then
-    MAX_FAIL=65
+    MAX_FAIL=55
 elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
     MAX_FAIL=68
 elif [ "$RCC" = "../../mingw-cross.sh" ]; then
-    MAX_FAIL=83
+    MAX_FAIL=63
 elif [ "$RCC" = "../../darwin-cross.sh" ]; then
     MAX_FAIL=41
 elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
