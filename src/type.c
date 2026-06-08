@@ -134,6 +134,19 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
 
 static void add_type_internal(Node *node);
 
+// Some __builtin_* functions are recognized by name in codegen and emit
+// values of a specific width/signedness regardless of the (absent) prototype,
+// which would otherwise default to plain `int`. Report their true return
+// types here so that e.g. ND_RETURN doesn't mis-truncate/sign-extend a
+// 64-bit __builtin_bswap64 result down to 32 bits.
+static Type *builtin_return_type(const char *name) {
+    if (!name) return NULL;
+    if (strcmp(name, "__builtin_bswap16") == 0) return ty_ushort;
+    if (strcmp(name, "__builtin_bswap32") == 0) return ty_uint;
+    if (strcmp(name, "__builtin_bswap64") == 0) return ty_ullong;
+    return NULL;
+}
+
 static void insert_arith_cast(Node **operand, Type *to) {
     Node *cast = arena_alloc(sizeof(Node));
     cast->kind = ND_CAST;
@@ -342,6 +355,8 @@ static void add_type_internal(Node *node) {
         return;
     case ND_POST_INC:
     case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC:
         node->ty = node->lhs->ty;
         return;
     case ND_COND: {
@@ -466,7 +481,9 @@ static void add_type_internal(Node *node) {
         node->ty = integer_promotion(node->lhs->ty);
         return;
     case ND_FUNCALL:
-        if (node->lhs && node->lhs->ty) {
+        if (node->funcname && builtin_return_type(node->funcname)) {
+            node->ty = builtin_return_type(node->funcname);
+        } else if (node->lhs && node->lhs->ty) {
             if (node->lhs->ty->kind == TY_PTR &&
                 node->lhs->ty->base && node->lhs->ty->base->kind == TY_FUNC) {
                 node->ty = node->lhs->ty->base->return_ty;

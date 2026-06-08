@@ -1901,7 +1901,7 @@ char *preprocess(char *filename, char *p) {
         define_pre("__unix__", "1");
         define_pre("__LP64__", "1");
 #endif
-        define_macro("__builtin_expect", true, builtin_expect_params, 2, "x");
+        define_macro("__builtin_expect", true, builtin_expect_params, 2, "((void)(y),(x))");
         define_pre("__builtin_abort", "abort");
         define_pre("__builtin_malloc", "malloc");
         define_pre("__builtin_calloc", "calloc");
@@ -1963,7 +1963,7 @@ char *preprocess(char *filename, char *p) {
 #endif
         define_pre("__INT128_TYPE__", "__int128");
         define_pre("__UINT128_TYPE__", "unsigned __int128");
-        define_macro("__builtin_expect", true, builtin_expect_params, 2, "x");
+        define_macro("__builtin_expect", true, builtin_expect_params, 2, "((void)(y),(x))");
         /* those are detected and replaced by builtins. TODO: vice-versa */
         define_pre("__builtin_memcpy", "memcpy");
         define_pre("__builtin_memcmp", "memcmp");

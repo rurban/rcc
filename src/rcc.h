@@ -285,6 +285,8 @@ typedef enum {
     ND_ASSIGN, // =
     ND_POST_INC, // postfix ++
     ND_POST_DEC, // postfix --
+    ND_PRE_INC, // prefix ++
+    ND_PRE_DEC, // prefix --
     ND_ADDR, // &
     ND_DEREF, // *
     ND_CAST, // cast

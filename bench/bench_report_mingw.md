@@ -1,21 +1,21 @@
 # Windows RCC Benchmark Results
 
-_Generated: 06/06/2026 09:46:28_
+_Generated: 06/08/2026 11:23:13_
 
 | Compiler              | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------------------- | -----------: | -----------: | ---------: |
-| RCC (your compiler)   |         3093 |          740 |       3833 |
-| RCC -O1 (optimized)   |         1253 |          739 |       1992 |
-| TCC (Tiny C Compiler) |         1260 |          496 |       1756 |
-| GCC -O0 (no opt)      |         1257 |          471 |       1728 |
-| GCC -O2 (optimized)   |         1253 |          119 |       1372 |
-| CLANG -O2 (optimized) |         1257 |          188 |       1445 |
+| RCC (your compiler)   |         3814 |          607 |       4421 |
+| RCC -O1 (optimized)   |         1256 |          609 |       1865 |
+| TCC (Tiny C Compiler) |         1285 |          437 |       1722 |
+| GCC -O0 (no opt)      |         1282 |          419 |       1701 |
+| GCC -O2 (optimized)   |         1260 |          117 |       1377 |
+| CLANG -O2 (optimized) |         1256 |          170 |       1426 |
 
 ## Windows RCC vs TCC Head-to-Head
 
-- Compile speed : RCC/TCC = 2.45x
-- Execute speed : RCC/TCC = 1.49x
-- Total : RCC/TCC = 2.18x
+- Compile speed : RCC/TCC = 2.97x
+- Execute speed : RCC/TCC = 1.39x
+- Total : RCC/TCC = 2.57x
 
 ## Output Correctness
 

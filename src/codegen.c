@@ -4608,6 +4608,55 @@ static int gen_int128(Node *node) {
         return addr;
     }
 #endif
+    case ND_POST_INC:
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC: {
+        bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
+        bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
+        int lhs_a = gen_addr(node->lhs);
+        int old_addr = is_pre ? -1 : alloc_int128_addr();
+#ifdef ARCH_ARM64
+        int t1 = alloc_reg(), t2 = alloc_reg();
+        printf("  ldr %s, [%s]\n", reg64[t1], reg64[lhs_a]);
+        printf("  ldr %s, [%s, #8]\n", reg64[t2], reg64[lhs_a]);
+        if (!is_pre) {
+            printf("  str %s, [%s]\n", reg64[t1], reg64[old_addr]);
+            printf("  str %s, [%s, #8]\n", reg64[t2], reg64[old_addr]);
+        }
+        if (is_inc) {
+            printf("  adds %s, %s, #1\n", reg64[t1], reg64[t1]);
+            printf("  adc %s, %s, xzr\n", reg64[t2], reg64[t2]);
+        } else {
+            printf("  subs %s, %s, #1\n", reg64[t1], reg64[t1]);
+            printf("  sbc %s, %s, xzr\n", reg64[t2], reg64[t2]);
+        }
+        printf("  str %s, [%s]\n", reg64[t1], reg64[lhs_a]);
+        printf("  str %s, [%s, #8]\n", reg64[t2], reg64[lhs_a]);
+        free_reg(t1);
+        free_reg(t2);
+#else
+        printf("  movq (%s), %%rax\n", reg64[lhs_a]);
+        printf("  movq 8(%s), %%rdx\n", reg64[lhs_a]);
+        if (!is_pre) {
+            printf("  movq %%rax, (%s)\n", reg64[old_addr]);
+            printf("  movq %%rdx, 8(%s)\n", reg64[old_addr]);
+        }
+        if (is_inc) {
+            printf("  addq $1, %%rax\n");
+            printf("  adcq $0, %%rdx\n");
+        } else {
+            printf("  subq $1, %%rax\n");
+            printf("  sbbq $0, %%rdx\n");
+        }
+        printf("  movq %%rax, (%s)\n", reg64[lhs_a]);
+        printf("  movq %%rdx, 8(%s)\n", reg64[lhs_a]);
+#endif
+        if (is_pre)
+            return lhs_a;
+        free_reg(lhs_a);
+        return old_addr;
+    }
     default:
         error("int128: unsupported node kind %d", node->kind);
         return -1;
@@ -5480,7 +5529,11 @@ static int gen(Node *node) {
         return -1;
     }
     case ND_POST_INC:
-    case ND_POST_DEC: {
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC: {
+        bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
+        bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
         int r = gen_addr(node->lhs);
         int r2 = alloc_reg();
         int sz = node->lhs->ty->size;
@@ -5522,17 +5575,34 @@ static int gen(Node *node) {
             // Clear the field bits in container word (r2)
             emit_mov_imm64("x16", ~mask);
             printf("  and %s, %s, x16\n", reg64[r2], reg64[r2]);
-            // Compute new field value in rn
+            // Compute new field value (masked, unshifted) in rn
             int rn = alloc_reg();
             printf("  mov %s, %s\n", reg64[rn], reg64[r3]);
             emit_mov_imm64("x16", (1ULL << bw) - 1);
             printf("  and %s, %s, x16\n", reg64[rn], reg64[rn]);
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 printf("  add %s, %s, #1\n", reg64[rn], reg64[rn]);
             else
                 printf("  sub %s, %s, #1\n", reg64[rn], reg64[rn]);
             emit_mov_imm64("x16", (1ULL << bw) - 1);
             printf("  and %s, %s, x16\n", reg64[rn], reg64[rn]);
+            // For prefix forms, sign/zero-extend the new field value the same
+            // way the original was extended into r3 (the field wraps within
+            // its bit width, so this must happen post-mask, not post-add).
+            int r4 = -1;
+            if (is_pre) {
+                r4 = alloc_reg();
+                printf("  mov %s, %s\n", reg64[r4], reg64[rn]);
+                if (bw < load_bits) {
+                    if (mem->ty->is_unsigned || mem->ty->is_enum) {
+                        // already masked to bw bits
+                    } else {
+                        int shift = 64 - bw;
+                        printf("  lsl %s, %s, #%d\n", reg64[r4], reg64[r4], shift);
+                        printf("  asr %s, %s, #%d\n", reg64[r4], reg64[r4], shift);
+                    }
+                }
+            }
             if (bo > 0)
                 printf("  lsl %s, %s, #%d\n", reg64[rn], reg64[rn], bo);
             printf("  orr %s, %s, %s\n", reg64[r2], reg64[r2], reg64[rn]);
@@ -5580,12 +5650,34 @@ static int gen(Node *node) {
             printf("  mov %s, %s\n", reg64[r3], reg64[rn]);
             printf("  movabsq $%llu, %%rax\n", (1ULL << bw) - 1);
             printf("  andq %%rax, %s\n", reg64[rn]); // mask to unsigned bw bits
-            if (node->kind == ND_POST_INC)
-                printf("  add $1, %s\n", reg(rn, 4));
+            // Use the full 64-bit register: bitfields can be wider than 32
+            // bits (e.g. `unsigned long long x : 40`), and the subsequent
+            // mask handles wraparound, so a narrower op would corrupt bits.
+            if (is_inc)
+                printf("  add $1, %s\n", reg64[rn]);
             else
-                printf("  sub $1, %s\n", reg(rn, 4));
+                printf("  sub $1, %s\n", reg64[rn]);
             printf("  movabsq $%llu, %%rax\n", (1ULL << bw) - 1);
             printf("  andq %%rax, %s\n", reg64[rn]); // wrap around in field
+            // For prefix forms, sign/zero-extend the new field value the same
+            // way the original was extended into r3 (the field wraps within
+            // its bit width, so this must happen post-mask, not post-add).
+            int r4 = -1;
+            if (is_pre) {
+                r4 = alloc_reg();
+                printf("  mov %s, %s\n", reg64[rn], reg64[r4]);
+                if (bw < load_bits) {
+                    if (mem->ty->is_unsigned || mem->ty->is_enum) {
+                        unsigned long long m = (1ULL << bw) - 1;
+                        printf("  movabsq $%llu, %%rax\n", m);
+                        printf("  andq %%rax, %s\n", reg64[r4]);
+                    } else {
+                        int shift = 64 - bw;
+                        printf("  shl $%d, %s\n", shift, reg64[r4]);
+                        printf("  sar $%d, %s\n", shift, reg64[r4]);
+                    }
+                }
+            }
             if (bo > 0)
                 printf("  shl $%d, %s\n", bo, reg64[rn]);
             printf("  or %s, %s\n", reg64[rn], reg64[r2]);
@@ -5600,9 +5692,14 @@ static int gen(Node *node) {
                 printf("  movq %s, (%s)\n", reg64[r2], reg64[r]);
 #endif
             free_reg(rn);
-            free_reg(r3);
             free_reg(r2);
             free_reg(r);
+            if (is_pre) {
+                free_reg(r3);
+                return r4; // Return new value (prefix semantics)
+            }
+            if (r4 != -1)
+                free_reg(r4);
             return r3; // Return original value (post-increment semantics)
         }
 #ifdef ARCH_ARM64
@@ -5618,38 +5715,49 @@ static int gen(Node *node) {
                 printf("  fmov s0, %s\n", reg(r3, 4));
                 emit_adrp_add("x16", format(".LF%d", id));
                 printf("  ldr s1, [x16]\n");
-                printf("  %s s0, s0, s1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  %s s0, s0, s1\n", is_inc ? "fadd" : "fsub");
                 printf("  fmov %s, s0\n", reg(r3, 4));
             } else {
                 printf("  fmov d0, %s\n", reg64[r3]);
                 emit_adrp_add("x16", format(".LF%d", id));
                 printf("  ldr d1, [x16]\n");
-                printf("  %s d0, d0, d1\n", node->kind == ND_POST_INC ? "fadd" : "fsub");
+                printf("  %s d0, d0, d1\n", is_inc ? "fadd" : "fsub");
                 printf("  fmov %s, d0\n", reg64[r3]);
             }
         } else {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
                 delta = node->lhs->ty->base->size;
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 printf("  add %s, %s, #%d\n", reg(r3, sz), reg(r3, sz), delta);
             else
                 printf("  sub %s, %s, #%d\n", reg(r3, sz), reg(r3, sz), delta);
         }
         emit_store(node->lhs->ty, r3, format("[%s]", reg64[r]));
-        free_reg(r3);
+        // r3 already holds the new value; r2 holds the original. Return
+        // whichever the prefix/postfix semantics require and free the other.
+        if (is_pre) {
+            free_reg(r2);
+            r2 = r3;
+        } else {
+            free_reg(r3);
+        }
 #else
-        printf("  mov (%s), %s\n", reg64[r], reg(r2, sz));
+        // Sign/zero-extend narrow loads into the full register — rcc keeps
+        // sub-int values extended in their register, and a plain narrow `mov`
+        // would leave garbage in the upper bits, breaking direct uses of the
+        // result (e.g. `x-- < 0` or `--x < 0`).
+        emit_load(node->lhs->ty, r2, format("(%s)", reg64[r]));
         bool is_float = is_flonum(node->lhs->ty);
         if (is_float) {
             int id = add_float_literal(1.0, sz);
             printf("  movq %s, %%xmm0\n", reg64[r2]);
             if (sz == 4)
                 printf("  %s .LF%d(%%rip), %%xmm0\n",
-                       node->kind == ND_POST_INC ? "addss" : "subss", id);
+                       is_inc ? "addss" : "subss", id);
             else
                 printf("  %s .LF%d(%%rip), %%xmm0\n",
-                       node->kind == ND_POST_INC ? "addsd" : "subsd", id);
+                       is_inc ? "addsd" : "subsd", id);
             if (sz == 4)
                 printf("  movss %%xmm0, (%s)\n", reg64[r]);
             else
@@ -5659,11 +5767,15 @@ static int gen(Node *node) {
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
                 delta = node->lhs->ty->base->size;
             char sc = size_suffix(sz);
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 printf("  add%c $%d, (%s)\n", sc, delta, reg64[r]);
             else
                 printf("  sub%c $%d, (%s)\n", sc, delta, reg64[r]);
         }
+        // The new value lives only in memory now (computed in-place); for
+        // prefix semantics, reload it (sign/zero-extended) into r2.
+        if (is_pre)
+            emit_load(node->lhs->ty, r2, format("(%s)", reg64[r]));
 #endif
         free_reg(r);
         return r2;
@@ -6183,6 +6295,17 @@ static int gen(Node *node) {
                     printf("  movq %s, %%rax\n", reg64[r]); // upper 32 bits zero-extended by cvttsd2si
 #endif
                 } else {
+                    // Widen the returned expression to the return type's width
+                    // first (e.g. `long foo() { return -1; }` returns an `int`
+                    // expression that must be sign-extended to 64 bits, not
+                    // left with garbage/zero bits in the upper 32).
+                    Type *src_ty = node->lhs->ty;
+                    if (ret_ty && src_ty && is_integer(src_ty) && ret_ty->size > src_ty->size && src_ty->size < 8) {
+                        if (src_ty->is_unsigned)
+                            zero_extend_to(r, src_ty->size, ret_ty->size);
+                        else
+                            sign_extend_to(r, src_ty->size, ret_ty->size);
+                    }
 #ifdef ARCH_ARM64
                     // Truncate return value to match function return type width
                     if (ret_ty && ret_ty->size < 4) {
@@ -6198,8 +6321,14 @@ static int gen(Node *node) {
 #else
                     printf("  movq %s, %%rax\n", reg64[r]);
                     // Truncate return value to match function return type width
-                    if (ret_ty && ret_ty->size < 4 && ret_ty->is_unsigned)
-                        printf("  andl $%d, %%eax\n", (1 << (ret_ty->size * 8)) - 1);
+                    if (ret_ty && ret_ty->size < 4) {
+                        if (ret_ty->is_unsigned)
+                            printf("  andl $%d, %%eax\n", (1 << (ret_ty->size * 8)) - 1);
+                        else if (ret_ty->size == 1)
+                            printf("  movsbl %%al, %%eax\n");
+                        else
+                            printf("  movswl %%ax, %%eax\n");
+                    }
 #endif
                 }
                 free_reg(r);
@@ -7366,7 +7495,7 @@ static int gen(Node *node) {
         int rs = gen(node->rhs);
         int rpop = alloc_reg();
         printf("  pop %s\n", reg64[rpop]);
-        printf("  movq %s, %%rcx\n", reg64[rs]);
+        printf("  movq (%s), %%rcx\n", reg64[rs]);
         printf("  movq %%rcx, (%s)\n", reg64[rpop]);
         printf("  movq 8(%s), %%rcx\n", reg64[rs]);
         printf("  movq %%rcx, 8(%s)\n", reg64[rpop]);
@@ -7508,7 +7637,24 @@ static int gen(Node *node) {
             printf("  movq %%rcx, %s\n", reg64[r]); // result = old ap (slot addr)
         }
 #else
-        if (is_fp) {
+        if (ty->kind == TY_LDOUBLE) {
+            // long double (80-bit extended in a 16-byte slot) is classified
+            // as MEMORY by the x86-64 SysV ABI and is never passed in SSE
+            // registers, even for variadic calls — read it straight from the
+            // overflow area, 16-byte aligned, and advance by 16. The slot
+            // holds an x87 80-bit extended value; rcc's long double is
+            // truncated to a 64-bit double everywhere else, so convert it
+            // in place (the slot is dead after this read) and hand back a
+            // pointer to the resulting double.
+            printf("  movq 8(%s), %%rcx\n", reg64[r]);
+            printf("  addq $15, %%rcx\n");
+            printf("  andq $-16, %%rcx\n");
+            printf("  leaq 16(%%rcx), %%rdx\n");
+            printf("  movq %%rdx, 8(%s)\n", reg64[r]);
+            printf("  fldt (%%rcx)\n");
+            printf("  fstpl (%%rcx)\n");
+            printf("  jmp .L.va_done.%d\n", rcc_label_count);
+        } else if (is_fp) {
             printf("  cmpl $160, 4(%s)\n", reg64[r]);
             printf("  ja .L.va_overflow.%d\n", rcc_label_count);
             printf("  movl 4(%s), %%ecx\n", reg64[r]);

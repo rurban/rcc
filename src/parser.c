@@ -2341,7 +2341,7 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // String literal for char array
     if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR) {
-        int len = strlen(tok->str) + 1;
+        int len = tok->len + 1; // include embedded NULs and the terminator
         if (ty->size > 0 && len > ty->size) len = ty->size;
         ensure_init_size(var, offset, len);
         memcpy(var->init_data + offset, tok->str, len);
@@ -4549,13 +4549,16 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         Node *lhs = unary(&tok, tok->next);
         *rest = tok;
-        return new_binary(ND_ASSIGN, lhs, new_binary(ND_ADD, lhs, new_num(1, start), start), start);
+        // Must compute the operand's lvalue address only once: `++*p++` would
+        // otherwise re-run the side-effecting `p++` if desugared to
+        // `lhs = lhs + 1`.
+        return new_unary(ND_PRE_INC, lhs, start);
     }
     if (equalc(tok, "--")) {
         Token *start = tok;
         Node *lhs = unary(&tok, tok->next);
         *rest = tok;
-        return new_binary(ND_ASSIGN, lhs, new_binary(ND_SUB, lhs, new_num(1, start), start), start);
+        return new_unary(ND_PRE_DEC, lhs, start);
     }
     if (equalc(tok, "+"))
         return unary(rest, tok->next);
@@ -5220,7 +5223,7 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 static void global_initializer(Token **rest, Token *tok, LVar *var) {
     if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR) {
         var->init_data = tok->str;
-        var->init_size = strlen(tok->str) + 1;
+        var->init_size = tok->len + 1; // include embedded NULs and the terminator
         *rest = tok->next;
         return;
     }
