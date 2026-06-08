@@ -5494,26 +5494,28 @@ static int gen(Node *node) {
     }
     case ND_ZERO_INIT: {
         // Zero-fill a local variable's stack memory
+        // Use x16/x17 (IP0/IP1) as scratch — never in the allocatable pool,
+        // so safe to clobber even when called within expression chains (ND_COMMA).
         LVar *var = node->lhs->var;
         if (!var || !var->is_local || var->ty->size <= 0) return -1;
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         if (var->offset <= 4095) {
-            printf("  sub x11, %s, #%d\n", FRAME_PTR, var->offset);
+            printf("  sub x16, %s, #%d\n", FRAME_PTR, var->offset);
         } else {
             emit_mov_imm64("x16", (uint64_t)var->offset);
-            printf("  sub x11, %s, x16\n", FRAME_PTR);
+            printf("  sub x16, %s, x16\n", FRAME_PTR);
         }
         if (var->ty->size <= 4095) {
-            printf("  mov x9, #%d\n", var->ty->size);
+            printf("  mov x17, #%d\n", var->ty->size);
         } else {
-            emit_mov_imm64("x9", (uint64_t)var->ty->size);
+            emit_mov_imm64("x17", (uint64_t)var->ty->size);
         }
         printf(".L.zero.%d:\n", c);
-        printf("  cmp x9, #0\n");
+        printf("  cmp x17, #0\n");
         printf("  b.eq .L.zero_end.%d\n", c);
-        printf("  sub x9, x9, #1\n");
-        printf("  strb wzr, [x11, x9]\n");
+        printf("  sub x17, x17, #1\n");
+        printf("  strb wzr, [x16, x17]\n");
         printf("  b .L.zero.%d\n", c);
         printf(".L.zero_end.%d:\n", c);
 #else
@@ -9985,7 +9987,6 @@ void codegen(Program *prog) {
         }
         body_text[body_len] = '\0';
         fclose(body_file);
-
         // Emit body with peephole optimization
         {
             uint64_t _t0 = opt_time ? cg_now_us() : 0;

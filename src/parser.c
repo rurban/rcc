@@ -4684,6 +4684,14 @@ static Node *unary(Token **rest, Token *tok) {
             LVar *var = new_var(name, ty, true);
 
             Node *result = new_var_node(var, start);
+            // Zero-initialize aggregate compound literal like regular locals (C99 6.7.8p10)
+            if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION ||
+                 var->ty->kind == TY_ARRAY) &&
+                var->ty->size > 0) {
+                Node *zinit = new_node(ND_ZERO_INIT, start);
+                zinit->lhs = new_var_node(var, start);
+                result = new_binary(ND_COMMA, zinit, result, start);
+            }
 
             if (ty->kind == TY_ARRAY && ty->base) {
                 // Array compound literal: assign each element
