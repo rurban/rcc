@@ -3388,6 +3388,33 @@ static bool try_const_int(Node *n, int64_t *val) {
 }
 #endif // ARCH_ARM64
 
+#if !defined(ARCH_ARM64) && (defined(_WIN32) || defined(__APPLE__))
+// __r10/__r11 (reg64[0]/reg64[1]) are volatile across calls per the x86_64 ABI.
+// Internal helper calls (e.g. __emutls_get_address, TLV thunks) clobber them
+// just like ordinary calls, so any live value held there — other than the
+// register `keep` which the caller is about to overwrite — must be spilled
+// across the call.  Mirrors the save/restore dance in gen_funcall.
+static int save_volatile_scratch(int keep) {
+    int saved = used_regs & 3 & ~(1 << keep);
+    if (saved & 1)
+        printf("  movq %%r10, -%d(%%rbp)\n", spill_offset(0));
+    if (saved & 2)
+        printf("  movq %%r11, -%d(%%rbp)\n", spill_offset(1));
+    return saved;
+}
+
+static void restore_volatile_scratch(int saved) {
+    if (saved & 2) {
+        used_regs |= 2;
+        printf("  movq -%d(%%rbp), %%r11\n", spill_offset(1));
+    }
+    if (saved & 1) {
+        used_regs |= 1;
+        printf("  movq -%d(%%rbp), %%r10\n", spill_offset(0));
+    }
+}
+#endif
+
 // Emit code to load the address of a global variable into reg r.
 // Handles TLS (%fs:-relative), GOT (PIC), and direct RIP-relative addressing.
 // Note: ARM64 uses inline address computation at call sites instead.
@@ -3403,19 +3430,23 @@ static void emit_global_addr(int r, LVar *var) {
     if (var->is_tls) {
 #ifdef _WIN32
         // Windows/MinGW: __emutls emulated TLS
+        int saved = save_volatile_scratch(r);
         int tmp = alloc_reg();
         printf("  leaq __emutls_v.%s(%%rip), %s\n", var_label(var), reg64[tmp]);
         printf("  movq %s, %%rcx\n", reg64[tmp]);
         free_reg(tmp);
         printf("  call __emutls_get_address\n");
+        restore_volatile_scratch(saved);
         printf("  movq %%rax, %s\n", reg64[r]);
 #elif defined(__APPLE__)
         // Darwin: TLV descriptor
+        int saved = save_volatile_scratch(r);
         int base = alloc_reg();
         printf("  movq ___tlv_bootstrap@GOTPCREL(%%rip), %s\n", reg64[base]);
         printf("  leaq %s(%%rip), %%rdi\n", var_label(var));
         printf("  call *(%s)\n", reg64[base]);
         free_reg(base);
+        restore_volatile_scratch(saved);
         printf("  movq %%rax, %s\n", reg64[r]);
 #else
         // Linux: Local Exec model
