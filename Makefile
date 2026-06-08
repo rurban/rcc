@@ -105,39 +105,81 @@ $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 
 src/sysinc_paths.h: FORCE
-	@tmp=$$(mktemp); \
+	@tmp=$$(mktemp); out=$$(mktemp); plat=$$(mktemp); \
+	$(CC) -dM -E - < /dev/null > $$plat; \
+	if grep -q '__APPLE__' $$plat; then \
+		echo '#ifndef __APPLE__' > $$out; \
+		echo '#error "sysinc_paths.h generated for Apple"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '_WIN32' $$plat; then \
+		echo '#ifndef _WIN32' > $$out; \
+		echo '#error "sysinc_paths.h generated for Windows"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '__linux__' $$plat; then \
+		echo '#ifndef __linux__' > $$out; \
+		echo '#error "sysinc_paths.h generated for Linux"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '__FreeBSD__' $$plat; then \
+		echo '#ifndef __FreeBSD__' > $$out; \
+		echo '#error "sysinc_paths.h generated for FreeBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '__OpenBSD__' $$plat; then \
+		echo '#ifndef __OpenBSD__' > $$out; \
+		echo '#error "sysinc_paths.h generated for OpenBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '__NetBSD__' $$plat; then \
+		echo '#ifndef __NetBSD__' > $$out; \
+		echo '#error "sysinc_paths.h generated for NetBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
+	elif grep -q '__DragonFly__' $$plat; then \
+		echo '#ifndef __DragonFly__' > $$out; \
+		echo '#error "sysinc_paths.h generated for DragonFly BSD"' >> $$out; \
+		echo '#endif' >> $$out; \
+	fi; \
 	RCC_CC="$(CC)"; \
 	if [ "$(CC)" = "aarch64-linux-gnu-gcc" ] || [ -n "$(ARM64_SYSROOT)" ]; then \
-		./tools/get-sysinc-paths.sh "$(CC) --sysroot=$(ARM64_SYSROOT)" > $$tmp; \
+		./tools/get-sysinc-paths.sh "$(CC) --sysroot=$(ARM64_SYSROOT)" >> $$out; \
 	else \
-		./tools/get-sysinc-paths.sh $(CC) > $$tmp; \
+		./tools/get-sysinc-paths.sh $(CC) >> $$out; \
 	fi; \
-	if [ -f $@ ] && cmp -s $$tmp $@; then rm -f $$tmp; else mv $$tmp $@; fi
+	rm -f $$plat; \
+	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
 src/gcc_predefined.h: FORCE
 	@tmp=$$(mktemp); out=$$(mktemp); \
 	$(CC) -dM -E - < /dev/null > $$tmp; \
 	if grep -q '__APPLE__' $$tmp; then \
-		echo '#ifdef __APPLE__' > $$out; \
+		echo '#ifndef __APPLE__' > $$out; \
+		echo '#error "gcc_predefined.h generated for Apple"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '_WIN32' $$tmp; then \
-		echo '#ifdef _WIN32' > $$out; \
+		echo '#ifndef _WIN32' > $$out; \
+		echo '#error "gcc_predefined.h generated for Windows"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '__linux__' $$tmp; then \
-		echo '#ifdef __linux__' > $$out; \
+		echo '#ifndef __linux__' > $$out; \
+		echo '#error "gcc_predefined.h generated for Linux"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '__FreeBSD__' $$tmp; then \
-		echo '#ifdef __FreeBSD__' > $$out; \
+		echo '#ifndef __FreeBSD__' > $$out; \
+		echo '#error "gcc_predefined.h generated for FreeBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '__OpenBSD__' $$tmp; then \
-		echo '#ifdef __OpenBSD__' > $$out; \
+		echo '#ifndef __OpenBSD__' > $$out; \
+		echo '#error "gcc_predefined.h generated for OpenBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '__NetBSD__' $$tmp; then \
-		echo '#ifdef __NetBSD__' > $$out; \
+		echo '#ifndef __NetBSD__' > $$out; \
+		echo '#error "gcc_predefined.h generated for NetBSD"' >> $$out; \
+		echo '#endif' >> $$out; \
 	elif grep -q '__DragonFly__' $$tmp; then \
-		echo '#ifdef __DragonFly__' > $$out; \
+		echo '#ifndef __DragonFly__' > $$out; \
+		echo '#error "gcc_predefined.h generated for DragonFly BSD"' >> $$out; \
+		echo '#endif' >> $$out; \
 	else \
 		: > $$out; \
 	fi; \
 	awk -f tools/get-gcc-predefined.awk $$tmp >> $$out; \
-	if grep -qE '__APPLE__|_WIN32|__linux__|__FreeBSD__|__OpenBSD__|__NetBSD__|__DragonFly__' $$tmp; then \
-		echo '#endif' >> $$out; \
-	fi; \
 	rm -f $$tmp; \
 	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 

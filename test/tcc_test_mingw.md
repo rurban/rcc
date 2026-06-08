@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 154
-- **Passed**: 151
-- **Failed**: 3
-- **Pass Rate**: 98%
+- **Passed**: 153
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## Detailed Results
 
@@ -103,7 +103,7 @@ Generated: June 2026
 | 98_al_ax_extend             | SKIP         | Skipped                   |
 | 99_fastcall                 | SKIP         | Skipped                   |
 | 100_c99array-decls          | PASS         | Output matches            |
-| 101_cleanup                 | EXEC_FAIL    | non-zero exit             |
+| 101_cleanup                 | PASS         | Output matches            |
 | 102_alignas                 | PASS         | Output matches            |
 | 103_implicit_memmove        | PASS         | Output matches            |
 | 104_inline                  | PASS         | Output matches            |
@@ -121,7 +121,7 @@ Generated: June 2026
 | 116_bound_setjmp2           | SKIP         | Skipped                   |
 | 117_builtins                | PASS         | Output matches            |
 | 118_switch                  | PASS         | Output matches            |
-| 119_random_stuff            | EXEC_FAIL    | non-zero exit             |
+| 119_random_stuff            | PASS         | Output matches            |
 | 120_alias                   | PASS         | Output matches            |
 | 121_struct_return           | PASS         | Output matches            |
 | 122_vla_reuse               | PASS         | Output matches            |
