@@ -63,6 +63,11 @@ if [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
     PLATFORM=arm64
     REPORT_FILE="$REPORT_DIR/tcc_test_arm64.md"
 fi
+# Detect mingw-cross: user passed mingw-cross.sh directly
+if [ "$RCC" = "./mingw-cross.sh" ] || echo "$RCC" | grep -q '/mingw-cross\.sh$'; then
+    PLATFORM=mingw_cross
+    REPORT_FILE="$REPORT_DIR/tcc_test_mingw_cross.md"
+fi
 # Detect mingw-native: user passed rcc.exe directly (not replaced by mingw-cross.sh)
 if echo "$RCC" | grep -qE '\.exe$'; then
     PLATFORM=mingw
