@@ -47,7 +47,7 @@ case "$RCC" in
             [ -z "$RUNNER" ] && RUNNER="qemu-aarch64"
         fi
         ;;
-    *mingw-cross*|*rcc.exe*)
+    *mingw-cross*)
         PLATFORM=mingw_cross
         if command -v wine >/dev/null 2>&1; then
             RUNNER="wine"
@@ -56,7 +56,7 @@ case "$RCC" in
     *)
         case "$(uname -s)" in
             Darwin) PLATFORM=arm64 ;;
-            MINGW*|MSYS*|CYGWIN*) PLATFORM=mingw ;;
+            MINGW*|MSYS*|CYGWIN*) PLATFORM=mingw; RCC=../../rcc.exe ;;
             *) PLATFORM=linux ;;
         esac
         ;;
@@ -221,17 +221,17 @@ cd ../../ || true
 FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
 
 # shellcheck disable=SC2143
-if [ "$RCC" = "../../arm64-cross.sh" ]; then
+if [ "$PLATFORM" = "arm64_cross" ]; then
     MAX_FAIL=55
-elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+elif [ "$PLATFORM" = "arm64" ]; then
     MAX_FAIL=68
-elif [ "$RCC" = "../../mingw-cross.sh" ]; then
+elif [ "$PLATFORM" = "mingw_cross" ]; then
     MAX_FAIL=63
-elif [ "$RCC" = "../../darwin-cross.sh" ]; then
-    MAX_FAIL=41
-elif [ "$(uname -s | grep -qE 'MSYS|MINGW|CYGWIN')" ]; then
+elif [ "$PLATFORM" = "darwin_cross" ]; then
+    MAX_FAIL=30
+elif [ "$PLATFORM" = "mingw" ]; then
     MAX_FAIL=83
-else
+else # PLATFORM=linux
     MAX_FAIL=44
 fi
 
