@@ -436,6 +436,11 @@ Token *tokenize(char *filename, char *p) {
             if (*p == 'f' || *p == 'F') {
                 is_float = true;
                 p++;
+            } else if ((*p == 'd' || *p == 'D') &&
+                       (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
+                // Decimal float suffixes: DD (double), DF (float), DL (long double)
+                is_float = true;
+                p += 2;
             } else if (*p == 'l' || *p == 'L') {
                 if (is_float) {
                     p++;
@@ -451,14 +456,27 @@ Token *tokenize(char *filename, char *p) {
 
             if (is_float) {
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
-                // Check for 'f'/'F' or 'l'/'L' suffix
+                // Check for 'f'/'F', 'l'/'L', or decimal DF/DD/DL suffix
                 char last = *(p - 1);
+                char prev = p > q + 1 ? *(p - 2) : '\0';
                 if (last == 'f' || last == 'F') {
                     cur->fval = (double)strtof(q, NULL);
                     cur->val = 1; // flag: is single-precision float
                 } else if (last == 'l' || last == 'L') {
                     cur->fval = strtod(q, NULL);
                     cur->val = 2; // flag: is long double
+                } else if ((last == 'd' || last == 'D') && (prev == 'd' || prev == 'D')) {
+                    // DD: decimal double → treat as double
+                    cur->fval = strtod(q, NULL);
+                    cur->val = 0;
+                } else if ((last == 'f' || last == 'F') && (prev == 'd' || prev == 'D')) {
+                    // DF: decimal float → treat as float
+                    cur->fval = (double)strtof(q, NULL);
+                    cur->val = 1;
+                } else if ((last == 'l' || last == 'L') && (prev == 'd' || prev == 'D')) {
+                    // DL: decimal long double → treat as long double
+                    cur->fval = strtod(q, NULL);
+                    cur->val = 2;
                 } else {
                     cur->fval = strtod(q, NULL);
                     cur->val = 0; // flag: is double

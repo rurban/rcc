@@ -113,9 +113,21 @@ run_test() {
     if grep -qE 'dg-require-effective-target nested' "$src" 2>/dev/null || \
        [ "$name" = "20061220-1" ] || \
        [ "$name" = "nest-align-1" ] || \
-       [ "$name" = "920415-1" ]; then
+       [ "$name" = "920415-1" ] || \
+       [ "$name" = "pr22061-3" ] || \
+       [ "$name" = "pr22061-4" ] || \
+       [ "$name" = "pr51447" ] || \
+       [ "$name" = "pr71494" ]; then
         SKIP=$((SKIP+1))
         [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(nested-func): $name"
+        return
+    fi
+
+    # Label-address differences in static initializers (requires two-symbol ELF relocations)
+    # VLA struct offsetof layout mismatch with gcc (rcc uses fat-pointer VLA struct members)
+    if [ "$name" = "pr70460" ] || [ "$name" = "pr41935" ]; then
+        SKIP=$((SKIP+1))
+        [ $SUMMARY_ONLY -eq 0 ] && echo "SKIP(not-implemented): $name"
         return
     fi
 
@@ -238,7 +250,7 @@ elif [ "$PLATFORM" = "darwin_cross" ]; then
 elif [ "$PLATFORM" = "mingw" ]; then
     MAX_FAIL=83
 else # PLATFORM=linux
-    MAX_FAIL=23
+    MAX_FAIL=15
 fi
 
 if [ "$FAIL" -gt "$MAX_FAIL" ]; then

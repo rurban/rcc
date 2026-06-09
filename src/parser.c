@@ -551,7 +551,8 @@ static bool is_typename(Token *tok) {
         equalc(tok, "float") || equalc(tok, "double") || equalc(tok, "__int128") ||
         equalc(tok, "_Bool") || equalc(tok, "struct") || equalc(tok, "union") || equalc(tok, "enum") ||
         equalc(tok, "typeof") || equalc(tok, "__typeof") || equalc(tok, "__typeof__") ||
-        equalc(tok, "_Atomic"))
+        equalc(tok, "_Atomic") ||
+        equalc(tok, "_Decimal32") || equalc(tok, "_Decimal64") || equalc(tok, "_Decimal128"))
         return true;
     if (is_storage_class(tok))
         return true;
@@ -949,6 +950,9 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     Type param_head = {};
     Type *pcur = &param_head;
     bool is_variadic = false;
+    // Save locals so earlier params are visible during VLA dim expressions
+    // (e.g. void foo(int a, int b[a++])), then restore afterward.
+    LVar *saved_locals = locals;
 
     if (equalc(tok, "void") && equalc(tok->next, ")")) {
         tok = tok->next->next;
@@ -972,19 +976,46 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             Type *pty = declarator(&tok, tok, copy_type(base), &pname);
             tok = skip_attributes(tok);
 
-            if (pty->kind == TY_ARRAY)
+            // Preserve VLA dim expression from single-dimension VLA param (e.g. b[a++])
+            // so side effects can be emitted at function entry.
+            Node *vla_dim_expr = NULL;
+            if (pty->kind == TY_VLA) {
+                vla_dim_expr = pty->vla_len_expr;
                 pty = pointer_to(pty->base);
-            else if (pty->kind == TY_FUNC)
+            } else if (pty->kind == TY_ARRAY) {
+                pty = pointer_to(pty->base);
+            } else if (pty->kind == TY_FUNC) {
                 pty = pointer_to(pty);
+            }
 
             Type *pt = arena_alloc(sizeof(Type));
             *pt = *pty;
             pt->param_next = NULL;
             pt->name = pname;
+            if (vla_dim_expr)
+                pt->vla_len_expr = vla_dim_expr;
+
+            // Create placeholder LVar for this param so subsequent params can
+            // reference it in VLA dimension expressions. Store it in vla_len_val
+            // so the function definition handler can reuse it with the correct offset.
+            if (pname) {
+                LVar *plvar = arena_alloc(sizeof(LVar));
+                plvar->name = pname;
+                plvar->ty = pt;
+                plvar->is_local = true;
+                plvar->offset = 0; // placeholder; updated by definition handler
+                plvar->next = locals;
+                locals = plvar;
+                pt->vla_len_val = plvar;
+            }
+
             pcur = pcur->param_next = pt;
         }
         tok = skip(tok, ")");
     }
+
+    // Restore locals (placeholder LVars remain in arena, referenced by pt->vla_len_val)
+    locals = saved_locals;
 
     ty = func_type(ty);
     ty->param_types = param_head.param_next;
@@ -1694,6 +1725,22 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
         if (equalc(tok, "double")) {
             is_double = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Decimal32")) {
+            is_float = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Decimal64")) {
+            is_double = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Decimal128")) {
+            is_double = true;
+            long_count = 1;
             tok = tok->next;
             continue;
         }
@@ -3948,6 +3995,18 @@ static int parse_memory_order(Token **rest) {
     return MEMORDER_SEQ_CST;
 }
 
+// Compute a Node* for the byte size of a type (may be runtime for VLA).
+static Node *type_size_node(Type *ty, Token *tok) {
+    if (ty->kind == TY_VLA) {
+        Node *len = ty->vla_len_expr ? ty->vla_len_expr : new_num(ty->array_len, tok);
+        Node *base = type_size_node(ty->base, tok);
+        Node *result = new_binary(ND_MUL, len, base, tok);
+        check_type(result);
+        return result;
+    }
+    return new_num(ty->size, tok);
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -3955,24 +4014,48 @@ static Node *unary(Token **rest, Token *tok) {
         Type *ty = type_name(&tok, tok);
         tok = skip(tok, ",");
 
-        int offset = 0;
+        int const_offset = 0;
+        Node *rt_expr = NULL; // non-NULL once we need runtime computation
+
         while (true) {
             if (tok->kind != TK_IDENT)
                 error_tok(tok, "expected member name");
             Member *mem = find_member(ty, tok);
             if (!mem)
                 error_tok(tok, "no such member");
-            offset += mem->offset;
+            const_offset += mem->offset;
             ty = mem->ty;
             tok = tok->next;
 
-            if (equalc(tok, "[")) {
+            while (equalc(tok, "[")) {
                 tok = tok->next;
-                if (tok->kind != TK_NUM || ty->kind != TY_ARRAY)
+                if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
                     error_tok(tok, "unsupported offsetof designator");
-                offset += tok->val * ty->base->size;
+
+                long long idx_val;
+                if (!rt_expr && ty->kind == TY_ARRAY && tok->kind == TK_NUM) {
+                    // Constant subscript on constant-size array
+                    idx_val = tok->val;
+                    const_offset += (int)(idx_val * ty->base->size);
+                    tok = skip(tok->next, "]");
+                } else {
+                    // Variable subscript or VLA: build runtime expression
+                    Node *idx = assign(&tok, tok);
+                    tok = skip(tok, "]");
+                    Node *elem_sz = type_size_node(ty->base, tok);
+                    Node *mul = new_binary(ND_MUL, idx, elem_sz, tok);
+                    check_type(mul);
+                    // Fold accumulated const_offset into rt_expr
+                    Node *base_off = new_num(const_offset, tok);
+                    check_type(base_off);
+                    rt_expr = rt_expr
+                        ? new_binary(ND_ADD, rt_expr, base_off, tok)
+                        : base_off;
+                    rt_expr = new_binary(ND_ADD, rt_expr, mul, tok);
+                    check_type(rt_expr);
+                    const_offset = 0;
+                }
                 ty = ty->base;
-                tok = skip(tok->next, "]");
             }
 
             if (!equalc(tok, "."))
@@ -3981,7 +4064,16 @@ static Node *unary(Token **rest, Token *tok) {
         }
 
         *rest = skip(tok, ")");
-        return new_num(offset, start);
+        if (!rt_expr)
+            return new_num(const_offset, start);
+        // Add any trailing const_offset to the runtime expression
+        if (const_offset != 0) {
+            Node *tail = new_num(const_offset, start);
+            check_type(tail);
+            rt_expr = new_binary(ND_ADD, rt_expr, tail, start);
+            check_type(rt_expr);
+        }
+        return rt_expr;
     }
     if (equalc(tok, "__builtin_va_start")) {
         Node *node = new_node(ND_VA_START, tok);
@@ -5793,7 +5885,23 @@ Program *parse(Token *tok) {
                     int param_index = 0;
                     for (Type *pt = ty->param_types; pt; pt = pt->param_next) {
                         char *pname = pt->name ? pt->name : format("__param%d", param_index++);
-                        cur = cur->param_next = new_var(pname, pt, true);
+                        LVar *lvar;
+                        if (pt->vla_len_val) {
+                            // Reuse placeholder LVar from declarator_params; update offset
+                            // so VLA dim expressions (e.g. a++) reference the correct slot.
+                            lvar = (LVar *)pt->vla_len_val;
+                            lvar->ty = pt;
+                            int sz = pt->size < 4 ? 4 : pt->size;
+                            int al = pt->align < 4 ? 4 : pt->align;
+                            stack_offset = align_to(stack_offset + sz, al);
+                            lvar->offset = stack_offset;
+                            lvar->next = locals;
+                            locals = lvar;
+                            lvar->param_next = NULL;
+                        } else {
+                            lvar = new_var(pname, pt, true);
+                        }
+                        cur = cur->param_next = lvar;
                     }
                     params = head.param_next;
                 } else {
@@ -5989,6 +6097,21 @@ Program *parse(Token *tok) {
                     fn->params = params;
                     fn->locals = fn_locals;
                     fn->body = body->body;
+                    // Prepend VLA parameter dimension side-effect expressions.
+                    // e.g. void foo(int a, int b[a++]) must increment a at entry.
+                    {
+                        Node **ins = &fn->body;
+                        for (Type *pt = fty->param_types; pt; pt = pt->param_next) {
+                            if (pt->vla_len_expr) {
+                                check_type(pt->vla_len_expr);
+                                Node *s = new_unary(ND_EXPR_STMT, pt->vla_len_expr,
+                                                    pt->vla_len_expr->tok);
+                                s->next = *ins;
+                                *ins = s;
+                                ins = &s->next;
+                            }
+                        }
+                    }
                     fn->stack_size = align_to(stack_offset, 16);
                     fn->is_variadic = is_variadic;
                     fn->dealloc_vla = fn_uses_vla;
