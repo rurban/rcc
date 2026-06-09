@@ -72,18 +72,22 @@ rcc -O1 -time:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, \_\_int128.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, Decimal.
 
-Not yet: complex, nested functions, C23, trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang compile-time warnings, fmv.
+Not yet: complex, C23, trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang compile-time warnings, fmv.
 
-Unplanned: `__attribute__((scalar_storage_order()))`, `__attribute__((mode()))`
+Unsupported (skipped in torture tests):
+
+- **Nested functions** (GCC extension) — function definitions inside other functions; would require trampolines on stack-executable pages.
+- **Label-address differences in static initializers** (`&&lab1 - &&lab0`) — requires two-symbol ELF relocations not yet emitted.
+- **VLA struct member `offsetof`** — rcc stores VLA array members as fat pointers (size=16, align=8), which gives different member offsets than GCC's flat in-struct layout.
+
+* `__attribute__((` **scalar_storage_order** `()))`, `__attribute__((` **mode** `()))`
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
 The test suites has all tests passed on linux, mingw-cross, arm64-cross,
 darwin-cross.
-windows native and arm64-darwin native have a few bugs left, which look like test artefacts.
-
 Three tcc core and test bugs have been detected so far. Fixes in the work.
 
 ## Build
@@ -175,9 +179,8 @@ This fork passes now:
 - The ncc/compliance tests pass 15/15 tests on all platforms.
 - The old gcc-torture tests pass all on linux, mingw-cross and arm64-cross.
   On darwin it fails: fprintf-chk-1
-  New gcc torture test fails in work (See GH #21).
-  Failures: pr22061-3 pr22061-4 pr41935 pr51447 pr70460 pr71494 pr77767
-  pr80692; pr22061-1 pr32244-1 pr34971 pr39240 pr58277-1 pr58277-2
+  New gcc torture tests: 1541/1556 pass (99%), 0 compile failures.
+  Runtime failures: pr22061-1 pr32244-1 pr34971 pr39240 pr58277-1 pr58277-2
   pr58943 pr70127 pr82210 pr92904 va-arg-15 va-arg-17 va-arg-18 va-arg-22
   va-arg-pack-1
 

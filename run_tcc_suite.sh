@@ -245,7 +245,16 @@ exit_if_only_test() {
 emit_exec_backtrace() {
 	exe=$1
 	shift
+	src_file="${src:-}"
 	bt_tmp="$TMPDIR/rcc_backtrace_$$.txt"
+
+	# Recompile with -g for source-level backtrace
+	if [ -n "$src_file" ] && [ -f "$src_file" ]; then
+		dbg_exe="$TMP_EXE.dbg"
+		if "$RCC" $RCCFLAGS -g ${LAST_DEFINE:-} -o "$dbg_exe" "$src_file" 2>/dev/null; then
+			exe="$dbg_exe"
+		fi
+	fi
 	{
 		echo ""
 		echo "=== EXEC_FAIL backtrace: $base ==="
@@ -258,6 +267,7 @@ emit_exec_backtrace() {
 			echo "No debugger found: install lldb or gdb to capture EXEC_FAIL backtraces."
 		fi
 	} >"$bt_tmp" 2>&1
+	rm -f "$dbg_exe" 2>/dev/null
 	while IFS= read -r bt_line; do
 		echo "$bt_line" >&2
 		echo "$bt_line" >>"$TMP_OUT"
@@ -467,6 +477,7 @@ while IFS= read -r src; do
             for tname in $(extract_dt_tests "$src" 2>/dev/null); do
                 echo "[$tname]" >>"$TMP_OUT"
                 # Try to compile and run; capture both stdout and stderr
+		LAST_DEFINE="-D$tname"
                 if "$RCC" $RCCFLAGS -D$tname -o "$TMP_EXE" \
                     "$src" >"$TMP_OUT".err 2>&1; then
                     # Also include any warnings emitted during successful compilation
@@ -535,6 +546,7 @@ while IFS= read -r src; do
             echo "[test_128_return]" >"$TMP_OUT"
 	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_return -o "$TMP_EXE" "$src"
+	    LAST_DEFINE="-Dtest_128_return"
             if [ "$is_darwin" = "1" ]; then
                 run_atexit=0
                 echo "[linked]" >>"$TMP_OUT"
@@ -551,6 +563,7 @@ while IFS= read -r src; do
             echo "[test_128_exit]" >>"$TMP_OUT"
 	    # shellcheck disable=SC2086
 	    "$RCC" $RCCFLAGS -Dtest_128_exit -o "$TMP_EXE" "$src"
+	    LAST_DEFINE="-Dtest_128_exit"
             if [ "$is_darwin" = "1" ]; then
                 xx=0
                 echo "[linked]" >>"$TMP_OUT"
@@ -564,6 +577,7 @@ while IFS= read -r src; do
             fi
             run_atexit="$run_atexit $xx"
         else
+            LAST_DEFINE=""
             # shellcheck disable=SC2086
             if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" $p_src "$src" $ldflags 2>"$TMP_OUT"; then
 		# shellcheck disable=SC2059
@@ -741,6 +755,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 
 		if expect_compile_fail "$base"; then
 			expected_exit=1
+			LAST_DEFINE=""
 			if "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 				# shellcheck disable=SC2059
 				printf "${RED}SHOULD FAIL (compiled ok)${RESET}\n"
@@ -761,6 +776,7 @@ if [ -d "$UNIT_TEST_DIR" ]; then
 			expected_exit=$(test_unit_expected_exit "$base")
 		fi
 
+		LAST_DEFINE=""
 		# shellcheck disable=SC2086
 		if ! "$RCC" $RCCFLAGS -o "$TMP_EXE" "$src" >/dev/null 2>&1; then
 			# shellcheck disable=SC2059

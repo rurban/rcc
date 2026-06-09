@@ -240,13 +240,13 @@ FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
 if [ -n "$1" ]; then
     MAX_FAIL=1
 elif [ "$PLATFORM" = "arm64_cross" ]; then
-    MAX_FAIL=55
+    MAX_FAIL=28
 elif [ "$PLATFORM" = "arm64" ]; then
-    MAX_FAIL=68
+    MAX_FAIL=27
 elif [ "$PLATFORM" = "mingw_cross" ]; then
     MAX_FAIL=63
 elif [ "$PLATFORM" = "darwin_cross" ]; then
-    MAX_FAIL=30
+    MAX_FAIL=2
 elif [ "$PLATFORM" = "mingw" ]; then
     MAX_FAIL=83
 else # PLATFORM=linux
