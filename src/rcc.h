@@ -48,7 +48,7 @@ struct Token {
     double fval; // If kind is TK_FNUM, its value
     char *name; // If kind is TK_IDENT, its name
     char *str; // If kind is TK_STR, its contents
-    char *loc; // Token location
+    char *ptr; // buffer location
     int len; // Token length
     // For string literals: 0 = regular, 'L' = wide, 'u' = char16_t, 'U' = char32_t
     int string_literal_prefix;

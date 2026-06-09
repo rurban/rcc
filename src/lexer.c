@@ -102,7 +102,7 @@ void error_at(char *loc, char *fmt, ...) {
 __attribute__((noreturn)) void error_tok_simple(Token *tok, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    int lineno = tok && tok->loc ? compute_line_no(tok->loc) : 1;
+    int lineno = tok && tok->ptr ? compute_line_no(tok->ptr) : 1;
     fprintf(stderr, "%s:%d: error: ",
             current_filename ? current_filename : "<unknown>", lineno);
     vfprintf(stderr, fmt, ap);
@@ -122,7 +122,7 @@ void error_tok(Token *tok, char *fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
-    verror_at(tok->loc, tok->len, fmt, ap);
+    verror_at(tok->ptr, tok->len, fmt, ap);
     exit(1);
 }
 
@@ -143,11 +143,11 @@ void warn_tok(Token *tok, char *fmt, ...) {
         return;
     }
     // Compute line number
-    char *line = tok->loc;
+    char *line = tok->ptr;
     while (current_input < line && line[-1] != '\n')
         line--;
     int reported_line = line_num;
-    if (current_line_offset == 0 || tok->loc < current_input + current_line_offset) {
+    if (current_line_offset == 0 || tok->ptr < current_input + current_line_offset) {
         reported_line = 1;
         for (char *p = current_input; p < line; p++)
             if (*p == '\n')
@@ -179,7 +179,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
 static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     Token *tok = arena_alloc(sizeof(Token));
     tok->kind = kind;
-    tok->loc = start;
+    tok->ptr = start;
     tok->len = end - start;
     if (opt_g) {
         tok->filename = current_debug_filename;

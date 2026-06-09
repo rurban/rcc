@@ -77,13 +77,13 @@ static PendingGoto *pending_gotos;
 static Node *conditional(Token **rest, Token *tok);
 
 static bool equal(Token *tok, char *op) {
-    if (!tok || !tok->loc) return false;
+    if (!tok || !tok->ptr) return false;
     int len = (int)strlen(op);
-    return tok->len == len && memcmp(tok->loc, op, len) == 0;
+    return tok->len == len && memcmp(tok->ptr, op, len) == 0;
 }
 
 // Fast variant for string-literal comparisons (avoids strlen at runtime)
-#define equalc(tok, op)     ((tok) && (tok)->loc && (tok)->len == (int)(sizeof(op) - 1) &&      memcmp((tok)->loc, op, sizeof(op) - 1) == 0)
+#define equalc(tok, op)     ((tok) && (tok)->ptr && (tok)->len == (int)(sizeof(op) - 1) &&      memcmp((tok)->ptr, op, sizeof(op) - 1) == 0)
 
 // Peek past a single __attribute__((...)) block without consuming tokens.
 // Returns the token after the closing )), or NULL if structure doesn't match.
@@ -171,10 +171,10 @@ static Node *new_num(int64_t val, Token *tok) {
     Node *node = new_node(ND_NUM, tok);
     node->val = val;
     // Determine type from suffix encoded in token text
-    char *end = tok->loc + tok->len;
+    char *end = tok->ptr + tok->len;
     bool is_u = false;
     int l_count = 0;
-    for (char *s = end - 1; s >= tok->loc; s--) {
+    for (char *s = end - 1; s >= tok->ptr; s--) {
         char c = *s;
         if (c == 'u' || c == 'U') {
             is_u = true;
@@ -191,7 +191,7 @@ static Node *new_num(int64_t val, Token *tok) {
         node->ty = (val >= 0 && val <= 0xFFFFFFFFLL) ? ty_uint : ty_ullong;
     else if (val >= -2147483648LL && val <= 2147483647LL)
         node->ty = ty_int;
-    else if (tok->loc[0] == '0' && tok->len > 1 && val >= 0 && val <= 4294967295LL)
+    else if (tok->ptr[0] == '0' && tok->len > 1 && val >= 0 && val <= 4294967295LL)
         node->ty = ty_uint;
     else
         node->ty = ty_llong;
@@ -1797,7 +1797,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     }
 
     if (!ty)
-        error_tok(tok, "expected type name, got kind=%d text='%.20s'", tok->kind, tok->loc);
+        error_tok(tok, "expected type name, got kind=%d text='%.20s'", tok->kind, tok->ptr);
 
     ty = apply_type_align(ty, attr_align);
     tok = skip_attributes(tok);
@@ -3168,7 +3168,7 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
             tok = tok->next;
             if (tok->kind == TK_IDENT) {
                 int nlen = tok->len < (int)sizeof(op->name) - 1 ? tok->len : (int)sizeof(op->name) - 1;
-                memcpy(op->name, tok->loc, nlen);
+                memcpy(op->name, tok->ptr, nlen);
                 op->name[nlen] = '\0';
                 tok = tok->next;
             }
@@ -3205,7 +3205,7 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
                 tok = tok->next;
                 if (tok->kind == TK_IDENT) {
                     int nlen = tok->len < (int)sizeof(op->name) - 1 ? tok->len : (int)sizeof(op->name) - 1;
-                    memcpy(op->name, tok->loc, nlen);
+                    memcpy(op->name, tok->ptr, nlen);
                     op->name[nlen] = '\0';
                     tok = tok->next;
                 }
