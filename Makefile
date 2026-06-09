@@ -47,21 +47,13 @@ DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
-ifneq ($(findstring apple,$(MACHINE)),)
-DARWIN_O = lib/darwin.dylib
-TARGET_DEPS += $(DARWIN_O)
-else
-TARGET_DEPS += $(MINGW_O)
-TARGET_EXT += $(MINGW_O)
-endif
-
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
 RCC_INCDIR ?= $(CURDIR)/include
 # On native Windows builds, default to the standard install location.
 ifeq ($(OS),Windows_NT)
 TARGET = rcc.exe
-MINGW_O = lib/mingw$(OBJ_EXT)
+MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 PREFIX ?= C:/Program Files/rcc
@@ -73,7 +65,7 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 else
 ifeq ($(CC),x86_64-w64-mingw32-gcc)
 TARGET = rcc.exe
-MINGW_O = lib/mingw$(OBJ_EXT)
+MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 OBJS = $(SRCS:.c=$(OBJ_EXT))
@@ -99,6 +91,14 @@ endif
 ifneq ($(IS_CLANG),0)
 CFLAGS += -march=native
 endif
+endif
+
+ifneq ($(findstring apple,$(MACHINE)),)
+DARWIN_O = lib/rcc_darwin.dylib
+TARGET_DEPS += $(DARWIN_O)
+else
+TARGET_DEPS += $(MINGW_O)
+TARGET_EXT += $(MINGW_O)
 endif
 
 $(TARGET): $(TARGET_DEPS)
@@ -183,16 +183,16 @@ src/gcc_predefined.h: FORCE
 	rm -f $$tmp; \
 	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
-$(DARWIN_O): lib/darwin.c
-	$(CC) -arch arm64 -dynamiclib -install_name @rpath/darwin.dylib -o $@ lib/darwin.c
-$(MINGW_O): lib/mingw.c
-	$(CC) $(CFLAGS) -c $< -o $@
+$(DARWIN_O): lib/rcc_darwin.c
+	$(CC) -arch arm64 -dynamiclib -install_name @rpath/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
+$(MINGW_O): lib/rcc_mingw.c
+	$(CC) $(CFLAGS) -c lib/rcc_mingw.c -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
-	$(CC) $(CFLAGS) -c $< -o $@ -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
+	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) -c $< -o $@ $(DEF_INCDIR)
+	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -c src/unicode.c -o $@
 %$(OBJ_EXT): %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -292,8 +292,8 @@ leanclean:
 	fi
 clean:
 	rm -f $(OBJS) $(TARGET) $(TARGET).exe rcc_prof src/sysinc_paths.h src/gcc_predefined.h \
-              fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o lib/darwin.o \
-              lib/darwin$(OBJ_EXT) test-*.summary
+              fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
+              lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-*.summary
 	if command -v git > /dev/null 2>&1; then \
 	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
 	  cd c-testsuite && git clean -dxf . && cd ..; \

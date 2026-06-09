@@ -495,20 +495,20 @@ int main(int argc, char **argv) {
                 snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
         } else {
 #ifdef __APPLE__
-            // Prefer lib/darwin.dylib (provides on_exit with exit-code capture
+            // Prefer lib/rcc_darwin.dylib (provides on_exit with exit-code capture
             // via dyld interposing).  Fall back to RCC_INCDIR path for installs.
             struct stat libst_darwin;
             char darwin_link[512] = "";
-            if (stat("lib/darwin.dylib", &libst_darwin) == 0) {
+            if (stat("lib/rcc_darwin.dylib", &libst_darwin) == 0) {
                 char cwd[256];
                 const char *rpath = getcwd(cwd, sizeof(cwd)) ? cwd : ".";
                 snprintf(darwin_link, sizeof(darwin_link),
-                         "lib/darwin.dylib -Wl,-rpath,%s/lib", rpath);
+                         "lib/rcc_darwin.dylib -Wl,-rpath,%s/lib", rpath);
             }
 #ifdef RCC_INCDIR
-            else if (stat(RCC_INCDIR "/../lib/darwin.dylib", &libst_darwin) == 0)
+            else if (stat(RCC_INCDIR "/../lib/rcc_darwin.dylib", &libst_darwin) == 0)
                 snprintf(darwin_link, sizeof(darwin_link),
-                         "%s/../lib/darwin.dylib -Wl,-rpath,%s/../lib",
+                         "%s/../lib/rcc_darwin.dylib -Wl,-rpath,%s/../lib",
                          RCC_INCDIR, RCC_INCDIR);
 #endif
             snprintf(cmd, sizeof(cmd),
@@ -549,13 +549,13 @@ int main(int argc, char **argv) {
         // Check local dev tree first, then installed path
 #ifdef RCC_INCDIR
         // cppcheck-suppress syntaxError
-        const char *rcc_lib = RCC_INCDIR "/../lib/mingw.obj";
-        if (stat("lib/mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
+        const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
+        if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
             snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
         else
 #endif
-            if (stat("lib/mingw.obj", &libst) == 0)
-            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/mingw.obj");
+            if (stat("lib/rcc_mingw.obj", &libst) == 0)
+            snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_mingw.obj");
 #endif
 
         if (libs_len)
