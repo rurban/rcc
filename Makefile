@@ -4,6 +4,7 @@ CFLAGS = -std=c11 -Wall -Wextra -O3 -g -Isrc
 TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
+EXE_EXT =
 
 ifeq ($(ASAN),1)
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer
@@ -56,6 +57,7 @@ TARGET = rcc.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+EXE_EXT = .exe
 PREFIX ?= C:/Program Files/rcc
 BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
@@ -68,6 +70,7 @@ TARGET = rcc.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+EXE_EXT = .exe
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 endif
 ifeq ($(CC),aarch64-linux-gnu-gcc)
@@ -193,6 +196,9 @@ src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined
 	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
+run_tests$(EXE_EXT): run_tests.c
+	$(CC) -std=c11 -Wall -Wextra -O2 -Isrc -o $@ run_tests.c
+
 %$(OBJ_EXT): %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -213,27 +219,26 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = powershell -ExecutionPolicy Bypass -File run_tcc_suite.ps1 -O1 && ./run_tcc_suite.sh ./rcc.exe && ./run-c-testsuite.sh && test/compliance/run.sh && ./gen-test-report.sh mingw
+TEST_RUNNER = ./run_tests ./rcc.exe --tcc --compliance --ctest
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
 else
-TEST_RUNNER = ./run_tcc_suite.sh && ./run-c-testsuite.sh && test/compliance/run.sh && ./gen-test-report.sh
+TEST_RUNNER = ./run_tests --tcc --compliance --ctest
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 
-test check: $(TARGET)
+test check: $(TARGET) run_tests$(EXE_EXT)
 	@$(TEST_RUNNER)
 
-test-extra check-extra: check lint test-torture
+test-extra check-extra: $(TARGET) run_tests$(EXE_EXT) lint
+	./run_tests --all
 
-test-torture check-torture: $(TARGET)
-	test/torture/capture.sh
-	./gen-test-report.sh
+test-torture check-torture: $(TARGET) run_tests$(EXE_EXT)
+	./run_tests --torture
 
-test-full check-full: $(TARGET)
+test-full check-full:
 	$(MAKE) clean
-	$(MAKE)
-	@$(TEST_RUNNER)
-	$(MAKE) test-torture
+	$(MAKE) $(TARGET) run_tests$(EXE_EXT)
+	./run_tests --all
 	-./mingw-test.sh
 	-./arm64-test.sh
 	-./darwin-test.sh
@@ -291,9 +296,10 @@ leanclean:
 	  cd c-testsuite && git clean -dxf . && cd ..; \
 	fi
 clean:
-	rm -f $(OBJS) $(TARGET) $(TARGET).exe rcc_prof src/sysinc_paths.h src/gcc_predefined.h \
-              fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
-              lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-*.summary
+	rm -f $(OBJS) $(TARGET) run_tests$(EXE_EXT) run_tcc_suite$(EXE_EXT) run_torture_tests$(EXE_EXT) rcc_prof \
+	      src/sysinc_paths.h src/gcc_predefined.h \
+	      fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
+	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-*.summary
 	if command -v git > /dev/null 2>&1; then \
 	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
 	  cd c-testsuite && git clean -dxf . && cd ..; \

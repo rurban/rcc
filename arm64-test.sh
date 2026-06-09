@@ -36,7 +36,7 @@ else
     make leanclean
     make -s CC=aarch64-linux-gnu-gcc
     trap 'make leanclean; make -s' EXIT   # restore host build after cross-test
-    ./run_tcc_suite.sh ./rcc-arm64
-    test/torture/capture.sh ../../arm64-cross.sh
-    ./gen-test-report.sh arm64_cross
+    echo "==> Running full test suite via arm64-cross.sh..."
+    echo ""
+    ./run_tests ./arm64-cross.sh --all
 fi

@@ -4,7 +4,7 @@
 # Usage: ./darwin-test.sh [test-name]
 set -e
 
-trap './gen-test-report.sh darwin_cross; make -s clean; make -s' EXIT
+trap 'make -s clean; make -s' EXIT
 
 echo "==> Building rcc-darwin (host binary, Darwin-targeted codegen)..."
 make -s clean
@@ -25,9 +25,7 @@ if [ -n "${1:-}" ]; then
     fi
     rm -f "$TMP_EXE"
 else
-    echo "==> Running TCC test suite via darwin-cross.sh..."
+    echo "==> Running full test suite via darwin-cross.sh..."
     echo ""
-    ./run_tcc_suite.sh ./rcc-darwin
-    echo "Report saved to test/tcc_test_darwin_cross.md"
-    test/torture/capture.sh ../../darwin-cross.sh
+    ./run_tests ./darwin-cross.sh --all
 fi

@@ -25,6 +25,7 @@ err.log
 tmp*.c
 101_cleanup.md
 /tcc_tests
+/run_tests
 amazon_bug_bounty/
 test/*.out
 /compile_commands.json
