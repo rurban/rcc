@@ -193,35 +193,41 @@ else
     done
 fi
 
-echo ""
-echo "=== TOTAL=$TOTAL PASS=$PASS FAIL_COMPILE=$FAIL_COMPILE FAIL_RUNTIME=$FAIL_RUNTIME SKIP=$SKIP ==="
-echo "Pass rate (excl. skip): $(( PASS * 100 / (TOTAL - SKIP) ))%"
+if [ -z "$1" ]; then
+    echo ""
+    echo "=== TOTAL=$TOTAL PASS=$PASS FAIL_COMPILE=$FAIL_COMPILE FAIL_RUNTIME=$FAIL_RUNTIME SKIP=$SKIP ==="
+    echo "Pass rate (excl. skip): $(( PASS * 100 / (TOTAL - SKIP) ))%"
 
-if [ -n "$COMPILE_ERRORS" ]; then
-    echo ""
-    echo "Compile failures:$COMPILE_ERRORS" | fold -s -w 80
-fi
-if [ -n "$RUNTIME_ERRORS" ]; then
-    echo ""
-    echo "Runtime failures:$RUNTIME_ERRORS" | fold -s -w 80
+    if [ -n "$COMPILE_ERRORS" ]; then
+        echo ""
+        echo "Compile failures:$COMPILE_ERRORS" | fold -s -w 80
+    fi
+    if [ -n "$RUNTIME_ERRORS" ]; then
+        echo ""
+        echo "Runtime failures:$RUNTIME_ERRORS" | fold -s -w 80
+    fi
 fi
 
 # Write machine-readable summary for unified report
 cd ../../ || true
-{
-    printf 'SUITE=torture\n'
-    printf 'TOTAL=%d\n' "$TOTAL"
-    printf 'PASS=%d\n' "$PASS"
-    printf 'FAIL=%d\n' "$((FAIL_COMPILE + FAIL_RUNTIME))"
-    printf 'FAIL_COMPILE=%d\n' "$FAIL_COMPILE"
-    printf 'FAIL_RUNTIME=%d\n' "$FAIL_RUNTIME"
-    printf 'SKIP=%d\n' "$SKIP"
-} > "test-torture-$PLATFORM.summary"
+if [ -z "$1" ]; then
+    {
+        printf 'SUITE=torture\n'
+        printf 'TOTAL=%d\n' "$TOTAL"
+        printf 'PASS=%d\n' "$PASS"
+        printf 'FAIL=%d\n' "$((FAIL_COMPILE + FAIL_RUNTIME))"
+        printf 'FAIL_COMPILE=%d\n' "$FAIL_COMPILE"
+        printf 'FAIL_RUNTIME=%d\n' "$FAIL_RUNTIME"
+        printf 'SKIP=%d\n' "$SKIP"
+    } > "test-torture-$PLATFORM.summary"
+fi
 
 FAIL=$((FAIL_COMPILE + FAIL_RUNTIME))
 
 # shellcheck disable=SC2143
-if [ "$PLATFORM" = "arm64_cross" ]; then
+if [ -n "$1" ]; then
+    MAX_FAIL=1
+elif [ "$PLATFORM" = "arm64_cross" ]; then
     MAX_FAIL=55
 elif [ "$PLATFORM" = "arm64" ]; then
     MAX_FAIL=68
