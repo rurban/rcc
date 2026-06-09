@@ -565,6 +565,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int arg_regs_stk[64];
     int arg_sizes_stk[64];
     bool arg_is_float_stk[64];
+    int arg_stage_stk[64];
 #ifndef _WIN32
     int arg_gp_idx_stk[64];
     int arg_fp_idx_stk[64];
@@ -579,6 +580,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int *arg_regs;
     int *arg_sizes;
     bool *arg_is_float;
+    int *arg_stage;
 #ifndef _WIN32
     int *arg_gp_idx;
     int *arg_fp_idx;
@@ -594,6 +596,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_regs = arg_regs_stk;
         arg_sizes = arg_sizes_stk;
         arg_is_float = arg_is_float_stk;
+        arg_stage = arg_stage_stk;
 #ifndef _WIN32
         arg_gp_idx = arg_gp_idx_stk;
         arg_fp_idx = arg_fp_idx_stk;
@@ -608,6 +611,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_regs = arena_alloc(sizeof(int) * nargs);
         arg_sizes = arena_alloc(sizeof(int) * nargs);
         arg_is_float = arena_alloc(sizeof(bool) * nargs);
+        arg_stage = arena_alloc(sizeof(int) * nargs);
 #ifndef _WIN32
         arg_gp_idx = arena_alloc(sizeof(int) * nargs);
         arg_fp_idx = arena_alloc(sizeof(int) * nargs);
@@ -1906,6 +1910,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
         arg_is_float[i] = is_flonum(argv[i]->ty);
+        arg_stage[i] = 0;
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
@@ -2367,6 +2372,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(r);
     }
 #else
+    // Count register args to detect when scratch regs are insufficient.
+    // When nreg_args > NUM_REGS, multiple args would share the same scratch
+    // register (via repeated spilling to the same slot), losing earlier values.
+    // Staging saves each arg to a unique stack slot and frees the register
+    // immediately, so evaluations never exhaust the scratch register set.
+    int nreg_args_count = 0;
+    for (int i = 0; i < nargs; i++)
+        if (arg_stack_idx[i] < 0)
+            nreg_args_count++;
+    bool use_staging = (nreg_args_count > NUM_REGS);
+
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
@@ -2388,6 +2404,19 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             arg_regs[i] = addr;
         } else
             arg_regs[i] = gen(argv[i]);
+
+        if (use_staging) {
+            fn_struct_ret_off += 8;
+            if (fn_struct_ret_off > fn_struct_ret_total)
+                fn_struct_ret_total = fn_struct_ret_off;
+            arg_stage[i] = current_fn_stack_size + fn_struct_ret_off;
+            printf("  movq %s, -%d(%%rbp)\n", reg64[arg_regs[i]], arg_stage[i]);
+            // Release without triggering spill restore; value is safe in staging slot.
+            spilled_regs &= ~(1 << arg_regs[i]);
+            used_regs &= ~(1 << arg_regs[i]);
+            reg_owner[arg_regs[i]] = NULL;
+            arg_regs[i] = -1;
+        }
     }
 
     // Bitmask of scratch registers still needed for register-passed args.
@@ -2507,13 +2536,21 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     // Two-pass placement: reg64[7]=="%rsi"==argreg64[1], so any arg whose scratch
     // register is rsi must be placed before the arg that writes to rsi, otherwise
     // the write clobbers the source value.  Pass 0: rsi-sourced args.  Pass 1: rest.
-    for (int pass = 0; pass < 2; pass++) {
+    // With staging, values are in unique stack slots so no ordering conflict exists;
+    // a single pass suffices.
+    for (int pass = 0; pass < (use_staging ? 1 : 2); pass++) {
         for (int i = 0; i < nargs; i++) {
             if (arg_stack_idx[i] >= 0)
                 continue;
-            bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
-            if (pass == 0 && !rsi_src) continue;
-            if (pass == 1 && rsi_src) continue;
+            if (!use_staging) {
+                bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
+                if (pass == 0 && !rsi_src) continue;
+                if (pass == 1 && rsi_src) continue;
+            }
+            if (use_staging && arg_stage[i]) {
+                arg_regs[i] = alloc_reg();
+                printf("  movq -%d(%%rbp), %s\n", arg_stage[i], reg64[arg_regs[i]]);
+            }
             if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 printf("  movq (%s), %s\n", reg64[arg_regs[i]], argreg64[arg_gp_idx[i]]);
@@ -2611,6 +2648,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     }
     return r;
 #endif
+    (void)arg_stage; /* suppress unused warning on some targets */
 }
 
 // Map any register name to a physical register ID (for peephole optimization)
