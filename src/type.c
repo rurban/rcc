@@ -144,6 +144,10 @@ static Type *builtin_return_type(const char *name) {
     if (strcmp(name, "__builtin_bswap16") == 0) return ty_ushort;
     if (strcmp(name, "__builtin_bswap32") == 0) return ty_uint;
     if (strcmp(name, "__builtin_bswap64") == 0) return ty_ullong;
+    // copysign builtins return double (handled inline in codegen, type must be correct)
+    if (strcmp(name, "__builtin_copysign") == 0) return ty_double;
+    if (strcmp(name, "__builtin_copysignf") == 0) return ty_float;
+    if (strcmp(name, "__builtin_copysignl") == 0) return ty_ldouble;
     return NULL;
 }
 

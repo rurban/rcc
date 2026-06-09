@@ -176,12 +176,10 @@ This fork passes now:
 - The old gcc-torture tests pass all on linux, mingw-cross and arm64-cross.
   On darwin it fails: fprintf-chk-1
   New gcc torture test fails in work (See GH #21).
-  Failures: pr117432 pr19449 pr22061-3 pr22061-4 pr22098-1 pr22098-2
-  pr22098-3 pr39228 pr41935 pr43784 pr44683 pr47237 pr51447 pr53084 pr57568
-  pr68249 pr70460 pr71494 pr71626-2 pr77767 pr78622 pr80692 pr88739 pr98366
-  pr22061-1 pr32244-1 pr34971 pr39240 pr44164 pr58277-1
-  pr58277-2 pr58943 pr70127 pr82210 pr92904 va-arg-15 va-arg-17 va-arg-18
-  va-arg-22
+  Failures: pr22061-3 pr22061-4 pr41935 pr51447 pr70460 pr71494 pr77767
+  pr80692; pr22061-1 pr32244-1 pr34971 pr39240 pr58277-1 pr58277-2
+  pr58943 pr70127 pr82210 pr92904 va-arg-15 va-arg-17 va-arg-18 va-arg-22
+  va-arg-pack-1
 
 ## Old Known Limitations
 

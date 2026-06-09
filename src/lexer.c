@@ -601,25 +601,31 @@ Token *tokenize(char *filename, char *p) {
         }
 
         // Character literal
-        if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '\'')
+        int char_prefix = 0;
+        if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '\'') {
+            char_prefix = *p;
             p++;
+        }
 
         if (*p == '\'') {
             char *start = p;
             p++;
-            char c = 0;
+            uint32_t cval = 0;
             while (*p && *p != '\'' && *p != '\n') {
                 if (*p == '\\') {
                     p++;
-                    c = read_escaped_char(&p, p);
+                    cval = (uint8_t)read_escaped_char(&p, p);
+                } else if (char_prefix && (unsigned char)*p >= 0x80) {
+                    // Wide char: decode full UTF-8 codepoint
+                    cval = decode_utf8(&p, p);
                 } else {
-                    c = *p++;
+                    cval = (uint8_t)*p++;
                 }
             }
             if (*p != '\'') error_at(start, "unclosed character literal");
             p++;
             cur = cur->next = new_token(TK_NUM, start, p, cur_lineno);
-            cur->val = (uint8_t)c;
+            cur->val = cval;
             continue;
         }
 

@@ -249,7 +249,6 @@ struct LVar {
     bool is_tls; // __thread / _Thread_local
 };
 
-typedef struct Node Node;
 void check_type(Node *node);
 LVar *find_global_name(char *name);
 
@@ -335,8 +334,6 @@ typedef enum {
     ND_ATOMIC_FENCE, // __atomic_thread_fence / __atomic_signal_fence
     ND_ATOMIC_FETCH_OP, // __atomic_fetch_add/sub/or/xor/and/nand
 } NodeKind;
-
-typedef struct Node Node;
 
 struct Node {
     NodeKind kind; // Node kind

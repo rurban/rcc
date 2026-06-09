@@ -1963,6 +1963,8 @@ char *preprocess(char *filename, char *p) {
 #endif
         define_pre("__INT128_TYPE__", "__int128");
         define_pre("__UINT128_TYPE__", "unsigned __int128");
+        define_pre("__uint128_t", "unsigned __int128");
+        define_pre("__int128_t", "__int128");
         define_macro("__builtin_expect", true, builtin_expect_params, 2, "((void)(y),(x))");
         /* those are detected and replaced by builtins. TODO: vice-versa */
         define_pre("__builtin_memcpy", "memcpy");
@@ -1996,6 +1998,24 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_trap", "abort");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
         // __builtin_va_* are handled as parser builtins, not macros
+        // Math classification builtins — handled inline in codegen
+        // (isinf/isnan are generic macros in system math.h but __builtin_isinf* are inline)
+        define_pre("__builtin_isinf", "isinf");
+        define_pre("__builtin_isinff", "isinf");
+        define_pre("__builtin_isinfl", "isinf");
+        define_pre("__builtin_isnan", "isnan");
+        define_pre("__builtin_isnanf", "isnan");
+        define_pre("__builtin_isnanl", "isnan");
+        define_pre("__builtin_isfinite", "isfinite");
+        define_pre("__builtin_isnormal", "isnormal");
+        define_pre("__builtin_fpclassify", "fpclassify");
+        // copysign builtins are handled inline in codegen (like signbit)
+        // snprintf/fprintf
+        define_pre("__builtin_snprintf", "snprintf");
+        define_pre("__builtin_fprintf", "fprintf");
+        define_pre("__builtin_vprintf", "vprintf");
+        define_pre("__builtin_vsprintf", "vsprintf");
+        define_pre("__builtin_vsnprintf", "vsnprintf");
         define_pre("__extension__", "");
         // __builtin_va_list is injected as a typedef at parse time
         // Don't define __asm__ or __volatile__ as macros — the parser

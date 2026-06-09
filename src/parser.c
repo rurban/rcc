@@ -76,14 +76,15 @@ struct PendingGoto {
 static PendingGoto *pending_gotos;
 static Node *conditional(Token **rest, Token *tok);
 
+// same name
 static bool equal(Token *tok, char *op) {
     if (!tok || !tok->ptr) return false;
     int len = (int)strlen(op);
     return tok->len == len && memcmp(tok->ptr, op, len) == 0;
 }
 
-// Fast variant for string-literal comparisons (avoids strlen at runtime)
-#define equalc(tok, op)     ((tok) && (tok)->ptr && (tok)->len == (int)(sizeof(op) - 1) &&      memcmp((tok)->ptr, op, sizeof(op) - 1) == 0)
+// Fast variant for string-literal comparisons (avoids strlen at runtime, op is constant)
+#define equalc(tok, op)     ((tok) && (tok)->ptr && (tok)->len == (int)(sizeof(op) - 1) && memcmp((tok)->ptr, op, sizeof(op) - 1) == 0)
 
 // Peek past a single __attribute__((...)) block without consuming tokens.
 // Returns the token after the closing )), or NULL if structure doesn't match.
@@ -1883,6 +1884,17 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         *label = format(".LC%d", s->id);
         if (addend) *addend = 0;
         *rest = tok->next;
+        // Handle "string" + const or "string" - const
+        if (equalc(*rest, "+") || equalc(*rest, "-")) {
+            bool is_sub = equalc(*rest, "-");
+            Token *op_next = (*rest)->next;
+            Node *n = assign(&op_next, op_next);
+            long long v;
+            if (eval_const_expr(n, &v)) {
+                if (addend) *addend += is_sub ? -(int)v : (int)v;
+                *rest = op_next;
+            }
+        }
         return true;
     }
 
@@ -1916,31 +1928,37 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         if (addend) *addend = 0;
         *rest = tok->next;
 
-        // Handle &identifier[constant] — array subscript in global initializer
-        if (equalc(*rest, "[")) {
-            Token *sub = (*rest)->next;
-            Node *idx = assign(&sub, sub);
-            check_type(idx);
-            long long ival;
-            if (sub->kind != TK_EOF && equalc(sub, "]") && eval_const_expr(idx, &ival)) {
-                LVar *var = find_global_name(*label);
-                if (var && var->ty && var->ty->kind == TY_ARRAY)
-                    ival *= var->ty->base->size;
-                if (addend) *addend = (int)ival;
-                *rest = sub->next;
-            }
-        }
-
-        // Handle &identifier.member — struct member access in global initializer
-        if (equalc(*rest, ".")) {
-            LVar *var = find_global_name(*label);
-            Token *member_tok = (*rest)->next;
-            if (var && var->ty && member_tok && member_tok->kind == TK_IDENT) {
-                Member *mem = find_member(var->ty, member_tok);
-                if (mem) {
-                    if (addend) *addend += mem->offset;
-                    *rest = member_tok->next;
-                }
+        // Handle chained &identifier[N][M].member[N]... access
+        {
+            LVar *lv2 = find_global_name(*label);
+            Type *cur_ty = lv2 ? lv2->ty : NULL;
+            while (cur_ty) {
+                if (equalc(*rest, "[") && (cur_ty->kind == TY_ARRAY || cur_ty->kind == TY_PTR)) {
+                    Token *sub = (*rest)->next;
+                    Node *idx = assign(&sub, sub);
+                    check_type(idx);
+                    long long ival;
+                    if (sub->kind != TK_EOF && equalc(sub, "]") && eval_const_expr(idx, &ival)) {
+                        int elem_size = cur_ty->base ? cur_ty->base->size : 1;
+                        if (addend) *addend += (int)(ival * elem_size);
+                        cur_ty = cur_ty->base;
+                        *rest = sub->next;
+                    } else
+                        break;
+                } else if (equalc(*rest, ".") && cur_ty && (cur_ty->kind == TY_STRUCT || cur_ty->kind == TY_UNION)) {
+                    Token *member_tok = (*rest)->next;
+                    if (member_tok && member_tok->kind == TK_IDENT) {
+                        Member *mem = find_member(cur_ty, member_tok);
+                        if (mem) {
+                            if (addend) *addend += mem->offset;
+                            cur_ty = mem->ty;
+                            *rest = member_tok->next;
+                        } else
+                            break;
+                    } else
+                        break;
+                } else
+                    break;
             }
         }
 
@@ -2340,11 +2358,45 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
 // Handles scalars, arrays, structs, compound literals, and flattened init.
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // String literal for char array
-    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR) {
+    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR && tok->string_literal_prefix == 0) {
         int len = tok->len + 1; // include embedded NULs and the terminator
         if (ty->size > 0 && len > ty->size) len = ty->size;
         ensure_init_size(var, offset, len);
         memcpy(var->init_data + offset, tok->str, len);
+        return tok->next;
+    }
+
+    // Wide string literal L"..." for wchar_t[] (unsigned int[] on Linux, unsigned short[] on Windows)
+    if (ty->kind == TY_ARRAY && tok->kind == TK_STR && tok->string_literal_prefix == 'L' &&
+        (ty->base->size == 4 || ty->base->size == 2)) {
+        int wchar_size = ty->base->size;
+        // Decode UTF-8 to wchar_t codepoints
+        char *p = tok->str;
+        char *end = p + tok->len;
+        int max_chars = (ty->size > 0) ? (ty->size / wchar_size) : 0x7fffffff;
+        int i = 0;
+        while (p < end && i < max_chars - 1) {
+            char *next_p = p;
+            uint32_t cp = decode_utf8(&next_p, p);
+            p = next_p;
+            ensure_init_size(var, offset + i * wchar_size, wchar_size);
+            if (wchar_size == 4) {
+                uint32_t wc = cp;
+                memcpy(var->init_data + offset + i * wchar_size, &wc, 4);
+            } else {
+                uint16_t wc = (uint16_t)cp;
+                memcpy(var->init_data + offset + i * wchar_size, &wc, 2);
+            }
+            i++;
+        }
+        // Null terminator
+        if (i < max_chars) {
+            ensure_init_size(var, offset + i * wchar_size, wchar_size);
+            memset(var->init_data + offset + i * wchar_size, 0, wchar_size);
+        }
+        // If array size is 0 (incomplete), set it
+        if (ty->size == 0)
+            ty->size = (i + 1) * wchar_size;
         return tok->next;
     }
 
@@ -2398,11 +2450,45 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         tok = skip(tok, "{");
         Member *mem = ty->members;
         while (!equalc(tok, "}")) {
-            // Designated initializer: .member = value
+            // Designated initializer: .member[.sub]* = value
             if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                 char *name = tok->next->name;
                 tok = tok->next->next;
-                tok = skip(tok, "=");
+                Member *m = find_member_by_name(ty, name);
+                if (m && equalc(tok, ".")) {
+                    // Nested designator .f.d[.e]* = value: follow chain
+                    int chain_base = offset + m->offset;
+                    Type *cur_ty = m->ty;
+                    while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                        char *sname = tok->next->name;
+                        tok = tok->next->next;
+                        Member *sm = find_member_by_name(cur_ty, sname);
+                        if (!sm) {
+                            tok = skip_initializer(tok);
+                            break;
+                        }
+                        if (!equalc(tok, ".")) {
+                            tok = skip(tok, "=");
+                            tok = global_init_member(tok, var, sm, chain_base);
+                            break;
+                        }
+                        chain_base += sm->offset;
+                        cur_ty = sm->ty;
+                    }
+                    mem = m->next;
+                } else {
+                    tok = skip(tok, "=");
+                    if (m) {
+                        tok = global_init_member(tok, var, m, offset);
+                        mem = m->next;
+                    } else {
+                        tok = skip_initializer(tok);
+                    }
+                }
+                // Old-style GNU designator: member: value (without leading '.')
+            } else if (tok->kind == TK_IDENT && equalc(tok->next, ":")) {
+                char *name = tok->name;
+                tok = tok->next->next; // skip "member" ":"
                 Member *m = find_member_by_name(ty, name);
                 if (m) {
                     tok = global_init_member(tok, var, m, offset);
@@ -3862,7 +3948,6 @@ static int parse_memory_order(Token **rest) {
     return MEMORDER_SEQ_CST;
 }
 
-
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -3902,8 +3987,12 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = new_node(ND_VA_START, tok);
         tok = skip(tok->next, "(");
         node->lhs = assign(&tok, tok);
-        tok = skip(tok, ",");
-        assign(&tok, tok);
+        // C23: second argument (last named param) is optional
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (!equalc(tok, ")"))
+                assign(&tok, tok); // consume but ignore second arg
+        }
         *rest = skip(tok, ")");
         return node;
     }
@@ -3921,6 +4010,41 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = assign(&tok, tok);
         *rest = skip(tok, ")");
         return node;
+    }
+    // GCC built-ins for forwarding variadic arguments (simplified: parse but treat as 0)
+    if (equalc(tok, "__builtin_va_arg_pack")) {
+        tok = skip(tok->next, "(");
+        *rest = skip(tok, ")");
+        return new_num(0, tok);
+    }
+    if (equalc(tok, "__builtin_va_arg_pack_len")) {
+        tok = skip(tok->next, "(");
+        *rest = skip(tok, ")");
+        return new_num(0, tok);
+    }
+    if (equalc(tok, "__builtin_apply_args")) {
+        tok = skip(tok->next, "(");
+        *rest = skip(tok, ")");
+        return new_num(0, tok); // returns void*, simplified as 0
+    }
+    if (equalc(tok, "__builtin_apply")) {
+        // __builtin_apply(fn, args, size) - simplified: parse args, ignore call
+        tok = skip(tok->next, "(");
+        Node *fn = assign(&tok, tok);
+        (void)fn;
+        tok = skip(tok, ",");
+        assign(&tok, tok); // args - skip
+        tok = skip(tok, ",");
+        assign(&tok, tok); // size - skip
+        *rest = skip(tok, ")");
+        return new_node(ND_NULL, tok);
+    }
+    if (equalc(tok, "__builtin_return")) {
+        // __builtin_return(result) - simplified: parse and ignore
+        tok = skip(tok->next, "(");
+        assign(&tok, tok);
+        *rest = skip(tok, ")");
+        return new_node(ND_NULL, tok);
     }
     if (equalc(tok, "__builtin_va_arg")) {
         Node *node = new_node(ND_VA_ARG, tok);
@@ -4473,6 +4597,26 @@ static Node *unary(Token **rest, Token *tok) {
         bool is_const = arg->kind == ND_NUM || arg->kind == ND_FNUM || arg->kind == ND_STR || eval_const_expr(arg, &cv);
         return new_num(is_const ? 1 : 0, start);
     }
+    if (equalc(tok, "__builtin_choose_expr")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *cond = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *expr1 = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *expr2 = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        // If condition is a compile-time constant, return the appropriate branch
+        long long cv = 0;
+        if (eval_const_expr(cond, &cv))
+            return cv ? expr1 : expr2;
+        // Non-constant: generate as runtime ternary
+        Node *node = new_node(ND_COND, start);
+        node->cond = cond;
+        node->then = expr1;
+        node->els = expr2;
+        return node;
+    }
     if (equalc(tok, "__builtin_types_compatible_p")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
@@ -4700,7 +4844,64 @@ static Node *unary(Token **rest, Token *tok) {
                     Node *idx = new_num(i, start);
                     Node *elem_ptr = new_binary(ND_ADD, new_var_node(var, start), idx, start);
                     Node *deref = new_unary(ND_DEREF, elem_ptr, start);
-                    Node *val = assign(&tok, tok);
+                    Node *val;
+                    // {.member=val,...} as nested struct/union initializer for element
+                    if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
+                        // Synthesize (ElemType){...} compound literal for the element
+                        Token *fake_start = tok; // tok = '{', the brace
+                        tok = tok->next; // skip '{'
+                        char *ename = format(".Lanon.%d", anon_count++);
+                        LVar *evar = new_var(ename, ty->base, true);
+                        Node *ezinit = new_node(ND_ZERO_INIT, start);
+                        ezinit->lhs = new_var_node(evar, start);
+                        Node *eres = new_binary(ND_COMMA, ezinit, new_var_node(evar, start), start);
+                        Member *emem = ty->base->members;
+                        while (!equalc(tok, "}")) {
+                            if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                                char *mname = tok->next->name;
+                                tok = tok->next->next;
+                                tok = skip(tok, "=");
+                                Member *m = find_member_by_name(ty->base, mname);
+                                if (m) {
+                                    Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+                                    ma->member = m;
+                                    check_type(ma);
+                                    Node *v2 = assign(&tok, tok);
+                                    check_type(v2);
+                                    Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+                                    check_type(a2);
+                                    eres = new_binary(ND_COMMA, eres, a2, start);
+                                    emem = m->next;
+                                } else {
+                                    assign(&tok, tok);
+                                }
+                            } else if (emem) {
+                                Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+                                ma->member = emem;
+                                check_type(ma);
+                                Node *v2 = assign(&tok, tok);
+                                check_type(v2);
+                                Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+                                check_type(a2);
+                                eres = new_binary(ND_COMMA, eres, a2, start);
+                                emem = emem->next;
+                            } else {
+                                assign(&tok, tok);
+                            }
+                            if (equalc(tok, ",")) {
+                                tok = tok->next;
+                                if (equalc(tok, "}")) break;
+                                continue;
+                            }
+                            break;
+                        }
+                        tok = skip(tok, "}");
+                        Node *efinal = new_var_node(evar, start);
+                        val = new_binary(ND_COMMA, eres, efinal, start);
+                        check_type(val);
+                    } else {
+                        val = assign(&tok, tok);
+                    }
                     check_type(val);
                     Node *asgn = new_binary(ND_ASSIGN, deref, val, start);
                     check_type(asgn);
@@ -4924,6 +5125,44 @@ static Node *unary(Token **rest, Token *tok) {
                 check_type(result);
             }
 
+            // Apply postfix operators: compound literals are lvalues that can be subscripted
+            while (true) {
+                if (equalc(tok, "[")) {
+                    Token *ps = tok;
+                    Node *idx = expr(&tok, tok->next);
+                    tok = skip(tok, "]");
+                    result = new_unary(ND_DEREF, new_binary(ND_ADD, result, idx, ps), ps);
+                    check_type(result);
+                    continue;
+                }
+                if (equalc(tok, ".")) {
+                    tok = tok->next;
+                    check_type(result);
+                    Member *mem = find_member(result->ty, tok);
+                    if (!mem) error_tok(tok, "no such member");
+                    Node *mn = new_unary(ND_MEMBER, result, tok);
+                    mn->member = mem;
+                    mn->ty = mem->ty;
+                    result = mn;
+                    tok = tok->next;
+                    continue;
+                }
+                if (equalc(tok, "->")) {
+                    tok = tok->next;
+                    check_type(result);
+                    result = new_unary(ND_DEREF, result, tok);
+                    check_type(result);
+                    Member *mem = find_member(result->ty, tok);
+                    if (!mem) error_tok(tok, "no such member");
+                    Node *mn = new_unary(ND_MEMBER, result, tok);
+                    mn->member = mem;
+                    mn->ty = mem->ty;
+                    result = mn;
+                    tok = tok->next;
+                    continue;
+                }
+                break;
+            }
             *rest = tok;
             return result;
         }
@@ -5085,8 +5324,16 @@ static Node *conditional(Token **rest, Token *tok) {
     if (equalc(tok, "?")) {
         Token *qtok = tok;
         Node *cond = node;
-        Node *then = expr(&tok, tok->next);
-        tok = skip(tok, ":");
+        Node *then;
+        tok = tok->next; // consume '?'
+        if (equalc(tok, ":")) {
+            // GNU extension: a ?: b  — omit then-expr, use cond as value
+            then = cond;
+            tok = tok->next; // skip ':'
+        } else {
+            then = expr(&tok, tok);
+            tok = skip(tok, ":");
+        }
         Node *els = conditional(&tok, tok);
         node = new_node(ND_COND, qtok);
         node->cond = cond;
@@ -5229,9 +5476,32 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 }
 
 static void global_initializer(Token **rest, Token *tok, LVar *var) {
-    if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR) {
+    if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR && tok->string_literal_prefix == 0) {
         var->init_data = tok->str;
         var->init_size = tok->len + 1; // include embedded NULs and the terminator
+        *rest = tok->next;
+        return;
+    }
+
+    // Wide string literal L"..." for wchar_t array
+    if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR && tok->string_literal_prefix == 'L' &&
+        (var->ty->base->size == 4 || var->ty->base->size == 2)) {
+        // Count UTF-8 codepoints to size the array
+        char *p = tok->str;
+        char *end = p + tok->len;
+        int count = 0;
+        while (p < end) {
+            char *np = p;
+            decode_utf8(&np, p);
+            p = np;
+            count++;
+        }
+        count++; // null terminator
+        if (var->ty->size == 0)
+            var->ty = array_of(var->ty->base, count);
+        var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+        var->init_size = var->ty->size;
+        global_init_one(tok, var, var->ty, 0);
         *rest = tok->next;
         return;
     }
