@@ -839,6 +839,7 @@ static bool diff_strings(const char *expect, const char *actual, const char *lab
         if (!ae) ae = as + strlen(as);
         printf("+%.*s\n", (int)(ae - as), as);
     }
+    return false;
 }
 
 static char **extract_dt_tests(const char *src_path) {
