@@ -1288,9 +1288,9 @@ PASS: pr57875
 PASS: pr57876
 PASS: pr57877
 PASS: pr58209
-./test/torture/run.sh: line 65: 884541 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 32494 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr58277-1
-./test/torture/run.sh: line 65: 884567 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 32522 Segmentation fault      timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr58277-2
 PASS: pr58364
 PASS: pr58365
@@ -1458,7 +1458,7 @@ PASS: pr81556
 PASS: pr81588
 PASS: pr81913
 PASS: pr82192
-./test/torture/run.sh: line 65: 887532 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 35714 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): pr82210
 PASS: pr82387
 PASS: pr82388
@@ -1640,7 +1640,7 @@ PASS: va-arg-19
 PASS: va-arg-2
 PASS: va-arg-20
 PASS: va-arg-21
-./test/torture/run.sh: line 65: 890619 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 38917 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-22
 PASS: va-arg-23
 PASS: va-arg-24
@@ -1651,7 +1651,7 @@ PASS: va-arg-6
 PASS: va-arg-7
 PASS: va-arg-8
 PASS: va-arg-9
-./test/torture/run.sh: line 65: 890805 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
+./test/torture/run.sh: line 65: 39112 Aborted                 timeout $TIMEOUT "/tmp/torture_rcc_${name}" > /dev/null 2>&1
 FAIL(runtime): va-arg-pack-1
 PASS: va-arg-trap-1
 PASS: vfprintf-1

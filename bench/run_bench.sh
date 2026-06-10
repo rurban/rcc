@@ -166,8 +166,8 @@ echo ""
 echo "============================================="
 echo "               SCOREBOARD"
 echo "============================================="
-printf "%-30s %10s %10s %10s\n" "Compiler" "Compile" "Execute" "Total"
-printf "%-30s %10s %10s %10s\n" "--------" "-------" "-------" "-----"
+printf "%-30s %10s %10s %10s\n" "Compiler " "Compile" "Execute" "Total"
+printf "%-30s %10s %10s %10s\n" "---------" "-------" "-------" "-----"
 oldifs="$IFS"
 IFS='|'
 for _c in $list_c; do
@@ -190,9 +190,8 @@ IFS="$oldifs"
 		printf "# Linux RCC Benchmark Results\n\n"
 	fi
 	printf "_Generated: %s_\n\n" "$(date '+%B %Y')"
-	printf "| %-12s | %12s | %12s | %10s |\n" \
-		"Compiler" "Compile (ms)" "Execute (ms)" "Total (ms)"
-	printf "| :----------- | -----------: | -----------: | ---------: |\n"
+	printf "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |\n"
+	printf "| :-------- | -----------: | -----------: | ---------: |\n"
 IFS='|'
 for _c in $list_c; do
 	[ -z "$_c" ] && continue
@@ -201,7 +200,7 @@ for _c in $list_c; do
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
 	[ -z "$_cm" ] && continue
-	printf "| %-12s | %12s | %12s | %10s |\n" "$_c" "$_cm" "$_em" "$_tm"
+	printf "| %-9s | %12s | %12s | %9s |\n" "$_c" "$_cm" "$_em" "$_tm"
 done
 IFS="$oldifs"
 printf "\n## RCC Substep Timing\n\n"
