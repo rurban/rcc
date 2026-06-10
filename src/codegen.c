@@ -176,6 +176,7 @@ static const char *bi_ffs, *bi_ffsl, *bi_ffsll;
 static const char *bi_prefetch, *bi_frame_address, *bi_return_address;
 static const char *bi_setjmp, *bi_longjmp;
 static const char *bi_signbit, *bi_signbitf, *bi_signbitl;
+static const char *bi_isinf, *bi_isinff, *bi_isinfl;
 static const char *bi_copysign, *bi_copysignf, *bi_copysignl;
 static const char *bi_abs, *bi_labs, *bi_llabs;
 static const char *bi_add_overflow, *bi_sub_overflow;
@@ -219,6 +220,9 @@ static void init_builtin_names(void) {
     bi_signbit = _BI("__builtin_signbit");
     bi_signbitf = _BI("__builtin_signbitf");
     bi_signbitl = _BI("__builtin_signbitl");
+    bi_isinf = _BI("__builtin_isinf");
+    bi_isinff = _BI("__builtin_isinff");
+    bi_isinfl = _BI("__builtin_isinfl");
     bi_copysign = _BI("__builtin_copysign");
     bi_copysignf = _BI("__builtin_copysignf");
     bi_copysignl = _BI("__builtin_copysignl");
@@ -717,7 +721,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         bool is_ffs = false, is_ffsl = false, is_ffsll = false;
         bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
         bool is_setjmp = false, is_longjmp = false;
-        bool is_signbit = false, is_copysign_builtin = false, is_abs_builtin = false;
+        bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_abs_builtin = false;
         bool is_add_overflow = false, is_sub_overflow = false;
         bool is_mul_overflow = false, is_mul_overflow_p = false;
         if (maybe_builtin) {
@@ -750,6 +754,9 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             is_signbit = call_target == bi_signbit ||
                 call_target == bi_signbitf ||
                 call_target == bi_signbitl;
+            is_isinf = call_target == bi_isinf ||
+                call_target == bi_isinff ||
+                call_target == bi_isinfl;
             is_copysign_builtin = call_target == bi_copysign ||
                 call_target == bi_copysignf ||
                 call_target == bi_copysignl;
@@ -1011,6 +1018,43 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 return r;
             }
         }
+
+        /* __builtin_isinf(x): true if exponent all-1s, mantissa 0.
+         * On x86: clear sign bit, compare against the inf bit pattern. */
+        if (is_isinf) {
+            Node *arg = node->args;
+            if (arg && !arg->next) {
+                int r_arg = gen(arg);
+                int r = alloc_reg();
+                int r_tmp = alloc_reg();
+                int sz = arg->ty ? arg->ty->size : 8;
+#ifdef ARCH_ARM64
+                // TODO: arm64 isinf
+                printf("  mov %s, #0\n", reg64[r]);
+#else
+                if (sz == 4) {
+                    printf("  movd %s, %%xmm0\n", reg32[r_arg]);
+                    printf("  movd %%xmm0, %s\n", reg32[r]);
+                    printf("  movl $0x7fffffff, %s\n", reg32[r_tmp]);
+                    printf("  andl %s, %s\n", reg32[r_tmp], reg32[r]);
+                    printf("  cmpl $0x7f800000, %s\n", reg32[r]);
+                } else {
+                    printf("  movq %s, %%xmm0\n", reg64[r_arg]);
+                    printf("  movq %%xmm0, %s\n", reg64[r]);
+                    printf("  movabsq $0x7fffffffffffffff, %s\n", reg64[r_tmp]);
+                    printf("  andq %s, %s\n", reg64[r_tmp], reg64[r]);
+                    printf("  movabsq $0x7ff0000000000000, %s\n", reg64[r_tmp]);
+                    printf("  cmpq %s, %s\n", reg64[r_tmp], reg64[r]);
+                }
+                printf("  sete %%al\n");
+                printf("  movzbl %%al, %s\n", reg32[r]);
+#endif
+                free_reg(r_tmp);
+                free_reg(r_arg);
+                return r;
+            }
+        }
+
 
         if (is_copysign_builtin) {
             Node *arg1 = node->args;

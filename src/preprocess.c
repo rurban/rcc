@@ -1999,10 +1999,8 @@ char *preprocess(char *filename, char *p) {
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
         // __builtin_va_* are handled as parser builtins, not macros
         // Math classification builtins — handled inline in codegen
-        // (isinf/isnan are generic macros in system math.h but __builtin_isinf* are inline)
-        define_pre("__builtin_isinf", "isinf");
-        define_pre("__builtin_isinff", "isinf");
-        define_pre("__builtin_isinfl", "isinf");
+        // __builtin_isinf* are handled inline in codegen (not macros)
+        // so they work on all targets including MSVCRT where isinf() is missing.
         define_pre("__builtin_isnan", "isnan");
         define_pre("__builtin_isnanf", "isnan");
         define_pre("__builtin_isnanl", "isnan");
