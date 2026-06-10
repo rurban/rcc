@@ -325,7 +325,7 @@ clean:
 	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) rcc_prof \
 	      src/sysinc_paths.h src/gcc_predefined.h \
 	      fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
-	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-units-*.summary test-ctest-*.summary test-compliance-*.summary
+	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
 	if command -v git > /dev/null 2>&1; then \
 	  cd tinycc && git reset --hard && git clean -dxf tests/tests2 && cd ..; \
 	  cd c-testsuite && git clean -dxf . && cd ..; \
