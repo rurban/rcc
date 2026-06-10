@@ -66,8 +66,7 @@ jobs:
         run: |
           ./rcc --version
           ./rcc -print-search-dirs
-          make check
-          make test-torture || true
+          make check-all
 
       - name: Cache pre-commit
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5

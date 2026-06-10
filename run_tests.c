@@ -5,6 +5,9 @@
  *           test/compliance/run.sh, run-c-testsuite.sh
  *
  * Usage: ./run_tests [rcc-binary] [options] [test-name]
+ * For cross platforma, run the whole runner under the cross environment.
+ *        wine ./run_tests.exe rcc.exe --tcc --unit-tests --compliance --ctest
+ *        qemu-aarch64 -L /usr/aarch64-linux-gnu/sys-root ./run_tests rcc-arm64 --tcc --unit-tests --compliance --ctest
  *
  * Options (default: --tcc --unit-tests --compliance --ctest):
  *   --tcc         TCC compatibility tests (tinycc/tests/tests2/)
@@ -17,30 +20,163 @@
  */
 
 #define _GNU_SOURCE
+#ifdef _WIN32
+#define _CRT_NONSTDC_NO_DEPRECATE
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <sys/utsname.h>
 #include <libgen.h>
 #include <limits.h>
 #include <time.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <ctype.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/wait.h>
+#include <sys/utsname.h>
+#endif
+
+#ifdef _WIN32
+/* sys/utsname.h replacement */
+struct utsname {
+    char sysname[32];
+    char machine[32];
+};
+static int uname(struct utsname *u) {
+    SYSTEM_INFO si;
+    GetNativeSystemInfo(&si);
+    strcpy(u->sysname, "Windows");
+    strcpy(u->machine, si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 ? "arm64" : "x86_64");
+    return 0;
+}
+#define realpath(path, resolved) _fullpath((resolved), (path), PATH_MAX)
+
+#ifndef NAME_MAX
+#define NAME_MAX FILENAME_MAX
+#endif
+
+static char *strndup(const char *s, size_t n) {
+    size_t len = strnlen(s, n);
+    char *p = malloc(len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    return p;
+}
+
+static int setenv(const char *name, const char *value, int overwrite) {
+    if (!overwrite && getenv(name)) return 0;
+    return _putenv_s(name, value);
+}
+
+/* dirent.h on mingw lacks scandir()/alphasort()/versionsort() */
+static int alphasort(const struct dirent **a, const struct dirent **b) {
+    return strcmp((*a)->d_name, (*b)->d_name);
+}
+
+static int scandir(const char *dir, struct dirent ***namelist,
+                   int (*filter)(const struct dirent *),
+                   int (*cmp)(const struct dirent **, const struct dirent **)) {
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    struct dirent **list = NULL;
+    int n = 0, cap = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (filter && !filter(e)) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            list = realloc(list, (size_t)cap * sizeof(*list));
+        }
+        struct dirent *copy = malloc(sizeof(*copy));
+        memcpy(copy, e, sizeof(*copy));
+        list[n++] = copy;
+    }
+    closedir(d);
+    if (cmp)
+        qsort(list, (size_t)n, sizeof(*list),
+              (int (*)(const void *, const void *))cmp);
+    *namelist = list;
+    return n;
+}
+#endif
+
+/* Return a temporary directory that exists.  On Windows the system
+ * temp path is used (C:\Users\...\AppData\Local\Temp); /tmp would
+ * only exist under MSYS2. */
+static const char *get_tmpdir(void) {
+    static char buf[PATH_MAX];
+    if (buf[0]) return buf;
+#ifdef _WIN32
+    if (!GetTempPathA(sizeof(buf), buf)) {
+        /* fallback: CreateDirectory + C:\tmp */
+        strcpy(buf, "C:\\tmp");
+    }
+    /* strip trailing backslash */
+    size_t len = strlen(buf);
+    while (len && buf[len - 1] == '\\') buf[--len] = '\0';
+#else
+    strcpy(buf, "/tmp");
+#endif
+    return buf;
+}
+
+/* versionsort() is a glibc/dirent.h extension; mingw and BSD-derived
+ * libcs (macOS) don't provide it. */
+#if defined(_WIN32) || !defined(__GLIBC__)
+/* natural-order compare: like GNU strverscmp(), splits runs of digits
+ * and compares them numerically so "f9" sorts before "f10" */
+static int versionsort(const struct dirent **a, const struct dirent **b) {
+    const char *pa = (*a)->d_name, *pb = (*b)->d_name;
+    while (*pa && *pb) {
+        if (isdigit((unsigned char)*pa) && isdigit((unsigned char)*pb)) {
+            const char *sa = pa, *sb = pb;
+            while (isdigit((unsigned char)*pa)) pa++;
+            while (isdigit((unsigned char)*pb)) pb++;
+            size_t la = (size_t)(pa - sa), lb = (size_t)(pb - sb);
+            if (la != lb) return la < lb ? -1 : 1;
+            int c = strncmp(sa, sb, la);
+            if (c) return c;
+        } else {
+            if (*pa != *pb) return (unsigned char)*pa - (unsigned char)*pb;
+            pa++;
+            pb++;
+        }
+    }
+    return (unsigned char)*pa - (unsigned char)*pb;
+}
+#endif
+
+/* ARM64_NATIVE: this binary itself runs natively on aarch64 (an
+ * aarch64-linux cross build executed under qemu-aarch64/native arm64,
+ * or a native arm64-darwin/arm64-elf build). On such hosts rcc-arm64
+ * and the binaries it produces execute directly, without a runner. */
+#if defined(__aarch64__) && !defined(ARM64_NATIVE)
+#define ARM64_NATIVE 1
+#endif
 
 /* ── unified result output ───────────────────────────────────────── */
 
-#define COL_GREEN  "\033[0;32m"
-#define COL_RED    "\033[0;31m"
-#define COL_YELLOW "\033[0;33m"
-#define COL_RESET  "\033[0m"
+/* set via --no-color (also forced for the mingw cross/wine target,
+ * whose console mangles ANSI SGI sequences) */
+static bool g_no_color = false;
+
+#define COL_GREEN  (g_no_color ? "" : "\033[0;32m")
+#define COL_RED    (g_no_color ? "" : "\033[0;31m")
+#define COL_YELLOW (g_no_color ? "" : "\033[0;33m")
+#define COL_CYAN   (g_no_color ? "" : "\033[0;36m")
+#define COL_RESET  (g_no_color ? "" : "\033[0m")
 
 static FILE *g_log_fp = NULL;
 
@@ -68,11 +204,16 @@ static void logprintf(const char *fmt, ...) {
 
 /* ── process execution ───────────────────────────────────────────── */
 
+static char *strappend(char *buf, size_t *len, size_t *cap, const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+
+#ifndef _WIN32
 static volatile sig_atomic_t alarm_fired;
 static void on_alarm(int sig) {
     (void)sig;
     alarm_fired = 1;
 }
+#endif
 
 typedef struct {
     char *out;
@@ -87,6 +228,144 @@ static void proc_free(ProcResult *r) {
     r->out = NULL;
 }
 
+#ifdef _WIN32
+/* Build a Windows command line from argv, quoting each argument per the
+ * MSVCRT/CommandLineToArgvW backslash-escaping rules. */
+static char *build_cmdline(char *const argv[]) {
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (int i = 0; argv[i]; i++) {
+        const char *a = argv[i];
+        if (i) buf = strappend(buf, &len, &cap, " ");
+        bool needs_quotes = a[0] == '\0' || strpbrk(a, " \t\"") != NULL;
+        if (!needs_quotes) {
+            buf = strappend(buf, &len, &cap, "%s", a);
+            continue;
+        }
+        buf = strappend(buf, &len, &cap, "\"");
+        size_t nbs = 0;
+        for (const char *p = a;; p++) {
+            if (*p == '\\') {
+                nbs++;
+                continue;
+            }
+            if (*p == '"') {
+                for (size_t k = 0; k < nbs * 2 + 1; k++) buf = strappend(buf, &len, &cap, "\\");
+                buf = strappend(buf, &len, &cap, "\"");
+            } else if (*p == '\0') {
+                for (size_t k = 0; k < nbs * 2; k++) buf = strappend(buf, &len, &cap, "\\");
+                break;
+            } else {
+                for (size_t k = 0; k < nbs; k++) buf = strappend(buf, &len, &cap, "\\");
+                char c[2] = {*p, '\0'};
+                buf = strappend(buf, &len, &cap, "%s", c);
+            }
+            nbs = 0;
+        }
+        buf = strappend(buf, &len, &cap, "\"");
+    }
+    if (!buf) buf = strdup("");
+    return buf;
+}
+
+typedef struct {
+    HANDLE pipe;
+    char *out;
+    size_t out_len, cap;
+} ReaderCtx;
+
+static DWORD WINAPI reader_thread(LPVOID arg) {
+    ReaderCtx *ctx = arg;
+    char buf[8192];
+    DWORD n;
+    while (ReadFile(ctx->pipe, buf, sizeof(buf), &n, NULL) && n > 0) {
+        if (ctx->out_len + n + 1 > ctx->cap) {
+            ctx->cap = ctx->out_len + n + 8192;
+            ctx->out = realloc(ctx->out, ctx->cap);
+        }
+        memcpy(ctx->out + ctx->out_len, buf, n);
+        ctx->out_len += n;
+    }
+    return 0;
+}
+
+/* capture: 0 = both stdout+stderr, 1 = stderr only, 2 = stdout only */
+static ProcResult proc_run(char *const argv[], int timeout_sec, int capture) {
+    ProcResult r = {0};
+    r.exit_code = -1;
+
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    HANDLE read_h, write_h;
+    if (!CreatePipe(&read_h, &write_h, &sa, 0)) {
+        r.spawn_failed = true;
+        return r;
+    }
+    SetHandleInformation(read_h, HANDLE_FLAG_INHERIT, 0);
+
+    HANDLE nul_h = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                               OPEN_EXISTING, 0, NULL);
+
+    STARTUPINFOA si = {0};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul_h;
+    if (capture == 1) { /* stderr only */
+        si.hStdOutput = nul_h;
+        si.hStdError = write_h;
+    } else if (capture == 2) { /* stdout only */
+        si.hStdOutput = write_h;
+        si.hStdError = nul_h;
+    } else { /* both */
+        si.hStdOutput = write_h;
+        si.hStdError = write_h;
+    }
+
+    char *cmdline = build_cmdline(argv);
+    PROCESS_INFORMATION pi = {0};
+    BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    free(cmdline);
+    CloseHandle(write_h);
+    if (nul_h != INVALID_HANDLE_VALUE) CloseHandle(nul_h);
+    if (!ok) {
+        CloseHandle(read_h);
+        r.spawn_failed = true;
+        return r;
+    }
+    CloseHandle(pi.hThread);
+
+    ReaderCtx ctx = {0};
+    ctx.pipe = read_h;
+    ctx.cap = 8192;
+    ctx.out = malloc(ctx.cap);
+    HANDLE reader = CreateThread(NULL, 0, reader_thread, &ctx, 0, NULL);
+
+    DWORD wait = WaitForSingleObject(pi.hProcess, (DWORD)timeout_sec * 1000);
+    if (wait == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        r.timed_out = true;
+    } else {
+        DWORD exit_code = 0;
+        GetExitCodeProcess(pi.hProcess, &exit_code);
+        r.exit_code = (int)exit_code;
+    }
+
+    WaitForSingleObject(reader, INFINITE);
+    CloseHandle(reader);
+    CloseHandle(read_h);
+    CloseHandle(pi.hProcess);
+
+    r.out = ctx.out;
+    r.out_len = ctx.out_len;
+    if (!r.out) r.out = strdup("");
+    else {
+        r.out = realloc(r.out, r.out_len + 1);
+        r.out[r.out_len] = '\0';
+    }
+    return r;
+}
+#else
 /* capture: 0 = both stdout+stderr, 1 = stderr only, 2 = stdout only */
 static ProcResult proc_run(char *const argv[], int timeout_sec, int capture) {
     ProcResult r = {0};
@@ -188,6 +467,7 @@ static ProcResult proc_run(char *const argv[], int timeout_sec, int capture) {
     }
     return r;
 }
+#endif /* _WIN32 */
 
 /* ── string / file helpers ───────────────────────────────────────── */
 
@@ -303,8 +583,6 @@ static bool word_in(const char *s, const char *needle) {
     return false;
 }
 
-static char *strappend(char *buf, size_t *len, size_t *cap, const char *fmt, ...)
-    __attribute__((format(printf, 4, 5)));
 static char *strappend(char *buf, size_t *len, size_t *cap, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -325,18 +603,27 @@ static char *strappend(char *buf, size_t *len, size_t *cap, const char *fmt, ...
 
 /* ── platform detection ──────────────────────────────────────────── */
 
-static const char *PLATFORM = "linux";
+static const char *platform = "linux";
 static bool is_arm64, is_darwin_cross, is_mingw_native;
 static char runner_cmd[512];
 static bool has_runner;
+#ifndef ARM64_NATIVE
 static char *arm64_sysroot;
+#endif
 
 static void detect_platform(const char *rcc_path) {
     struct utsname u;
     uname(&u);
 
     if (contains(rcc_path, "arm64-cross") || contains(rcc_path, "rcc-arm64")) {
-        PLATFORM = "arm64_cross";
+#ifdef ARM64_NATIVE
+        /* Already running natively on aarch64 (or under qemu-aarch64);
+         * rcc-arm64 and the binaries it produces execute directly,
+         * without a runner wrapper. This is much faster. */
+        platform = "linux";
+        is_arm64 = true;
+#else
+        platform = "arm64_cross";
         is_arm64 = true;
         static const char *sysroots[] = {
             "/usr/aarch64-linux-gnu",
@@ -364,28 +651,44 @@ static void detect_platform(const char *rcc_path) {
             snprintf(runner_cmd, sizeof(runner_cmd), "qemu-aarch64");
             has_runner = true;
         }
+#endif
     } else if (contains(rcc_path, "darwin-cross") || contains(rcc_path, "rcc-darwin")) {
-        PLATFORM = "darwin_cross";
+        platform = "darwin_cross";
         is_darwin_cross = true;
         is_arm64 = true;
     } else if (contains(rcc_path, "mingw-cross")) {
-        PLATFORM = "mingw_cross";
+        platform = "mingw_cross";
         snprintf(runner_cmd, sizeof(runner_cmd), "wine");
         has_runner = true;
     } else if (contains(rcc_path, ".exe")) {
-        PLATFORM = "mingw";
-        is_mingw_native = true;
+#ifdef _WIN32
+        if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
+            platform = "mingw_cross";
+            is_mingw_native = true;
+            /* No runner needed — we're already inside wine,
+             * so spawned .exe files execute directly. */
+        } else {
+            platform = "mingw";
+            is_mingw_native = true;
+        }
+#else
         if (strcmp(u.sysname, "Linux") == 0 && access("/usr/bin/wine", X_OK) == 0) {
+            platform = "mingw_cross";
             snprintf(runner_cmd, sizeof(runner_cmd), "wine");
             has_runner = true;
+        } else {
+            platform = "mingw";
+            is_mingw_native = true;
         }
+#endif
     } else {
-        if (strcmp(u.sysname, "Darwin") == 0) PLATFORM = "arm64";
+        if (strcmp(u.sysname, "Darwin") == 0)
+            platform = "arm64";
         else if (contains(u.sysname, "MINGW") || contains(u.sysname, "MSYS") ||
                  contains(u.sysname, "CYGWIN"))
-            PLATFORM = "mingw";
+            platform = "mingw";
         else
-            PLATFORM = "linux";
+            platform = "linux";
         if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0)
             is_arm64 = true;
     }
@@ -644,8 +947,8 @@ static void emit_backtrace(const char *exe_path, const char *args,
 
 /* ── TCC suite globals ───────────────────────────────────────────── */
 
-static const char *RCC, *RCCFLAGS, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
-static const char *ONLY_TEST;
+static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
+static const char *only_test;
 static int total, passed, failed, regressions, fixes, changed_cnt;
 
 typedef struct {
@@ -723,19 +1026,20 @@ static const char *old_status_for(const char *name) {
 }
 
 static void print_change(const char *base, const char *new_status) {
+    if (only_test) return;
     const char *old = old_status_for(base);
     if (!old) return;
     const char *oc = streq(old, "COMPILE_OK") ? "PASS" : old;
     const char *nc = streq(new_status, "COMPILE_OK") ? "PASS" : new_status;
     if (streq(oc, nc)) return;
     if (streq(nc, "PASS")) {
-        printf("    \033[0;32m-> FIXED\033[0m (was %s)\n", old);
+        printf("    %s-> FIXED%s (was %s)\n", COL_GREEN, COL_RESET, old);
         fixes++;
     } else if (streq(oc, "PASS")) {
-        printf("    \033[0;31m-> REGRESSION\033[0m (was PASS)\n");
+        printf("    %s-> REGRESSION%s (was PASS)\n", COL_RED, COL_RESET);
         regressions++;
     } else {
-        printf("    \033[0;33m-> CHANGED\033[0m (%s -> %s)\n", old, new_status);
+        printf("    %s-> CHANGED%s (%s -> %s)\n", COL_YELLOW, COL_RESET, old, new_status);
         changed_cnt++;
     }
 }
@@ -752,7 +1056,7 @@ static void run_one_test(const char *src_path, const char *base,
         snprintf(expect_file, sizeof(expect_file), "%s/%s.expect", TEST_DIR, base);
 
     bool in_cd_dir = false;
-    const char *orig_src = src_path, *orig_rcc = RCC;
+    const char *orig_src = src_path, *orig_rcc = rcc;
     const char *fname_only = strrchr(orig_src, '/');
     if (!fname_only) fname_only = orig_src;
     else
@@ -760,22 +1064,23 @@ static void run_one_test(const char *src_path, const char *base,
 
     if (is_cd_test(base)) {
         char rcc_abs[PATH_MAX];
-        if (realpath(RCC, rcc_abs)) {
+        if (realpath(rcc, rcc_abs)) {
             static char buf[PATH_MAX];
             strncpy(buf, rcc_abs, sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
-            RCC = buf;
+            rcc = buf;
         }
-        chdir(TEST_DIR);
-        src_path = fname_only;
-        in_cd_dir = true;
+        if (chdir(TEST_DIR) == 0) {
+            src_path = fname_only;
+            in_cd_dir = true;
+        } else
+            perror("chdir");
     }
 
     char tmp_exe[256];
-    snprintf(tmp_exe, sizeof(tmp_exe), "/tmp/rcc_test_%d", getpid());
+    snprintf(tmp_exe, sizeof(tmp_exe), "%s/rcc_test_%d", get_tmpdir(), getpid());
     if (is_mingw || (has_runner && contains(runner_cmd, "wine")))
         strcat(tmp_exe, ".exe");
-
     char *out_buf = NULL;
     size_t out_len = 0, out_cap = 0;
 
@@ -786,8 +1091,8 @@ static void run_one_test(const char *src_path, const char *base,
             for (char **tn = dt; *tn; tn++) {
                 char *ca[16];
                 int ai = 0;
-                ca[ai++] = (char *)RCC;
-                ca[ai++] = (char *)RCCFLAGS;
+                ca[ai++] = (char *)rcc;
+                ca[ai++] = (char *)rccflags;
                 char df[128];
                 snprintf(df, sizeof(df), "-D%s", *tn);
                 ca[ai++] = df;
@@ -834,9 +1139,9 @@ static void run_one_test(const char *src_path, const char *base,
             }
         }
         if (in_cd_dir) {
-            chdir(SCRIPT_DIR);
+            if (chdir(SCRIPT_DIR) != 0) perror("chdir");
             src_path = orig_src;
-            RCC = orig_rcc;
+            rcc = orig_rcc;
             in_cd_dir = false;
         }
         if (is_darwin_cross) {
@@ -863,7 +1168,7 @@ static void run_one_test(const char *src_path, const char *base,
                     print_change(base, "MISMATCH");
                     char sp[512];
                     snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                    FILE *sf = fopen(sp, "w");
+                    FILE *sf = fopen(sp, "wb");
                     if (sf) {
                         if (out_buf) fputs(out_buf, sf);
                         fclose(sf);
@@ -890,8 +1195,8 @@ static void run_one_test(const char *src_path, const char *base,
         for (int t = 0; tests[t]; t++) {
             char *ca[8];
             int ai = 0;
-            ca[ai++] = (char *)RCC;
-            ca[ai++] = (char *)RCCFLAGS;
+            ca[ai++] = (char *)rcc;
+            ca[ai++] = (char *)rccflags;
             char df[64];
             snprintf(df, sizeof(df), "-D%s", tests[t]);
             ca[ai++] = df;
@@ -909,16 +1214,16 @@ static void run_one_test(const char *src_path, const char *base,
                 out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[returns %d]\n", rc);
                 if (rc != exp_rc[t])
-                    emit_backtrace(tmp_exe, "", src_path, RCC, RCCFLAGS, NULL, &out_buf, &out_len, &out_cap);
+                    emit_backtrace(tmp_exe, "", src_path, rcc, rccflags, NULL, &out_buf, &out_len, &out_cap);
                 proc_free(&rr);
             }
             if (t == 0) out_buf = strappend(out_buf, &out_len, &out_cap, "\n");
             proc_free(&cr);
         }
         if (in_cd_dir) {
-            chdir(SCRIPT_DIR);
+            if (chdir(SCRIPT_DIR) != 0) perror("chdir");
             src_path = orig_src;
-            RCC = orig_rcc;
+            rcc = orig_rcc;
             in_cd_dir = false;
         }
         {
@@ -949,8 +1254,8 @@ static void run_one_test(const char *src_path, const char *base,
     {
         char *ca[16];
         int ai = 0;
-        ca[ai++] = (char *)RCC;
-        ca[ai++] = (char *)RCCFLAGS;
+        ca[ai++] = (char *)rcc;
+        ca[ai++] = (char *)rccflags;
         ca[ai++] = "-o";
         ca[ai++] = tmp_exe;
         if (p_src && *p_src) {
@@ -979,11 +1284,11 @@ static void run_one_test(const char *src_path, const char *base,
             failed++;
             add_row(base, "COMPILE_FAIL", "rcc returned non-zero");
             print_change(base, "COMPILE_FAIL");
-            if (cr.out && cr.out[0]) printf("%s", cr.out);
+            if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
             if (in_cd_dir) {
-                chdir(SCRIPT_DIR);
+                if (chdir(SCRIPT_DIR) != 0) perror("chdir");
                 src_path = orig_src;
-                RCC = orig_rcc;
+                rcc = orig_rcc;
             }
             proc_free(&cr);
             return;
@@ -993,9 +1298,9 @@ static void run_one_test(const char *src_path, const char *base,
     }
 
     if (in_cd_dir) {
-        chdir(SCRIPT_DIR);
+        if (chdir(SCRIPT_DIR) != 0) perror("chdir");
         src_path = orig_src;
-        RCC = orig_rcc;
+        rcc = orig_rcc;
         in_cd_dir = false;
     }
 
@@ -1021,8 +1326,8 @@ static void run_one_test(const char *src_path, const char *base,
 
     if (streq(base, "46_grep")) {
         char save_cwd[PATH_MAX];
-        getcwd(save_cwd, sizeof(save_cwd));
-        chdir(TEST_DIR);
+        if (!getcwd(save_cwd, sizeof(save_cwd))) save_cwd[0] = '\0';
+        if (chdir(TEST_DIR) != 0) perror("chdir");
         char *ga[8];
         int gai = 0;
         if (has_runner) {
@@ -1042,7 +1347,7 @@ static void run_one_test(const char *src_path, const char *base,
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         actual_exit = rr.exit_code;
         proc_free(&rr);
-        chdir(save_cwd);
+        if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
     } else {
         ProcResult rr = run_exe(tmp_exe, args, args && *args ? 20 : 5);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
@@ -1055,7 +1360,7 @@ static void run_one_test(const char *src_path, const char *base,
         failed++;
         add_row(base, "EXEC_FAIL", "non-zero exit");
         print_change(base, "EXEC_FAIL");
-        emit_backtrace(tmp_exe, args, src_path, RCC, RCCFLAGS, NULL, &out_buf, &out_len, &out_cap);
+        emit_backtrace(tmp_exe, args, src_path, rcc, rccflags, NULL, &out_buf, &out_len, &out_cap);
         unlink(tmp_exe);
         free(out_buf);
         return;
@@ -1078,7 +1383,7 @@ static void run_one_test(const char *src_path, const char *base,
                 print_change(base, "MISMATCH");
                 char sp[512];
                 snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                FILE *sf = fopen(sp, "w");
+                FILE *sf = fopen(sp, "wb");
                 if (sf) {
                     if (out_buf) fputs(out_buf, sf);
                     fclose(sf);
@@ -1103,7 +1408,7 @@ static void run_unit_tests(void) {
     static char unit_path[512];
     snprintf(unit_path, sizeof(unit_path), "%s/test", SCRIPT_DIR);
     if (!file_exists(unit_path)) return;
-    printf("\n\033[0;36mUnit tests (test/)\033[0m\n");
+    printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
     struct dirent **nl;
     int n = scandir(unit_path, &nl, NULL, alphasort);
@@ -1123,7 +1428,7 @@ static void run_unit_tests(void) {
         char *dot = strrchr(base, '.');
         if (dot) *dot = '\0';
 
-        if (ONLY_TEST && !streq(base, ONLY_TEST)) {
+        if (only_test && !streq(base, only_test)) {
             free(nl[i]);
             continue;
         }
@@ -1143,10 +1448,10 @@ static void run_unit_tests(void) {
         /* test_err: expect compile failure */
         if (streq(base, "test_err")) {
             char tmp[256];
-            snprintf(tmp, sizeof(tmp), "/tmp/rcc_test_%d", getpid());
+            snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
             if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
                 strcat(tmp, ".exe");
-            char *ca[] = {(char *)RCC, (char *)RCCFLAGS, "-o", tmp, src_path, NULL};
+            char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
             ProcResult cr = proc_run(ca, 30, 1);
             if (cr.exit_code == 0) {
                 print_result(base, COL_RED, "SHOULD FAIL");
@@ -1167,18 +1472,18 @@ static void run_unit_tests(void) {
 
         int expected_exit = test_unit_expected_exit(base);
         char tmp[256];
-        snprintf(tmp, sizeof(tmp), "/tmp/rcc_test_%d", getpid());
+        snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
         if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
             strcat(tmp, ".exe");
         {
-            char *ca[] = {(char *)RCC, (char *)RCCFLAGS, "-o", tmp, src_path, NULL};
+            char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
             ProcResult cr = proc_run(ca, 30, 1);
             if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
                 print_result(base, COL_RED, "COMPILE FAIL");
                 failed++;
                 add_row(base, "COMPILE_FAIL", cr.exit_code != 0 ? "rcc returned non-zero" : "executable missing");
                 print_change(base, "COMPILE_FAIL");
-                if (cr.out && cr.out[0]) printf("%s", cr.out);
+                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
                 proc_free(&cr);
                 free(nl[i]);
                 continue;
@@ -1225,7 +1530,7 @@ static void run_unit_tests(void) {
 static void generate_tcc_report(void) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", SCRIPT_DIR, REPORT_FILE);
-    FILE *rf = fopen(path, "w");
+    FILE *rf = fopen(path, "wb");
     if (!rf) return;
 
     time_t now = time(NULL);
@@ -1275,11 +1580,16 @@ static int run_tcc_suite(void) {
     free(old_states);
     old_states = NULL;
 
-    if (!file_exists("tinycc"))
-        system("git submodule update --init --recursive tinycc 2>/dev/null");
-    if (!file_exists("tcc_tests") && file_exists("tinycc/tests/tests2"))
-        symlink("tinycc/tests/tests2", "tcc_tests");
-
+    if (!file_exists("tinycc")) {
+        if (system("git submodule update --init --recursive tinycc 2>/dev/null") != 0)
+            fprintf(stderr, "warning: failed to fetch tinycc submodule\n");
+    }
+#ifndef _WIN32
+    if (!file_exists("tcc_tests") && file_exists("tinycc/tests/tests2")) {
+        if (symlink("tinycc/tests/tests2", "tcc_tests") != 0)
+            perror("symlink");
+    }
+#endif
     TEST_DIR = "tinycc/tests/tests2";
     if (!file_exists(TEST_DIR)) {
         fprintf(stderr, "TCC test directory not found: %s\n", TEST_DIR);
@@ -1287,23 +1597,22 @@ static int run_tcc_suite(void) {
     }
 
     static char rf_buf[256];
-    if (streq(PLATFORM, "arm64_cross")) snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64_cross.md");
-    else if (streq(PLATFORM, "darwin_cross"))
+    if (streq(platform, "arm64_cross")) snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64_cross.md");
+    else if (streq(platform, "darwin_cross"))
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_darwin_cross.md");
-    else if (streq(PLATFORM, "mingw_cross"))
+    else if (streq(platform, "mingw_cross"))
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_mingw_cross.md");
-    else if (streq(PLATFORM, "mingw"))
+    else if (streq(platform, "mingw"))
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_mingw.md");
-    else if (streq(PLATFORM, "arm64"))
+    else if (streq(platform, "arm64"))
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64.md");
-    else
+    else // TODO: BSD's, musl, arm64-elf
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_linux.md");
     REPORT_FILE = rf_buf;
-
+    bool is_mingw = is_mingw_native || streq(platform, "mingw_cross");
     load_old_states(REPORT_FILE);
-    bool is_mingw = is_mingw_native || contains(RCC, "mingw-cross");
 
-    printf("\033[0;36mTCC compatibility tests\033[0m\n");
+    printf("%sTCC compatibility tests%s\n", COL_CYAN, COL_RESET);
 
     char **files = list_c_files_sorted(TEST_DIR);
     const char *p_src = NULL;
@@ -1330,7 +1639,7 @@ static int run_tcc_suite(void) {
                 if (is_mingw) p_src = "-mno-ms-bitfields";
             }
 
-            if (ONLY_TEST && !streq(base, ONLY_TEST)) {
+            if (only_test && !streq(base, only_test)) {
                 p_src = NULL;
                 continue;
             }
@@ -1349,28 +1658,29 @@ static int run_tcc_suite(void) {
     }
     if (p_src) free((void *)p_src);
 
-    if (!ONLY_TEST) {
+    if (!only_test) {
         char sp[256];
-        snprintf(sp, sizeof(sp), "test-tcc-%s.summary", PLATFORM);
-        FILE *sf = fopen(sp, "w");
+        snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
         if (sf) {
             fprintf(sf, "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", total, passed, failed);
             fclose(sf);
         }
     }
 
-    int pct = total > 0 ? passed * 100 / total : 0;
-    printf("\n\033[0;36mTCC Results: %d/%d passed (%d%%), %d failed.\033[0m\n",
-           passed, total, pct, failed);
-    if (regressions + fixes + changed_cnt > 0) {
-        printf("Changes vs previous:");
-        if (regressions) printf("  \033[0;31m%d regression(s)\033[0m", regressions);
-        if (fixes) printf("  \033[0;32m%d fixed\033[0m", fixes);
-        if (changed_cnt) printf("  \033[0;33m%d changed\033[0m", changed_cnt);
-        printf("\n");
+    if (!only_test) {
+        int pct = total > 0 ? passed * 100 / total : 0;
+        printf("\n%sTCC Results: %d/%d passed (%d%%), %d failed.%s\n",
+               COL_CYAN, passed, total, pct, failed, COL_RESET);
+        if (regressions + fixes + changed_cnt > 0) {
+            printf("Changes vs previous:");
+            if (regressions) printf("  %s%d regression(s)%s", COL_RED, regressions, COL_RESET);
+            if (fixes) printf("  %s%d fixed%s", COL_GREEN, fixes, COL_RESET);
+            if (changed_cnt) printf("  %s%d changed%s", COL_YELLOW, changed_cnt, COL_RESET);
+            printf("\n");
+        }
+        generate_tcc_report();
     }
-
-    if (!ONLY_TEST) generate_tcc_report();
     return failed > 0 ? 1 : 0;
 }
 
@@ -1415,7 +1725,7 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     if (contains(content, "dg-skip-if") &&
         (contains(content, "i?86") || contains(content, "x86_64") || contains(content, "i386")))
         return SKIP_X86_ONLY;
-    if (streq(PLATFORM, "arm64") && contains(content, "#include \"gcc_tmpnam.h\""))
+    if (streq(platform, "arm64") && contains(content, "#include \"gcc_tmpnam.h\""))
         return SKIP_TMPNAM;
     if (contains(content, "__complex__") || contains(content, "Complex"))
         return SKIP_COMPLEX;
@@ -1474,13 +1784,13 @@ static void run_torture_test(const char *src, bool summary_only) {
     }
 
     char exe_path[512];
-    snprintf(exe_path, sizeof(exe_path), "/tmp/torture_rcc_%s", name);
+    snprintf(exe_path, sizeof(exe_path), "%s/torture_rcc_%s", get_tmpdir(), name);
     if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
         strcat(exe_path, ".exe");
     char *ca[16];
     int ai = 0;
-    ca[ai++] = (char *)RCC;
-    ca[ai++] = (char *)RCCFLAGS;
+    ca[ai++] = (char *)rcc;
+    ca[ai++] = (char *)rccflags;
     ca[ai++] = "-I";
     ca[ai++] = ".";
     ca[ai++] = "-o";
@@ -1500,7 +1810,7 @@ static void run_torture_test(const char *src, bool summary_only) {
             tort_add_error(&g_tort_compile_errors, name);
             if (!summary_only) {
                 print_result(name, COL_RED, "FAIL (compile)");
-                if (cr.out && cr.out[0]) printf("%s", cr.out);
+                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
             }
         }
         proc_free(&cr);
@@ -1509,7 +1819,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     }
     proc_free(&cr);
 
-    if (streq(PLATFORM, "darwin_cross")) {
+    if (streq(platform, "darwin_cross")) {
         g_tort_pass++;
         if (!summary_only) print_result(name, COL_GREEN, "PASS (compile only)");
         unlink(exe_path);
@@ -1538,7 +1848,7 @@ static void run_torture_test(const char *src, bool summary_only) {
             print_result(name, COL_RED, "FAIL (runtime)");
             if (!has_runner) {
                 static const char *tort_extra[] = {"-I", ".", "-lm", NULL};
-                emit_backtrace(exe_path, NULL, src, RCC, RCCFLAGS,
+                emit_backtrace(exe_path, NULL, src, rcc, rccflags,
                                tort_extra, NULL, NULL, NULL);
             }
         }
@@ -1566,26 +1876,26 @@ static int run_torture_suite(bool summary_only) {
     }
 
     /* open log file for torture output */
-    if (!ONLY_TEST && !summary_only) {
+    if (!only_test && !summary_only) {
         char lp[PATH_MAX];
-        snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, PLATFORM);
-        g_log_fp = fopen(lp, "w");
+        snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform);
+        g_log_fp = fopen(lp, "wb");
     }
 
-    logprintf("\n\033[0;36mGCC torture tests\033[0m\n");
+    logprintf("\n%sGCC torture tests%s\n", COL_CYAN, COL_RESET);
 
     char save_cwd[PATH_MAX];
-    getcwd(save_cwd, sizeof(save_cwd));
+    if (!getcwd(save_cwd, sizeof(save_cwd))) save_cwd[0] = '\0';
     if (chdir(tort_dir) != 0) {
         perror("chdir torture");
         return 1;
     }
 
-    if (ONLY_TEST) {
+    if (only_test) {
         char sp[512];
-        if (strstr(ONLY_TEST, ".c")) snprintf(sp, sizeof(sp), "%s", ONLY_TEST);
+        if (strstr(only_test, ".c")) snprintf(sp, sizeof(sp), "%s", only_test);
         else
-            snprintf(sp, sizeof(sp), "%s.c", ONLY_TEST);
+            snprintf(sp, sizeof(sp), "%s.c", only_test);
         run_torture_test(sp, summary_only);
     } else {
         char **files = list_c_files_sorted(".");
@@ -1598,9 +1908,9 @@ static int run_torture_suite(bool summary_only) {
         }
     }
 
-    chdir(save_cwd);
+    if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
 
-    if (!ONLY_TEST) {
+    if (!only_test) {
         if (!summary_only) logprintf("\n");
         logprintf("=== TOTAL=%d PASS=%d FAIL_COMPILE=%d FAIL_RUNTIME=%d SKIP=%d ===\n",
                   g_tort_total, g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
@@ -1612,8 +1922,8 @@ static int run_torture_suite(bool summary_only) {
             logprintf("\nRuntime failures: %s\n", g_tort_runtime_errors);
 
         char sp[256];
-        snprintf(sp, sizeof(sp), "test-torture-%s.summary", PLATFORM);
-        FILE *sf = fopen(sp, "w");
+        snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
         if (sf) {
             fprintf(sf, "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n",
                     g_tort_total, g_tort_pass, g_tort_fail_compile + g_tort_fail_runtime,
@@ -1624,17 +1934,18 @@ static int run_torture_suite(bool summary_only) {
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     int max_fail;
-    if (ONLY_TEST) max_fail = 1;
-    else if (streq(PLATFORM, "arm64_cross"))
+    if (only_test)
+        max_fail = 1;
+    else if (streq(platform, "arm64_cross"))
         max_fail = 28;
-    else if (streq(PLATFORM, "arm64"))
+    else if (streq(platform, "arm64"))
         max_fail = 27;
-    else if (streq(PLATFORM, "mingw_cross"))
+    else if (streq(platform, "mingw_cross"))
         max_fail = 63;
-    else if (streq(PLATFORM, "darwin_cross"))
+    else if (streq(platform, "darwin_cross"))
         max_fail = 2;
-    else if (streq(PLATFORM, "mingw"))
-        max_fail = 83;
+    else if (streq(platform, "mingw"))
+        max_fail = 37;
     else
         max_fail = 15;
 
@@ -1657,25 +1968,35 @@ static int run_compliance_suite(void) {
         return 0;
     }
 
-    printf("\n\033[0;36mNCC Compliance tests (test/compliance/)\033[0m\n");
+    printf("\n%sNCC Compliance tests (test/compliance/)%s\n", COL_CYAN, COL_RESET);
 
     /* locate gcc */
-    static const char *gcc_cands[] = {"/usr/bin/gcc", "/usr/local/bin/gcc", NULL};
-    const char *gcc_path = NULL;
-    for (const char **c = gcc_cands; *c; c++) {
-        if (access(*c, X_OK) == 0) {
-            gcc_path = *c;
-            break;
+    const char *gcc_path = getenv("GCC_FOR_TESTS");
+    if (!gcc_path || !gcc_path[0]) {
+#ifdef _WIN32
+        /* Let CreateProcess search PATH for gcc.exe (e.g. the MinGW-w64
+         * toolchain installed under the wine prefix's C:\mingw64\bin). The
+         * Unix candidate paths below would resolve through wine's Z:\ drive
+         * to a Linux ELF gcc, which can't be run directly here. */
+        gcc_path = "gcc";
+#else
+        static const char *gcc_cands[] = {"/usr/bin/gcc", "/usr/local/bin/gcc", NULL};
+        for (const char **c = gcc_cands; *c; c++) {
+            if (access(*c, X_OK) == 0) {
+                gcc_path = *c;
+                break;
+            }
         }
-    }
-    if (!gcc_path) {
-        FILE *fp = popen("command -v gcc 2>/dev/null", "r");
-        static char gcc_buf[256];
-        if (fp && fgets(gcc_buf, sizeof(gcc_buf), fp)) {
-            gcc_buf[strcspn(gcc_buf, "\n")] = '\0';
-            if (gcc_buf[0]) gcc_path = gcc_buf;
+        if (!gcc_path) {
+            FILE *fp = popen("command -v gcc 2>/dev/null", "r");
+            static char gcc_buf[256];
+            if (fp && fgets(gcc_buf, sizeof(gcc_buf), fp)) {
+                gcc_buf[strcspn(gcc_buf, "\n")] = '\0';
+                if (gcc_buf[0]) gcc_path = gcc_buf;
+            }
+            if (fp) pclose(fp);
         }
-        if (fp) pclose(fp);
+#endif
     }
 
     int comp_pass = 0, comp_fail = 0, comp_skip = 0;
@@ -1697,13 +2018,22 @@ static int run_compliance_suite(void) {
         char *dot = strrchr(base, '.');
         if (dot) *dot = '\0';
 
-        if (ONLY_TEST && !streq(base, ONLY_TEST)) {
+        if (only_test && !streq(base, only_test)) {
             free(nl[i]);
             continue;
         }
 
         char src_path[PATH_MAX + NAME_MAX + 2];
         snprintf(src_path, sizeof(src_path), "%s/%s", comp_dir, fname);
+
+        /* On native Windows, MSVCRT doesn't support %Lf (long double)
+         * format specifiers — gcc output differs from rcc. */
+        if (is_mingw_native && streq(base, "15_long_double_conv")) {
+            print_result(base, COL_YELLOW, "SKIP (%%Lf unsupported by MSVCRT)");
+            comp_skip++;
+            free(nl[i]);
+            continue;
+        }
 
         if (!gcc_path) {
             print_result(base, COL_YELLOW, "SKIP (gcc not found)");
@@ -1713,8 +2043,8 @@ static int run_compliance_suite(void) {
         }
 
         char gcc_exe[PATH_MAX], rcc_exe[PATH_MAX];
-        snprintf(gcc_exe, sizeof(gcc_exe), "/tmp/compliance_gcc_%d_%s", getpid(), base);
-        snprintf(rcc_exe, sizeof(rcc_exe), "/tmp/compliance_rcc_%d_%s", getpid(), base);
+        snprintf(gcc_exe, sizeof(gcc_exe), "%s/compliance_gcc_%d_%s", get_tmpdir(), getpid(), base);
+        snprintf(rcc_exe, sizeof(rcc_exe), "%s/compliance_rcc_%d_%s", get_tmpdir(), getpid(), base);
 
         { /* compile with gcc */
             char *ca[] = {(char *)gcc_path, "-o", gcc_exe, src_path, NULL};
@@ -1729,11 +2059,11 @@ static int run_compliance_suite(void) {
             proc_free(&cr);
         }
         { /* compile with rcc */
-            char *ca[] = {(char *)RCC, "-o", rcc_exe, src_path, NULL};
+            char *ca[] = {(char *)rcc, "-o", rcc_exe, src_path, NULL};
             ProcResult cr = proc_run(ca, 30, 1);
             if (cr.exit_code != 0) {
                 print_result(base, COL_RED, "FAIL (rcc compile)");
-                if (cr.out && cr.out[0]) printf("    %s\n", cr.out);
+                if (cr.out && cr.out[0]) fprintf(stderr, "    %s\n", cr.out);
                 comp_fail++;
                 proc_free(&cr);
                 unlink(gcc_exe);
@@ -1772,10 +2102,10 @@ static int run_compliance_suite(void) {
     if (comp_skip) printf(", %d skipped", comp_skip);
     printf("\n");
 
-    if (!ONLY_TEST) {
+    if (!only_test) {
         char sp[256];
-        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", PLATFORM);
-        FILE *sf = fopen(sp, "w");
+        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
         if (sf) {
             fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
             fclose(sf);
@@ -1789,13 +2119,23 @@ static int run_compliance_suite(void) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 static int run_ctest_suite(void) {
+    /* Detect wine early — git and system() call cmd.exe which can't
+     * find native Linux binaries. */
+    bool under_wine = false;
+#ifdef _WIN32
+    under_wine = GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version") != NULL;
+#else
+    under_wine = (has_runner && contains(runner_cmd, "wine"));
+#endif
+
     char ctest_dir[PATH_MAX];
     snprintf(ctest_dir, sizeof(ctest_dir), "%s/c-testsuite", SCRIPT_DIR);
 
-    if (!file_exists(ctest_dir)) {
-        char cmd[512];
-        snprintf(cmd, sizeof(cmd), "git -C '%s' submodule update --init --recursive c-testsuite 2>/dev/null", SCRIPT_DIR);
-        system(cmd);
+    if (!has_runner && !streq(platform, "darwin_cross") && !file_exists(ctest_dir)) {
+        char gcmd[512];
+        snprintf(gcmd, sizeof(gcmd), "git -C '%s' submodule update --init --recursive c-testsuite 2>/dev/null", SCRIPT_DIR);
+        if (system(gcmd) != 0)
+            fprintf(stderr, "warning: failed to fetch c-testsuite submodule\n");
     }
 
     char single_exec[PATH_MAX + 32];
@@ -1806,27 +2146,34 @@ static int run_ctest_suite(void) {
     }
 
     /* clean stale state left by a previous test run */
-    char fred[PATH_MAX + 32];
-    snprintf(fred, sizeof(fred), "%s/fred.txt", ctest_dir);
-    if (file_exists(fred)) {
-        char cmd[PATH_MAX + 64];
-        snprintf(cmd, sizeof(cmd), "git -C '%s' clean -dxf . 2>/dev/null", ctest_dir);
-        system(cmd);
+    if (!under_wine && !has_runner && !streq(platform, "darwin_cross")) {
+        char fred[PATH_MAX + 32];
+        snprintf(fred, sizeof(fred), "%s/fred.txt", ctest_dir);
+        if (file_exists(fred)) {
+            char gcmd[PATH_MAX + 64];
+            snprintf(gcmd, sizeof(gcmd), "git -C '%s' clean -dxf . 2>/dev/null", ctest_dir);
+            if (system(gcmd) != 0)
+                fprintf(stderr, "warning: failed to clean c-testsuite directory\n");
+        }
     }
 
-    printf("\n\033[0;36mC-testsuite\033[0m\n");
-    printf("Start c-testsuite with %s -O1 -lm\n", RCC);
+    printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
 
-    /* run: CC=<rcc> CFLAGS="-O1 -lm" ./single-exec posix — parse TAP directly */
+    if (is_mingw_native || under_wine) {
+        printf("SKIP (requires POSIX shell; cmd.exe cannot run shell scripts)\n");
+        return 0;
+    }
+
+    printf("Start c-testsuite with %s -O1 -lm\n", rcc);
+
     char cmd[PATH_MAX * 2 + 128];
-    /* stdbuf -oL forces line-buffered stdout in the subprocess so results
-     * arrive immediately rather than in 4K chunks */
     const char *stdbuf = access("/usr/bin/stdbuf", X_OK) == 0 ? "stdbuf -oL " : "";
     snprintf(cmd, sizeof(cmd),
              "cd '%s' && env CC='%s' CFLAGS='-O1 -lm' %s./single-exec posix 2>/dev/null",
-             ctest_dir, RCC, stdbuf);
+             ctest_dir, rcc, stdbuf);
 
     FILE *fp = popen(cmd, "r");
+
     if (!fp) {
         fprintf(stderr, "c-testsuite: failed to run\n");
         return 1;
@@ -1868,7 +2215,7 @@ static int run_ctest_suite(void) {
     printf("  pass  %d\n", ctest_pass);
     printf("  skip  %d\n", ctest_skip);
     if (ctest_fail > 0)
-        printf("  " COL_RED "fail  %d" COL_RESET "\n", ctest_fail);
+        printf("  %sfail  %d%s\n", COL_RED, ctest_fail, COL_RESET);
     else
         printf("  fail  %d\n", ctest_fail);
     printf("  total %d\n", ctest_total);
@@ -1878,10 +2225,10 @@ static int run_ctest_suite(void) {
     else
         printf("\nOK: %d failures, within limit of 0\n", ctest_fail);
 
-    if (!ONLY_TEST) {
+    if (!only_test) {
         char sp[256];
-        snprintf(sp, sizeof(sp), "test-ctest-%s.summary", PLATFORM);
-        FILE *sf = fopen(sp, "w");
+        snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
         if (sf) {
             fprintf(sf, "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
                     ctest_total, ctest_pass, ctest_fail, ctest_skip);
@@ -1906,27 +2253,27 @@ static void generate_report(void) {
         {"compliance", "NCC Compliance Tests (vs GCC)"},
         {"torture", "GCC Torture Tests"},
     };
-    static const int NSUITE = 5;
+#define NSUITE sizeof(suite_meta)/sizeof(*suite_meta)
 
     const char *desc =
-        streq(PLATFORM, "linux") ? "Linux x86_64" : streq(PLATFORM, "mingw_cross") ? "Windows x86_64 (mingw cross)"
-        : streq(PLATFORM, "arm64_cross")                                           ? "Linux ARM64 (aarch64 cross)"
-        : streq(PLATFORM, "darwin_cross")                                          ? "macOS ARM64 (darwin cross, compile+link only)"
-        : streq(PLATFORM, "arm64")                                                 ? "macOS ARM64 (native)"
-        : streq(PLATFORM, "mingw")                                                 ? "Windows x86_64 (native)"
-                                                                                   : PLATFORM;
+        streq(platform, "linux") ? "Linux x86_64" : streq(platform, "mingw_cross") ? "Windows x86_64 (mingw cross)"
+        : streq(platform, "arm64_cross")                                           ? "Linux ARM64 (aarch64 cross)"
+        : streq(platform, "darwin_cross")                                          ? "macOS ARM64 (darwin cross, compile+link only)"
+        : streq(platform, "arm64")                                                 ? "macOS ARM64 (native)"
+        : streq(platform, "mingw")                                                 ? "Windows x86_64 (native)"
+                                                                                   : platform;
 
     char report_path[PATH_MAX];
-    snprintf(report_path, sizeof(report_path), "%s/test_report_%s.md", SCRIPT_DIR, PLATFORM);
+    snprintf(report_path, sizeof(report_path), "%s/test_report_%s.md", SCRIPT_DIR, platform);
 
     struct {
         int total, pass, fail, skip, fail_compile, fail_runtime;
         bool found;
-    } s[4] = {0};
+    } s[NSUITE] = {0};
 
-    for (int i = 0; i < NSUITE; i++) {
+    for (size_t i = 0; i < NSUITE; i++) {
         char sp[PATH_MAX];
-        snprintf(sp, sizeof(sp), "%s/test-%s-%s.summary", SCRIPT_DIR, suite_meta[i].id, PLATFORM);
+        snprintf(sp, sizeof(sp), "%s/test-%s-%s.summary", SCRIPT_DIR, suite_meta[i].id, platform);
         char *c = slurp(sp);
         if (!c) continue;
         s[i].found = true;
@@ -1953,14 +2300,14 @@ static void generate_report(void) {
     }
 
     int ov_total = 0, ov_pass = 0, ov_fail = 0;
-    for (int i = 0; i < NSUITE; i++) {
+    for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found) continue;
         ov_total += s[i].total;
         ov_pass += s[i].pass;
         ov_fail += s[i].fail;
     }
 
-    FILE *rf = fopen(report_path, "w");
+    FILE *rf = fopen(report_path, "wb");
     if (!rf) {
         perror(report_path);
         return;
@@ -1981,7 +2328,7 @@ static void generate_report(void) {
     if (ov_total > 0)
         fprintf(rf, "- **Overall Pass Rate**: %d%%\n", ov_pass * 100 / ov_total);
 
-    for (int i = 0; i < NSUITE; i++) {
+    for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found || s[i].total == 0) continue;
         fprintf(rf, "\n## %s\n\n", suite_meta[i].label);
         fprintf(rf, "- **Total**: %d\n", s[i].total);
@@ -2001,7 +2348,7 @@ static void generate_report(void) {
     }
 
     fclose(rf);
-    printf("Unified report saved to test_report_%s.md\n", PLATFORM);
+    printf("Unified report saved to test_report_%s.md\n", platform);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2009,6 +2356,15 @@ static void generate_report(void) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    /* enable ANSI escape sequence processing (COL_GREEN etc.) on the
+     * native console; ansi.sys is not loaded by default on Windows */
+    HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode;
+    if (GetConsoleMode(hout, &mode))
+        SetConsoleMode(hout, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#endif
+
     /* resolve script dir and chdir to it */
     {
         char *dir = strdup(argv[0]);
@@ -2023,12 +2379,12 @@ int main(int argc, char **argv) {
         free(dir);
     }
 
-    RCCFLAGS = "-O1";
+    rccflags = "-O1";
     bool run_tcc = false, run_units = false, run_torture = false;
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
-    RCC = NULL;
-    ONLY_TEST = NULL;
+    rcc = NULL;
+    only_test = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -2046,6 +2402,8 @@ int main(int argc, char **argv) {
             run_ctest = true;
         else if (streq(a, "--summary"))
             summary_only = true;
+        else if (streq(a, "--no-color"))
+            g_no_color = true;
         else if (streq(a, "--help") || streq(a, "-h")) {
             printf("Usage: ./run_tests [rcc-binary] [options] [test-name]\n\n");
             printf("Options (default: --tcc --unit-tests --compliance --ctest):\n");
@@ -2055,26 +2413,34 @@ int main(int argc, char **argv) {
             printf("  --compliance  NCC Compliance tests (gcc vs rcc output comparison)\n");
             printf("  --ctest       C-testsuite (posix single-exec suite)\n");
             printf("  --all         All test suites\n");
-            printf("  --summary     Torture summary-only (no per-test output)\n\n");
+            printf("  --summary     Torture summary-only (no per-test output)\n");
+            printf("  --no-color    Disable ANSI color output\n\n");
             printf("rcc-binary  Path to rcc binary (auto-detected if not given)\n");
             printf("test-name   Run only this one test\n");
             return 0;
         }
         /* first non-flag arg that looks like an executable path is the rcc binary;
            otherwise treat it as a test-name filter (rcc is auto-detected) */
-        else if (!RCC && (access(a, X_OK) == 0 || strchr(a, '/') != NULL || strchr(a, '\\') != NULL))
-            RCC = a;
-        else if (!ONLY_TEST)
-            ONLY_TEST = a;
+        else if (!rcc && (access(a, X_OK) == 0 || strchr(a, '/') != NULL || strchr(a, '\\') != NULL))
+            rcc = a;
+        else if (!only_test)
+            only_test = a;
     }
 
     /* auto-detect rcc */
-    if (!RCC) {
-        if (access("./rcc", X_OK) == 0) RCC = "./rcc";
+    if (!rcc) {
+#ifdef ARM64_NATIVE
+        if (access("./rcc-arm64", X_OK) == 0)
+            rcc = "./rcc-arm64";
+        else if (access("./rcc", X_OK) == 0)
+            rcc = "./rcc";
+#else
+        if (access("./rcc", X_OK) == 0) rcc = "./rcc";
         else if (access("./rcc.exe", X_OK) == 0)
-            RCC = "./mingw-cross.sh";
+            rcc = "./mingw-cross.sh";
+#endif
     }
-    if (!RCC) {
+    if (!rcc) {
         fprintf(stderr, "rcc binary not found\n");
         return 1;
     }
@@ -2083,33 +2449,49 @@ int main(int argc, char **argv) {
     {
         char resolved[PATH_MAX];
         static char rcc_buf[PATH_MAX];
-        if (realpath(RCC, resolved)) {
+        if (realpath(rcc, resolved)) {
             memcpy(rcc_buf, resolved, strlen(resolved) + 1);
-            RCC = rcc_buf;
+            rcc = rcc_buf;
         }
     }
 
     /* rewrite shorthand cross-compiler paths */
-    if (contains(RCC, "rcc-arm64") && !contains(RCC, "arm64-cross")) {
+#ifndef ARM64_NATIVE
+    if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
-        RCC = buf;
+        rcc = buf;
     }
-    if (contains(RCC, "rcc-darwin") && !contains(RCC, "darwin-cross")) {
+#endif
+
+    if (contains(rcc, "rcc-darwin") && !contains(rcc, "darwin-cross")) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/darwin-cross.sh", SCRIPT_DIR);
-        RCC = buf;
+        rcc = buf;
     }
 
-    detect_platform(RCC);
+    detect_platform(rcc);
 
     /* suppress wine fixme noise so it doesn't pollute captured test output */
     if (has_runner && contains(runner_cmd, "wine"))
         setenv("WINEDEBUG", "fixme-all", 0);
 
+    /* wine's console mangles ANSI SGI sequences (the ESC byte of e.g.
+     * "\033[0;36m" gets eaten, leaving literal "[0;36m" in the output) */
+    if (streq(platform, "mingw_cross") || (has_runner && contains(runner_cmd, "wine")))
+        g_no_color = true;
+#ifdef _WIN32
+    if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version"))
+        g_no_color = true;
+#endif
+
     /* for cross-compilers, suites that require native execution don't apply */
     if (!run_tcc && !run_units && !run_torture && !run_compliance && !run_ctest) {
-        if (has_runner || streq(PLATFORM, "darwin_cross")) {
+        if (only_test) {
+            /* single-test mode: only the TCC suite supports filtering by
+             * test name; units/compliance/ctest would just run in full */
+            run_tcc = true;
+        } else if (has_runner || streq(platform, "darwin_cross")) {
             run_tcc = run_torture = true;
         } else {
             run_tcc = run_units = run_compliance = run_ctest = true;
@@ -2117,13 +2499,19 @@ int main(int argc, char **argv) {
     }
 
     int exit_code = 0;
-    if (run_tcc && run_tcc_suite() != 0) exit_code = 1;
-    if (run_units) run_unit_tests();
-    if (run_compliance && run_compliance_suite() != 0) exit_code = 1;
-    if (run_ctest && run_ctest_suite() != 0) exit_code = 1;
-    if (run_torture && run_torture_suite(summary_only) != 0) exit_code = 1;
+    if (run_tcc && run_tcc_suite() != 0)
+        exit_code = 1;
+    if (run_units)
+        run_unit_tests();
+    if (run_compliance && run_compliance_suite() != 0)
+        exit_code = 1;
+    if (run_ctest && run_ctest_suite() != 0)
+        exit_code = 1;
+    if (run_torture && run_torture_suite(summary_only) != 0)
+        exit_code = 1;
 
-    if (!ONLY_TEST) generate_report();
+    if (!only_test)
+        generate_report();
 
     return exit_code;
 }

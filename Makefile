@@ -5,6 +5,11 @@ TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
 EXE_EXT =
+# Backend C compiler invoked by the generated rcc binary itself (assembler/
+# linker step). Defaults to $(CC), but the mingw cross build produces
+# rcc.exe which runs on Windows, where the toolchain is normally just "gcc"
+# (e.g. MSYS2/MinGW-w64), not "x86_64-w64-mingw32-gcc".
+RCC_GCC = $(CC)
 
 ifeq ($(ASAN),1)
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer
@@ -43,6 +48,7 @@ LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
 TARGET_DEPS = $(OBJS) src/rcc.h
 TARGET_EXT = $(OBJS)
+RUN_TESTS = run_tests
 
 DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
@@ -54,6 +60,7 @@ RCC_INCDIR ?= $(CURDIR)/include
 # On native Windows builds, default to the standard install location.
 ifeq ($(OS),Windows_NT)
 TARGET = rcc.exe
+RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
@@ -67,14 +74,19 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 else
 ifeq ($(CC),x86_64-w64-mingw32-gcc)
 TARGET = rcc.exe
+RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 EXE_EXT = .exe
 OBJS = $(SRCS:.c=$(OBJ_EXT))
+# rcc.exe runs on Windows; its backend toolchain there is "gcc", not the
+# Linux cross-compiler name used to build rcc.exe itself.
+RCC_GCC = gcc
 endif
 ifeq ($(CC),aarch64-linux-gnu-gcc)
 TARGET = rcc-arm64
+RUN_TESTS = run_tests_arm64
 OBJ_EXT = .arm64.o
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
@@ -103,6 +115,8 @@ else
 TARGET_DEPS += $(MINGW_O)
 TARGET_EXT += $(MINGW_O)
 endif
+
+all: $(TARGET) $(RUN_TESTS)
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
@@ -189,15 +203,27 @@ src/gcc_predefined.h: FORCE
 $(DARWIN_O): lib/rcc_darwin.c
 	$(CC) -arch arm64 -dynamiclib -install_name @rpath/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
 $(MINGW_O): lib/rcc_mingw.c
-	$(CC) $(CFLAGS) -c lib/rcc_mingw.c -o $@
+	$(CC) $(filter-out -flto=auto -flto=thin,$(CFLAGS)) -c lib/rcc_mingw.c -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
-	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
+	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h
 	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
-run_tests$(EXE_EXT): run_tests.c
-	$(CC) -std=c11 -Wall -Wextra -O2 -Isrc -o $@ run_tests.c
+
+run_tests: run_tests.c
+	$(CC) $(CFLAGS) -o $@ run_tests.c
+run_tests.exe: run_tests.c
+	$(CC) $(CFLAGS) -o $@ run_tests.c
+run_tests_arm64: run_tests.c
+	@sysroot="$$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null)"; \
+	if [ -z "$$sysroot" ] || [ "$$sysroot" = "/" ] || [ ! -f "$$sysroot/usr/include/stdio.h" ]; then \
+	    for p in /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root; do \
+	        if [ -f "$$p/usr/include/stdio.h" ]; then sysroot="$$p"; break; fi; \
+	    done; \
+	fi; \
+	aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -O2 -Isrc \
+	  --sysroot="$$sysroot" -o $@ run_tests.c
 
 %$(OBJ_EXT): %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -209,7 +235,7 @@ compile_commands.json: $(SRCS)
 # Profile build: rcc compiled with -pg for gprof analysis
 rcc_prof: CFLAGS += -pg
 rcc_prof: $(SRCS) src/rcc.h src/sysinc_paths.h src/gcc_predefined.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(CC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS) -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\" -lm
 
 # Run profile: compile a decent-sized file to generate gmon.out
 prof: rcc_prof
@@ -222,23 +248,23 @@ ifeq ($(OS),Windows_NT)
 TEST_RUNNER = ./run_tests ./rcc.exe --tcc --compliance --ctest
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
 else
-TEST_RUNNER = ./run_tests --tcc --compliance --ctest
+TEST_RUNNER = ./run_tests ./rcc --tcc --compliance --ctest
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 
-test check: $(TARGET) run_tests$(EXE_EXT)
+test check: $(TARGET) $(RUN_TESTS)
 	@$(TEST_RUNNER)
 
-test-extra check-extra: $(TARGET) run_tests$(EXE_EXT) lint
-	./run_tests --all
+test-all check-all: $(TARGET) $(RUN_TESTS) lint
+	./$(RUN_TESTS) ./$(TARGET) --all
 
-test-torture check-torture: $(TARGET) run_tests$(EXE_EXT)
-	./run_tests --torture
+test-torture check-torture: $(TARGET) $(RUN_TESTS)
+	./$(RUN_TESTS) ./$(TARGET) --torture
 
 test-full check-full:
 	$(MAKE) clean
-	$(MAKE) $(TARGET) run_tests$(EXE_EXT)
-	./run_tests --all
+	$(MAKE) $(TARGET) $(RUN_TESTS)
+	./$(RUN_TESTS) ./$(TARGET) --all
 	-./mingw-test.sh
 	-./arm64-test.sh
 	-./darwin-test.sh
@@ -296,7 +322,7 @@ leanclean:
 	  cd c-testsuite && git clean -dxf . && cd ..; \
 	fi
 clean:
-	rm -f $(OBJS) $(TARGET) run_tests$(EXE_EXT) run_tcc_suite$(EXE_EXT) run_torture_tests$(EXE_EXT) rcc_prof \
+	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) rcc_prof \
 	      src/sysinc_paths.h src/gcc_predefined.h \
 	      fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
 	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-*.summary

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cross-build Windows rcc and run the TCC test suite against it.
+# Cross-build Windows rcc and run the tests against it.
 set -e
 trap 'rm src/sysinc_paths.h src/gcc_predefined.h' EXIT
 make leanclean
@@ -11,4 +11,5 @@ if [ -e /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll ] && [ ! -e libwinpthrea
 fi
 echo "==> Running full test suite via mingw-cross.sh..."
 echo ""
-./run_tests ./mingw-cross.sh --all
+./run_tests.exe ./rcc.exe --all --no-color
+./run-c-testsuite.sh ../rcc.exe

@@ -1,42 +1,26 @@
 #!/bin/sh
-# Cross-build ARM64 rcc and run the TCC test suite against it.
+# Cross-build ARM64 rcc and run tests via qemu-aarch64.
 # Usage: ./arm64-test.sh [test-name]
 set -e
 
+# Locate aarch64 sysroot with headers/libs
+SYSROOT="$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null || true)"
+if [ ! -f "${SYSROOT}/usr/include/stdio.h" ] && [ -d "/usr/aarch64-redhat-linux/sys-root/fc43/usr/include" ]; then
+    SYSROOT="/usr/aarch64-redhat-linux/sys-root/fc43"
+fi
+
 if [ -n "${1:-}" ]; then
     make -s CC=aarch64-linux-gnu-gcc
-    # Run a single test directly
-    TEST_BASE="$1"
-    TEST_SRC="tinycc/tests/tests2/${TEST_BASE}.c"
-    TEST_EXPECT="tinycc/tests/tests2/${TEST_BASE}.expect"
-    TMP_OUT="/tmp/rcc_test_${TEST_BASE}_$$.out"
-    TMP_EXE="/tmp/rcc_test_${TEST_BASE}_$$"
-    printf "  %-40s " "${TEST_BASE}..."
-    if ! ./arm64-cross.sh "$TEST_SRC" -o "$TMP_EXE" 2>/dev/null; then
-        printf "COMPILE FAIL\n"
-        exit 1
-    fi
-    if [ -f "$TEST_EXPECT" ]; then
-        if "$TMP_EXE" >"$TMP_OUT" 2>&1 && diff -q "$TEST_EXPECT" "$TMP_OUT" >/dev/null 2>&1; then
-            printf "PASS\n"
-        else
-            printf "MISMATCH\n"
-            exit 1
-        fi
-    else
-        if "$TMP_EXE" >"$TMP_OUT" 2>&1; then
-            printf "PASS (no expect)\n"
-        else
-            printf "EXEC FAIL\n"
-            exit 1
-        fi
-    fi
-    rm -f "$TMP_OUT" "$TMP_EXE"
+    make -s run_tests_arm64
+    export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
+    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --all "$1"
 else
     make leanclean
     make -s CC=aarch64-linux-gnu-gcc
-    trap 'make leanclean; make -s' EXIT   # restore host build after cross-test
-    echo "==> Running full test suite via arm64-cross.sh..."
+    make -s run_tests_arm64
+    trap 'make leanclean; make -s' EXIT
+    echo "==> Running full test suite via run_tests_arm64 under qemu..."
     echo ""
-    ./run_tests ./arm64-cross.sh --all
+    export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
+    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --all
 fi
