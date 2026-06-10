@@ -1570,9 +1570,23 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                             Node *off_n = new_num(offset, tok);
                             check_type(off_n);
                             full_sz = new_binary(ND_ADD, off_n, vla_sz, tok);
-                            check_type(full_sz);
                         } else {
                             full_sz = vla_sz;
+                        }
+                        check_type(full_sz);
+                        // Apply alignment padding when the member has explicit non-default
+                        // alignment (e.g. __attribute__((aligned(16)))) that would cause subsequent
+                        // members to start at a different offset than the raw VLA extent.
+                        // Skip when the alignment equals the natural base type alignment, and
+                        // skip for packed structs.
+                        if (a > 8 && !(a & (a - 1))) {
+                            int64_t mask = a - 1;
+                            Node *padded = new_binary(ND_ADD, full_sz, new_num(mask, tok), tok);
+                            check_type(padded);
+                            Node *mask_n = new_num(~mask, tok);
+                            check_type(mask_n);
+                            full_sz = new_binary(ND_BITAND, padded, mask_n, tok);
+                            check_type(full_sz);
                         }
                         // Create hidden lvar to freeze the size at struct definition time
                         LVar *cap = new_var("", ty_long, true);
@@ -5476,7 +5490,16 @@ static Node *to_assign(Node *binary) {
     deref_r->ty = lhs_ty;
     Node *deref_w = new_unary(ND_DEREF, new_var_node(var, tok), tok);
     deref_w->ty = lhs_ty;
-    Node *op = new_binary(binary->kind, deref_r, binary->rhs, tok);
+    // Swap LHS and RHS so the RHS (with possible side effects) is evaluated
+    // before the old LHS value is read. This matches GCC's behavior for
+    // compound assignments like x[0] |= foo() where foo() modifies x[0].
+    // Only safe for commutative operations.
+    bool commutative = (binary->kind == ND_BITOR || binary->kind == ND_BITAND ||
+                        binary->kind == ND_BITXOR || binary->kind == ND_ADD ||
+                        binary->kind == ND_MUL);
+    Node *op = commutative
+        ? new_binary(binary->kind, binary->rhs, deref_r, tok)
+        : new_binary(binary->kind, deref_r, binary->rhs, tok);
     Node *expr2 = new_binary(ND_ASSIGN, deref_w, op, tok);
     return new_binary(ND_COMMA, expr1, expr2, tok);
 }

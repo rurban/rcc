@@ -5104,7 +5104,9 @@ static int gen(Node *node) {
             }
 
             if (node->rhs->ty && (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY))
-                src = gen_addr(node->rhs);
+                // For chain assignments (d = e = a[0] = c), use gen() to trigger
+                // inner assignment evaluation, not gen_addr() which skips it.
+                src = (node->rhs->kind == ND_ASSIGN) ? gen(node->rhs) : gen_addr(node->rhs);
             else
                 src = gen(node->rhs);
 
