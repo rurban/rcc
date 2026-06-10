@@ -5270,6 +5270,51 @@ static VReg gen_int128(Node *node) {
         return addr;
     }
 #endif
+    case ND_POST_INC:
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC: {
+        bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
+        bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
+        VReg lhs_a = gen_addr(node->lhs);
+        VReg old_addr = is_pre ? R_NONE : alloc_int128_addr();
+#ifdef ARCH_ARM64
+        VReg t1 = alloc_reg(), t2 = alloc_reg();
+        asm_ldr_reg_off(cg_sec, t1, lhs_a, 8, 0); // ldr x{t1}, [x{lhs_a}]
+        asm_ldr_reg_off(cg_sec, t2, lhs_a, 8, 8); // ldr x{t2}, [x{lhs_a}, #8]
+        if (!is_pre) {
+            asm_str_reg_off(cg_sec, t1, old_addr, 8, 0); // str x{t1}, [x{old_addr}]
+            asm_str_reg_off(cg_sec, t2, old_addr, 8, 8); // str x{t2}, [x{old_addr}, #8]
+        }
+        if (is_inc) {
+            arm64_adds_imm(cg_sec, 1, REG(t1), REG(t1), 1, 0); // adds x{t1}, x{t1}, #1
+            asm_adc_phy(cg_sec, t2, t2, ARM64_XZR); // adc x{t2}, x{t2}, xzr
+        } else {
+            arm64_subs_imm(cg_sec, 1, REG(t1), REG(t1), 1, 0); // subs x{t1}, x{t1}, #1
+            asm_sbc_phy(cg_sec, t2, t2, ARM64_XZR); // sbc x{t2}, x{t2}, xzr
+        }
+#else
+        asm_mov_mem_rax(cg_sec, lhs_a); // movq (lhs_a), %rax
+        asm_mov_mem8_rdx(cg_sec, lhs_a); // movq 8(lhs_a), %rdx
+        if (!is_pre) {
+            asm_mov_rax_mem(cg_sec, old_addr); // movq %rax, (old_addr)
+            asm_mov_rdx_mem8(cg_sec, old_addr); // movq %rdx, 8(old_addr)
+        }
+        if (is_inc) {
+            x86_add_ri(cg_sec, 8, X86_RAX, 1); // addq $1, %rax
+            secbuf_emit32le(cg_sec, 0x00D28348); // adcq $0, %rdx (REX.W 83 /2 ib)
+        } else {
+            x86_sub_ri(cg_sec, 8, X86_RAX, 1); // subq $1, %rax
+            secbuf_emit32le(cg_sec, 0x00DA8348); // sbbq $0, %rdx (REX.W 83 /3 ib)
+        }
+        asm_mov_rax_mem(cg_sec, lhs_a); // movq %rax, (lhs_a)
+        asm_mov_rdx_mem8(cg_sec, lhs_a); // movq %rdx, 8(lhs_a)
+#endif
+        if (is_pre)
+            return lhs_a;
+        free_reg(lhs_a);
+        return old_addr;
+    }
     default:
         error("int128: unsupported node kind %d", node->kind);
         return R_NONE;
@@ -6333,7 +6378,11 @@ static VReg gen(Node *node) {
         return -1;
     }
     case ND_POST_INC:
-    case ND_POST_DEC: {
+    case ND_POST_DEC:
+    case ND_PRE_INC:
+    case ND_PRE_DEC: {
+        bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
+        bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
         VReg r = gen_addr(node->lhs);
         VReg r2 = alloc_reg();
         int sz = node->lhs->ty->size;
@@ -6380,12 +6429,25 @@ static VReg gen(Node *node) {
             asm_mov_reg_reg(cg_sec, rn, r3, 8); // mov rr3 -> rrn
             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
             asm_and_reg_phy(cg_sec, rn, ARM64_X16, 8); // and rrn, r16
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 asm_add_imm(cg_sec, rn, 8, 1); // add $1, rrn
             else
                 asm_sub_imm(cg_sec, rn, 8, 1); // sub $1, rrn
             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
-            asm_and_reg_phy(cg_sec, rn, ARM64_X16, 8); // and rrn, r16
+            asm_and_reg_phy(cg_sec, rn, ARM64_X16, 8); // and rrn, r16 (wrap)
+            // For prefix forms, sign/zero-extend the new field value
+            int r4 = -1;
+            if (is_pre) {
+                r4 = alloc_reg();
+                asm_mov_reg_reg(cg_sec, r4, rn, 8); // mov rrn -> rr4
+                if (bw < load_bits) {
+                    if (!(mem->ty->is_unsigned || mem->ty->is_enum)) {
+                        int shift = 64 - bw;
+                        asm_shl_imm(cg_sec, r4, 8, (uint8_t)(shift)); // lsl x{r4}, x{r4}, #shift
+                        asm_sar_imm(cg_sec, r4, 8, (uint8_t)(shift)); // asr x{r4}, x{r4}, #shift
+                    }
+                }
+            }
             if (bo > 0)
                 asm_shl_imm(cg_sec, rn, 8, (uint8_t)(bo)); // lsl x{rn}, x{rn}, #bo
             asm_or_reg_reg(cg_sec, r2, rn, 8); // orr x{r2}, x{r2}, x{rn}
@@ -6430,14 +6492,27 @@ static VReg gen(Node *node) {
             // Compute new field value in rn
             VReg rn = alloc_reg();
             asm_mov_reg_reg(cg_sec, rn, r3, 8); // mov rr3 -> rrn
-            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs $(uint64_t)((1ULL << bw) - 1), rX86_RAX
-            asm_and_rax(cg_sec, rn, 8); // andq %rax, rrn
-            if (node->kind == ND_POST_INC)
+            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs mask, %rax
+            asm_and_rax(cg_sec, rn, 8); // andq %rax, rrn (mask to bw bits)
+            if (is_inc)
                 asm_add_imm(cg_sec, rn, 8, 1); // addq $1, rn
             else
                 asm_sub_imm(cg_sec, rn, 8, 1); // subq $1, rn
-            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs $(uint64_t)((1ULL << bw) - 1), rX86_RAX
-            asm_and_rax(cg_sec, rn, 8); // andq %rax, rrn
+            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs mask, %rax
+            asm_and_rax(cg_sec, rn, 8); // andq %rax, rrn (wrap)
+            // For prefix forms, sign/zero-extend the new field value
+            VReg r4 = R_NONE;
+            if (is_pre) {
+                r4 = alloc_reg();
+                asm_mov_reg_reg(cg_sec, r4, rn, 8); // mov rrn -> rr4
+                if (bw < load_bits) {
+                    if (!(mem->ty->is_unsigned || mem->ty->is_enum)) {
+                        int shift = 64 - bw;
+                        asm_shl_imm(cg_sec, r4, 8, (uint8_t)(shift)); // shl $(uint8_t)(shift), rr4
+                        asm_sar_imm(cg_sec, r4, 8, (uint8_t)(shift)); // sar $(uint8_t)(shift), rr4
+                    }
+                }
+            }
             if (bo > 0)
                 asm_shl_imm(cg_sec, rn, 8, (uint8_t)(bo)); // shl $(uint8_t)(bo), rrn
             asm_or_reg_reg(cg_sec, rn, r2, 8); // or rrn, rr2
@@ -6455,7 +6530,7 @@ static VReg gen(Node *node) {
             free_reg(r3);
             free_reg(r2);
             free_reg(r);
-            return r3; // Return original value (post-increment semantics)
+            return is_pre ? r4 : r3; // pre→new value, post→old value
         }
 #ifdef ARCH_ARM64
         // Load current value (correct load width for type)
@@ -6464,16 +6539,16 @@ static VReg gen(Node *node) {
         VReg r3 = alloc_reg();
         emit_load(node->lhs->ty, r3, r, 0);
         if (is_flonum(node->lhs->ty)) {
-            // Float post-inc/dec: use fp arithmetic and store the updated bit pattern.
+            // Float inc/dec: use fp arithmetic and store the updated bit pattern.
             int id = add_float_literal(1.0, sz);
             int tmp = alloc_reg();
             emit_adrp_add(tmp, format(".LF%d", id));
             if (sz == 4) {
                 asm_ldr_fp(cg_sec, 1, tmp, 4); // ldr s1, [x{tmp}]
-                (node->kind == ND_POST_INC ? asm_fadd(cg_sec, 0) : asm_fsub(cg_sec, 0)); // fadd/fsub s0, s0, s1
+                (is_inc ? asm_fadd(cg_sec, 0) : asm_fsub(cg_sec, 0)); // fadd/fsub s0, s0, s1
             } else {
                 asm_ldr_fp(cg_sec, 1, tmp, 8); // ldr d1, [x{tmp}]
-                (node->kind == ND_POST_INC ? asm_fadd(cg_sec, 1) : asm_fsub(cg_sec, 1)); // fadd/fsub d0, d0, d1
+                (is_inc ? asm_fadd(cg_sec, 1) : asm_fsub(cg_sec, 1)); // fadd/fsub d0, d0, d1
             }
             free_reg(tmp);
             asm_fmov_f2i(cg_sec, r3, 0, 1); // fmov x{r3}, d0
@@ -6481,16 +6556,21 @@ static VReg gen(Node *node) {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
                 delta = node->lhs->ty->base->size;
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 asm_add_imm(cg_sec, r3, sz, delta); // add r3, r3, #delta
             else
                 asm_sub_imm(cg_sec, r3, sz, delta); // sub r3, r3, #delta
 
         }
         emit_store(node->lhs->ty, r3, r, 0);
+        if (is_pre) {
+            free_reg(r);
+            return r3;
+        }
         free_reg(r3);
+        free_reg(r);
+        return r2;
 #else
-        // x86_64: load from [r] into r2 with proper extension /* sub %s, %s, #%d\n */
         asm_mov_mem_reg(cg_sec, r2, r, sz); // movl/movq (%r), r2
         if (sz < 4) {
             if (node->lhs->ty->is_unsigned)
@@ -6499,8 +6579,9 @@ static VReg gen(Node *node) {
                 asm_movsx_mem_reg(cg_sec, r2, r, 4, sz); // movsbl/movswl (%r), r2
         }
         bool is_float = is_flonum(node->lhs->ty);
+        VReg r3 = R_NONE;
         if (is_float) {
-            // Load current float value from memory into xmm0 (r2 bits are old value for return)
+            // Load current float value from memory into xmm0
             if (sz == 4)
                 x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (%r), %xmm0
             else
@@ -6510,17 +6591,21 @@ static VReg gen(Node *node) {
             if (sz == 4) {
                 asm_lea_rip_reg(cg_sec, tmp, format(".LF%d", id));
                 x86_movss_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0));
-                if (node->kind == ND_POST_INC) x86_addss(cg_sec, X86_XMM0, X86_XMM1);
+                if (is_inc) x86_addss(cg_sec, X86_XMM0, X86_XMM1);
                 else
                     x86_subss(cg_sec, X86_XMM0, X86_XMM1);
             } else {
                 asm_lea_rip_reg(cg_sec, tmp, format(".LF%d", id));
                 x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0));
-                if (node->kind == ND_POST_INC) x86_addsd(cg_sec, X86_XMM0, X86_XMM1);
+                if (is_inc) x86_addsd(cg_sec, X86_XMM0, X86_XMM1);
                 else
                     x86_subsd(cg_sec, X86_XMM0, X86_XMM1);
             }
             free_reg(tmp);
+            if (is_pre) {
+                r3 = alloc_reg();
+                x86_movq_xmm_r(cg_sec, X86_XMM0, REG(r3)); // movq %xmm0, r3
+            }
             if (sz == 4)
                 x86_movss_mr(cg_sec, x86_mem(REG(r), 0), X86_XMM0); // movss %xmm0, (%r)
             else
@@ -6529,16 +6614,20 @@ static VReg gen(Node *node) {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
                 delta = node->lhs->ty->base->size;
-            VReg r3 = alloc_reg();
+            r3 = alloc_reg();
             asm_mov_reg_reg(cg_sec, r3, r2, sz > 4 ? 8 : 4); // mov rr2 -> rr3
-            if (node->kind == ND_POST_INC)
+            if (is_inc)
                 asm_add_imm(cg_sec, r3, sz, delta); // add $delta, rr3
             else
                 asm_sub_imm(cg_sec, r3, sz, delta); // sub $delta, rr3
-            x86_mov_mr(cg_sec, sz, x86_mem(REG(r), 0), REG(r3)); // sub%c $%d, (%s)
+            x86_mov_mr(cg_sec, sz, x86_mem(REG(r), 0), REG(r3)); // mov%c %s, (%s)
             free_reg(r3);
         }
 #endif
+        if (is_pre) {
+            free_reg(r);
+            return r3;
+        }
         free_reg(r);
         return r2;
     }

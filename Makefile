@@ -74,6 +74,7 @@ endif
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
 RCC_INCDIR ?= $(CURDIR)/include
+
 # On native Windows builds, default to the standard install location.
 ifeq ($(OS),Windows_NT)
 TARGET = rcc.exe
@@ -135,13 +136,11 @@ DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 
 ifneq ($(findstring apple,$(MACHINE)),)
-SRCS += src/macho_write.c src/arm64_enc.c
 DARWIN_O = lib/rcc_darwin.dylib
 OBJS += $(DARWIN_O)
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(DARWIN_O)
 else ifneq ($(findstring mingw,$(MACHINE)),)
-SRCS += src/coff_write.c
 TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
 OBJS += $(MINGW_O) -lpthread
 else

@@ -525,7 +525,7 @@ int main(int argc, char **argv) {
             else
 #endif
                 if (stat("lib/rcc_mingw.obj", &libst) == 0)
-                    snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_mingw.obj");
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_mingw.obj");
         }
 #endif
 #ifdef __APPLE__
@@ -539,7 +539,7 @@ int main(int argc, char **argv) {
             else
 #endif
                 if (stat("lib/rcc_darwin.dylib", &libst) == 0)
-                    snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_darwin.dylib");
+                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_darwin.dylib");
         }
 #endif
 
