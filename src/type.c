@@ -90,6 +90,35 @@ static Node *new_scale_mul(Node *rhs, int size) {
     return node;
 }
 
+// Return a Node* computing the runtime size of a VLA type.
+// For non-VLA types, returns a compile-time ND_NUM with ty_ulong.
+// For VLA types, computes len * base_size recursively.
+static Node *vla_size_node(Type *ty) {
+    if (ty->kind != TY_VLA) {
+        Node *num = arena_alloc(sizeof(Node));
+        num->kind = ND_NUM;
+        num->val = ty->size;
+        num->ty = ty_ulong;
+        return num;
+    }
+    Node *len;
+    if (ty->vla_len_expr) {
+        len = ty->vla_len_expr;
+    } else {
+        len = arena_alloc(sizeof(Node));
+        len->kind = ND_NUM;
+        len->val = ty->array_len;
+        len->ty = ty_ulong;
+    }
+    Node *base = vla_size_node(ty->base);
+    Node *node = arena_alloc(sizeof(Node));
+    node->kind = ND_MUL;
+    node->lhs = len;
+    node->rhs = base;
+    node->ty = ty_ulong;
+    return node;
+}
+
 static Type *integer_promotion(Type *ty) {
     if (!is_integer(ty))
         return ty;
@@ -219,7 +248,17 @@ static void add_type_internal(Node *node) {
             return;
         }
         if (lty->base && is_integer(rty)) {
-            node->rhs = new_scale_mul(node->rhs, lty->base->size);
+            if (lty->base->kind == TY_VLA) {
+                Node *vla_sz = vla_size_node(lty->base);
+                Node *mul = arena_alloc(sizeof(Node));
+                mul->kind = ND_MUL;
+                mul->lhs = node->rhs;
+                mul->rhs = vla_sz;
+                mul->ty = ty_ulong;
+                node->rhs = mul;
+            } else {
+                node->rhs = new_scale_mul(node->rhs, lty->base->size);
+            }
             if (node->rhs->ty->size < 8) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
@@ -241,7 +280,17 @@ static void add_type_internal(Node *node) {
             Node *tmp = node->lhs;
             node->lhs = node->rhs;
             node->rhs = tmp;
-            node->rhs = new_scale_mul(node->rhs, rty->base->size);
+            if (rty->base->kind == TY_VLA) {
+                Node *vla_sz = vla_size_node(rty->base);
+                Node *mul = arena_alloc(sizeof(Node));
+                mul->kind = ND_MUL;
+                mul->lhs = node->rhs;
+                mul->rhs = vla_sz;
+                mul->ty = ty_ulong;
+                node->rhs = mul;
+            } else {
+                node->rhs = new_scale_mul(node->rhs, rty->base->size);
+            }
             if (node->rhs->ty->size < 8) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;

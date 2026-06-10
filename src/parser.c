@@ -862,8 +862,25 @@ static bool eval_const_expr(Node *node, long long *val) {
         return eval_const_expr(node->lhs, &lhs) && ((*val = !lhs), true);
     case ND_BITNOT:
         return eval_const_expr(node->lhs, &lhs) && ((*val = ~lhs), true);
-    case ND_CAST:
-        return eval_const_expr(node->lhs, val);
+    case ND_CAST: {
+        if (!eval_const_expr(node->lhs, val))
+            return false;
+        if (!node->ty || !is_integer(node->ty))
+            return true;
+        int sz = node->ty->size;
+        if (sz <= 0 || sz >= 8)
+            return true;
+        int bits = sz * 8;
+        unsigned long long mask = (bits == 64) ? ~0ULL : ((1ULL << bits) - 1);
+        if (node->ty->is_unsigned) {
+            *val &= mask;
+        } else {
+            *val &= mask;
+            if (*val & (1ULL << (bits - 1)))
+                *val |= ~mask;
+        }
+        return true;
+    }
     case ND_SIZEOF:
         if (node->lhs && node->lhs->ty) {
             if (node->lhs->ty->kind == TY_VLA)

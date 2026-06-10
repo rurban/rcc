@@ -8257,6 +8257,26 @@ static int gen(Node *node) {
             free_reg(r_rhs);
         }
 #endif
+        // Extended bitfield shift: mask result to bitfield width
+        // (only for x86_64 — ARM64 uses different register setup in #ifdef above)
+        {
+            int bw = 0;
+            if (node->lhs && node->lhs->kind == ND_MEMBER && node->lhs->member &&
+                node->lhs->member->bit_width > 32 && node->lhs->member->bit_width < 64 &&
+                node->lhs->member->ty && node->lhs->member->ty->size >= 8 &&
+                node->lhs->member->ty->is_unsigned)
+                bw = node->lhs->member->bit_width;
+            if (bw > 0) {
+                unsigned long long mask = (1ULL << bw) - 1;
+#ifdef ARCH_ARM64
+                emit_mov_imm64("x17", mask);
+                printf("  and %s, %s, x17\n", reg64[r_lhs], reg64[r_lhs]);
+#else
+                printf("  movabsq $%llu, %%rax\n", mask);
+                printf("  andq %%rax, %s\n", reg64[r_lhs]);
+#endif
+            }
+        }
         return r_lhs;
     }
 

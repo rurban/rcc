@@ -250,7 +250,7 @@ elif [ "$PLATFORM" = "darwin_cross" ]; then
 elif [ "$PLATFORM" = "mingw" ]; then
     MAX_FAIL=83
 else # PLATFORM=linux
-    MAX_FAIL=15
+    MAX_FAIL=7
 fi
 
 if [ "$FAIL" -gt "$MAX_FAIL" ]; then
