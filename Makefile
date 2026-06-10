@@ -106,9 +106,7 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 # mapped through Z:\), and it works equally on native Windows.
 RCC_GCC = gcc.exe
 endif
-ifeq ($(CC),aarch64-linux-gnu-gcc)
-SRCS += src/x86_enc.c
-else ifneq ($(findstring aarch64,$(MACHINE)),)
+ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
 RUN_TESTS = run_tests_arm64
 SRCS += src/arm64_enc.c

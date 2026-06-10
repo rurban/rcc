@@ -6436,7 +6436,7 @@ static VReg gen(Node *node) {
             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
             asm_and_reg_phy(cg_sec, rn, ARM64_X16, 8); // and rrn, r16 (wrap)
             // For prefix forms, sign/zero-extend the new field value
-            int r4 = -1;
+            VReg r4 = R_NONE;
             if (is_pre) {
                 r4 = alloc_reg();
                 asm_mov_reg_reg(cg_sec, r4, rn, 8); // mov rrn -> rr4
@@ -6527,10 +6527,15 @@ static VReg gen(Node *node) {
                 asm_mov_reg_mem(cg_sec, rn, r, 8); // movq rn, (%r)
 #endif
             free_reg(rn);
-            free_reg(r3);
             free_reg(r2);
             free_reg(r);
-            return is_pre ? r4 : r3; // pre→new value, post→old value
+            if (is_pre) {
+                free_reg(r3);
+                return r4; // Return new value (prefix semantics)
+            }
+            if (r4 != R_NONE)
+                free_reg(r4);
+            return r3; // Return original value (post-increment semantics)
         }
 #ifdef ARCH_ARM64
         // Load current value (correct load width for type)
@@ -6563,49 +6568,38 @@ static VReg gen(Node *node) {
 
         }
         emit_store(node->lhs->ty, r3, r, 0);
+        // r3 already holds the new value; r2 holds the original. Return
+        // whichever the prefix/postfix semantics require and free the other.
         if (is_pre) {
-            free_reg(r);
-            return r3;
+            free_reg(r2);
+            r2 = r3;
+        } else {
+            free_reg(r3);
         }
-        free_reg(r3);
-        free_reg(r);
-        return r2;
 #else
-        asm_mov_mem_reg(cg_sec, r2, r, sz); // movl/movq (%r), r2
-        if (sz < 4) {
-            if (node->lhs->ty->is_unsigned)
-                asm_movzx_mem_reg(cg_sec, r2, r, 4, sz); // movzbl/movzwl (%r), r2
-            else
-                asm_movsx_mem_reg(cg_sec, r2, r, 4, sz); // movsbl/movswl (%r), r2
-        }
+        // Sign/zero-extend narrow loads into the full register — rcc keeps
+        // sub-int values extended in their register, and a plain narrow `mov`
+        // would leave garbage in the upper bits, breaking direct uses of the
+        // result (e.g. `x-- < 0` or `--x < 0`).
+        emit_load(node->lhs->ty, r2, r, 0); // mov/movsx/movzx (%r), r2
         bool is_float = is_flonum(node->lhs->ty);
-        VReg r3 = R_NONE;
         if (is_float) {
-            // Load current float value from memory into xmm0
-            if (sz == 4)
-                x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (%r), %xmm0
-            else
-                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movsd (%r), %xmm0
             int id = add_float_literal(1.0, sz);
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r2); // movq r2, %xmm0
             VReg tmp = alloc_reg();
+            asm_lea_rip_reg(cg_sec, tmp, format(".LF%d", id)); // lea .LFid(%rip), tmp
             if (sz == 4) {
-                asm_lea_rip_reg(cg_sec, tmp, format(".LF%d", id));
-                x86_movss_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0));
-                if (is_inc) x86_addss(cg_sec, X86_XMM0, X86_XMM1);
+                x86_movss_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0)); // movss (tmp), %xmm1
+                if (is_inc) x86_addss(cg_sec, X86_XMM0, X86_XMM1); // addss %xmm1, %xmm0
                 else
-                    x86_subss(cg_sec, X86_XMM0, X86_XMM1);
+                    x86_subss(cg_sec, X86_XMM0, X86_XMM1); // subss %xmm1, %xmm0
             } else {
-                asm_lea_rip_reg(cg_sec, tmp, format(".LF%d", id));
-                x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0));
-                if (is_inc) x86_addsd(cg_sec, X86_XMM0, X86_XMM1);
+                x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(tmp), 0)); // movsd (tmp), %xmm1
+                if (is_inc) x86_addsd(cg_sec, X86_XMM0, X86_XMM1); // addsd %xmm1, %xmm0
                 else
-                    x86_subsd(cg_sec, X86_XMM0, X86_XMM1);
+                    x86_subsd(cg_sec, X86_XMM0, X86_XMM1); // subsd %xmm1, %xmm0
             }
             free_reg(tmp);
-            if (is_pre) {
-                r3 = alloc_reg();
-                x86_movq_xmm_r(cg_sec, X86_XMM0, REG(r3)); // movq %xmm0, r3
-            }
             if (sz == 4)
                 x86_movss_mr(cg_sec, x86_mem(REG(r), 0), X86_XMM0); // movss %xmm0, (%r)
             else
@@ -6614,20 +6608,16 @@ static VReg gen(Node *node) {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
                 delta = node->lhs->ty->base->size;
-            r3 = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r3, r2, sz > 4 ? 8 : 4); // mov rr2 -> rr3
             if (is_inc)
-                asm_add_imm(cg_sec, r3, sz, delta); // add $delta, rr3
+                x86_add_mi(cg_sec, sz, x86_mem(REG(r), 0), delta); // add%c $delta, (%r)
             else
-                asm_sub_imm(cg_sec, r3, sz, delta); // sub $delta, rr3
-            x86_mov_mr(cg_sec, sz, x86_mem(REG(r), 0), REG(r3)); // mov%c %s, (%s)
-            free_reg(r3);
+                x86_sub_mi(cg_sec, sz, x86_mem(REG(r), 0), delta); // sub%c $delta, (%r)
         }
+        // The new value lives only in memory now (computed in-place); for
+        // prefix semantics, reload it (sign/zero-extended) into r2.
+        if (is_pre)
+            emit_load(node->lhs->ty, r2, r, 0);
 #endif
-        if (is_pre) {
-            free_reg(r);
-            return r3;
-        }
         free_reg(r);
         return r2;
     }

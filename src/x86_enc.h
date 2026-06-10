@@ -106,6 +106,7 @@ void x86_mov_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_or_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_cmp_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_add_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
+void x86_sub_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_movabs(SecBuf *s, X86Reg dst, uint64_t imm64); // 64-bit immediate
 void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src);
 void x86_movzx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src);

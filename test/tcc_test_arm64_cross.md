@@ -4,15 +4,15 @@ Generated: June 2026
 
 ## Summary
 
-- **Total**: 155
-- **Passed**: 138
-- **Failed**: 17
-- **Pass Rate**: 89%
+- **Total**: 120
+- **Passed**: 110
+- **Failed**: 10
+- **Pass Rate**: 91%
 
 ## Detailed Results
 
 | Test                        | Status    | Message                       |
-| :-------------------------- | :-------- | :---------------------------- |
+| --------------------------- | --------- | ----------------------------- |
 | 00_assignment               | PASS      | Output matches                |
 | 01_comment                  | PASS      | Output matches                |
 | 02_printf                   | PASS      | Output matches                |
@@ -36,7 +36,7 @@ Generated: June 2026
 | 20_pointer_comparison       | PASS      | Output matches                |
 | 21_char_array               | PASS      | Output matches                |
 | 22_floating_point           | MISMATCH  | Output does not match .expect |
-| 23_type_coercion            | MISMATCH  | Output does not match .expect |
+| 23_type_coercion            | PASS      | Output matches                |
 | 24_math_library             | MISMATCH  | Output does not match .expect |
 | 25_quicksort                | PASS      | Output matches                |
 | 26_character_constants      | PASS      | Output matches                |
@@ -72,7 +72,7 @@ Generated: June 2026
 | 61_integers                 | PASS      | Output matches                |
 | 64_macro_nesting            | PASS      | Output matches                |
 | 67_macro_concat             | PASS      | Output matches                |
-| 70_floating_point_literals  | MISMATCH  | Output does not match .expect |
+| 70_floating_point_literals  | PASS      | Output matches                |
 | 71_macro_empty_arg          | PASS      | Output matches                |
 | 72_long_long_constant       | PASS      | Output matches                |
 | 73_arm64                    | PASS      | Output matches                |
@@ -103,7 +103,7 @@ Generated: June 2026
 | 98_al_ax_extend             | SKIP      | Skipped                       |
 | 99_fastcall                 | SKIP      | Skipped                       |
 | 100_c99array-decls          | PASS      | Output matches                |
-| 101_cleanup                 | MISMATCH  | Output does not match .expect |
+| 101_cleanup                 | PASS      | Output matches                |
 | 102_alignas                 | PASS      | Output matches                |
 | 103_implicit_memmove        | PASS      | Output matches                |
 | 104_inline                  | PASS      | Output matches                |
@@ -134,9 +134,9 @@ Generated: June 2026
 | 129_scopes                  | EXEC_FAIL | non-zero exit                 |
 | 130_large_argument          | PASS      | Output matches                |
 | 131_return_struct_in_reg    | PASS      | Output matches                |
-| 132_bound_test              | MISMATCH  | Output does not match .expect |
-| 133_old_func                | MISMATCH  | Output does not match .expect |
-| 134_double_to_signed        | MISMATCH  | Output does not match .expect |
+| 132_bound_test              | PASS      | Output matches                |
+| 133_old_func                | PASS      | Output matches                |
+| 134_double_to_signed        | PASS      | Output matches                |
 | 135_func_arg_struct_compare | PASS      | Output matches                |
 | 136_atomic_gcc_style        | PASS      | Output matches                |
 | 137_funcall_struct_args     | MISMATCH  | Output does not match .expect |
@@ -148,38 +148,3 @@ Generated: June 2026
 | 143_void_expr               | PASS      | Output matches                |
 | 144_tls                     | EXEC_FAIL | non-zero exit                 |
 | 145_winarm64_interlocked    | SKIP      | Skipped                       |
-| test_arm64_asm              | PASS      |                               |
-| test_atomic_op              | PASS      |                               |
-| test_atomic_op2             | PASS      |                               |
-| test_bitfields              | PASS      |                               |
-| test_builtins               | PASS      |                               |
-| test_elif2                  | PASS      |                               |
-| test_elif_simple            | PASS      |                               |
-| test_err                    | PASS      | compile error as expected     |
-| test_fallthrough            | PASS      |                               |
-| test_func                   | PASS      |                               |
-| test_gperf                  | PASS      |                               |
-| test_if                     | PASS      |                               |
-| test_if2                    | PASS      |                               |
-| test_if3                    | PASS      |                               |
-| test_if4                    | PASS      |                               |
-| test_if5                    | PASS      |                               |
-| test_if6                    | PASS      |                               |
-| test_if_nested              | PASS      |                               |
-| test_if_simple              | PASS      |                               |
-| test_include                | PASS      |                               |
-| test_include2               | PASS      |                               |
-| test_loop                   | PASS      |                               |
-| test_macro                  | PASS      |                               |
-| test_minimal                | PASS      |                               |
-| test_nested_if              | PASS      |                               |
-| test_ptr                    | PASS      |                               |
-| test_real                   | PASS      |                               |
-| test_self_include2          | PASS      |                               |
-| test_signextend             | PASS      |                               |
-| test_simple                 | PASS      |                               |
-| test_simple2                | PASS      |                               |
-| test_str                    | PASS      |                               |
-| test_struct                 | PASS      |                               |
-| test_unicode                | EXEC_FAIL | exit=134                      |
-| test_with_comment           | PASS      |                               |
