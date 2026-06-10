@@ -4,15 +4,15 @@ Generated: June 2026
 
 ## Summary
 
-- **Total**: 156
-- **Passed**: 156
+- **Total**: 120
+- **Passed**: 120
 - **Failed**: 0
 - **Pass Rate**: 100%
 
 ## Detailed Results
 
 | Test                        | Status     | Message                     |
-| :-------------------------- | :--------- | :-------------------------- |
+| --------------------------- | ---------- | --------------------------- |
 | 00_assignment               | COMPILE_OK | linked, (execution skipped) |
 | 01_comment                  | COMPILE_OK | linked, (execution skipped) |
 | 02_printf                   | COMPILE_OK | linked, (execution skipped) |
@@ -122,7 +122,7 @@ Generated: June 2026
 | 117_builtins                | COMPILE_OK | linked, (execution skipped) |
 | 118_switch                  | COMPILE_OK | linked, (execution skipped) |
 | 119_random_stuff            | COMPILE_OK | linked, (execution skipped) |
-| 120_alias                   | COMPILE_OK | linked, (execution skipped) |
+| 120_alias                   | SKIP       | Skipped                     |
 | 121_struct_return           | COMPILE_OK | linked, (execution skipped) |
 | 122_vla_reuse               | COMPILE_OK | linked, (execution skipped) |
 | 123_vla_bug                 | COMPILE_OK | linked, (execution skipped) |
@@ -130,7 +130,7 @@ Generated: June 2026
 | 125_atomic_misc             | COMPILE_OK | linked, (execution skipped) |
 | 126_bound_global            | SKIP       | Skipped                     |
 | 127_asm_goto                | SKIP       | Skipped                     |
-| 128_run_atexit              | COMPILE_OK | linked, (execution skipped) |
+| 128_run_atexit              | PASS       | Output matches              |
 | 129_scopes                  | COMPILE_OK | linked, (execution skipped) |
 | 130_large_argument          | COMPILE_OK | linked, (execution skipped) |
 | 131_return_struct_in_reg    | COMPILE_OK | linked, (execution skipped) |
@@ -148,38 +148,3 @@ Generated: June 2026
 | 143_void_expr               | COMPILE_OK | linked, (execution skipped) |
 | 144_tls                     | COMPILE_OK | linked, (execution skipped) |
 | 145_winarm64_interlocked    | SKIP       | Skipped                     |
-| test_arm64_asm              | COMPILE_OK | linked, (execution skipped) |
-| test_atomic_op              | COMPILE_OK | linked, (execution skipped) |
-| test_atomic_op2             | COMPILE_OK | linked, (execution skipped) |
-| test_bitfields              | COMPILE_OK | linked, (execution skipped) |
-| test_builtins               | COMPILE_OK | linked, (execution skipped) |
-| test_elif2                  | COMPILE_OK | linked, (execution skipped) |
-| test_elif_simple            | COMPILE_OK | linked, (execution skipped) |
-| test_err                    | PASS       | compile error as expected   |
-| test_fallthrough            | COMPILE_OK | linked, (execution skipped) |
-| test_func                   | COMPILE_OK | linked, (execution skipped) |
-| test_gperf                  | COMPILE_OK | linked, (execution skipped) |
-| test_if                     | COMPILE_OK | linked, (execution skipped) |
-| test_if2                    | COMPILE_OK | linked, (execution skipped) |
-| test_if3                    | COMPILE_OK | linked, (execution skipped) |
-| test_if4                    | COMPILE_OK | linked, (execution skipped) |
-| test_if5                    | COMPILE_OK | linked, (execution skipped) |
-| test_if6                    | COMPILE_OK | linked, (execution skipped) |
-| test_if_nested              | COMPILE_OK | linked, (execution skipped) |
-| test_if_simple              | COMPILE_OK | linked, (execution skipped) |
-| test_include                | COMPILE_OK | linked, (execution skipped) |
-| test_include2               | COMPILE_OK | linked, (execution skipped) |
-| test_loop                   | COMPILE_OK | linked, (execution skipped) |
-| test_macro                  | COMPILE_OK | linked, (execution skipped) |
-| test_minimal                | COMPILE_OK | linked, (execution skipped) |
-| test_nested_if              | COMPILE_OK | linked, (execution skipped) |
-| test_ptr                    | COMPILE_OK | linked, (execution skipped) |
-| test_real                   | COMPILE_OK | linked, (execution skipped) |
-| test_self_include2          | COMPILE_OK | linked, (execution skipped) |
-| test_signextend             | COMPILE_OK | linked, (execution skipped) |
-| test_simple                 | COMPILE_OK | linked, (execution skipped) |
-| test_simple2                | COMPILE_OK | linked, (execution skipped) |
-| test_str                    | COMPILE_OK | linked, (execution skipped) |
-| test_struct                 | COMPILE_OK | linked, (execution skipped) |
-| test_unicode                | COMPILE_OK | linked, (execution skipped) |
-| test_with_comment           | COMPILE_OK | linked, (execution skipped) |

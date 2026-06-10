@@ -9379,19 +9379,24 @@ void codegen(Program *prog) {
                 LVar *existing = NULL;
                 for (LVar *g = prog->globals; g; g = g->next) {
                     if (g != var && !g->is_extern && !g->is_function &&
-                        strcmp(sym_name(g->name), var->asm_name) == 0 &&
                         (g->has_init || g->init_data)) {
-                        existing = g;
-                        break;
+                        const char *gn = sym_name(g->name);
+                        if (strcmp(gn, var->asm_name) == 0 ||
+                            (var->asm_name[0] == '_' && strcmp(gn, var->asm_name + 1) == 0)) {
+                            existing = g;
+                            break;
+                        }
                     }
                 }
                 if (existing) {
-                    // This is an alias via __asm__ — emit .set instead of data
+                    // This is an alias via __asm__ — emit .set from asm_name
+                    // to the existing global that provides the data.
+                    const char *target = asm_sym_name(sym_name(existing->name));
 #ifdef __APPLE__
                     printf("  .balign 8\n");
 #endif
-                    printf(".globl %s\n", asm_sym_name(sym_name(var->name)));
-                    printf(".set %s, %s\n", asm_sym_name(sym_name(var->name)), canon);
+                    printf(".globl %s\n", target);
+                    printf(".set %s, %s\n", asm_sym_name(var->asm_name), target);
                     continue;
                 }
             }

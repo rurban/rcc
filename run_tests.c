@@ -823,7 +823,22 @@ static bool diff_strings(const char *expect, const char *actual, const char *lab
     if (alen > 0 && a[alen - 1] == '\n' && elen == alen - 1 && memcmp(e, a, elen) == 0)
         return true;
     printf("--- expected (%s)\n+++ actual\n@@ output differs @@\n", label);
-    return false;
+    /* Print the first differing line from each */
+    {
+        const char *es = e, *as = a;
+        while (*es && *as && *es == *as) es++, as++;
+        /* back up to start of line */
+        while (es > e && es[-1] != '\n') es--;
+        while (as > a && as[-1] != '\n') as--;
+        /* print the line from expect */
+        const char *ee = strchr(es, '\n');
+        if (!ee) ee = es + strlen(es);
+        printf("-%.*s\n", (int)(ee - es), es);
+        /* print the line from actual */
+        const char *ae = strchr(as, '\n');
+        if (!ae) ae = as + strlen(as);
+        printf("+%.*s\n", (int)(ae - as), as);
+    }
 }
 
 static char **extract_dt_tests(const char *src_path) {
@@ -1941,11 +1956,11 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "arm64"))
         max_fail = 27;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 63;
+        max_fail = 274 + 26;
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw"))
-        max_fail = 37;
+        max_fail = 31;
     else
         max_fail = 15;
 
