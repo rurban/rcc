@@ -2264,7 +2264,6 @@ static void generate_report(void) {
         const char *label;
     } suite_meta[] = {
         {"tcc", "TCC Compatibility Tests + Unit tests"},
-        {"units", "RCC Unit tests"},
         {"ctest", "c-testsuite"},
         {"compliance", "NCC Compliance Tests (vs GCC)"},
         {"torture", "GCC Torture Tests"},
