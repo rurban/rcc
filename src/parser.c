@@ -137,6 +137,7 @@ static Node *new_unary(NodeKind kind, Node *expr, Token *tok) {
     return node;
 }
 
+
 // Insert implicit casts for function call arguments to match parameter types
 static void cast_funcall_args(Node *call) {
     Type *fty = NULL;
@@ -278,6 +279,21 @@ static Node *new_var_node(LVar *var, Token *tok) {
     node->var = var;
     node->ty = var->ty;
     return node;
+}
+
+// Create a complex value node from real and imaginary parts.
+// Allocates a temporary local variable and returns (setreal, setimag, tmp).
+static Node *new_complex_val(Node *real_part, Node *imag_part, Type *cty, Token *tok) {
+    LVar *tmp = new_var("", cty, true);
+    Node *tmp_var = new_var_node(tmp, tok);
+    // __real__ tmp = real_part
+    Node *set_real = new_binary(ND_ASSIGN, new_unary(ND_REAL, tmp_var, tok), real_part, tok);
+    // __imag__ tmp = imag_part
+    Node *set_imag = new_binary(ND_ASSIGN, new_unary(ND_IMAG, tmp_var, tok), imag_part, tok);
+    // (set_real, set_imag, tmp)
+    Node *comma1 = new_binary(ND_COMMA, set_real, set_imag, tok);
+    Node *result = new_binary(ND_COMMA, comma1, tmp_var, tok);
+    return result;
 }
 
 static LVar *find_var(Token *tok) {
@@ -552,6 +568,7 @@ static bool is_typename(Token *tok) {
         equalc(tok, "_Bool") || equalc(tok, "struct") || equalc(tok, "union") || equalc(tok, "enum") ||
         equalc(tok, "typeof") || equalc(tok, "__typeof") || equalc(tok, "__typeof__") ||
         equalc(tok, "_Atomic") ||
+        equalc(tok, "_Complex") || equalc(tok, "__complex__") ||
         equalc(tok, "_Decimal32") || equalc(tok, "_Decimal64") || equalc(tok, "_Decimal128"))
         return true;
     if (is_storage_class(tok))
@@ -960,6 +977,99 @@ static bool eval_double_const_expr(Node *node, double *val) {
         return false;
     }
 }
+
+// Evaluate a complex constant expression, extracting real and imag parts.
+// Handles patterns like "1.0 + 1.0i", "-2.0 + 2.0i", "1.0 + 14.0 * (1.0fi)", etc.
+static bool eval_complex_const_expr(Node *node, double *real_out, double *imag_out) {
+    double rl, il, rr, ir;
+    if (!node) return false;
+    switch (node->kind) {
+    case ND_FNUM:
+        *real_out = node->fval;
+        *imag_out = 0.0;
+        return true;
+    case ND_NUM:
+        *real_out = (double)node->val;
+        *imag_out = 0.0;
+        return true;
+    case ND_ADD:
+        if (!eval_complex_const_expr(node->lhs, &rl, &il)) return false;
+        if (!eval_complex_const_expr(node->rhs, &rr, &ir)) return false;
+        *real_out = rl + rr;
+        *imag_out = il + ir;
+        return true;
+    case ND_SUB:
+        if (!eval_complex_const_expr(node->lhs, &rl, &il)) return false;
+        if (!eval_complex_const_expr(node->rhs, &rr, &ir)) return false;
+        *real_out = rl - rr;
+        *imag_out = il - ir;
+        return true;
+    case ND_MUL:
+        if (!eval_complex_const_expr(node->lhs, &rl, &il)) return false;
+        if (!eval_complex_const_expr(node->rhs, &rr, &ir)) return false;
+        *real_out = rl * rr - il * ir;
+        *imag_out = rl * ir + il * rr;
+        return true;
+    case ND_DIV:
+        if (!eval_complex_const_expr(node->lhs, &rl, &il)) return false;
+        if (!eval_complex_const_expr(node->rhs, &rr, &ir)) return false;
+        {
+            double denom = rr * rr + ir * ir;
+            if (denom == 0.0) return false;
+            *real_out = (rl * rr + il * ir) / denom;
+            *imag_out = (il * rr - rl * ir) / denom;
+        }
+        return true;
+    case ND_NEG:
+        if (!eval_complex_const_expr(node->lhs, &rl, &il)) return false;
+        *real_out = -rl;
+        *imag_out = -il;
+        return true;
+    case ND_CAST:
+        return eval_complex_const_expr(node->lhs, real_out, imag_out);
+    case ND_COMMA: {
+        // Walk through comma chains (e.g., from new_complex_val:
+        // ND_COMMA(ND_COMMA(ND_ASSIGN(ND_REAL, real), ND_ASSIGN(ND_IMAG, imag)), ND_LVAR))
+        // Extract real/imag from the ND_ASSIGN nodes in the chain.
+        double rv = 0.0, iv = 0.0;
+        bool has_real = false, has_imag = false;
+        Node *inner = node;
+        while (inner->kind == ND_COMMA) {
+            Node *l = inner->lhs;
+            if (l->kind == ND_COMMA) {
+                double cr, ci;
+                if (eval_complex_const_expr(l, &cr, &ci)) {
+                    rv = cr;
+                    has_real = true;
+                    iv = ci;
+                    has_imag = true;
+                }
+            } else if (l->kind == ND_ASSIGN && l->lhs) {
+                if (l->lhs->kind == ND_REAL) {
+                    if (eval_double_const_expr(l->rhs, &rv)) has_real = true;
+                } else if (l->lhs->kind == ND_IMAG) {
+                    if (eval_double_const_expr(l->rhs, &iv)) has_imag = true;
+                }
+            }
+            inner = inner->rhs;
+        }
+        if (inner->kind == ND_ASSIGN && inner->lhs) {
+            if (inner->lhs->kind == ND_REAL && eval_double_const_expr(inner->rhs, &rv)) has_real = true;
+            else if (inner->lhs->kind == ND_IMAG && eval_double_const_expr(inner->rhs, &iv))
+                has_imag = true;
+        }
+        if (has_real || has_imag) {
+            *real_out = rv;
+            *imag_out = iv;
+            return true;
+        }
+        return eval_complex_const_expr(node->rhs, real_out, imag_out);
+    }
+    default:
+        return false;
+    }
+}
+
 
 static Type *declarator(Token **rest, Token *tok, Type *ty, char **name);
 
@@ -1646,6 +1756,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     bool is_bool = false;
     bool is_void = false;
     bool is_int128 = false;
+    bool is_complex = false;
     int attr_align = 0;
     unsigned char quals = 0;
     memset(attr, 0, sizeof(*attr));
@@ -1780,6 +1891,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "_Complex") || equalc(tok, "__complex__")) {
+            is_complex = true;
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "__int64")) {
             long_count = 2;
             tok = tok->next;
@@ -1869,11 +1985,16 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = is_unsigned ? ty_ulong : ty_long;
         } else if (is_int || is_signed || is_unsigned) {
             ty = is_unsigned ? ty_uint : ty_int;
+        } else if (is_complex) {
+            ty = ty_double;
         } else {
             ty = ty_int;
             warn_tok(tok, "type defaults to int");
         }
     }
+
+    if (is_complex && ty)
+        ty = complex_type(ty);
 
     if (!ty)
         error_tok(tok, "expected type name, got kind=%d text='%.20s'", tok->kind, tok->ptr);
@@ -2728,6 +2849,29 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         }
     }
 
+    if (is_complex(ty)) {
+        double rv = 0.0, iv = 0.0;
+        if (eval_complex_const_expr(node, &rv, &iv)) {
+            int base_sz = ty->base ? ty->base->size : 4;
+            ensure_init_size(var, offset, base_sz * 2);
+            if (is_flonum(ty->base)) {
+                if (base_sz == 4) {
+                    float rf = (float)rv, imf = (float)iv;
+                    memcpy(var->init_data + offset, &rf, 4);
+                    memcpy(var->init_data + offset + 4, &imf, 4);
+                } else {
+                    memcpy(var->init_data + offset, &rv, 8);
+                    memcpy(var->init_data + offset + 8, &iv, 8);
+                }
+            } else {
+                write_scalar_bytes(var, offset, base_sz, (int64_t)rv);
+                write_scalar_bytes(var, offset + base_sz, base_sz, (int64_t)iv);
+            }
+            return tok;
+        }
+        error_tok(tok, "expected constant expression in initializer");
+        return tok;
+    }
     if (is_flonum(ty)) {
         double fv = 0;
         if (eval_double_const_expr(node, &fv)) {
@@ -3704,6 +3848,8 @@ static bool type_equal(Type *a, Type *b) {
         return false;
 
     switch (a->kind) {
+    case TY_COMPLEX:
+        return type_equal(a->base, b->base);
     case TY_PTR:
         return type_equal(a->base, b->base);
     case TY_ARRAY:
@@ -3716,8 +3862,6 @@ static bool type_equal(Type *a, Type *b) {
         {
             Type *pa = a->param_types;
             Type *pb = b->param_types;
-            // If either side lacks parameter info (common for typedefs/fwd-decls),
-            // consider them compatible as long as return types match.
             if (!pa || !pb)
                 return true;
             while (pa && pb) {
@@ -3845,7 +3989,7 @@ static Node *primary(Token **rest, Token *tok) {
             } else {
                 LVar *var = find_var(tok);
                 if (!var)
-                    error_tok(tok, "undefined variable\n\033[1;36mnote\033[0m: variable must be declared before use (e.g., 'int x = 0;')");
+                    error_tok(tok, "undeclared variable");
                 node = new_var_node(var, tok);
                 tok = tok->next;
             }
@@ -3860,10 +4004,34 @@ static Node *primary(Token **rest, Token *tok) {
         node = new_num(tok->val, tok);
         tok = tok->next;
     } else if (tok->kind == TK_FNUM) {
-        node = new_fnum(tok->fval, tok);
-        if (tok->val == 1)
-            node->ty = ty_float;
-        tok = tok->next;
+        if (tok->val & 4) {
+            // Imaginary literal: create complex with real=0, imag=val
+            if (tok->val & 8) {
+                // Integer imaginary (e.g., 200i): _Complex int
+                Type *cty = complex_type(ty_int);
+                Node *zero = new_num(0, tok);
+                zero->ty = ty_int;
+                Node *imag = new_num((int64_t)tok->fval, tok);
+                imag->ty = ty_int;
+                node = new_complex_val(zero, imag, cty, tok);
+            } else {
+                int fkind = tok->val & 3;
+                Type *base = fkind == 1 ? ty_float : fkind == 2 ? ty_ldouble
+                                                                : ty_double;
+                Type *cty = complex_type(base);
+                Node *zero = new_fnum(0.0, tok);
+                zero->ty = base;
+                Node *imag = new_fnum(tok->fval, tok);
+                imag->ty = base;
+                node = new_complex_val(zero, imag, cty, tok);
+            }
+            tok = tok->next;
+        } else {
+            node = new_fnum(tok->fval, tok);
+            if (tok->val == 1)
+                node->ty = ty_float;
+            tok = tok->next;
+        }
     } else if (tok->kind == TK_STR) {
         node = new_node(ND_STR, tok);
         node->str = tok->str;
@@ -4875,6 +5043,16 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return new_num(node->ty->size, tok);
     }
+    if (equalc(tok, "__real__") || equalc(tok, "__real")) {
+        Node *node = new_unary(ND_REAL, unary(rest, tok->next), tok);
+        check_type(node);
+        return node;
+    }
+    if (equalc(tok, "__imag__") || equalc(tok, "__imag")) {
+        Node *node = new_unary(ND_IMAG, unary(rest, tok->next), tok);
+        check_type(node);
+        return node;
+    }
     if (equalc(tok, "__alignof__") || equalc(tok, "__alignof") || equalc(tok, "_Alignof")) {
         Token *start = tok;
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
@@ -5651,6 +5829,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         // Pointer initialized with &(compound literal): &(struct T){...}
         if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
             tok = tok->next; // skip &
+
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
             while (equalc(t, "(")) t = t->next;
@@ -5739,6 +5918,27 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
                 return;
             }
         }
+        // Try complex constant evaluation
+        if (is_complex(var->ty)) {
+            double rv = 0.0, iv = 0.0;
+            if (eval_complex_const_expr(node, &rv, &iv)) {
+                int base_sz = var->ty->base ? var->ty->base->size : 8;
+                int sz = var->ty->size ? var->ty->size : base_sz * 2;
+                var->init_data = arena_alloc(sz);
+                var->init_size = sz;
+                if (base_sz == 4) {
+                    float rf = (float)rv, imf = (float)iv;
+                    memcpy(var->init_data, &rf, 4);
+                    memcpy(var->init_data + 4, &imf, 4);
+                } else {
+                    memcpy(var->init_data, &rv, 8);
+                    memcpy(var->init_data + 8, &iv, 8);
+                }
+                *rest = tok;
+                return;
+            }
+        }
+
 
         // Try integer constant evaluation
         long long ival = 0;
@@ -6025,6 +6225,12 @@ Program *parse(Token *tok) {
                     fty->is_oldstyle = is_oldstyle;
                     Type param_head = {};
                     Type *pcur = &param_head;
+                    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
+                        Type *pt = arena_alloc(sizeof(Type));
+                        *pt = *pointer_to(fty->return_ty);
+                        pt->param_next = NULL;
+                        pcur = pcur->param_next = pt;
+                    }
                     for (LVar *p = params; p; p = p->param_next) {
                         Type *pt = arena_alloc(sizeof(Type));
                         *pt = *p->ty;
@@ -6054,7 +6260,7 @@ Program *parse(Token *tok) {
                     }
                 }
 
-                if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION)) {
+                if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
                     LVar *retbuf = new_var("__retbuf", pointer_to(fty->return_ty), true);
                     retbuf->cleanup_func = NULL;
                 }

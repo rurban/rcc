@@ -43,8 +43,23 @@ bool is_flonum(Type *ty) {
     return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE || ty->kind == TY_LDOUBLE;
 }
 
+bool is_complex(Type *ty) {
+    return ty && ty->kind == TY_COMPLEX;
+}
+
+Type *complex_type(Type *base) {
+    if (!base)
+        error("complex_type: base is NULL");
+    Type *ty = arena_alloc(sizeof(Type));
+    ty->kind = TY_COMPLEX;
+    ty->base = base;
+    ty->size = base->size * 2;
+    ty->align = base->align;
+    return ty;
+}
+
 bool is_number(Type *ty) {
-    return is_integer(ty) || is_flonum(ty);
+    return is_integer(ty) || is_flonum(ty) || is_complex(ty);
 }
 
 Type *get_integer_type(int size, bool is_unsigned) {
@@ -149,6 +164,26 @@ static int int_rank(Type *ty) {
 }
 
 static Type *usual_arith_type(Type *lhs, Type *rhs) {
+    // Mixed scalar+complex: promote to complex
+    if (is_complex(lhs) || is_complex(rhs)) {
+        if (is_complex(lhs) && is_complex(rhs)) {
+            // Both complex: promote to wider base type
+            // If same type, return as-is (no promotion needed)
+            if (lhs == rhs) return lhs;
+            if (lhs->base == rhs->base && lhs->base->size == rhs->base->size &&
+                lhs->base->is_unsigned == rhs->base->is_unsigned)
+                return lhs;
+            Type *common_base = usual_arith_type(lhs->base, rhs->base);
+            if (common_base == lhs->base) return lhs;
+            if (common_base == rhs->base) return rhs;
+            return complex_type(common_base);
+        }
+        // One complex, one scalar: promote scalar to complex
+        Type *cx = is_complex(lhs) ? lhs : rhs;
+        Type *sc = is_complex(lhs) ? rhs : lhs;
+        if (!is_number(sc)) return cx;
+        return cx; // scalar promotes to complex
+    }
     if (is_flonum(lhs) || is_flonum(rhs))
         return get_float_type(lhs, rhs);
     lhs = integer_promotion(lhs);
@@ -338,6 +373,13 @@ static void add_type_internal(Node *node) {
         return;
     case ND_FNUM:
         return;
+    case ND_REAL:
+    case ND_IMAG:
+        if (node->lhs->ty && node->lhs->ty->kind == TY_COMPLEX)
+            node->ty = node->lhs->ty->base;
+        else
+            node->ty = node->lhs->ty ? node->lhs->ty : ty_int;
+        return;
     case ND_SHL:
     case ND_SHR:
         node->ty = integer_promotion(node->lhs->ty);
@@ -393,7 +435,7 @@ static void add_type_internal(Node *node) {
                     insert_arith_cast(&node->lhs, cmp_ty);
                 if (is_integer(rty))
                     insert_arith_cast(&node->rhs, cmp_ty);
-            } else if (is_integer(cmp_ty)) {
+            } else if (is_integer(cmp_ty) || is_complex(cmp_ty)) {
                 if (cmp_ty->size > lty->size)
                     insert_arith_cast(&node->lhs, cmp_ty);
                 if (cmp_ty->size > rty->size)

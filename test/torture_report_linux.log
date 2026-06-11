@@ -190,7 +190,21 @@
   960416-1                            PASS
   960419-1                            PASS
   960419-2                            PASS
-  960512-1                            SKIP (complex)
+  960512-1                            FAIL (runtime)
+
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_960512-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1090837) "torture_rcc_960"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x000000000040052c in main () at ./960512-1.c:17
   960513-1                            PASS
   960521-1                            PASS
   960608-1                            PASS
@@ -397,7 +411,7 @@
   20010520-1                          PASS
   20010604-1                          PASS
   20010605-1                          SKIP (nested-func)
-  20010605-2                          SKIP (complex)
+  20010605-2                          SKIP (nested-func)
   20010711-1                          PASS
   20010717-1                          PASS
   20010723-1                          PASS
@@ -438,7 +452,7 @@
   20020225-1                          PASS
   20020225-2                          PASS
   20020226-1                          PASS
-  20020227-1                          SKIP (complex)
+  20020227-1                          PASS
   20020307-1                          PASS
   20020314-1                          PASS
   20020320-1                          PASS
@@ -449,7 +463,21 @@
   20020402-3                          PASS
   20020404-1                          PASS
   20020406-1                          PASS
-  20020411-1                          SKIP (complex)
+  20020411-1                          FAIL (runtime)
+
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_20020411-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1092404) "torture_rcc_200"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004006ab in main () at ./20020411-1.c:20
   20020412-1                          PASS
   20020413-1                          PASS
   20020418-1                          PASS
@@ -590,9 +618,15 @@
   20041112-1                          PASS
   20041113-1                          PASS
   20041114-1                          PASS
-  20041124-1                          SKIP (complex)
+  20041124-1                          PASS
   20041126-1                          PASS
-  20041201-1                          SKIP (complex)
+  20041201-1                          FAIL (runtime)
+
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_20041201-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+[Inferior 1 (process 1093299) exited with code 01]
   20041210-1                          PASS
   20041212-1                          PASS
   20041213-2                          PASS
@@ -605,7 +639,7 @@
   20050111-1                          PASS
   20050119-1                          SKIP (attribute-mode)
   20050119-2                          SKIP (attribute-mode)
-  20050121-1                          SKIP (complex)
+  20050121-1                          PASS
   20050124-1                          PASS
   20050125-1                          PASS
   20050131-1                          PASS
@@ -654,7 +688,7 @@
   20070212-3                          PASS
   20070424-1                          PASS
   20070517-1                          PASS
-  20070614-1                          SKIP (complex)
+  20070614-1                          PASS
   20070623-1                          PASS
   20070724-1                          PASS
   20070824-1                          PASS
@@ -820,13 +854,13 @@
   compare-1                           PASS
   compare-2                           PASS
   compare-3                           PASS
-  complex-1                           SKIP (complex)
-  complex-2                           SKIP (complex)
+  complex-1                           SKIP (nested-func)
+  complex-2                           SKIP (nested-func)
   complex-3                           PASS
-  complex-4                           SKIP (complex)
-  complex-5                           SKIP (complex)
-  complex-6                           SKIP (complex)
-  complex-7                           SKIP (complex)
+  complex-4                           SKIP (nested-func)
+  complex-5                           SKIP (nested-func)
+  complex-6                           SKIP (nested-func)
+  complex-7                           SKIP (nested-func)
   compndlit-1                         SKIP (nested-func)
   const-addr-expr-1                   PASS
   conversion                          PASS
@@ -1060,20 +1094,42 @@
   pr38048-1                           PASS
   pr38048-2                           PASS
   pr38051                             PASS
-  pr38151                             SKIP (complex)
+  pr38151                             FAIL (runtime)
+
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr38151.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000000004006c6 in main () at ./pr38151.c:39
+39	  s2848.b = (723419448 + -218144346 * __extension__ 1i);
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1096066) "torture_rcc_pr3"):
+#0  0x00000000004006c6 in main () at ./pr38151.c:39
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
   pr38533                             PASS
   pr38819                             PASS
-  pr38969                             SKIP (complex)
+  pr38969                             PASS
   pr39100                             PASS
   pr39120                             PASS
   pr39228                             FAIL (runtime)
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr39228.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1096152) "torture_rcc_pr3"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x0000000000400650 in main () at ./pr39228.c:29
   pr39233                             PASS
   pr39240                             PASS
   pr39339                             PASS
@@ -1100,7 +1156,7 @@ No debugger found.
   pr42142                             PASS
   pr42154                             PASS
   pr42231                             PASS
-  pr42248                             SKIP (complex)
+  pr42248                             PASS
   pr42269-2                           PASS
   pr42512                             PASS
   pr42544                             PASS
@@ -1164,7 +1220,7 @@ No debugger found.
   pr49281                             PASS
   pr49390                             PASS
   pr49419                             PASS
-  pr49644                             SKIP (complex)
+  pr49644                             PASS
   pr49712                             PASS
   pr49768                             PASS
   pr49886                             PASS
@@ -1199,7 +1255,7 @@ No debugger found.
   pr56205                             PASS
   pr56250                             PASS
   pr56799                             PASS
-  pr56837                             SKIP (complex)
+  pr56837                             PASS
   pr56866                             PASS
   pr56899                             PASS
   pr56962                             PASS
@@ -1226,12 +1282,29 @@ No debugger found.
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr58277-1.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000000000401574 in main () at ./pr58277-1.c:98
+98	  if (!a[a[a[a[a[a[a[a[a[a[a[a[a[a[a[u]]]]]]]]]]]]]]])
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1097102) "torture_rcc_pr5"):
+#0  0x0000000000401574 in main () at ./pr58277-1.c:98
   pr58277-2                           FAIL (runtime)
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr58277-2.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000000004004dc in fn1 () at ./pr58277-2.c:15
+15	  b = a[a[a[a[a[a[a[a[b]]]]]]]];
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1097138) "torture_rcc_pr5"):
+#0  0x00000000004004dc in fn1 () at ./pr58277-2.c:15
+#1  0x0000000000401e93 in main () at ./pr58277-2.c:92
   pr58364                             PASS
   pr58365                             PASS
   pr58385                             PASS
@@ -1401,7 +1474,18 @@ No debugger found.
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr82210.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1098164) "torture_rcc_pr8"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004005d7 in foo () at ./pr82210.c:18
+#4  0x000000000040060b in main () at ./pr82210.c:24
   pr82387                             PASS
   pr82388                             PASS
   pr82524                             PASS
@@ -1515,7 +1599,20 @@ No debugger found.
   pr103405                            SKIP (nested-func)
   pr103417                            PASS
   pr104196                            PASS
-  pr104604                            SKIP (complex)
+  pr104604                            FAIL (runtime)
+
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr104604.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000000000400528 in foo () at ./pr104604.c:9
+9	    t /= c;
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1098842) "torture_rcc_pr1"):
+#0  0x0000000000400528 in foo () at ./pr104604.c:9
+#1  0x00000000004006c2 in main () at ./pr104604.c:22
   pr104814                            PASS
   pr104839                            PASS
   pr105613                            SKIP (vector_size)
@@ -1665,7 +1762,19 @@ No debugger found.
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_va-arg-22.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1099741) "torture_rcc_va-"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004004fa in bar () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:21
+#4  0x000000000040098b in foo () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:48
+#5  0x0000000000401c0d in main () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:74
   va-arg-23                           PASS
   va-arg-24                           PASS
   va-arg-26                           PASS
@@ -1673,7 +1782,19 @@ No debugger found.
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_va-arg-pack-1.dbg 
-No debugger found.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 1099806) "torture_rcc_va-"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x0000000000400696 in foo1 () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:41
+#4  0x0000000000400eef in bar () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:127
+#5  0x0000000000400f9f in main () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:134
   va-arg-trap-1                       PASS
   vfprintf-1                          PASS
   vfprintf-chk-1                      PASS
@@ -1696,7 +1817,7 @@ No debugger found.
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-=== TOTAL=1671 PASS=1550 FAIL_COMPILE=0 FAIL_RUNTIME=6 SKIP=115 ===
+=== TOTAL=1671 PASS=1558 FAIL_COMPILE=0 FAIL_RUNTIME=11 SKIP=102 ===
 Pass rate (excl. skip): 99%
 
-Runtime failures: pr39228 pr58277-1 pr58277-2 pr82210 va-arg-22 va-arg-pack-1
+Runtime failures: 960512-1 20020411-1 20041201-1 pr38151 pr39228 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
