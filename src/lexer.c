@@ -432,54 +432,70 @@ Token *tokenize(char *filename, char *p) {
                 }
             }
 
-            // Check for float suffix
-            if (*p == 'f' || *p == 'F') {
-                is_float = true;
-                p++;
-            } else if ((*p == 'd' || *p == 'D') &&
-                       (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
-                // Decimal float suffixes: DD (double), DF (float), DL (long double)
-                is_float = true;
-                p += 2;
-            } else if (*p == 'l' || *p == 'L') {
-                if (is_float) {
-                    p++;
-                } else {
-                    // Integer suffix
-                    while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L')
+
+            // Check for float/imaginary suffix: f/F, l/L, i/I in any order
+            int fkind = 0; // 0=double, 1=float, 2=long double
+            bool is_imag = false;
+            if (is_float) {
+                for (int pass = 0; pass < 2; pass++) {
+                    if (*p == 'f' || *p == 'F') {
+                        fkind = 1;
                         p++;
+                    } else if (*p == 'l' || *p == 'L') {
+                        if (is_float) {
+                            fkind = 2;
+                            p++;
+                        } else
+                            break;
+                    } else if (*p == 'i' || *p == 'I') {
+                        is_imag = true;
+                        p++;
+                    }
+                }
+                // Also handle DD/DF/DL decimal suffixes
+                if (fkind == 0 && !is_imag &&
+                    (*p == 'd' || *p == 'D') &&
+                    (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
+                    if (p[1] == 'd' || p[1] == 'D') fkind = 0;
+                    else if (p[1] == 'f' || p[1] == 'F')
+                        fkind = 1;
+                    else
+                        fkind = 2;
+                    p += 2;
                 }
             } else {
+                // Integer suffix (including imaginary i/I extension)
                 while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L')
                     p++;
+                if (*p == 'i' || *p == 'I') {
+                    is_imag = true;
+                    p++;
+                }
             }
-
             if (is_float) {
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
-                // Check for 'f'/'F', 'l'/'L', or decimal DF/DD/DL suffix
-                char last = *(p - 1);
-                char prev = p > q + 1 ? *(p - 2) : '\0';
-                if (last == 'f' || last == 'F') {
+                if (is_imag)
+                    cur->val = fkind | 4; // bit 2 = imaginary flag
+                else
+                    cur->val = fkind;
+                if (fkind == 1)
                     cur->fval = (double)strtof(q, NULL);
-                    cur->val = 1; // flag: is single-precision float
-                } else if (last == 'l' || last == 'L') {
+                else
                     cur->fval = strtod(q, NULL);
-                    cur->val = 2; // flag: is long double
-                } else if ((last == 'd' || last == 'D') && (prev == 'd' || prev == 'D')) {
-                    // DD: decimal double → treat as double
-                    cur->fval = strtod(q, NULL);
-                    cur->val = 0;
-                } else if ((last == 'f' || last == 'F') && (prev == 'd' || prev == 'D')) {
-                    // DF: decimal float → treat as float
-                    cur->fval = (double)strtof(q, NULL);
-                    cur->val = 1;
-                } else if ((last == 'l' || last == 'L') && (prev == 'd' || prev == 'D')) {
-                    // DL: decimal long double → treat as long double
-                    cur->fval = strtod(q, NULL);
-                    cur->val = 2;
+            } else if (is_imag) {
+                // Integer imaginary (e.g., 200i): emit as TK_FNUM with val=4|8
+                cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
+                cur->val = 4 | 8; // bit 2 = imaginary, bit 3 = integer-based
+                if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
+                    int64_t iv = 0;
+                    char *bp = q + 2;
+                    while (*bp == '0' || *bp == '1') {
+                        iv = iv * 2 + (*bp - '0');
+                        bp++;
+                    }
+                    cur->fval = (double)iv;
                 } else {
-                    cur->fval = strtod(q, NULL);
-                    cur->val = 0; // flag: is double
+                    cur->fval = (double)strtoull(q, NULL, 0);
                 }
             } else {
                 cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
@@ -498,8 +514,6 @@ Token *tokenize(char *filename, char *p) {
             cur->len = (int)(p - q);
             continue;
         }
-
-        // Identifier or keyword
         if ((unsigned char)*p >= 128) {
             char *start = p;
             char *pos;

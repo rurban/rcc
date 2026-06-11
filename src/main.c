@@ -562,7 +562,7 @@ int main(int argc, char **argv) {
             strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
 
         if (opt_dryrun) {
-            printf("%s\n", cmd);
+            puts(cmd);
             return 0;
         }
 

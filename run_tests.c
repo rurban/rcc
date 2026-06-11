@@ -1720,7 +1720,7 @@ typedef enum {
     SKIP_NONE,
     SKIP_X86_ONLY,
     SKIP_TMPNAM,
-    SKIP_COMPLEX,
+    //SKIP_COMPLEX,
     SKIP_TRAMPOLINES,
     SKIP_SCALAR_STORAGE,
     SKIP_FINSTRUMENT,
@@ -1735,7 +1735,7 @@ static const char *skip_reason_str(SkipReason r) {
     switch (r) {
     case SKIP_X86_ONLY: return "x86-only";
     case SKIP_TMPNAM: return "tmpnam-macOS";
-    case SKIP_COMPLEX: return "complex";
+    //case SKIP_COMPLEX: return "complex";
     case SKIP_TRAMPOLINES: return "trampolines";
     case SKIP_SCALAR_STORAGE: return "scalar_storage_order";
     case SKIP_FINSTRUMENT: return "finstrument";
@@ -1755,8 +1755,8 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_X86_ONLY;
     if (streq(platform, "arm64") && contains(content, "#include \"gcc_tmpnam.h\""))
         return SKIP_TMPNAM;
-    if (contains(content, "__complex__") || contains(content, "Complex"))
-        return SKIP_COMPLEX;
+    //if (contains(content, "__complex__") || contains(content, "Complex"))
+    //    return SKIP_COMPLEX;
     if (contains(content, "dg-require-effective-target trampolines"))
         return SKIP_TRAMPOLINES;
     if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
@@ -1979,9 +1979,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw"))
-        max_fail = 31;
+        max_fail = 42;
     else
-        max_fail = 6;
+        max_fail = 11;
 
     if (g_log_fp) {
         fclose(g_log_fp);

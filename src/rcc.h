@@ -113,6 +113,7 @@ typedef enum {
     TY_FLOAT,
     TY_DOUBLE,
     TY_LDOUBLE,
+    TY_COMPLEX, // _Complex
     TY_PTR,
     TY_ARRAY,
     TY_VLA, // variable-length array
@@ -212,10 +213,12 @@ extern uint64_t time_peep_us;
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);
+bool is_complex(Type *ty);
 bool is_number(Type *ty);
 Type *get_integer_type(int size, bool is_unsigned);
 Type *pointer_to(Type *base);
 Type *array_of(Type *base, int64_t len);
+Type *complex_type(Type *base);
 
 typedef struct Reloc Reloc;
 struct Reloc {
@@ -317,6 +320,8 @@ typedef enum {
     ND_COMMA, // ,
     ND_SIZEOF, // sizeof
     ND_FNUM, // Float literal
+    ND_REAL, // __real__ (extract real part of complex)
+    ND_IMAG, // __imag__ (extract imag part of complex)
     ND_NEG, // Unary minus
     ND_NOT, // Logical not
     ND_ZERO_INIT, // Zero-fill a local variable (lhs=ND_LVAR)
