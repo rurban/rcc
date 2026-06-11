@@ -2474,7 +2474,7 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         }
         // If array size is 0 (incomplete), set it
         if (ty->size == 0)
-            ty->size = (i + 1) * wchar_size;
+            ty->size = (int64_t)(i + 1) * wchar_size;
         return tok->next;
     }
 

@@ -1073,22 +1073,7 @@
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr39228.dbg 
-Downloading separate debug info for system-supplied DSO at 0x7ffff7fc3000...
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGABRT, Aborted.
-Download failed: Invalid argument.  Continuing without source file ./nptl/./nptl/pthread_kill.c.
-__pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-warning: 44	./nptl/pthread_kill.c: No such file or directory
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1572332) "torture_rcc_pr3"):
-#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-#1  __pthread_kill_internal (signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:78
-#2  __GI___pthread_kill (threadid=<optimized out>, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
-#3  0x00007ffff7c4527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
-#4  0x00007ffff7c288ff in __GI_abort () at ./stdlib/abort.c:79
-#5  0x0000000000401310 in main () at ./pr39228.c:29
+No debugger found.
   pr39233                             PASS
   pr39240                             PASS
   pr39339                             PASS
@@ -1241,29 +1226,12 @@ Thread 1 (Thread 0x7ffff7f84740 (LWP 1572332) "torture_rcc_pr3"):
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr58277-1.dbg 
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGSEGV, Segmentation fault.
-0x0000000000402234 in main () at ./pr58277-1.c:98
-98	  if (!a[a[a[a[a[a[a[a[a[a[a[a[a[a[a[u]]]]]]]]]]]]]]])
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1573363) "torture_rcc_pr5"):
-#0  0x0000000000402234 in main () at ./pr58277-1.c:98
+No debugger found.
   pr58277-2                           FAIL (runtime)
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr58277-2.dbg 
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGSEGV, Segmentation fault.
-0x000000000040119c in fn1 () at ./pr58277-2.c:15
-15	  b = a[a[a[a[a[a[a[a[b]]]]]]]];
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1573437) "torture_rcc_pr5"):
-#0  0x000000000040119c in fn1 () at ./pr58277-2.c:15
-#1  0x0000000000402b53 in main () at ./pr58277-2.c:92
+No debugger found.
   pr58364                             PASS
   pr58365                             PASS
   pr58385                             PASS
@@ -1433,22 +1401,7 @@ Thread 1 (Thread 0x7ffff7f84740 (LWP 1573437) "torture_rcc_pr5"):
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_pr82210.dbg 
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGABRT, Aborted.
-Download failed: Invalid argument.  Continuing without source file ./nptl/./nptl/pthread_kill.c.
-__pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-warning: 44	./nptl/pthread_kill.c: No such file or directory
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1574604) "torture_rcc_pr8"):
-#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-#1  __pthread_kill_internal (signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:78
-#2  __GI___pthread_kill (threadid=<optimized out>, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
-#3  0x00007ffff7c4527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
-#4  0x00007ffff7c288ff in __GI_abort () at ./stdlib/abort.c:79
-#5  0x0000000000401297 in foo () at ./pr82210.c:18
-#6  0x00000000004012cb in main () at ./pr82210.c:24
+No debugger found.
   pr82387                             PASS
   pr82388                             PASS
   pr82524                             PASS
@@ -1712,23 +1665,7 @@ Thread 1 (Thread 0x7ffff7f84740 (LWP 1574604) "torture_rcc_pr8"):
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_va-arg-22.dbg 
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGABRT, Aborted.
-Download failed: Invalid argument.  Continuing without source file ./nptl/./nptl/pthread_kill.c.
-__pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-warning: 44	./nptl/pthread_kill.c: No such file or directory
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1576361) "torture_rcc_va-"):
-#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-#1  __pthread_kill_internal (signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:78
-#2  __GI___pthread_kill (threadid=<optimized out>, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
-#3  0x00007ffff7c4527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
-#4  0x00007ffff7c288ff in __GI_abort () at ./stdlib/abort.c:79
-#5  0x00000000004011ba in bar () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:21
-#6  0x000000000040164b in foo () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:48
-#7  0x00000000004028cd in main () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:74
+No debugger found.
   va-arg-23                           PASS
   va-arg-24                           PASS
   va-arg-26                           PASS
@@ -1736,23 +1673,7 @@ Thread 1 (Thread 0x7ffff7f84740 (LWP 1576361) "torture_rcc_va-"):
 
 === EXEC_FAIL backtrace ===
 command: /tmp/torture_rcc_va-arg-pack-1.dbg 
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-
-Program received signal SIGABRT, Aborted.
-Download failed: Invalid argument.  Continuing without source file ./nptl/./nptl/pthread_kill.c.
-__pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-warning: 44	./nptl/pthread_kill.c: No such file or directory
-
-Thread 1 (Thread 0x7ffff7f84740 (LWP 1576451) "torture_rcc_va-"):
-#0  __pthread_kill_implementation (no_tid=0, signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:44
-#1  __pthread_kill_internal (signo=6, threadid=<optimized out>) at ./nptl/pthread_kill.c:78
-#2  __GI___pthread_kill (threadid=<optimized out>, signo=signo@entry=6) at ./nptl/pthread_kill.c:89
-#3  0x00007ffff7c4527e in __GI_raise (sig=sig@entry=6) at ../sysdeps/posix/raise.c:26
-#4  0x00007ffff7c288ff in __GI_abort () at ./stdlib/abort.c:79
-#5  0x0000000000401356 in foo1 () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:41
-#6  0x0000000000401baf in bar () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:127
-#7  0x0000000000401c5f in main () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:134
+No debugger found.
   va-arg-trap-1                       PASS
   vfprintf-1                          PASS
   vfprintf-chk-1                      PASS
