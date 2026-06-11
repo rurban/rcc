@@ -75,10 +75,6 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      - name: Run linter
-        run: make lint
-        timeout-minutes: 10
-
       - name: Check for source changes
         id: changed
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1

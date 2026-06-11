@@ -4,7 +4,10 @@
 set -e
 trap 'rm src/sysinc_paths.h src/gcc_predefined.h' EXIT
 WINE_DISABLE_RANDR=1
-export WINE_DISABLE_RANDR
+WINEDEBUG=fixme-all
+WINEDLLOVERRIDES="winedbg=d"
+WINENOPOPUPS=1
+export WINEDEBUG WINEDLLOVERRIDES WINENOPOPUPS WINE_DISABLE_RANDR
 
 if [ -e /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll ] && [ ! -e libwinpthread-1.dll ]; then
     cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll .
@@ -16,7 +19,7 @@ if [ -n "${1:-}" ]; then
 else
     make leanclean
     make -s CC=x86_64-w64-mingw32-gcc
-    echo "==> Running full test suite via mingw-cross.sh..."
+    echo "==> Running full test suite via run_tests.exe..."
     echo ""
     ./run_tests.exe ./rcc.exe --all --no-color
     ./run-c-testsuite.sh ../rcc.exe
