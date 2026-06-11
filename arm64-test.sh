@@ -30,8 +30,8 @@ else
     make -s CC=aarch64-linux-gnu-gcc
     make -s run_tests_arm64
     trap 'make leanclean; make -s' EXIT
-    echo "==> Running full test suite via run_tests_arm64 under qemu..."
+    echo "==> Running full test suite in parallel via run_tests_arm64 under qemu..."
     echo ""
     export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
-    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --all
+    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --all --parallel
 fi

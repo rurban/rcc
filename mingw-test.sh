@@ -15,12 +15,11 @@ fi
 
 if [ -n "${1:-}" ]; then
     make -s CC=x86_64-w64-mingw32-gcc
-    ./run_tests.exe ./rcc.exe --no-color "$1"
+    ./run_tests.exe ./rcc.exe "$1"
 else
     make leanclean
     make -s CC=x86_64-w64-mingw32-gcc
-    echo "==> Running full test suite via run_tests.exe..."
+    echo "==> Running full test suite in parallel via run_tests.exe..."
     echo ""
-    ./run_tests.exe ./rcc.exe --all --no-color
-    ./run-c-testsuite.sh ../rcc.exe
+    ./run_tests.exe ./rcc.exe --all --parallel
 fi
