@@ -52,12 +52,11 @@ detect_platform() {
 }
 platform="$(detect_platform)"
 if [ "$1" = "../rcc.exe" ]; then
-    if [ -f runners/single-exec/win ]; then
-        sed -e 's,\.bin,\.exe,' <runners/single-exec/posix >runners/single-exec/win
-        chmod +x runners/single-exec/win
-    fi
-    echo "Start c-testsuite with ../rcc.exe -O1 -lm"
-    env CC="../rcc.exe" CFLAGS="-O1 -lm" ./single-exec win | scripts/tapsummary | tee ../c-testsuite.tap.txt
+    # shellcheck disable=SC2016  # $t is literal sed text, not shell expansion
+    sed -e 's,\.bin,\.exe,g' -e 's/^if ! "\$t/if ! wine "\$t/' <runners/single-exec/posix >runners/single-exec/win
+    chmod +x runners/single-exec/win
+    echo "Start c-testsuite with wine ../rcc.exe -O1 -lm"
+    env CC="wine ../rcc.exe" CFLAGS="-O1 -lm" ./single-exec win | scripts/tapsummary | tee ../c-testsuite.tap.txt
 else
     echo "Start c-testsuite with ../rcc -O1 -lm"
     env CC="../rcc" CFLAGS="-O1 -lm" ./single-exec posix | scripts/tapsummary | tee ../c-testsuite.tap.txt

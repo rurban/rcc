@@ -15,8 +15,17 @@ static uint64_t now_us(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
 }
+#if defined(_WIN32) || defined(__MINGW32__)
+/* Under Wine, CreateProcess needs the .exe extension to find gcc.exe
+ * in the Wine prefix's PATH (e.g. C:\mingw64\bin\gcc.exe).  Plain
+ * "gcc" resolves through Z:\ to a Linux ELF, which cannot be run. */
+#define GCC_DEFAULT "gcc.exe"
+#else
+#define GCC_DEFAULT "gcc"
+#endif
+
 #ifndef GCC
-#define GCC "gcc"
+#define GCC GCC_DEFAULT
 #endif
 
 void add_define(char *def);

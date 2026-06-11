@@ -115,6 +115,8 @@ static int scandir(const char *dir, struct dirent ***namelist,
 /* Return a temporary directory that exists.  On Windows the system
  * temp path is used (C:\Users\...\AppData\Local\Temp); /tmp would
  * only exist under MSYS2. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 static const char *get_tmpdir(void) {
     static char buf[PATH_MAX];
     if (buf[0]) return buf;
@@ -123,6 +125,7 @@ static const char *get_tmpdir(void) {
         /* fallback: CreateDirectory + C:\tmp */
         strcpy(buf, "C:\\tmp");
     }
+#pragma GCC diagnostic pop
     /* strip trailing backslash */
     size_t len = strlen(buf);
     while (len && buf[len - 1] == '\\') buf[--len] = '\0';
@@ -893,12 +896,48 @@ static char **extract_dt_tests(const char *src_path) {
     return names;
 }
 
+/* On macOS, lldb needs task_for_pid access which is only granted when
+ * launched from a proper Terminal session.  In CI / SSH / launchd
+ * contexts it fails with "cannot get permission to debug processes".
+ * Probe once and cache the result so we never try lldb when it can't work. */
+#ifdef __APPLE__
+static bool lldb_probed(void) {
+    static int ok = -1; /* -1 = unchecked, 0 = no, 1 = yes */
+    if (ok >= 0) return ok;
+    const char *bin = "/usr/bin/true";
+    if (access(bin, X_OK) != 0)
+        bin = "/bin/true";
+    if (access(bin, X_OK) != 0)
+        bin = "/bin/ls";
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "lldb --batch -o quit -- %s 2>&1", bin);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        ok = 0;
+        return false;
+    }
+    char ln[512];
+    bool can = true;
+    while (fgets(ln, sizeof(ln), fp)) {
+        if (strstr(ln, "cannot get permission") ||
+            strstr(ln, "error: process launch failed")) {
+            can = false;
+            break;
+        }
+    }
+    int rc = pclose(fp);
+    ok = (can && rc == 0) ? 1 : 0;
+    return ok;
+}
+#endif
+
 /* extra: NULL-terminated extra compile flags (e.g. {"-I",".","-lm",NULL}); may be NULL.
  * ob/ol/oc: output buffer for TCC suite (append mode); pass all NULL to print directly. */
 static void emit_backtrace(const char *exe_path, const char *args,
                            const char *src_file, const char *rcc, const char *cflags,
                            const char *const extra[],
                            char **ob, size_t *ol, size_t *oc) {
+    static bool lldb_failed, gdb_failed;
     char dbg[512];
     snprintf(dbg, sizeof(dbg), "%s.dbg", exe_path);
     bool have_dbg = false;
@@ -927,9 +966,13 @@ static void emit_backtrace(const char *exe_path, const char *args,
     if (ob) *ob = strappend(*ob, ol, oc, fmt, ##__VA_ARGS__); \
     else logprintf(fmt, ##__VA_ARGS__); \
 } while (0)
-    BT_OUT("\n=== EXEC_FAIL backtrace ===\n");
-    BT_OUT("command: %s %s\n", dp, args ? args : "");
-    if (access("/usr/bin/lldb", X_OK) == 0) {
+    if (access("/usr/bin/lldb", X_OK) == 0 && !lldb_failed
+#ifdef __APPLE__
+        && lldb_probed()
+#endif
+    ) {
+        BT_OUT("\n=== EXEC_FAIL backtrace ===\n");
+        BT_OUT("command: %s %s\n", dp, args ? args : "");
         char cmd[1024];
         snprintf(cmd, sizeof(cmd),
                  "lldb --batch --one-line run --one-line-on-crash \"thread backtrace all\" "
@@ -939,10 +982,19 @@ static void emit_backtrace(const char *exe_path, const char *args,
         FILE *fp = popen(cmd, "r");
         if (fp) {
             char ln[1024];
-            while (fgets(ln, sizeof(ln), fp)) BT_OUT("%s", ln);
+            while (fgets(ln, sizeof(ln), fp)) {
+                if (strstr(ln, "cannot get permission to debug processes")) {
+                    lldb_failed = true;
+                    BT_OUT("lldb: permission denied (skipping)\n");
+                    break;
+                }
+                BT_OUT("%s", ln);
+            }
             pclose(fp);
         }
-    } else if (access("/usr/bin/gdb", X_OK) == 0) {
+    } else if (access("/usr/bin/gdb", X_OK) == 0 && !gdb_failed) {
+        BT_OUT("\n=== EXEC_FAIL backtrace ===\n");
+        BT_OUT("command: %s %s\n", dp, args ? args : "");
         char cmd[1024];
         snprintf(cmd, sizeof(cmd),
                  "gdb -q -batch -ex run -ex \"thread apply all bt\" --args %s %s 2>&1",
@@ -950,11 +1002,15 @@ static void emit_backtrace(const char *exe_path, const char *args,
         FILE *fp = popen(cmd, "r");
         if (fp) {
             char ln[1024];
-            while (fgets(ln, sizeof(ln), fp)) BT_OUT("%s", ln);
+            while (fgets(ln, sizeof(ln), fp)) {
+                BT_OUT("%s", ln);
+                if (strstr(ln, "not permitted") || strstr(ln, "ptrace"))
+                    gdb_failed = true;
+            }
             pclose(fp);
         }
-    } else {
-        BT_OUT("No debugger found.\n");
+    } else if (!lldb_failed && !gdb_failed) {
+        BT_OUT("\nNo debugger available for backtrace.\n");
     }
 #undef BT_OUT
     if (have_dbg) unlink(dbg);
@@ -1429,6 +1485,8 @@ static void run_unit_tests(void) {
     if (!file_exists(unit_path)) return;
     printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
+    total = passed = failed = 0;
+
     struct dirent **nl;
     int n = scandir(unit_path, &nl, NULL, alphasort);
     if (n < 0) return;
@@ -1469,7 +1527,7 @@ static void run_unit_tests(void) {
 
         /* test_err: expect compile failure */
         if (streq(base, "test_err")) {
-            char tmp[256];
+            char tmp[PATH_MAX];
             snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
             if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
                 strcat(tmp, ".exe");
@@ -1493,7 +1551,7 @@ static void run_unit_tests(void) {
         }
 
         int expected_exit = test_unit_expected_exit(base);
-        char tmp[256];
+        char tmp[PATH_MAX];
         snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
         if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
             strcat(tmp, ".exe");
@@ -1546,6 +1604,20 @@ static void run_unit_tests(void) {
         free(nl[i]);
     }
     free(nl);
+
+    if (!only_test) {
+        int pct = total > 0 ? passed * 100 / total : 0;
+        printf("\n%sUnit Test Results: %d/%d passed (%d%%), %d failed.%s\n",
+               COL_CYAN, passed, total, pct, failed, COL_RESET);
+
+        char sp[256];
+        snprintf(sp, sizeof(sp), "test-units-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
+        if (sf) {
+            fprintf(sf, "SUITE=units\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", total, passed, failed);
+            fclose(sf);
+        }
+    }
 }
 
 /* ── markdown report ─────────────────────────────────────────────── */
@@ -1975,7 +2047,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "arm64"))
         max_fail = 21;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 274 + 26;
+        max_fail = 39;
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw"))
@@ -2012,7 +2084,7 @@ static int run_compliance_suite(void) {
          * toolchain installed under the wine prefix's C:\mingw64\bin). The
          * Unix candidate paths below would resolve through wine's Z:\ drive
          * to a Linux ELF gcc, which can't be run directly here. */
-        gcc_path = "gcc";
+        gcc_path = "gcc.exe";
 #else
         static const char *gcc_cands[] = {"/usr/bin/gcc", "/usr/local/bin/gcc", NULL};
         for (const char **c = gcc_cands; *c; c++) {
@@ -2278,8 +2350,98 @@ static int run_ctest_suite(void) {
     printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
 
     if (is_mingw_native || under_wine) {
-        printf("SKIP (requires POSIX shell; cmd.exe cannot run shell scripts)\n");
-        return 0;
+        /* Native per-test execution — no POSIX shell needed.
+         * Same compile+run+compare as run_ctest_one(), iterated
+         * over all tests in single-exec/ via list_c_files_sorted(). */
+        printf("Start c-testsuite with %s -O1 -lm\n", rcc);
+
+        char src_dir[PATH_MAX];
+        snprintf(src_dir, sizeof(src_dir), "%s/tests/single-exec", ctest_dir);
+        char **files = list_c_files_sorted(src_dir);
+        if (!files) {
+            printf("  No c-testsuite tests found\n");
+            return 0;
+        }
+
+        int ctest_pass = 0, ctest_fail2 = 0, ctest_skip2 = 0, ctest_total = 0;
+        for (char **f = files; *f; f++) {
+            /* list_c_files_sorted returns full paths; extract basename */
+            const char *base = strrchr(*f, '/');
+            base = base ? base + 1 : *f;
+            char *dot = strrchr(base, '.');
+            if (!dot || strcmp(dot, ".c") != 0) continue;
+            ctest_total++;
+
+            char name[16];
+            size_t nlen = (size_t)(dot - base);
+            if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+            memcpy(name, base, nlen);
+            name[nlen] = '\0';
+
+            char exp_path[PATH_MAX], bin_path[PATH_MAX];
+            snprintf(exp_path, sizeof(exp_path), "%s/%s.expected", src_dir, name);
+            snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d_%s",
+                     get_tmpdir(), getpid(), name);
+            if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
+                strcat(bin_path, ".exe");
+
+            char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, (char *)*f, NULL};
+            ProcResult cr = proc_run(ca, 30, 1);
+            if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
+                print_result(name, COL_RED, "COMPILE FAIL");
+                ctest_fail2++;
+            } else {
+                ProcResult rr = run_exe(bin_path, "", 30);
+                if (rr.exit_code != 0) {
+                    print_result(name, COL_RED, "FAIL (non-zero exit)");
+                    ctest_fail2++;
+                } else {
+                    char *expected = slurp(exp_path);
+                    char *actual = normalize_output(rr.out, name);
+                    if (!diff_strings(expected, actual, name)) {
+                        print_result(name, COL_RED, "FAIL");
+                        ctest_fail2++;
+                    } else {
+                        print_result(name, COL_GREEN, "PASS");
+                        ctest_pass++;
+                    }
+                    free(expected);
+                    free(actual);
+                }
+                proc_free(&rr);
+            }
+            proc_free(&cr);
+            unlink(bin_path);
+            fflush(stdout);
+        }
+        for (char **f = files; *f; f++) free(*f);
+        free(files);
+
+        printf("\n");
+        printf("  pass  %d\n", ctest_pass);
+        printf("  skip  %d\n", ctest_skip2);
+        if (ctest_fail2 > 0)
+            printf("  %sfail  %d%s\n", COL_RED, ctest_fail2, COL_RESET);
+        else
+            printf("  fail  %d\n", ctest_fail2);
+        printf("  total %d\n", ctest_total);
+
+        if (ctest_fail2 > 0)
+            printf("\nFAIL: got %d failures, maximum allowed is 0\n", ctest_fail2);
+        else
+            printf("\nOK: %d failures, within limit of 0\n", ctest_fail2);
+
+        if (!only_test) {
+            char sp[256];
+            snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
+            FILE *sf = fopen(sp, "wb");
+            if (sf) {
+                fprintf(sf, "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
+                        ctest_total, ctest_pass, ctest_fail2, ctest_skip2);
+                fclose(sf);
+            }
+        }
+        return ctest_fail2 > 0 ? 1 : 0;
     }
 
     printf("Start c-testsuite with %s -O1 -lm\n", rcc);
@@ -2365,7 +2527,8 @@ static void generate_report(void) {
         const char *id;
         const char *label;
     } suite_meta[] = {
-        {"tcc", "TCC Compatibility Tests + Unit tests"},
+        {"tcc", "TCC Compatibility Tests"},
+        {"units", "RCC Unit Tests"},
         {"ctest", "c-testsuite"},
         {"compliance", "NCC Compliance Tests (vs GCC)"},
         {"torture", "GCC Torture Tests"},
@@ -2547,10 +2710,10 @@ int main(int argc, char **argv) {
     /* auto-detect rcc */
     if (!rcc) {
 #ifdef ARM64_NATIVE
-        if (access("./rcc-arm64", X_OK) == 0)
-            rcc = "./rcc-arm64";
-        else if (access("./rcc", X_OK) == 0)
+        if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
+        else if (access("./rcc-arm64", X_OK) == 0)
+            rcc = "./rcc-arm64";
 #else
         if (access("./rcc", X_OK) == 0) rcc = "./rcc";
         else if (access("./rcc.exe", X_OK) == 0)
@@ -2573,13 +2736,11 @@ int main(int argc, char **argv) {
     }
 
     /* rewrite shorthand cross-compiler paths */
-#ifndef ARM64_NATIVE
     if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
         rcc = buf;
     }
-#endif
 
     if (contains(rcc, "rcc-darwin") && !contains(rcc, "darwin-cross")) {
         static char buf[PATH_MAX + 32];

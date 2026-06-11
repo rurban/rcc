@@ -80,9 +80,10 @@ TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 EXE_EXT = .exe
 OBJS = $(SRCS:.c=$(OBJ_EXT))
-# rcc.exe runs on Windows; its backend toolchain there is "gcc", not the
-# Linux cross-compiler name used to build rcc.exe itself.
-RCC_GCC = gcc
+# rcc.exe runs on Windows; its backend toolchain is "gcc.exe".
+# .exe is needed under Wine (CreateProcess can't run ELF binaries
+# mapped through Z:\), and it works equally on native Windows.
+RCC_GCC = gcc.exe
 endif
 ifeq ($(CC),aarch64-linux-gnu-gcc)
 TARGET = rcc-arm64
