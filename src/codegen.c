@@ -1026,12 +1026,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             if (arg && !arg->next) {
                 int r_arg = gen(arg);
                 int r = alloc_reg();
-                int r_tmp = alloc_reg();
-                int sz = arg->ty ? arg->ty->size : 8;
 #ifdef ARCH_ARM64
                 // TODO: arm64 isinf
                 printf("  mov %s, #0\n", reg64[r]);
 #else
+                int r_tmp = alloc_reg();
+                int sz = arg->ty ? arg->ty->size : 8;
                 if (sz == 4) {
                     printf("  movd %s, %%xmm0\n", reg32[r_arg]);
                     printf("  movd %%xmm0, %s\n", reg32[r]);
@@ -1048,8 +1048,8 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 }
                 printf("  sete %%al\n");
                 printf("  movzbl %%al, %s\n", reg32[r]);
-#endif
                 free_reg(r_tmp);
+#endif
                 free_reg(r_arg);
                 return r;
             }
