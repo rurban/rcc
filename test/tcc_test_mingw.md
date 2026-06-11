@@ -13,6 +13,23 @@ Generated: June 2026
 
 | Test                        | Status | Message        |
 | --------------------------- | ------ | -------------- |
+| 60_errors_and_warnings      | SKIP   | Skipped        |
+| 73_arm64                    | SKIP   | Skipped        |
+| 96_nodata_wanted            | SKIP   | Skipped        |
+| 98_al_ax_extend             | SKIP   | Skipped        |
+| 99_fastcall                 | SKIP   | Skipped        |
+| 112_backtrace               | SKIP   | Skipped        |
+| 113_btdll                   | SKIP   | Skipped        |
+| 114_bound_signal            | SKIP   | Skipped        |
+| 115_bound_setjmp            | SKIP   | Skipped        |
+| 116_bound_setjmp2           | SKIP   | Skipped        |
+| 120_alias                   | SKIP   | Skipped        |
+| 126_bound_global            | SKIP   | Skipped        |
+| 138_arm64_encoding          | SKIP   | Skipped        |
+| 139_arm64_errors            | SKIP   | Skipped        |
+| 140_arm64_extasm            | SKIP   | Skipped        |
+| 141_riscv_asm               | SKIP   | Skipped        |
+| 145_winarm64_interlocked    | SKIP   | Skipped        |
 | 00_assignment               | PASS   | Output matches |
 | 01_comment                  | PASS   | Output matches |
 | 02_printf                   | PASS   | Output matches |
@@ -59,7 +76,6 @@ Generated: June 2026
 | 43_void_param               | PASS   | Output matches |
 | 44_scoped_declarations      | PASS   | Output matches |
 | 45_empty_for                | PASS   | Output matches |
-| 46_grep                     | PASS   | Output matches |
 | 47_switch_return            | PASS   | Output matches |
 | 48_nested_break             | PASS   | Output matches |
 | 49_bracket_evaluation       | PASS   | Output matches |
@@ -68,14 +84,12 @@ Generated: June 2026
 | 52_unnamed_enum             | PASS   | Output matches |
 | 54_goto                     | PASS   | Output matches |
 | 55_lshift_type              | PASS   | Output matches |
-| 60_errors_and_warnings      | SKIP   | Skipped        |
 | 61_integers                 | PASS   | Output matches |
 | 64_macro_nesting            | PASS   | Output matches |
 | 67_macro_concat             | PASS   | Output matches |
 | 70_floating_point_literals  | PASS   | Output matches |
 | 71_macro_empty_arg          | PASS   | Output matches |
 | 72_long_long_constant       | PASS   | Output matches |
-| 73_arm64                    | SKIP   | Skipped        |
 | 75_array_in_struct_init     | PASS   | Output matches |
 | 76_dollars_in_identifiers   | PASS   | Output matches |
 | 77_push_pop_macro           | PASS   | Output matches |
@@ -98,10 +112,7 @@ Generated: June 2026
 | 94_generic                  | PASS   | Output matches |
 | 95_bitfields                | PASS   | Output matches |
 | 95_bitfields_ms             | PASS   | Output matches |
-| 96_nodata_wanted            | SKIP   | Skipped        |
 | 97_utf8_string_literal      | PASS   | Output matches |
-| 98_al_ax_extend             | SKIP   | Skipped        |
-| 99_fastcall                 | SKIP   | Skipped        |
 | 100_c99array-decls          | PASS   | Output matches |
 | 101_cleanup                 | PASS   | Output matches |
 | 102_alignas                 | PASS   | Output matches |
@@ -114,24 +125,15 @@ Generated: June 2026
 | 109_float_struct_calling    | PASS   | Output matches |
 | 110_average                 | PASS   | Output matches |
 | 111_conversion              | PASS   | Output matches |
-| 112_backtrace               | SKIP   | Skipped        |
-| 113_btdll                   | SKIP   | Skipped        |
-| 114_bound_signal            | SKIP   | Skipped        |
-| 115_bound_setjmp            | SKIP   | Skipped        |
-| 116_bound_setjmp2           | SKIP   | Skipped        |
 | 117_builtins                | PASS   | Output matches |
 | 118_switch                  | PASS   | Output matches |
 | 119_random_stuff            | PASS   | Output matches |
-| 120_alias                   | SKIP   | Skipped        |
 | 121_struct_return           | PASS   | Output matches |
 | 122_vla_reuse               | PASS   | Output matches |
 | 123_vla_bug                 | PASS   | Output matches |
 | 124_atomic_counter          | PASS   | Output matches |
-| 125_atomic_misc             | PASS   | Output matches |
-| 126_bound_global            | SKIP   | Skipped        |
 | 127_asm_goto                | PASS   | Output matches |
 | 128_run_atexit              | PASS   | Output matches |
-| 129_scopes                  | PASS   | Output matches |
 | 130_large_argument          | PASS   | Output matches |
 | 131_return_struct_in_reg    | PASS   | Output matches |
 | 132_bound_test              | PASS   | Output matches |
@@ -140,11 +142,9 @@ Generated: June 2026
 | 135_func_arg_struct_compare | PASS   | Output matches |
 | 136_atomic_gcc_style        | PASS   | Output matches |
 | 137_funcall_struct_args     | PASS   | Output matches |
-| 138_arm64_encoding          | SKIP   | Skipped        |
-| 139_arm64_errors            | SKIP   | Skipped        |
-| 140_arm64_extasm            | SKIP   | Skipped        |
-| 141_riscv_asm               | SKIP   | Skipped        |
 | 142_int_conversion          | PASS   | Output matches |
 | 143_void_expr               | PASS   | Output matches |
 | 144_tls                     | PASS   | Output matches |
-| 145_winarm64_interlocked    | SKIP   | Skipped        |
+| 46_grep                     | PASS   | Output matches |
+| 125_atomic_misc             | PASS   | Output matches |
+| 129_scopes                  | PASS   | Output matches |

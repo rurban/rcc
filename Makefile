@@ -246,26 +246,22 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = ./run_tests ./rcc.exe --tcc --compliance --ctest
+TEST_RUNNER = ./run_tests ./rcc.exe --parallel
 BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
 else
-TEST_RUNNER = ./run_tests ./rcc --tcc --compliance --ctest
+TEST_RUNNER = ./run_tests ./rcc --parallel
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
-
 test check: $(TARGET) $(RUN_TESTS)
 	@$(TEST_RUNNER)
-
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
-	./$(RUN_TESTS) ./$(TARGET) --all
-
+	./$(RUN_TESTS) ./$(TARGET) --all --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
-	./$(RUN_TESTS) ./$(TARGET) --torture
-
+	./$(RUN_TESTS) ./$(TARGET) --torture --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) $(TARGET) $(RUN_TESTS)
-	./$(RUN_TESTS) ./$(TARGET) --all
+	./$(RUN_TESTS) ./$(TARGET) --all --parallel
 	-./mingw-test.sh
 	-./arm64-test.sh
 	-./darwin-test.sh

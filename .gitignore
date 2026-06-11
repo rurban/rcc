@@ -4,6 +4,9 @@ TAGS
 .gdbinit
 *.exe
 libwinpthread-1.dll
+a.arm64
+*.arm64.o
+lib/rcc_darwin.dylib
 a.out
 *.o
 *.obj
@@ -27,6 +30,7 @@ tmp*.c
 /tcc_tests
 /run_tests
 /run_tests_arm64
+.claude/
 amazon_bug_bounty/
 test/*.out
 /compile_commands.json
@@ -41,8 +45,6 @@ rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt
 .rcc-arm64.stamp
-a.arm64
-*.arm64.o
 qemu_*.core
 gmon.out
 test-*.summary

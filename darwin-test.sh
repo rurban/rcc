@@ -25,7 +25,7 @@ if [ -n "${1:-}" ]; then
     fi
     rm -f "$TMP_EXE"
 else
-    echo "==> Running full test suite via darwin-cross.sh..."
+    echo "==> Running full test suite sequentially via darwin-cross.sh..."
     echo ""
     ./run_tests ./darwin-cross.sh --all
 fi
