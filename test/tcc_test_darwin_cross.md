@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 120
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Passed**: 119
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## Detailed Results
 
@@ -130,7 +130,7 @@ Generated: June 2026
 | 125_atomic_misc             | COMPILE_OK | linked, (execution skipped) |
 | 126_bound_global            | SKIP       | Skipped                     |
 | 127_asm_goto                | SKIP       | Skipped                     |
-| 128_run_atexit              | PASS       | Output matches              |
+| 128_run_atexit              | MISMATCH   | Output differs              |
 | 129_scopes                  | COMPILE_OK | linked, (execution skipped) |
 | 130_large_argument          | COMPILE_OK | linked, (execution skipped) |
 | 131_return_struct_in_reg    | COMPILE_OK | linked, (execution skipped) |

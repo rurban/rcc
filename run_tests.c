@@ -616,15 +616,10 @@ static void detect_platform(const char *rcc_path) {
     uname(&u);
 
     if (contains(rcc_path, "arm64-cross") || contains(rcc_path, "rcc-arm64")) {
-#ifdef ARM64_NATIVE
-        /* Already running natively on aarch64 (or under qemu-aarch64);
-         * rcc-arm64 and the binaries it produces execute directly,
-         * without a runner wrapper. This is much faster. */
-        platform = "linux";
-        is_arm64 = true;
-#else
         platform = "arm64_cross";
         is_arm64 = true;
+#ifndef ARM64_NATIVE
+        // run each test via qemu. better is to run run_tests_arm64 and all tests via qemu
         static const char *sysroots[] = {
             "/usr/aarch64-linux-gnu",
             "/usr/aarch64-redhat-linux/sys-root/fc43",
@@ -911,16 +906,20 @@ static void emit_backtrace(const char *exe_path, const char *args,
         char *a[32];
         int ai = 0;
         a[ai++] = (char *)rcc;
-        if (cflags && *cflags) a[ai++] = (char *)cflags;
-        if (extra)
-            for (int i = 0; extra[i] && ai < 28; i++) a[ai++] = (char *)extra[i];
+        if (cflags && *cflags)
+            a[ai++] = (char *)cflags;
+        if (extra) {
+            for (int i = 0; extra[i] && ai < 28; i++)
+                a[ai++] = (char *)extra[i];
+        }
         a[ai++] = "-g";
         a[ai++] = "-o";
         a[ai++] = dbg;
         a[ai++] = (char *)src_file;
         a[ai] = NULL;
         ProcResult cr = proc_run(a, 30, 1);
-        if (cr.exit_code == 0) have_dbg = true;
+        if (cr.exit_code == 0)
+            have_dbg = true;
         proc_free(&cr);
     }
     const char *dp = have_dbg ? dbg : exe_path;
@@ -965,6 +964,7 @@ static void emit_backtrace(const char *exe_path, const char *args,
 
 static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
 static const char *only_test;
+static bool only_test_found; /* single-test mode: stop after the suite containing it */
 static int total, passed, failed, regressions, fixes, changed_cnt;
 
 typedef struct {
@@ -1230,7 +1230,8 @@ static void run_one_test(const char *src_path, const char *base,
                 out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[returns %d]\n", rc);
                 if (rc != exp_rc[t])
-                    emit_backtrace(tmp_exe, "", src_path, rcc, rccflags, NULL, &out_buf, &out_len, &out_cap);
+                    emit_backtrace(tmp_exe, "", src_path, rcc, rccflags, NULL, &out_buf,
+                                   &out_len, &out_cap);
                 proc_free(&rr);
             }
             if (t == 0) out_buf = strappend(out_buf, &out_len, &out_cap, "\n");
@@ -1342,7 +1343,8 @@ static void run_one_test(const char *src_path, const char *base,
 
     if (streq(base, "46_grep")) {
         char save_cwd[PATH_MAX];
-        if (!getcwd(save_cwd, sizeof(save_cwd))) save_cwd[0] = '\0';
+        if (!getcwd(save_cwd, sizeof(save_cwd)))
+            save_cwd[0] = '\0';
         if (chdir(TEST_DIR) != 0) perror("chdir");
         char *ga[8];
         int gai = 0;
@@ -1376,7 +1378,8 @@ static void run_one_test(const char *src_path, const char *base,
         failed++;
         add_row(base, "EXEC_FAIL", "non-zero exit");
         print_change(base, "EXEC_FAIL");
-        emit_backtrace(tmp_exe, args, src_path, rcc, rccflags, NULL, &out_buf, &out_len, &out_cap);
+        emit_backtrace(tmp_exe, args, src_path, rcc, rccflags, NULL, &out_buf, &out_len,
+                       &out_cap);
         unlink(tmp_exe);
         free(out_buf);
         return;
@@ -1444,9 +1447,12 @@ static void run_unit_tests(void) {
         char *dot = strrchr(base, '.');
         if (dot) *dot = '\0';
 
-        if (only_test && !streq(base, only_test)) {
-            free(nl[i]);
-            continue;
+        if (only_test) {
+            if (!streq(base, only_test)) {
+                free(nl[i]);
+                continue;
+            }
+            only_test_found = true;
         }
 
         /* skip arm64-only tests on non-arm64 */
@@ -1499,7 +1505,8 @@ static void run_unit_tests(void) {
                 failed++;
                 add_row(base, "COMPILE_FAIL", cr.exit_code != 0 ? "rcc returned non-zero" : "executable missing");
                 print_change(base, "COMPILE_FAIL");
-                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                if (cr.out && cr.out[0])
+                    fprintf(stderr, "%s", cr.out);
                 proc_free(&cr);
                 free(nl[i]);
                 continue;
@@ -1556,7 +1563,8 @@ static void generate_tcc_report(void) {
     int pct = total > 0 ? passed * 100 / total : 0;
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
-    fprintf(rf, "## Summary\n\n- **Total**: %d\n- **Passed**: %d\n- **Failed**: %d\n- **Pass Rate**: %d%%\n\n",
+    fprintf(rf, "## Summary\n\n- **Total**: %d\n- **Passed**: %d\n"
+                "- **Failed**: %d\n- **Pass Rate**: %d%%\n\n",
             total, passed, failed, pct);
     fprintf(rf, "## Detailed Results\n\n");
 
@@ -1613,7 +1621,8 @@ static int run_tcc_suite(void) {
     }
 
     static char rf_buf[256];
-    if (streq(platform, "arm64_cross")) snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64_cross.md");
+    if (streq(platform, "arm64_cross"))
+        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64_cross.md");
     else if (streq(platform, "darwin_cross"))
         snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_darwin_cross.md");
     else if (streq(platform, "mingw_cross"))
@@ -1655,9 +1664,12 @@ static int run_tcc_suite(void) {
                 if (is_mingw) p_src = "-mno-ms-bitfields";
             }
 
-            if (only_test && !streq(base, only_test)) {
-                p_src = NULL;
-                continue;
+            if (only_test) {
+                if (!streq(base, only_test)) {
+                    p_src = NULL;
+                    continue;
+                }
+                only_test_found = true;
             }
 
             if (is_skipped(base, is_mingw)) {
@@ -1714,7 +1726,7 @@ typedef enum {
     SKIP_FINSTRUMENT,
     SKIP_NESTED,
     SKIP_NOT_IMPL,
-    SKIP_VECTOR,
+    SKIP_VECTOR_SIZE,
     SKIP_MODE,
     SKIP_MISSING_INCLUDE,
 } SkipReason;
@@ -1729,7 +1741,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_FINSTRUMENT: return "finstrument";
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
-    case SKIP_VECTOR: return "vector_size";
+    case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_MODE: return "attribute-mode";
     case SKIP_MISSING_INCLUDE: return "missing-include";
     default: return "unknown";
@@ -1754,9 +1766,12 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         streq(name, "20061220-1") || streq(name, "nest-align-1") || streq(name, "920415-1") ||
         streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447") || streq(name, "pr71494"))
         return SKIP_NESTED;
-    if (streq(name, "pr70460") || streq(name, "pr41935")) return SKIP_NOT_IMPL;
-    if (contains(content, "vector_size") || streq(name, "pr71626-2")) return SKIP_VECTOR;
-    if (contains(content, "__attribute__((mode")) return SKIP_MODE;
+    if (streq(name, "pr70460") || streq(name, "pr41935"))
+        return SKIP_NOT_IMPL;
+    if (contains(content, "vector_size") || streq(name, "pr71626-2"))
+        return SKIP_VECTOR_SIZE;
+    if (contains(content, "__attribute__((mode"))
+        return SKIP_MODE;
     return SKIP_NONE;
 }
 
@@ -1912,7 +1927,10 @@ static int run_torture_suite(bool summary_only) {
         if (strstr(only_test, ".c")) snprintf(sp, sizeof(sp), "%s", only_test);
         else
             snprintf(sp, sizeof(sp), "%s.c", only_test);
-        run_torture_test(sp, summary_only);
+        if (file_exists(sp)) {
+            only_test_found = true;
+            run_torture_test(sp, summary_only);
+        }
     } else {
         char **files = list_c_files_sorted(".");
         if (files) {
@@ -1953,9 +1971,9 @@ static int run_torture_suite(bool summary_only) {
     if (only_test)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 28;
+        max_fail = 22;
     else if (streq(platform, "arm64"))
-        max_fail = 27;
+        max_fail = 21;
     else if (streq(platform, "mingw_cross"))
         max_fail = 274 + 26;
     else if (streq(platform, "darwin_cross"))
@@ -1963,7 +1981,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 31;
     else
-        max_fail = 15;
+        max_fail = 6;
 
     if (g_log_fp) {
         fclose(g_log_fp);
@@ -2034,9 +2052,12 @@ static int run_compliance_suite(void) {
         char *dot = strrchr(base, '.');
         if (dot) *dot = '\0';
 
-        if (only_test && !streq(base, only_test)) {
-            free(nl[i]);
-            continue;
+        if (only_test) {
+            if (!streq(base, only_test)) {
+                free(nl[i]);
+                continue;
+            }
+            only_test_found = true;
         }
 
         char src_path[PATH_MAX + NAME_MAX + 2];
@@ -2114,9 +2135,11 @@ static int run_compliance_suite(void) {
     free(nl);
 
     int comp_total = comp_pass + comp_fail;
-    printf("\nCompliance: %d/%d passed", comp_pass, comp_total);
-    if (comp_skip) printf(", %d skipped", comp_skip);
-    printf("\n");
+    if (!only_test) {
+        printf("\nCompliance: %d/%d passed", comp_pass, comp_total);
+        if (comp_skip) printf(", %d skipped", comp_skip);
+        printf("\n");
+    }
 
     if (!only_test) {
         char sp[256];
@@ -2134,7 +2157,89 @@ static int run_compliance_suite(void) {
  * C-TESTSUITE https://github.com/c-testsuite/c-testsuite
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* "210", "00210" or "00210.c" -> "00210"; false if not a c-testsuite name */
+static bool ctest_test_num(char *out, size_t outsz) {
+    char buf[32];
+    strncpy(buf, only_test, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *dot = strstr(buf, ".c");
+    if (dot) *dot = '\0';
+    size_t len = strlen(buf);
+    if (len == 0 || len > 5) return false;
+    for (size_t i = 0; i < len; i++)
+        if (!isdigit((unsigned char)buf[i])) return false;
+    snprintf(out, outsz, "%05d", atoi(buf));
+    return true;
+}
+
+/* c-testsuite/tests/single-exec is a flat numbered suite (00001.c..00220.c)
+ * with no per-test filter in single-exec; compile and run just the one
+ * requested test directly, the same way run_one_test() does for the TCC
+ * suite (proc_run() to compile, run_exe() to execute under any runner). */
+static int run_ctest_one(const char *ctest_dir) {
+    char num[6];
+    if (!ctest_test_num(num, sizeof(num))) return -1;
+
+    char src_path[PATH_MAX], exp_path[PATH_MAX], bin_path[PATH_MAX];
+    snprintf(src_path, sizeof(src_path), "%s/tests/single-exec/%s.c", ctest_dir, num);
+    snprintf(exp_path, sizeof(exp_path), "%s/tests/single-exec/%s.c.expected", ctest_dir, num);
+    if (!file_exists(src_path)) return -1;
+
+    printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
+    printf("Start c-testsuite with %s -O1 -lm\n", rcc);
+
+    snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d", get_tmpdir(), getpid());
+    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
+        strcat(bin_path, ".exe");
+
+    char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, src_path, NULL};
+    ProcResult cr = proc_run(ca, 30, 1);
+    int fail = 0;
+    if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
+        print_result(num, COL_RED, "COMPILE FAIL");
+        fail = 1;
+    } else {
+        ProcResult rr = run_exe(bin_path, "", 30);
+        if (rr.exit_code != 0) {
+            print_result(num, COL_RED, "FAIL (non-zero exit)");
+            fail = 1;
+        } else {
+            char *expected = slurp(exp_path);
+            char *actual = normalize_output(rr.out, num);
+            if (!diff_strings(expected, actual, num)) {
+                print_result(num, COL_RED, "FAIL");
+                fail = 1;
+            } else {
+                print_result(num, COL_GREEN, "PASS");
+            }
+            free(expected);
+            free(actual);
+        }
+        proc_free(&rr);
+    }
+    proc_free(&cr);
+    unlink(bin_path);
+
+    return fail;
+}
+
 static int run_ctest_suite(void) {
+    char ctest_dir[PATH_MAX];
+    snprintf(ctest_dir, sizeof(ctest_dir), "%s/c-testsuite", SCRIPT_DIR);
+
+    /* the single-exec runner has no per-test filter; for a numeric test
+     * name, compile and run just that one test directly */
+    if (only_test) {
+        int r = run_ctest_one(ctest_dir);
+        if (r >= 0) {
+            only_test_found = true;
+            return r;
+        }
+        printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
+        printf("SKIP (not a c-testsuite test number)\n");
+        return 0;
+    }
+
     /* Detect wine early — git and system() call cmd.exe which can't
      * find native Linux binaries. */
     bool under_wine = false;
@@ -2143,9 +2248,6 @@ static int run_ctest_suite(void) {
 #else
     under_wine = (has_runner && contains(runner_cmd, "wine"));
 #endif
-
-    char ctest_dir[PATH_MAX];
-    snprintf(ctest_dir, sizeof(ctest_dir), "%s/c-testsuite", SCRIPT_DIR);
 
     if (!has_runner && !streq(platform, "darwin_cross") && !file_exists(ctest_dir)) {
         char gcmd[512];
@@ -2503,9 +2605,9 @@ int main(int argc, char **argv) {
     /* for cross-compilers, suites that require native execution don't apply */
     if (!run_tcc && !run_units && !run_torture && !run_compliance && !run_ctest) {
         if (only_test) {
-            /* single-test mode: only the TCC suite supports filtering by
-             * test name; units/compliance/ctest would just run in full */
-            run_tcc = true;
+            /* single-test mode: search the filterable suites in order and
+             * stop at the first one containing the test */
+            run_tcc = run_units = run_compliance = run_ctest = run_torture = true;
         } else if (has_runner || streq(platform, "darwin_cross")) {
             run_tcc = run_torture = true;
         } else {
@@ -2516,17 +2618,32 @@ int main(int argc, char **argv) {
     int exit_code = 0;
     if (run_tcc && run_tcc_suite() != 0)
         exit_code = 1;
+    if (only_test && only_test_found)
+        return exit_code;
     if (run_units)
         run_unit_tests();
+    if (only_test && only_test_found)
+        return exit_code;
     if (run_compliance && run_compliance_suite() != 0)
         exit_code = 1;
+    if (only_test && only_test_found)
+        return exit_code;
     if (run_ctest && run_ctest_suite() != 0)
         exit_code = 1;
+    if (only_test && only_test_found)
+        return exit_code;
     if (run_torture && run_torture_suite(summary_only) != 0)
         exit_code = 1;
 
-    if (!only_test)
-        generate_report();
+    if (only_test) {
+        if (!only_test_found) {
+            fprintf(stderr, "Test '%s' not found in any suite\n", only_test);
+            return 1;
+        }
+        return exit_code;
+    }
+
+    generate_report();
 
     return exit_code;
 }
