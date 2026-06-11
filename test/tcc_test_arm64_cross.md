@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 120
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Passed**: 119
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## Detailed Results
 

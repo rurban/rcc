@@ -2136,12 +2136,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
             if (cfloat) {
                 if (argv[i]->ty->size <= 8) {
+                    // _Complex float: one xmm reg
                     if (fp_reg_args < max_fp_args) {
                         arg_fp_idx[i] = fp_reg_args++;
                     } else {
                         arg_stack_idx[i] = stack_args++;
                     }
                 } else {
+                    // _Complex double: two xmm regs
                     if (fp_reg_args + 1 < max_fp_args) {
                         arg_fp_idx[i] = fp_reg_args;
                         fp_reg_args += 2;
@@ -2152,6 +2154,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                     }
                 }
             } else {
+                // Integer complex: one or two GP regs
                 if (argv[i]->ty->size <= 8) {
                     if (gp_reg_args < max_gp_args)
                         arg_gp_idx[i] = gp_reg_args++;
@@ -2170,6 +2173,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             }
             continue;
         }
+
         if (gp_reg_args < max_gp_args)
             arg_gp_idx[i] = gp_reg_args++;
         else
@@ -4261,6 +4265,7 @@ static int gen_addr(Node *node) {
                 return -1;
             }
             return -1;
+
         }
         error_tok(node->tok, "lvalue required as left operand of assignment");
         return -1;
@@ -6907,6 +6912,7 @@ static int gen(Node *node) {
 #endif
                 }
             }
+
         } else if (to->size == 1) {
 #ifdef ARCH_ARM64
             if (to->is_unsigned)
@@ -9189,8 +9195,7 @@ static int gen(Node *node) {
         int result_off = current_fn_stack_size + fn_struct_ret_off;
         int result = alloc_reg();
 #ifdef ARCH_ARM64
-        emit_mov_imm64("x16", (uint64_t)result_off);
-        printf("  sub %s, %s, x16\n", reg64[result], FRAME_PTR);
+        printf("  add %s, %s, #%d\n", reg64[result], FRAME_PTR, -result_off);
 #else
         printf("  lea -%d(%%rbp), %s\n", result_off, reg64[result]);
 #endif
@@ -9757,31 +9762,18 @@ static int gen(Node *node) {
 #ifdef ARCH_ARM64
         if (sz <= 4) {
             printf("  mov %s, #0\n", reg32[result]);
-            if (sz == 1) {
-                printf("  ldrb w16, [%s]\n", reg64[addr_lhs]);
-                printf("  ldrb w17, [%s]\n", reg64[addr_rhs]);
-            } else if (sz == 2) {
-                printf("  ldrh w16, [%s]\n", reg64[addr_lhs]);
-                printf("  ldrh w17, [%s]\n", reg64[addr_rhs]);
-            } else {
-                printf("  ldr w16, [%s]\n", reg64[addr_lhs]);
-                printf("  ldr w17, [%s]\n", reg64[addr_rhs]);
-            }
+            printf("  ldrb w16, [%s]\n", reg64[addr_lhs]);
+            printf("  ldrb w17, [%s]\n", reg64[addr_rhs]);
             printf("  eor w16, w16, w17\n");
             printf("  cmp w16, #0\n");
         } else {
             printf("  ldr %s, [%s]\n", reg64[result], reg64[addr_lhs]);
-            // ARM64 eor cannot take memory operand; load rhs into temp first
-            int tr = alloc_reg();
-            printf("  ldr %s, [%s]\n", reg64[tr], reg64[addr_rhs]);
-            printf("  eor %s, %s, %s\n", reg64[result], reg64[result], reg64[tr]);
+            printf("  eor %s, %s, [%s]\n", reg64[result], reg64[result], reg64[addr_rhs]);
             if (sz > 8) {
                 printf("  ldr x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                printf("  ldr %s, [%s, #%d]\n", reg64[tr], reg64[addr_rhs], base_sz);
-                printf("  eor x16, x16, %s\n", reg64[tr]);
+                printf("  eor x16, x16, [%s, #%d]\n", reg64[addr_rhs], base_sz);
                 printf("  orr %s, %s, x16\n", reg64[result], reg64[result]);
             }
-            free_reg(tr);
             printf("  cmp %s, #0\n", reg64[result]);
         }
         if (node->kind == ND_EQ)
@@ -9820,6 +9812,7 @@ static int gen(Node *node) {
 #endif
         return result;
     }
+
     // Fused Division/Modulo Optimization
     if (node->kind == ND_DIV || node->kind == ND_MOD) {
         int sz = op_size(node->ty);

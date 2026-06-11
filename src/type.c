@@ -48,15 +48,14 @@ bool is_complex(Type *ty) {
 }
 
 Type *complex_type(Type *base) {
-    if (!base)
-        error("complex_type: base is NULL");
-    Type *ty = arena_alloc(sizeof(Type));
+    Type *ty = calloc(1, sizeof(Type));
     ty->kind = TY_COMPLEX;
     ty->base = base;
     ty->size = base->size * 2;
     ty->align = base->align;
     return ty;
 }
+
 
 bool is_number(Type *ty) {
     return is_integer(ty) || is_flonum(ty) || is_complex(ty);
