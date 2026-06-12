@@ -258,6 +258,7 @@ static int gen_addr(Node *node);
 static bool is_asm_reserved(const char *name);
 static void sign_extend_to(int r, int from_size, int to_size);
 static void zero_extend_to(int r, int from_size, int to_size);
+static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr);
 static int alloc_int128_slot(void);
 static int alloc_int128_addr(void);
 static int widen_to_int128(int val, bool is_unsigned);
@@ -3146,6 +3147,98 @@ static void zero_extend_to(int r, int from_size, int to_size) {
     }
 }
 
+// Convert the scalar value in register r (of type `from`, an integer or
+// floating-point type) to the representation of complex base type `base`,
+// store it as the real part at the buffer pointed to by register `addr`,
+// and zero-fill the imaginary part at offset base->size.
+static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
+    int base_sz = base->size;
+    bool base_flo = is_flonum(base);
+#ifdef ARCH_ARM64
+    if (base_flo) {
+        if (is_flonum(from)) {
+            printf("  fmov d0, %s\n", reg64[r]);
+        } else if (from->is_unsigned) {
+            printf("  ucvtf d0, %s\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+        } else {
+            printf("  scvtf d0, %s\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+        }
+        if (base_sz == 4) {
+            printf("  fcvt s0, d0\n");
+            printf("  str s0, [%s]\n", reg64[addr]);
+            printf("  str wzr, [%s, #4]\n", reg64[addr]);
+        } else {
+            printf("  str d0, [%s]\n", reg64[addr]);
+            printf("  str xzr, [%s, #8]\n", reg64[addr]);
+        }
+    } else {
+        if (is_flonum(from)) {
+            printf("  fmov d0, %s\n", reg64[r]);
+            printf("  fcvtzs %s, d0\n", base_sz == 8 ? reg64[r] : reg32[r]);
+        } else if (from->size < base_sz) {
+            if (from->is_unsigned)
+                zero_extend_to(r, from->size, base_sz);
+            else
+                sign_extend_to(r, from->size, base_sz);
+        }
+        if (base_sz == 4) {
+            printf("  str %s, [%s]\n", reg32[r], reg64[addr]);
+            printf("  str wzr, [%s, #4]\n", reg64[addr]);
+        } else {
+            printf("  str %s, [%s]\n", reg64[r], reg64[addr]);
+            printf("  str xzr, [%s, #8]\n", reg64[addr]);
+        }
+    }
+#else
+    if (base_flo) {
+        if (is_flonum(from)) {
+            printf("  movq %s, %%xmm0\n", reg64[r]);
+        } else if (from->is_unsigned && from->size == 8) {
+            int c = ++rcc_label_count;
+            printf("  testq %s, %s\n", reg64[r], reg64[r]);
+            printf("  js .L.u2cx.high.%d\n", c);
+            printf("  cvtsi2sd %s, %%xmm0\n", reg64[r]);
+            printf("  jmp .L.u2cx.end.%d\n", c);
+            printf(".L.u2cx.high.%d:\n", c);
+            printf("  movq %s, %%rcx\n", reg64[r]);
+            printf("  shrq %%rcx\n");
+            printf("  cvtsi2sd %%rcx, %%xmm0\n");
+            printf("  addsd %%xmm0, %%xmm0\n");
+            printf(".L.u2cx.end.%d:\n", c);
+        } else if (from->is_unsigned && from->size == 4) {
+            printf("  cvtsi2sd %s, %%xmm0\n", reg64[r]);
+        } else {
+            printf("  cvtsi2sd %s, %%xmm0\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+        }
+        if (base_sz == 4) {
+            printf("  cvtsd2ss %%xmm0, %%xmm0\n");
+            printf("  movss %%xmm0, (%s)\n", reg64[addr]);
+            printf("  movl $0, %d(%s)\n", base_sz, reg64[addr]);
+        } else {
+            printf("  movsd %%xmm0, (%s)\n", reg64[addr]);
+            printf("  movq $0, %d(%s)\n", base_sz, reg64[addr]);
+        }
+    } else {
+        if (is_flonum(from)) {
+            printf("  movq %s, %%xmm0\n", reg64[r]);
+            printf("  cvttsd2si %%xmm0, %s\n", base_sz == 8 ? reg64[r] : reg32[r]);
+        } else if (from->size < base_sz) {
+            if (from->is_unsigned)
+                zero_extend_to(r, from->size, base_sz);
+            else
+                sign_extend_to(r, from->size, base_sz);
+        }
+        if (base_sz == 4) {
+            printf("  movl %s, (%s)\n", reg32[r], reg64[addr]);
+            printf("  movl $0, %d(%s)\n", base_sz, reg64[addr]);
+        } else {
+            printf("  movq %s, (%s)\n", reg64[r], reg64[addr]);
+            printf("  movq $0, %d(%s)\n", base_sz, reg64[addr]);
+        }
+    }
+#endif
+}
+
 #ifdef ARCH_ARM64
 #if 0
 static int base_regnum_from_addr(const char *addr) {
@@ -3823,39 +3916,13 @@ static int gen_addr(Node *node) {
             if (r >= 0) return r;
             // Non-lvalue cast to complex/struct: materialize on stack
             if (node->ty->kind == TY_COMPLEX) {
-                int sz = node->ty->size;
-                int base_sz = node->ty->base ? node->ty->base->size : 4;
                 Type *from = node->lhs->ty;
-                int off = fn_struct_ret_off;
-                fn_struct_ret_off += (sz + 7) & ~7;
-                if (fn_struct_ret_off > fn_struct_ret_total)
-                    fn_struct_ret_total = fn_struct_ret_off;
-                int addr = alloc_reg();
-#ifdef ARCH_ARM64
-                printf("  sub %s, %s, #%d\n", reg64[addr], FRAME_PTR, current_fn_stack_size + off + (int)(((sz + 7) & ~7)));
-#else
-                printf("  lea -%d(%%rbp), %s\n", current_fn_stack_size + off + (int)(((sz + 7) & ~7)), reg64[addr]);
-#endif
-                int val = gen(node->lhs);
-                // Store scalar as real part, zero as imag part
-                if (from && from->size < base_sz) {
-                    if (from->is_unsigned)
-                        zero_extend_to(val, from->size, base_sz);
-                    else
-                        sign_extend_to(val, from->size, base_sz);
-                }
-#ifdef ARCH_ARM64
-                if (base_sz == 4)
-                    printf("  str %s, [%s]\n", reg32[val], reg64[addr]);
-                else
-                    printf("  str %s, [%s]\n", reg64[val], reg64[addr]);
-                printf("  str xzr, [%s, #%d]\n", reg64[addr], base_sz == 4 ? 4 : 8);
-#else
-                printf("  mov %s, (%s)\n", reg(val, base_sz <= 8 ? base_sz : 8), reg64[addr]);
-                printf("  mov%c $0, %d(%s)\n", base_sz == 8 ? 'q' : 'l', base_sz, reg64[addr]);
-#endif
-                free_reg(val);
-                return addr;
+                if (from && (is_flonum(from) || is_integer(from)))
+                    // Scalar -> complex: delegate to gen(), which performs the
+                    // proper int/float conversion to the complex base type and
+                    // materializes the {real, imag} pair on the stack.
+                    return gen(node);
+                return -1;
             }
             return -1;
         }
@@ -5366,39 +5433,8 @@ static int gen(Node *node) {
                 src = (node->rhs->kind == ND_ASSIGN) ? gen(node->rhs) : gen_addr(node->rhs);
             else if (node->rhs->ty && is_complex(node->rhs->ty) && node->rhs->kind == ND_LVAR && !node->rhs->var->is_local)
                 src = gen_addr(node->rhs);
-            else if (node->rhs->kind == ND_CAST && is_complex(node->rhs->ty) &&
-                     !is_complex(node->rhs->lhs->ty))
-                src = gen(node->rhs->lhs); // get scalar directly, skip complex cast
             else
                 src = gen(node->rhs);
-
-            // If LHS is complex and RHS is a scalar (non-complex, non-aggregate),
-            // store real part directly and zero out imag part.
-            // Look through ND_CAST inserted by type promotion (e.g. int→complex).
-            Type *real_rhs_ty = node->rhs->ty;
-            if (real_rhs_ty && is_complex(real_rhs_ty) && node->rhs->kind == ND_CAST)
-                real_rhs_ty = node->rhs->lhs->ty;
-            if (node->lhs->ty && is_complex(node->lhs->ty) &&
-                real_rhs_ty && !is_complex(real_rhs_ty) &&
-                real_rhs_ty->kind != TY_STRUCT && real_rhs_ty->kind != TY_UNION &&
-                real_rhs_ty->kind != TY_ARRAY) {
-#ifdef ARCH_ARM64
-                int base_sz = node->lhs->ty->base->size;
-                // Store real part
-                if (base_sz == 4)
-                    printf("  str %s, [%s]\n", reg32[src], reg64[dst]);
-                else
-                    printf("  str %s, [%s]\n", reg64[src], reg64[dst]);
-                // Store zero imag part
-                printf("  str xzr, [%s, #%d]\n", reg64[dst], base_sz == 4 ? 4 : 8);
-#else
-                int base_sz = node->lhs->ty->base->size;
-                printf("  mov %s, (%s)\n", reg(src, base_sz), reg64[dst]);
-                printf("  mov%c $0, %d(%s)\n", base_sz == 8 ? 'q' : 'l', base_sz, reg64[dst]);
-#endif
-                free_reg(src);
-                return dst;
-            }
 
             // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
             // store the value directly instead of copying bytes from the address in the register.
@@ -6430,18 +6466,10 @@ static int gen(Node *node) {
             int result = alloc_reg();
 #ifdef ARCH_ARM64
             printf("  sub %s, %s, #%d\n", reg64[result], FRAME_PTR, result_off);
-            if (to->base->size == 4) {
-                printf("  str %s, [%s]\n", reg32[r], reg64[result]);
-                printf("  str wzr, [%s, #4]\n", reg64[result]);
-            } else {
-                printf("  str %s, [%s]\n", reg64[r], reg64[result]);
-                printf("  str xzr, [%s, #%d]\n", reg64[result], to->base->size);
-            }
 #else
             printf("  lea -%d(%%rbp), %s\n", result_off, reg64[result]);
-            printf("  movq %s, (%s)\n", reg64[r], reg64[result]);
-            printf("  movq $0, %d(%s)\n", to->base->size, reg64[result]);
 #endif
+            emit_scalar_to_complex(r, from, to->base, result);
             return result;
         } else if (is_complex(from) && (is_flonum(to) || is_integer(to))) {
             // complex → float/int: load real part from address
@@ -8531,7 +8559,11 @@ static int gen(Node *node) {
         int base_sz = node->ty->base->size;
         bool lhs_cx = is_complex(node->lhs->ty);
         bool rhs_cx = is_complex(node->rhs->ty);
-        int addr_lhs = gen_addr(node->lhs), addr_rhs = gen_addr(node->rhs);
+        // Non-complex operands must be converted to the complex base type and
+        // materialized as a {real, imag} pair, so never reuse their plain
+        // scalar address (it is too small and holds the wrong representation).
+        int addr_lhs = lhs_cx ? gen_addr(node->lhs) : -1;
+        int addr_rhs = rhs_cx ? gen_addr(node->rhs) : -1;
         int need_free_lhs = 0, need_free_rhs = 0;
         if (addr_lhs < 0) {
             need_free_lhs = 1;
@@ -8562,15 +8594,7 @@ static int gen(Node *node) {
                 }
 #endif
             } else {
-#ifdef ARCH_ARM64
-                printf("  str %s, [%s]\n", reg64[v], reg64[addr_lhs]);
-                if (complex_sz > 8)
-                    printf("  str xzr, [%s, #8]\n", reg64[addr_lhs]);
-#else
-                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_lhs]);
-                if (complex_sz > 8)
-                    printf("  movq $0, 8(%s)\n", reg64[addr_lhs]);
-#endif
+                emit_scalar_to_complex(v, node->lhs->ty, node->ty->base, addr_lhs);
             }
             free_reg(v);
         }
@@ -8602,15 +8626,7 @@ static int gen(Node *node) {
                 }
 #endif
             } else {
-#ifdef ARCH_ARM64
-                printf("  str %s, [%s]\n", reg64[v], reg64[addr_rhs]);
-                if (complex_sz > 8)
-                    printf("  str xzr, [%s, #8]\n", reg64[addr_rhs]);
-#else
-                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_rhs]);
-                if (complex_sz > 8)
-                    printf("  movq $0, 8(%s)\n", reg64[addr_rhs]);
-#endif
+                emit_scalar_to_complex(v, node->rhs->ty, node->ty->base, addr_rhs);
             }
             free_reg(v);
         }
@@ -8860,6 +8876,41 @@ static int gen(Node *node) {
         return result;
     }
 
+    if (node->kind == ND_REAL || node->kind == ND_IMAG) {
+        // gen_addr adds the offset for ND_IMAG, so the returned address
+        // already points to the real or imag part of the complex value.
+        // This must be handled before the unconditional gen(node->lhs)
+        // below, which would otherwise evaluate node->lhs (the whole
+        // complex value) into a register that is never used or freed.
+        int r = gen_addr(node);
+        if (is_flonum(node->ty)) {
+#ifdef ARCH_ARM64
+            if (node->ty->size == 4) {
+                printf("  ldr s0, [%s]\n", reg64[r]);
+                printf("  fcvt d0, s0\n");
+            } else {
+                printf("  ldr d0, [%s]\n", reg64[r]);
+            }
+            printf("  fmov %s, d0\n", reg64[r]);
+#else
+            if (node->ty->size == 4) {
+                printf("  movss (%s), %%xmm0\n", reg64[r]);
+                printf("  cvtss2sd %%xmm0, %%xmm0\n");
+            } else {
+                printf("  movsd (%s), %%xmm0\n", reg64[r]);
+            }
+            printf("  movq %%xmm0, %s\n", reg64[r]);
+#endif
+        } else {
+#ifdef ARCH_ARM64
+            emit_load(node->ty, r, format("[%s]", reg64[r]));
+#else
+            emit_load(node->ty, r, format("(%s)", reg64[r]));
+#endif
+        }
+        return r;
+    }
+
     int r_lhs = gen(node->lhs);
 
     // Float binary operations (must come before integer ops)
@@ -8947,6 +8998,10 @@ static int gen(Node *node) {
     // Complex comparisons: compare both real and imag parts
     if ((node->kind == ND_EQ || node->kind == ND_NE) &&
         node->lhs->ty && is_complex(node->lhs->ty)) {
+        // r_lhs (from the unconditional gen(node->lhs) above) is unused here
+        // since we re-derive the address via gen_addr(); free it to avoid a
+        // register leak.
+        free_reg(r_lhs);
         int addr_lhs = gen_addr(node->lhs);
         int addr_rhs = gen_addr(node->rhs);
         int need_free_lhs = 0, need_free_rhs = 0;
@@ -8959,17 +9014,38 @@ static int gen(Node *node) {
             printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
             printf("  mov %s, sp\n", reg64[addr_lhs]);
 #else
-            printf("  subq $16, %%rsp\n");
+            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
             printf("  movq %%rsp, %s\n", reg64[addr_lhs]);
 #endif
             int v = gen(node->lhs);
+            if (is_complex(node->lhs->ty)) {
+                // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-            printf("  str %s, [%s]\n", reg64[v], reg64[addr_lhs]);
-            if (complex_sz > 8)
-                printf("  str %s, [%s, #%d]\n", reg64[v], reg64[addr_lhs], base_sz);
+                printf("  ldr x16, [%s]\n", reg64[v]);
+                printf("  str x16, [%s]\n", reg64[addr_lhs]);
+                if (complex_sz > 8) {
+                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
+                    printf("  str x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                }
 #else
-            printf("  movq %s, (%s)\n", reg64[v], reg64[addr_lhs]);
+                printf("  movq (%s), %%rax\n", reg64[v]);
+                printf("  movq %%rax, (%s)\n", reg64[addr_lhs]);
+                if (complex_sz > 8) {
+                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
+                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_lhs]);
+                }
 #endif
+            } else {
+#ifdef ARCH_ARM64
+                printf("  str %s, [%s]\n", reg64[v], reg64[addr_lhs]);
+                if (complex_sz > 8)
+                    printf("  str xzr, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+#else
+                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_lhs]);
+                if (complex_sz > 8)
+                    printf("  movq $0, %d(%s)\n", base_sz, reg64[addr_lhs]);
+#endif
+            }
             free_reg(v);
             need_free_lhs = 1;
         }
@@ -8979,17 +9055,38 @@ static int gen(Node *node) {
             printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
             printf("  mov %s, sp\n", reg64[addr_rhs]);
 #else
-            printf("  subq $16, %%rsp\n");
+            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
             printf("  movq %%rsp, %s\n", reg64[addr_rhs]);
 #endif
             int v = gen(node->rhs);
+            if (is_complex(node->rhs->ty)) {
+                // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-            printf("  str %s, [%s]\n", reg64[v], reg64[addr_rhs]);
-            if (complex_sz > 8)
-                printf("  str %s, [%s, #%d]\n", reg64[v], reg64[addr_rhs], base_sz);
+                printf("  ldr x16, [%s]\n", reg64[v]);
+                printf("  str x16, [%s]\n", reg64[addr_rhs]);
+                if (complex_sz > 8) {
+                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
+                    printf("  str x16, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                }
 #else
-            printf("  movq %s, (%s)\n", reg64[v], reg64[addr_rhs]);
+                printf("  movq (%s), %%rax\n", reg64[v]);
+                printf("  movq %%rax, (%s)\n", reg64[addr_rhs]);
+                if (complex_sz > 8) {
+                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
+                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_rhs]);
+                }
 #endif
+            } else {
+#ifdef ARCH_ARM64
+                printf("  str %s, [%s]\n", reg64[v], reg64[addr_rhs]);
+                if (complex_sz > 8)
+                    printf("  str xzr, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+#else
+                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_rhs]);
+                if (complex_sz > 8)
+                    printf("  movq $0, %d(%s)\n", base_sz, reg64[addr_rhs]);
+#endif
+            }
             free_reg(v);
             need_free_rhs = 1;
         }
@@ -9360,39 +9457,6 @@ static int gen(Node *node) {
         }
 
         return r_lhs;
-    }
-
-
-    if (node->kind == ND_REAL || node->kind == ND_IMAG) {
-        // gen_addr adds the offset for ND_IMAG, so the returned address
-        // already points to the real or imag part of the complex value.
-        int r = gen_addr(node);
-        if (is_flonum(node->ty)) {
-#ifdef ARCH_ARM64
-            if (node->ty->size == 4) {
-                printf("  ldr s0, [%s]\n", reg64[r]);
-                printf("  fcvt d0, s0\n");
-            } else {
-                printf("  ldr d0, [%s]\n", reg64[r]);
-            }
-            printf("  fmov %s, d0\n", reg64[r]);
-#else
-            if (node->ty->size == 4) {
-                printf("  movss (%s), %%xmm0\n", reg64[r]);
-                printf("  cvtss2sd %%xmm0, %%xmm0\n");
-            } else {
-                printf("  movsd (%s), %%xmm0\n", reg64[r]);
-            }
-            printf("  movq %%xmm0, %s\n", reg64[r]);
-#endif
-        } else {
-#ifdef ARCH_ARM64
-            emit_load(node->ty, r, format("[%s]", reg64[r]));
-#else
-            emit_load(node->ty, r, format("(%s)", reg64[r]));
-#endif
-        }
-        return r;
     }
 
     error("invalid expression %d", node->kind);

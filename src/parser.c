@@ -1993,8 +1993,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
     }
 
-    if (is_complex && ty)
+    if (is_complex && ty) {
+        if (ty->size > 8 && !is_flonum(ty))
+            error_tok(tok, "_Complex with %d-byte base type is not supported", ty->size);
         ty = complex_type(ty);
+    }
 
     if (!ty)
         error_tok(tok, "expected type name, got kind=%d text='%.20s'", tok->kind, tok->ptr);
