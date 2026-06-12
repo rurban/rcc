@@ -1030,20 +1030,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 int r_tmp = alloc_reg();
                 int sz = arg->ty ? arg->ty->size : 8;
 #ifdef ARCH_ARM64
-                if (sz == 4) {
-                    printf("  movz %s, #0x%x\n", reg32[r_tmp], 0x7fff);
-                    printf("  movk %s, #0x%x, lsl #16\n", reg32[r_tmp], 0xffff);
-                    printf("  and %s, %s, %s\n", reg32[r], reg32[r_arg], reg32[r_tmp]);
-                    printf("  movz %s, #0x%x\n", reg32[r_tmp], 0x7f80);
-                    printf("  movk %s, #0x%x, lsl #16\n", reg32[r_tmp], 0x0000);
-                    printf("  cmp %s, %s\n", reg32[r], reg32[r_tmp]);
-                } else {
-                    printf("  mov %s, %s\n", reg64[r], reg64[r_arg]);
-                    emit_mov_imm64(reg64[r_tmp], 0x7fffffffffffffffULL);
-                    printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[r_tmp]);
-                    emit_mov_imm64(reg64[r_tmp], 0x7ff0000000000000ULL);
-                    printf("  cmp %s, %s\n", reg64[r], reg64[r_tmp]);
-                }
+                // rcc promotes all floats to doubles in GP registers;
+                // use 64-bit operations regardless of the source type size
+                printf("  mov %s, %s\n", reg64[r], reg64[r_arg]);
+                emit_mov_imm64(reg64[r_tmp], 0x7fffffffffffffffULL);
+                printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[r_tmp]);
+                emit_mov_imm64(reg64[r_tmp], 0x7ff0000000000000ULL);
+                printf("  cmp %s, %s\n", reg64[r], reg64[r_tmp]);
                 printf("  cset %s, eq\n", reg32[r]);
 #else
                 if (sz == 4) {
