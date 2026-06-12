@@ -69,12 +69,6 @@ jobs:
           ./rcc -print-search-dirs
           make check-all
 
-      - name: Cache pre-commit
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-
       - name: Check for source changes
         id: changed
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
