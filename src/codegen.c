@@ -10507,6 +10507,20 @@ void codegen(Program *prog) {
                         printf("  movsd %d(%%rbp), %%xmm0\n", stack_off);
                         printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset);
                     }
+                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
+                    // Structs > 8 bytes are passed by pointer even on the stack;
+                    // load the pointer and copy the pointee into the local slot.
+                    int c = ++rcc_label_count;
+                    printf("  movq %d(%%rbp), %%r11\n", stack_off);
+                    printf("  movq $%d, %%r10\n", var->ty->size);
+                    printf(".L.pcopy.%d:\n", c);
+                    printf("  cmpq $0, %%r10\n");
+                    printf("  je .L.pcopy_end.%d\n", c);
+                    printf("  movb -1(%%r11,%%r10), %%al\n");
+                    printf("  movb %%al, -%d-1(%%rbp,%%r10)\n", var->offset);
+                    printf("  subq $1, %%r10\n");
+                    printf("  jmp .L.pcopy.%d\n", c);
+                    printf(".L.pcopy_end.%d:\n", c);
                 } else {
                     char *tmpreg = var->ty->size == 1 ? "%al"
                         : var->ty->size == 2          ? "%ax"
