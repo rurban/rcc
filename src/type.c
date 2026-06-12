@@ -418,6 +418,14 @@ static void add_type_internal(Node *node) {
                 cast->ty = node->lhs->ty;
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
+            } else if (is_complex(node->lhs->ty) && !is_complex(node->rhs->ty) &&
+                       is_number(node->rhs->ty)) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
             }
         }
         node->ty = node->lhs->ty;

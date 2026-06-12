@@ -190,9 +190,7 @@
   960416-1                            PASS
   960419-1                            PASS
   960419-2                            PASS
-  960512-1                            FAIL (runtime)
-
-No debugger available for backtrace.
+  960512-1                            PASS
   960513-1                            PASS
   960521-1                            PASS
   960608-1                            PASS
@@ -453,7 +451,19 @@ No debugger available for backtrace.
   20020406-1                          PASS
   20020411-1                          FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_20020411-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2293905) "torture_rcc_200"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004006c3 in main () at ./20020411-1.c:20
   20020412-1                          PASS
   20020413-1                          PASS
   20020418-1                          PASS
@@ -598,7 +608,11 @@ No debugger available for backtrace.
   20041126-1                          PASS
   20041201-1                          FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_20041201-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+[Inferior 1 (process 2295170) exited with code 01]
   20041210-1                          PASS
   20041212-1                          PASS
   20041213-2                          PASS
@@ -1068,7 +1082,17 @@ No debugger available for backtrace.
   pr38051                             PASS
   pr38151                             FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr38151.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000000004006d0 in main () at ./pr38151.c:39
+39	  s2848.b = (723419448 + -218144346 * __extension__ 1i);
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2300285) "torture_rcc_pr3"):
+#0  0x00000000004006d0 in main () at ./pr38151.c:39
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
@@ -1079,7 +1103,19 @@ No debugger available for backtrace.
   pr39120                             PASS
   pr39228                             FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr39228.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2300505) "torture_rcc_pr3"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x0000000000400650 in main () at ./pr39228.c:29
   pr39233                             PASS
   pr39240                             PASS
   pr39339                             PASS
@@ -1230,10 +1266,31 @@ No debugger available for backtrace.
   pr58209                             PASS
   pr58277-1                           FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr58277-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000000000401574 in main () at ./pr58277-1.c:98
+98	  if (!a[a[a[a[a[a[a[a[a[a[a[a[a[a[a[u]]]]]]]]]]]]]]])
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2302465) "torture_rcc_pr5"):
+#0  0x0000000000401574 in main () at ./pr58277-1.c:98
   pr58277-2                           FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr58277-2.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x00000000004004dc in fn1 () at ./pr58277-2.c:15
+15	  b = a[a[a[a[a[a[a[a[b]]]]]]]];
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2302555) "torture_rcc_pr5"):
+#0  0x00000000004004dc in fn1 () at ./pr58277-2.c:15
+#1  0x0000000000401e93 in main () at ./pr58277-2.c:92
   pr58364                             PASS
   pr58365                             PASS
   pr58385                             PASS
@@ -1401,7 +1458,20 @@ No debugger available for backtrace.
   pr82192                             PASS
   pr82210                             FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr82210.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2304539) "torture_rcc_pr8"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004005d7 in foo () at ./pr82210.c:18
+#4  0x000000000040060b in main () at ./pr82210.c:24
   pr82387                             PASS
   pr82388                             PASS
   pr82524                             PASS
@@ -1517,7 +1587,18 @@ No debugger available for backtrace.
   pr104196                            PASS
   pr104604                            FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_pr104604.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGSEGV, Segmentation fault.
+0x000000000040054a in foo () at ./pr104604.c:9
+9	    t /= c;
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2305862) "torture_rcc_pr1"):
+#0  0x000000000040054a in foo () at ./pr104604.c:9
+#1  0x000000000040074a in main () at ./pr104604.c:22
   pr104814                            PASS
   pr104839                            PASS
   pr105613                            SKIP (vector_size)
@@ -1665,13 +1746,41 @@ No debugger available for backtrace.
   va-arg-21                           PASS
   va-arg-22                           FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_va-arg-22.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2307205) "torture_rcc_va-"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x00000000004004fa in bar () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:21
+#4  0x000000000040098b in foo () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:48
+#5  0x0000000000401c0d in main () at /home/rurban/Software/rcc/test/torture/va-arg-22.c:74
   va-arg-23                           PASS
   va-arg-24                           PASS
   va-arg-26                           PASS
   va-arg-pack-1                       FAIL (runtime)
 
-No debugger available for backtrace.
+=== EXEC_FAIL backtrace ===
+command: /tmp/torture_rcc_va-arg-pack-1.dbg 
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+
+Program received signal SIGABRT, Aborted.
+0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7ffff7c94780 (LWP 2307257) "torture_rcc_va-"):
+#0  0x00007ffff7d0b32c in __pthread_kill_implementation () from /lib64/libc.so.6
+#1  0x00007ffff7cb115e in raise () from /lib64/libc.so.6
+#2  0x00007ffff7c986d0 in abort () from /lib64/libc.so.6
+#3  0x0000000000400696 in foo1 () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:41
+#4  0x0000000000400eef in bar () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:127
+#5  0x0000000000400f9f in main () at /home/rurban/Software/rcc/test/torture/va-arg-pack-1.c:134
   va-arg-trap-1                       PASS
   vfprintf-1                          PASS
   vfprintf-chk-1                      PASS
@@ -1694,7 +1803,7 @@ No debugger available for backtrace.
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-=== TOTAL=1671 PASS=1558 FAIL_COMPILE=0 FAIL_RUNTIME=11 SKIP=102 ===
+=== TOTAL=1671 PASS=1559 FAIL_COMPILE=0 FAIL_RUNTIME=10 SKIP=102 ===
 Pass rate (excl. skip): 99%
 
-Runtime failures: 960512-1 20020411-1 20041201-1 pr38151 pr39228 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
+Runtime failures: 20020411-1 20041201-1 pr38151 pr39228 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
