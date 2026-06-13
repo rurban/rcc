@@ -657,11 +657,32 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         argv[idx++] = arg;
 
     char *call_target = node->funcname;
+    if (!call_target && node->lhs && node->lhs->var && node->lhs->var->is_function)
+        call_target = node->lhs->var->name;
     if (call_target && is_asm_reserved(call_target))
         call_target = format(".L_rcc_%s", call_target);
-    if (!call_target && node->lhs && node->lhs->kind == ND_LVAR &&
-        node->lhs->var && node->lhs->var->is_function)
-        call_target = node->lhs->var->name;
+    init_builtin_names();
+    if (0 && opt_O1 && call_target && nargs >= 2) {
+        if ((strcmp(call_target, "__printf_chk") == 0 && nargs >= 2) ||
+            (strcmp(call_target, "__vprintf_chk") == 0 && nargs == 3)) {
+            node->args = argv[1];
+            call_target = call_target[2] == 'p' ? bi_s_printf : bi_s_vprintf;
+            for (int j = 0; j < nargs - 1; j++)
+                argv[j] = argv[j + 1];
+            nargs--;
+        } else if ((strcmp(call_target, "__fprintf_chk") == 0 && nargs >= 3) ||
+                   (strcmp(call_target, "__vfprintf_chk") == 0 && nargs == 4)) {
+            Node *flag = argv[1];
+            argv[0]->next = flag->next;
+            flag->next = NULL;
+            call_target = call_target[2] == 'f' ? bi_s_fprintf : bi_s_vfprintf;
+            for (int j = 1; j < nargs - 1; j++)
+                argv[j] = argv[j + 1];
+            nargs--;
+            if (node->args == flag)
+                node->args = argv[0];
+        }
+    }
 
     // Optimize (void)printf("%s\n", arg) → puts(arg)
     //          (void)fprintf(fp, "%s", arg) → fputs(arg, fp)
