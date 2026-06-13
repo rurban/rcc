@@ -1326,18 +1326,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 // Overflow check: does the double-width product fit in res_sz bits?
                 if (res_sz >= sz * 2) {
                     // Result wider than or equal to double-width product.
-                    // Overflow possible only if result is unsigned and product is negative.
+                    // Double-width product always fits — overflow impossible.
                     if (sz == 8) {
                         printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
                     } else {
                         printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
                     }
-                    if (res_unsigned) {
-                        printf("  cmp %s, #0\n", reg64[ra]);
-                        printf("  cset %s, lt\n", reg32[r_result]);
-                    } else {
-                        printf("  mov %s, #0\n", reg32[r_result]);
-                    }
+                    // Double-width product always fits in wider result → no overflow
+                    printf("  mov %s, #0\n", reg32[r_result]);
                 } else if (res_sz == sz) {
                     // Same width: check overflow using result signedness
                     int r2 = alloc_reg();
@@ -1418,7 +1414,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             }
             if (argres && !is_mul_overflow_p) {
                 int rr = gen(argres);
-                printf("  str %s, [%s]\n", reg(ra, res_sz), reg64[rr]);
+                if (argres->ty && argres->ty->kind == TY_PTR && argres->ty->base &&
+                    argres->ty->base->kind == TY_INT128) {
+                    printf("  str %s, [%s]\n", reg64[ra], reg64[rr]);
+                    printf("  asr %s, %s, #63\n", reg64[ra], reg64[ra]);
+                    printf("  str %s, [%s, #8]\n", reg64[ra], reg64[rr]);
+                } else {
+                    printf("  str %s, [%s]\n", reg(ra, res_sz), reg64[rr]);
+                }
                 free_reg(rr);
             }
             free_reg(ra);
@@ -1842,11 +1845,35 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         else if (node->lhs->ty->kind == TY_FUNC && (node->lhs->kind != ND_LVAR || node->lhs->ty->is_variadic))
             fn_type = node->lhs->ty;
     }
+    if (!fn_type && call_target) {
+        static Type variadic_fn;
+        if (strcmp(call_target, "sprintf") == 0 ||
+            strcmp(call_target, "snprintf") == 0 ||
+            strcmp(call_target, "fprintf") == 0 ||
+            strcmp(call_target, "vfprintf") == 0 ||
+            strcmp(call_target, "printf") == 0 ||
+            strcmp(call_target, "vprintf") == 0) {
+            variadic_fn.kind = TY_FUNC;
+            variadic_fn.is_variadic = true;
+            fn_type = &variadic_fn;
+        }
+    }
     bool is_variadic = fn_type && fn_type->kind == TY_FUNC && fn_type->is_variadic;
     int named_count = 0;
     if (fn_type && fn_type->kind == TY_FUNC)
         for (Type *t = fn_type->param_types; t; t = t->param_next)
             named_count++;
+    if (named_count == 0 && call_target && is_variadic) {
+        if (strcmp(call_target, "printf") == 0 ||
+            strcmp(call_target, "vprintf") == 0)
+            named_count = 1;
+        else if (strcmp(call_target, "sprintf") == 0 ||
+                 strcmp(call_target, "fprintf") == 0 ||
+                 strcmp(call_target, "vfprintf") == 0)
+            named_count = 2;
+        else if (strcmp(call_target, "snprintf") == 0)
+            named_count = 3;
+    }
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = argv[i]->ty->size;
@@ -3836,7 +3863,7 @@ static int gen_addr(Node *node) {
                 printf("  add %s, %s, #%d\n", reg64[r], reg64[r], offset);
             else {
                 int ti = alloc_reg();
-                printf("  mov %s, #%d\n", reg64[ti], offset);
+                emit_mov_imm64(reg64[ti], (uint64_t)offset);
                 printf("  add %s, %s, %s\n", reg64[r], reg64[r], reg64[ti]);
                 free_reg(ti);
             }
@@ -3853,14 +3880,14 @@ static int gen_addr(Node *node) {
             printf("  add %s, %s, #%d\n", reg64[r], reg64[r], node->member->offset);
         else if (node->member->offset > 0) {
             int ti = alloc_reg();
-            printf("  mov %s, #%d\n", reg64[ti], node->member->offset);
+            emit_mov_imm64(reg64[ti], (uint64_t)node->member->offset);
             printf("  add %s, %s, %s\n", reg64[r], reg64[r], reg64[ti]);
             free_reg(ti);
         } else if (node->member->offset < 0 && -node->member->offset <= 4095)
             printf("  sub %s, %s, #%d\n", reg64[r], reg64[r], -node->member->offset);
         else if (node->member->offset < 0) {
             int ti = alloc_reg();
-            printf("  mov %s, #%d\n", reg64[ti], -node->member->offset);
+            emit_mov_imm64(reg64[ti], (uint64_t)(-node->member->offset));
             printf("  sub %s, %s, %s\n", reg64[r], reg64[r], reg64[ti]);
             free_reg(ti);
         }
