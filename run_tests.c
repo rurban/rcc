@@ -2661,7 +2661,7 @@ static void run_unit_tests(void) {
 
             /* test_err: expect compile failure */
             if (streq(base, "test_err")) {
-                char tmp[PATH_MAX];
+                char tmp[2 * PATH_MAX];
                 snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
                 if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
                     strcat(tmp, ".exe");
@@ -2685,7 +2685,7 @@ static void run_unit_tests(void) {
             }
 
             int expected_exit = test_unit_expected_exit(base);
-            char tmp[PATH_MAX];
+            char tmp[2 * PATH_MAX];
             snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
             if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
                 strcat(tmp, ".exe");
@@ -3535,8 +3535,8 @@ static int run_torture_suite(bool summary_only) {
                         char *dot = strrchr(nbuf, '.');
                         if (dot) *dot = '\0';
                         /* Build absolute path */
-                        char *abs_path = malloc(PATH_MAX);
-                        snprintf(abs_path, PATH_MAX, "%s/%s", g_tort_dir, fn);
+                        char *abs_path = malloc(2 * PATH_MAX);
+                        snprintf(abs_path, 2 * PATH_MAX, "%s/%s", g_tort_dir, fn);
                         jobs[idx].suite = SUITE_TORTURE;
                         jobs[idx].src_path = abs_path;
                         jobs[idx].base = strdup(nbuf);
@@ -3841,8 +3841,8 @@ static int run_compliance_suite(void) {
         if (n_tests > 0) {
             ParallelJob *jobs = calloc((size_t)n_tests, sizeof(ParallelJob));
             for (int i = 0; i < n_tests; i++) {
-                char *sp = malloc(PATH_MAX);
-                snprintf(sp, PATH_MAX, "%s/%s", comp_dir, entries[i].fname);
+                char *sp = malloc(2 * PATH_MAX);
+                snprintf(sp, 2 * PATH_MAX, "%s/%s", comp_dir, entries[i].fname);
                 jobs[i].suite = SUITE_COMPLIANCE;
                 jobs[i].src_path = sp;
                 jobs[i].base = strdup(entries[i].base);
@@ -3902,7 +3902,7 @@ static int run_compliance_suite(void) {
                 continue;
             }
 
-            char gcc_exe[PATH_MAX], rcc_exe[PATH_MAX];
+            char gcc_exe[2 * PATH_MAX], rcc_exe[2 * PATH_MAX];
             snprintf(gcc_exe, sizeof(gcc_exe), "%s/compliance_gcc_%d_%s", get_tmpdir(), getpid(), base);
             snprintf(rcc_exe, sizeof(rcc_exe), "%s/compliance_rcc_%d_%s", get_tmpdir(), getpid(), base);
 
@@ -4008,7 +4008,7 @@ static int run_ctest_one(const char *ctest_dir) {
     char num[6];
     if (!ctest_test_num(num, sizeof(num))) return -1;
 
-    char src_path[PATH_MAX], exp_path[PATH_MAX], bin_path[PATH_MAX];
+    char src_path[2 * PATH_MAX], exp_path[2 * PATH_MAX], bin_path[2 * PATH_MAX];
     snprintf(src_path, sizeof(src_path), "%s/tests/single-exec/%s.c", ctest_dir, num);
     snprintf(exp_path, sizeof(exp_path), "%s/tests/single-exec/%s.c.expected", ctest_dir, num);
     if (!file_exists(src_path)) return -1;
@@ -4209,7 +4209,7 @@ static int run_ctest_suite(void) {
          * parallelized. */
         logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
 
-        char src_dir[PATH_MAX];
+        char src_dir[PATH_MAX + 64];
         snprintf(src_dir, sizeof(src_dir), "%s/tests/single-exec", ctest_dir);
         char **files = list_c_files_sorted(src_dir);
         if (!files) {
@@ -4241,7 +4241,7 @@ static int run_ctest_suite(void) {
                 memcpy(name, base, nlen);
                 name[nlen] = '\0';
 
-                char exp_path[PATH_MAX];
+                char exp_path[2 * PATH_MAX];
                 snprintf(exp_path, sizeof(exp_path), "%s/%s.c.expected", src_dir, name);
 
                 jobs[n_tests].suite = SUITE_CTEST;
@@ -4279,7 +4279,7 @@ static int run_ctest_suite(void) {
                 memcpy(name, base, nlen);
                 name[nlen] = '\0';
 
-                char exp_path[PATH_MAX], bin_path[PATH_MAX];
+                char exp_path[2 * PATH_MAX], bin_path[2 * PATH_MAX];
                 snprintf(exp_path, sizeof(exp_path), "%s/%s.c.expected", src_dir, name);
                 snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d_%s",
                          get_tmpdir(), getpid(), name);
@@ -4392,7 +4392,7 @@ static int run_ctest_suite(void) {
             } else {
                 ctest_pass++;
                 print_result(tname, COL_GREEN, "PASS");
-                char outpath[PATH_MAX], binpath[PATH_MAX];
+                char outpath[2 * PATH_MAX], binpath[2 * PATH_MAX];
                 snprintf(outpath, sizeof(outpath), "%s/%s.output", ctest_dir, tname);
                 snprintf(binpath, sizeof(binpath), "%s/%s.bin", ctest_dir, tname);
                 unlink(outpath);
