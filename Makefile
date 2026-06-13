@@ -219,7 +219,7 @@ run_tests.exe: run_tests.c
 run_tests_arm64: run_tests.c
 	@sysroot="$$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null)"; \
 	if [ -z "$$sysroot" ] || [ "$$sysroot" = "/" ] || [ ! -f "$$sysroot/usr/include/stdio.h" ]; then \
-	    for p in /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-linux-gnu/sys-root; do \
+	    for p in /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-redhat-linux/sys-root/fc44 /usr/aarch64-linux-gnu/sys-root; do \
 	        if [ -f "$$p/usr/include/stdio.h" ]; then sysroot="$$p"; break; fi; \
 	    done; \
 	fi; \

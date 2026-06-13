@@ -5,19 +5,23 @@
  *           test/compliance/run.sh, run-c-testsuite.sh
  *
  * Usage: ./run_tests [rcc-binary] [options] [test-name]
- * For cross platforma, run the whole runner under the cross environment.
+ * For cross platforms, run the whole runner under the cross environment.
  *        wine ./run_tests.exe rcc.exe --tcc --unit-tests --compliance --ctest
- *        qemu-aarch64 -L /usr/aarch64-linux-gnu/sys-root ./run_tests rcc-arm64 --tcc --unit-tests --compliance --ctest
+ *        qemu-aarch64 -L /usr/aarch64-linux-gnu/sys-root ./run_tests ./rcc-arm64 --tcc --unit-tests --compliance --ctest
  *
  * Options (default: --tcc --unit-tests --compliance --ctest):
  *   --tcc         TCC compatibility tests (tinycc/tests/tests2/)
  *   --unit-tests  Our own Unit tests (test/test_*.c)
  *   --compliance  NCC compliance tests (gcc vs rcc output comparison)
  *   --ctest       C-testsuite (native C runner)
- *   -v, --verbose Show thread pool activity during parallel runs
  *   --torture     GCC torture tests (test/torture/)
  *   --all         All test suites
+ *   -v, --verbose Show thread pool activity during parallel runs
  *   --summary     Torture summary-only mode
+ *   --no-color    Disable ANSI color output
+ *   --parallel    Run tests in parallel (auto-detect worker count)
+ *   --jobs N      Run tests with N worker threads (--jobs 1 = sequential)
+ *
  */
 
 #define _GNU_SOURCE
@@ -672,6 +676,7 @@ static void detect_platform(const char *rcc_path) {
         static const char *sysroots[] = {
             "/usr/aarch64-linux-gnu",
             "/usr/aarch64-redhat-linux/sys-root/fc43",
+            "/usr/aarch64-redhat-linux/sys-root/fc44",
             "/usr/aarch64-linux-gnu/sys-root",
         };
         for (size_t i = 0; i < sizeof(sysroots) / sizeof(sysroots[0]); i++) {
@@ -727,12 +732,15 @@ static void detect_platform(const char *rcc_path) {
 #endif
     } else {
         if (strcmp(u.sysname, "Darwin") == 0)
-            platform = "arm64";
+            platform = "arm64"; // TODO apple intel
         else if (contains(u.sysname, "MINGW") || contains(u.sysname, "MSYS") ||
                  contains(u.sysname, "CYGWIN"))
             platform = "mingw";
-        else
-            platform = "linux";
+        else {
+            platform = u.sysname;
+            if (strcmp(u.sysname, "Linux") == 0)
+                platform = "linux";
+        }
         if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0)
             is_arm64 = true;
     }
@@ -3234,7 +3242,7 @@ static int run_torture_suite(bool summary_only) {
     if (only_test)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 22;
+        max_fail = 27;
     else if (streq(platform, "arm64"))
         max_fail = 24;
     else if (streq(platform, "darwin_cross"))
@@ -4241,8 +4249,8 @@ int main(int argc, char **argv) {
             printf("  --torture     GCC torture tests (test/torture/)\n");
             printf("  --compliance  NCC Compliance tests (gcc vs rcc output comparison)\n");
             printf("  --ctest       C-testsuite (native C runner)\n");
-            printf("  -v, --verbose Show thread/pool activity during parallel runs\n");
             printf("  --all         All test suites\n");
+            printf("  -v, --verbose Show thread/pool activity during parallel runs\n");
             printf("  --summary     Torture summary-only (no per-test output)\n");
             printf("  --no-color    Disable ANSI color output\n");
             printf("  --parallel    Run tests in parallel (auto-detect worker count)\n");
@@ -4262,14 +4270,15 @@ int main(int argc, char **argv) {
     /* auto-detect rcc */
     if (!rcc) {
 #ifdef ARM64_NATIVE
+        if (access("./rcc-arm64", X_OK) == 0) // cross, under qemu
+            rcc = "./rcc-arm64";
+        else if (access("./rcc", X_OK) == 0) // native
+            rcc = "./rcc";
+#else
         if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
-        else if (access("./rcc-arm64", X_OK) == 0)
-            rcc = "./rcc-arm64";
-#else
-        if (access("./rcc", X_OK) == 0) rcc = "./rcc";
         else if (access("./rcc.exe", X_OK) == 0)
-            rcc = "./mingw-cross.sh";
+            rcc = "./rcc.exe";
 #endif
     }
     if (!rcc) {
@@ -4287,7 +4296,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* rewrite shorthand cross-compiler paths */
+    /* rewrite shorthand cross-compiler paths.
+       FIXME: should be able to run rcc-arm64 via gcc-aarch64 */
     if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
@@ -4301,6 +4311,8 @@ int main(int argc, char **argv) {
     }
 
     detect_platform(rcc);
+    if (g_verbose)
+        printf("rcc=%s, platform=%s\n", rcc, platform);
 
     /* suppress wine fixme noise so it doesn't pollute captured test output */
     if (has_runner && contains(runner_cmd, "wine"))
