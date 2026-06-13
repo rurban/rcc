@@ -6919,7 +6919,7 @@ static int gen(Node *node) {
                 printf("  movq 8(%s), %%rdx\n", reg64[src]);
 #endif
                 free_reg(src);
-            } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty))) {
+            } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs);
@@ -6974,6 +6974,19 @@ static int gen(Node *node) {
                 free_reg(ret_reg);
 #endif
                 free_reg(src);
+            } else if (node->lhs->ty && is_complex(node->lhs->ty)) {
+                // Complex expression returned as scalar: extract real part
+                int addr = gen_addr(node->lhs);
+                if (addr < 0) addr = gen(node->lhs);
+                Type *ret_ty = current_fn_def->ty->return_ty;
+#ifdef ARCH_ARM64
+                printf("  ldr w0, [%s]\n", reg64[addr]);
+#else
+                printf("  movl (%s), %%eax\n", reg64[addr]);
+#endif
+                if (ret_ty && ret_ty->size == 1)
+                    printf("  uxtb w0, w0\n");
+                free_reg(addr);
             } else {
                 int r = gen(node->lhs);
                 Type *ret_ty = current_fn_def->ty->return_ty;
@@ -11389,7 +11402,7 @@ void codegen(Program *prog) {
                         printf("  b .L.pcopy.%d\n", c);
                         printf(".L.pcopy_end.%d:\n", c);
                     } else {
-                        printf("  str %s, [%s, #-%d]\n", preg, FRAME_PTR, var->offset);
+                        arm64_store_to_fp_minus(preg, var->offset);
                     }
                     gp_param++;
                 } else {
