@@ -329,7 +329,17 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         close(err_pipe[0]);
 
     int status;
-    pid_t w = waitpid(pid, &status, 0);
+    pid_t w;
+    int wait_attempts = 0;
+    do {
+        w = waitpid(pid, &status, WNOHANG);
+        if (w != pid) {
+            usleep(100000); // 100ms
+            wait_attempts++;
+        }
+    } while (w == 0 && wait_attempts < 10);
+    if (w != pid && wait_attempts >= 10)
+        r.timed_out = true; /* gave up waiting */
 
     if (w == pid) {
         if (WIFEXITED(status)) r.exit_code = WEXITSTATUS(status);
@@ -463,7 +473,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     DWORD wait = WaitForSingleObject(pi.hProcess, (DWORD)timeout_sec * 1000);
     if (wait == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        WaitForSingleObject(pi.hProcess, 5000);
         r.timed_out = true;
     } else {
         DWORD exit_code = 0;
@@ -660,6 +670,7 @@ static const char *platform = "linux";
 static bool is_arm64, is_darwin_cross, is_mingw_native;
 static char runner_cmd[512];
 static bool has_runner;
+static int g_num_workers = 0;
 #ifndef ARM64_NATIVE
 static char *arm64_sysroot;
 #endif
@@ -709,18 +720,18 @@ static void detect_platform(const char *rcc_path) {
         platform = "mingw_cross";
         snprintf(runner_cmd, sizeof(runner_cmd), "wine");
         has_runner = true;
-    } else if (contains(rcc_path, ".exe")) {
+    }
 #ifdef _WIN32
-        if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
-            platform = "mingw_cross";
-            is_mingw_native = true;
-            /* No runner needed — we're already inside wine,
-             * so spawned .exe files execute directly. */
-        } else {
-            platform = "mingw";
-            is_mingw_native = true;
-        }
+    /* We are a Windows PE binary.  mingw_cross if under wine. */
+    else if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
+        platform = "mingw_cross";
+        is_mingw_native = true;
+    } else {
+        platform = "mingw";
+        is_mingw_native = true;
+    }
 #else
+    else if (contains(rcc_path, ".exe")) {
         if (strcmp(u.sysname, "Linux") == 0 && access("/usr/bin/wine", X_OK) == 0) {
             platform = "mingw_cross";
             snprintf(runner_cmd, sizeof(runner_cmd), "wine");
@@ -729,10 +740,9 @@ static void detect_platform(const char *rcc_path) {
             platform = "mingw";
             is_mingw_native = true;
         }
-#endif
     } else {
         if (strcmp(u.sysname, "Darwin") == 0)
-            platform = "arm64"; // TODO apple intel
+            platform = "arm64";
         else if (contains(u.sysname, "MINGW") || contains(u.sysname, "MSYS") ||
                  contains(u.sysname, "CYGWIN"))
             platform = "mingw";
@@ -744,9 +754,292 @@ static void detect_platform(const char *rcc_path) {
         if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0)
             is_arm64 = true;
     }
+#endif
 }
 
+#ifdef _WIN32
+/* rcc_lib.dll and try_run_exe_inprocess() both redirect the process-wide
+ * stdout/stderr fds and (for rcc_lib) drive the compiler's global state.
+ * Serialize them with a critical section so parallel workers don't race. */
+static CRITICAL_SECTION g_inproc_cs;
+static bool g_inproc_cs_init = false;
+
+static void inproc_lock(void) {
+    if (!g_inproc_cs_init) {
+        InitializeCriticalSection(&g_inproc_cs);
+        g_inproc_cs_init = true;
+    }
+    EnterCriticalSection(&g_inproc_cs);
+}
+
+static void inproc_unlock(void) {
+    LeaveCriticalSection(&g_inproc_cs);
+}
+
+/* Try to run the binary in-process via LoadLibrary + GetProcAddress("main").
+ * Returns true if successful (result in *pr), false if fallback needed. */
+static bool try_run_exe_inprocess(const char *exe_path, ProcResult *pr,
+                                  int timeout_sec) {
+    (void)timeout_sec;
+    HMODULE h = LoadLibraryA(exe_path);
+    if (!h) return false;
+    typedef int (*main_fn)(int, char **);
+    _Pragma("GCC diagnostic push")
+        _Pragma("GCC diagnostic ignored \"-Wcast-function-type\"")
+            main_fn fn = (main_fn)GetProcAddress(h, "main");
+    _Pragma("GCC diagnostic pop") if (!fn) {
+        FreeLibrary(h);
+        return false;
+    }
+
+    inproc_lock();
+
+    /* Redirect stdout/stderr to pipes */
+    HANDLE out_read = NULL, out_write = NULL;
+    HANDLE err_read = NULL, err_write = NULL;
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    if (!CreatePipe(&out_read, &out_write, &sa, 0)) {
+        inproc_unlock();
+        FreeLibrary(h);
+        return false;
+    }
+    if (!CreatePipe(&err_read, &err_write, &sa, 0)) {
+        inproc_unlock();
+        CloseHandle(out_read);
+        CloseHandle(out_write);
+        FreeLibrary(h);
+        return false;
+    }
+    SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(err_read, HANDLE_FLAG_INHERIT, 0);
+
+    int saved_stdout = _dup(_fileno(stdout));
+    int saved_stderr = _dup(_fileno(stderr));
+    _dup2(_open_osfhandle((intptr_t)out_write, 0), _fileno(stdout));
+    _dup2(_open_osfhandle((intptr_t)err_write, 0), _fileno(stderr));
+    CloseHandle(out_write);
+    CloseHandle(err_write);
+
+    /* Build argv: [exe_path] */
+    char *argv[2];
+    argv[0] = (char *)exe_path;
+    argv[1] = NULL;
+    int exit_code = fn(1, argv);
+
+    fflush(stdout);
+    fflush(stderr);
+    _dup2(saved_stdout, _fileno(stdout));
+    _dup2(saved_stderr, _fileno(stderr));
+    close(saved_stdout);
+    close(saved_stderr);
+
+    /* Read captured output */
+    char buf[8192];
+    DWORD n;
+    size_t cap = 8192, len = 0;
+    char *out = malloc(cap);
+    while (ReadFile(out_read, buf, sizeof(buf), &n, NULL) && n > 0) {
+        if (len + n + 1 > cap) {
+            cap = len + n + 8192;
+            out = realloc(out, cap);
+        }
+        memcpy(out + len, buf, n);
+        len += n;
+    }
+    /* Also drain stderr into output */
+    while (ReadFile(err_read, buf, sizeof(buf), &n, NULL) && n > 0) {
+        if (len + n + 1 > cap) {
+            cap = len + n + 8192;
+            out = realloc(out, cap);
+        }
+        memcpy(out + len, buf, n);
+        len += n;
+    }
+    out[len] = '\0';
+    CloseHandle(out_read);
+    CloseHandle(err_read);
+    FreeLibrary(h);
+
+    pr->out = out;
+    pr->out_len = len;
+    pr->exit_code = exit_code;
+    pr->timed_out = false;
+    pr->spawn_failed = false;
+    inproc_unlock();
+    return true;
+}
+
+/* ── rcc library API (dynamically loaded from rcc_lib.dll) ────────── */
+
+typedef struct RCCLib RCCLib;
+typedef RCCLib *(*rcc_lib_new_fn)(void);
+typedef int (*rcc_lib_compile_file_fn)(RCCLib *, const char *);
+typedef void *(*rcc_lib_get_symbol_fn)(RCCLib *, const char *);
+typedef const char *(*rcc_lib_output_path_fn)(const RCCLib *);
+typedef void (*rcc_lib_delete_fn)(RCCLib *);
+typedef int (*main_fn_t)(int, char **);
+
+/* Cast GetProcAddress through uintptr_t to avoid -Wcast-function-type */
+#define GETPROC(h, name, type) ((type)(uintptr_t)GetProcAddress((h), (name)))
+
+static HMODULE rcc_lib_dll = NULL;
+static rcc_lib_new_fn p_rcc_lib_new = NULL;
+static rcc_lib_compile_file_fn p_rcc_lib_compile_file = NULL;
+static rcc_lib_get_symbol_fn p_rcc_lib_get_symbol = NULL;
+static rcc_lib_output_path_fn p_rcc_lib_output_path = NULL;
+static rcc_lib_delete_fn p_rcc_lib_delete = NULL;
+
+static void init_rcc_lib(void) {
+    if (rcc_lib_dll) return;
+    /* Try loading from the run_tests.exe directory first —
+     * the working directory may have been changed by chdir() */
+    char exe_dir[MAX_PATH];
+    if (GetModuleFileNameA(NULL, exe_dir, sizeof(exe_dir))) {
+        char *slash = strrchr(exe_dir, '\\');
+        if (slash) {
+            *(slash + 1) = '\0';
+            size_t dlen = strlen(exe_dir);
+            snprintf(exe_dir + dlen, sizeof(exe_dir) - dlen, "rcc_lib.dll");
+            rcc_lib_dll = LoadLibraryA(exe_dir);
+        }
+    }
+    if (!rcc_lib_dll)
+        rcc_lib_dll = LoadLibraryA("rcc_lib.dll");
+    if (!rcc_lib_dll) return;
+    p_rcc_lib_new = GETPROC(rcc_lib_dll, "rcc_lib_new", rcc_lib_new_fn);
+    p_rcc_lib_compile_file = GETPROC(rcc_lib_dll, "rcc_lib_compile_file", rcc_lib_compile_file_fn);
+    p_rcc_lib_get_symbol = GETPROC(rcc_lib_dll, "rcc_lib_get_symbol", rcc_lib_get_symbol_fn);
+    p_rcc_lib_output_path = GETPROC(rcc_lib_dll, "rcc_lib_output_path", rcc_lib_output_path_fn);
+    p_rcc_lib_delete = GETPROC(rcc_lib_dll, "rcc_lib_delete", rcc_lib_delete_fn);
+    if (!p_rcc_lib_new || !p_rcc_lib_compile_file ||
+        !p_rcc_lib_get_symbol || !p_rcc_lib_delete) {
+        FreeLibrary(rcc_lib_dll);
+        rcc_lib_dll = NULL;
+    }
+}
+
+/* Compile src_path to a DLL via rcc_lib, load it, call main(), capture
+ * output.  include_dir may be NULL.  flags are appended to the rcc
+ * command line (e.g. "-lm").  Returns 0 on success, -1 if fallback. */
+static int run_test_inprocess(const char *src_path, const char *name,
+                              const char *include_dir, const char *extra_flags,
+                              ProcResult *pr, int timeout_sec) {
+    (void)timeout_sec;
+    init_rcc_lib();
+    if (!rcc_lib_dll) return -1;
+
+    inproc_lock();
+
+    RCCLib *lib = p_rcc_lib_new();
+    if (!lib) {
+        inproc_unlock();
+        return -1;
+    }
+
+    /* Try the _ex variant which supports include_dir + link flags */
+    typedef int (*rcc_lib_compile_file_ex_fn)(RCCLib *, const char *,
+                                              const char *, const char *);
+    rcc_lib_compile_file_ex_fn p_compile_ex =
+        GETPROC(rcc_lib_dll, "rcc_lib_compile_file_ex",
+                rcc_lib_compile_file_ex_fn);
+    int saved_stdout = dup(STDOUT_FILENO);
+    int cres;
+    if (p_compile_ex)
+        cres = p_compile_ex(lib, src_path, include_dir, extra_flags);
+    else
+        cres = p_rcc_lib_compile_file(lib, src_path);
+    /* Restore stdout */
+    dup2(saved_stdout, STDOUT_FILENO);
+    close(saved_stdout);
+    freopen("CONOUT$", "w", stdout);
+    if (cres != 0) {
+        p_rcc_lib_delete(lib);
+        inproc_unlock();
+        return -1;
+    }
+
+    typedef int (*main_fn)(int, char **);
+    main_fn fn = (main_fn)p_rcc_lib_get_symbol(lib, "main");
+    if (!fn) {
+        p_rcc_lib_delete(lib);
+        inproc_unlock();
+        return -1;
+    }
+
+    /* Build argv */
+    char *argv[3];
+    argv[0] = (char *)name;
+    argv[1] = NULL;
+
+    /* Capture stdout/stderr via pipes */
+    HANDLE out_r = NULL, out_w = NULL;
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
+        p_rcc_lib_delete(lib);
+        inproc_unlock();
+        return -1;
+    }
+    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+
+    int saved_out = _dup(_fileno(stdout));
+    int saved_err = _dup(_fileno(stderr));
+    _dup2(_open_osfhandle((intptr_t)out_w, 0), _fileno(stdout));
+    _dup2(_open_osfhandle((intptr_t)out_w, 0), _fileno(stderr));
+    CloseHandle(out_w);
+
+    int exit_code = fn(1, argv);
+
+    fflush(stdout);
+    fflush(stderr);
+    _dup2(saved_out, _fileno(stdout));
+    _dup2(saved_err, _fileno(stderr));
+    close(saved_out);
+    close(saved_err);
+
+    /* Read output */
+    char buf[8192];
+    DWORD n;
+    size_t cap = 8192, len = 0;
+    char *out = malloc(cap);
+    while (ReadFile(out_r, buf, sizeof(buf), &n, NULL) && n > 0) {
+        if (len + n + 1 > cap) {
+            cap = len + n + 8192;
+            out = realloc(out, cap);
+        }
+        memcpy(out + len, buf, n);
+        len += n;
+    }
+    out[len] = '\0';
+    CloseHandle(out_r);
+
+    pr->out = out;
+    pr->out_len = len;
+    pr->exit_code = exit_code;
+    pr->timed_out = false;
+    pr->spawn_failed = false;
+
+    p_rcc_lib_delete(lib);
+    inproc_unlock();
+    return 0;
+}
+#endif /* _WIN32 */
+
 static ProcResult run_exe(const char *exe_path, const char *args, int timeout_sec) {
+#ifdef _WIN32
+    /* Try in-process execution: if the binary was compiled as a DLL
+     * (LoadLibrary succeeds and has a main export), run it without
+     * spawning a new wine process.  Falls back to proc_run on failure.
+     * Restricted to the main thread (g_num_workers <= 1): under wine,
+     * the msvcrt stdio fd-redirection in try_run_exe_inprocess() deadlocks
+     * (RtlpWaitForCriticalSection wait-timed-out) when invoked from a
+     * worker thread, even with inproc_lock held — this is a CRT-internal
+     * deadlock, not an application-level data race. */
+    if (g_num_workers <= 1) {
+        ProcResult r;
+        if (try_run_exe_inprocess(exe_path, &r, timeout_sec))
+            return r;
+    }
+#endif
     char *argv[32];
     int ai = 0;
     if (has_runner) {
@@ -1073,7 +1366,6 @@ static void emit_backtrace(const char *exe_path, const char *args,
 
 /* ── parallel test execution ─────────────────────────────────────── */
 
-static int g_num_workers = 0;
 static bool g_verbose = false;
 #ifndef _WIN32
 static pthread_mutex_t g_verbose_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -2893,6 +3185,24 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         return;
     }
 
+#ifdef _WIN32
+    /* Fast path: compile+run in-process via rcc_lib.dll.  Native windows
+     * only — under wine (mingw_cross), run_test_inprocess()'s msvcrt
+     * stdio/CRT redirection deadlocks/crashes (see inproc_lock comment). */
+    if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
+        ProcResult rp;
+        if (run_test_inprocess(src_path, name, g_tort_dir, "-lm", &rp, 5) == 0) {
+            r->did_compile = true;
+            r->did_exec = true;
+            r->exec_exit = rp.exit_code;
+            r->exec_out = rp.out;
+            rp.out = NULL;
+            free(content);
+            return;
+        }
+    }
+#endif
+
     /* compile */
     {
         char *ca[16];
@@ -3050,6 +3360,29 @@ static void run_torture_test(const char *src, bool summary_only) {
         free(content);
         return;
     }
+
+#ifdef _WIN32
+    /* Fast path: compile+run in-process via rcc_lib.dll (avoids per-test
+     * wine fork+exec).  Native windows only — under wine (mingw_cross),
+     * run_test_inprocess()'s msvcrt stdio/CRT redirection deadlocks/crashes
+     * (see inproc_lock comment).  Falls through on failure. */
+    if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
+        ProcResult rp;
+        if (run_test_inprocess(src, name, ".", "-lm", &rp, 5) == 0) {
+            if (rp.exit_code != 0) {
+                g_tort_fail_runtime++;
+                tort_add_error(&g_tort_runtime_errors, name);
+                if (!summary_only) print_result(name, COL_RED, "FAIL (runtime)");
+            } else {
+                g_tort_pass++;
+                if (!summary_only) print_result(name, COL_GREEN, "PASS");
+            }
+            free(rp.out);
+            free(content);
+            return;
+        }
+    }
+#endif
 
     char exe_path[512];
     snprintf(exe_path, sizeof(exe_path), "%s/torture_rcc_%s", get_tmpdir(), name);
@@ -3623,23 +3956,26 @@ static int run_compliance_suite(void) {
             free(nl[i]);
         }
         free(nl);
-        int comp_total = comp_pass + comp_fail;
-        if (!only_test) {
-            int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
-            const char *red = comp_fail > 0 ? COL_RED : "";
-            const char *rst = comp_fail > 0 ? COL_RESET : "";
-            printf("\nCompliance: %d/%d passed (%d%%), %s%d failed%s",
-                   comp_pass, comp_total, comp_pct, red, comp_fail, rst);
-            if (comp_skip) printf(", %d skipped", comp_skip);
-            printf(".\n");
+    }
+    /* Print summary and write test-compliance-<platform>.summary for both the
+     * parallel and sequential paths, so `make check-all` (--parallel) gets a
+     * compliance section in the unified report just like the sequential run. */
+    int comp_total = comp_pass + comp_fail;
+    if (!only_test) {
+        int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
+        const char *red = comp_fail > 0 ? COL_RED : "";
+        const char *rst = comp_fail > 0 ? COL_RESET : "";
+        printf("\nCompliance: %d/%d passed (%d%%), %s%d failed%s",
+               comp_pass, comp_total, comp_pct, red, comp_fail, rst);
+        if (comp_skip) printf(", %d skipped", comp_skip);
+        printf(".\n");
 
-            char sp[256];
-            snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
-            FILE *sf = fopen(sp, "wb");
-            if (sf) {
-                fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
-                fclose(sf);
-            }
+        char sp[256];
+        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
+        FILE *sf = fopen(sp, "wb");
+        if (sf) {
+            fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
+            fclose(sf);
         }
     }
     return comp_fail > 0 ? 1 : 0;
@@ -3725,6 +4061,20 @@ static void ctest_compile_exec(const char *src_path, const char *name,
     if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
         strcat(r->tmp_exe, ".exe");
 
+#if 0 && defined(_WIN32) /* FIXME: rcc_lib not yet thread-safe for parallel workers */
+    /* Fast path: compile+run in-process via rcc_lib.dll */
+    if (!has_runner || is_mingw_native) {
+        ProcResult rp;
+        if (run_test_inprocess(src_path, name, NULL, "-O1 -lm", &rp, 30) == 0) {
+            r->did_compile = true;
+            r->did_exec = true;
+            r->exec_exit = rp.exit_code;
+            r->exec_out = rp.out;
+            rp.out = NULL;
+            return;
+        }
+    }
+#endif
     char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", r->tmp_exe, (char *)src_path, NULL};
     ProcResult cr = proc_run(ca, 30, 1);
     if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
@@ -4230,8 +4580,7 @@ int main(int argc, char **argv) {
     bool run_tcc = false, run_units = false, run_torture = false;
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
-    rcc = NULL;
-    only_test = NULL;
+    rccflags = "-O1";
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -4291,17 +4640,22 @@ int main(int argc, char **argv) {
             only_test = a;
     }
 
-    /* auto-detect rcc */
     if (!rcc) {
-#ifdef ARM64_NATIVE
-        if (access("./rcc-arm64", X_OK) == 0) // cross, under qemu
+#ifdef _WIN32
+        /* Under wine/Windows, prefer .exe over native binary */
+        if (access("./rcc.exe", X_OK) == 0)
+            rcc = "./rcc.exe";
+        else if (access("./rcc", X_OK) == 0)
+            rcc = "./rcc";
+#elif defined(ARM64_NATIVE)
+        if (access("./rcc-arm64", X_OK) == 0)
             rcc = "./rcc-arm64";
-        else if (access("./rcc", X_OK) == 0) // native
+        else if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
 #else
         if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
-        else if (access("./rcc.exe", X_OK) == 0)
+        if (!rcc && access("./rcc.exe", X_OK) == 0)
             rcc = "./rcc.exe";
 #endif
     }

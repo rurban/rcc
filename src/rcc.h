@@ -500,6 +500,7 @@ Program *parse(Token *tok);
 //
 bool va_arg_need_copy(Type *ty);
 void codegen(Program *prog);
+void rcc_set_output_stream(FILE *f);
 
 // VLA
 Type *vla_of(Type *base, Node *expr, int64_t arr_len);

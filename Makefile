@@ -5,6 +5,8 @@ TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
 EXE_EXT =
+SHARED_EXT = .so
+RCC_LIB_LDFLAGS = -shared -fPIC
 # Backend C compiler invoked by the generated rcc binary itself (assembler/
 # linker step). Defaults to $(CC), but the mingw cross build produces
 # rcc.exe which runs on Windows, where the toolchain is normally just "gcc"
@@ -65,6 +67,8 @@ MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 EXE_EXT = .exe
+SHARED_EXT = .dll
+RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
 PREFIX ?= C:/Program Files/rcc
 BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
@@ -79,6 +83,8 @@ MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
 EXE_EXT = .exe
+SHARED_EXT = .dll
+RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 # rcc.exe runs on Windows; its backend toolchain is "gcc.exe".
 # .exe is needed under Wine (CreateProcess can't run ELF binaries
@@ -116,11 +122,17 @@ else
 TARGET_DEPS += $(MINGW_O)
 TARGET_EXT += $(MINGW_O)
 endif
+RCC_LIB = rcc_lib$(SHARED_EXT)
 
-all: $(TARGET) $(RUN_TESTS)
+ifeq ($(CC),x86_64-w64-mingw32-gcc)
+RCC_ALL = $(RCC_LIB)
+endif
+all: $(TARGET) $(RUN_TESTS) $(RCC_ALL)
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
+$(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
+	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
 
 src/sysinc_paths.h: FORCE
 	@tmp=$$(mktemp); out=$$(mktemp); plat=$$(mktemp); \
@@ -211,6 +223,8 @@ src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined
 	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
+src/lib$(OBJ_EXT): src/lib.c src/rcc.h src/rcc_lib.h
+	$(CC) $(CFLAGS) -c src/lib.c -o $@
 
 run_tests: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
@@ -253,7 +267,7 @@ TEST_RUNNER = ./run_tests ./rcc --parallel
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
-	@$(TEST_RUNNER)
+	$(TEST_RUNNER)
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
 	./$(RUN_TESTS) ./$(TARGET) --all --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
@@ -318,7 +332,7 @@ leanclean:
 	  cd c-testsuite && git clean -dxf . && cd ..; \
 	fi
 clean:
-	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) rcc_prof \
+	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof \
 	      src/sysinc_paths.h src/gcc_predefined.h \
 	      fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
 	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary

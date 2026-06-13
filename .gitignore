@@ -7,6 +7,8 @@ libwinpthread-1.dll
 a.arm64
 *.arm64.o
 lib/rcc_darwin.dylib
+rcc_lib.dll
+rcc_lib.so
 a.out
 *.o
 *.obj
