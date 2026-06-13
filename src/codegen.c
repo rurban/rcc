@@ -1062,21 +1062,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 printf("  cmp %s, %s\n", reg64[r], reg64[r_tmp]);
                 printf("  cset %s, eq\n", reg32[r]);
 #else
-                int sz = arg->ty ? arg->ty->size : 8;
-                if (sz == 4) {
-                    printf("  movd %s, %%xmm0\n", reg32[r_arg]);
-                    printf("  movd %%xmm0, %s\n", reg32[r]);
-                    printf("  movl $0x7fffffff, %s\n", reg32[r_tmp]);
-                    printf("  andl %s, %s\n", reg32[r_tmp], reg32[r]);
-                    printf("  cmpl $0x7f800000, %s\n", reg32[r]);
-                } else {
-                    printf("  movq %s, %%xmm0\n", reg64[r_arg]);
-                    printf("  movq %%xmm0, %s\n", reg64[r]);
-                    printf("  movabsq $0x7fffffffffffffff, %s\n", reg64[r_tmp]);
-                    printf("  andq %s, %s\n", reg64[r_tmp], reg64[r]);
-                    printf("  movabsq $0x7ff0000000000000, %s\n", reg64[r_tmp]);
-                    printf("  cmpq %s, %s\n", reg64[r_tmp], reg64[r]);
-                }
+                // Same on x86_64: floats are stored as doubles in GP regs
+                printf("  movq %s, %%xmm0\n", reg64[r_arg]);
+                printf("  movq %%xmm0, %s\n", reg64[r]);
+                printf("  movabsq $0x7fffffffffffffff, %s\n", reg64[r_tmp]);
+                printf("  andq %s, %s\n", reg64[r_tmp], reg64[r]);
+                printf("  movabsq $0x7ff0000000000000, %s\n", reg64[r_tmp]);
+                printf("  cmpq %s, %s\n", reg64[r_tmp], reg64[r]);
                 printf("  sete %%al\n");
                 printf("  movzbl %%al, %s\n", reg32[r]);
 #endif

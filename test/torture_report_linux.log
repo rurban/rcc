@@ -1069,7 +1069,7 @@
   pr38969                             PASS
   pr39100                             PASS
   pr39120                             PASS
-  pr39228                             FAIL (runtime)
+  pr39228                             PASS
   pr39233                             PASS
   pr39240                             PASS
   pr39339                             PASS
@@ -1672,7 +1672,7 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-=== TOTAL=1671 PASS=1559 FAIL_COMPILE=0 FAIL_RUNTIME=10 SKIP=102 ===
+=== TOTAL=1671 PASS=1560 FAIL_COMPILE=0 FAIL_RUNTIME=9 SKIP=102 ===
 Pass rate (excl. skip): 99%
 
-Runtime failures: 20020411-1 20041201-1 pr38151 pr39228 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
+Runtime failures: 20020411-1 20041201-1 pr38151 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
