@@ -8710,7 +8710,7 @@ static int gen(Node *node) {
                 printf("  fmov %s0, %s4\n", ldr_sfx, ldr_sfx);
             } else {
                 // Complex float division via libcall
-                printf("  bl %s\n", base_sz == 4 ? "__divsc3" : "__divdc3");
+                printf("  bl %s\n", base_sz == 4 ? "___divsc3" : "___divdc3");
                 printf("  str %s0, [%s]\n", ldr_sfx, reg64[result]);
                 printf("  str %s1, [%s, #%d]\n", ldr_sfx, reg64[result], base_sz);
                 goto cx_arith_done;
@@ -8793,7 +8793,7 @@ static int gen(Node *node) {
                 case ND_DIV:
                     printf("  ldr d0, [%s]\n", reg64[addr_lhs]);
                     printf("  ldr d1, [%s]\n", reg64[addr_rhs]);
-                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "__mulsc3" : "__divsc3") : (node->kind == ND_MUL ? "__muldc3" : "__divdc3"));
+                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "___mulsc3" : "___divsc3") : (node->kind == ND_MUL ? "___muldc3" : "___divdc3"));
                     printf("  str d0, [%s]\n", reg64[result]);
                     goto cx_arith_done;
                 default:
@@ -8823,8 +8823,7 @@ static int gen(Node *node) {
                 case ND_DIV:
                     printf("  ldr d0, [%s]\n", reg64[addr_lhs]);
                     printf("  ldr d1, [%s]\n", reg64[addr_rhs]);
-                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "__mulsc3" : "__divsc3") : (node->kind == ND_MUL ? "__muldc3" : "__divdc3"));
-                    printf("  str d0, [%s]\n", reg64[result]);
+                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "___mulsc3" : "___divsc3") : (node->kind == ND_MUL ? "___muldc3" : "___divdc3"));
                     goto cx_arith_done;
                 default:
                     __builtin_unreachable();

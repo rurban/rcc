@@ -50,3 +50,21 @@ static void rcc_exit_interposer(int code) {
     ((exit_fn_t)rcc_exit_interpose.replacee)(code);
     __builtin_unreachable();
 }
+
+/* Complex double division: (a+bi)/(c+di).
+   Called by rcc codegen for _Complex double / operator.
+   Arguments a,b,c,d arrive in d0-d3. Returns quotient in d0-d1. */
+double _Complex __divdc3(double a, double b, double c, double d) {
+    double denom, ratio;
+    if (c < 0) c = -c;
+    if (d < 0) d = -d;
+    if (c >= d) {
+        ratio = d / c;
+        denom = c + d * ratio;
+        return (a + b * ratio) / denom + (b - a * ratio) / denom * 1.0i;
+    } else {
+        ratio = c / d;
+        denom = c * ratio + d;
+        return (a * ratio + b) / denom + (b * ratio - a) / denom * 1.0i;
+    }
+}
