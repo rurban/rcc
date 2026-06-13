@@ -6,6 +6,7 @@
 #include "asm.h"
 #include "codegen_asm.h"
 #include <ctype.h>
+#include <stdarg.h>
 #include <time.h>
 
 static ObjFile *cg_obj;
@@ -49,6 +50,94 @@ static void cg_set_section(int sec) {
     }
 }
 
+#ifdef _WIN32
+// Emit the MinGW emulated TLS control block and template for a thread-local
+// global variable.  The control block lives in .data and is what
+// __emutls_get_address receives; the template lives in .rdata and holds the
+// per-thread initial value.
+static void cg_emit_emutls_data(LVar *var) {
+    char *label = var->asm_name ? var->asm_name : var->name;
+    int align = var->ty->align > 1 ? var->ty->align : 1;
+
+    cg_set_section(SEC_DATA);
+    secbuf_align(cg_sec, 32);
+    size_t ctrl_off = cg_sec->len;
+    char *ctrl_name = format("__emutls_v.%s", label);
+    SymBind bind = var->is_static ? SB_LOCAL : SB_GLOBAL;
+    objfile_add_sym(cg_obj, ctrl_name, SEC_DATA, ctrl_off, 32, bind, ST_OBJECT);
+    secbuf_emit64le(cg_sec, var->ty->size);
+    secbuf_emit64le(cg_sec, align);
+    secbuf_emit64le(cg_sec, 0);
+    size_t ptr_off = cg_sec->len;
+    secbuf_emit64le(cg_sec, 0);
+
+    char *tmpl_name = format("__emutls_t.%s", label);
+    int tidx = objfile_find_sym(cg_obj, tmpl_name);
+    if (tidx < 0)
+        tidx = objfile_add_sym(cg_obj, tmpl_name, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
+    objfile_add_reloc(cg_obj, SEC_DATA, ptr_off, tidx, R_X86_64_64, 0);
+
+    cg_set_section(SEC_RODATA);
+    secbuf_align(cg_sec, align);
+    size_t tmpl_off = cg_sec->len;
+    objfile_add_sym(cg_obj, tmpl_name, SEC_RODATA, tmpl_off, var->ty->size, SB_LOCAL, ST_OBJECT);
+    if (var->init_data || var->relocs) {
+        int pos = 0;
+        for (Reloc *rel = var->relocs; rel; rel = rel->next) {
+            for (; pos < rel->offset; pos++)
+                secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]);
+            size_t rel_off = cg_sec->len;
+            secbuf_emit64le(cg_sec, 0);
+            int sidx = objfile_find_sym(cg_obj, rel->label);
+            if (sidx < 0)
+                sidx = objfile_add_sym(cg_obj, rel->label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+            objfile_add_reloc(cg_obj, SEC_RODATA, rel_off, sidx, R_X86_64_64, (int64_t)rel->addend);
+            pos += 8;
+        }
+        for (; pos < var->init_size; pos++)
+            secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]);
+        if (var->ty->size > var->init_size) {
+            size_t pad = var->ty->size - var->init_size;
+            secbuf_reserve(cg_sec, pad);
+            memset(cg_sec->data + cg_sec->len, 0, pad);
+            cg_sec->len += pad;
+        }
+    } else if (var->has_init) {
+        if (var->ty->size == 1)
+            secbuf_emit8(cg_sec, (uint8_t)var->init_val);
+        else if (var->ty->size == 2)
+            secbuf_emit16le(cg_sec, (uint16_t)var->init_val);
+        else if (var->ty->size == 4)
+            secbuf_emit32le(cg_sec, (uint32_t)var->init_val);
+        else
+            secbuf_emit64le(cg_sec, (uint64_t)var->init_val);
+    } else if (var->ty->size > 0) {
+        size_t pad = var->ty->size;
+        secbuf_reserve(cg_sec, pad);
+        memset(cg_sec->data + cg_sec->len, 0, pad);
+        cg_sec->len += pad;
+    }
+}
+#endif
+
+// Define (finalize) a label/symbol at the current section offset. Forward
+// references via emit_adrp_add/emit_adrp_got may have already created this
+// symbol as a SEC_RODATA/ST_NOTYPE placeholder at offset 0; objfile_add_sym
+// only updates existing symbols when their section is SEC_UNDEF, so such a
+// placeholder would otherwise keep its bogus offset forever. Force-overwrite
+// it here since this call site holds the authoritative offset.
+static void cg_def_sym(const char *name, int sec, SymBind bind, SymType type) {
+    int idx = objfile_find_sym(cg_obj, name);
+    if (idx >= 0) {
+        cg_obj->syms[idx].section = sec;
+        cg_obj->syms[idx].offset = cg_sec->len;
+        cg_obj->syms[idx].bind = bind;
+        cg_obj->syms[idx].type = type;
+    } else {
+        objfile_add_sym(cg_obj, name, sec, cg_sec->len, 0, bind, type);
+    }
+}
+
 static void cg_def_label(const char *name) {
     if (cg_dry_run) return;
 #ifdef __APPLE__
@@ -64,14 +153,14 @@ static void cg_def_label(const char *name) {
         return;
     }
 #endif
-    objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_LOCAL, ST_FUNC);
+    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
 }
 
 static void cg_def_label_sec(const char *name, int sec) {
     if (cg_dry_run) return;
-    objfile_add_sym(cg_obj, name, sec, cg_sec->len, 0, SB_LOCAL, ST_OBJECT);
+    cg_def_sym(name, sec, SB_LOCAL, ST_OBJECT);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
 }
@@ -236,6 +325,7 @@ static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char 
     }
     return s->len - off;
 }
+
 #endif
 
 // Forward-fixup callback for assemble_inline: registers unresolved labels
@@ -248,6 +338,40 @@ static void cg_inline_fixup_cb(size_t patch_off, const char *label, void *ctx) {
     // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
     asm_fixup_ht_add(patch_off - 1, dup, 0);
 }
+
+// Bridge for the remaining printf("  <asm line>\n", ...)-based codegen: assembles
+// the formatted line directly into cg_obj->text via assemble_inline(), instead of
+// writing assembly text to a stream. Local label definitions ("name:") go through
+// cg_def_label so they integrate with the same fixup table as the asm_*() wrappers.
+static void cg_emit(const char *fmt, ...) {
+    if (cg_dry_run) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
+    if (n == 0) return;
+    char *p = buf;
+    while (*p == ' ' || *p == '\t') p++;
+    size_t len = strlen(p);
+    if (len > 1 && p[len - 1] == ':') {
+        bool is_label = true;
+        for (size_t i = 0; i + 1 < len; i++)
+            if (isspace((unsigned char)p[i])) {
+                is_label = false;
+                break;
+            }
+        if (is_label) {
+            p[len - 1] = '\0';
+            cg_def_label(p);
+            return;
+        }
+    }
+    assemble_inline(cg_obj, p, cg_inline_fixup_cb, NULL);
+}
+#define printf(...) cg_emit(__VA_ARGS__)
 
 static uint64_t cg_now_us(void) {
     struct timespec ts;
@@ -622,12 +746,22 @@ static void emit_direct_call(char *name) {
     const char *label = func_label(name);
     size_t off = asm_call_label(cg_sec); // bl %s
     int sidx = objfile_find_sym(cg_obj, label);
+#ifdef ARCH_ARM64
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
-#ifdef ARCH_ARM64
     // bl label
     objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_CALL26, 0);
 #else
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
+        // Same-section function: patch displacement directly, no relocation.
+        // This avoids blowing the COFF 16-bit per-section relocation limit
+        // in files with many local calls (e.g. 101_cleanup).
+        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)(off + 5));
+        secbuf_patch32le(cg_sec, off + 1, (uint32_t)disp);
+        return;
+    }
+    if (sidx < 0)
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
     // call label
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
 #endif
@@ -2193,7 +2327,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     else
                         asm_str_reg_off(cg_sec, val, addr, 8, 0); // str x{val}, [x{addr}]
                     free_reg(val);
-
                 }
             }
             arg_regs[i] = addr;
@@ -3270,38 +3403,40 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
         }
     }
 #else
+    X86Mem m_addr0 = x86_mem(REG(addr), 0);
+    X86Mem m_addr_base = x86_mem(REG(addr), base_sz);
     if (base_flo) {
         if (is_flonum(from)) {
-            printf("  movq %s, %%xmm0\n", reg64[r]);
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq reg64[r], %xmm0
         } else if (from->is_unsigned && from->size == 8) {
             int c = ++rcc_label_count;
             printf("  testq %s, %s\n", reg64[r], reg64[r]);
             printf("  js .L.u2cx.high.%d\n", c);
-            printf("  cvtsi2sd %s, %%xmm0\n", reg64[r]);
+            x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
             printf("  jmp .L.u2cx.end.%d\n", c);
             printf(".L.u2cx.high.%d:\n", c);
-            printf("  movq %s, %%rcx\n", reg64[r]);
-            printf("  shrq %%rcx\n");
-            printf("  cvtsi2sd %%rcx, %%xmm0\n");
-            printf("  addsd %%xmm0, %%xmm0\n");
+            x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq reg64[r], %rcx
+            x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq %rcx
+            x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
+            x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
             printf(".L.u2cx.end.%d:\n", c);
         } else if (from->is_unsigned && from->size == 4) {
-            printf("  cvtsi2sd %s, %%xmm0\n", reg64[r]);
+            x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
         } else {
-            printf("  cvtsi2sd %s, %%xmm0\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+            x86_cvtsi2sd(cg_sec, from->size < 4 ? 4 : from->size, X86_XMM0, REG(r)); // cvtsi2sd reg32/64[r], %xmm0
         }
         if (base_sz == 4) {
-            printf("  cvtsd2ss %%xmm0, %%xmm0\n");
-            printf("  movss %%xmm0, (%s)\n", reg64[addr]);
-            printf("  movl $0, %d(%s)\n", base_sz, reg64[addr]);
+            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
+            x86_movss_mr(cg_sec, m_addr0, X86_XMM0); // movss %xmm0, (reg64[addr])
+            x86_mov_mi(cg_sec, 4, m_addr_base, 0); // movl $0, base_sz(reg64[addr])
         } else {
-            printf("  movsd %%xmm0, (%s)\n", reg64[addr]);
-            printf("  movq $0, %d(%s)\n", base_sz, reg64[addr]);
+            x86_movsd_mr(cg_sec, m_addr0, X86_XMM0); // movsd %xmm0, (reg64[addr])
+            x86_mov_mi(cg_sec, 8, m_addr_base, 0); // movq $0, base_sz(reg64[addr])
         }
     } else {
         if (is_flonum(from)) {
-            printf("  movq %s, %%xmm0\n", reg64[r]);
-            printf("  cvttsd2si %%xmm0, %s\n", base_sz == 8 ? reg64[r] : reg32[r]);
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq reg64[r], %xmm0
+            x86_cvttsd2si(cg_sec, base_sz, REG(r), X86_XMM0); // cvttsd2si %xmm0, reg32/64[r]
         } else if (from->size < base_sz) {
             if (from->is_unsigned)
                 zero_extend_to(r, from->size, base_sz);
@@ -3309,11 +3444,11 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
                 sign_extend_to(r, from->size, base_sz);
         }
         if (base_sz == 4) {
-            printf("  movl %s, (%s)\n", reg32[r], reg64[addr]);
-            printf("  movl $0, %d(%s)\n", base_sz, reg64[addr]);
+            x86_mov_mr(cg_sec, 4, m_addr0, REG(r)); // movl reg32[r], (reg64[addr])
+            x86_mov_mi(cg_sec, 4, m_addr_base, 0); // movl $0, base_sz(reg64[addr])
         } else {
-            printf("  movq %s, (%s)\n", reg64[r], reg64[addr]);
-            printf("  movq $0, %d(%s)\n", base_sz, reg64[addr]);
+            x86_mov_mr(cg_sec, 8, m_addr0, REG(r)); // movq reg64[r], (reg64[addr])
+            x86_mov_mi(cg_sec, 8, m_addr_base, 0); // movq $0, base_sz(reg64[addr])
         }
     }
 #endif
@@ -3662,6 +3797,37 @@ static void free_reg(VReg i) {
     reg_owner[i] = NULL;
 }
 
+#ifndef ARCH_ARM64
+#ifdef _WIN32
+// MinGW emulated TLS: load the address of a thread-local variable by calling
+// __emutls_get_address with a pointer to the variable's control block.
+static void emit_emutls_addr(VReg dst, const char *label) {
+    bool save0 = (used_regs & (1 << 0)) && dst != 0;
+    bool save1 = (used_regs & (1 << 1)) && dst != 1;
+    if (save0) asm_mov_phyreg_rbp(cg_sec, X86_R10, 8, spill_offset(0));
+    if (save1) asm_mov_phyreg_rbp(cg_sec, X86_R11, 8, spill_offset(1));
+
+    VReg tmp = alloc_reg();
+    const char *ctrl = format("__emutls_v.%s", label);
+    asm_lea_rip_reg(cg_sec, tmp, ctrl);
+    x86_mov_rr(cg_sec, 8, X86_RCX, REG(tmp));
+    free_reg(tmp);
+
+    x86_sub_ri(cg_sec, 8, X86_RSP, 32);
+    size_t call_off = asm_call_label(cg_sec);
+    int sidx = objfile_find_sym(cg_obj, "__emutls_get_address");
+    if (sidx < 0)
+        sidx = objfile_add_sym(cg_obj, "__emutls_get_address", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+    objfile_add_reloc(cg_obj, SEC_TEXT, call_off + 1, sidx, R_X86_64_PC32, -4);
+    x86_add_ri(cg_sec, 8, X86_RSP, 32);
+
+    x86_mov_rr(cg_sec, 8, REG(dst), X86_RAX);
+    if (save1) asm_mov_rbp_reg(cg_sec, 1, 8, spill_offset(1));
+    if (save0) asm_mov_rbp_reg(cg_sec, 0, 8, spill_offset(0));
+}
+#endif
+#endif
+
 static VReg gen(Node *node);
 
 #ifdef ARCH_ARM64
@@ -3962,10 +4128,14 @@ static VReg gen_addr(Node *node) {
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
             if (node->var->is_tls) {
+#ifdef _WIN32
+                emit_emutls_addr(r, var_label(node->var));
+#else
                 VReg base = alloc_reg();
                 asm_mov_fs0_reg(cg_sec, base);
                 asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
                 free_reg(base);
+#endif
             } else if (node->var->is_weak || var_needs_got(node->var))
                 asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
             else
@@ -4111,7 +4281,6 @@ static VReg gen_addr(Node *node) {
                 return -1;
             }
             return -1;
-
         }
         error_tok(node->tok, "lvalue required as left operand of assignment");
         return -1;
@@ -5664,10 +5833,14 @@ static VReg gen(Node *node) {
                 free_reg(ta);
 #else
                 if (node->var->is_tls) {
+#ifdef _WIN32
+                    emit_emutls_addr(r, var_label(node->var));
+#else
                     VReg base = alloc_reg();
                     asm_mov_fs0_reg(cg_sec, base);
                     asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
                     free_reg(base);
+#endif
                     emit_load(node->ty, r, r, 0);
                 } else if (var_needs_got(node->var)) {
                     asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
@@ -6565,7 +6738,6 @@ static VReg gen(Node *node) {
                 asm_add_imm(cg_sec, r3, sz, delta); // add r3, r3, #delta
             else
                 asm_sub_imm(cg_sec, r3, sz, delta); // sub r3, r3, #delta
-
         }
         emit_store(node->lhs->ty, r3, r, 0);
         // r3 already holds the new value; r2 holds the original. Return
@@ -9195,54 +9367,62 @@ static VReg gen(Node *node) {
                 printf("  str %s1, [%s, #%d]\n", ldr_sfx, reg64[result], base_sz);
             }
 #else
-            const char *sfx = base_sz == 4 ? "ss" : "sd";
-            printf("  mov%s (%s), %%xmm0\n", sfx, reg64[addr_lhs]);
-            printf("  mov%s %d(%s), %%xmm1\n", sfx, base_sz, reg64[addr_lhs]);
-            printf("  mov%s (%s), %%xmm2\n", sfx, reg64[addr_rhs]);
-            printf("  mov%s %d(%s), %%xmm3\n", sfx, base_sz, reg64[addr_rhs]);
+            int sfx = base_sz; // 4 -> ss, 8 -> sd
+            X86Mem m_lhs0 = x86_mem(REG(addr_lhs), 0);
+            X86Mem m_lhs1 = x86_mem(REG(addr_lhs), base_sz);
+            X86Mem m_rhs0 = x86_mem(REG(addr_rhs), 0);
+            X86Mem m_rhs1 = x86_mem(REG(addr_rhs), base_sz);
+            X86Mem m_res0 = x86_mem(REG(result), 0);
+            X86Mem m_res1 = x86_mem(REG(result), base_sz);
+            asm_mov_fp_rm(cg_sec, sfx, X86_XMM0, m_lhs0); // mov[s|s]s/d (addr_lhs), %xmm0
+            asm_mov_fp_rm(cg_sec, sfx, X86_XMM1, m_lhs1); // mov[s|s]s/d base_sz(addr_lhs), %xmm1
+            asm_mov_fp_rm(cg_sec, sfx, X86_XMM2, m_rhs0); // mov[s|s]s/d (addr_rhs), %xmm2
+            asm_mov_fp_rm(cg_sec, sfx, X86_XMM3, m_rhs1); // mov[s|s]s/d base_sz(addr_rhs), %xmm3
             if (node->kind == ND_ADD || node->kind == ND_SUB) {
-                const char *op = node->kind == ND_ADD ? "add" : "sub";
-                printf("  %s%s %%xmm2, %%xmm0\n", op, sfx);
-                printf("  %s%s %%xmm3, %%xmm1\n", op, sfx);
+                if (node->kind == ND_ADD) {
+                    asm_add_fp(cg_sec, sfx, X86_XMM0, X86_XMM2); // add[s|s]s/d %xmm2, %xmm0
+                    asm_add_fp(cg_sec, sfx, X86_XMM1, X86_XMM3); // add[s|s]s/d %xmm3, %xmm1
+                } else {
+                    asm_sub_fp(cg_sec, sfx, X86_XMM0, X86_XMM2); // sub[s|s]s/d %xmm2, %xmm0
+                    asm_sub_fp(cg_sec, sfx, X86_XMM1, X86_XMM3); // sub[s|s]s/d %xmm3, %xmm1
+                }
             } else if (node->kind == ND_MUL) {
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
                 // xmm0=a.r, xmm1=a.i, xmm2=b.r, xmm3=b.i
-                printf("  movapd %%xmm0, %%xmm4\n");
-                printf("  movapd %%xmm1, %%xmm5\n");
-                printf("  mul%s %%xmm2, %%xmm4\n", sfx); // a.r * b.r
-                printf("  mul%s %%xmm3, %%xmm5\n", sfx); // a.i * b.i
-                printf("  sub%s %%xmm5, %%xmm4\n", sfx); // ac - bd = real
-                printf("  mul%s %%xmm3, %%xmm0\n", sfx); // a.r * b.i
-                printf("  mul%s %%xmm2, %%xmm1\n", sfx); // a.i * b.r
-                printf("  add%s %%xmm0, %%xmm1\n", sfx); // ad + bc = imag
-                printf("  movapd %%xmm4, %%xmm0\n");
+                asm_movapd_rr(cg_sec, X86_XMM4, X86_XMM0); // movapd %xmm0, %xmm4
+                asm_movapd_rr(cg_sec, X86_XMM5, X86_XMM1); // movapd %xmm1, %xmm5
+                asm_mul_fp(cg_sec, sfx, X86_XMM4, X86_XMM2); // mul[s|s]s/d %xmm2, %xmm4  -- a.r * b.r
+                asm_mul_fp(cg_sec, sfx, X86_XMM5, X86_XMM3); // mul[s|s]s/d %xmm3, %xmm5  -- a.i * b.i
+                asm_sub_fp(cg_sec, sfx, X86_XMM4, X86_XMM5); // sub[s|s]s/d %xmm5, %xmm4  -- ac - bd = real
+                asm_mul_fp(cg_sec, sfx, X86_XMM0, X86_XMM3); // mul[s|s]s/d %xmm3, %xmm0  -- a.r * b.i
+                asm_mul_fp(cg_sec, sfx, X86_XMM1, X86_XMM2); // mul[s|s]s/d %xmm2, %xmm1  -- a.i * b.r
+                asm_add_fp(cg_sec, sfx, X86_XMM1, X86_XMM0); // add[s|s]s/d %xmm0, %xmm1  -- ad + bc = imag
+                asm_movapd_rr(cg_sec, X86_XMM0, X86_XMM4); // movapd %xmm4, %xmm0
             } else {
                 // (a+bi)/(c+di) = ((ac+bd)/(cc+dd)) + ((bc-ad)/(cc+dd))i
                 // xmm0=a.r, xmm1=a.i, xmm2=b.r, xmm3=b.i
-                // (a+bi)/(c+di) = ((ac+bd)/(cc+dd)) + ((bc-ad)/(cc+dd))i
-                // xmm0=a.r, xmm1=a.i, xmm2=b.r, xmm3=b.i
-                printf("  movapd %%xmm2, %%xmm6\n"); // save b.r
-                printf("  movapd %%xmm3, %%xmm7\n"); // save b.i
-                printf("  movapd %%xmm0, %%xmm4\n"); // save a.r
-                printf("  movapd %%xmm1, %%xmm5\n"); // save a.i
+                asm_movapd_rr(cg_sec, X86_XMM6, X86_XMM2); // movapd %xmm2, %xmm6  -- save b.r
+                asm_movapd_rr(cg_sec, X86_XMM7, X86_XMM3); // movapd %xmm3, %xmm7  -- save b.i
+                asm_movapd_rr(cg_sec, X86_XMM4, X86_XMM0); // movapd %xmm0, %xmm4  -- save a.r
+                asm_movapd_rr(cg_sec, X86_XMM5, X86_XMM1); // movapd %xmm1, %xmm5  -- save a.i
                 // denom = b.r² + b.i²
-                printf("  mul%s %%xmm2, %%xmm2\n", sfx); // b.r²
-                printf("  mul%s %%xmm3, %%xmm3\n", sfx); // b.i²
-                printf("  add%s %%xmm3, %%xmm2\n", sfx); // denom in xmm2
+                asm_mul_fp(cg_sec, sfx, X86_XMM2, X86_XMM2); // mul[s|s]s/d %xmm2, %xmm2  -- b.r²
+                asm_mul_fp(cg_sec, sfx, X86_XMM3, X86_XMM3); // mul[s|s]s/d %xmm3, %xmm3  -- b.i²
+                asm_add_fp(cg_sec, sfx, X86_XMM2, X86_XMM3); // add[s|s]s/d %xmm3, %xmm2  -- denom in xmm2
                 // real = (a.r*b.r + a.i*b.i) / denom
-                printf("  mul%s %%xmm6, %%xmm4\n", sfx); // a.r * b.r
-                printf("  mul%s %%xmm7, %%xmm5\n", sfx); // a.i * b.i
-                printf("  add%s %%xmm5, %%xmm4\n", sfx); // ac+bd
-                printf("  div%s %%xmm2, %%xmm4\n", sfx); // real = (ac+bd)/denom
+                asm_mul_fp(cg_sec, sfx, X86_XMM4, X86_XMM6); // mul[s|s]s/d %xmm6, %xmm4  -- a.r * b.r
+                asm_mul_fp(cg_sec, sfx, X86_XMM5, X86_XMM7); // mul[s|s]s/d %xmm7, %xmm5  -- a.i * b.i
+                asm_add_fp(cg_sec, sfx, X86_XMM4, X86_XMM5); // add[s|s]s/d %xmm5, %xmm4  -- ac+bd
+                asm_div_fp(cg_sec, sfx, X86_XMM4, X86_XMM2); // div[s|s]s/d %xmm2, %xmm4  -- real = (ac+bd)/denom
                 // imag = (a.i*b.r - a.r*b.i) / denom
-                printf("  mul%s %%xmm6, %%xmm1\n", sfx); // a.i * b.r
-                printf("  mul%s %%xmm7, %%xmm0\n", sfx); // a.r * b.i
-                printf("  sub%s %%xmm0, %%xmm1\n", sfx); // bc-ad
-                printf("  div%s %%xmm2, %%xmm1\n", sfx); // imag = (bc-ad)/denom
-                printf("  movapd %%xmm4, %%xmm0\n");
+                asm_mul_fp(cg_sec, sfx, X86_XMM1, X86_XMM6); // mul[s|s]s/d %xmm6, %xmm1  -- a.i * b.r
+                asm_mul_fp(cg_sec, sfx, X86_XMM0, X86_XMM7); // mul[s|s]s/d %xmm7, %xmm0  -- a.r * b.i
+                asm_sub_fp(cg_sec, sfx, X86_XMM1, X86_XMM0); // sub[s|s]s/d %xmm0, %xmm1  -- bc-ad
+                asm_div_fp(cg_sec, sfx, X86_XMM1, X86_XMM2); // div[s|s]s/d %xmm2, %xmm1  -- imag = (bc-ad)/denom
+                asm_movapd_rr(cg_sec, X86_XMM0, X86_XMM4); // movapd %xmm4, %xmm0
             }
-            printf("  mov%s %%xmm0, (%s)\n", sfx, reg64[result]);
-            printf("  mov%s %%xmm1, %d(%s)\n", sfx, base_sz, reg64[result]);
+            asm_mov_fp_mr(cg_sec, sfx, m_res0, X86_XMM0); // mov[s|s]s/d %xmm0, (result)
+            asm_mov_fp_mr(cg_sec, sfx, m_res1, X86_XMM1); // mov[s|s]s/d %xmm1, base_sz(result)
 #endif
         } else {
 #ifdef ARCH_ARM64
@@ -10768,6 +10948,14 @@ struct ObjFile *codegen(Program *prog) {
                 // FIXME: proper alias via objfile
                 continue;
             }
+#ifdef _WIN32
+            // Windows/MinGW uses emulated TLS via __emutls_get_address.
+            if (var->is_tls) {
+                if (!var->is_extern)
+                    cg_emit_emutls_data(var);
+                continue;
+            }
+#endif
             if (var->alias_target) {
                 // __attribute__((alias("target")))
                 // Defer alias resolution until after all symbols are emitted
@@ -10789,19 +10977,22 @@ struct ObjFile *codegen(Program *prog) {
                 continue;
             if (var->asm_name) {
                 // Check if asm_name matches another global that provides data
+                // (with or without a leading underscore on the C name).
                 LVar *existing = NULL;
                 for (LVar *g = prog->globals; g; g = g->next) {
                     if (g != var && !g->is_extern && !g->is_function &&
-                        strcmp(sym_name(g->name), var->asm_name) == 0 &&
                         (g->has_init || g->init_data)) {
-                        existing = g;
-                        break;
+                        if (strcmp(sym_name(g->name), var->asm_name) == 0 ||
+                            (var->asm_name[0] == '_' &&
+                             strcmp(sym_name(g->name), var->asm_name + 1) == 0)) {
+                            existing = g;
+                            break;
+                        }
                     }
                 }
                 if (existing) {
-                    // This is an alias via __asm__ — emit .set instead of data
-                    (void)0 /* .globl symbol handled by objfile */;
-                    (void)0 /* .set directive */;
+                    // This is an alias via __asm__ — defer alias resolution
+                    // until after all globals have been emitted.
                     continue;
                 }
             }
@@ -10877,6 +11068,48 @@ struct ObjFile *codegen(Program *prog) {
                         secbuf_emit32le(cg_sec, (uint32_t)var->init_val); // .quad %s
                     else
                         secbuf_emit64le(cg_sec, (uint64_t)var->init_val); // .byte %u
+                }
+            }
+        }
+        // Resolve __asm__("name") aliases that refer to another global.
+        // The matching is done with/without a leading underscore so that
+        // e.g. `extern struct xx7 y __asm__("_z7")` aliases the C global `z7`
+        // on targets where C symbols are prefixed with an underscore.
+        for (LVar *var = prog->globals; var; var = var->next) {
+            if (!var->is_extern || !var->asm_name)
+                continue;
+            LVar *existing = NULL;
+            for (LVar *g = prog->globals; g; g = g->next) {
+                if (g != var && !g->is_extern && !g->is_function &&
+                    (g->has_init || g->init_data)) {
+                    if (strcmp(sym_name(g->name), var->asm_name) == 0 ||
+                        (var->asm_name[0] == '_' &&
+                         strcmp(sym_name(g->name), var->asm_name + 1) == 0)) {
+                        existing = g;
+                        break;
+                    }
+                }
+            }
+            if (existing) {
+                const char *target_name = asm_sym_name(sym_name(existing->name));
+                const char *alias_name = asm_sym_name(var->asm_name);
+                int tidx = objfile_find_sym(cg_obj, target_name);
+                if (tidx >= 0 && cg_obj->syms[tidx].section != SEC_UNDEF) {
+                    int aidx = objfile_find_sym(cg_obj, alias_name);
+                    if (aidx < 0) {
+                        objfile_add_sym(cg_obj, alias_name,
+                                        cg_obj->syms[tidx].section,
+                                        cg_obj->syms[tidx].offset,
+                                        cg_obj->syms[tidx].size,
+                                        cg_obj->syms[tidx].bind,
+                                        cg_obj->syms[tidx].type);
+                    } else if (cg_obj->syms[aidx].section == SEC_UNDEF) {
+                        cg_obj->syms[aidx].section = cg_obj->syms[tidx].section;
+                        cg_obj->syms[aidx].offset = cg_obj->syms[tidx].offset;
+                        cg_obj->syms[aidx].size = cg_obj->syms[tidx].size;
+                        cg_obj->syms[aidx].bind = cg_obj->syms[tidx].bind;
+                        cg_obj->syms[aidx].type = cg_obj->syms[tidx].type;
+                    }
                 }
             }
         }
@@ -11819,7 +12052,7 @@ struct ObjFile *codegen(Program *prog) {
             X86Reg greg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
             int max_gp = 6;
 #endif
-            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) ? 1 : 0;
+            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || fn->ty->return_ty->kind == TY_COMPLEX) ? 1 : 0;
             int xfp = 0;
             int stack_param_index = 0;
             for (LVar *var = fn->params; var; var = var->param_next) {

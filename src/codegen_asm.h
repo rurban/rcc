@@ -1971,6 +1971,47 @@ static void asm_ucomisd(SecBuf *s) {
 static void asm_ucomiss(SecBuf *s) {
     x86_ucomiss(s, X86_XMM0, X86_XMM1);
 }
+
+// Size-polymorphic SSE scalar fp ops (size=4 -> ss, size=8 -> sd), for _Complex arithmetic
+static void asm_mov_fp_rm(SecBuf *s, int size, X86XmmReg dst, X86Mem m) {
+    if (size == 4) x86_movss_rm(s, dst, m);
+    else
+        x86_movsd_rm(s, dst, m); // mov[s|s]s/d m, xmm{dst}
+}
+static void asm_mov_fp_mr(SecBuf *s, int size, X86Mem m, X86XmmReg src) {
+    if (size == 4) x86_movss_mr(s, m, src);
+    else
+        x86_movsd_mr(s, m, src); // mov[s|s]s/d xmm{src}, m
+}
+static void asm_mov_fp_rr(SecBuf *s, int size, X86XmmReg dst, X86XmmReg src) {
+    if (size == 4) x86_movss_rr(s, dst, src);
+    else
+        x86_movsd_rr(s, dst, src); // mov[s|s]s/d xmm{src}, xmm{dst}
+}
+static void asm_add_fp(SecBuf *s, int size, X86XmmReg dst, X86XmmReg src) {
+    if (size == 4) x86_addss(s, dst, src);
+    else
+        x86_addsd(s, dst, src); // add[s|s]s/d xmm{src}, xmm{dst}
+}
+static void asm_sub_fp(SecBuf *s, int size, X86XmmReg dst, X86XmmReg src) {
+    if (size == 4) x86_subss(s, dst, src);
+    else
+        x86_subsd(s, dst, src); // sub[s|s]s/d xmm{src}, xmm{dst}
+}
+static void asm_mul_fp(SecBuf *s, int size, X86XmmReg dst, X86XmmReg src) {
+    if (size == 4) x86_mulss(s, dst, src);
+    else
+        x86_mulsd(s, dst, src); // mul[s|s]s/d xmm{src}, xmm{dst}
+}
+static void asm_div_fp(SecBuf *s, int size, X86XmmReg dst, X86XmmReg src) {
+    if (size == 4) x86_divss(s, dst, src);
+    else
+        x86_divsd(s, dst, src); // div[s|s]s/d xmm{src}, xmm{dst}
+}
+// movapd xmm{dst}, xmm{src} -- full-register fp move (movaps bit pattern works for both s/d)
+static void asm_movapd_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src) {
+    x86_movaps(s, dst, src); // movapd xmm{src}, xmm{dst}
+}
 #endif // X64
 
 #ifdef ARCH_ARM64
@@ -3448,7 +3489,7 @@ static void asm_negq_mem8(SecBuf *s, VReg rd) {
 static void x86_adc_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
     // ADC r/m, r: opcode 13 /r
     uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index & 8) ? 0x02 : 0));
+    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
     secbuf_emit8(s, 0x13);
     uint8_t modrm;
     if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {
@@ -3467,7 +3508,7 @@ static void x86_adc_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
 static void x86_sbb_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
     // SBB r/m, r: opcode 1B /r
     uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index & 8) ? 0x02 : 0));
+    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
     secbuf_emit8(s, 0x1B);
     uint8_t modrm;
     if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {

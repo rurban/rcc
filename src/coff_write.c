@@ -69,7 +69,8 @@
 // Symbol storage class
 #define IMAGE_SYM_CLASS_EXTERNAL      2
 #define IMAGE_SYM_CLASS_STATIC        3
-#define IMAGE_SYM_CLASS_WEAK_EXTERNAL 104
+#define IMAGE_SYM_CLASS_WEAK_EXTERNAL 105
+#define IMAGE_WEAK_EXTERN_SEARCH_LIBRARY 1
 
 // Symbol type
 #define IMAGE_SYM_TYPE_FUNC           0x20
@@ -139,6 +140,8 @@ typedef struct {
     uint16_t aux_num_relocs;
     uint16_t aux_num_linenums;
     uint16_t aux_number;
+    // aux weak external entry: tag index into syms.data
+    uint32_t aux_tagndx;
 } CoffSymRec;
 
 // ---------------------------------------------------------------------------
@@ -204,6 +207,16 @@ static void write_coff_aux_section(FILE *f, const CoffSymRec *s) {
     w16(f, s->aux_number);
     w8(f, 0); // selection
     wzeros(f, 3); // reserved
+}
+
+// ---------------------------------------------------------------------------
+// Write a COFF aux weak external symbol entry (18 bytes)
+// ---------------------------------------------------------------------------
+static void write_coff_aux_weak(FILE *f, const CoffSymRec *s,
+                                const int *coff_sym_idx) {
+    w32(f, (uint32_t)coff_sym_idx[s->aux_tagndx]); // tag index
+    w32(f, IMAGE_WEAK_EXTERN_SEARCH_LIBRARY); // characteristics
+    wzeros(f, 10); // unused
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +467,6 @@ int coff_write(ObjFile *obj, const char *path) {
         ObjSym *os = &obj->syms[i];
         if (os->bind == SB_LOCAL)
             continue;
-        sym_map[i] = syms.len;
         CoffSymRec es = {0};
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
@@ -464,11 +476,30 @@ int coff_write(ObjFile *obj, const char *path) {
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = (os->bind == SB_WEAK) ? IMAGE_SYM_CLASS_WEAK_EXTERNAL
                                                  : IMAGE_SYM_CLASS_EXTERNAL;
-        if (strcmp(os->name, "inline_inline_2decl_only") == 0 ||
-            strcmp(os->name, "inline_inline_undeclared") == 0 ||
-            strcmp(os->name, "check_exports") == 0)
-            fprintf(stderr, "DEBUG coff_write: name=%s section=%d bind=%d -> sec_num=%d scl=%d\n",
-                    os->name, os->section, os->bind, es.section_number, es.storage_class);
+        if (os->bind == SB_WEAK && os->section == SEC_UNDEF) {
+            // COFF weak external requires an auxiliary record pointing to a
+            // default resolution symbol. Emit .weak.<name> as that default.
+            CoffSymRec def = {0};
+            size_t dn_len = strlen(os->name) + 7; // ".weak." + '\0'
+            char *defname = malloc(dn_len);
+            if (!defname) {
+                fprintf(stderr, "coff_write: out of memory\n");
+                exit(1);
+            }
+            snprintf(defname, dn_len, ".weak.%s", os->name);
+            fill_short_name(def.short_name, defname, &strtab,
+                            &def.long_name, &def.strtab_off);
+            free(defname);
+            def.value = 0;
+            def.section_number = 0;
+            def.type = 0;
+            def.storage_class = IMAGE_SYM_CLASS_EXTERNAL;
+            def.num_aux = 0;
+            symarr_push(&syms, def);
+            es.num_aux = 1;
+            es.aux_tagndx = (uint32_t)(syms.len - 1);
+        }
+        sym_map[i] = syms.len;
         symarr_push(&syms, es);
     }
 
@@ -643,8 +674,12 @@ int coff_write(ObjFile *obj, const char *path) {
     // --- Symbol table (aux entries immediately follow their owning symbol) ---
     for (int i = 0; i < syms.len; i++) {
         write_coff_sym(f, &syms.data[i]);
-        if (syms.data[i].num_aux > 0)
-            write_coff_aux_section(f, &syms.data[i]);
+        if (syms.data[i].num_aux > 0) {
+            if (syms.data[i].storage_class == IMAGE_SYM_CLASS_WEAK_EXTERNAL)
+                write_coff_aux_weak(f, &syms.data[i], coff_sym_idx);
+            else
+                write_coff_aux_section(f, &syms.data[i]);
+        }
     }
 
     // --- String table ---
