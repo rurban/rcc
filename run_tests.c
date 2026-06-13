@@ -1993,7 +1993,8 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
     total++;
     char expect_file[512], local_expect[512];
     snprintf(local_expect, sizeof(local_expect), "%s/test/tinycc-%s.expect", SCRIPT_DIR, base);
-    if (file_exists(local_expect)) snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
+    if (file_exists(local_expect))
+        snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
     else
         snprintf(expect_file, sizeof(expect_file), "%s/%s.expect", TEST_DIR, base);
 
@@ -2449,8 +2450,10 @@ static void run_unit_tests(void) {
 
     if (!only_test) {
         int pct = total > 0 ? passed * 100 / total : 0;
-        printf("\n%sUnit Test Results: %d/%d passed (%d%%), %d failed.%s\n",
-               COL_CYAN, passed, total, pct, failed, COL_RESET);
+        const char *red = failed > 0 ? COL_RED : "";
+        const char *rst = failed > 0 ? COL_RESET : "";
+        printf("\nUnit tests: %d/%d passed (%d%%), %s%d failed%s.\n",
+               passed, total, pct, red, failed, rst);
 
         char sp[256];
         snprintf(sp, sizeof(sp), "test-units-%s.summary", platform);
@@ -2464,10 +2467,23 @@ static void run_unit_tests(void) {
 
 /* ── markdown report ─────────────────────────────────────────────── */
 
+/* atomically replace dst with src; rename is atomic on POSIX within
+ * the same filesystem, and MOVEFILE_REPLACE_EXISTING is the closest
+ * Windows equivalent. */
+static int move_file_atomic(const char *src, const char *dst) {
+#ifdef _WIN32
+    return MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+#else
+    return rename(src, dst);
+#endif
+}
+
 static void generate_tcc_report(void) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", SCRIPT_DIR, REPORT_FILE);
-    FILE *rf = fopen(path, "wb");
+    char tmp_path[520];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    FILE *rf = fopen(tmp_path, "wb");
     if (!rf) return;
 
     time_t now = time(NULL);
@@ -2504,6 +2520,7 @@ static void generate_tcc_report(void) {
         fprintf(rf, "| %-*s | %-*s | %-*s |\n",
                 nm, report_rows[i].name, sm, report_rows[i].status, mm, report_rows[i].message);
     fclose(rf);
+    move_file_atomic(tmp_path, path);
     printf("Report saved to %s\n", REPORT_FILE);
 }
 
@@ -2763,8 +2780,10 @@ static int run_tcc_suite(void) {
 
     if (!only_test) {
         int pct = total > 0 ? passed * 100 / total : 0;
-        printf("\n%sTCC Results: %d/%d passed (%d%%), %d failed.%s\n",
-               COL_CYAN, passed, total, pct, failed, COL_RESET);
+        const char *red = failed > 0 ? COL_RED : "";
+        const char *rst = failed > 0 ? COL_RESET : "";
+        printf("\nTCC: %d/%d passed (%d%%), %s%d failed%s.\n",
+               passed, total, pct, red, failed, rst);
         if (regressions + fixes + changed_cnt > 0) {
             printf("Changes vs previous:");
             if (regressions) printf("  %s%d regression(s)%s", COL_RED, regressions, COL_RESET);
@@ -3215,12 +3234,42 @@ static int run_torture_suite(bool summary_only) {
 
     if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
 
+    int max_fail;
+    if (only_test)
+        max_fail = 1;
+    else if (streq(platform, "arm64_cross"))
+        max_fail = 27;
+    else if (streq(platform, "arm64"))
+        max_fail = 24;
+    else if (streq(platform, "darwin_cross"))
+        max_fail = 2;
+    else if (streq(platform, "mingw_cross"))
+        max_fail = 33;
+    else if (streq(platform, "mingw"))
+        max_fail = 38;
+    else
+        max_fail = 9;
+
+    int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (!only_test) {
-        if (!summary_only) logprintf("\n");
-        logprintf("=== TOTAL=%d PASS=%d FAIL_COMPILE=%d FAIL_RUNTIME=%d SKIP=%d ===\n",
-                  g_tort_total, g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
         int eff = g_tort_total - g_tort_skip;
-        logprintf("Pass rate (excl. skip): %d%%\n", eff > 0 ? g_tort_pass * 100 / eff : 0);
+        int pct = eff > 0 ? g_tort_pass * 100 / eff : 0;
+        const char *red = fail > max_fail ? COL_RED : "";
+        const char *rst = fail > max_fail ? COL_RESET : "";
+        printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
+        if (fail)
+            printf("%s%d fail (%d compile/%d runtime)%s, %d skipped.\n",
+                   red, fail, g_tort_fail_compile, g_tort_fail_runtime, rst, g_tort_skip);
+        else
+            printf("0 failed, %d skipped.\n", g_tort_skip);
+        if (g_log_fp) {
+            fprintf(g_log_fp, "\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
+            if (fail)
+                fprintf(g_log_fp, "%d failed (%d compile/%d runtime), %d skipped.\n",
+                        fail, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
+            else
+                fprintf(g_log_fp, "0 failed, %d skipped.\n", g_tort_skip);
+        }
         if (g_tort_compile_errors && *g_tort_compile_errors)
             logprintf("\nCompile failures: %s\n", g_tort_compile_errors);
         if (g_tort_runtime_errors && *g_tort_runtime_errors)
@@ -3236,23 +3285,6 @@ static int run_torture_suite(bool summary_only) {
             fclose(sf);
         }
     }
-
-    int fail = g_tort_fail_compile + g_tort_fail_runtime;
-    int max_fail;
-    if (only_test)
-        max_fail = 1;
-    else if (streq(platform, "arm64_cross"))
-        max_fail = 27;
-    else if (streq(platform, "arm64"))
-        max_fail = 24;
-    else if (streq(platform, "darwin_cross"))
-        max_fail = 2;
-    else if (streq(platform, "mingw_cross"))
-        max_fail = 33;
-    else if (streq(platform, "mingw"))
-        max_fail = 38;
-    else
-        max_fail = 10;
 
     if (g_log_fp) {
         fclose(g_log_fp);
@@ -3591,22 +3623,23 @@ static int run_compliance_suite(void) {
             free(nl[i]);
         }
         free(nl);
-    }
+        int comp_total = comp_pass + comp_fail;
+        if (!only_test) {
+            int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
+            const char *red = comp_fail > 0 ? COL_RED : "";
+            const char *rst = comp_fail > 0 ? COL_RESET : "";
+            printf("\nCompliance: %d/%d passed (%d%%), %s%d failed%s",
+                   comp_pass, comp_total, comp_pct, red, comp_fail, rst);
+            if (comp_skip) printf(", %d skipped", comp_skip);
+            printf(".\n");
 
-    int comp_total = comp_pass + comp_fail;
-    if (!only_test) {
-        printf("\nCompliance: %d/%d passed", comp_pass, comp_total);
-        if (comp_skip) printf(", %d skipped", comp_skip);
-        printf("\n");
-    }
-
-    if (!only_test) {
-        char sp[256];
-        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
-            fclose(sf);
+            char sp[256];
+            snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
+            FILE *sf = fopen(sp, "wb");
+            if (sf) {
+                fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
+                fclose(sf);
+            }
         }
     }
     return comp_fail > 0 ? 1 : 0;
@@ -3679,8 +3712,7 @@ static int run_ctest_one(const char *ctest_dir) {
         proc_free(&rr);
     }
     proc_free(&cr);
-    unlink(bin_path);
-
+    if (!fail) unlink(bin_path);
     return fail;
 }
 
@@ -3744,7 +3776,7 @@ static bool ctest_evaluate_report(const char *name, const char *exp_path, Parall
     }
     free(r->exec_out);
     r->exec_out = NULL;
-    unlink(r->tmp_exe);
+    if (pass) unlink(r->tmp_exe);
     return pass;
 }
 
@@ -3906,6 +3938,7 @@ static int run_ctest_suite(void) {
 
                 char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, (char *)*f, NULL};
                 ProcResult cr = proc_run(ca, 30, 1);
+                bool test_pass = false;
                 if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
                     print_result(name, COL_RED, "COMPILE FAIL");
                     ctest_fail2++;
@@ -3925,6 +3958,7 @@ static int run_ctest_suite(void) {
                         } else {
                             print_result(name, COL_GREEN, "PASS");
                             ctest_pass++;
+                            test_pass = true;
                         }
                         free(expected);
                         free(actual);
@@ -3932,30 +3966,21 @@ static int run_ctest_suite(void) {
                     proc_free(&rr);
                 }
                 proc_free(&cr);
-                unlink(bin_path);
+                if (test_pass) unlink(bin_path);
                 fflush(stdout);
             }
         }
         for (char **f = files; *f; f++) free(*f);
         free(files);
 
-        logprintf("\n");
-        logprintf("  pass  %d\n", ctest_pass);
-        logprintf("  skip  %d\n", ctest_skip2);
-        if (ctest_fail2 > 0)
-            printf("  %sfail  %d%s\n", COL_RED, ctest_fail2, COL_RESET);
-        else
-            printf("  fail  %d\n", ctest_fail2);
-        if (g_log_fp) fprintf(g_log_fp, "  fail  %d\n", ctest_fail2);
-        logprintf("  total %d\n", ctest_total);
-
-        if (ctest_fail2 > 0)
-            printf("\nFAIL: got %d failures, maximum allowed is 0\n", ctest_fail2);
-        else
-            printf("\nOK: %d failures, within limit of 0\n", ctest_fail2);
+        int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+        const char *red = ctest_fail2 > 0 ? COL_RED : "";
+        const char *rst = ctest_fail2 > 0 ? COL_RESET : "";
+        printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
+               ctest_pass, ctest_total, ctest_pct, red, ctest_fail2, rst, ctest_skip2);
         if (g_log_fp)
-            fprintf(g_log_fp, "\n%s: got %d failures, maximum allowed is 0\n",
-                    ctest_fail2 > 0 ? "FAIL" : "OK", ctest_fail2);
+            fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
+                    ctest_pass, ctest_total, ctest_pct, ctest_fail2, ctest_skip2);
 
         if (!only_test) {
             char sp[256];
@@ -4017,6 +4042,11 @@ static int run_ctest_suite(void) {
             } else {
                 ctest_pass++;
                 print_result(tname, COL_GREEN, "PASS");
+                char outpath[PATH_MAX], binpath[PATH_MAX];
+                snprintf(outpath, sizeof(outpath), "%s/%s.output", ctest_dir, tname);
+                snprintf(binpath, sizeof(binpath), "%s/%s.bin", ctest_dir, tname);
+                unlink(outpath);
+                unlink(binpath);
             }
             fflush(stdout);
         } else if (strncmp(line, "1..", 3) == 0) {
@@ -4025,23 +4055,14 @@ static int run_ctest_suite(void) {
     }
     pclose(fp);
 
-    logprintf("\n");
-    logprintf("  pass  %d\n", ctest_pass);
-    logprintf("  skip  %d\n", ctest_skip);
-    if (ctest_fail > 0)
-        printf("  %sfail  %d%s\n", COL_RED, ctest_fail, COL_RESET);
-    else
-        printf("  fail  %d\n", ctest_fail);
-    if (g_log_fp) fprintf(g_log_fp, "  fail  %d\n", ctest_fail);
-    logprintf("  total %d\n", ctest_total);
-
-    if (ctest_fail > 0)
-        printf("\nFAIL: got %d failures, maximum allowed is 0\n", ctest_fail);
-    else
-        printf("\nOK: %d failures, within limit of 0\n", ctest_fail);
+    int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+    const char *red = ctest_fail > 0 ? COL_RED : "";
+    const char *rst = ctest_fail > 0 ? COL_RESET : "";
+    printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
+           ctest_pass, ctest_total, ctest_pct, red, ctest_fail, rst, ctest_skip);
     if (g_log_fp)
-        fprintf(g_log_fp, "\n%s: got %d failures, maximum allowed is 0\n",
-                ctest_fail > 0 ? "FAIL" : "OK", ctest_fail);
+        fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
+                ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
 
     if (!only_test) {
         char sp[256];
@@ -4088,6 +4109,8 @@ static void generate_report(void) {
 
     char report_path[PATH_MAX];
     snprintf(report_path, sizeof(report_path), "%s/test_report_%s.md", SCRIPT_DIR, platform);
+    char tmp_path[PATH_MAX + 5];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", report_path);
 
     struct {
         int total, pass, fail, skip, fail_compile, fail_runtime;
@@ -4130,9 +4153,9 @@ static void generate_report(void) {
         ov_fail += s[i].fail;
     }
 
-    FILE *rf = fopen(report_path, "wb");
+    FILE *rf = fopen(tmp_path, "wb");
     if (!rf) {
-        perror(report_path);
+        perror(tmp_path);
         return;
     }
 
@@ -4171,6 +4194,7 @@ static void generate_report(void) {
     }
 
     fclose(rf);
+    move_file_atomic(tmp_path, report_path);
     printf("Unified report saved to test_report_%s.md\n", platform);
 }
 

@@ -21,5 +21,5 @@ else
     make -s CC=x86_64-w64-mingw32-gcc
     echo "==> Running full test suite in parallel via run_tests.exe..."
     echo ""
-    ./run_tests.exe ./rcc.exe --all --parallel
+    ./run_tests.exe ./rcc.exe --all
 fi

@@ -2,12 +2,12 @@
 
 **Platform**: Linux x86_64
 
-Generated: June 13 2026 10:46
+Generated: June 13 2026 11:42
 
 ## Overall Summary
 
-- **Total**: 2060
-- **Passed**: 1949
+- **Total**: 2045
+- **Passed**: 1934
 - **Failed**: 9
 - **Overall Pass Rate**: 94%
 
@@ -29,13 +29,6 @@ Generated: June 13 2026 10:46
 
 - **Total**: 220
 - **Passed**: 220
-- **Failed**: 0
-- **Pass Rate**: 100%
-
-## NCC Compliance Tests (vs GCC)
-
-- **Total**: 15
-- **Passed**: 15
 - **Failed**: 0
 - **Pass Rate**: 100%
 

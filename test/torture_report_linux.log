@@ -1672,7 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-=== TOTAL=1671 PASS=1560 FAIL_COMPILE=0 FAIL_RUNTIME=9 SKIP=102 ===
-Pass rate (excl. skip): 99%
+Torture: 1560/1569 passed (99%), 9 failed (0 compile/9 runtime), 102 skipped.
 
 Runtime failures: 20020411-1 20041201-1 pr38151 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
