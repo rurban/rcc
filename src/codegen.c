@@ -2329,14 +2329,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             bool var_double = (is_variadic && i >= named_count) ||
                 (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
             if (!var_double) {
-                if (argv[i]->ty->size == 4)
-                    printf("  fcvt s%d, %s\n", arg_fp_idx[i], argxmm[arg_fp_idx[i]]);
-                else if (fn_type && fn_type->param_types && i < named_count) {
+                bool float_arg = argv[i]->ty->size == 4;
+                if (fn_type && fn_type->param_types && i < named_count) {
                     Type *pt = fn_type->param_types;
                     for (int j = 0; j < i && pt; j++) pt = pt->param_next;
-                    if (pt && pt->kind == TY_FLOAT)
-                        printf("  fcvt s%d, %s\n", arg_fp_idx[i], argxmm[arg_fp_idx[i]]);
+                    float_arg = pt && pt->kind == TY_FLOAT;
                 }
+                if (float_arg)
+                    printf("  fcvt s%d, %s\n", arg_fp_idx[i], argxmm[arg_fp_idx[i]]);
             }
             if (arg_gp_idx[i] >= 0)
                 printf("  mov %s, %s\n", argreg64[arg_gp_idx[i]], reg64[arg_regs[i]]);
