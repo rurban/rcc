@@ -260,8 +260,7 @@ test-torture check-torture: $(TARGET) $(RUN_TESTS)
 	./$(RUN_TESTS) ./$(TARGET) --torture --parallel
 test-full check-full:
 	$(MAKE) clean
-	$(MAKE) $(TARGET) $(RUN_TESTS)
-	./$(RUN_TESTS) ./$(TARGET) --all --parallel
+	$(MAKE) check-all
 	-./mingw-test.sh
 	-./arm64-test.sh
 	-./darwin-test.sh

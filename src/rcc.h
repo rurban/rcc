@@ -82,6 +82,38 @@ void print_search_dirs(const char *gcc);
 Token *tokenize(char *filename, char *p);
 void init_builtins(void);
 
+// Pre-interned name pointers for O(1) pointer-equality matching.
+// All identifiers from the lexer are str_intern'd, so comparing
+// against these interned pointers avoids strcmp.
+void init_builtin_names(void);
+extern char *bi_bswap16, *bi_bswap32, *bi_bswap64;
+extern char *bi_clz, *bi_clzl, *bi_clzll;
+extern char *bi_ctz, *bi_ctzl, *bi_ctzll;
+extern char *bi_popcount, *bi_popcountl, *bi_popcountll;
+extern char *bi_parity, *bi_parityl, *bi_parityll;
+extern char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
+extern char *bi_ffs, *bi_ffsl, *bi_ffsll;
+extern char *bi_prefetch, *bi_frame_address, *bi_return_address;
+extern char *bi_setjmp, *bi_longjmp;
+extern char *bi_signbit, *bi_signbitf, *bi_signbitl;
+extern char *bi_isinf, *bi_isinff, *bi_isinfl;
+extern char *bi_copysign, *bi_copysignf, *bi_copysignl;
+extern char *bi_abs, *bi_labs, *bi_llabs;
+extern char *bi_add_overflow, *bi_sub_overflow;
+extern char *bi_mul_overflow, *bi_mul_overflow_p;
+extern char *bi_memset, *bi_memcpy, *bi_memcmp;
+extern char *bi_strlen, *bi_strcmp, *bi_strchr;
+extern char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
+extern char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
+extern char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
+extern char *bi_s_printf, *bi_s_fprintf, *bi_s_vprintf, *bi_s_vfprintf;
+extern char *bi_s_puts, *bi_s_fputs;
+extern char *bi_s_sprintf, *bi_s_snprintf;
+extern char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
+extern char *bi_s_alloca;
+extern char *bi_chk_printf, *bi_chk_vprintf;
+extern char *bi_chk_fprintf, *bi_chk_vfprintf;
+
 //
 // Parser
 //

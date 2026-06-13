@@ -102,12 +102,12 @@ static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, 
         }
         Function *target = NULL;
         for (TLItem *item = prog->items; item; item = item->next) {
-            if (item->kind == TL_FUNC && strcmp(item->fn->name, node->funcname) == 0) {
+            if (item->kind == TL_FUNC && item->fn->name == node->funcname) {
                 target = item->fn;
                 break;
             }
         }
-        if (target && target->body && strcmp(target->name, "printf") != 0) {
+        if (target && target->body && target->name != bi_s_printf) {
             int new_env[256] = {0};
             LVar *param = target->params;
             for (int i = 0; i < nargs; i++) {
@@ -209,10 +209,10 @@ static Node *optimize_node(Program *prog, Node *node) {
             }
             if (nargs < 10) args[nargs++] = arg->val;
         }
-        if (all_const && !has_addr_arg(node) && strcmp(node->funcname, "printf") != 0) {
+        if (all_const && !has_addr_arg(node) && node->funcname != bi_s_printf) {
             Function *target = NULL;
             for (TLItem *item = prog->items; item; item = item->next) {
-                if (item->kind == TL_FUNC && strcmp(item->fn->name, node->funcname) == 0) {
+                if (item->kind == TL_FUNC && item->fn->name == node->funcname) {
                     target = item->fn;
                     break;
                 }

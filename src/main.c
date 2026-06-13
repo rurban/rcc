@@ -154,6 +154,7 @@ int main(int argc, char **argv) {
 #endif
 
     init_builtins();
+    init_builtin_names();
     char *out_path =
 #ifdef _WIN32
         "a.exe"

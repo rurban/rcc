@@ -166,28 +166,36 @@ static const char *reg_owner[NUM_REGS];
 // All function names come from tok->name which is str_intern'd by the lexer,
 // so pointer comparison is valid after we intern these literals once.
 #define _BI(s) str_intern(s, sizeof(s)-1)
-static const char *bi_bswap16, *bi_bswap32, *bi_bswap64;
-static const char *bi_clz, *bi_clzl, *bi_clzll;
-static const char *bi_ctz, *bi_ctzl, *bi_ctzll;
-static const char *bi_popcount, *bi_popcountl, *bi_popcountll;
-static const char *bi_parity, *bi_parityl, *bi_parityll;
-static const char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
-static const char *bi_ffs, *bi_ffsl, *bi_ffsll;
-static const char *bi_prefetch, *bi_frame_address, *bi_return_address;
-static const char *bi_setjmp, *bi_longjmp;
-static const char *bi_signbit, *bi_signbitf, *bi_signbitl;
-static const char *bi_isinf, *bi_isinff, *bi_isinfl;
-static const char *bi_copysign, *bi_copysignf, *bi_copysignl;
-static const char *bi_abs, *bi_labs, *bi_llabs;
-static const char *bi_add_overflow, *bi_sub_overflow;
-static const char *bi_mul_overflow, *bi_mul_overflow_p;
-static const char *bi_memset, *bi_memcpy, *bi_memcmp;
-static const char *bi_strlen, *bi_strcmp, *bi_strchr;
-static const char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
-static const char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
-static const char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
+char *bi_bswap16, *bi_bswap32, *bi_bswap64;
+char *bi_clz, *bi_clzl, *bi_clzll;
+char *bi_ctz, *bi_ctzl, *bi_ctzll;
+char *bi_popcount, *bi_popcountl, *bi_popcountll;
+char *bi_parity, *bi_parityl, *bi_parityll;
+char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
+char *bi_ffs, *bi_ffsl, *bi_ffsll;
+char *bi_prefetch, *bi_frame_address, *bi_return_address;
+char *bi_setjmp, *bi_longjmp;
+char *bi_signbit, *bi_signbitf, *bi_signbitl;
+char *bi_isinf, *bi_isinff, *bi_isinfl;
+char *bi_copysign, *bi_copysignf, *bi_copysignl;
+char *bi_abs, *bi_labs, *bi_llabs;
+char *bi_add_overflow, *bi_sub_overflow;
+char *bi_mul_overflow, *bi_mul_overflow_p;
+char *bi_memset, *bi_memcpy, *bi_memcmp;
+char *bi_strlen, *bi_strcmp, *bi_strchr;
+char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
+char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
+char *bi_s_printf, *bi_s_fprintf, *bi_s_vprintf, *bi_s_vfprintf;
+char *bi_s_puts, *bi_s_fputs;
+char *bi_s_sprintf, *bi_s_snprintf;
+char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
+char *bi_s_alloca;
+char *bi_chk_printf, *bi_chk_vprintf;
+char *bi_chk_fprintf, *bi_chk_vfprintf;
+char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
+char *bi_strlen, *bi_strcmp, *bi_strchr;
 
-static void init_builtin_names(void) {
+void init_builtin_names(void) {
     static bool done = false;
     if (done) return;
     done = true;
@@ -248,6 +256,22 @@ static void init_builtin_names(void) {
     bi_s_strlen = _BI("strlen");
     bi_s_strcmp = _BI("strcmp");
     bi_s_strchr = _BI("strchr");
+    bi_s_printf = _BI("printf");
+    bi_s_fprintf = _BI("fprintf");
+    bi_s_vprintf = _BI("vprintf");
+    bi_s_vfprintf = _BI("vfprintf");
+    bi_s_puts = _BI("puts");
+    bi_s_fputs = _BI("fputs");
+    bi_s_sprintf = _BI("sprintf");
+    bi_s_snprintf = _BI("snprintf");
+    bi_s_scanf = _BI("scanf");
+    bi_s_fscanf = _BI("fscanf");
+    bi_s_sscanf = _BI("sscanf");
+    bi_s_alloca = _BI("alloca");
+    bi_chk_printf = _BI("__printf_chk");
+    bi_chk_vprintf = _BI("__vprintf_chk");
+    bi_chk_fprintf = _BI("__fprintf_chk");
+    bi_chk_vfprintf = _BI("__vfprintf_chk");
 }
 
 static char *reg(int r, int size);
@@ -646,12 +670,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     cg_discard_result = false;
     if (discard_result && opt_O1 && call_target &&
         !(node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION))) {
-        if (nargs == 2 && strcmp(call_target, "printf") == 0) {
+        if (nargs == 2 && call_target == bi_s_printf) {
             Node *fmt = node->args;
             if (fmt && fmt->kind == ND_STR) {
                 for (StrLit *s = all_strs; s; s = s->next) {
                     if (s->id == fmt->str_id && s->prefix == 0 && strcmp(s->str, "%s\n") == 0) {
-                        call_target = "puts";
+                        call_target = bi_s_puts;
                         node->args = fmt->next;
                         nargs = 1;
                         argv[0] = node->args;
@@ -659,13 +683,13 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                     }
                 }
             }
-        } else if (nargs == 3 && strcmp(call_target, "fprintf") == 0) {
+        } else if (nargs == 3 && call_target == bi_s_fprintf) {
             Node *fp_arg = node->args;
             Node *fmt = fp_arg ? fp_arg->next : NULL;
             if (fmt && fmt->kind == ND_STR) {
                 for (StrLit *s = all_strs; s; s = s->next) {
                     if (s->id == fmt->str_id && s->prefix == 0 && strcmp(s->str, "%s") == 0) {
-                        call_target = "fputs";
+                        call_target = bi_s_fputs;
                         Node *str_arg = fmt->next;
                         node->args = str_arg;
                         str_arg->next = fp_arg;
@@ -1028,7 +1052,6 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 int r_arg = gen(arg);
                 int r = alloc_reg();
                 int r_tmp = alloc_reg();
-                int sz = arg->ty ? arg->ty->size : 8;
 #ifdef ARCH_ARM64
                 // rcc promotes all floats to doubles in GP registers;
                 // use 64-bit operations regardless of the source type size
@@ -1039,6 +1062,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 printf("  cmp %s, %s\n", reg64[r], reg64[r_tmp]);
                 printf("  cset %s, eq\n", reg32[r]);
 #else
+                int sz = arg->ty ? arg->ty->size : 8;
                 if (sz == 4) {
                     printf("  movd %s, %%xmm0\n", reg32[r_arg]);
                     printf("  movd %%xmm0, %s\n", reg32[r]);
@@ -1809,7 +1833,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #ifdef ARCH_ARM64
     // Inline alloca: directly adjust sp without any register save/restore
     // (save/restore around a bl __rcc_alloca would use the stack, which alloca moves)
-    if (call_target && strcmp(call_target, "alloca") == 0) {
+    if (call_target && call_target == bi_s_alloca) {
         alloca_needed = true;
         fn_uses_alloca = true;
         int ra = gen(node->args);
@@ -1847,12 +1871,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     }
     if (!fn_type && call_target) {
         static Type variadic_fn;
-        if (strcmp(call_target, "sprintf") == 0 ||
-            strcmp(call_target, "snprintf") == 0 ||
-            strcmp(call_target, "fprintf") == 0 ||
-            strcmp(call_target, "vfprintf") == 0 ||
-            strcmp(call_target, "printf") == 0 ||
-            strcmp(call_target, "vprintf") == 0) {
+        if (call_target == bi_s_sprintf ||
+            call_target == bi_s_snprintf ||
+            call_target == bi_s_fprintf ||
+            call_target == bi_s_vfprintf ||
+            call_target == bi_s_printf ||
+            call_target == bi_s_vprintf) {
             variadic_fn.kind = TY_FUNC;
             variadic_fn.is_variadic = true;
             fn_type = &variadic_fn;
@@ -1864,14 +1888,14 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         for (Type *t = fn_type->param_types; t; t = t->param_next)
             named_count++;
     if (named_count == 0 && call_target && is_variadic) {
-        if (strcmp(call_target, "printf") == 0 ||
-            strcmp(call_target, "vprintf") == 0)
+        if (call_target == bi_s_printf ||
+            call_target == bi_s_vprintf)
             named_count = 1;
-        else if (strcmp(call_target, "sprintf") == 0 ||
-                 strcmp(call_target, "fprintf") == 0 ||
-                 strcmp(call_target, "vfprintf") == 0)
+        else if (call_target == bi_s_sprintf ||
+                 call_target == bi_s_fprintf ||
+                 call_target == bi_s_vfprintf)
             named_count = 2;
-        else if (strcmp(call_target, "snprintf") == 0)
+        else if (call_target == bi_s_snprintf)
             named_count = 3;
     }
     for (int i = 0; i < nargs; i++) {
@@ -2388,7 +2412,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     }
 
     if (call_target) {
-        if (strcmp(call_target, "alloca") == 0) {
+        if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
             emit_direct_call("__rcc_alloca");
@@ -2503,7 +2527,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         arg_is_float[i] = is_flonum(argv[i]->ty);
     }
 
-    if (stack_reserve > 0 && (!call_target || strcmp(call_target, "alloca") != 0))
+    if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  subq $%d, %%rsp\n", stack_reserve);
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
@@ -2580,7 +2604,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (arg_regs[i] >= 0 && arg_stack_idx[i] < 0)
             reg_arg_mask |= (1 << arg_regs[i]);
 
-    if (stack_reserve > 0 && (!call_target || strcmp(call_target, "alloca") != 0))
+    if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  subq $%d, %%rsp\n", stack_reserve);
 
     for (int i = nargs - 1; i >= 0; i--) {
@@ -2689,7 +2713,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             printf("  mov %s, %s\n", reg(arg_regs[i], 8), argreg64[argi]);
         }
         // Also store to shadow space so variadic callees can find args via va_list
-        if (!call_target || strcmp(call_target, "alloca") != 0)
+        if (!call_target || call_target != bi_s_alloca)
             printf("  movq %s, %d(%%rsp)\n", argreg64[argi], argi * 8);
         free_reg(arg_regs[i]);
     }
@@ -2760,7 +2784,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 
     printf("  movl $%d, %%eax\n", xmm_args);
     if (call_target) {
-        if (strcmp(call_target, "alloca") == 0) {
+        if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
             emit_direct_call("__rcc_alloca");
@@ -2772,7 +2796,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         free_reg(callee_reg);
     }
 
-    if (stack_reserve > 0 && (!call_target || strcmp(call_target, "alloca") != 0))
+    if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  addq $%d, %%rsp\n", stack_reserve);
 
     if ((saved_scratch & 2) && hidden_ret_reg != 1) {

@@ -205,13 +205,13 @@ static void add_type_internal(Node *node);
 // 64-bit __builtin_bswap64 result down to 32 bits.
 static Type *builtin_return_type(const char *name) {
     if (!name) return NULL;
-    if (strcmp(name, "__builtin_bswap16") == 0) return ty_ushort;
-    if (strcmp(name, "__builtin_bswap32") == 0) return ty_uint;
-    if (strcmp(name, "__builtin_bswap64") == 0) return ty_ullong;
+    if (name == bi_bswap16) return ty_ushort;
+    if (name == bi_bswap32) return ty_uint;
+    if (name == bi_bswap64) return ty_ullong;
     // copysign builtins return double (handled inline in codegen, type must be correct)
-    if (strcmp(name, "__builtin_copysign") == 0) return ty_double;
-    if (strcmp(name, "__builtin_copysignf") == 0) return ty_float;
-    if (strcmp(name, "__builtin_copysignl") == 0) return ty_ldouble;
+    if (name == bi_copysign) return ty_double;
+    if (name == bi_copysignf) return ty_float;
+    if (name == bi_copysignl) return ty_ldouble;
     return NULL;
 }
 
@@ -596,8 +596,8 @@ static void add_type_internal(Node *node) {
                 LVar *gvar = find_global_name(node->funcname);
                 node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                     ? gvar->ty->return_ty
-                    : (strcmp(node->funcname, "alloca") == 0) ? pointer_to(ty_void)
-                                                              : ty_int;
+                    : (node->funcname == bi_s_alloca) ? pointer_to(ty_void)
+                                                      : ty_int;
             } else {
                 node->ty = ty_int;
             }
@@ -605,8 +605,8 @@ static void add_type_internal(Node *node) {
             LVar *gvar = find_global_name(node->funcname);
             node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                 ? gvar->ty->return_ty
-                : (strcmp(node->funcname, "alloca") == 0) ? pointer_to(ty_void)
-                                                          : ty_int;
+                : (node->funcname == bi_s_alloca) ? pointer_to(ty_void)
+                                                  : ty_int;
         } else {
             node->ty = ty_int;
         }
