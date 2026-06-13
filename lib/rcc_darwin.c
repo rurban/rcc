@@ -51,9 +51,15 @@ static void rcc_exit_interposer(int code) {
     __builtin_unreachable();
 }
 
-/* Complex double division: (a+bi)/(c+di).
-   Called by rcc codegen for _Complex double / operator.
-   Arguments a,b,c,d arrive in d0-d3. Returns quotient in d0-d1. */
+/* Complex arithmetic helpers for rcc codegen.
+   Each takes 4 float/double arguments (a,b,c,d = a+bi and c+di)
+   in d0-d3, returns the result (double _Complex) in d0-d1. */
+
+double _Complex __muldc3(double a, double b, double c, double d) {
+    return (a * c - b * d) + (a * d + b * c) * 1.0i;
+}
+
+/* Complex double division: (a+bi)/(c+di) using Smith's algorithm. */
 double _Complex __divdc3(double a, double b, double c, double d) {
     double denom, ratio;
     if (c < 0) c = -c;
@@ -66,5 +72,24 @@ double _Complex __divdc3(double a, double b, double c, double d) {
         ratio = c / d;
         denom = c * ratio + d;
         return (a * ratio + b) / denom + (b * ratio - a) / denom * 1.0i;
+    }
+}
+
+float _Complex __mulsc3(float a, float b, float c, float d) {
+    return (a * c - b * d) + (a * d + b * c) * 1.0fi;
+}
+
+float _Complex __divsc3(float a, float b, float c, float d) {
+    double denom, ratio;
+    if (c < 0) c = -c;
+    if (d < 0) d = -d;
+    if (c >= d) {
+        ratio = d / c;
+        denom = c + d * ratio;
+        return (float)((a + b * ratio) / denom) + (float)((b - a * ratio) / denom) * 1.0fi;
+    } else {
+        ratio = c / d;
+        denom = c * ratio + d;
+        return (float)((a * ratio + b) / denom) + (float)((b * ratio - a) / denom) * 1.0fi;
     }
 }

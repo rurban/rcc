@@ -6703,6 +6703,8 @@ static int gen(Node *node) {
                     }
                 }
 #ifdef ARCH_ARM64
+                // Save src to x12 before loading retbuf into x11
+                printf("  mov x12, %s\n", reg64[src]);
                 if (retbuf_offset <= 4095)
                     printf("  ldr x11, [%s, #-%d]\n", FRAME_PTR, retbuf_offset);
                 else {
@@ -6722,7 +6724,7 @@ static int gen(Node *node) {
                 printf("  cmp x9, #0\n");
                 printf("  b.eq .L.retcopy_end.%d\n", c);
                 printf("  sub x9, x9, #1\n");
-                printf("  ldrb w16, [%s, x9]\n", reg64[src]);
+                printf("  ldrb w16, [x12, x9]\n");
                 printf("  strb w16, [x11, x9]\n");
                 printf("  b .L.retcopy.%d\n", c);
                 printf(".L.retcopy_end.%d:\n", c);
