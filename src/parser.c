@@ -460,6 +460,7 @@ static void resolve_pending_gotos(char *name, LVar *locals_at_label) {
 }
 
 static Typedef *find_typedef(Token *tok) {
+    if (!tok || !tok->name) return NULL;
     uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
     for (Typedef *td = typedef_htab[h]; td; td = td->hash_next)
         if (td->name == tok->name)
@@ -495,6 +496,7 @@ static Type *typedef_find_name(const char *name) {
 }
 
 static EnumConst *find_enum_const(Token *tok) {
+    if (!tok || !tok->name) return NULL;
     uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
     for (EnumConst *ec = enum_htab[h]; ec; ec = ec->hash_next)
         if (ec->name == tok->name)
@@ -503,6 +505,7 @@ static EnumConst *find_enum_const(Token *tok) {
 }
 
 static TagScope *find_tag(Token *tok) {
+    if (!tok || !tok->name) return NULL;
     uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
     for (TagScope *tag = tag_htab[h]; tag; tag = tag->hash_next)
         if (tag->name == tok->name)
