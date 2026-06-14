@@ -2117,7 +2117,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
     if (is_complex && ty) {
         if (ty->size > 8 && !is_flonum(ty))
-            error_tok(tok, "_Complex with %d-byte base type is not supported", ty->size);
+            error_tok(tok, "_Complex with %u-byte base type is not supported",
+                      (unsigned)ty->size);
         ty = complex_type(ty);
     }
 
