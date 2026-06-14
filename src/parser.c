@@ -365,7 +365,7 @@ static Type *func_type(Type *return_ty) {
 
 static LVar *new_var(char *name, Type *ty, bool is_local) {
     LVar *var = arena_alloc(sizeof(LVar));
-    var->name = name;
+    var->name = str_intern(name, strlen(name));
     var->ty = ty;
     var->is_local = is_local;
     var->alias_target = NULL;
@@ -526,6 +526,7 @@ static TagScope *push_tag(char *name, Type *ty) {
 static Member *find_member_by_name(Type *ty, char *name) {
     if (ty->kind != TY_STRUCT && ty->kind != TY_UNION)
         return NULL;
+    name = str_intern(name, strlen(name));
     for (Member *mem = ty->members; mem; mem = mem->next) {
         if (!mem->name) {
             // Anonymous struct/union: search inside recursively
@@ -541,7 +542,7 @@ static Member *find_member_by_name(Type *ty, char *name) {
             }
             continue;
         }
-        if (strcmp(mem->name, name) == 0)
+        if (mem->name == name)
             return mem;
     }
     return NULL;
@@ -5397,7 +5398,7 @@ static Node *unary(Token **rest, Token *tok) {
                             char *mname = tok->next->name;
                             Member *m = NULL;
                             for (Member *mm = cur_ty->members; mm; mm = mm->next) {
-                                if (strcmp(mm->name, mname) == 0) {
+                                if (mm->name == mname) {
                                     m = mm;
                                     break;
                                 }
@@ -6174,6 +6175,13 @@ static char *parse_toplevel_asm(Token **rest, Token *tok) {
 }
 
 Program *parse(Token *tok) {
+    static char *kw_main;
+    static bool parser_inited = false;
+    if (!parser_inited) {
+        kw_main = str_intern("main", 4);
+        parser_inited = true;
+    }
+
     char *saved_input = current_input;
     char *saved_filename = current_filename;
     Token *head = tokenize("rcc_builtins",
@@ -6359,7 +6367,7 @@ Program *parse(Token *tok) {
                                 Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname);
                                 if (dname) {
                                     for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
-                                        if (strcmp(krp->name, dname) == 0) {
+                                        if (krp->name == dname) {
                                             krp->ty = ddecl;
                                             break;
                                         }
@@ -6490,7 +6498,7 @@ Program *parse(Token *tok) {
                     LVar *fn_locals = NULL;
                     Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
                     // Implicit return 0 for main if no explicit return
-                    if (strcmp(name, "main") == 0) {
+                    if (name == kw_main) {
                         Node *last = body->body;
                         if (last) {
                             while (last->next)

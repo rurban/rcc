@@ -50,7 +50,7 @@ static int last_debug_line = 0;
 static int get_debug_file_idx(char *filename) {
     if (!filename) return 1;
     for (int i = 0; i < debug_file_count; i++)
-        if (strcmp(debug_files[i], filename) == 0)
+        if (debug_files[i] == filename)
             return i + 1;
     if (debug_file_count >= MAX_DEBUG_FILES)
         return 1;
@@ -206,6 +206,7 @@ char *bi_chk_printf, *bi_chk_vprintf;
 char *bi_chk_fprintf, *bi_chk_vfprintf;
 char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
 char *bi_strlen, *bi_strcmp, *bi_strchr;
+static char *kw_retbuf;
 
 void init_builtin_names(void) {
     static bool done = false;
@@ -284,6 +285,7 @@ void init_builtin_names(void) {
     bi_chk_vprintf = _BI("__vprintf_chk");
     bi_chk_fprintf = _BI("__fprintf_chk");
     bi_chk_vfprintf = _BI("__vfprintf_chk");
+    kw_retbuf = _BI("__retbuf");
 }
 
 static char *reg(int r, int size);
@@ -6987,7 +6989,7 @@ static int gen(Node *node) {
                 int c = ++rcc_label_count;
                 int retbuf_offset = 0;
                 for (LVar *var = current_fn_def->locals; var; var = var->next) {
-                    if (var->name && strcmp(var->name, "__retbuf") == 0) {
+                    if (var->name && var->name == kw_retbuf) {
                         retbuf_offset = var->offset;
                         break;
                     }
@@ -10488,6 +10490,7 @@ void dump_ast(Program *prog) {
 }
 
 void codegen(Program *prog) {
+    init_builtin_names();
     cg_stream = stdout;
     all_items = prog->items;
     memset(func_htab, 0, sizeof(func_htab));
@@ -11268,7 +11271,7 @@ void codegen(Program *prog) {
         bool had_extern_decl = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
-                if (g->is_function && strcmp(g->name, fn->name) == 0) {
+                if (g->is_function && g->name == fn->name) {
                     if (g->has_init) has_noninline_decl = true;
                     if (g->is_extern && !g->is_weak) had_extern_decl = true;
                     break;
@@ -11343,7 +11346,7 @@ void codegen(Program *prog) {
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || fn->ty->return_ty->kind == TY_COMPLEX)) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
-                if (var->name && strcmp(var->name, "__retbuf") == 0) {
+                if (var->name && var->name == kw_retbuf) {
                     retbuf_offset = var->offset;
                     break;
                 }
@@ -11658,7 +11661,7 @@ void codegen(Program *prog) {
         bool had_extern_decl = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
-                if (g->is_function && strcmp(g->name, fn->name) == 0) {
+                if (g->is_function && g->name == fn->name) {
                     if (g->has_init)
                         has_noninline_decl = true;
                     // Only consider non-weak extern declarations
@@ -11722,7 +11725,7 @@ void codegen(Program *prog) {
                                                                                                                   ))) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
-                if (var->name && strcmp(var->name, "__retbuf") == 0) {
+                if (var->name && var->name == kw_retbuf) {
                     retbuf_offset = var->offset;
                     break;
                 }

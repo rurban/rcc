@@ -32,6 +32,17 @@ struct Macro {
 #define MACRO_HT_SIZE 2048 // power of 2
 static Macro *macro_htab[MACRO_HT_SIZE];
 
+// interned identifiers for frequently-compared builtin macro names
+static char *kw_line;
+static char *kw_file;
+static char *kw_counter;
+static char *kw_function;
+static char *kw_func;
+static char *kw_pretty_function;
+static char *kw_has_include;
+static char *kw_has_include_next;
+static char *kw_va_args;
+
 static uint32_t macro_hash(const char *name) {
     uint32_t h = 2166136261u;
     for (; *name; name++) {
@@ -49,9 +60,10 @@ static void macro_ht_add(Macro *m) {
 }
 
 static void macro_ht_remove(const char *name) {
-    uint32_t h = macro_hash(name);
+    char *iname = str_intern(name, strlen(name));
+    uint32_t h = macro_hash(iname);
     for (Macro **p = &macro_htab[h]; *p; p = &(*p)->hash_next) {
-        if (strcmp((*p)->name, name) == 0) {
+        if ((*p)->name == iname) {
             *p = (*p)->hash_next;
             return;
         }
@@ -466,9 +478,10 @@ static void strip_comments(char *p) {
 }
 
 static Macro *find_macro(char *name) {
+    name = str_intern(name, strlen(name));
     uint32_t h = macro_hash(name);
     for (Macro *m = macro_htab[h]; m; m = m->hash_next)
-        if (m->hash == h && strcmp(m->name, name) == 0)
+        if (m->hash == h && m->name == name)
             return m;
     return NULL;
 }
@@ -497,7 +510,7 @@ static void push_macro(char *name) {
 static void pop_macro(char *name) {
     MacroStack *ms = NULL;
     for (MacroStack **p = &macro_stack; *p; p = &(*p)->next) {
-        if (strcmp((*p)->name, name) == 0) {
+        if ((*p)->name == name) {
             ms = *p;
             *p = (*p)->next;
             break;
@@ -509,7 +522,7 @@ static void pop_macro(char *name) {
         macro_ht_remove(name);
         Macro **pm = &macros;
         while (*pm) {
-            if (strcmp((*pm)->name, name) == 0) {
+            if ((*pm)->name == name) {
                 *pm = (*pm)->next;
                 break;
             }
@@ -534,6 +547,9 @@ static void pop_macro(char *name) {
 }
 
 static void define_macro(char *name, bool is_function, char **params, int param_len, char *body) {
+    name = str_intern(name, strlen(name));
+    for (int i = 0; i < param_len; i++)
+        params[i] = str_intern(params[i], strlen(params[i]));
     Macro *m = find_macro(name);
     if (!m) {
         m = arena_alloc(sizeof(Macro));
@@ -556,10 +572,10 @@ void add_define(char *def) {
     char *name;
     char *body;
     if (eq) {
-        name = pp_strndup(def, eq - def);
+        name = str_intern(def, eq - def);
         body = pp_strndup(eq + 1, strlen(eq));
     } else {
-        name = pp_strndup(def, strlen(def));
+        name = str_intern(def, strlen(def));
         body = pp_strndup("1", 1);
     }
     Macro *m = arena_alloc(sizeof(Macro));
@@ -573,10 +589,11 @@ void add_define(char *def) {
 }
 
 void add_undef(char *name) {
+    name = str_intern(name, strlen(name));
     macro_ht_remove(name);
     Macro **prev = &macros;
     for (Macro *m = macros; m; prev = &m->next, m = m->next) {
-        if (strcmp(m->name, name) == 0) {
+        if (m->name == name) {
             *prev = m->next;
             return;
         }
@@ -585,7 +602,7 @@ void add_undef(char *name) {
 
 static bool is_once_file(char *path) {
     for (OnceFile *f = once_files; f; f = f->next)
-        if (strcmp(f->path, path) == 0)
+        if (f->path == path)
             return true;
     return false;
 }
@@ -668,7 +685,7 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
 
 static int find_param_index(Macro *m, char *name) {
     for (int i = 0; i < m->param_len; i++)
-        if (strcmp(m->params[i], name) == 0)
+        if (m->params[i] == name)
             return i;
     return -1;
 }
@@ -797,19 +814,25 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
             while (isspace((unsigned char)*p))
                 p++;
             // GNU extension: ,##__VA_ARGS__ — delete comma if __VA_ARGS__ is empty
-            if (m->is_variadic && pp_startswith(p, "__VA_ARGS__") && !pp_is_ident2(p[11])) {
-                int va_idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
-                if (va_idx >= argc) {
-                    // Strip trailing comma and whitespace from output
-                    while (sb.len > 0 && isspace((unsigned char)sb.buf[sb.len - 1]))
-                        sb.buf[--sb.len] = '\0';
-                    if (sb.len > 0 && sb.buf[sb.len - 1] == ',')
-                        sb.buf[--sb.len] = '\0';
-                } else {
-                    sb_puts(&sb, (hashhash_mask & (1u << va_idx)) ? raw_args[va_idx] : args[va_idx]);
+            if (m->is_variadic && pp_is_ident1(*p)) {
+                char *va_end = p;
+                while (pp_is_ident2(*va_end))
+                    va_end++;
+                char *name = str_intern(p, va_end - p);
+                if (name == kw_va_args && !pp_is_ident2(*va_end)) {
+                    int va_idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
+                    if (va_idx >= argc) {
+                        // Strip trailing comma and whitespace from output
+                        while (sb.len > 0 && isspace((unsigned char)sb.buf[sb.len - 1]))
+                            sb.buf[--sb.len] = '\0';
+                        if (sb.len > 0 && sb.buf[sb.len - 1] == ',')
+                            sb.buf[--sb.len] = '\0';
+                    } else {
+                        sb_puts(&sb, (hashhash_mask & (1u << va_idx)) ? raw_args[va_idx] : args[va_idx]);
+                    }
+                    p = va_end;
+                    continue;
                 }
-                p += 11;
-                continue;
             }
             sb_putc(&sb, '#');
             sb_putc(&sb, '#');
@@ -824,7 +847,7 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
                 char *start = p;
                 while (pp_is_ident2(*p))
                     p++;
-                char *name = pp_strndup(start, p - start);
+                char *name = str_intern(start, p - start);
                 int idx = find_param_index(m, name);
                 if (idx >= 0 && idx < argc) {
                     // # stringification uses unexpanded (raw) argument
@@ -843,9 +866,9 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
             char *start = p;
             while (pp_is_ident2(*p))
                 p++;
-            char *name = pp_strndup(start, p - start);
+            char *name = str_intern(start, p - start);
             // Handle __VA_ARGS__ in variadic macros
-            if (m->is_variadic && strcmp(name, "__VA_ARGS__") == 0) {
+            if (m->is_variadic && name == kw_va_args) {
                 int va_idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
                 if (va_idx < argc) {
                     sb_puts(&sb, args[va_idx]);
@@ -963,27 +986,26 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
         char *start = p;
         while (pp_is_ident2(*p))
             p++;
-        char *name = pp_strndup(start, p - start);
+        char *name = str_intern(start, p - start);
 
-        if (strcmp(name, "__LINE__") == 0) {
+        if (name == kw_line) {
             sb_puts(&sb, format("%u", line_no));
             continue;
         }
-        if (strcmp(name, "__FILE__") == 0) {
+        if (name == kw_file) {
             sb_puts(&sb, quote_string(filename));
             continue;
         }
-        if (strcmp(name, "__COUNTER__") == 0) {
+        if (name == kw_counter) {
             sb_puts(&sb, format("%d", pp_counter++));
             continue;
         }
-        if (strcmp(name, "__FUNCTION__") == 0 || strcmp(name, "__func__") == 0 ||
-            strcmp(name, "__PRETTY_FUNCTION__") == 0) {
+        if (name == kw_function || name == kw_func || name == kw_pretty_function) {
             // Leave these as identifiers; the parser resolves them to the function name
             sb_puts(&sb, name);
             continue;
         }
-        if (strcmp(name, "__has_include") == 0 || strcmp(name, "__has_include_next") == 0) {
+        if (name == kw_has_include || name == kw_has_include_next) {
             char *q = p;
             while (isspace((unsigned char)*q))
                 q++;
@@ -1456,7 +1478,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         } else {
                             while (s < end && pp_is_ident2(*s)) s++;
                         }
-                        char *name = pp_strndup(name_start, s - name_start);
+                        char *name = str_intern(name_start, s - name_start);
                         pp_check_ident(name, s - name_start, filename, line_no);
                         push_macro(name);
                         sb_putc(&out, '\n');
@@ -1474,7 +1496,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         } else {
                             while (s < end && pp_is_ident2(*s)) s++;
                         }
-                        char *name = pp_strndup(name_start, s - name_start);
+                        char *name = str_intern(name_start, s - name_start);
                         pp_check_ident(name, s - name_start, filename, line_no);
                         pop_macro(name);
                         sb_putc(&out, '\n');
@@ -1511,7 +1533,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 char *name_start = s;
                 while (s < end && pp_is_ident2(*s))
                     s++;
-                char *name = pp_strndup(name_start, s - name_start);
+                char *name = str_intern(name_start, s - name_start);
                 pp_check_ident(name, s - name_start, filename, line_no);
                 bool is_function = false;
                 bool is_variadic = false;
@@ -1551,7 +1573,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         while (s < end && pp_is_ident2(*s))
                             s++;
                         if (s > ps)
-                            params[param_len++] = pp_strndup(ps, s - ps);
+                            params[param_len++] = str_intern(ps, s - ps);
                         while (s < end && isspace((unsigned char)*s))
                             s++;
                         if (*s == ',')
@@ -1593,12 +1615,12 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 char *name_start = s;
                 while (s < end && pp_is_ident2(*s))
                     s++;
-                char *name = pp_strndup(name_start, s - name_start);
+                char *name = str_intern(name_start, s - name_start);
                 pp_check_ident(name, s - name_start, filename, line_no);
                 macro_ht_remove(name);
                 Macro **pm = &macros;
                 while (*pm) {
-                    if (strcmp((*pm)->name, name) == 0) {
+                    if ((*pm)->name == name) {
                         *pm = (*pm)->next;
                         break;
                     }
@@ -2077,6 +2099,15 @@ char *preprocess(char *filename, char *p) {
              __builtin_parity/parityl/parityll,
              __builtin_frame_address, __builtin_prefetch */
 #undef define_pre
+        kw_line = str_intern("__LINE__", 8);
+        kw_file = str_intern("__FILE__", 8);
+        kw_counter = str_intern("__COUNTER__", 11);
+        kw_function = str_intern("__FUNCTION__", 12);
+        kw_func = str_intern("__func__", 8);
+        kw_pretty_function = str_intern("__PRETTY_FUNCTION__", 19);
+        kw_has_include = str_intern("__has_include", 13);
+        kw_has_include_next = str_intern("__has_include_next", 18);
+        kw_va_args = str_intern("__VA_ARGS__", 11);
         saved_macros = macros;
         macros_inited = true;
     }
