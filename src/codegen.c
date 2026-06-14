@@ -296,7 +296,7 @@ static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char 
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0) {
-            bool il = label[0] == ".";
+            bool il = label[0] == '.';
             sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
         }
         objfile_add_reloc(cg_obj, SEC_TEXT, disp_off, sidx, R_X86_64_TPOFF32, 0);
@@ -634,14 +634,11 @@ static void zero_extend_to(VReg r, int from_size, int to_size);
 static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr);
 static void emit_complex_convert_float(int src, int dst, Type *from, Type *to);
 static int alloc_int128_slot(void);
-static int alloc_int128_addr(void);
-static int widen_to_int128(int val, bool is_unsigned);
-static int gen_to_int128(Node *operand);
-static void gen_int128_nonzero(int addr, int result);
-static VReg gen_int128(Node *node);
-static VReg gen_to_int128(Node *operand);
-static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg alloc_int128_addr(void);
+static VReg widen_to_int128(VReg val, bool is_unsigned);
+static VReg gen_to_int128(Node *operand);
+static void gen_int128_nonzero(VReg addr, VReg result);
+static VReg gen_int128(Node *node);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -9600,12 +9597,12 @@ static VReg gen(Node *node) {
             printf("  fmov %s, d0\n", reg64[r]);
 #else
                 if (node->ty->size == 4) {
-                    printf("  movss (%s), %%xmm0\n", reg64[r]);
-                    printf("  cvtss2sd %%xmm0, %%xmm0\n");
+                    x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    x86_cvtss2sd(cg_sec, X86_XMM0, X86_XMM0); // cvtss2sd %xmm0, %xmm0
                 } else {
-                    printf("  movsd (%s), %%xmm0\n", reg64[r]);
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
                 }
-                printf("  movq %%xmm0, %s\n", reg64[r]);
+                asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
 #endif
         } else {
             emit_load(node->ty, r, r, 0);
