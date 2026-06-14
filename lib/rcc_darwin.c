@@ -93,3 +93,12 @@ float _Complex __divsc3(float a, float b, float c, float d) {
         return (float)((a * ratio + b) / denom) + (float)((b * ratio - a) / denom) * 1.0fi;
     }
 }
+/* mempcpy - GNU extension missing from Darwin libc.
+   Like memcpy but returns a pointer to the byte past the end of dst. */
+void *mempcpy(void *dst, const void *src, unsigned long n) {
+    char *d = dst;
+    const char *s = src;
+    for (unsigned long i = 0; i < n; i++)
+        d[i] = s[i];
+    return d + n;
+}

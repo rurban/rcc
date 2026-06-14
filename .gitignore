@@ -55,3 +55,7 @@ test-*.summary
 bench/sqlite3.c
 bench/sqlite3.h
 bench/bench
+
+# macOS debug symbols
+*.dSYM
+*.dSYM/

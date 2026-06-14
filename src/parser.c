@@ -6194,8 +6194,27 @@ Program *parse(Token *tok) {
     char *saved_input = current_input;
     char *saved_filename = current_filename;
     Token *head = tokenize("rcc_builtins",
-#ifdef ARCH_ARM64
-                           // AArch64 ABI va_list: 32 bytes
+#if defined(ARCH_ARM64) && defined(__APPLE__)
+                           // Apple ARM64: va_list is char* (simple pointer ABI)
+                           "typedef char *__builtin_va_list;"
+                           // Declare libc builtins with correct return types
+                           "void *memcpy(void *, const void *, unsigned long);"
+                           "void *memmove(void *, const void *, unsigned long);"
+                           "void *memset(void *, int, unsigned long);"
+                           "int memcmp(const void *, const void *, unsigned long);"
+                           "unsigned long strlen(const char *);"
+                           "char *strcpy(char *, const char *);"
+                           "char *strncpy(char *, const char *, unsigned long);"
+                           "int strcmp(const char *, const char *);"
+                           "int strncmp(const char *, const char *, unsigned long);"
+                           "char *strchr(const char *, int);"
+                           "char *strrchr(const char *, int);"
+                           "void *malloc(unsigned long);"
+                           "void *calloc(unsigned long, unsigned long);"
+                           "void *realloc(void *, unsigned long);"
+                           "void free(void *);"
+#elif defined(ARCH_ARM64)
+                           // AArch64 AAPCS64 va_list: 32 bytes
                            "typedef struct {"
                            "  void *__stack;"
                            "  void *__gr_top;"

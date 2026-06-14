@@ -1382,15 +1382,24 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 // Multiply always produces double-width result (sz*2 bits).
                 // Overflow check: does the double-width product fit in res_sz bits?
                 if (res_sz >= sz * 2) {
-                    // Result wider than or equal to double-width product.
-                    // Double-width product always fits — overflow impossible.
+                    // Result type is at least as wide as the double-width product.
+                    // For signed result: product always fits → no overflow.
+                    // For unsigned result: negative products can't fit → check sign.
+                    bool a_signed = arga->ty && !arga->ty->is_unsigned;
+                    bool b_signed = argb->ty && !argb->ty->is_unsigned;
                     if (sz == 8) {
                         printf("  mul %s, %s, %s\n", reg64[ra], reg64[ra], reg64[rb]);
                     } else {
                         printf("  smull %s, %s, %s\n", reg64[ra], reg32[ra], reg32[rb]);
                     }
-                    // Double-width product always fits in wider result → no overflow
-                    printf("  mov %s, #0\n", reg32[r_result]);
+                    if (res_unsigned && (a_signed || b_signed)) {
+                        // Negative product means overflow for unsigned result type
+                        printf("  tst %s, %s\n", reg64[ra], reg64[ra]);
+                        printf("  cset %s, mi\n", reg32[r_result]);
+                    } else {
+                        // Double-width product always fits in wider signed result
+                        printf("  mov %s, #0\n", reg32[r_result]);
+                    }
                 } else if (res_sz == sz) {
                     // Same width: check overflow using result signedness
                     int r2 = alloc_reg();
@@ -1907,9 +1916,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (call_target == bi_s_sprintf ||
             call_target == bi_s_snprintf ||
             call_target == bi_s_fprintf ||
-            call_target == bi_s_vfprintf ||
-            call_target == bi_s_printf ||
-            call_target == bi_s_vprintf) {
+            call_target == bi_s_printf) {
             variadic_fn.kind = TY_FUNC;
             variadic_fn.is_variadic = true;
             fn_type = &variadic_fn;
@@ -1921,12 +1928,10 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         for (Type *t = fn_type->param_types; t; t = t->param_next)
             named_count++;
     if (named_count == 0 && call_target && is_variadic) {
-        if (call_target == bi_s_printf ||
-            call_target == bi_s_vprintf)
+        if (call_target == bi_s_printf)
             named_count = 1;
         else if (call_target == bi_s_sprintf ||
-                 call_target == bi_s_fprintf ||
-                 call_target == bi_s_vfprintf)
+                 call_target == bi_s_fprintf)
             named_count = 2;
         else if (call_target == bi_s_snprintf)
             named_count = 3;
@@ -8311,13 +8316,14 @@ static int gen(Node *node) {
 #endif
     }
     case ND_VA_START: {
-#ifdef _WIN32
-        int r = gen_addr(node->lhs); // va_list is char *, need its address to write
-#else
+#if defined(ARCH_ARM64) && defined(__APPLE__)
+        // Apple ARM64: va_list is char*. Point ap to first variadic arg on stack.
+        int r = gen_addr(node->lhs); // address of the char* variable ap
+        printf("  add x16, %s, #%d\n", FRAME_PTR, va_st_start);
+        printf("  str x16, [%s]\n", reg64[r]);
+#elif defined(ARCH_ARM64)
+        // AAPCS64: initialize 5-field va_list struct
         int r = gen(node->lhs); // va_list is array-of-struct, decays to pointer
-#endif
-#ifdef ARCH_ARM64
-        // AArch64 ABI va_list: [__stack(8), __gr_top(8), __vr_top(8), __gr_offs(4), __vr_offs(4)]
         // __stack: pointer to first stack overflow argument
         printf("  add x16, %s, #%d\n", FRAME_PTR, va_st_start);
         printf("  str x16, [%s]\n", reg64[r]);
@@ -8329,35 +8335,44 @@ static int gen(Node *node) {
         printf("  ldur x16, [%s, #-8]\n", FRAME_PTR);
         printf("  add x16, x16, #192\n");
         printf("  str x16, [%s, #16]\n", reg64[r]);
-        // __gr_offs: -(8 - gp_param) * 8
+        // __gr_offs
         printf("  mov w16, #%d\n", va_gp_start);
         printf("  str w16, [%s, #24]\n", reg64[r]);
-        // __vr_offs: -(8 - fp_param) * 16
+        // __vr_offs
         printf("  mov w16, #%d\n", va_fp_start);
         printf("  str w16, [%s, #28]\n", reg64[r]);
 #else
 #ifdef _WIN32
-        // Windows x64: va_list is char *. Point to first variadic arg in
-        // caller's shadow space (rbp+16 = return addr + saved rbp; 8-byte slots).
-        printf("  leaq %d(%%rbp), %%rdx\n", 16 + va_gp_start);
-        printf("  movq %%rdx, (%s)\n", reg64[r]);
+            int r = gen_addr(node->lhs); // va_list is char *, need its address to write
+            // Windows x64: va_list is char *. Point to first variadic arg in
+            // caller's shadow space (rbp+16 = return addr + saved rbp; 8-byte slots).
+            printf("  leaq %d(%%rbp), %%rdx\n", 16 + va_gp_start);
+            printf("  movq %%rdx, (%s)\n", reg64[r]);
 #else
-        printf("  movl $%d, (%s)\n", va_gp_start, reg64[r]);
-        printf("  movl $%d, 4(%s)\n", va_fp_start, reg64[r]);
-        printf("  leaq %d(%%rbp), %%rdx\n", va_st_start);
-        printf("  movq %%rdx, 8(%s)\n", reg64[r]);
-        printf("  leaq -%d(%%rbp), %%rdx\n", va_reg_save_ofs);
-        printf("  movq %%rdx, 16(%s)\n", reg64[r]);
+            int r = gen(node->lhs); // va_list is array-of-struct, decays to pointer
+            printf("  movl $%d, (%s)\n", va_gp_start, reg64[r]);
+            printf("  movl $%d, 4(%s)\n", va_fp_start, reg64[r]);
+            printf("  leaq %d(%%rbp), %%rdx\n", va_st_start);
+            printf("  movq %%rdx, 8(%s)\n", reg64[r]);
+            printf("  leaq -%d(%%rbp), %%rdx\n", va_reg_save_ofs);
+            printf("  movq %%rdx, 16(%s)\n", reg64[r]);
 #endif
 #endif
         free_reg(r);
         return -1;
     }
     case ND_VA_COPY: {
+#if defined(ARCH_ARM64) && defined(__APPLE__)
+        // Apple ARM64: va_list is char*. Just copy the pointer.
+        int rd = gen_addr(node->lhs); // address of dst char* variable
+        int rs = gen(node->rhs); // value of src char* (the pointer itself)
+        printf("  str %s, [%s]\n", reg64[rs], reg64[rd]);
+        free_reg(rd);
+        free_reg(rs);
+#elif defined(ARCH_ARM64)
         int rd = gen(node->lhs);
-#ifdef ARCH_ARM64
         int rs = gen(node->rhs);
-        // ABI va_list is 32 bytes: copy all 4 x 8-byte words
+        // AAPCS64 va_list is 32 bytes: copy all 4 x 8-byte words
         printf("  ldr x16, [%s]\n", reg64[rs]);
         printf("  str x16, [%s]\n", reg64[rd]);
         printf("  ldr x16, [%s, #8]\n", reg64[rs]);
@@ -8369,29 +8384,59 @@ static int gen(Node *node) {
         free_reg(rd);
         free_reg(rs);
 #else
-        printf("  push %s\n", reg64[rd]);
-        free_reg(rd);
-        int rs = gen(node->rhs);
-        int rpop = alloc_reg();
-        printf("  pop %s\n", reg64[rpop]);
-        printf("  movq (%s), %%rcx\n", reg64[rs]);
-        printf("  movq %%rcx, (%s)\n", reg64[rpop]);
-        printf("  movq 8(%s), %%rcx\n", reg64[rs]);
-        printf("  movq %%rcx, 8(%s)\n", reg64[rpop]);
-        printf("  movq 16(%s), %%rcx\n", reg64[rs]);
-        printf("  movq %%rcx, 16(%s)\n", reg64[rpop]);
-        free_reg(rs);
-        free_reg(rpop);
+            int rd = gen(node->lhs);
+            printf("  push %s\n", reg64[rd]);
+            free_reg(rd);
+            int rs = gen(node->rhs);
+            int rpop = alloc_reg();
+            printf("  pop %s\n", reg64[rpop]);
+            printf("  movq (%s), %%rcx\n", reg64[rs]);
+            printf("  movq %%rcx, (%s)\n", reg64[rpop]);
+            printf("  movq 8(%s), %%rcx\n", reg64[rs]);
+            printf("  movq %%rcx, 8(%s)\n", reg64[rpop]);
+            printf("  movq 16(%s), %%rcx\n", reg64[rs]);
+            printf("  movq %%rcx, 16(%s)\n", reg64[rpop]);
+            free_reg(rs);
+            free_reg(rpop);
 #endif
         return -1;
     }
     case ND_VA_ARG: {
+        Type *ty = node->ty->base;
+#if defined(ARCH_ARM64) && defined(__APPLE__)
+        // Apple ARM64: va_list is char*. Load address of arg and advance.
+        // Returns ADDRESS of the arg (like AAPCS64), so callers can do typed loads.
+        int r = gen_addr(node->lhs); // address of the char* variable ap
+        bool is_ptr_struct_apple = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
+        // Load current pointer (= address of next arg slot)
+        printf("  ldr x12, [%s]\n", reg64[r]); // x12 = ap
+        // Compute slot size: Apple ARM64 variadic args occupy 8-byte aligned slots
+        int slot_sz;
+        if (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
+            slot_sz = (ty->size + 7) & ~7;
+        else
+            slot_sz = 8;
+        // Advance ap
+        printf("  add x16, x12, #%d\n", slot_sz);
+        printf("  str x16, [%s]\n", reg64[r]);
+        free_reg(r);
+        // Return address of the arg slot in x12 (like AAPCS64 convention).
+        // For structs > 8 bytes passed by pointer, dereference once to get struct ptr.
+        int ret = alloc_reg();
+        if (is_ptr_struct_apple) {
+            // Slot holds a pointer to the struct; dereference to get struct pointer
+            printf("  ldr %s, [x12]\n", reg64[ret]);
+        } else {
+            // x12 = address of arg value; return it directly
+            printf("  mov %s, x12\n", reg64[ret]);
+        }
+        return ret;
+#else
 #ifdef _WIN32
         int r = gen_addr(node->lhs); // va_list is char *, need its address to advance
 #else
         int r = gen(node->lhs); // va_list is array-of-struct, decays to pointer
 #endif
-        Type *ty = node->ty->base;
 #ifndef _WIN32
         bool is_fp = is_flonum(ty);
 #endif
@@ -8401,6 +8446,9 @@ static int gen(Node *node) {
         // va_arg must read 8-byte pointer from reg save area, then dereference.
         bool is_ptr_val_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
 
+        // AArch64 ABI va_list: [__stack(8), __gr_top(8), __vr_top(8), __gr_offs(4), __vr_offs(4)]
+        // gr_offs < 0 means reg arg available; addr = __gr_top + __gr_offs
+        // Only use FP path for bare float types; structs (incl. HFA) always go in GP regs.
         // AArch64 ABI va_list: [__stack(8), __gr_top(8), __vr_top(8), __gr_offs(4), __vr_offs(4)]
         // gr_offs < 0 means reg arg available; addr = __gr_top + __gr_offs
         // Only use FP path for bare float types; structs (incl. HFA) always go in GP regs.
@@ -8909,6 +8957,7 @@ static int gen(Node *node) {
             }
         }
 #endif
+#endif // defined(ARCH_ARM64) && defined(__APPLE__)
         return -1;
     }
 
@@ -9115,13 +9164,54 @@ static int gen(Node *node) {
                     printf("  sub w18, w17, w18\n");
                     printf("  bfi x16, x18, #32, #32\n");
                     break;
-                case ND_MUL:
-                case ND_DIV:
-                    printf("  ldr d0, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr d1, [%s]\n", reg64[addr_rhs]);
-                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "___mulsc3" : "___divsc3") : (node->kind == ND_MUL ? "___muldc3" : "___divdc3"));
-                    printf("  str d0, [%s]\n", reg64[result]);
+                case ND_MUL: {
+                    // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — integer arithmetic
+                    printf("  ldr w16, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr w18, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul w16, w16, w18\n");
+                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul w17, w17, w18\n");
+                    printf("  sub w16, w16, w17\n"); // real = ac-bd
+                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr w18, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul w17, w17, w18\n");
+                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  ldr w9, [%s]\n", reg64[addr_lhs]);
+                    printf("  mul w9, w9, w18\n");
+                    printf("  add w17, w17, w9\n"); // imag = bc+ad
+                    printf("  str w16, [%s]\n", reg64[result]);
+                    printf("  str w17, [%s, #%d]\n", reg64[result], base_sz);
                     goto cx_arith_done;
+                }
+                case ND_DIV: {
+                    // (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
+                    const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
+                    printf("  ldr w16, [%s]\n", reg64[addr_rhs]);
+                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul w16, w16, w16\n");
+                    printf("  mul w17, w17, w17\n");
+                    printf("  add w9, w16, w17\n"); // denom = c²+d²
+                    printf("  ldr w16, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr w17, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul w16, w16, w17\n"); // ac
+                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul w17, w17, w18\n"); // bd
+                    printf("  add w16, w16, w17\n"); // ac+bd
+                    printf("  %s w16, w16, w9\n", dv); // real
+                    printf("  str w16, [%s]\n", reg64[result]);
+                    printf("  ldr w16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr w17, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul w16, w16, w17\n"); // bc
+                    printf("  ldr w17, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul w17, w17, w18\n"); // ad
+                    printf("  sub w16, w16, w17\n"); // bc-ad
+                    printf("  %s w16, w16, w9\n", dv); // imag
+                    printf("  str w16, [%s, #%d]\n", reg64[result], base_sz);
+                    goto cx_arith_done;
+                }
                 default:
                     __builtin_unreachable();
                 }
@@ -9145,12 +9235,53 @@ static int gen(Node *node) {
                     printf("  str x16, [%s]\n", reg64[result]);
                     printf("  str x17, [%s, #%d]\n", reg64[result], base_sz);
                     goto cx_arith_done;
-                case ND_MUL:
-                case ND_DIV:
-                    printf("  ldr d0, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr d1, [%s]\n", reg64[addr_rhs]);
-                    printf("  bl %s\n", base_sz == 4 ? (node->kind == ND_MUL ? "___mulsc3" : "___divsc3") : (node->kind == ND_MUL ? "___muldc3" : "___divdc3"));
+                case ND_MUL: {
+                    // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — 64-bit integer arithmetic
+                    printf("  ldr x16, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr x18, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul x16, x16, x18\n");
+                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul x17, x17, x18\n");
+                    printf("  sub x16, x16, x17\n");
+                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr x18, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul x17, x17, x18\n");
+                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  ldr x9, [%s]\n", reg64[addr_lhs]);
+                    printf("  mul x9, x9, x18\n");
+                    printf("  add x17, x17, x9\n");
+                    printf("  str x16, [%s]\n", reg64[result]);
+                    printf("  str x17, [%s, #%d]\n", reg64[result], base_sz);
                     goto cx_arith_done;
+                }
+                case ND_DIV: {
+                    const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
+                    printf("  ldr x16, [%s]\n", reg64[addr_rhs]);
+                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul x16, x16, x16\n");
+                    printf("  mul x17, x17, x17\n");
+                    printf("  add x9, x16, x17\n");
+                    printf("  ldr x16, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul x16, x16, x17\n");
+                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul x17, x17, x18\n");
+                    printf("  add x16, x16, x17\n");
+                    printf("  %s x16, x16, x9\n", dv);
+                    printf("  str x16, [%s]\n", reg64[result]);
+                    printf("  ldr x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
+                    printf("  mul x16, x16, x17\n");
+                    printf("  ldr x17, [%s]\n", reg64[addr_lhs]);
+                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    printf("  mul x17, x17, x18\n");
+                    printf("  sub x16, x16, x17\n");
+                    printf("  %s x16, x16, x9\n", dv);
+                    printf("  str x16, [%s, #%d]\n", reg64[result], base_sz);
+                    goto cx_arith_done;
+                }
                 default:
                     __builtin_unreachable();
                 }
@@ -11277,8 +11408,12 @@ void codegen(Program *prog) {
             if (callee_mask & (1 << j)) n_callee_saved++;
 
         int need = fn->stack_size + fn_struct_ret_total + 32;
-        int va_save_size = fn->is_variadic ? 192 : 0;
-        if (fn->is_variadic)
+        int va_save_size = 0;
+#ifndef __APPLE__
+        // AAPCS64 (Linux): save all GP and FP arg regs for variadic functions
+        if (fn->is_variadic) va_save_size = 192;
+#endif
+        if (va_save_size > 0)
             need += va_save_size;
         int frame_size = need + 16 + n_callee_saved * 8;
         // Round up to 16-byte alignment
@@ -11338,7 +11473,8 @@ void codegen(Program *prog) {
         }
 
         // Save variadic argument registers at the bottom of the frame (sp)
-        if (fn->is_variadic) {
+        // Skip on Apple ARM64: variadic args are already on the caller's stack.
+        if (fn->is_variadic && va_save_size > 0) {
             printf("  stp x0, x1, [%s]\n", STACK_REG);
             printf("  stp x2, x3, [%s, #16]\n", STACK_REG);
             printf("  stp x4, x5, [%s, #32]\n", STACK_REG);
@@ -11353,7 +11489,7 @@ void codegen(Program *prog) {
         }
 
         // Save callee-saved regs
-        int cs_off = fn->is_variadic ? 192 + 16 : 16;
+        int cs_off = (fn->is_variadic && va_save_size > 0) ? va_save_size + 16 : 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 printf("  str %s, [%s, #%d]\n", reg64[j + 6], STACK_REG, cs_off);

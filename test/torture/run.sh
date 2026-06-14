@@ -9,7 +9,7 @@
 # script (e.g. ./mingw-cross.sh, ./arm64-cross.sh).
 
 cd "$(dirname "$0")" || exit
-RCC="${1:-../../rcc}"
+RCC="../../rcc"
 CFLAGS="-O1"
 PASS=0
 FAIL_COMPILE=0
