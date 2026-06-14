@@ -449,7 +449,7 @@
   20020402-3                          PASS
   20020404-1                          PASS
   20020406-1                          PASS
-  20020411-1                          FAIL (runtime)
+  20020411-1                          PASS
   20020412-1                          PASS
   20020413-1                          PASS
   20020418-1                          PASS
@@ -1218,8 +1218,8 @@
   pr57876                             PASS
   pr57877                             PASS
   pr58209                             PASS
-  pr58277-1                           FAIL (runtime)
-  pr58277-2                           FAIL (runtime)
+  pr58277-1                           PASS
+  pr58277-2                           PASS
   pr58364                             PASS
   pr58365                             PASS
   pr58385                             PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1563/1569 passed (99%), 6 failed (0 compile/6 runtime), 102 skipped.
+Torture: 1566/1569 passed (99%), 3 failed (0 compile/3 runtime), 102 skipped.
 
-Runtime failures: 20020411-1 pr58277-1 pr58277-2 pr82210 va-arg-22 va-arg-pack-1
+Runtime failures: pr82210 va-arg-22 va-arg-pack-1

@@ -4429,6 +4429,23 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return rt_expr;
     }
+    // __builtin_conjf/conj/conjl(z) — complex conjugate: negate the imaginary part
+    if (equalc(tok, "__builtin_conjf") || equalc(tok, "__builtin_conj") ||
+        equalc(tok, "__builtin_conjl")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *arg = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        check_type(arg);
+        Type *cty = arg->ty;
+        if (!is_complex(cty))
+            cty = complex_type(ty_double);
+        Node *re = new_unary(ND_REAL, arg, start);
+        Node *im = new_unary(ND_IMAG, arg, start);
+        Node *neg_im = new_unary(ND_NEG, im, start);
+        check_type(neg_im);
+        return new_complex_val(re, neg_im, cty, start);
+    }
     if (equalc(tok, "__builtin_va_start")) {
         Node *node = new_node(ND_VA_START, tok);
         tok = skip(tok->next, "(");

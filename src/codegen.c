@@ -2532,12 +2532,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     // after the call. If there's no hidden retbuf, hidden_ret_reg (if set)
     // just holds a destination address from gen_addr() that must survive the
     // call like any other live register.
-    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
+    if (saved_scratch & 1) {
         printf("  movq %%r10, -%d(%%rbp)\n", spill_offset(0));
         // Keep r10 marked as in-use so alloc_reg() doesn't reuse it for the
         // hidden ret buffer, which would overwrite a caller's live arg value.
     }
-    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
+    if (saved_scratch & 2) {
         printf("  movq %%r11, -%d(%%rbp)\n", spill_offset(1));
         // Same for r11.
     }
@@ -2847,11 +2847,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  addq $%d, %%rsp\n", stack_reserve);
 
-    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
+    if (saved_scratch & 2) {
         used_regs |= 2;
         printf("  movq -%d(%%rbp), %%r11\n", spill_offset(1));
     }
-    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
+    if (saved_scratch & 1) {
         used_regs |= 1;
         printf("  movq -%d(%%rbp), %%r10\n", spill_offset(0));
     }
@@ -6913,6 +6913,25 @@ static int gen(Node *node) {
     case ND_DEREF: {
         if (node->ty->kind == TY_FUNC || node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
             return gen(node->lhs);
+        // Optimize *(pointer + index) to use LEA addressing, avoiding
+        // an intermediate add register that can be spilled under deep nesting.
+        if (node->lhs->kind == ND_ADD && node->lhs->lhs->ty &&
+            node->lhs->lhs->ty->base && !is_flonum(node->ty)) {
+            int idx = gen(node->lhs->rhs);
+            int base = gen(node->lhs->lhs);
+            int r = alloc_reg();
+            // idx is already scaled by gen(node->lhs->rhs), so just add.
+#ifdef ARCH_ARM64
+            printf("  add %s, %s, %s\n", reg64[r], reg64[base], reg64[idx]);
+#else
+            printf("  mov %s, %s\n", reg64[base], reg64[r]);
+            printf("  add %s, %s\n", reg64[idx], reg64[r]);
+#endif
+            free_reg(base);
+            free_reg(idx);
+            emit_load(node->ty, r, format("(%s)", reg64[r]));
+            return r;
+        }
         int r = gen(node->lhs);
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64

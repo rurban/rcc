@@ -1991,7 +1991,7 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_printf", "printf");
         define_pre("__builtin_puts", "puts");
         define_pre("__builtin_sprintf", "sprintf");
-        define_pre("__builtin_conjf", "conjf");
+        // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
@@ -2058,7 +2058,7 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_printf", "printf");
         define_pre("__builtin_puts", "puts");
         define_pre("__builtin_sprintf", "sprintf");
-        define_pre("__builtin_conjf", "conjf");
+        // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
