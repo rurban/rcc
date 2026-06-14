@@ -2537,12 +2537,12 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     // after the call. If there's no hidden retbuf, hidden_ret_reg (if set)
     // just holds a destination address from gen_addr() that must survive the
     // call like any other live register.
-    if (saved_scratch & 1) {
+    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
         printf("  movq %%r10, -%d(%%rbp)\n", spill_offset(0));
         // Keep r10 marked as in-use so alloc_reg() doesn't reuse it for the
         // hidden ret buffer, which would overwrite a caller's live arg value.
     }
-    if (saved_scratch & 2) {
+    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
         printf("  movq %%r11, -%d(%%rbp)\n", spill_offset(1));
         // Same for r11.
     }
@@ -2852,11 +2852,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  addq $%d, %%rsp\n", stack_reserve);
 
-    if (saved_scratch & 2) {
+    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
         used_regs |= 2;
         printf("  movq -%d(%%rbp), %%r11\n", spill_offset(1));
     }
-    if (saved_scratch & 1) {
+    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
         used_regs |= 1;
         printf("  movq -%d(%%rbp), %%r10\n", spill_offset(0));
     }
@@ -5586,9 +5586,14 @@ static int gen(Node *node) {
             int src;
             if (node->rhs->kind == ND_FUNCALL && node->rhs->ty &&
                 (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_COMPLEX)) {
-                // Generate the call with dst as the hidden return buffer.
-                // gen_funcall will copy the return value directly to dst.
+                int sav = -1;
+                if (dst == 0 || dst == 1) {
+                    sav = dst;
+                    printf("  movq %s, -%d(%%rbp)\n", reg64[dst], spill_offset(dst));
+                }
                 gen_funcall(node->rhs, dst);
+                if (sav >= 0)
+                    printf("  movq -%d(%%rbp), %s\n", spill_offset(sav), reg64[sav]);
                 // If the call's complex return type and the destination's
                 // complex type have differently-sized real-floating bases
                 // (e.g. _Complex float -> _Complex double), convert the
@@ -6918,14 +6923,12 @@ static int gen(Node *node) {
     case ND_DEREF: {
         if (node->ty->kind == TY_FUNC || node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
             return gen(node->lhs);
-        // Optimize *(pointer + index) to use LEA addressing, avoiding
-        // an intermediate add register that can be spilled under deep nesting.
+        fprintf(stderr, "DEREF uregs=%d\n", used_regs);
         if (node->lhs->kind == ND_ADD && node->lhs->lhs->ty &&
             node->lhs->lhs->ty->base && !is_flonum(node->ty)) {
-            int idx = gen(node->lhs->rhs);
             int base = gen(node->lhs->lhs);
+            int idx = gen(node->lhs->rhs);
             int r = alloc_reg();
-            // idx is already scaled by gen(node->lhs->rhs), so just add.
 #ifdef ARCH_ARM64
             printf("  add %s, %s, %s\n", reg64[r], reg64[base], reg64[idx]);
 #else
