@@ -6923,26 +6923,23 @@ static int gen(Node *node) {
     case ND_DEREF: {
         if (node->ty->kind == TY_FUNC || node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
             return gen(node->lhs);
-        fprintf(stderr, "DEREF uregs=%d\n", used_regs);
         if (node->lhs->kind == ND_ADD && node->lhs->lhs->ty &&
-            node->lhs->lhs->ty->base && !is_flonum(node->ty)) {
-            int base = gen(node->lhs->lhs);
+            node->lhs->lhs->ty->base && !is_flonum(node->ty) &&
+            node->lhs->lhs->kind == ND_LVAR) {
             int idx = gen(node->lhs->rhs);
-            int r = alloc_reg();
+            int base = gen(node->lhs->lhs);
 #ifdef ARCH_ARM64
-            printf("  add %s, %s, %s\n", reg64[r], reg64[base], reg64[idx]);
+            printf("  add %s, %s, %s\n", reg64[base], reg64[base], reg64[idx]);
 #else
-            printf("  mov %s, %s\n", reg64[base], reg64[r]);
-            printf("  add %s, %s\n", reg64[idx], reg64[r]);
+            printf("  add %s, %s\n", reg64[idx], reg64[base]);
 #endif
-            free_reg(base);
             free_reg(idx);
 #ifdef ARCH_ARM64
-            emit_load(node->ty, r, format("[%s]", reg64[r]));
+            emit_load(node->ty, base, format("[%s]", reg64[base]));
 #else
-            emit_load(node->ty, r, format("(%s)", reg64[r]));
+            emit_load(node->ty, base, format("(%s)", reg64[base]));
 #endif
-            return r;
+            return base;
         }
         int r = gen(node->lhs);
         if (is_flonum(node->ty)) {
