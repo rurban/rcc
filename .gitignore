@@ -50,3 +50,8 @@ c-testsuite.tap.txt
 qemu_*.core
 gmon.out
 test-*.summary
+
+# Bench artifacts
+bench/sqlite3.c
+bench/sqlite3.h
+bench/bench

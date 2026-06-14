@@ -5,8 +5,8 @@
 
 set -e
 
-BENCHDIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$BENCHDIR/bench.c"
+cd "$(dirname "$0")/.." || exit 1
+SRC="bench/bench.c"
 RCC="${1:-./rcc}"
 TCC="${TCC:-tcc}"
 GCC="${GCC:-gcc}"
@@ -16,9 +16,31 @@ if [ -z "$KEFIR" ] && [ -e "/opt/kefir/bin/kefir" ]; then
    KEFIR="/opt/kefir/bin/kefir"
 fi
 SLIMCC="$(which slimcc 2>/dev/null || true)"
-if [ -z "$SLIMCC" ] && [ -e "$BENCHDIR/../../slimcc/slimcc" ]; then
-   SLIMCC="$BENCHDIR/../../slimcc/slimcc"
+if [ -z "$SLIMCC" ] && [ -e "bench/../../slimcc/slimcc" ]; then
+   SLIMCC="../slimcc/slimcc"
 fi
+
+LARGE_SRC="bench/sqlite3.c"
+LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
+
+# download_sqlite: fetch sqlite3.c amalgamation if missing (cached)
+download_sqlite() {
+	if [ -f "$LARGE_SRC" ]; then
+		return 0
+	fi
+	printf "Downloading sqlite amalgamation...\n"
+	if command -v curl >/dev/null 2>&1; then
+		curl -sSL "$LARGE_SRC_URL" -o /tmp/sqlite-amalg.zip
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q "$LARGE_SRC_URL" -O /tmp/sqlite-amalg.zip
+	else
+		printf "  SKIP: no curl or wget\n"
+		return 1
+	fi
+	unzip -o -j /tmp/sqlite-amalg.zip "sqlite-amalgamation-*/sqlite3.c" "sqlite-amalgamation-*/sqlite3.h" -d bench/
+	rm -f /tmp/sqlite-amalg.zip
+	printf "  Downloaded sqlite3.c (%s lines)\n" "$(wc -l < "$LARGE_SRC")"
+}
 
 # Check rcc and tcc exist
 if [ ! -x "$RCC" ]; then
@@ -30,22 +52,22 @@ if ! command -v "$TCC" >/dev/null 2>&1; then
     TCC=""
 fi
 
-RCC_EXE="$BENCHDIR/bench_rcc"
-RCC_O1_EXE="$BENCHDIR/bench_rcc_o1"
-TCC_EXE="$BENCHDIR/bench_tcc"
-GCC_EXE="$BENCHDIR/bench_gcc"
-GCC_O2_EXE="$BENCHDIR/bench_gcc_o2"
-CLANG_EXE="$BENCHDIR/bench_clang"
-CLANG_O2_EXE="$BENCHDIR/bench_clang_o2"
-KEFIR_EXE="$BENCHDIR/bench_kefir"
-KEFIR_O1_EXE="$BENCHDIR/bench_kefir_o1"
-SLIMCC_EXE="$BENCHDIR/bench_slimcc"
+RCC_EXE="bench/bench_rcc"
+RCC_O1_EXE="bench/bench_rcc_o1"
+TCC_EXE="bench/bench_tcc"
+GCC_EXE="bench/bench_gcc"
+GCC_O2_EXE="bench/bench_gcc_o2"
+CLANG_EXE="bench/bench_clang"
+CLANG_O2_EXE="bench/bench_clang_o2"
+KEFIR_EXE="bench/bench_kefir"
+KEFIR_O1_EXE="bench/bench_kefir_o1"
+SLIMCC_EXE="bench/bench_slimcc"
 
 RUNS=3
 if [ "$(uname -s)" = "Darwin" ]; then
-	REPORT="$BENCHDIR/bench_report_darwin.md"
+	REPORT="bench/bench_report_darwin.md"
 else
-	REPORT="$BENCHDIR/bench_report.md"
+	REPORT="bench/bench_report.md"
 fi
 
 cleanup() {
@@ -131,12 +153,27 @@ echo "============================================"
 echo ""
 printf "\n--- RCC ---\n"
 rcc_time=$("$RCC" -time "$SRC" -o "$RCC_EXE" 2>&1 >/dev/null) || true
-printf '%s\n' "$rcc_time"
+printf '%s\n' "$rcc_time" | column -t
 rm -f "$RCC_EXE"
 printf "\n--- RCC -O1 ---\n"
 rcc_o1_time=$("$RCC" -time -O1 "$SRC" -o "$RCC_O1_EXE" 2>&1 >/dev/null) || true
-printf '%s\n' "$rcc_o1_time"
+printf '%s\n' "$rcc_o1_time" | column -t
 rm -f "$RCC_O1_EXE"
+
+# ---- Large file substep timing ----
+if download_sqlite; then
+    echo ""
+    echo "============================================"
+    echo "  RCC substep timing  --  sqlite3.c"
+    echo "============================================"
+    echo ""
+    printf "\n--- RCC ---\n"
+    rcc_large_time=$("$RCC" -time -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    printf '%s\n' "$rcc_large_time" | column -t
+    printf "\n--- RCC -O1 ---\n"
+    rcc_large_o1_time=$("$RCC" -time -O1 -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    printf '%s\n' "$rcc_large_o1_time" | column -t
+fi
 
 echo ""
 echo "============================================"
@@ -182,6 +219,40 @@ for _c in $list_c; do
 done
 IFS="$oldifs"
 
+# ---- Large file compile-only benchmark ----
+if [ -f "$LARGE_SRC" ]; then
+    echo ""
+    echo "============================================="
+    echo "     LARGE FILE COMPILE-ONLY  (sqlite3.c)"
+    echo "============================================="
+    printf "%-30s %10s\n" "Compiler" "Compile (ms)"
+    printf "%-30s %10s\n" "--------" "-----------"
+
+    _compile_large() {
+	# shellcheck disable=SC2086
+	_label="$1"
+	shift
+	printf "%-30s " "$_label"
+	_cm=$(time_ms "$@" 2>/dev/null) || true
+	printf "%8s ms\n" "$_cm"
+    }
+
+    _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null
+    _compile_large "RCC -O1" "$RCC" -O1 -c "$LARGE_SRC" -o /dev/null
+    if [ -n "$TCC" ]; then
+	_compile_large "TCC" "$TCC" -c "$LARGE_SRC" -o /dev/null
+    fi
+    if [ -n "$SLIMCC" ]; then
+	_compile_large "SLIMCC" "$SLIMCC" -c "$LARGE_SRC" -o /dev/null
+    fi
+    _compile_large "GCC -O0" "$GCC" -O0 -c "$LARGE_SRC" -o /dev/null
+    _compile_large "GCC -O2" "$GCC" -O2 -c "$LARGE_SRC" -o /dev/null
+    if [ -n "$CLANG" ]; then
+	_compile_large "Clang -O0" "$CLANG" -O0 -c "$LARGE_SRC" -o /dev/null
+	_compile_large "Clang -O2" "$CLANG" -O2 -c "$LARGE_SRC" -o /dev/null
+    fi
+fi # LARGE_SRC
+
 # Write markdown report
 {
 	if [ "$(uname -s)" = "Darwin" ]; then
@@ -210,6 +281,15 @@ printf '%s\n' "$rcc_time" | sed 's|[^ ]*/||g'
 printf "\nRCC -O1:\n"
 printf '%s\n' "$rcc_o1_time" | sed 's|[^ ]*/||g'
 printf '```\n'
+if [ -n "${rcc_large_time:-}" ]; then
+	printf "\n## RCC Substep Timing -- sqlite3.c\n\n"
+	printf '```\n'
+	printf "RCC:\n"
+	printf '%s\n' "$rcc_large_time" | sed 's|[^ ]*/||g'
+	printf "\nRCC -O1:\n"
+	printf '%s\n' "$rcc_large_o1_time" | sed 's|[^ ]*/||g'
+	printf '```\n'
+fi
 } > "$REPORT"
 printf "Report: %s\n" "$REPORT"
 
