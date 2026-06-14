@@ -4665,11 +4665,15 @@ int main(int argc, char **argv) {
 
     /* rewrite shorthand cross-compiler paths.
        FIXME: should be able to run rcc-arm64 via gcc-aarch64 */
+    /* rewrite shorthand cross-compiler paths.
+       Only when cross-compiling — not on native ARM64 or x86 builds */
+#if !defined(ARM64_NATIVE) && !defined(__aarch64__)
     if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
         rcc = buf;
     }
+#endif
 
     if (contains(rcc, "rcc-darwin") && !contains(rcc, "darwin-cross")) {
         static char buf[PATH_MAX + 32];
