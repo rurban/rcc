@@ -4148,8 +4148,6 @@ static int run_ctest_suite(void) {
             only_test_found = true;
             return r;
         }
-        printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
-        printf("SKIP (not a c-testsuite test number)\n");
         return 0;
     }
 
