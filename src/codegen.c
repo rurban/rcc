@@ -750,7 +750,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     int shadow_space = 0;
 #endif
 
-    bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_COMPLEX);
+    bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || (node->ty->kind == TY_COMPLEX
+#ifdef _WIN32
+                                                                                                        && node->ty->size > 8
+#endif
+                                                                                                        ));
 
     // Cross-architecture builtins (x86_64 and arm64)
     if (call_target && !has_hidden_retbuf) {
@@ -2508,12 +2512,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 #else
     // === x86_64 (Windows + Linux) calling convention ===
     int saved_scratch = used_regs & 3;
-    if ((saved_scratch & 1) && hidden_ret_reg != 0) {
+    // The hidden_ret_reg exclusion only applies to the has_hidden_retbuf path,
+    // where temp_ret_reg (r10/r11) is reloaded via a frame-relative `lea`
+    // after the call. If there's no hidden retbuf, hidden_ret_reg (if set)
+    // just holds a destination address from gen_addr() that must survive the
+    // call like any other live register.
+    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
         printf("  movq %%r10, -%d(%%rbp)\n", spill_offset(0));
         // Keep r10 marked as in-use so alloc_reg() doesn't reuse it for the
         // hidden ret buffer, which would overwrite a caller's live arg value.
     }
-    if ((saved_scratch & 2) && hidden_ret_reg != 1) {
+    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
         printf("  movq %%r11, -%d(%%rbp)\n", spill_offset(1));
         // Same for r11.
     }
@@ -2536,6 +2545,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         if (argv[i]->kind == ND_FUNCALL && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8 && argv[i]->ty->size > 0) {
             printf("  movq (%s), %s\n", reg64[arg_regs[i]], reg64[arg_regs[i]]);
         }
+        // Win64: an 8-byte _Complex is passed by value in a GP register.
+        // gen() returns the address of the complex value; load it.
+        if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
+            printf("  movq (%s), %s\n", reg64[arg_regs[i]], reg64[arg_regs[i]]);
+        }
 #endif
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
         arg_is_float[i] = is_flonum(argv[i]->ty);
@@ -2552,6 +2566,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + (i - reg_nargs) * 8);
         } else if (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) {
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + (i - reg_nargs) * 8);
+        } else if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
+            // Win64: an 8-byte _Complex is passed by value on the stack.
+            // gen() returns the address of the complex value; load it.
+            printf("  movq (%s), %%rax\n", reg64[r]);
+            printf("  movq %%rax, %d(%%rsp)\n", shadow_space + (i - reg_nargs) * 8);
         } else {
             if (argv[i]->ty->size == 1)
                 printf("  movzbl %s, %s\n", reg8[r], reg32[r]);
@@ -2813,11 +2832,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         printf("  addq $%d, %%rsp\n", stack_reserve);
 
-    if ((saved_scratch & 2) && hidden_ret_reg != 1) {
+    if ((saved_scratch & 2) && (!has_hidden_retbuf || hidden_ret_reg != 1)) {
         used_regs |= 2;
         printf("  movq -%d(%%rbp), %%r11\n", spill_offset(1));
     }
-    if ((saved_scratch & 1) && hidden_ret_reg != 0) {
+    if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
         used_regs |= 1;
         printf("  movq -%d(%%rbp), %%r10\n", spill_offset(0));
     }
@@ -2840,6 +2859,19 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         return ret;
     }
 
+#ifdef _WIN32
+    // Win64: an 8-byte _Complex return value comes back by value in RAX (no
+    // hidden return pointer — see has_hidden_retbuf above). Store it where
+    // the caller wants it (hidden_ret_reg, e.g. from `c = f()`) or, if no
+    // destination was provided, materialize it on the stack and return its
+    // address, matching the convention that gen() returns the address of a
+    // complex value.
+    if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        printf("  movq %%rax, (%s)\n", reg64[addr]);
+        return addr;
+    }
+#endif
     // int128 return: spill rax:rdx (x86-64) or x0:x1 (ARM64) to a 16-byte slot
     if (node->ty && node->ty->kind == TY_INT128) {
         int addr = alloc_int128_addr();
@@ -6923,6 +6955,18 @@ static int gen(Node *node) {
                 printf("  movq 8(%s), %%rdx\n", reg64[src]);
 #endif
                 free_reg(src);
+#ifdef _WIN32
+            } else if (node->lhs->ty && is_complex(node->lhs->ty) && node->lhs->ty->size <= 8 && current_fn_def && current_fn_def->ty &&
+                       is_complex(current_fn_def->ty->return_ty) && current_fn_def->ty->return_ty->size <= 8) {
+                // Win64: an 8-byte _Complex return value is returned by value
+                // in RAX — there is no hidden return pointer for it (see the
+                // param_index computation in the prologue).
+                int src = gen_addr(node->lhs);
+                if (src < 0)
+                    src = gen(node->lhs);
+                printf("  movq (%s), %%rax\n", reg64[src]);
+                free_reg(src);
+#endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
@@ -10811,7 +10855,13 @@ void codegen(Program *prog) {
 #ifndef ARCH_ARM64
         int param_xmm_index = 0;
         int stack_param_index = 0;
-        int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || is_complex(fn->ty->return_ty)) ? 1 : 0;
+        int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (is_complex(fn->ty->return_ty)
+#ifdef _WIN32
+                                                                                                                                && fn->ty->return_ty->size > 8
+#endif
+                                                                                                                                ))
+            ? 1
+            : 0;
 #ifdef _WIN32
         char *param_regs64[] = {"%rcx", "%rdx", "%r8", "%r9"};
         char *param_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
@@ -10857,8 +10907,9 @@ void codegen(Program *prog) {
                     : var->ty->size == 2        ? param_regs16[param_index]
                     : var->ty->size <= 4        ? param_regs32[param_index]
                                                 : param_regs64[param_index];
-                // Structs > 8 bytes are passed by pointer; copy to local stack
-                if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
+                // Structs > 8 bytes (and 16-byte _Complex double) are passed by
+                // pointer; copy the pointee to the local stack slot.
+                if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
                     int c = ++rcc_label_count;
                     printf("  movq %s, %%r11\n", preg);
                     printf("  movq $%d, %%r10\n", var->ty->size);
@@ -10885,9 +10936,10 @@ void codegen(Program *prog) {
                         printf("  movsd %d(%%rbp), %%xmm0\n", stack_off);
                         printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset);
                     }
-                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
-                    // Structs > 8 bytes are passed by pointer even on the stack;
-                    // load the pointer and copy the pointee into the local slot.
+                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
+                    // Structs > 8 bytes (and 16-byte _Complex double) are passed
+                    // by pointer even on the stack; load the pointer and copy
+                    // the pointee into the local slot.
                     int c = ++rcc_label_count;
                     printf("  movq %d(%%rbp), %%r11\n", stack_off);
                     printf("  movq $%d, %%r10\n", var->ty->size);
@@ -10950,7 +11002,16 @@ void codegen(Program *prog) {
                 // _Complex double (16 bytes): two SSE eightbytes  → xmm0, xmm1
                 // _Complex int    (8 bytes):  one INTEGER eightbyte → GP reg
                 int base_sz = var->ty->base ? var->ty->base->size : 4;
-                if (is_flonum(var->ty->base)) {
+#ifdef _WIN32
+                // Win64: an 8-byte _Complex (float or int base) is passed by
+                // value in a single GP register, like any other 8-byte
+                // aggregate — XMM is only used for native float/double
+                // scalars, not for _Complex.
+                bool win_small_complex = var->ty->size <= 8;
+#else
+                bool win_small_complex = false;
+#endif
+                if (is_flonum(var->ty->base) && !win_small_complex) {
                     // Float complex: pass in xmm registers
                     if (var->ty->size <= 8) {
                         // _Complex float: 8 bytes in one xmm reg
@@ -11616,7 +11677,11 @@ void codegen(Program *prog) {
 #endif
             printf("  subq $%d, %%rsp\n", sub_amount);
 
-        if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || fn->ty->return_ty->kind == TY_COMPLEX)) {
+        if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+#ifdef _WIN32
+                                                                                                                  && fn->ty->return_ty->size > 8
+#endif
+                                                                                                                  ))) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var->name && strcmp(var->name, "__retbuf") == 0) {

@@ -3577,7 +3577,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 37;
+        max_fail = 31;
     else if (streq(platform, "mingw"))
         max_fail = 38;
     else
@@ -4643,18 +4643,9 @@ int main(int argc, char **argv) {
         /* Under wine/Windows, prefer .exe over native binary */
         if (access("./rcc.exe", X_OK) == 0)
             rcc = "./rcc.exe";
-        else if (access("./rcc", X_OK) == 0)
-            rcc = "./rcc";
-#elif defined(ARM64_NATIVE)
-        if (access("./rcc-arm64", X_OK) == 0)
-            rcc = "./rcc-arm64";
-        else if (access("./rcc", X_OK) == 0)
-            rcc = "./rcc";
 #else
         if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
-        if (!rcc && access("./rcc.exe", X_OK) == 0)
-            rcc = "./rcc.exe";
 #endif
     }
     if (!rcc) {

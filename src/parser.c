@@ -158,7 +158,8 @@ static void cast_funcall_args(Node *call) {
         bool param_float = is_flonum(pt);
         bool arg_int = is_integer((*arg)->ty);
         bool param_int = is_integer(pt);
-        if ((arg_int && param_float) || (arg_float && param_int) ||
+        if ((is_complex((*arg)->ty) && is_complex(pt) && (*arg)->ty->size != pt->size) ||
+            (arg_int && param_float) || (arg_float && param_int) ||
             (arg_int && param_int && (*arg)->ty->size != pt->size)) {
             Node *cast = new_unary(ND_CAST, *arg, (*arg)->tok);
             cast->ty = arena_alloc(sizeof(Type));
