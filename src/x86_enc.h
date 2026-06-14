@@ -245,5 +245,7 @@ void x86_pxor(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 // x87 (legacy, for long double)
 void x86_fldl_m(SecBuf *s, X86Mem srcm);
 void x86_fstpt_m(SecBuf *s, X86Mem dstm);
+void x86_fldt_m(SecBuf *s, X86Mem srcm);
+void x86_fstpl_m(SecBuf *s, X86Mem dstm);
 
 #endif // X86_ENC_H

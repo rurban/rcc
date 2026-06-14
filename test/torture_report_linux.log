@@ -592,7 +592,7 @@
   20041114-1                          PASS
   20041124-1                          PASS
   20041126-1                          PASS
-  20041201-1                          PASS
+  20041201-1                          FAIL (runtime)
   20041210-1                          PASS
   20041212-1                          PASS
   20041213-2                          PASS
@@ -605,7 +605,7 @@
   20050111-1                          PASS
   20050119-1                          SKIP (attribute-mode)
   20050119-2                          SKIP (attribute-mode)
-  20050121-1                          PASS
+  20050121-1                          FAIL (runtime)
   20050124-1                          PASS
   20050125-1                          PASS
   20050131-1                          PASS
@@ -654,7 +654,7 @@
   20070212-3                          PASS
   20070424-1                          PASS
   20070517-1                          PASS
-  20070614-1                          PASS
+  20070614-1                          FAIL (runtime)
   20070623-1                          PASS
   20070724-1                          PASS
   20070824-1                          PASS
@@ -901,10 +901,10 @@
   memclr                              SKIP (attribute-mode)
   memcpy-1                            PASS
   memcpy-2                            PASS
-  memcpy-a1                           PASS
-  memcpy-a2                           PASS
-  memcpy-a4                           PASS
-  memcpy-a8                           PASS
+  memcpy-a1                           FAIL (compile)
+  memcpy-a2                           FAIL (compile)
+  memcpy-a4                           FAIL (compile)
+  memcpy-a8                           FAIL (compile)
   memcpy-bi                           PASS
   memset-1                            PASS
   memset-2                            PASS
@@ -1011,7 +1011,7 @@
   pr31448-2                           PASS
   pr31448                             PASS
   pr31605                             PASS
-  pr32244-1                           PASS
+  pr32244-1                           FAIL (runtime)
   pr32500                             PASS
   pr33142                             PASS
   pr33382                             PASS
@@ -1033,7 +1033,7 @@
   pr34456                             PASS
   pr34768-1                           PASS
   pr34768-2                           PASS
-  pr34971                             PASS
+  pr34971                             FAIL (runtime)
   pr34982                             PASS
   pr35163                             PASS
   pr35231                             PASS
@@ -1060,13 +1060,13 @@
   pr38048-1                           PASS
   pr38048-2                           PASS
   pr38051                             PASS
-  pr38151                             PASS
+  pr38151                             FAIL (runtime)
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
   pr38533                             PASS
   pr38819                             PASS
-  pr38969                             PASS
+  pr38969                             FAIL (runtime)
   pr39100                             PASS
   pr39120                             PASS
   pr39228                             PASS
@@ -1096,8 +1096,8 @@
   pr42142                             PASS
   pr42154                             PASS
   pr42231                             PASS
-  pr42248                             PASS
-  pr42269-2                           PASS
+  pr42248                             FAIL (runtime)
+  pr42269-2                           FAIL (runtime)
   pr42512                             PASS
   pr42544                             PASS
   pr42570                             PASS
@@ -1122,7 +1122,7 @@
   pr44555                             PASS
   pr44575                             PASS
   pr44683                             PASS
-  pr44828                             PASS
+  pr44828                             FAIL (runtime)
   pr44852                             PASS
   pr44858                             PASS
   pr44942                             PASS
@@ -1185,7 +1185,7 @@
   pr53645-2                           SKIP (vector_size)
   pr53645                             SKIP (vector_size)
   pr53688                             PASS
-  pr54471                             PASS
+  pr54471                             FAIL (runtime)
   pr54937                             PASS
   pr54985                             PASS
   pr55137                             PASS
@@ -1257,14 +1257,14 @@
   pr61306-1                           PASS
   pr61306-2                           PASS
   pr61306-3                           PASS
-  pr61375                             PASS
+  pr61375                             FAIL (runtime)
   pr61517                             PASS
   pr61673                             PASS
   pr61682                             PASS
   pr61725                             PASS
   pr62151                             PASS
   pr63209                             PASS
-  pr63302                             PASS
+  pr63302                             FAIL (runtime)
   pr63641                             PASS
   pr63659                             PASS
   pr63843                             PASS
@@ -1279,7 +1279,7 @@
   pr64979                             PASS
   pr65053-1                           PASS
   pr65053-2                           PASS
-  pr65170                             PASS
+  pr65170                             FAIL (runtime)
   pr65215-1                           PASS
   pr65215-2                           PASS
   pr65215-3                           PASS
@@ -1342,7 +1342,7 @@
   pr71335                             PASS
   pr71494                             SKIP (nested-func)
   pr71550                             PASS
-  pr71554                             PASS
+  pr71554                             FAIL (runtime)
   pr71626-1                           SKIP (vector_size)
   pr71626-2                           SKIP (vector_size)
   pr71631                             PASS
@@ -1375,7 +1375,7 @@
   pr79737-2                           PASS
   pr80153                             PASS
   pr80421                             PASS
-  pr80501                             PASS
+  pr80501                             FAIL (runtime)
   pr80692                             PASS
   pr81281                             PASS
   pr81423                             PASS
@@ -1395,12 +1395,12 @@
   pr83362                             PASS
   pr83383                             PASS
   pr83477                             PASS
-  pr84169                             PASS
+  pr84169                             FAIL (runtime)
   pr84339                             PASS
   pr84478                             PASS
   pr84521                             PASS
   pr84524                             PASS
-  pr84748                             PASS
+  pr84748                             FAIL (runtime)
   pr85095                             PASS
   pr85156                             PASS
   pr85169                             SKIP (vector_size)
@@ -1408,8 +1408,8 @@
   pr85529-1                           PASS
   pr85529-2                           PASS
   pr85582-1                           PASS
-  pr85582-2                           PASS
-  pr85582-3                           PASS
+  pr85582-2                           FAIL (runtime)
+  pr85582-3                           FAIL (runtime)
   pr85756                             PASS
   pr86231                             PASS
   pr86492                             PASS
@@ -1435,15 +1435,15 @@
   pr90348                             PASS
   pr90949                             PASS
   pr91137                             PASS
-  pr91450-1                           PASS
+  pr91450-1                           FAIL (runtime)
   pr91450-2                           PASS
   pr91597                             PASS
   pr91632                             PASS
-  pr91635                             PASS
+  pr91635                             FAIL (runtime)
   pr92140                             PASS
   pr92618                             SKIP (vector_size)
-  pr92904                             PASS
-  pr93213                             PASS
+  pr92904                             FAIL (runtime)
+  pr93213                             FAIL (runtime)
   pr93249                             PASS
   pr93402                             PASS
   pr93434                             PASS
@@ -1479,10 +1479,10 @@
   pr97836                             PASS
   pr97888-1                           PASS
   pr97888-2                           PASS
-  pr98366                             PASS
-  pr98474                             PASS
+  pr98366                             FAIL (runtime)
+  pr98474                             FAIL (runtime)
   pr98681                             PASS
-  pr98727                             PASS
+  pr98727                             FAIL (runtime)
   pr98736                             PASS
   pr98853-1                           PASS
   pr98853-2                           PASS
@@ -1499,7 +1499,7 @@
   pr103405                            SKIP (nested-func)
   pr103417                            PASS
   pr104196                            PASS
-  pr104604                            PASS
+  pr104604                            FAIL (runtime)
   pr104814                            PASS
   pr104839                            PASS
   pr105613                            SKIP (vector_size)
@@ -1586,7 +1586,7 @@
   simd-5                              SKIP (vector_size)
   simd-6                              SKIP (vector_size)
   ssad-run                            PASS
-  stdarg-1                            PASS
+  stdarg-1                            FAIL (runtime)
   stdarg-2                            PASS
   stdarg-3                            PASS
   stdarg-4                            PASS
@@ -1633,15 +1633,15 @@
   va-arg-7                            PASS
   va-arg-8                            PASS
   va-arg-9                            PASS
-  va-arg-10                           PASS
+  va-arg-10                           FAIL (runtime)
   va-arg-11                           PASS
   va-arg-12                           PASS
   va-arg-13                           PASS
-  va-arg-14                           PASS
-  va-arg-15                           PASS
+  va-arg-14                           FAIL (runtime)
+  va-arg-15                           FAIL (runtime)
   va-arg-16                           PASS
-  va-arg-17                           PASS
-  va-arg-18                           PASS
+  va-arg-17                           FAIL (runtime)
+  va-arg-18                           FAIL (runtime)
   va-arg-19                           PASS
   va-arg-20                           PASS
   va-arg-21                           PASS
@@ -1672,6 +1672,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1563/1569 passed (99%), 6 failed (0 compile/6 runtime), 102 skipped.
+Torture: 1525/1569 passed (97%), 44 failed (4 compile/40 runtime), 102 skipped.
 
-Runtime failures: 20020411-1 pr58277-1 pr58277-2 pr82210 va-arg-22 va-arg-pack-1
+Compile failures: memcpy-a1 memcpy-a2 memcpy-a4 memcpy-a8
+
+Runtime failures: 20020411-1 20041201-1 20050121-1 20070614-1 pr32244-1 pr34971 pr38151 pr38969 pr42248 pr42269-2 pr44828 pr54471 pr58277-1 pr58277-2 pr61375 pr63302 pr65170 pr71554 pr80501 pr82210 pr84169 pr84748 pr85582-2 pr85582-3 pr91450-1 pr91635 pr92904 pr93213 pr98366 pr98474 pr98727 pr104604 stdarg-1 va-arg-10 va-arg-14 va-arg-15 va-arg-17 va-arg-18 va-arg-22 va-arg-pack-1

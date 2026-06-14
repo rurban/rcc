@@ -752,6 +752,18 @@ void x86_fstpt_m(SecBuf *s, X86Mem m) {
     emit1(s, 0xdb);
     emit_mem(s, m.base, m.index, m.scale, m.disp, 7);
 }
+void x86_fldt_m(SecBuf *s, X86Mem m) {
+    // fldt: DB /5 (load m80 extended onto x87 stack)
+    maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
+    emit1(s, 0xdb);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 5);
+}
+void x86_fstpl_m(SecBuf *s, X86Mem m) {
+    // fstpl: DD /3 (pop x87 stack, store as m64 double)
+    maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
+    emit1(s, 0xdd);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
+}
 
 // SSE compare (ucomisd/ucomiss) — fix the encoding above:
 // ucomisd is: 66 0F 2E /r (compare, no prefix for ucomiss)
