@@ -5,8 +5,8 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 114
-- **Failed**: 6
+- **Passed**: 115
+- **Failed**: 5
 - **Pass Rate**: 95%
 
 ## Detailed Results
@@ -146,5 +146,5 @@ Generated: June 2026
 | 141_riscv_asm               | SKIP      | Skipped        |
 | 142_int_conversion          | PASS      | Output matches |
 | 143_void_expr               | PASS      | Output matches |
-| 144_tls                     | EXEC_FAIL | non-zero exit  |
+| 144_tls                     | PASS      | Output matches |
 | 145_winarm64_interlocked    | SKIP      | Skipped        |

@@ -2277,7 +2277,9 @@ int assemble_file(const char *asm_path, const char *obj_path) {
 
     // Write object file
     int rc;
-#ifdef __APPLE__
+#ifdef _WIN32
+    rc = coff_write(&obj, obj_path);
+#elif __APPLE__
     rc = macho_write(&obj, obj_path);
 #else
     rc = elf_write(&obj, obj_path);

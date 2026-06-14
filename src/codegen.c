@@ -15,28 +15,6 @@ static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
 uint64_t time_peep_us = 0;
 
-#define _BI(s) str_intern(s, sizeof(s) - 1)
-static const char *bi_bswap16, *bi_bswap32, *bi_bswap64;
-static const char *bi_clz, *bi_clzl, *bi_clzll;
-static const char *bi_ctz, *bi_ctzl, *bi_ctzll;
-static const char *bi_popcount, *bi_popcountl, *bi_popcountll;
-static const char *bi_parity, *bi_parityl, *bi_parityll;
-static const char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
-static const char *bi_ffs, *bi_ffsl, *bi_ffsll;
-static const char *bi_prefetch, *bi_frame_address, *bi_return_address;
-static const char *bi_setjmp, *bi_longjmp;
-static const char *bi_signbit, *bi_signbitf, *bi_signbitl;
-static const char *bi_isinf, *bi_isinff, *bi_isinfl;
-static const char *bi_copysign, *bi_copysignf, *bi_copysignl;
-static const char *bi_abs, *bi_labs, *bi_llabs;
-static const char *bi_add_overflow, *bi_sub_overflow;
-static const char *bi_mul_overflow, *bi_mul_overflow_p;
-static const char *bi_memset, *bi_memcpy, *bi_memcmp;
-static const char *bi_strlen, *bi_strcmp, *bi_strchr;
-static const char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
-static const char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
-static const char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
-
 static void cg_set_section(int sec) {
     if (!cg_obj) return;
     switch (sec) {
@@ -660,7 +638,6 @@ static int alloc_int128_addr(void);
 static int widen_to_int128(int val, bool is_unsigned);
 static int gen_to_int128(Node *operand);
 static void gen_int128_nonzero(int addr, int result);
-static void init_builtin_names(void);
 static VReg gen_int128(Node *node);
 static VReg gen_to_int128(Node *operand);
 static VReg widen_to_int128(VReg val, bool is_unsigned);
@@ -3209,6 +3186,23 @@ static void emit_adrp_got(VReg r, const char *label) {
         asm_ldr_rd_rd(cg_sec, rd); // ldr x{rd}, [x{rd}] (load value from address)
     }
 }
+
+// TLS address load: Linux ARM64 Local Exec model via tpidr_el0 + tprel offsets.
+static void emit_tls_addr(VReg r, LVar *var) {
+    if (cg_dry_run) return;
+    Arm64Reg rd = REG(r);
+    const char *label = asm_sym_name(var_sym_label(var));
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (sidx < 0)
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_TLS);
+    arm64_mrs(cg_sec, rd, 0x5e82); // mrs x{rd}, tpidr_el0
+    size_t hi_off = cg_sec->len;
+    arm64_add_imm(cg_sec, 1, rd, rd, 0, 1); // add x{rd}, x{rd}, #:tprel_hi12:label, lsl #12
+    objfile_add_reloc(cg_obj, SEC_TEXT, hi_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_HI12, 0);
+    size_t lo_off = cg_sec->len;
+    arm64_add_imm(cg_sec, 1, rd, rd, 0, 0); // add x{rd}, x{rd}, #:tprel_lo12_nc:label
+    objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
+}
 #endif
 
 // Emit load/store-safe address for [x29, #-offset] when offset > 255
@@ -4122,7 +4116,9 @@ static VReg gen_addr(Node *node) {
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
-            if (node->var->is_weak)
+            if (node->var->is_tls)
+                emit_tls_addr(r, node->var);
+            else if (node->var->is_weak)
                 emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
             else
                 emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
@@ -4153,11 +4149,11 @@ static VReg gen_addr(Node *node) {
         if (offset > 0) {
 #ifdef ARCH_ARM64
             if (offset <= 4095)
-                printf("  add %s, %s, #%d\n", reg64[r], reg64[r], offset);
+                asm_add_imm(cg_sec, r, 8, offset); // add r, r, #offset
             else {
-                int ti = alloc_reg();
-                emit_mov_imm64(reg64[ti], (uint64_t)offset);
-                printf("  add %s, %s, %s\n", reg64[r], reg64[r], reg64[ti]);
+                VReg ti = alloc_reg();
+                emit_mov_imm64(REG(ti), (uint64_t)offset); // mov ti, #offset
+                asm_add_reg_reg(cg_sec, r, ti, 8); // add r, r, ti
                 free_reg(ti);
             }
 #else
@@ -5491,68 +5487,6 @@ static VReg gen_int128(Node *node) {
 }
 
 // Generate code for a given node.
-static void init_builtin_names(void) {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    bi_bswap16 = _BI("__builtin_bswap16");
-    bi_bswap32 = _BI("__builtin_bswap32");
-    bi_bswap64 = _BI("__builtin_bswap64");
-    bi_clz = _BI("__builtin_clz");
-    bi_clzl = _BI("__builtin_clzl");
-    bi_clzll = _BI("__builtin_clzll");
-    bi_ctz = _BI("__builtin_ctz");
-    bi_ctzl = _BI("__builtin_ctzl");
-    bi_ctzll = _BI("__builtin_ctzll");
-    bi_popcount = _BI("__builtin_popcount");
-    bi_popcountl = _BI("__builtin_popcountl");
-    bi_popcountll = _BI("__builtin_popcountll");
-    bi_parity = _BI("__builtin_parity");
-    bi_parityl = _BI("__builtin_parityl");
-    bi_parityll = _BI("__builtin_parityll");
-    bi_clrsb = _BI("__builtin_clrsb");
-    bi_clrsbl = _BI("__builtin_clrsbl");
-    bi_clrsbll = _BI("__builtin_clrsbll");
-    bi_ffs = _BI("__builtin_ffs");
-    bi_ffsl = _BI("__builtin_ffsl");
-    bi_ffsll = _BI("__builtin_ffsll");
-    bi_prefetch = _BI("__builtin_prefetch");
-    bi_frame_address = _BI("__builtin_frame_address");
-    bi_return_address = _BI("__builtin_return_address");
-    bi_setjmp = _BI("__builtin_setjmp");
-    bi_longjmp = _BI("__builtin_longjmp");
-    bi_signbit = _BI("__builtin_signbit");
-    bi_signbitf = _BI("__builtin_signbitf");
-    bi_signbitl = _BI("__builtin_signbitl");
-    bi_isinf = _BI("__builtin_isinf");
-    bi_isinff = _BI("__builtin_isinff");
-    bi_isinfl = _BI("__builtin_isinfl");
-    bi_copysign = _BI("__builtin_copysign");
-    bi_copysignf = _BI("__builtin_copysignf");
-    bi_copysignl = _BI("__builtin_copysignl");
-    bi_abs = _BI("__builtin_abs");
-    bi_labs = _BI("__builtin_labs");
-    bi_llabs = _BI("__builtin_llabs");
-    bi_add_overflow = _BI("__builtin_add_overflow");
-    bi_sub_overflow = _BI("__builtin_sub_overflow");
-    bi_mul_overflow = _BI("__builtin_mul_overflow");
-    bi_mul_overflow_p = _BI("__builtin_mul_overflow_p");
-    bi_memset = _BI("__builtin_memset");
-    bi_memcpy = _BI("__builtin_memcpy");
-    bi_memcmp = _BI("__builtin_memcmp");
-    bi_strlen = _BI("__builtin_strlen");
-    bi_strcmp = _BI("__builtin_strcmp");
-    bi_strchr = _BI("__builtin_strchr");
-    bi_s_abs = _BI("abs");
-    bi_s_labs = _BI("labs");
-    bi_s_llabs = _BI("llabs");
-    bi_s_memset = _BI("memset");
-    bi_s_memcpy = _BI("memcpy");
-    bi_s_memcmp = _BI("memcmp");
-    bi_s_strlen = _BI("strlen");
-    bi_s_strcmp = _BI("strcmp");
-    bi_s_strchr = _BI("strchr");
-}
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
 
@@ -5677,7 +5611,9 @@ static VReg gen(Node *node) {
 #endif
             } else {
 #ifdef ARCH_ARM64
-                if (var_needs_got(node->var))
+                if (node->var->is_tls)
+                    emit_tls_addr(r, node->var);
+                else if (var_needs_got(node->var))
                     emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
@@ -5774,7 +5710,9 @@ static VReg gen(Node *node) {
                 } else {
                     if (node->var->ty->size == 4) {
 #ifdef ARCH_ARM64
-                        if (var_needs_got(node->var))
+                        if (node->var->is_tls)
+                            emit_tls_addr(r, node->var);
+                        else if (var_needs_got(node->var))
                             emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
                         else
                             emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
@@ -5792,7 +5730,9 @@ static VReg gen(Node *node) {
 #endif
                     } else {
 #ifdef ARCH_ARM64
-                        if (var_needs_got(node->var))
+                        if (node->var->is_tls)
+                            emit_tls_addr(r, node->var);
+                        else if (var_needs_got(node->var))
                             emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
                         else
                             emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
@@ -5825,7 +5765,9 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
                 int ta = alloc_reg();
-                if (var_needs_got(node->var))
+                if (node->var->is_tls)
+                    emit_tls_addr(ta, node->var);
+                else if (var_needs_got(node->var))
                     emit_adrp_got(ta, asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(ta, asm_sym_name(var_sym_label(node->var)));
