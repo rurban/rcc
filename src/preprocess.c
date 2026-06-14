@@ -695,6 +695,46 @@ static char *quote_string(char *s) {
     sb_putc(&sb, '"');
     return sb.buf;
 }
+// Find which parameter indices are adjacent to ## in the macro body.
+// Returns a bitmask where bit i is set if param i is used in a ## context.
+static unsigned find_hashhash_params(Macro *m) {
+    unsigned mask = 0;
+    char *p = m->body;
+    int prev_param_idx = -1;
+    while (*p) {
+        if (p[0] == '#' && p[1] == '#') {
+            // Parameter before ## (look back)
+            if (prev_param_idx >= 0)
+                mask |= 1u << prev_param_idx;
+            p += 2;
+            while (isspace((unsigned char)*p))
+                p++;
+            // Parameter after ##
+            if (pp_is_ident1(*p)) {
+                char *start = p;
+                while (pp_is_ident2(*p))
+                    p++;
+                char *name = str_intern(start, p - start);
+                int idx = find_param_index(m, name);
+                if (idx >= 0)
+                    mask |= 1u << idx;
+            }
+            prev_param_idx = -1;
+            continue;
+        }
+        if (pp_is_ident1(*p)) {
+            char *start = p;
+            while (pp_is_ident2(*p))
+                p++;
+            char *name = str_intern(start, p - start);
+            prev_param_idx = find_param_index(m, name);
+            continue;
+        }
+        prev_param_idx = -1;
+        p++;
+    }
+    return mask;
+}
 
 static char *paste_tokens(char *s) {
     StrBuf sb;
@@ -716,7 +756,7 @@ static char *paste_tokens(char *s) {
     return sb.buf;
 }
 
-static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc) {
+static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, unsigned hashhash_mask) {
     StrBuf sb;
     sb_init(&sb, strlen(m->body) * 8 + 256);
 
@@ -766,7 +806,7 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc) 
                     if (sb.len > 0 && sb.buf[sb.len - 1] == ',')
                         sb.buf[--sb.len] = '\0';
                 } else {
-                    sb_puts(&sb, args[va_idx]);
+                    sb_puts(&sb, (hashhash_mask & (1u << va_idx)) ? raw_args[va_idx] : args[va_idx]);
                 }
                 p += 11;
                 continue;
@@ -814,8 +854,8 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc) 
             }
             int idx = find_param_index(m, name);
             if (idx >= 0 && idx < argc) {
-                // args[] are pre-expanded; emit directly
-                sb_puts(&sb, args[idx]);
+                // Use raw (unexpanded) arg when adjacent to ## (C11 6.10.3.3 ¶3)
+                sb_puts(&sb, (hashhash_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
                 continue;
             }
             sb_puts(&sb, name);
@@ -1008,7 +1048,7 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
                 continue;
             }
             // C11 6.10.3.1: pre-expand arguments before substitution.
-            // Keep raw (unexpanded) args for # stringification.
+            // Keep raw (unexpanded) args for # stringification and ## token pasting.
             char *raw_args[32];
             for (int i = 0; i < argc; i++) raw_args[i] = args[i];
             // Pad missing args with empty strings (STR() -> one empty arg)
@@ -1017,10 +1057,13 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
                 raw_args[argc] = pp_strndup("", 0);
                 argc++;
             }
-            for (int i = 0; i < argc; i++)
-                args[i] = expand_text(args[i], filename, line_no, depth + 1);
+            unsigned hashhash_mask = find_hashhash_params(m);
+            for (int i = 0; i < argc; i++) {
+                if (!(hashhash_mask & (1u << i)))
+                    args[i] = expand_text(args[i], filename, line_no, depth + 1);
+            }
             push_disabled(m);
-            char *subst = substitute_macro(m, args, raw_args, argc);
+            char *subst = substitute_macro(m, args, raw_args, argc, hashhash_mask);
             sb_puts(&sb, expand_text(subst, filename, line_no, depth + 1));
             pop_disabled(m);
             p = end;
