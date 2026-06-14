@@ -176,9 +176,9 @@ if download_sqlite; then
 fi
 
 echo ""
-echo "============================================"
-echo "  RCC vs TCC vs others  --  Benchmark Battle"
-echo "============================================"
+echo "======================================"
+echo "  RCC vs TCC vs others  --  Small file"
+echo "======================================"
 
 run_bench "RCC" "$RCC" "$SRC -o $RCC_EXE" "$RCC_EXE"
 run_bench "RCC -O1" "$RCC" "-O1 $SRC -o $RCC_O1_EXE" "$RCC_O1_EXE"
@@ -228,6 +228,7 @@ if [ -f "$LARGE_SRC" ]; then
     printf "%-30s %10s\n" "Compiler" "Compile (ms)"
     printf "%-30s %10s\n" "--------" "-----------"
 
+    large_results=""
     _compile_large() {
 	# shellcheck disable=SC2086
 	_label="$1"
@@ -235,6 +236,7 @@ if [ -f "$LARGE_SRC" ]; then
 	printf "%-30s " "$_label"
 	_cm=$(time_ms "$@" 2>/dev/null) || true
 	printf "%8s ms\n" "$_cm"
+	[ -n "$_cm" ] && large_results="$large_results| $_label | ${_cm}ms |\n"
     }
 
     _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null
@@ -289,6 +291,12 @@ if [ -n "${rcc_large_time:-}" ]; then
 	printf "\nRCC -O1:\n"
 	printf '%s\n' "$rcc_large_o1_time" | sed 's|[^ ]*/||g'
 	printf '```\n'
+fi
+if [ -n "${large_results:-}" ]; then
+	printf "\n## Large File Compile-Only  (sqlite3.c)\n\n"
+	printf "| Compiler  | Compile (ms) |\n"
+	printf "| :-------- | -----------: |\n"
+	printf '%b' "$large_results"
 fi
 } > "$REPORT"
 printf "Report: %s\n" "$REPORT"
