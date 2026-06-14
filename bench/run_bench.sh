@@ -79,19 +79,30 @@ trap cleanup EXIT
 # time_ms: prints elapsed ms for a command
 # Usage: elapsed=$(time_ms cmd args...)
 time_ms() {
-	# Use date +%s%N if available (GNU), else fall back to seconds
-	if date +%s%N >/dev/null 2>&1; then
-		_start=$(date +%s%N)
-		"$@" >/dev/null
-		_rc=$?
-		_end=$(date +%s%N)
+	# Prefer GNU date (gdate from coreutils on macOS/BSD); otherwise fall back
+	# to the system date.  BSD date does not support %N, so verify the output
+	# actually contains nanoseconds before using it.
+	if command -v gdate >/dev/null 2>&1; then
+		_date="gdate"
+	elif [ -x /usr/local/bin/gdate ]; then
+		_date="/usr/local/bin/gdate"
+	elif [ -x /opt/homebrew/bin/gdate ]; then
+		_date="/opt/homebrew/bin/gdate"
+	else
+		_date="date"
+	fi
+	if _ns=$($_date +%s%N 2>/dev/null) && [ -n "$_ns" ] && [ "$_ns" != "$($_date +%s 2>/dev/null)N" ]; then
+		_start=$($_date +%s%N)
+		_rc=0
+		"$@" >/dev/null || _rc=$?
+		_end=$($_date +%s%N)
 		echo $(((_end - _start) / 1000000))
 		return $_rc
 	else
-		_start=$(date +%s)
-		"$@" >/dev/null
-		_rc=$?
-		_end=$(date +%s)
+		_start=$($_date +%s)
+		_rc=0
+		"$@" >/dev/null || _rc=$?
+		_end=$($_date +%s)
 		echo $(((_end - _start) * 1000))
 		return $_rc
 	fi
@@ -235,8 +246,10 @@ if [ -f "$LARGE_SRC" ]; then
 	shift
 	printf "%-30s " "$_label"
 	_cm=$(time_ms "$@" 2>/dev/null) || true
-	printf "%8s ms\n" "$_cm"
-	[ -n "$_cm" ] && large_results="$large_results| $_label | ${_cm}ms |\n"
+	printf "%8s ms\n" "${_cm:-FAILED}"
+	if [ -n "$_cm" ]; then
+	    large_results="$large_results| $_label | ${_cm}ms |\n"
+	fi
     }
 
     _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null

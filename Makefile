@@ -304,8 +304,8 @@ tinycc/lib/tcc/include:
 	mkdir -p tinycc/lib/tcc
 	ln -sf ../../include tinycc/lib/tcc/include
 
-bench: $(TARGET) tcc
-	TCC=$(CURDIR)/tinycc/tcc $(BENCH_RUNNER)
+bench: $(TARGET)
+	$(BENCH_RUNNER)
 
 # Rebuild with the installed include path so rcc finds its headers
 # without needing -I after installation.
