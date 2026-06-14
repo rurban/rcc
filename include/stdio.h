@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-typedef struct __rcc_FILE FILE;
+typedef struct _rcc_FILE FILE;
 
 #ifdef _WIN32
 FILE *__acrt_iob_func(unsigned idx);
@@ -23,6 +23,14 @@ extern FILE *stdout;
 extern FILE *stderr;
 #endif
 #define EOF (-1)
+#define BUFSIZ 1024
+#define FILENAME_MAX 1024
+#define FOPEN_MAX 20
+#define L_tmpnam 1024
+#define TMP_MAX 308915776
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 
 int printf(const char *fmt, ...);
 int fprintf(FILE *stream, const char *fmt, ...);

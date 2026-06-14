@@ -39,4 +39,16 @@ typedef long long ptrdiff_t;
 #define PTRDIFF_MIN INT64_MIN
 #define PTRDIFF_MAX INT64_MAX
 
+
+/* Integer constant macros (C99 7.18.4.1) */
+#define INT8_C(v)  v
+#define UINT8_C(v) v
+#define INT16_C(v) v
+#define UINT16_C(v) v
+#define INT32_C(v) v
+#define UINT32_C(v) v ## U
+#define INT64_C(v) v ## LL
+#define UINT64_C(v) v ## ULL
+#define INTMAX_C(v) v ## LL
+#define UINTMAX_C(v) v ## ULL
 #endif

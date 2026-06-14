@@ -515,7 +515,7 @@ static bool is_storage_class(Token *tok) {
         equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
         equalc(tok, "restrict") ||
         equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
-        equalc(tok, "signed") || equalc(tok, "__signed__") ||
+        equalc(tok, "signed") || equalc(tok, "__signed") || equalc(tok, "__signed__") ||
         equalc(tok, "unsigned") || equalc(tok, "short") || equalc(tok, "long");
 }
 
@@ -590,6 +590,16 @@ static void maybe_update_align(int *align, int value) {
 
 static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
     while (true) {
+
+        // _Pragma("string") — C99 pragma operator, treat as no-op
+        if (equalc(tok, "_Pragma")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            if (tok->kind == TK_STR)
+                tok = tok->next;
+            tok = skip(tok, ")");
+            continue;
+        }
         if (equalc(tok, "_Alignas")) {
             tok = tok->next;
             tok = skip(tok, "(");
@@ -606,6 +616,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             tok = skip(tok, ")");
             continue;
         }
+
 
         if (equalc(tok, "__asm__") || equalc(tok, "__asm") || equalc(tok, "asm")) {
             Token *start = tok;
@@ -1831,7 +1842,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "signed") || equalc(tok, "__signed__")) {
+        if (equalc(tok, "signed") || equalc(tok, "__signed") || equalc(tok, "__signed__")) {
             is_signed = true;
             tok = tok->next;
             continue;
@@ -3829,6 +3840,17 @@ static Node *stmt(Token **rest, Token *tok) {
         return new_node(ND_NULL, tok);
     }
 
+
+    // _Pragma("string") — C99 pragma operator, treat as no-op
+    if (equalc(tok, "_Pragma")) {
+        tok = tok->next;
+        tok = skip(tok, "(");
+        if (tok->kind == TK_STR)
+            tok = tok->next;
+        tok = skip(tok, ")");
+        *rest = tok;
+        return new_node(ND_NULL, tok);
+    }
     Node *node = new_node(ND_EXPR_STMT, tok);
     node->lhs = expr(&tok, tok);
     *rest = skip(tok, ";");
