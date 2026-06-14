@@ -283,6 +283,7 @@ static bool is_asm_reserved(const char *name);
 static void sign_extend_to(int r, int from_size, int to_size);
 static void zero_extend_to(int r, int from_size, int to_size);
 static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr);
+static void emit_complex_convert_float(int src, int dst, Type *from, Type *to);
 static int alloc_int128_slot(void);
 static int alloc_int128_addr(void);
 static int widen_to_int128(int val, bool is_unsigned);
@@ -3296,6 +3297,146 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
 #endif
 }
 
+// Convert a TY_COMPLEX value at address `src` (real-floating base type
+// `from->base`, e.g. _Complex float) to a TY_COMPLEX value at address `dst`
+// (real-floating base type `to->base`, e.g. _Complex double), narrowing or
+// widening each component as needed (cvtss2sd/cvtsd2ss).  Both components
+// are loaded before either is stored, so src == dst (in-place conversion,
+// e.g. a smaller hidden-retbuf result being widened in place) is safe even
+// when to->size > from->size.
+static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
+    int fsz = from->base->size, tsz = to->base->size;
+#ifdef ARCH_ARM64
+    if (fsz == 4) {
+        printf("  ldr s0, [%s]\n", reg64[src]);
+        printf("  ldr s1, [%s, #4]\n", reg64[src]);
+        printf("  fcvt d0, s0\n");
+        printf("  fcvt d1, s1\n");
+    } else {
+        printf("  ldr d0, [%s]\n", reg64[src]);
+        printf("  ldr d1, [%s, #8]\n", reg64[src]);
+        printf("  fcvt s0, d0\n");
+        printf("  fcvt s1, d1\n");
+    }
+    if (tsz == 4) {
+        printf("  str s0, [%s]\n", reg64[dst]);
+        printf("  str s1, [%s, #4]\n", reg64[dst]);
+    } else {
+        printf("  str d0, [%s]\n", reg64[dst]);
+        printf("  str d1, [%s, #8]\n", reg64[dst]);
+    }
+#else
+    if (fsz == 4) {
+        printf("  movss (%s), %%xmm0\n", reg64[src]);
+        printf("  movss 4(%s), %%xmm1\n", reg64[src]);
+        printf("  cvtss2sd %%xmm0, %%xmm0\n");
+        printf("  cvtss2sd %%xmm1, %%xmm1\n");
+    } else {
+        printf("  movsd (%s), %%xmm0\n", reg64[src]);
+        printf("  movsd 8(%s), %%xmm1\n", reg64[src]);
+        printf("  cvtsd2ss %%xmm0, %%xmm0\n");
+        printf("  cvtsd2ss %%xmm1, %%xmm1\n");
+    }
+    if (tsz == 4) {
+        printf("  movss %%xmm0, (%s)\n", reg64[dst]);
+        printf("  movss %%xmm1, 4(%s)\n", reg64[dst]);
+    } else {
+        printf("  movsd %%xmm0, (%s)\n", reg64[dst]);
+        printf("  movsd %%xmm1, 8(%s)\n", reg64[dst]);
+    }
+#endif
+}
+
+// Convert a TY_COMPLEX value at address `src` (integer base type
+// `from->base`, e.g. _Complex char) to a TY_COMPLEX value at address `dst`
+// (integer base type `to->base`, e.g. _Complex int), sign- or
+// zero-extending (per from->base->is_unsigned) or truncating each
+// component as needed. Both components are loaded before either is
+// stored, so src == dst is safe.
+static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
+    int fsz = from->base->size, tsz = to->base->size;
+    bool uns = from->base->is_unsigned;
+#ifdef ARCH_ARM64
+    if (fsz == 8) {
+        printf("  ldr x0, [%s]\n", reg64[src]);
+        printf("  ldr x1, [%s, #8]\n", reg64[src]);
+    } else if (fsz == 4) {
+        if (uns) {
+            printf("  ldr w0, [%s]\n", reg64[src]);
+            printf("  ldr w1, [%s, #4]\n", reg64[src]);
+        } else {
+            printf("  ldrsw x0, [%s]\n", reg64[src]);
+            printf("  ldrsw x1, [%s, #4]\n", reg64[src]);
+        }
+    } else if (fsz == 2) {
+        printf("  %s x0, [%s]\n", uns ? "ldrh" : "ldrsh", reg64[src]);
+        printf("  %s x1, [%s, #2]\n", uns ? "ldrh" : "ldrsh", reg64[src]);
+    } else {
+        printf("  %s x0, [%s]\n", uns ? "ldrb" : "ldrsb", reg64[src]);
+        printf("  %s x1, [%s, #1]\n", uns ? "ldrb" : "ldrsb", reg64[src]);
+    }
+    if (tsz == 8) {
+        printf("  str x0, [%s]\n", reg64[dst]);
+        printf("  str x1, [%s, #8]\n", reg64[dst]);
+    } else if (tsz == 4) {
+        printf("  str w0, [%s]\n", reg64[dst]);
+        printf("  str w1, [%s, #4]\n", reg64[dst]);
+    } else if (tsz == 2) {
+        printf("  strh w0, [%s]\n", reg64[dst]);
+        printf("  strh w1, [%s, #2]\n", reg64[dst]);
+    } else {
+        printf("  strb w0, [%s]\n", reg64[dst]);
+        printf("  strb w1, [%s, #1]\n", reg64[dst]);
+    }
+#else
+    if (fsz == 8) {
+        printf("  mov (%s), %%rax\n", reg64[src]);
+        printf("  mov %d(%s), %%rcx\n", fsz, reg64[src]);
+    } else if (fsz == 4) {
+        if (uns) {
+            printf("  mov (%s), %%eax\n", reg64[src]);
+            printf("  mov %d(%s), %%ecx\n", fsz, reg64[src]);
+        } else {
+            printf("  movslq (%s), %%rax\n", reg64[src]);
+            printf("  movslq %d(%s), %%rcx\n", fsz, reg64[src]);
+        }
+    } else if (fsz == 2) {
+        printf("  %s (%s), %%rax\n", uns ? "movzwq" : "movswq", reg64[src]);
+        printf("  %s %d(%s), %%rcx\n", uns ? "movzwq" : "movswq", fsz, reg64[src]);
+    } else {
+        printf("  %s (%s), %%rax\n", uns ? "movzbq" : "movsbq", reg64[src]);
+        printf("  %s %d(%s), %%rcx\n", uns ? "movzbq" : "movsbq", fsz, reg64[src]);
+    }
+    const char *store_real = tsz == 8 ? "%rax" : tsz == 4 ? "%eax"
+        : tsz == 2                                        ? "%ax"
+                                                          : "%al";
+    const char *store_imag = tsz == 8 ? "%rcx" : tsz == 4 ? "%ecx"
+        : tsz == 2                                        ? "%cx"
+                                                          : "%cl";
+    printf("  mov %s, (%s)\n", store_real, reg64[dst]);
+    printf("  mov %s, %d(%s)\n", store_imag, tsz, reg64[dst]);
+#endif
+}
+
+#ifndef ARCH_ARM64
+// Given a 32-bit x86_64 register name (e.g. "%eax", "%r9d"), return the
+// 8-bit ("%al", "%r9b") or 16-bit ("%ax", "%r9w") sub-register name, used
+// to store a truncated _Complex char/short integer component.
+static const char *x86_subreg(const char *reg32, int sz) {
+    static const char *map8[] = {
+        "%eax", "%al", "%ecx", "%cl", "%edx", "%dl", "%edi", "%dil",
+        "%r8d", "%r8b", "%r9d", "%r9b", "%r10d", "%r10b", "%r11d", "%r11b", NULL};
+    static const char *map16[] = {
+        "%eax", "%ax", "%ecx", "%cx", "%edx", "%dx", "%edi", "%di",
+        "%r8d", "%r8w", "%r9d", "%r9w", "%r10d", "%r10w", "%r11d", "%r11w", NULL};
+    const char **map = sz == 1 ? map8 : map16;
+    for (int i = 0; map[i]; i += 2)
+        if (!strcmp(reg32, map[i]))
+            return map[i + 1];
+    return reg32;
+}
+#endif
+
 #ifdef ARCH_ARM64
 #if 0
 static int base_regnum_from_addr(const char *addr) {
@@ -3969,6 +4110,35 @@ static int gen_addr(Node *node) {
     }
     case ND_CAST:
         if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_COMPLEX || node->ty->kind == TY_ARRAY)) {
+            // Complex -> complex cast with a differently-sized base type of
+            // the same kind (e.g. _Complex char -> _Complex int, from the
+            // usual arithmetic conversions). The source storage doesn't
+            // match node->ty's size, so handing back gen_addr(node->lhs)'s
+            // address as-is would make callers read/write past the smaller
+            // object. Materialize a converted copy on the stack instead.
+            if (node->ty->kind == TY_COMPLEX && node->lhs->ty && node->lhs->ty->kind == TY_COMPLEX &&
+                is_flonum(node->lhs->ty->base) == is_flonum(node->ty->base) &&
+                node->lhs->ty->base->size != node->ty->base->size) {
+                int src = gen_addr(node->lhs);
+                if (src < 0)
+                    src = gen(node->lhs); // gen() for complex exprs also returns an address
+                int alloc = (node->ty->size + 7) & ~7;
+                fn_struct_ret_off += alloc;
+                if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+                int result_off = current_fn_stack_size + fn_struct_ret_off;
+                int dst = alloc_reg();
+#ifdef ARCH_ARM64
+                printf("  sub %s, %s, #%d\n", reg64[dst], FRAME_PTR, result_off);
+#else
+                printf("  lea -%d(%%rbp), %s\n", result_off, reg64[dst]);
+#endif
+                if (is_flonum(node->lhs->ty->base))
+                    emit_complex_convert_float(src, dst, node->lhs->ty, node->ty);
+                else
+                    emit_complex_convert_int(src, dst, node->lhs->ty, node->ty);
+                free_reg(src);
+                return dst;
+            }
             int r = gen_addr(node->lhs);
             if (r >= 0) return r;
             // Non-lvalue cast to complex/struct: materialize on stack
@@ -5367,6 +5537,16 @@ static int gen(Node *node) {
                 // Generate the call with dst as the hidden return buffer.
                 // gen_funcall will copy the return value directly to dst.
                 gen_funcall(node->rhs, dst);
+                // If the call's complex return type and the destination's
+                // complex type have differently-sized real-floating bases
+                // (e.g. _Complex float -> _Complex double), convert the
+                // components in place before anything else uses dst.
+                if (node->ty->kind == TY_COMPLEX && node->rhs->ty->kind == TY_COMPLEX &&
+                    is_flonum(node->ty->base) && is_flonum(node->rhs->ty->base) &&
+                    node->ty->base->kind != TY_LDOUBLE && node->rhs->ty->base->kind != TY_LDOUBLE &&
+                    node->ty->base->size != node->rhs->ty->base->size) {
+                    emit_complex_convert_float(dst, dst, node->rhs->ty, node->ty);
+                }
                 // For complex return values used as a condition (e.g. if (c = f())),
                 // test whether the value is non-zero.
                 if (node->ty->kind == TY_COMPLEX) {
@@ -5492,6 +5672,18 @@ static int gen(Node *node) {
                 src = gen_addr(node->rhs);
             else
                 src = gen(node->rhs);
+
+            // Complex-to-complex assignment with differing real-floating base
+            // types (e.g. _Complex float = _Complex double or vice versa):
+            // convert each component instead of doing a raw byte copy.
+            if (node->lhs->ty->kind == TY_COMPLEX && node->rhs->ty && node->rhs->ty->kind == TY_COMPLEX &&
+                is_flonum(node->lhs->ty->base) && is_flonum(node->rhs->ty->base) &&
+                node->lhs->ty->base->kind != TY_LDOUBLE && node->rhs->ty->base->kind != TY_LDOUBLE &&
+                node->lhs->ty->base->size != node->rhs->ty->base->size) {
+                emit_complex_convert_float(src, dst, node->rhs->ty, node->lhs->ty);
+                free_reg(src);
+                return dst;
+            }
 
             // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
             // store the value directly instead of copying bytes from the address in the register.
@@ -6700,6 +6892,22 @@ static int gen(Node *node) {
     }
     case ND_RETURN: {
         if (node->lhs) {
+            // Returning a _Complex value from a function whose declared
+            // return type is a plain scalar (GNU extension: discards the
+            // imaginary part). Wrap in an ND_CAST to the return type so the
+            // scalar-return path below loads just the real component,
+            // instead of mistaking this for a complex-returning function
+            // and copying raw bytes into __retbuf.
+            Type *ret_ty = current_fn_def->ty->return_ty;
+            if (node->lhs->ty && is_complex(node->lhs->ty) && ret_ty &&
+                !is_complex(ret_ty) && ret_ty->kind != TY_STRUCT && ret_ty->kind != TY_UNION) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->lhs;
+                cast->ty = ret_ty;
+                cast->tok = node->lhs->tok;
+                node->lhs = cast;
+            }
             if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
                 // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
                 int src = gen_int128(node->lhs);
@@ -8853,70 +9061,101 @@ static int gen(Node *node) {
                 }
             }
 #else
-            printf("  mov (%s), %%rax\n", reg64[addr_lhs]);
-            printf("  mov %d(%s), %%rdx\n", base_sz, reg64[addr_lhs]);
+            // Operate on each base_sz-byte component (real/imag) in a
+            // W-byte register (W=4 for char/short/int bases, 8 for long
+            // bases), sign- or zero-extending narrower components on load
+            // and truncating on store. Scratch registers (rax, rcx, rdx,
+            // r8, r9, rdi) are all outside the alloc_reg pool ({%r10, %r11,
+            // %rbx, %r12-%r15, %rsi}), so they can never collide with
+            // addr_lhs/addr_rhs/result or any live register from an
+            // enclosing expression.
+            bool base_unsigned = node->ty->base->is_unsigned;
+            int W = base_sz <= 4 ? 4 : 8;
+            const char *rax_w = W == 4 ? "%eax" : "%rax";
+            const char *rdx_w = W == 4 ? "%edx" : "%rdx";
+            const char *rcx_w = W == 4 ? "%ecx" : "%rcx";
+            const char *r8_w = W == 4 ? "%r8d" : "%r8";
+            const char *r9_w = W == 4 ? "%r9d" : "%r9";
+            const char *rdi_w = W == 4 ? "%edi" : "%rdi";
+#define CX_LOAD(memreg, off, dstw) do { \
+    if (base_sz == W) \
+        printf("  mov %d(%s), %s\n", off, memreg, dstw); \
+    else if (base_sz == 1) \
+        printf("  %s %d(%s), %s\n", base_unsigned ? "movzbl" : "movsbl", off, memreg, dstw); \
+    else \
+        printf("  %s %d(%s), %s\n", base_unsigned ? "movzwl" : "movswl", off, memreg, dstw); \
+} while (0)
+            CX_LOAD(reg64[addr_lhs], 0, rax_w); // a = lhs real
+            CX_LOAD(reg64[addr_lhs], base_sz, rdx_w); // b = lhs imag
+            CX_LOAD(reg64[addr_rhs], 0, rcx_w); // c = rhs real
+            CX_LOAD(reg64[addr_rhs], base_sz, r8_w); // d = rhs imag
+            const char *real_reg, *imag_reg;
             switch (node->kind) {
             case ND_ADD:
-                printf("  add (%s), %%rax\n", reg64[addr_rhs]);
-                printf("  adc %d(%s), %%rdx\n", base_sz, reg64[addr_rhs]);
+                printf("  add %s, %s\n", rcx_w, rax_w); // a+c
+                printf("  add %s, %s\n", r8_w, rdx_w); // b+d
+                real_reg = rax_w;
+                imag_reg = rdx_w;
                 break;
             case ND_SUB:
-                printf("  sub (%s), %%rax\n", reg64[addr_rhs]);
-                printf("  sbb %d(%s), %%rdx\n", base_sz, reg64[addr_rhs]);
+                printf("  sub %s, %s\n", rcx_w, rax_w); // a-c
+                printf("  sub %s, %s\n", r8_w, rdx_w); // b-d
+                real_reg = rax_w;
+                imag_reg = rdx_w;
                 break;
             case ND_MUL:
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
-                // rax=a (LHS real), rdx=b (LHS imag)
-                printf("  mov (%s), %%rcx\n", reg64[addr_rhs]); // c = RHS real
-                printf("  mov %d(%s), %%r8\n", base_sz, reg64[addr_rhs]); // d = RHS imag
-                printf("  mov %%rax, %%r9\n");
-                printf("  imul %%rcx, %%r9\n"); // r9 = a*c
-                printf("  mov %%rdx, %%r10\n");
-                printf("  imul %%r8, %%r10\n"); // r10 = b*d
-                printf("  sub %%r10, %%r9\n"); // r9 = ac - bd (real)
-                printf("  imul %%r8, %%rax\n"); // rax = a*d
-                printf("  imul %%rcx, %%rdx\n"); // rdx = b*c
-                printf("  add %%rdx, %%rax\n"); // rax = ad+bc (imag)
-                printf("  mov %%r9, %%rdx\n"); // move real to rdx for store
+                printf("  mov %s, %s\n", rax_w, r9_w);
+                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
+                printf("  mov %s, %s\n", rdx_w, rdi_w);
+                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
+                printf("  sub %s, %s\n", rdi_w, r9_w); // r9 = ac-bd (real)
+                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
+                printf("  imul %s, %s\n", rcx_w, rdx_w); // rdx = b*c
+                printf("  add %s, %s\n", rdx_w, rax_w); // rax = ad+bc (imag)
+                printf("  mov %s, %s\n", r9_w, rdx_w); // rdx = real
+                real_reg = rdx_w;
+                imag_reg = rax_w;
                 break;
             case ND_DIV:
                 // (a+bi)/(c+di) = ((ac+bd)/(cc+dd)) + ((bc-ad)/(cc+dd))i
-                // rax=a (LHS real), rdx=b (LHS imag)
-                printf("  mov (%s), %%rcx\n", reg64[addr_rhs]); // c
-                printf("  mov %d(%s), %%r8\n", base_sz, reg64[addr_rhs]); // d
-                printf("  mov %%rax, %%r9\n");
-                printf("  mov %%rdx, %%r10\n");
-                // r9 = a*c, r10 = b*d
-                printf("  imul %%rcx, %%r9\n");
-                printf("  imul %%r8, %%r10\n");
-                printf("  add %%r10, %%r9\n"); // r9 = ac+bd (num_real)
-                // r10 = b*c, rax = a*d
-                printf("  mov %%rdx, %%r10\n");
-                printf("  imul %%rcx, %%r10\n"); // r10 = b*c
-                printf("  imul %%r8, %%rax\n"); // rax = a*d
-                printf("  sub %%rax, %%r10\n"); // r10 = bc-ad (num_imag)
-                // denom = c*c + d*d
-                printf("  mov %%rcx, %%rax\n");
-                printf("  imul %%rcx, %%rax\n"); // rax = c*c
-                printf("  mov %%r8, %%r11\n");
-                printf("  imul %%r8, %%r11\n"); // r11 = d*d
-                printf("  add %%r11, %%rax\n"); // rax = cc+dd (denom)
-                printf("  mov %%rax, %%r11\n"); // save denom
-                printf("  mov %%r9, %%rax\n"); // num_real → rax
-                printf("  cqo\n");
-                printf("  idiv %%r11\n"); // rax = num_real/denom (real)
-                printf("  mov %%r10, %%rdx\n"); // num_imag → for next division
+                printf("  mov %s, %s\n", rax_w, r9_w);
+                printf("  mov %s, %s\n", rdx_w, rdi_w);
+                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
+                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
+                printf("  add %s, %s\n", rdi_w, r9_w); // r9 = ac+bd (num_real)
+                printf("  mov %s, %s\n", rdx_w, rdi_w); // rdi = b
+                printf("  imul %s, %s\n", rcx_w, rdi_w); // rdi = b*c
+                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
+                printf("  sub %s, %s\n", rax_w, rdi_w); // rdi = bc-ad (num_imag)
+                printf("  mov %s, %s\n", rcx_w, rax_w); // rax = c
+                printf("  imul %s, %s\n", rcx_w, rax_w); // rax = c*c
+                printf("  mov %s, %s\n", r8_w, rdx_w); // rdx = d
+                printf("  imul %s, %s\n", r8_w, rdx_w); // rdx = d*d
+                printf("  add %s, %s\n", rdx_w, rax_w); // rax = cc+dd (denom)
+                printf("  mov %s, %s\n", rax_w, rcx_w); // rcx = denom
+                printf("  mov %s, %s\n", r9_w, rax_w); // rax = num_real
+                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
+                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = real
                 printf("  push %%rax\n"); // save real result
-                printf("  mov %%rdx, %%rax\n");
-                printf("  cqo\n");
-                printf("  idiv %%r11\n"); // rax = num_imag/denom (imag)
-                printf("  pop %%rdx\n"); // restore real to rdx
+                printf("  mov %s, %s\n", rdi_w, rax_w); // rax = num_imag
+                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
+                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = imag
+                printf("  pop %%rdx\n"); // rdx = real result
+                real_reg = rdx_w;
+                imag_reg = rax_w;
                 break;
             default:
                 __builtin_unreachable();
             }
-            printf("  mov %%rax, (%s)\n", reg64[result]);
-            printf("  mov %%rdx, %d(%s)\n", base_sz, reg64[result]);
+            if (base_sz == W) {
+                printf("  mov %s, (%s)\n", real_reg, reg64[result]);
+                printf("  mov %s, %d(%s)\n", imag_reg, base_sz, reg64[result]);
+            } else {
+                printf("  mov %s, (%s)\n", x86_subreg(real_reg, base_sz), reg64[result]);
+                printf("  mov %s, %d(%s)\n", x86_subreg(imag_reg, base_sz), base_sz, reg64[result]);
+            }
+#undef CX_LOAD
 #endif
         }
 #ifdef ARCH_ARM64

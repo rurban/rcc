@@ -426,6 +426,17 @@ static void add_type_internal(Node *node) {
                 cast->ty = node->lhs->ty;
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
+            } else if (!is_complex(node->lhs->ty) && is_complex(node->rhs->ty) &&
+                       is_number(node->lhs->ty)) {
+                // Assigning a complex value to a non-complex scalar discards
+                // the imaginary part (GNU extension): cast rhs down to the
+                // real scalar type so codegen loads just the real component.
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
             }
         }
         node->ty = node->lhs->ty;

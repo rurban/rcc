@@ -3571,7 +3571,7 @@ static int run_torture_suite(bool summary_only) {
     if (only_test)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 25;
+        max_fail = 24;
     else if (streq(platform, "arm64"))
         max_fail = 18;
     else if (streq(platform, "darwin_cross"))
@@ -3581,7 +3581,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 38;
     else
-        max_fail = 9;
+        max_fail = 6;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (!only_test) {

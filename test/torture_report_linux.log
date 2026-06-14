@@ -592,7 +592,7 @@
   20041114-1                          PASS
   20041124-1                          PASS
   20041126-1                          PASS
-  20041201-1                          FAIL (runtime)
+  20041201-1                          PASS
   20041210-1                          PASS
   20041212-1                          PASS
   20041213-2                          PASS
@@ -1060,7 +1060,7 @@
   pr38048-1                           PASS
   pr38048-2                           PASS
   pr38051                             PASS
-  pr38151                             FAIL (runtime)
+  pr38151                             PASS
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
@@ -1499,7 +1499,7 @@
   pr103405                            SKIP (nested-func)
   pr103417                            PASS
   pr104196                            PASS
-  pr104604                            FAIL (runtime)
+  pr104604                            PASS
   pr104814                            PASS
   pr104839                            PASS
   pr105613                            SKIP (vector_size)
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1560/1569 passed (99%), 9 failed (0 compile/9 runtime), 102 skipped.
+Torture: 1563/1569 passed (99%), 6 failed (0 compile/6 runtime), 102 skipped.
 
-Runtime failures: 20020411-1 20041201-1 pr38151 pr58277-1 pr58277-2 pr82210 pr104604 va-arg-22 va-arg-pack-1
+Runtime failures: 20020411-1 pr58277-1 pr58277-2 pr82210 va-arg-22 va-arg-pack-1

@@ -2,13 +2,13 @@
 
 **Platform**: Linux ARM64 (aarch64 cross)
 
-Generated: June 13 2026 22:09
+Generated: June 14 2026 08:55
 
 ## Overall Summary
 
 - **Total**: 2048
-- **Passed**: 1920
-- **Failed**: 26
+- **Passed**: 1922
+- **Failed**: 24
 - **Overall Pass Rate**: 93%
 
 ## TCC Compatibility Tests
@@ -35,9 +35,9 @@ Generated: June 13 2026 22:09
 ## GCC Torture Tests
 
 - **Total**: 1671
-- **Passed**: 1544
-- **Failed**: 25
+- **Passed**: 1546
+- **Failed**: 23
 - **Skipped**: 102
-- **Fail Compile**: 6
-- **Fail Runtime**: 19
+- **Fail Compile**: 5
+- **Fail Runtime**: 18
 - **Pass Rate (excl. skip)**: 98%
