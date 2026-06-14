@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 CC     := gcc
 CFLAGS = -std=c11 -Wall -Wextra -O3 -g -Isrc
+GPERF  := gperf
 TARGET = rcc
 MINGW_O =
 OBJ_EXT = .o
@@ -40,7 +41,7 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 PREFIX ?= /usr/local
@@ -133,6 +134,14 @@ $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 $(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
 	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
+
+src/keywords.h: src/keywords.gperf src/keyword_ids.h
+	$(GPERF) -m 10 --output-file=$@.tmp src/keywords.gperf
+	sed -e's,unsigned int hval = len;,unsigned int hval = len \& UINT_MAX;,' \
+	    -e's,unsigned int len,size_t len,;' -e 's,register ,,g' <$@.tmp >$@
+	rm -f $@.tmp
+
+src/keywords$(OBJ_EXT): src/keywords.c src/keywords.h src/keyword_ids.h
 
 src/sysinc_paths.h: FORCE
 	@tmp=$$(mktemp); out=$$(mktemp); plat=$$(mktemp); \
@@ -345,7 +354,7 @@ leanclean:
 	fi
 clean:
 	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof \
-	      src/sysinc_paths.h src/gcc_predefined.h \
+	      src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp \
 	      fred.txt *.s qemu*.core src/*.obj src/*.darwin.o src/*.arm64.o \
 	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
 	if command -v git > /dev/null 2>&1; then \

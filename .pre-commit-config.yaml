@@ -42,7 +42,7 @@ repos:
     hooks:
       - id: clang-format
         entry: ./clang-format.sh
-        exclude: test/.*|tinycc/.*|c-testsuite/.*
+        exclude: test/.*|tinycc/.*|c-testsuite/.*|src/keywords\.h
 
   - repo: local
     hooks:

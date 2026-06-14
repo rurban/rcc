@@ -177,7 +177,7 @@ static const char *reg_owner[NUM_REGS];
 // Pre-interned builtin name pointers for O(1) pointer-equality matching.
 // All function names come from tok->name which is str_intern'd by the lexer,
 // so pointer comparison is valid after we intern these literals once.
-#define _BI(s) str_intern(s, sizeof(s)-1)
+#define _BI(s) keyword_interned(s, sizeof(s) - 1)
 char *bi_bswap16, *bi_bswap32, *bi_bswap64;
 char *bi_clz, *bi_clzl, *bi_clzll;
 char *bi_ctz, *bi_ctzl, *bi_ctzll;

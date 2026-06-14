@@ -32,6 +32,8 @@ struct EnumConst {
     int64_t val;
 };
 
+#define kw_is(tok, flag) ((tok)->kw != ID_NONE && (kw_flags[(tok)->kw] & (flag)))
+
 static LVar *locals;
 static LVar *globals;
 
@@ -624,19 +626,6 @@ static Node *append_cleanup_range(Node *body, LVar *begin, LVar *end, Token *tok
     return node;
 }
 
-static bool is_storage_class(Token *tok) {
-    return equalc(tok, "typedef") || equalc(tok, "extern") || equalc(tok, "static") ||
-        equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__") ||
-        equalc(tok, "register") || equalc(tok, "auto") ||
-        equalc(tok, "__thread") || equalc(tok, "_Thread_local") ||
-        equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
-        equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
-        equalc(tok, "restrict") ||
-        equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
-        equalc(tok, "signed") || equalc(tok, "__signed") || equalc(tok, "__signed__") ||
-        equalc(tok, "unsigned") || equalc(tok, "short") || equalc(tok, "long");
-}
-
 static Token *skip_balanced(Token *tok) {
     int depth = 0;
     do {
@@ -659,17 +648,27 @@ static Token *skip_attributes(Token *tok) {
 
 static unsigned char collect_type_quals(Token **rest, Token *tok) {
     unsigned char q = 0;
-    while (true) {
-        if (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__"))
+    while (kw_is(tok, KW_QUAL)) {
+        switch (tok->kw) {
+        case ID_CONST:
+        case ID___CONST:
+        case ID___CONST__:
             q |= QUAL_CONST;
-        else if (equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__"))
-            q |= QUAL_VOLATILE;
-        else if (equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__"))
-            q |= QUAL_RESTRICT;
-        else if (equalc(tok, "_Atomic"))
-            q |= QUAL_ATOMIC;
-        else
             break;
+        case ID_VOLATILE:
+        case ID___VOLATILE:
+        case ID___VOLATILE__:
+            q |= QUAL_VOLATILE;
+            break;
+        case ID_RESTRICT:
+        case ID___RESTRICT:
+        case ID___RESTRICT__:
+            q |= QUAL_RESTRICT;
+            break;
+        case ID__ATOMIC:
+            q |= QUAL_ATOMIC;
+            break;
+        }
         tok = tok->next;
     }
     *rest = tok;
@@ -678,19 +677,11 @@ static unsigned char collect_type_quals(Token **rest, Token *tok) {
 
 
 static bool is_typename(Token *tok) {
-    if (equalc(tok, "__attribute__") || equalc(tok, "__attribute") ||
-        equalc(tok, "__declspec") || equalc(tok, "_Alignas"))
+    if (tok->kw == ID___ATTRIBUTE || tok->kw == ID___ATTRIBUTE__ ||
+        tok->kw == ID___DECLSPEC || tok->kw == ID__ALIGNAS)
         return true;
     tok = skip_attributes(tok);
-    if (equalc(tok, "int") || equalc(tok, "char") || equalc(tok, "void") ||
-        equalc(tok, "float") || equalc(tok, "double") || equalc(tok, "__int128") ||
-        equalc(tok, "_Bool") || equalc(tok, "struct") || equalc(tok, "union") || equalc(tok, "enum") ||
-        equalc(tok, "typeof") || equalc(tok, "__typeof") || equalc(tok, "__typeof__") ||
-        equalc(tok, "_Atomic") ||
-        equalc(tok, "_Complex") || equalc(tok, "__complex__") ||
-        equalc(tok, "_Decimal32") || equalc(tok, "_Decimal64") || equalc(tok, "_Decimal128"))
-        return true;
-    if (is_storage_class(tok))
+    if (kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE))
         return true;
     return find_typedef(tok) != NULL;
 }
@@ -710,7 +701,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
     while (true) {
 
         // _Pragma("string") — C99 pragma operator, treat as no-op
-        if (equalc(tok, "_Pragma")) {
+        if (tok->kw == ID__PRAGMA) {
             tok = tok->next;
             tok = skip(tok, "(");
             if (tok->kind == TK_STR)
@@ -718,7 +709,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             tok = skip(tok, ")");
             continue;
         }
-        if (equalc(tok, "_Alignas")) {
+        if (tok->kw == ID__ALIGNAS) {
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok)) {
@@ -736,7 +727,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
         }
 
 
-        if (equalc(tok, "__asm__") || equalc(tok, "__asm") || equalc(tok, "asm")) {
+        if (tok->kw == ID_ASM || tok->kw == ID___ASM || tok->kw == ID___ASM__) {
             Token *start = tok;
             tok = tok->next;
             // Before consuming "(", check if next is "(" — if not, it's not an asm attribute
@@ -769,7 +760,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             return tok;
         }
 
-        if (equalc(tok, "__attribute__") || equalc(tok, "__attribute")) {
+        if (tok->kw == ID___ATTRIBUTE || tok->kw == ID___ATTRIBUTE__) {
             tok = tok->next;
             tok = skip(tok, "(");
             tok = skip(tok, "(");
@@ -930,7 +921,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             continue;
         }
 
-        if (equalc(tok, "__declspec")) {
+        if (tok->kw == ID___DECLSPEC) {
             tok = tok->next;
             if (equalc(tok, "("))
                 tok = skip_balanced(tok);
@@ -3547,7 +3538,7 @@ static Node *compound_stmt(Token **rest, Token *tok) {
 }
 
 static bool is_asm_keyword(Token *tok) {
-    return equalc(tok, "asm") || equalc(tok, "__asm__") || equalc(tok, "__asm");
+    return tok->kw == ID_ASM || tok->kw == ID___ASM__ || tok->kw == ID___ASM;
 }
 
 #ifdef ARCH_ARM64
@@ -6244,7 +6235,7 @@ Program *parse(Token *tok) {
             }
             continue;
         }
-        if (equalc(tok, "__asm__") || equalc(tok, "__asm") || equalc(tok, "asm")) {
+        if (tok->kw == ID_ASM || tok->kw == ID___ASM || tok->kw == ID___ASM__) {
             tok = tok->next;
             char *str = parse_toplevel_asm(&tok, tok);
             TLItem *item = arena_alloc(sizeof(TLItem));

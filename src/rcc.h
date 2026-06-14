@@ -30,6 +30,8 @@
 // Tokenizer / Lexer
 //
 
+#include "keyword_ids.h"
+
 typedef enum {
     TK_IDENT, // Identifiers
     TK_PUNCT, // Punctuators
@@ -47,6 +49,7 @@ struct Token {
     int64_t val; // If kind is TK_NUM, its value
     double fval; // If kind is TK_FNUM, its value
     char *name; // If kind is TK_IDENT, its name
+    int kw; // keyword/builtin ID if identifier is a known word, else ID_NONE
     char *str; // If kind is TK_STR, its contents
     char *ptr; // buffer location
     int len; // Token length

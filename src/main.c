@@ -153,6 +153,7 @@ int main(int argc, char **argv) {
     return 1;
 #endif
 
+    init_keywords();
     init_builtins();
     init_builtin_names();
     char *out_path =

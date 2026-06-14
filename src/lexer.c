@@ -179,6 +179,7 @@ void warn_tok(Token *tok, char *fmt, ...) {
 static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     Token *tok = arena_alloc(sizeof(Token));
     tok->kind = kind;
+    tok->kw = ID_NONE;
     tok->ptr = start;
     tok->len = end - start;
     if (opt_g) {
@@ -526,7 +527,13 @@ Token *tokenize(char *filename, char *p) {
             } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
             if (pos != p) {
                 cur = cur->next = new_token(TK_IDENT, start, p, cur_lineno);
-                cur->name = str_intern(start, p - start);
+                int kw = keyword_id(start, p - start, NULL);
+                if (kw != ID_NONE) {
+                    cur->kw = kw;
+                    cur->name = kw_canon[kw];
+                } else {
+                    cur->name = str_intern(start, p - start);
+                }
                 if (!opt_Wno_homoglyph) {
                     const char *w = u8ident_check_ident(cur->name, p - start);
                     if (w)
@@ -548,7 +555,13 @@ Token *tokenize(char *filename, char *p) {
                     c = decode_utf8(&pos, p);
                 } while (is_ident2(*p) || (is32_ident2(c) && pos != p));
                 cur = cur->next = new_token(TK_IDENT, start, p, cur_lineno);
-                cur->name = str_intern(start, p - start);
+                int kw = keyword_id(start, p - start, NULL);
+                if (kw != ID_NONE) {
+                    cur->kw = kw;
+                    cur->name = kw_canon[kw];
+                } else {
+                    cur->name = str_intern(start, p - start);
+                }
                 if (!opt_Wno_homoglyph) {
                     const char *w = u8ident_check_ident(cur->name, p - start);
                     if (w)
