@@ -20,21 +20,134 @@ struct VarAttr {
 
 struct TagScope {
     TagScope *next;
+    TagScope *hash_next;
     char *name;
     Type *ty;
 };
 
 struct EnumConst {
     EnumConst *next;
+    EnumConst *hash_next;
     char *name;
     int64_t val;
 };
 
 static LVar *locals;
 static LVar *globals;
+
+#define GLOBAL_HASH_SIZE 8192
+static LVar *global_htab[GLOBAL_HASH_SIZE];
+
+static uint32_t hash_name(const char *s) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; s[i]; i++) {
+        h ^= (unsigned char)s[i];
+        h *= 16777619;
+    }
+    return h;
+}
+
+static void global_htab_add(LVar *var) {
+    uint32_t h = hash_name(var->name) % GLOBAL_HASH_SIZE;
+    var->hash_next = global_htab[h];
+    global_htab[h] = var;
+}
+
+#define SCOPE_HASH_SIZE 4096
+
 static Typedef *typedefs;
+static Typedef *typedef_htab[SCOPE_HASH_SIZE];
+
+typedef struct TypedefLog TypedefLog;
+struct TypedefLog {
+    uint32_t h;
+    Typedef *prev;
+    TypedefLog *next;
+};
+static TypedefLog *typedef_log;
+
 static TagScope *tags;
+static TagScope *tag_htab[SCOPE_HASH_SIZE];
+
+typedef struct TagLog TagLog;
+struct TagLog {
+    uint32_t h;
+    TagScope *prev;
+    TagLog *next;
+};
+static TagLog *tag_log;
+
 static EnumConst *enum_consts;
+static EnumConst *enum_htab[SCOPE_HASH_SIZE];
+
+typedef struct EnumLog EnumLog;
+struct EnumLog {
+    uint32_t h;
+    EnumConst *prev;
+    EnumLog *next;
+};
+static EnumLog *enum_log;
+
+static TypedefLog *typedef_scope_checkpoint(void) { return typedef_log; }
+static void typedef_scope_restore(TypedefLog *cp) {
+    while (typedef_log != cp) {
+        TypedefLog *log = typedef_log;
+        typedef_log = log->next;
+        typedef_htab[log->h] = log->prev;
+    }
+}
+
+static TagLog *tag_scope_checkpoint(void) { return tag_log; }
+static void tag_scope_restore(TagLog *cp) {
+    while (tag_log != cp) {
+        TagLog *log = tag_log;
+        tag_log = log->next;
+        tag_htab[log->h] = log->prev;
+    }
+}
+
+static EnumLog *enum_scope_checkpoint(void) { return enum_log; }
+static void enum_scope_restore(EnumLog *cp) {
+    while (enum_log != cp) {
+        EnumLog *log = enum_log;
+        enum_log = log->next;
+        enum_htab[log->h] = log->prev;
+    }
+}
+
+static void typedef_htab_add(Typedef *td) {
+    uint32_t h = hash_name(td->name) % SCOPE_HASH_SIZE;
+    TypedefLog *log = arena_alloc(sizeof(TypedefLog));
+    log->h = h;
+    log->prev = typedef_htab[h];
+    log->next = typedef_log;
+    typedef_log = log;
+    td->hash_next = typedef_htab[h];
+    typedef_htab[h] = td;
+}
+
+static void tag_htab_add(TagScope *tag) {
+    uint32_t h = hash_name(tag->name) % SCOPE_HASH_SIZE;
+    TagLog *log = arena_alloc(sizeof(TagLog));
+    log->h = h;
+    log->prev = tag_htab[h];
+    log->next = tag_log;
+    tag_log = log;
+    tag->hash_next = tag_htab[h];
+    tag_htab[h] = tag;
+}
+
+static void enum_htab_add(EnumConst *ec) {
+    uint32_t h = hash_name(ec->name) % SCOPE_HASH_SIZE;
+    EnumLog *log = arena_alloc(sizeof(EnumLog));
+    log->h = h;
+    log->prev = enum_htab[h];
+    log->next = enum_log;
+    enum_log = log;
+    ec->hash_next = enum_htab[h];
+    enum_htab[h] = ec;
+}
+
 static int stack_offset;
 static char *pending_cleanup_func;
 static Token *pending_cleanup_tok;
@@ -76,14 +189,7 @@ struct PendingGoto {
 static PendingGoto *pending_gotos;
 static Node *conditional(Token **rest, Token *tok);
 
-// same name
-static bool equal(Token *tok, char *op) {
-    if (!tok || !tok->ptr) return false;
-    int len = (int)strlen(op);
-    return tok->len == len && memcmp(tok->ptr, op, len) == 0;
-}
-
-// Fast variant for string-literal comparisons (avoids strlen at runtime, op is constant)
+// Fast token/string-literal comparison (avoids strlen at runtime, op is constant)
 #define equalc(tok, op)     ((tok) && (tok)->ptr && (tok)->len == (int)(sizeof(op) - 1) && memcmp((tok)->ptr, op, sizeof(op) - 1) == 0)
 
 // Peek past a single __attribute__((...)) block without consuming tokens.
@@ -107,11 +213,15 @@ static Token *peek_past_attr(Token *tok) {
     return tok->next;
 }
 
-static Token *skip(Token *tok, char *op) {
-    if (!equal(tok, op))
-        error_tok(tok, "expected specific operator");
-    return tok->next;
-}
+// All skip() callers in this file use string-literal operators, so use the
+// compile-time-length equalc() variant and avoid a run-time strlen().
+#define skip(tok, op)                                          \
+    ({                                                         \
+        Token *_t = (tok);                                     \
+        if (!equalc(_t, (op)))                                 \
+            error_tok(_t, "expected specific operator");       \
+        _t->next;                                              \
+    })
 
 static int64_t align_to(int64_t n, int64_t align) {
     return (n + align - 1) & ~(align - 1);
@@ -271,6 +381,7 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
     } else {
         var->next = globals;
         globals = var;
+        global_htab_add(var);
     }
     return var;
 }
@@ -301,14 +412,12 @@ static LVar *find_var(Token *tok) {
     for (LVar *var = locals; var; var = var->next)
         if (var->name == tok->name)
             return var;
-    for (LVar *var = globals; var; var = var->next)
-        if (var->name == tok->name)
-            return var;
-    return NULL;
+    return find_global_name(tok->name);
 }
 
 LVar *find_global_name(char *name) {
-    for (LVar *var = globals; var; var = var->next)
+    uint32_t h = hash_name(name) % GLOBAL_HASH_SIZE;
+    for (LVar *var = global_htab[h]; var; var = var->hash_next)
         if (var->name == name)
             return var;
     return NULL;
@@ -351,8 +460,9 @@ static void resolve_pending_gotos(char *name, LVar *locals_at_label) {
 }
 
 static Typedef *find_typedef(Token *tok) {
-    for (Typedef *td = typedefs; td; td = td->next)
-        if (equal(tok, td->name))
+    uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
+    for (Typedef *td = typedef_htab[h]; td; td = td->hash_next)
+        if (td->name == tok->name)
             return td;
     return NULL;
 }
@@ -363,6 +473,7 @@ void add_typedef(char *name, Type *ty) {
     td->ty = ty;
     td->next = typedefs;
     typedefs = td;
+    typedef_htab_add(td);
 }
 
 void init_builtins(void) {
@@ -378,21 +489,23 @@ void init_builtins(void) {
 
 static Type *typedef_find_name(const char *name) {
     Token tok = {};
-    tok.name = (char *)name;
+    tok.name = str_intern(name, strlen(name));
     Typedef *td = find_typedef(&tok);
     return td ? td->ty : NULL;
 }
 
 static EnumConst *find_enum_const(Token *tok) {
-    for (EnumConst *ec = enum_consts; ec; ec = ec->next)
-        if (equal(tok, ec->name))
+    uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
+    for (EnumConst *ec = enum_htab[h]; ec; ec = ec->hash_next)
+        if (ec->name == tok->name)
             return ec;
     return NULL;
 }
 
 static TagScope *find_tag(Token *tok) {
-    for (TagScope *tag = tags; tag; tag = tag->next)
-        if (equal(tok, tag->name))
+    uint32_t h = hash_name(tok->name) % SCOPE_HASH_SIZE;
+    for (TagScope *tag = tag_htab[h]; tag; tag = tag->hash_next)
+        if (tag->name == tok->name)
             return tag;
     return NULL;
 }
@@ -403,6 +516,7 @@ static TagScope *push_tag(char *name, Type *ty) {
     tag->ty = ty;
     tag->next = tags;
     tags = tag;
+    tag_htab_add(tag);
     return tag;
 }
 
@@ -1338,6 +1452,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         ec->val = val++;
         ec->next = enum_consts;
         enum_consts = ec;
+        enum_htab_add(ec);
 
         if (!equalc(tok, "}"))
             tok = skip(tok, ",");
@@ -3337,6 +3452,9 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     Typedef *saved_typedefs = typedefs;
     TagScope *saved_tags = tags;
     EnumConst *saved_enum_consts = enum_consts;
+    TypedefLog *saved_typedef_log = typedef_scope_checkpoint();
+    TagLog *saved_tag_log = tag_scope_checkpoint();
+    EnumLog *saved_enum_log = enum_scope_checkpoint();
     int saved_block_depth = current_block_depth;
 
     Node head = {};
@@ -3411,6 +3529,9 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         node->body = append_cleanup_range(node->body, locals, saved_locals, tok);
     current_block_depth = saved_block_depth;
     locals = saved_locals;
+    typedef_scope_restore(saved_typedef_log);
+    tag_scope_restore(saved_tag_log);
+    enum_scope_restore(saved_enum_log);
     typedefs = saved_typedefs;
     tags = saved_tags;
     enum_consts = saved_enum_consts;
@@ -3619,11 +3740,13 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_IF, tok);
         tok = skip(tok->next, "(");
         EnumConst *saved_enum = enum_consts;
+        EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
         node->then = stmt(&tok, tok);
         if (equalc(tok, "else"))
             node->els = stmt(&tok, tok->next);
+        enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = tok;
         return node;
@@ -3633,6 +3756,7 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_FOR, tok);
         tok = skip(tok->next, "(");
         EnumConst *saved_enum = enum_consts;
+        EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
         Node *saved_loop = current_loop;
@@ -3641,6 +3765,7 @@ static Node *stmt(Token **rest, Token *tok) {
         current_loop = node;
         node->then = stmt(&tok, tok);
         current_loop = saved_loop;
+        enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = tok;
         return node;
@@ -3657,8 +3782,10 @@ static Node *stmt(Token **rest, Token *tok) {
         tok = skip(tok, "while");
         tok = skip(tok, "(");
         EnumConst *saved_enum = enum_consts;
+        EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
+        enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = skip(tok, ";");
         return node;
@@ -3667,9 +3794,11 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "for")) {
         LVar *saved_locals = locals;
         Typedef *saved_typedefs = typedefs;
+        TypedefLog *saved_typedef_log = typedef_scope_checkpoint();
+        EnumConst *saved_enum = enum_consts;
+        EnumLog *saved_enum_log = enum_scope_checkpoint();
         Node *node = new_node(ND_FOR, tok);
         tok = skip(tok->next, "(");
-        EnumConst *saved_enum = enum_consts;
 
         if (!equalc(tok, ";")) {
             if (is_typename(tok)) {
@@ -3697,6 +3826,8 @@ static Node *stmt(Token **rest, Token *tok) {
         current_loop = node;
         node->then = stmt(&tok, tok);
         current_loop = saved_loop;
+        enum_scope_restore(saved_enum_log);
+        typedef_scope_restore(saved_typedef_log);
         enum_consts = saved_enum;
         node = append_cleanup_range(node, locals, saved_locals, tok);
         locals = saved_locals;
@@ -3709,6 +3840,7 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_SWITCH, tok);
         tok = skip(tok->next, "(");
         EnumConst *saved_enum = enum_consts;
+        EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
         tok = skip(tok, ")");
         Node *saved = current_switch;
@@ -3716,6 +3848,7 @@ static Node *stmt(Token **rest, Token *tok) {
         current_switch = node;
         node->then = stmt(&tok, tok);
         current_switch = saved;
+        enum_scope_restore(saved_enum_log);
         enum_consts = saved_enum;
         *rest = tok;
         return node;
@@ -6072,6 +6205,13 @@ Program *parse(Token *tok) {
     tok = head;
 
     globals = NULL;
+    memset(global_htab, 0, sizeof(global_htab));
+    memset(typedef_htab, 0, sizeof(typedef_htab));
+    typedef_log = NULL;
+    memset(tag_htab, 0, sizeof(tag_htab));
+    tag_log = NULL;
+    memset(enum_htab, 0, sizeof(enum_htab));
+    enum_log = NULL;
     str_lits = NULL;
     TLItem item_head = {};
     TLItem *item_cur = &item_head;

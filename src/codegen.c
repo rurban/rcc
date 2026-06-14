@@ -16,6 +16,18 @@ static uint64_t cg_now_us(void) {
 static Function *current_fn_def;
 static TLItem *all_items;
 static StrLit *all_strs;
+
+#define FUNC_HASH_SIZE 8192
+static TLItem *func_htab[FUNC_HASH_SIZE];
+
+static uint32_t func_hash_name(const char *s) {
+    uint32_t h = 2166136261u;
+    for (int i = 0; s[i]; i++) {
+        h ^= (unsigned char)s[i];
+        h *= 16777619;
+    }
+    return h;
+}
 static bool cg_discard_result;
 static void cg_emit(const char *fmt, ...) {
     va_list ap;
@@ -329,8 +341,9 @@ static const char *var_sym_label(LVar *var) {
 // Assembly label for a function: respects __asm__ names (used as-is) and
 // applies sym_name() to regular C identifiers.
 static const char *func_label(char *name) {
-    for (TLItem *item = all_items; item; item = item->next)
-        if (item->kind == TL_FUNC && !strcmp(item->fn->name, name)) {
+    uint32_t h = func_hash_name(name) % FUNC_HASH_SIZE;
+    for (TLItem *item = func_htab[h]; item; item = item->hash_next)
+        if (item->fn->name == name) {
             if (item->fn->asm_name)
                 return item->fn->asm_name;
             return sym_name(item->fn->name);
@@ -9885,36 +9898,54 @@ static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
     reg[rlen] = '\0';
     p = comma + 1;
     while (*p == ' ' || *p == '\t') p++;
-    int n;
-    if (sscanf(p, "-%d(%%rbp)", &n) == 1) {
-        *off = n;
-        return 1;
-    }
-    return 0;
+    if (*p != '-') return 0;
+    char *end;
+    long n = strtol(p + 1, &end, 10);
+    if (strncmp(end, "(%rbp)", 6) != 0) return 0;
+    *off = (int)n;
+    return 1;
 }
 static int peep_mov_reg_rbp(char *line, char *dst, int dst_sz, char *szword, int *off) {
-    (void)dst_sz;
     // AT&T: mov[lq] -N(%%rbp), %%reg  (load from [rbp-N] into reg)
     if (strncmp(line, "  mov", 5) != 0) return 0;
     char *p = line + 5;
-    if (p[0] == 'l') {
+    char sizechar = *p;
+    if (sizechar == 'l') {
         if (szword) strcpy(szword, "dword");
         p++;
-    } else if (p[0] == 'q') {
+    } else if (sizechar == 'q') {
         if (szword) strcpy(szword, "qword");
         p++;
     } else
         return 0;
     if (*p != ' ') return 0;
     p++;
-    if (sscanf(p, "-%d(%%rbp), %s", off, dst) == 2)
-        return 1;
-    return 0;
+    if (*p != '-') return 0;
+    char *end;
+    long n = strtol(p + 1, &end, 10);
+    if (strncmp(end, "(%rbp), ", 8) != 0) return 0;
+    p = end + 8;
+    int rlen = strlen(p);
+    if (rlen >= dst_sz) return 0;
+    memcpy(dst, p, rlen + 1);
+    *off = (int)n;
+    return 1;
 }
 static int peep_mov_rbp_imm(char *line, int *off, int *val) {
     // AT&T: movl $imm, -N(%%rbp)
-    if (sscanf(line, "  movl $%d, -%d(%%rbp)", val, off) == 2) return 1;
-    return 0;
+    if (strncmp(line, "  movl $", 8) != 0) return 0;
+    char *p = line + 8;
+    if (*p != '-' && !isdigit((unsigned char)*p)) return 0;
+    char *end;
+    long v = strtol(p, &end, 10);
+    if (end == p) return 0;
+    if (strncmp(end, ", -", 3) != 0) return 0;
+    p = end + 3;
+    long n = strtol(p, &end, 10);
+    if (end == p || strncmp(end, "(%rbp)", 6) != 0) return 0;
+    *val = (int)v;
+    *off = (int)n;
+    return 1;
 }
 static int peep_jmp(char *line, char *lbl, int lbl_sz) {
     if (strncmp(line, "  jmp ", 6) != 0) return 0;
@@ -10459,6 +10490,13 @@ void dump_ast(Program *prog) {
 void codegen(Program *prog) {
     cg_stream = stdout;
     all_items = prog->items;
+    memset(func_htab, 0, sizeof(func_htab));
+    for (TLItem *item = all_items; item; item = item->next)
+        if (item->kind == TL_FUNC) {
+            uint32_t h = func_hash_name(item->fn->name) % FUNC_HASH_SIZE;
+            item->hash_next = func_htab[h];
+            func_htab[h] = item;
+        }
     all_strs = prog->strs;
     alloca_needed = false;
     debug_file_count = 0;

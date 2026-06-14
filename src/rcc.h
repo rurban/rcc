@@ -206,6 +206,7 @@ static inline bool ty_atomic(const Type *t) { return t->qual & QUAL_ATOMIC; }
 typedef struct Typedef Typedef;
 struct Typedef {
     Typedef *next;
+    Typedef *hash_next;
     char *name;
     Type *ty;
 };
@@ -263,6 +264,7 @@ struct Reloc {
 typedef struct LVar LVar;
 struct LVar {
     LVar *next;
+    LVar *hash_next;
     LVar *param_next;
     char *name;
     char *asm_name; // Assembly-level name (for static locals)
@@ -482,6 +484,7 @@ struct TLItem {
     Function *fn; // valid if kind == TL_FUNC
     char *asm_str; // valid if kind == TL_ASM
     TLItem *next;
+    TLItem *hash_next;
 };
 
 typedef struct Program Program;
