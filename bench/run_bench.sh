@@ -240,6 +240,8 @@ if [ -f "$LARGE_SRC" ]; then
     printf "%-30s %10s\n" "--------" "-----------"
 
     large_results=""
+    nl='
+'
     _compile_large() {
 	# shellcheck disable=SC2086
 	_label="$1"
@@ -248,7 +250,7 @@ if [ -f "$LARGE_SRC" ]; then
 	_cm=$(time_ms "$@" 2>/dev/null) || true
 	printf "%8s ms\n" "${_cm:-FAILED}"
 	if [ -n "$_cm" ]; then
-	    large_results="$large_results| $_label | ${_cm}ms |\n"
+	    large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm}ms")$nl"
 	fi
     }
 
@@ -287,7 +289,7 @@ for _c in $list_c; do
 	eval "_em=\${${_vname}_EXEC:-}"
 	eval "_tm=\${${_vname}_TOTAL:-}"
 	[ -z "$_cm" ] && continue
-	printf "| %-9s | %12s | %12s | %9s |\n" "$_c" "$_cm" "$_em" "$_tm"
+	printf "| %-9s | %12s | %12s | %10s |\n" "$_c" "$_cm" "$_em" "$_tm"
 done
 IFS="$oldifs"
 printf "\n## RCC Substep Timing\n\n"
@@ -307,10 +309,10 @@ if [ -n "${rcc_large_time:-}" ]; then
 	printf '```\n'
 fi
 if [ -n "${large_results:-}" ]; then
-	printf "\n## Large File Compile-Only  (sqlite3.c)\n\n"
+	printf "\n## Large File Compile-Only (sqlite3.c)\n\n"
 	printf "| Compiler  | Compile (ms) |\n"
 	printf "| :-------- | -----------: |\n"
-	printf '%b' "$large_results"
+	printf '%s' "$large_results"
 fi
 } > "$REPORT"
 printf "Report: %s\n" "$REPORT"

@@ -212,10 +212,10 @@ $reportLines += "# Windows RCC Benchmark Results"
 $reportLines += ""
 $reportLines += "_Generated: $(Get-Date)_"
 $reportLines += ""
-$reportLines += "| Compiler | Compile (ms) | Execute (ms) | Total (ms) |"
-$reportLines += "| :------- | -----------: | -----------: | ---------: |"
+$reportLines += "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |"
+$reportLines += "| :-------- | -----------: | -----------: | ---------: |"
 foreach ($r in $results) {
-    $reportLines += "| $($r.Label) | $($r.Compile) | $($r.Execute) | $($r.Total) |"
+    $reportLines += ("| {0,-9} | {1,12} | {2,12} | {3,10} |" -f $r.Label, $r.Compile, $r.Execute, $r.Total)
 }
 $reportLines += ""
 if ($rcc_r -and $tcc_r) {
