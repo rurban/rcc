@@ -2001,7 +2001,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
                 arg_stack_idx[i] = stack_args;
                 stack_args += 2;
             } else if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
-                stack_args += (argv[i]->ty->size + 7) / 8;
+                stack_args += (argv[i]->ty->size + 7) / 8; // by value
             else
                 stack_args++;
             continue;
@@ -6934,7 +6934,11 @@ static int gen(Node *node) {
 #endif
             free_reg(base);
             free_reg(idx);
+#ifdef ARCH_ARM64
+            emit_load(node->ty, r, format("[%s]", reg64[r]));
+#else
             emit_load(node->ty, r, format("(%s)", reg64[r]));
+#endif
             return r;
         }
         int r = gen(node->lhs);
@@ -8407,15 +8411,16 @@ static int gen(Node *node) {
         // Apple ARM64: va_list is char*. Load address of arg and advance.
         // Returns ADDRESS of the arg (like AAPCS64), so callers can do typed loads.
         int r = gen_addr(node->lhs); // address of the char* variable ap
-        bool is_ptr_struct_apple = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
+        // Struct variadic args on Apple ARM64 are passed by value on the stack.
+        // Small structs (≤8 bytes) are stored as 1 packed register value.
+        // Large structs (>8 bytes) are stored as raw bytes in N*8-byte slots.
+        // In both cases, x12 = address of the bytes; never a pointer-to-struct.
+        bool is_ptr_struct_apple = false;
+        int slot_sz = (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
+            ? ((ty->size + 7) & ~7)
+            : 8;
         // Load current pointer (= address of next arg slot)
         printf("  ldr x12, [%s]\n", reg64[r]); // x12 = ap
-        // Compute slot size: Apple ARM64 variadic args occupy 8-byte aligned slots
-        int slot_sz;
-        if (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
-            slot_sz = (ty->size + 7) & ~7;
-        else
-            slot_sz = 8;
         // Advance ap
         printf("  add x16, x12, #%d\n", slot_sz);
         printf("  str x16, [%s]\n", reg64[r]);
@@ -8623,8 +8628,9 @@ static int gen(Node *node) {
         }
         printf(".L.va_done.%d:\n", rcc_label_count);
         printf("  movq %%rcx, %s\n", reg64[r]);
-#endif
-#endif
+#endif // _WIN32 (x86 path inside #ifdef ARCH_ARM64)
+#endif // ARCH_ARM64 (big AAPCS64 va_arg block)
+#endif // defined(ARCH_ARM64) && defined(__APPLE__)
         rcc_label_count++;
         return r;
     }
@@ -8957,7 +8963,6 @@ static int gen(Node *node) {
             }
         }
 #endif
-#endif // defined(ARCH_ARM64) && defined(__APPLE__)
         return -1;
     }
 
