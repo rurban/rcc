@@ -242,7 +242,8 @@ if [ -f "$LARGE_SRC" ]; then
     _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null
     _compile_large "RCC -O1" "$RCC" -O1 -c "$LARGE_SRC" -o /dev/null
     if [ -n "$TCC" ]; then
-	_compile_large "TCC" "$TCC" -c "$LARGE_SRC" -o /dev/null
+	# TCC defines __GNUC__ but doesn't support __uint128_t casts on ARM64
+	_compile_large "TCC" "$TCC" -DSQLITE_DISABLE_INTRINSIC -c "$LARGE_SRC" -o /dev/null
     fi
     if [ -n "$SLIMCC" ]; then
 	_compile_large "SLIMCC" "$SLIMCC" -c "$LARGE_SRC" -o /dev/null
