@@ -6754,7 +6754,11 @@ static int gen(Node *node) {
                     else
                         printf("  cvttsd2si (%s), %s\n", reg64[r], reg64[r]);
                 } else {
+#ifdef ARCH_ARM64
+                    emit_load(to, r, format("[%s]", reg64[r]));
+#else
                     emit_load(to, r, format("(%s)", reg64[r]));
+#endif
                 }
             }
         } else if (to->size == 1) {
