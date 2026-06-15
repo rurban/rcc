@@ -1,7 +1,7 @@
 # RCC — Regoshi C Compiler
 
 A fast, self-contained C compiler targeting x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux, arm64 and fixed the rest by Reini Urban.
-**RCC equally fast code as TCC** while keeping compilation speed competitive.
+**RCC almost as fast as TCC** while keeping compilation speed competitive.
 
 ## Benchmark Results
 
@@ -26,6 +26,8 @@ Linux:
 | SLIMCC    |           52 |          630 |        682 |
 | KEFIR     |          189 |          673 |        862 |
 | KEFIR -O1 |          232 |      **499** |        731 |
+| CCC       |           38 |          593 |        631 |
+| CCC -O2   |           39 |          577 |        616 |
 | GCC -O0   |           73 |          576 |        649 |
 | GCC -O2   |          195 |          212 |        407 |
 | Clang -O0 |          108 |          636 |        744 |
@@ -34,17 +36,18 @@ Linux:
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
 - **Compile-time performance**: RCC emits assembly to stdout then invokes GCC (`system()`) to assemble and link, which is ~2× slower than TCC's native internal assembler/linker. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Generated code quality is on par with TCC. A refactor to emit native assembly by ourself is in work, because that's 92% of the time spent.
+  CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel.
 
 rcc -O1 -time:
 
-    preprocess  bench.c:   1239 us
-    lex         bench.c:    299 us
-    parse       bench.c:    648 us
-    typecheck   bench.c:     25 us
-    opt(CTFE)   bench.c:     61 us
-    codegen     bench.c:   1559 us
-    peephole    bench.c:    848 us
-    asm+link    bench_o1: 53930 us
+    preprocess  bench.c:    495 us
+    lex         bench.c:    156 us
+    parse       bench.c:    292 us
+    typecheck   bench.c:      6 us
+    opt(CTFE)   bench.c:     27 us
+    codegen     bench.c:   1108 us
+    peephole    bench.c:    369 us
+    asm+link    bench_o1: 41045 us
 
 ## Key Features
 
@@ -68,7 +71,7 @@ rcc -O1 -time:
 - **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 - **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register, x0–x7 argument/return registers, x8 indirect result register, x9–x15 caller-saved, x19–x28 callee-saved. Variadic args passed on the stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long double pairs on ELF use even-odd register pairs.
 - **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins. Mandatory SSE4.2 not yet.
-- No **insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Check unicode security guidelines for identifiers.
+- No **insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
 
 ## Supported C Features
 

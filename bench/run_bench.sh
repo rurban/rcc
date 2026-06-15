@@ -19,6 +19,11 @@ SLIMCC="$(which slimcc 2>/dev/null || true)"
 if [ -z "$SLIMCC" ] && [ -e "bench/../../slimcc/slimcc" ]; then
    SLIMCC="../slimcc/slimcc"
 fi
+# https://github.com/anthropics/claudes-c-compiler/
+CCC="$(which ccc 2>/dev/null || true)"
+if [ -z "$CCC" ] && [ -e "../claudes-c-compiler/target/release/ccc" ]; then
+   CCC="../claudes-c-compiler/target/release/ccc"
+fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
@@ -28,7 +33,7 @@ download_sqlite() {
 	if [ -f "$LARGE_SRC" ]; then
 		return 0
 	fi
-	printf "Downloading sqlite amalgamation...\n"
+	printf "\nDownloading sqlite amalgamation...\n"
 	if command -v curl >/dev/null 2>&1; then
 		curl -sSL "$LARGE_SRC_URL" -o /tmp/sqlite-amalg.zip
 	elif command -v wget >/dev/null 2>&1; then
@@ -62,6 +67,7 @@ CLANG_O2_EXE="bench/bench_clang_o2"
 KEFIR_EXE="bench/bench_kefir"
 KEFIR_O1_EXE="bench/bench_kefir_o1"
 SLIMCC_EXE="bench/bench_slimcc"
+CCC_EXE="bench/bench_ccc"
 
 RUNS=3
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -72,7 +78,7 @@ fi
 
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
-	rm -f "$KEFIR_EXE" "$SLIMCC_EXE"
+	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$CCC_EXE"
 }
 trap cleanup EXIT
 
@@ -203,6 +209,9 @@ if [ -n "$KEFIR" ]; then
    run_bench "KEFIR" "$KEFIR" "$SRC -o $KEFIR_EXE" "$KEFIR_EXE" || true
    run_bench "KEFIR -O1" "$KEFIR" "-O1 $SRC -o $KEFIR_O1_EXE" "$KEFIR_O1_EXE" || true
 fi
+if [ -n "$CCC" ]; then
+   run_bench "CCC" "$CCC" "$SRC -o $CCC_EXE" "$CCC_EXE" || true
+fi
 run_bench "GCC -O0" "$GCC" "-O0 $SRC -o $GCC_EXE -lm" "$GCC_EXE" || true
 run_bench "GCC -O2" "$GCC" "-O2 $SRC -o $GCC_O2_EXE -lm" "$GCC_O2_EXE" || true
 if [ -n "$CLANG" ]; then
@@ -250,7 +259,7 @@ if [ -f "$LARGE_SRC" ]; then
 	_cm=$(time_ms "$@" 2>/dev/null) || true
 	printf "%8s ms\n" "${_cm:-FAILED}"
 	if [ -n "$_cm" ]; then
-	    large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm}ms")$nl"
+	    large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm} ms")$nl"
 	fi
     }
 
@@ -262,6 +271,13 @@ if [ -f "$LARGE_SRC" ]; then
     fi
     if [ -n "$SLIMCC" ]; then
 	_compile_large "SLIMCC" "$SLIMCC" -c "$LARGE_SRC" -o /dev/null
+    fi
+    if [ -n "$KEFIR" ]; then
+	_compile_large "KEFIR" "$KEFIR" -c "$LARGE_SRC" -o /dev/null
+	_compile_large "KEFIR" "$KEFIR" -O1 -c "$LARGE_SRC" -o /dev/null
+    fi
+    if [ -n "$CCC" ]; then
+	_compile_large "CCC" "$CCC" -c "$LARGE_SRC" -o /dev/null
     fi
     _compile_large "GCC -O0" "$GCC" -O0 -c "$LARGE_SRC" -o /dev/null
     _compile_large "GCC -O2" "$GCC" -O2 -c "$LARGE_SRC" -o /dev/null

@@ -1,75 +1,79 @@
 # Linux RCC Benchmark Results
 
-_Generated: June 2026_
+_Generated: Juni 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           53 |          611 |        664 |
-| RCC -O1   |           65 |          590 |        655 |
-| TCC       |            9 |          566 |        575 |
-| SLIMCC    |           50 |          636 |        686 |
-| KEFIR     |          210 |          672 |        882 |
-| KEFIR -O1 |          200 |          505 |        705 |
-| GCC -O0   |           80 |          576 |        656 |
-| GCC -O2   |          189 |          215 |        404 |
-| Clang -O0 |          102 |          633 |        735 |
-| Clang -O2 |          153 |          238 |        391 |
+| RCC       |           46 |          610 |        656 |
+| RCC -O1   |           40 |          604 |        644 |
+| TCC       |            7 |          509 |        516 |
+| SLIMCC    |           40 |          520 |        560 |
+| KEFIR     |          183 |          600 |        783 |
+| KEFIR -O1 |          200 |          325 |        525 |
+| CCC       |           35 |          556 |        591 |
+| GCC -O0   |           58 |          504 |        562 |
+| GCC -O2   |          134 |          191 |        325 |
+| Clang -O0 |           90 |          475 |        565 |
+| Clang -O2 |          135 |          189 |        324 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:    392 us
-  lex         bench.c:    214 us
-  parse       bench.c:    335 us
-  typecheck   bench.c:      9 us
-  codegen     bench.c:    746 us
-  peephole    bench.c:    298 us
-  link        bench_rcc:  48526 us
+  preprocess  bench.c:    506 us
+  lex         bench.c:    146 us
+  parse       bench.c:    307 us
+  typecheck   bench.c:      5 us
+  codegen     bench.c:   1574 us
+  peephole    bench.c:    484 us
+  link        bench_rcc:  36775 us
 
 RCC -O1:
-  preprocess  bench.c:    394 us
-  lex         bench.c:    181 us
-  parse       bench.c:    323 us
-  typecheck   bench.c:     10 us
-  opt(CTFE)   bench.c:     28 us
-  codegen     bench.c:   1017 us
-  peephole    bench.c:    323 us
-  link        bench_rcc_o1:  50042 us
+  preprocess  bench.c:    481 us
+  lex         bench.c:    188 us
+  parse       bench.c:    355 us
+  typecheck   bench.c:      5 us
+  opt(CTFE)   bench.c:     41 us
+  codegen     bench.c:    861 us
+  peephole    bench.c:    227 us
+  link        bench_rcc_o1:  37997 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c: 222127 us
-  lex         sqlite3.c: 145498 us
-  parse       sqlite3.c: 162468 us
-  typecheck   sqlite3.c:  13026 us
-  codegen     sqlite3.c: 360249 us
-  peephole    sqlite3.c: 155523 us
-  link        null: 123047 us
+  preprocess  sqlite3.c: 230354 us
+  lex         sqlite3.c: 114185 us
+  parse       sqlite3.c: 130447 us
+  typecheck   sqlite3.c:   9440 us
+  codegen     sqlite3.c: 397960 us
+  peephole    sqlite3.c: 155905 us
+  link        null: 435191 us
 
 RCC -O1:
-  preprocess  sqlite3.c: 227720 us
-  lex         sqlite3.c: 149847 us
-  parse       sqlite3.c: 148987 us
-  typecheck   sqlite3.c:  13065 us
-  opt(CTFE)   sqlite3.c:  30191 us
-  codegen     sqlite3.c: 316392 us
-  peephole    sqlite3.c: 143759 us
-  link        null: 1650559 us
+  preprocess  sqlite3.c: 217150 us
+  lex         sqlite3.c: 114326 us
+  parse       sqlite3.c: 121252 us
+  typecheck   sqlite3.c:   9611 us
+  opt(CTFE)   sqlite3.c:  29186 us
+  codegen     sqlite3.c: 309523 us
+  peephole    sqlite3.c: 129149 us
+  link        null: 431558 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |       1238ms |
-| RCC -O1   |       2718ms |
-| TCC       |        123ms |
-| SLIMCC    |        471ms |
-| GCC -O0   |      10445ms |
-| GCC -O2   |      77893ms |
-| Clang -O0 |       4317ms |
-| Clang -O2 |      39639ms |
+| RCC       |      1420 ms |
+| RCC -O1   |      1443 ms |
+| TCC       |       113 ms |
+| SLIMCC    |       423 ms |
+| KEFIR     |     19993 ms |
+| KEFIR     |     36341 ms |
+| CCC       |     13465 ms |
+| GCC -O0   |      4694 ms |
+| GCC -O2   |     28008 ms |
+| Clang -O0 |      2041 ms |
+| Clang -O2 |     22689 ms |
