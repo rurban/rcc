@@ -134,6 +134,7 @@ static int assemble_and_link(const char *asm_path, const char *out_path,
 
 RCCLib *rcc_lib_new(void) {
     if (!lib_initialized) {
+        init_keywords();
         init_builtins();
         init_builtin_names();
         lib_initialized = true;
@@ -162,12 +163,58 @@ int rcc_lib_compile_file(RCCLib *lib, const char *path) {
     return rcc_lib_compile_file_ex(lib, path, NULL, NULL);
 }
 
+// Reset compiler global state (command-line macros, -I paths, bitfield
+// layout option, ...) to a fresh-process baseline.  Called before every
+// compile so flags from a previous rcc_lib_compile_file* call don't leak
+// into the next one.
+void rcc_lib_reset(RCCLib *lib) {
+    (void)lib;
+    rcc_reset_state();
+    opt_ms_bitfields =
+#ifdef _WIN32
+        true;
+#else
+        false;
+#endif
+}
+
+// Apply a whitespace-separated list of compile flags: -Dname[=val],
+// -Uname, -Ipath (no space between flag and argument), -mms-bitfields,
+// -mno-ms-bitfields.  Unrecognized flags are ignored.
+static void apply_cflags(const char *cflags) {
+    if (!cflags || !cflags[0]) return;
+    char *copy = strdup(cflags);
+    char *sv = NULL;
+    for (char *tok = strtok_r(copy, " \t", &sv); tok; tok = strtok_r(NULL, " \t", &sv)) {
+        if (!strncmp(tok, "-D", 2) && tok[2])
+            add_define(tok + 2);
+        else if (!strncmp(tok, "-U", 2) && tok[2])
+            add_undef(tok + 2);
+        else if (!strncmp(tok, "-I", 2) && tok[2])
+            add_include_path(tok + 2);
+        else if (!strcmp(tok, "-mms-bitfields"))
+            opt_ms_bitfields = true;
+        else if (!strcmp(tok, "-mno-ms-bitfields"))
+            opt_ms_bitfields = false;
+        /* else: ignore unknown flags */
+    }
+    free(copy);
+}
+
 int rcc_lib_compile_file_ex(RCCLib *lib, const char *path,
                             const char *include_dir,
                             const char *extra_link_flags) {
+    return rcc_lib_compile_file_ex2(lib, path, include_dir, NULL, extra_link_flags);
+}
+
+int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
+                             const char *include_dir, const char *cflags,
+                             const char *extra_link_flags) {
+    rcc_lib_reset(lib);
     if (!file_exists(path)) return -1;
     if (include_dir && include_dir[0])
         add_include_path(include_dir);
+    apply_cflags(cflags);
 
     char *base = path_basename_noext(path);
     lib->asm_path = build_tmp_path(base, ".s");
@@ -238,7 +285,12 @@ void *rcc_lib_get_symbol(RCCLib *lib, const char *name) {
         }
         return (void *)GetProcAddress((HMODULE)lib->dlhandle, name);
 #else
-        lib->dlhandle = dlopen(lib->out_path, RTLD_LAZY);
+        /* RTLD_NOW (not RTLD_LAZY): resolve all symbols at dlopen time so an
+         * undefined symbol (e.g. a multi-file TCC test whose companion
+         * "+"-file wasn't linked in) makes dlopen() fail with a recoverable
+         * error here, instead of aborting the whole process later via the
+         * PLT lazy-binding trampoline when the symbol is first called. */
+        lib->dlhandle = dlopen(lib->out_path, RTLD_NOW);
         if (!lib->dlhandle) {
             fprintf(stderr, "rcc_lib: dlopen %s: %s\n", lib->out_path, dlerror());
             return NULL;

@@ -54,6 +54,7 @@
 #else
 #include <sys/wait.h>
 #include <sys/utsname.h>
+#include <dlfcn.h>
 #endif
 
 #ifndef _WIN32
@@ -814,6 +815,19 @@ static void detect_platform(const char *rcc_path) {
 #endif
 }
 
+/* ── rcc library API (dynamically loaded from rcc_lib.{dll,so,dylib}) ──
+ * Shared typedefs for both the Windows (LoadLibrary) and POSIX (dlopen)
+ * loaders below. */
+typedef struct RCCLib RCCLib;
+typedef RCCLib *(*rcc_lib_new_fn)(void);
+typedef int (*rcc_lib_compile_file_fn)(RCCLib *, const char *);
+typedef int (*rcc_lib_compile_file_ex_fn)(RCCLib *, const char *, const char *, const char *);
+typedef int (*rcc_lib_compile_file_ex2_fn)(RCCLib *, const char *, const char *, const char *, const char *);
+typedef void *(*rcc_lib_get_symbol_fn)(RCCLib *, const char *);
+typedef const char *(*rcc_lib_output_path_fn)(const RCCLib *);
+typedef void (*rcc_lib_delete_fn)(RCCLib *);
+typedef int (*main_fn_t)(int, char **);
+
 #ifdef _WIN32
 /* rcc_lib.dll and try_run_exe_inprocess() both redirect the process-wide
  * stdout/stderr fds and (for rcc_lib) drive the compiler's global state.
@@ -926,22 +940,14 @@ static bool try_run_exe_inprocess(const char *exe_path, ProcResult *pr,
     return true;
 }
 
-/* ── rcc library API (dynamically loaded from rcc_lib.dll) ────────── */
-
-typedef struct RCCLib RCCLib;
-typedef RCCLib *(*rcc_lib_new_fn)(void);
-typedef int (*rcc_lib_compile_file_fn)(RCCLib *, const char *);
-typedef void *(*rcc_lib_get_symbol_fn)(RCCLib *, const char *);
-typedef const char *(*rcc_lib_output_path_fn)(const RCCLib *);
-typedef void (*rcc_lib_delete_fn)(RCCLib *);
-typedef int (*main_fn_t)(int, char **);
-
 /* Cast GetProcAddress through uintptr_t to avoid -Wcast-function-type */
 #define GETPROC(h, name, type) ((type)(uintptr_t)GetProcAddress((h), (name)))
 
 static HMODULE rcc_lib_dll = NULL;
 static rcc_lib_new_fn p_rcc_lib_new = NULL;
 static rcc_lib_compile_file_fn p_rcc_lib_compile_file = NULL;
+static rcc_lib_compile_file_ex_fn p_rcc_lib_compile_file_ex = NULL;
+static rcc_lib_compile_file_ex2_fn p_rcc_lib_compile_file_ex2 = NULL;
 static rcc_lib_get_symbol_fn p_rcc_lib_get_symbol = NULL;
 static rcc_lib_output_path_fn p_rcc_lib_output_path = NULL;
 static rcc_lib_delete_fn p_rcc_lib_delete = NULL;
@@ -965,6 +971,8 @@ static void init_rcc_lib(void) {
     if (!rcc_lib_dll) return;
     p_rcc_lib_new = GETPROC(rcc_lib_dll, "rcc_lib_new", rcc_lib_new_fn);
     p_rcc_lib_compile_file = GETPROC(rcc_lib_dll, "rcc_lib_compile_file", rcc_lib_compile_file_fn);
+    p_rcc_lib_compile_file_ex = GETPROC(rcc_lib_dll, "rcc_lib_compile_file_ex", rcc_lib_compile_file_ex_fn);
+    p_rcc_lib_compile_file_ex2 = GETPROC(rcc_lib_dll, "rcc_lib_compile_file_ex2", rcc_lib_compile_file_ex2_fn);
     p_rcc_lib_get_symbol = GETPROC(rcc_lib_dll, "rcc_lib_get_symbol", rcc_lib_get_symbol_fn);
     p_rcc_lib_output_path = GETPROC(rcc_lib_dll, "rcc_lib_output_path", rcc_lib_output_path_fn);
     p_rcc_lib_delete = GETPROC(rcc_lib_dll, "rcc_lib_delete", rcc_lib_delete_fn);
@@ -976,10 +984,15 @@ static void init_rcc_lib(void) {
 }
 
 /* Compile src_path to a DLL via rcc_lib, load it, call main(), capture
- * output.  include_dir may be NULL.  flags are appended to the rcc
- * command line (e.g. "-lm").  Returns 0 on success, -1 if fallback. */
+ * output.  include_dir/cflags/extra_link_flags may be NULL.  extra_argv
+ * (may be NULL) is a NULL-terminated array of extra argv entries appended
+ * after argv[0].  cwd (may be NULL) is chdir'd to for the duration of the
+ * compile+run.  Returns 0 on success, -1 if fallback to external rcc
+ * is needed. */
 static int run_test_inprocess(const char *src_path, const char *name,
-                              const char *include_dir, const char *extra_flags,
+                              const char *include_dir, const char *cflags,
+                              const char *extra_link_flags,
+                              char *const *extra_argv, const char *cwd,
                               ProcResult *pr, int timeout_sec) {
     (void)timeout_sec;
     init_rcc_lib();
@@ -987,22 +1000,26 @@ static int run_test_inprocess(const char *src_path, const char *name,
 
     inproc_lock();
 
+    char saved_cwd[PATH_MAX];
+    bool chdir_done = false;
+    if (cwd && cwd[0]) {
+        if (_getcwd(saved_cwd, sizeof(saved_cwd)) && _chdir(cwd) == 0)
+            chdir_done = true;
+    }
+
     RCCLib *lib = p_rcc_lib_new();
     if (!lib) {
+        if (chdir_done) _chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
 
-    /* Try the _ex variant which supports include_dir + link flags */
-    typedef int (*rcc_lib_compile_file_ex_fn)(RCCLib *, const char *,
-                                              const char *, const char *);
-    rcc_lib_compile_file_ex_fn p_compile_ex =
-        GETPROC(rcc_lib_dll, "rcc_lib_compile_file_ex",
-                rcc_lib_compile_file_ex_fn);
     int saved_stdout = dup(STDOUT_FILENO);
     int cres;
-    if (p_compile_ex)
-        cres = p_compile_ex(lib, src_path, include_dir, extra_flags);
+    if (p_rcc_lib_compile_file_ex2)
+        cres = p_rcc_lib_compile_file_ex2(lib, src_path, include_dir, cflags, extra_link_flags);
+    else if (p_rcc_lib_compile_file_ex)
+        cres = p_rcc_lib_compile_file_ex(lib, src_path, include_dir, extra_link_flags);
     else
         cres = p_rcc_lib_compile_file(lib, src_path);
     /* Restore stdout */
@@ -1011,28 +1028,33 @@ static int run_test_inprocess(const char *src_path, const char *name,
     freopen("CONOUT$", "w", stdout);
     if (cres != 0) {
         p_rcc_lib_delete(lib);
+        if (chdir_done) _chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
 
-    typedef int (*main_fn)(int, char **);
-    main_fn fn = (main_fn)p_rcc_lib_get_symbol(lib, "main");
+    main_fn_t fn = (main_fn_t)p_rcc_lib_get_symbol(lib, "main");
     if (!fn) {
         p_rcc_lib_delete(lib);
+        if (chdir_done) _chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
 
-    /* Build argv */
-    char *argv[3];
-    argv[0] = (char *)name;
-    argv[1] = NULL;
+    /* Build argv: [name, extra_argv..., NULL] */
+    char *argv[16];
+    int argc = 0;
+    argv[argc++] = (char *)name;
+    for (int i = 0; extra_argv && extra_argv[i] && argc < 15; i++)
+        argv[argc++] = extra_argv[i];
+    argv[argc] = NULL;
 
     /* Capture stdout/stderr via pipes */
     HANDLE out_r = NULL, out_w = NULL;
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
         p_rcc_lib_delete(lib);
+        if (chdir_done) _chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
@@ -1044,7 +1066,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     _dup2(_open_osfhandle((intptr_t)out_w, 0), _fileno(stderr));
     CloseHandle(out_w);
 
-    int exit_code = fn(1, argv);
+    int exit_code = fn(argc, argv);
 
     fflush(stdout);
     fflush(stderr);
@@ -1076,6 +1098,237 @@ static int run_test_inprocess(const char *src_path, const char *name,
     pr->spawn_failed = false;
 
     p_rcc_lib_delete(lib);
+    if (chdir_done) _chdir(saved_cwd);
+    inproc_unlock();
+    return 0;
+}
+#else /* !_WIN32 */
+
+/* rcc_lib.{so,dylib} and run_test_inprocess() both drive the compiler's
+ * process-wide global state.  Serialize them with a mutex so parallel
+ * workers don't race. */
+static pthread_mutex_t g_inproc_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void inproc_lock(void) { pthread_mutex_lock(&g_inproc_mutex); }
+static void inproc_unlock(void) { pthread_mutex_unlock(&g_inproc_mutex); }
+
+/* defined below, in the TCC suite globals section */
+static const char *SCRIPT_DIR;
+
+static void *rcc_lib_handle = NULL;
+static rcc_lib_new_fn p_rcc_lib_new = NULL;
+static rcc_lib_compile_file_fn p_rcc_lib_compile_file = NULL;
+static rcc_lib_compile_file_ex_fn p_rcc_lib_compile_file_ex = NULL;
+static rcc_lib_compile_file_ex2_fn p_rcc_lib_compile_file_ex2 = NULL;
+static rcc_lib_get_symbol_fn p_rcc_lib_get_symbol = NULL;
+static rcc_lib_output_path_fn p_rcc_lib_output_path = NULL;
+static rcc_lib_delete_fn p_rcc_lib_delete = NULL;
+
+static void init_rcc_lib(void) {
+    if (rcc_lib_handle) return;
+#ifdef __APPLE__
+    static const char *names[] = {"./rcc_lib.dylib", "rcc_lib.dylib"};
+#else
+    static const char *names[] = {"./rcc_lib.so", "rcc_lib.so"};
+#endif
+    char path[PATH_MAX];
+    if (SCRIPT_DIR) {
+#ifdef __APPLE__
+        snprintf(path, sizeof(path), "%s/rcc_lib.dylib", SCRIPT_DIR);
+#else
+        snprintf(path, sizeof(path), "%s/rcc_lib.so", SCRIPT_DIR);
+#endif
+        rcc_lib_handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
+    }
+    for (size_t i = 0; !rcc_lib_handle && i < sizeof(names) / sizeof(names[0]); i++)
+        rcc_lib_handle = dlopen(names[i], RTLD_LAZY | RTLD_LOCAL);
+    if (!rcc_lib_handle) return;
+    p_rcc_lib_new = (rcc_lib_new_fn)dlsym(rcc_lib_handle, "rcc_lib_new");
+    p_rcc_lib_compile_file = (rcc_lib_compile_file_fn)dlsym(rcc_lib_handle, "rcc_lib_compile_file");
+    p_rcc_lib_compile_file_ex = (rcc_lib_compile_file_ex_fn)dlsym(rcc_lib_handle, "rcc_lib_compile_file_ex");
+    p_rcc_lib_compile_file_ex2 = (rcc_lib_compile_file_ex2_fn)dlsym(rcc_lib_handle, "rcc_lib_compile_file_ex2");
+    p_rcc_lib_get_symbol = (rcc_lib_get_symbol_fn)dlsym(rcc_lib_handle, "rcc_lib_get_symbol");
+    p_rcc_lib_output_path = (rcc_lib_output_path_fn)dlsym(rcc_lib_handle, "rcc_lib_output_path");
+    p_rcc_lib_delete = (rcc_lib_delete_fn)dlsym(rcc_lib_handle, "rcc_lib_delete");
+    if (!p_rcc_lib_new || !p_rcc_lib_compile_file ||
+        !p_rcc_lib_get_symbol || !p_rcc_lib_delete) {
+        dlclose(rcc_lib_handle);
+        rcc_lib_handle = NULL;
+    }
+}
+
+/* Compile src_path to a shared object via rcc_lib, dlopen it, call main(),
+ * capture output.  See the _WIN32 implementation above for parameter docs. */
+static int run_test_inprocess(const char *src_path, const char *name,
+                              const char *include_dir, const char *cflags,
+                              const char *extra_link_flags,
+                              char *const *extra_argv, const char *cwd,
+                              ProcResult *pr, int timeout_sec) {
+    (void)timeout_sec;
+    init_rcc_lib();
+    if (!rcc_lib_handle) return -1;
+
+    inproc_lock();
+
+    char saved_cwd[PATH_MAX];
+    bool chdir_done = false;
+    if (cwd && cwd[0]) {
+        if (getcwd(saved_cwd, sizeof(saved_cwd)) && chdir(cwd) == 0)
+            chdir_done = true;
+    }
+
+    RCCLib *lib = p_rcc_lib_new();
+    if (!lib) {
+        if (chdir_done && chdir(saved_cwd) != 0) perror("chdir");
+        inproc_unlock();
+        return -1;
+    }
+
+    /* Redirect stdout/stderr to a pipe while compiling (rcc_lib writes
+     * generated assembly via stdout, then reopens it itself; capture any
+     * stray diagnostics too) and while running the compiled main(). */
+    int pfd[2];
+    if (pipe(pfd) != 0) {
+        p_rcc_lib_delete(lib);
+        if (chdir_done && chdir(saved_cwd) != 0) perror("chdir");
+        inproc_unlock();
+        return -1;
+    }
+    /* flush any output buffered by run_tests itself before redirecting fd
+     * 1/2, otherwise it gets flushed into our capture pipe later (e.g. when
+     * rcc_lib does fclose(stdout)) */
+    fflush(NULL);
+
+    int saved_out = dup(STDOUT_FILENO);
+    int saved_err = dup(STDERR_FILENO);
+    /* extra reference to the pipe's write end that survives rcc_lib's
+     * fclose(stdout) (which closes fd 1) */
+    int pipe_w2 = dup(pfd[1]);
+    dup2(pfd[1], STDOUT_FILENO);
+    dup2(pfd[1], STDERR_FILENO);
+    close(pfd[1]);
+
+    int cres;
+    if (p_rcc_lib_compile_file_ex2)
+        cres = p_rcc_lib_compile_file_ex2(lib, src_path, include_dir, cflags, extra_link_flags);
+    else if (p_rcc_lib_compile_file_ex)
+        cres = p_rcc_lib_compile_file_ex(lib, src_path, include_dir, extra_link_flags);
+    else
+        cres = p_rcc_lib_compile_file(lib, src_path);
+
+    /* rcc_lib redirects stdout to the assembly file and fclose()s it,
+     * closing fd 1; restore fd 1 -> pipe and give it a fresh FILE* so the
+     * test program's printf() (via stdout) is captured correctly. */
+    dup2(pipe_w2, STDOUT_FILENO);
+    close(pipe_w2);
+    stdout = fdopen(STDOUT_FILENO, "w");
+
+    main_fn_t fn = cres == 0 ? (main_fn_t)p_rcc_lib_get_symbol(lib, "main") : NULL;
+    if (!fn) {
+        fflush(stdout);
+        fflush(stderr);
+        dup2(saved_out, STDOUT_FILENO);
+        dup2(saved_err, STDERR_FILENO);
+        close(saved_out);
+        close(saved_err);
+        close(pfd[0]);
+        p_rcc_lib_delete(lib);
+        if (chdir_done && chdir(saved_cwd) != 0) perror("chdir");
+        inproc_unlock();
+        return -1;
+    }
+
+    /* Build argv: [name, extra_argv..., NULL] */
+    char *argv[16];
+    int argc = 0;
+    argv[argc++] = (char *)name;
+    for (int i = 0; extra_argv && extra_argv[i] && argc < 15; i++)
+        argv[argc++] = extra_argv[i];
+    argv[argc] = NULL;
+
+    fflush(stdout);
+    fflush(stderr);
+
+    /* Run the compiled main() in a forked child process: generated code
+     * with a stack/register-clobbering bug, or a call to exit()/abort(),
+     * would otherwise corrupt or terminate run_tests itself.  fd 1/2
+     * (pointing at the pipe) are inherited by the child; it never returns
+     * into run_tests' own code. */
+    int exit_code;
+    pid_t cpid = fork();
+    if (cpid == 0) {
+        /* exit() (not _exit()): run atexit handlers and ELF/.so destructors
+         * (__attribute__((destructor))) registered by the compiled test, and
+         * flush stdio, matching how a real standalone binary would exit. */
+        exit(fn(argc, argv) & 0xff);
+    }
+
+    /* Parent: restore fd 1/2 right away so our own output doesn't go to
+     * the pipe. */
+    dup2(saved_out, STDOUT_FILENO);
+    dup2(saved_err, STDERR_FILENO);
+    close(saved_out);
+    close(saved_err);
+
+    if (cpid < 0) {
+        close(pfd[0]);
+        p_rcc_lib_delete(lib);
+        if (chdir_done && chdir(saved_cwd) != 0) perror("chdir");
+        inproc_unlock();
+        return -1;
+    }
+
+    int status;
+    bool timed_out = false;
+    if (timeout_sec > 0) {
+        time_t deadline = time(NULL) + timeout_sec;
+        for (;;) {
+            pid_t w = waitpid(cpid, &status, WNOHANG);
+            if (w == cpid) break;
+            if (time(NULL) >= deadline) {
+                kill(cpid, SIGKILL);
+                waitpid(cpid, &status, 0);
+                timed_out = true;
+                break;
+            }
+            struct timespec ts = {0, 10 * 1000 * 1000}; /* 10ms */
+            nanosleep(&ts, NULL);
+        }
+    } else {
+        waitpid(cpid, &status, 0);
+    }
+
+    if (WIFEXITED(status))
+        exit_code = WEXITSTATUS(status);
+    else if (WIFSIGNALED(status))
+        exit_code = 128 + WTERMSIG(status);
+    else
+        exit_code = -1;
+
+    /* Read captured output (compile diagnostics + program output) */
+    char buf[8192];
+    ssize_t n;
+    size_t cap = 8192, len = 0;
+    char *out = malloc(cap);
+    while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
+        if (len + (size_t)n + 1 > cap) {
+            cap = len + (size_t)n + 8192;
+            out = realloc(out, cap);
+        }
+        memcpy(out + len, buf, (size_t)n);
+        len += (size_t)n;
+    }
+    out[len] = '\0';
+    close(pfd[0]);
+
+    pr->out = out;
+    pr->out_len = len;
+    pr->exit_code = exit_code;
+    pr->timed_out = timed_out;
+    pr->spawn_failed = false;
+
+    p_rcc_lib_delete(lib);
+    if (chdir_done && chdir(saved_cwd) != 0) perror("chdir");
     inproc_unlock();
     return 0;
 }
@@ -1700,6 +1953,11 @@ static void parallel_dispatch(ParallelJob *jobs, int count) {
 /* ── TCC suite globals ───────────────────────────────────────────── */
 
 static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
+/* In-process mode: compile + run tests via rcc_lib instead of spawning
+ * `rcc` per test.  Enabled by default when no rcc-binary positional arg
+ * is given (see main()); disabled by an explicit binary/runner arg, by
+ * "compiler flags" args (e.g. "ccc -O2"), and for cross-compile targets. */
+static bool use_rcc_lib;
 static const char *only_test;
 static bool only_test_found; /* single-test mode: stop after the suite containing it */
 static int total, passed, failed, todo, regressions, fixes, changed_cnt;
@@ -1814,6 +2072,84 @@ static void run_one_test(const char *src_path, const char *base,
     if (!fname_only) fname_only = orig_src;
     else
         fname_only++;
+
+    /* In-process fast path (see compile_and_exec() for rationale): always
+     * compile+run with cwd=TEST_DIR and a basename source path, skipping
+     * the external rcc/exe process spawns entirely.  On any failure, fall
+     * back to the external-rcc path below. */
+    if (use_rcc_lib && !is_dt_test(base) && !streq(base, "128_run_atexit") &&
+        !streq(base, "46_grep") && !is_darwin_cross) {
+        const char *args = test_args(base);
+        int expected_exit = test_expected_exit(base);
+
+        char *extra_argv[8];
+        int eai = 0;
+        char *args_copy = NULL;
+        if (args && *args) {
+            args_copy = strdup(args);
+            char *sv = NULL;
+            for (char *tok = strtok_r(args_copy, " ", &sv); tok && eai < 7;
+                 tok = strtok_r(NULL, " ", &sv))
+                extra_argv[eai++] = tok;
+        }
+        extra_argv[eai] = NULL;
+
+        char tmp_name[64];
+        snprintf(tmp_name, sizeof(tmp_name), "rcc_test_%d", getpid());
+
+        ProcResult pr;
+        int rc = run_test_inprocess(fname_only, tmp_name, NULL, p_src, ldflags,
+                                    extra_argv, TEST_DIR, &pr, 30);
+        free(args_copy);
+        if (rc == 0) {
+            char *out_buf = pr.out;
+            int actual_exit = pr.exit_code;
+            if (actual_exit != expected_exit) {
+                print_result(base, COL_RED, "EXEC FAIL");
+                failed++;
+                add_row(base, "EXEC_FAIL", "non-zero exit");
+                print_change(base, "EXEC_FAIL");
+                vlog_test_details(base, "(in-process compile)", NULL, "(in-process run)", out_buf);
+                free(out_buf);
+                return;
+            }
+            char *er = file_exists(expect_file) ? slurp(expect_file) : NULL;
+            if (er) {
+                char *en = normalize_output(er, base), *on = normalize_output(out_buf, base);
+                if (diff_strings(en, on, base)) {
+                    print_result(base, COL_GREEN, "PASS");
+                    passed++;
+                    add_row(base, "PASS", "Output matches");
+                    print_change(base, "PASS");
+                } else {
+                    print_result(base, COL_RED, "MISMATCH");
+                    failed++;
+                    add_row(base, "MISMATCH", "Output does not match .expect");
+                    print_change(base, "MISMATCH");
+                    char sp[512], sp_tmp[516];
+                    snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
+                    snprintf(sp_tmp, sizeof(sp_tmp), "%s.tmp", sp);
+                    FILE *sf = fopen(sp_tmp, "wb");
+                    if (sf) {
+                        if (out_buf) fputs(out_buf, sf);
+                        fclose(sf);
+                        move_file_atomic(sp_tmp, sp);
+                    }
+                }
+                free(on);
+                free(en);
+                free(er);
+            } else {
+                print_result(base, COL_GREEN, "PASS (no expect)");
+                passed++;
+                add_row(base, "PASS", "Executed successfully (no .expect)");
+                print_change(base, "PASS");
+            }
+            vlog_test_details(base, "(in-process compile)", NULL, "(in-process run)", out_buf);
+            free(out_buf);
+            return;
+        }
+    }
 
     if (is_cd_test(base)) {
         char rcc_abs[PATH_MAX];
@@ -2212,6 +2548,60 @@ static void compile_and_exec(const char *src_path, const char *base,
     char *out_buf = NULL;
     size_t out_len = 0, out_cap = 0;
     r->did_compile = true;
+
+    /* In-process fast path: compile + run via rcc_lib, skipping the
+     * external rcc/exe process spawns entirely.  Always run with
+     * cwd=TEST_DIR and a basename source path so __FILE__/relative
+     * includes resolve the same way for every test (cd_tests no longer
+     * need special-casing here).  DT-tests, 128_run_atexit and 46_grep
+     * keep using the external-rcc path below (multiple compiles / custom
+     * argv per sub-test). On any failure, fall back to external rcc.
+     *
+     * Restricted to g_num_workers <= 1 (sequential): run_test_inprocess
+     * forks to isolate the compiled test's main(), but fork() from a
+     * multi-threaded process only clones the calling thread - any mutex
+     * (e.g. glibc's malloc arena lock) held by another worker thread at
+     * that instant stays locked forever in the child, deadlocking it if
+     * fn() ever needs it. Under --parallel, use the external-rcc path
+     * (separate processes, no such hazard) instead. */
+    if (use_rcc_lib && g_num_workers <= 1 && !is_dt_test(base) &&
+        !streq(base, "128_run_atexit") &&
+        !streq(base, "46_grep") && !is_darwin_cross) {
+        const char *fn = strrchr(src_path, '/');
+        const char *base_src = fn ? fn + 1 : src_path;
+        const char *args = test_args(base);
+        int expected_exit = test_expected_exit(base);
+
+        char *extra_argv[8];
+        int eai = 0;
+        char *args_copy = NULL;
+        if (args && *args) {
+            args_copy = strdup(args);
+            char *sv = NULL;
+            for (char *tok = strtok_r(args_copy, " ", &sv); tok && eai < 7;
+                 tok = strtok_r(NULL, " ", &sv))
+                extra_argv[eai++] = tok;
+        }
+        extra_argv[eai] = NULL;
+
+        ProcResult pr;
+        int rc = run_test_inprocess(base_src, r->tmp_exe, NULL, p_src, ldflags,
+                                    extra_argv, TEST_DIR, &pr, 30);
+        free(args_copy);
+        if (rc == 0) {
+            r->compile_cmdline = strdup("(in-process compile)");
+            r->run_cmdline = strdup("(in-process run)");
+            r->did_exec = true;
+            r->exec_exit = pr.exit_code;
+            r->exec_out = pr.out;
+            if (r->exec_exit != expected_exit) {
+                size_t len = pr.out_len, cap = pr.out_len + 1;
+                r->exec_out = strappend(r->exec_out, &len, &cap,
+                                        "\n(in-process execution, no backtrace available)\n");
+            }
+            return;
+        }
+    }
 
     /* cd_tests (e.g. 125_atomic_misc, 129_scopes) need __FILE__ to expand
      * to just the basename. Instead of a process-global chdir() (thread-
@@ -3095,10 +3485,21 @@ static int run_tcc_suite(void) {
             perror("symlink");
     }
 #endif
-    TEST_DIR = "tinycc/tests/tests2";
-    if (!file_exists(TEST_DIR)) {
-        fprintf(stderr, "TCC test directory not found: %s\n", TEST_DIR);
+    if (!file_exists("tinycc/tests/tests2")) {
+        fprintf(stderr, "TCC test directory not found: tinycc/tests/tests2\n");
         return 1;
+    }
+    /* Absolute path: under --parallel, the in-process compile path
+     * temporarily chdir()s the whole process to TEST_DIR (process-global)
+     * while holding inproc_lock; other worker threads may concurrently
+     * fork() external rcc with a TEST_DIR-relative src_path/expect_file,
+     * inheriting the wrong cwd and failing with "No such file or
+     * directory".  Making TEST_DIR absolute makes all such paths
+     * independent of the process's current working directory. */
+    {
+        static char test_dir_buf[PATH_MAX];
+        snprintf(test_dir_buf, sizeof(test_dir_buf), "%s/tinycc/tests/tests2", SCRIPT_DIR);
+        TEST_DIR = test_dir_buf;
     }
 
     static char rf_buf[256];
@@ -4916,6 +5317,18 @@ int main(int argc, char **argv) {
             printf("test-name   Run only this one test\n");
             return 0;
         }
+        /* A single arg containing whitespace is a "compiler + flags" string,
+           e.g. "ccc -O2": split into binary (rcc) + flags (rccflags).  This
+           always uses an external process — never the in-proc rcc_lib. */
+        else if (!rcc && strchr(a, ' ') != NULL) {
+            char *copy = strdup(a);
+            char *sp = strchr(copy, ' ');
+            *sp = '\0';
+            rcc = copy;
+            char *flags = sp + 1;
+            while (*flags == ' ') flags++;
+            if (*flags) rccflags = flags;
+        }
         /* first non-flag arg that looks like an executable path is the rcc binary;
            otherwise treat it as a test-name filter (rcc is auto-detected) */
         else if (!rcc && (access(a, X_OK) == 0 || strchr(a, '/') != NULL || strchr(a, '\\') != NULL))
@@ -4925,6 +5338,10 @@ int main(int argc, char **argv) {
     }
 
     if (!rcc) {
+        /* No rcc-binary arg given: default to in-process compile+run via
+         * rcc_lib (see run_test_inprocess()).  `rcc` is still resolved to
+         * an external binary for detect_platform() and as a fallback. */
+        use_rcc_lib = true;
 #ifdef _WIN32
         /* Under wine/Windows, prefer .exe over native binary */
         if (access("./rcc.exe", X_OK) == 0)
@@ -4970,6 +5387,13 @@ int main(int argc, char **argv) {
     detect_platform(rcc);
     if (g_verbose)
         printf("rcc=%s, platform=%s\n", rcc, platform);
+
+    /* in-proc execution requires a native, same-architecture rcc; disable
+     * it for cross-compile targets (runner needed, or darwin-cross) */
+    if (has_runner || is_darwin_cross)
+        use_rcc_lib = false;
+    if (use_rcc_lib && g_verbose)
+        printf("in-process mode: compiling+running tests via rcc_lib\n");
 
     /* suppress wine fixme noise so it doesn't pollute captured test output */
     if (has_runner && contains(runner_cmd, "wine"))

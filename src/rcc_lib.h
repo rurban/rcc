@@ -24,6 +24,19 @@ int rcc_lib_compile_file_ex(RCCLib *lib, const char *path,
                             const char *include_dir,
                             const char *extra_link_flags);
 
+// Like rcc_lib_compile_file_ex, but additionally accepts a whitespace-
+// separated string of compile flags (may be NULL): -Dname[=val], -Uname,
+// -Ipath (no space before the argument), -mms-bitfields,
+// -mno-ms-bitfields.  Unrecognized flags are ignored.
+int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
+                             const char *include_dir, const char *cflags,
+                             const char *extra_link_flags);
+
+// Reset global compiler state (command-line macros, -I paths, bitfield
+// layout option) to a fresh-process baseline.  Called automatically by
+// rcc_lib_compile_file* before each compile.
+void rcc_lib_reset(RCCLib *lib);
+
 // Compile C source text to a shared library.  The file must contain a
 // complete translation unit.  Returns 0 on success.
 int rcc_lib_compile_string(RCCLib *lib, const char *src);

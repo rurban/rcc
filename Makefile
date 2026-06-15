@@ -125,10 +125,7 @@ TARGET_EXT += $(MINGW_O)
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
 
-ifeq ($(CC),x86_64-w64-mingw32-gcc)
-RCC_ALL = $(RCC_LIB)
-endif
-all: $(TARGET) $(RUN_TESTS) $(RCC_ALL)
+all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB)
 
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
@@ -278,9 +275,9 @@ endif
 test check: $(TARGET) $(RUN_TESTS)
 	$(TEST_RUNNER)
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
-	./$(RUN_TESTS) ./$(TARGET) --all --parallel
+	./$(RUN_TESTS) --all --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
-	./$(RUN_TESTS) ./$(TARGET) --torture --parallel
+	./$(RUN_TESTS) --torture --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all

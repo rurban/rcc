@@ -287,6 +287,13 @@ static char read_escaped_char(char **new_pos, char *p) {
 Token *tokenize(char *filename, char *p) {
     current_input = p;
     current_filename = filename;
+    /* Reset #line-directive tracking from any previous tokenize() call in
+     * this process (e.g. rcc_lib compiling multiple files in-process);
+     * otherwise a leftover current_line_offset/line_num from the previous
+     * file's buffer produces bogus line numbers in warn_tok()/error_at()
+     * for files with no #line directive of their own. */
+    current_line_offset = 0;
+    line_num = 1;
     if (opt_g)
         current_debug_filename = filename;
     Token head = {};

@@ -109,6 +109,7 @@ static MacroStack *macro_stack;
 
 static const char *user_include_paths[64];
 static int nb_user_include_paths;
+static bool macros_inited = false;
 
 void add_include_path(const char *path) {
     if (nb_user_include_paths < 64)
@@ -126,6 +127,23 @@ static void clear_macros(void) {
 int pack_align = 0;
 int pack_align_stack[16];
 int pack_align_idx = 0;
+
+// Reset preprocessor global state between independent rcc_lib compiles
+// (each compile starts as if from a fresh process: no leftover -D/-U/-I
+// from a previous rcc_lib_compile_file* call).
+void rcc_reset_state(void) {
+    cmdline_macros = NULL;
+    saved_macros = NULL;
+    macros = NULL;
+    macro_stack = NULL;
+    memset(macro_htab, 0, sizeof(macro_htab));
+    nb_user_include_paths = 0;
+    macros_inited = false;
+    pp_counter = 0;
+    once_files = NULL;
+    pack_align = 0;
+    pack_align_idx = 0;
+}
 
 static void pp_warn(char *filename, unsigned line_no, char *fmt, ...) {
     va_list ap;
@@ -1855,7 +1873,6 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
 
 char *preprocess(char *filename, char *p) {
     clear_macros();
-    static bool macros_inited = false;
     static char *builtin_expect_params[] = {"x", "y"};
 
     if (!macros_inited) {
