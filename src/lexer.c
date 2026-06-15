@@ -7,8 +7,8 @@
 // Input string
 char *current_input;
 char *current_filename;
-static int current_line_offset = 0;
-static int line_num = 1;
+int current_line_offset = 0;
+int line_num = 1;
 // Tracks the filename from #line directives for debug info (tok->filename).
 // Kept separate from current_filename so error messages always use the
 // original in_path (relative/short) while tok->filename gets the resolved path.
@@ -329,13 +329,10 @@ Token *tokenize(char *filename, char *p) {
                     if (*q == '"') {
                         if (opt_g)
                             current_debug_filename = str_intern(fn_start, q - fn_start);
-                        // Save current position for line counting
                         current_input = p;
                         current_line_offset = q + 1 - current_input;
-                        // Update line number
                         line_num = n - 1;
                         cur_lineno = n;
-                        // Skip to end of line
                         p = q + 1;
                         while (*p && *p != '\n') p++;
                         if (*p == '\n') cur_lineno++;

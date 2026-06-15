@@ -6469,6 +6469,8 @@ Program *parse(Token *tok) {
 
     char *saved_input = current_input;
     char *saved_filename = current_filename;
+    int saved_line_offset = current_line_offset;
+    int saved_line_num = line_num;
     Token *head = tokenize("rcc_builtins",
 #if defined(ARCH_ARM64) && defined(__APPLE__)
                            // Apple ARM64: va_list is char* (simple pointer ABI)
@@ -6513,6 +6515,8 @@ Program *parse(Token *tok) {
     );
     current_input = saved_input;
     current_filename = saved_filename;
+    current_line_offset = saved_line_offset;
+    line_num = saved_line_num;
     Token *t = head;
     while (t->next && t->next->kind != TK_EOF)
         t = t->next;

@@ -69,6 +69,8 @@ void warn_tok(Token *tok, char *fmt, ...);
 // Lexer state (for token injection)
 extern char *current_input;
 extern char *current_filename;
+extern int current_line_offset;
+extern int line_num;
 
 // Allocator / Utils
 void *arena_alloc(size_t size);
