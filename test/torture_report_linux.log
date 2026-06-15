@@ -1645,7 +1645,7 @@
   va-arg-19                           PASS
   va-arg-20                           PASS
   va-arg-21                           PASS
-  va-arg-22                           FAIL (runtime)
+  va-arg-22                           PASS
   va-arg-23                           PASS
   va-arg-24                           PASS
   va-arg-26                           PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1567/1569 passed (99%), 2 failed (0 compile/2 runtime), 102 skipped.
+Torture: 1568/1569 passed (99%), 1 failed (0 compile/1 runtime), 102 skipped.
 
-Runtime failures: va-arg-22 va-arg-pack-1
+Runtime failures: va-arg-pack-1

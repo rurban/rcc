@@ -2702,10 +2702,17 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         } else if (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) {
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + arg_stack_idx[i] * 8);
         } else {
-            if (argv[i]->ty->is_unsigned)
-                zero_extend_to(r, argv[i]->ty->size, 8);
-            else
-                sign_extend_to(r, argv[i]->ty->size, 8);
+            // Structs/unions <=8 bytes (sizes 0,3,5,6,7) were already loaded
+            // as a full 8-byte register value by emit_load's movq; sign/zero
+            // extending by size would corrupt bytes beyond size with
+            // sign/zero-extension of the lower 32 bits. Only scalars (sizes
+            // 1,2,4) need extension to fill the 8-byte stack slot.
+            if (argv[i]->ty->kind != TY_STRUCT && argv[i]->ty->kind != TY_UNION) {
+                if (argv[i]->ty->is_unsigned)
+                    zero_extend_to(r, argv[i]->ty->size, 8);
+                else
+                    sign_extend_to(r, argv[i]->ty->size, 8);
+            }
             printf("  movq %s, %d(%%rsp)\n", reg64[r], shadow_space + arg_stack_idx[i] * 8);
         }
         free_reg(r);
