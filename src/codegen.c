@@ -1995,15 +1995,20 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
         }
 #if defined(__APPLE__)
         if (is_variadic && !is_named) {
-            arg_stack_idx[i] = stack_args;
             if (argv[i]->ty->kind == TY_INT128) {
                 if (stack_args & 1) stack_args++;
                 arg_stack_idx[i] = stack_args;
                 stack_args += 2;
-            } else if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)
-                stack_args += (argv[i]->ty->size + 7) / 8; // by value
-            else
-                stack_args++;
+            } else if (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) {
+                if (argv[i]->ty->size == 0)
+                    arg_stack_idx[i] = -1; // zero-size: no stack slot, nothing to push
+                else {
+                    arg_stack_idx[i] = stack_args;
+                    stack_args += (argv[i]->ty->size + 7) / 8;
+                }
+            } else {
+                arg_stack_idx[i] = stack_args++;
+            }
             continue;
         }
 #endif
@@ -2342,6 +2347,11 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
+        // Skip args with no assigned destination (e.g. zero-size variadic structs)
+        if (arg_gp_idx[i] < 0 && arg_fp_idx[i] < 0) {
+            if (arg_regs[i] >= 0) free_reg(arg_regs[i]);
+            continue;
+        }
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
             continue;
         }
@@ -8441,33 +8451,27 @@ static int gen(Node *node) {
     case ND_VA_ARG: {
         Type *ty = node->ty->base;
 #if defined(ARCH_ARM64) && defined(__APPLE__)
-        // Apple ARM64: va_list is char*. Load address of arg and advance.
-        // Returns ADDRESS of the arg (like AAPCS64), so callers can do typed loads.
+        // Apple ARM64: va_list is char*; all variadic args are 8-byte slots on the stack.
+        // slot_sz = ceil(size / 8) * 8; zero-size types advance by 0.
         int r = gen_addr(node->lhs); // address of the char* variable ap
-        // Struct variadic args on Apple ARM64 are passed by value on the stack.
-        // Small structs (≤8 bytes) are stored as 1 packed register value.
-        // Large structs (>8 bytes) are stored as raw bytes in N*8-byte slots.
-        // In both cases, x12 = address of the bytes; never a pointer-to-struct.
-        bool is_ptr_struct_apple = false;
-        int slot_sz = (ty->kind == TY_STRUCT || ty->kind == TY_UNION)
-            ? ((ty->size + 7) & ~7)
-            : 8;
-        // Load current pointer (= address of next arg slot)
-        printf("  ldr x12, [%s]\n", reg64[r]); // x12 = ap
-        // Advance ap
-        printf("  add x16, x12, #%d\n", slot_sz);
-        printf("  str x16, [%s]\n", reg64[r]);
-        free_reg(r);
-        // Return address of the arg slot in x12 (like AAPCS64 convention).
-        // For structs > 8 bytes passed by pointer, dereference once to get struct ptr.
-        int ret = alloc_reg();
-        if (is_ptr_struct_apple) {
-            // Slot holds a pointer to the struct; dereference to get struct pointer
-            printf("  ldr %s, [x12]\n", reg64[ret]);
-        } else {
-            // x12 = address of arg value; return it directly
-            printf("  mov %s, x12\n", reg64[ret]);
+        int slot_sz = (ty->size + 7) & ~7;
+        // Use x17 (reserved scratch) to hold &ap before loading x12.
+        // Without this, if gen_addr returns x12, "ldr x12,[x12]" clobbers the
+        // address and "str x16,[x12]" writes new_ap into the data area instead
+        // of back into the ap variable.
+        printf("  mov x17, %s\n", reg64[r]); // x17 = &ap
+        printf("  ldr x12, [x17]\n"); // x12 = ap (current slot pointer)
+        // __int128 requires 16-byte alignment; the caller pads stack_args to even
+        // before placing it, so va_arg must align ap up to 16 to match.
+        if (ty->kind == TY_INT128) {
+            printf("  add x16, x12, #15\n");
+            printf("  and x12, x16, #-16\n");
         }
+        printf("  add x16, x12, #%d\n", slot_sz);
+        printf("  str x16, [x17]\n"); // ap += slot_sz (correct write-back)
+        free_reg(r);
+        int ret = alloc_reg();
+        printf("  mov %s, x12\n", reg64[ret]);
         return ret;
 #else
 #ifdef _WIN32
