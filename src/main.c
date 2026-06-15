@@ -115,6 +115,8 @@ void help(void) {
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
            "-print-search-dirs  print install, include and library paths\n"
+           "-dumpmachine        print target version\n"
+           "-dumpversion        print gcc compatibility version\n"
            "--help\n"
            "--version\n");
 }
@@ -185,6 +187,14 @@ int main(int argc, char **argv) {
         }
         if (!strcmp(argv[i], "--version")) {
             printf("rcc %s %s\n", VERSION, MACHINE);
+            return 0;
+        }
+        if (!strcmp(argv[i], "-dumpversion")) {
+            puts("5"); // first gcc which made -std=c11 default
+            return 0;
+        }
+        if (!strcmp(argv[i], "-dumpmachine")) {
+            printf("%s\n", MACHINE);
             return 0;
         }
         if (!strcmp(argv[i], "-print-search-dirs")) {
