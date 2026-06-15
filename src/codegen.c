@@ -8426,6 +8426,18 @@ static int gen(Node *node) {
 #endif
         return -1;
     }
+    case ND_VA_ARG_PACK: {
+        // Only valid inside a function inlined by the call-site
+        // __builtin_va_arg_pack expander in the parser; if one reaches
+        // codegen (e.g. unused inline-pack function), emit a harmless 0.
+        int r = alloc_reg();
+#ifdef ARCH_ARM64
+        printf("  mov %s, #0\n", reg32[r]);
+#else
+        printf("  mov $0, %s\n", reg32[r]);
+#endif
+        return r;
+    }
     case ND_VA_ARG: {
         Type *ty = node->ty->base;
 #if defined(ARCH_ARM64) && defined(__APPLE__)
@@ -10619,6 +10631,7 @@ static const char *node_kind_name(NodeKind k) {
     case ND_VA_START: return "VA_START";
     case ND_VA_COPY: return "VA_COPY";
     case ND_VA_ARG: return "VA_ARG";
+    case ND_VA_ARG_PACK: return "VA_ARG_PACK";
     case ND_ALLOCA: return "ALLOCA";
     case ND_ALLOCA_ZINIT: return "ALLOCA_ZINIT";
     case ND_CHAIN: return "CHAIN";

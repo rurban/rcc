@@ -37,6 +37,19 @@ struct EnumConst {
 static LVar *locals;
 static LVar *globals;
 
+// Functions defined as "extern inline ... (...) { ... __builtin_va_arg_pack() ... }"
+// are never emitted; instead each call site is inlined as a statement
+// expression with __builtin_va_arg_pack() replaced by that call's trailing
+// variadic arguments. See node_uses_va_arg_pack/inline_pack_call below.
+typedef struct InlinePackFn InlinePackFn;
+struct InlinePackFn {
+    InlinePackFn *next;
+    char *name;
+    Function *fn;
+};
+static InlinePackFn *inline_pack_fns;
+static int inline_pack_counter;
+
 #define GLOBAL_HASH_SIZE 8192
 static LVar *global_htab[GLOBAL_HASH_SIZE];
 
@@ -428,6 +441,190 @@ LVar *find_global_name(char *name) {
         if (var->name == name)
             return var;
     return NULL;
+}
+
+// Does this AST (sub)tree contain a __builtin_va_arg_pack() placeholder?
+static bool node_uses_va_arg_pack(Node *n) {
+    if (!n)
+        return false;
+    if (n->kind == ND_VA_ARG_PACK)
+        return true;
+    return node_uses_va_arg_pack(n->lhs) || node_uses_va_arg_pack(n->rhs) ||
+        node_uses_va_arg_pack(n->cond) || node_uses_va_arg_pack(n->then) ||
+        node_uses_va_arg_pack(n->els) || node_uses_va_arg_pack(n->init) ||
+        node_uses_va_arg_pack(n->inc) || node_uses_va_arg_pack(n->body) ||
+        node_uses_va_arg_pack(n->args) || node_uses_va_arg_pack(n->next) ||
+        node_uses_va_arg_pack(n->stmt_expr_result);
+}
+
+static InlinePackFn *find_inline_pack_fn(char *name) {
+    for (InlinePackFn *p = inline_pack_fns; p; p = p->next)
+        if (strcmp(p->name, name) == 0)
+            return p;
+    return NULL;
+}
+
+// Context for cloning a __builtin_va_arg_pack-using function's body into a
+// call site: named parameters are remapped to fresh shadow locals (assigned
+// once from the call's arguments), "return EXPR;"/"return;" become
+// "{ __pack_ret = EXPR; goto __pack_end; }" / "{ goto __pack_end; }", and
+// __builtin_va_arg_pack() argument slots are spliced with the call's
+// trailing variadic arguments (shared, not cloned - each call site has its
+// own unique copies).
+typedef struct InlineCloneCtx {
+    LVar **old_params;
+    LVar **new_params;
+    int nparams;
+    Node *pack_args;
+    LVar *ret_var;
+    char *end_label;
+} InlineCloneCtx;
+
+static Node *clone_inline_node(Node *n, InlineCloneCtx *ctx);
+
+static Node *clone_inline_stmts(Node *n, InlineCloneCtx *ctx) {
+    Node head = {0};
+    Node *tail = &head;
+    for (Node *cur = n; cur; cur = cur->next) {
+        tail->next = clone_inline_node(cur, ctx);
+        tail = tail->next;
+    }
+    return head.next;
+}
+
+static Node *clone_inline_args(Node *n, InlineCloneCtx *ctx) {
+    Node head = {0};
+    Node *tail = &head;
+    for (Node *cur = n; cur; cur = cur->next) {
+        if (cur->kind == ND_VA_ARG_PACK) {
+            for (Node *p = ctx->pack_args; p; p = p->next) {
+                Node *pc = arena_alloc(sizeof(Node));
+                *pc = *p;
+                pc->next = NULL;
+                check_type(pc);
+                tail->next = pc;
+                tail = tail->next;
+            }
+            continue;
+        }
+        tail->next = clone_inline_node(cur, ctx);
+        tail = tail->next;
+    }
+    return head.next;
+}
+
+static Node *clone_inline_node(Node *n, InlineCloneCtx *ctx) {
+    if (!n)
+        return NULL;
+    switch (n->kind) {
+    case ND_LVAR:
+        for (int i = 0; i < ctx->nparams; i++)
+            if (n->var == ctx->old_params[i])
+                return new_var_node(ctx->new_params[i], n->tok);
+        break;
+    case ND_RETURN: {
+        // return EXPR; -> { __pack_ret = EXPR; goto __pack_end; }
+        // return;      -> { goto __pack_end; }
+        Node *blk = new_node(ND_BLOCK, n->tok);
+        Node *head = NULL, **tail = &head;
+        if (n->lhs) {
+            Node *expr = clone_inline_node(n->lhs, ctx);
+            Node *assign = new_binary(ND_ASSIGN, new_var_node(ctx->ret_var, n->tok), expr, n->tok);
+            check_type(assign);
+            *tail = new_unary(ND_EXPR_STMT, assign, n->tok);
+            tail = &(*tail)->next;
+        }
+        Node *gt = new_node(ND_GOTO, n->tok);
+        gt->label_name = ctx->end_label;
+        *tail = gt;
+        blk->body = head;
+        return blk;
+    }
+    default:
+        break;
+    }
+    Node *c = arena_alloc(sizeof(Node));
+    *c = *n;
+    c->next = NULL;
+    c->lhs = clone_inline_node(n->lhs, ctx);
+    c->rhs = clone_inline_node(n->rhs, ctx);
+    c->cond = clone_inline_node(n->cond, ctx);
+    c->then = clone_inline_node(n->then, ctx);
+    c->els = clone_inline_node(n->els, ctx);
+    c->init = clone_inline_node(n->init, ctx);
+    c->inc = clone_inline_node(n->inc, ctx);
+    c->body = clone_inline_stmts(n->body, ctx);
+    c->args = clone_inline_args(n->args, ctx);
+    c->stmt_expr_result = clone_inline_node(n->stmt_expr_result, ctx);
+    return c;
+}
+
+// Expand a call to a registered __builtin_va_arg_pack-using function at this
+// call site into a GNU statement expression: assign named arguments to
+// shadow locals, inline a clone of the callee's body with
+// __builtin_va_arg_pack() replaced by the remaining (variadic) arguments,
+// and capture the return value (if any) as the expression's result.
+static Node *inline_pack_call(Node *call, InlinePackFn *ipf, Token *tok) {
+    Function *callee = ipf->fn;
+    int nparams = 0;
+    for (LVar *p = callee->params; p; p = p->param_next)
+        nparams++;
+
+    InlineCloneCtx ctx = {0};
+    ctx.nparams = nparams;
+    if (nparams > 0) {
+        ctx.old_params = arena_alloc(sizeof(LVar *) * nparams);
+        ctx.new_params = arena_alloc(sizeof(LVar *) * nparams);
+    }
+
+    int id = inline_pack_counter++;
+
+    Node head_stmts = {0};
+    Node *tail = &head_stmts;
+
+    Node *cur = call->args;
+    int i = 0;
+    for (LVar *p = callee->params; p; p = p->param_next, i++) {
+        ctx.old_params[i] = p;
+        LVar *shadow = new_var(format("__pack_arg%d_%d", id, i), copy_type(p->ty), true);
+        ctx.new_params[i] = shadow;
+        Node *arg = cur ? cur : new_num(0, tok);
+        Node *assign = new_binary(ND_ASSIGN, new_var_node(shadow, tok), arg, tok);
+        check_type(assign);
+        tail->next = new_unary(ND_EXPR_STMT, assign, tok);
+        tail = tail->next;
+        if (cur)
+            cur = cur->next;
+    }
+    ctx.pack_args = cur;
+
+    Type *ret_ty = callee->ty->return_ty;
+    LVar *ret_var = (ret_ty->kind != TY_VOID) ? new_var(format("__pack_ret%d", id), copy_type(ret_ty), true) : NULL;
+    ctx.ret_var = ret_var;
+    ctx.end_label = format("__pack_end%d", id);
+
+    tail->next = clone_inline_stmts(callee->body, &ctx);
+    while (tail->next)
+        tail = tail->next;
+
+    Node *label = new_node(ND_LABEL, tok);
+    label->label_name = ctx.end_label;
+    label->lhs = new_node(ND_NULL, tok);
+    tail->next = label;
+    tail = label;
+
+    Node *se = new_node(ND_STMT_EXPR, tok);
+    if (ret_var) {
+        Node *ret_node = new_var_node(ret_var, tok);
+        tail->next = new_unary(ND_EXPR_STMT, ret_node, tok);
+        tail = tail->next;
+        se->stmt_expr_result = ret_node;
+        se->ty = ret_node->ty;
+    } else {
+        se->ty = ty_void;
+    }
+    se->body = head_stmts.next;
+    return se;
 }
 
 static LabelScope *find_label_scope(char *name) {
@@ -4180,6 +4377,7 @@ static Node *primary(Token **rest, Token *tok) {
             return node;
         }
         if (equalc(tok->next, "(")) {
+            Token *fn_tok = tok;
             node = new_node(ND_FUNCALL, tok);
             LVar *var = find_var(tok);
             if (var)
@@ -4201,6 +4399,11 @@ static Node *primary(Token **rest, Token *tok) {
             node->args = head.next;
             tok = skip(tok, ")");
             cast_funcall_args(node);
+            if (!var || !var->is_local) {
+                InlinePackFn *ipf = find_inline_pack_fn(fn_tok->name);
+                if (ipf)
+                    node = inline_pack_call(node, ipf, fn_tok);
+            }
         } else {
             EnumConst *ec = find_enum_const(tok);
             if (ec) {
@@ -4546,7 +4749,12 @@ static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_va_arg_pack")) {
         tok = skip(tok->next, "(");
         *rest = skip(tok, ")");
-        return new_num(0, tok);
+        // Expanded by the call-site inliner (see inline_pack_fns) into the
+        // caller's trailing variadic args. If it survives to codegen
+        // (e.g. unused inline-pack function), emits a harmless 0.
+        Node *node = new_node(ND_VA_ARG_PACK, tok);
+        node->ty = ty_int;
+        return node;
     }
     if (equalc(tok, "__builtin_va_arg_pack_len")) {
         tok = skip(tok->next, "(");
@@ -6647,10 +6855,22 @@ Program *parse(Token *tok) {
                     pending_destructor = false;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
-                    TLItem *item = arena_alloc(sizeof(TLItem));
-                    item->kind = TL_FUNC;
-                    item->fn = fn;
-                    item_cur = item_cur->next = item;
+                    // "extern inline __attribute__((always_inline, gnu_inline))"
+                    // variadic functions using __builtin_va_arg_pack() are never
+                    // emitted; each call site is expanded inline instead (see
+                    // inline_pack_call).
+                    if (fn->is_variadic && node_uses_va_arg_pack(fn->body)) {
+                        InlinePackFn *ipf = arena_alloc(sizeof(InlinePackFn));
+                        ipf->name = fn->name;
+                        ipf->fn = fn;
+                        ipf->next = inline_pack_fns;
+                        inline_pack_fns = ipf;
+                    } else {
+                        TLItem *item = arena_alloc(sizeof(TLItem));
+                        item->kind = TL_FUNC;
+                        item->fn = fn;
+                        item_cur = item_cur->next = item;
+                    }
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;

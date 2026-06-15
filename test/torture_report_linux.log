@@ -1649,7 +1649,7 @@
   va-arg-23                           PASS
   va-arg-24                           PASS
   va-arg-26                           PASS
-  va-arg-pack-1                       FAIL (runtime)
+  va-arg-pack-1                       PASS
   va-arg-trap-1                       PASS
   vfprintf-1                          PASS
   vfprintf-chk-1                      PASS
@@ -1672,6 +1672,4 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1568/1569 passed (99%), 1 failed (0 compile/1 runtime), 102 skipped.
-
-Runtime failures: va-arg-pack-1
+Torture: 1569/1569 passed (100%), 0 failed, 102 skipped.
