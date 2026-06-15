@@ -23,7 +23,7 @@ fi
 if [ -n "${1:-}" ]; then
     make -s CC=aarch64-linux-gnu-gcc rcc-arm64 run_tests_arm64
     export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
-    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 ./rcc-arm64 "$1"
+    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 ./rcc-arm64 "$@"
 else
     make leanclean
     make -s CC=aarch64-linux-gnu-gcc rcc-arm64 run_tests_arm64

@@ -725,6 +725,13 @@ static char *cmdline_from_argv(char *const argv[]) {
 /* ── platform detection ──────────────────────────────────────────── */
 
 static const char *platform = "linux";
+/* platform_suffix: like `platform`, but with "_<compiler-basename>"
+ * appended when `rcc` refers to an external/unknown compiler (e.g.
+ * /usr/bin/gcc) rather than one of rcc's own binaries, so report
+ * filenames don't clobber rcc's own reports. compiler_name is set in
+ * that case (NULL for rcc's own binaries). */
+static const char *platform_suffix = "linux";
+static const char *compiler_name;
 static bool is_arm64, is_darwin_cross, is_mingw_native;
 static char runner_cmd[512];
 static bool has_runner;
@@ -1003,13 +1010,13 @@ static int run_test_inprocess(const char *src_path, const char *name,
     char saved_cwd[PATH_MAX];
     bool chdir_done = false;
     if (cwd && cwd[0]) {
-        if (_getcwd(saved_cwd, sizeof(saved_cwd)) && _chdir(cwd) == 0)
+        if (getcwd(saved_cwd, sizeof(saved_cwd)) && chdir(cwd) == 0)
             chdir_done = true;
     }
 
     RCCLib *lib = p_rcc_lib_new();
     if (!lib) {
-        if (chdir_done) _chdir(saved_cwd);
+        if (chdir_done) chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
@@ -1028,7 +1035,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     freopen("CONOUT$", "w", stdout);
     if (cres != 0) {
         p_rcc_lib_delete(lib);
-        if (chdir_done) _chdir(saved_cwd);
+        if (chdir_done) chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
@@ -1036,7 +1043,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     main_fn_t fn = (main_fn_t)p_rcc_lib_get_symbol(lib, "main");
     if (!fn) {
         p_rcc_lib_delete(lib);
-        if (chdir_done) _chdir(saved_cwd);
+        if (chdir_done) chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
@@ -1054,7 +1061,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
         p_rcc_lib_delete(lib);
-        if (chdir_done) _chdir(saved_cwd);
+        if (chdir_done) chdir(saved_cwd);
         inproc_unlock();
         return -1;
     }
@@ -1098,7 +1105,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     pr->spawn_failed = false;
 
     p_rcc_lib_delete(lib);
-    if (chdir_done) _chdir(saved_cwd);
+    if (chdir_done) chdir(saved_cwd);
     inproc_unlock();
     return 0;
 }
@@ -3394,7 +3401,7 @@ static void run_unit_tests(void) {
                    passed, total, pct, red, failed, rst);
 
         char sp[256], sc[256];
-        snprintf(sp, sizeof(sp), "test-units-%s.summary", platform);
+        snprintf(sp, sizeof(sp), "test-units-%s.summary", platform_suffix);
         if (todo > 0)
             snprintf(sc, sizeof(sc), "SUITE=units\nTOTAL=%d\nPASS=%d\nFAIL=%d\nTODO=%d\n",
                      total, passed, failed, todo);
@@ -3433,6 +3440,8 @@ static void generate_tcc_report(void) {
     int pct = total > 0 ? passed * 100 / total : 0;
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
+    if (compiler_name)
+        fprintf(rf, "**Compiler**: %s\n\n", rcc);
     fprintf(rf, "## Summary\n\n- **Total**: %d\n- **Passed**: %d\n"
                 "- **Failed**: %d\n- **Pass Rate**: %d%%\n\n",
             total, passed, failed, pct);
@@ -3503,18 +3512,7 @@ static int run_tcc_suite(void) {
     }
 
     static char rf_buf[256];
-    if (streq(platform, "arm64_cross"))
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64_cross.md");
-    else if (streq(platform, "darwin_cross"))
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_darwin_cross.md");
-    else if (streq(platform, "mingw_cross"))
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_mingw_cross.md");
-    else if (streq(platform, "mingw"))
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_mingw.md");
-    else if (streq(platform, "arm64"))
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_arm64.md");
-    else // TODO: BSD's, musl, arm64-elf
-        snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_linux.md");
+    snprintf(rf_buf, sizeof(rf_buf), "test/tcc_test_%s.md", platform_suffix);
     REPORT_FILE = rf_buf;
     bool is_mingw = is_mingw_native || streq(platform, "mingw_cross");
     load_old_states(REPORT_FILE);
@@ -3721,7 +3719,7 @@ static int run_tcc_suite(void) {
 
     if (!only_test) {
         char sp[256], sc[256];
-        snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform);
+        snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
                  total, passed, failed);
         write_summary(sp, sc);
@@ -3848,7 +3846,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
      * stdio/CRT redirection deadlocks/crashes (see inproc_lock comment). */
     if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
         ProcResult rp;
-        if (run_test_inprocess(src_path, name, g_tort_dir, "-lm", &rp, 5) == 0) {
+        if (run_test_inprocess(src_path, name, g_tort_dir, "-lm", NULL, NULL, NULL, &rp, 5) == 0) {
             r->did_compile = true;
             r->did_exec = true;
             r->exec_exit = rp.exit_code;
@@ -4034,7 +4032,7 @@ static void run_torture_test(const char *src, bool summary_only) {
      * (see inproc_lock comment).  Falls through on failure. */
     if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
         ProcResult rp;
-        if (run_test_inprocess(src, name, ".", "-lm", &rp, 5) == 0) {
+        if (run_test_inprocess(src, name, ".", "-lm", NULL, NULL, NULL, &rp, 5) == 0) {
             if (rp.exit_code != 0) {
                 g_tort_fail_runtime++;
                 tort_add_error(&g_tort_runtime_errors, name);
@@ -4154,7 +4152,7 @@ static int run_torture_suite(bool summary_only) {
     /* open log file for torture output */
     if (!only_test && !summary_only) {
         char lp[PATH_MAX];
-        snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform);
+        snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
     }
 
@@ -4285,7 +4283,7 @@ static int run_torture_suite(bool summary_only) {
 
         char sp[256];
         char sc[512];
-        snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform);
+        snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc),
                  "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n",
                  g_tort_total, g_tort_pass, g_tort_fail_compile + g_tort_fail_runtime,
@@ -4665,7 +4663,7 @@ static int run_compliance_suite(void) {
         printf(".\n");
 
         char sp[256], sc[256];
-        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
+        snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
                  comp_total, comp_pass, comp_fail);
         write_summary(sp, sc);
@@ -4897,7 +4895,7 @@ static int run_ctest_suite(void) {
     /* open log file for c-testsuite output */
     if (!only_test) {
         char lp[PATH_MAX];
-        snprintf(lp, sizeof(lp), "%s/test/ctest_report_%s.log", SCRIPT_DIR, platform);
+        snprintf(lp, sizeof(lp), "%s/test/ctest_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
     }
 
@@ -5034,7 +5032,7 @@ static int run_ctest_suite(void) {
 
         if (!only_test) {
             char sp[256], sc[256];
-            snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
+            snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
             snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
                      ctest_total, ctest_pass, ctest_fail2, ctest_skip2);
             write_summary(sp, sc);
@@ -5107,7 +5105,7 @@ static int run_ctest_suite(void) {
 
     if (!only_test) {
         char sp[256], sc[256];
-        snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
+        snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
                  ctest_total, ctest_pass, ctest_fail, ctest_skip);
         write_summary(sp, sc);
@@ -5143,7 +5141,7 @@ static void generate_report(void) {
                                                                                    : platform;
 
     char report_path[PATH_MAX];
-    snprintf(report_path, sizeof(report_path), "%s/test_report_%s.md", SCRIPT_DIR, platform);
+    snprintf(report_path, sizeof(report_path), "%s/test_report_%s.md", SCRIPT_DIR, platform_suffix);
     char tmp_path[PATH_MAX + 5];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", report_path);
 
@@ -5154,7 +5152,7 @@ static void generate_report(void) {
 
     for (size_t i = 0; i < NSUITE; i++) {
         char sp[PATH_MAX];
-        snprintf(sp, sizeof(sp), "%s/test-%s-%s.summary", SCRIPT_DIR, suite_meta[i].id, platform);
+        snprintf(sp, sizeof(sp), "%s/test-%s-%s.summary", SCRIPT_DIR, suite_meta[i].id, platform_suffix);
         char *c = slurp(sp);
         if (!c) continue;
         s[i].found = true;
@@ -5200,6 +5198,8 @@ static void generate_report(void) {
 
     fprintf(rf, "# RCC Test Suite Report\n\n");
     fprintf(rf, "**Platform**: %s\n\n", desc);
+    if (compiler_name)
+        fprintf(rf, "**Compiler**: %s\n\n", rcc);
     fprintf(rf, "Generated: %s\n\n", datebuf);
 
     fprintf(rf, "## Overall Summary\n\n");
@@ -5230,7 +5230,7 @@ static void generate_report(void) {
 
     fclose(rf);
     move_file_atomic(tmp_path, report_path);
-    printf("Unified report saved to test_report_%s.md\n", platform);
+    printf("Unified report saved to test_report_%s.md\n", platform_suffix);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -5356,6 +5356,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* External/unknown compiler (not one of rcc's own binaries: rcc,
+     * rcc.exe, rcc-arm64, rcc-darwin, ...): remember its basename (as
+     * given, before realpath resolution turns e.g. /usr/bin/gcc into a
+     * versioned symlink target like x86_64-linux-gnu-gcc-13) so report
+     * filenames can be suffixed with it, e.g. test_report_linux_gcc.md,
+     * to avoid clobbering rcc's own reports for the same platform. */
+    {
+        const char *rb = strrchr(rcc, '/');
+        rb = rb ? rb + 1 : rcc;
+        if (!contains(rb, "rcc")) {
+            static char name_buf[256];
+            snprintf(name_buf, sizeof(name_buf), "%s", rb);
+            compiler_name = name_buf;
+        }
+    }
+
     /* resolve to absolute path */
     {
         char resolved[PATH_MAX];
@@ -5387,6 +5403,14 @@ int main(int argc, char **argv) {
     detect_platform(rcc);
     if (g_verbose)
         printf("rcc=%s, platform=%s\n", rcc, platform);
+
+    if (compiler_name) {
+        static char suffix_buf[PATH_MAX];
+        snprintf(suffix_buf, sizeof(suffix_buf), "%s_%s", platform, compiler_name);
+        platform_suffix = suffix_buf;
+    } else {
+        platform_suffix = platform;
+    }
 
     /* in-proc execution requires a native, same-architecture rcc; disable
      * it for cross-compile targets (runner needed, or darwin-cross) */
