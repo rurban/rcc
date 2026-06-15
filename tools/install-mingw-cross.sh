@@ -82,10 +82,33 @@ echo "==> Verifying gcc.exe runs under wine..."
 WINEPREFIX="$WINEPREFIX" WINEDEBUG=fixme-all wine cmd /c "gcc --version" 2>/dev/null | head -1
 
 echo ""
+echo "==> Registering wine binfmt_misc handler (optional)..."
+if [ -e /proc/sys/fs/binfmt_misc/register ]; then
+    if [ -e /proc/sys/fs/binfmt_misc/windowsPE ]; then
+        echo "    windowsPE handler already registered"
+    elif [ -w /proc/sys/fs/binfmt_misc/register ]; then
+        printf '%s' ':windowsPE:M::MZ::/usr/bin/wine:F' > /proc/sys/fs/binfmt_misc/register
+        echo "    registered windowsPE -> /usr/bin/wine"
+    elif command -v sudo >/dev/null 2>&1; then
+        printf '%s' ':windowsPE:M::MZ::/usr/bin/wine:F' | sudo tee /proc/sys/fs/binfmt_misc/register >/dev/null || true
+        if [ -e /proc/sys/fs/binfmt_misc/windowsPE ]; then
+            echo "    registered windowsPE -> /usr/bin/wine"
+        else
+            echo "    skipped (could not register)"
+        fi
+    else
+        echo "    skipped (need root to write /proc/sys/fs/binfmt_misc/register)"
+    fi
+else
+    echo "    skipped (binfmt_misc not available)"
+fi
+
+echo ""
 echo "==> Done. Build and test the mingw cross target with:"
 echo ""
 echo "  make CC=x86_64-w64-mingw32-gcc rcc.exe run_tests.exe"
-echo "  wine ./run_tests.exe rcc.exe"
+echo "  ./run_tests.exe rcc.exe        # via binfmt_misc/wine"
+echo "  wine ./run_tests.exe rcc.exe   # explicit"
 echo ""
 echo "Or use the slower ./mingw-cross.sh as the rcc command for run_tests:"
 echo ""
