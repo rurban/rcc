@@ -133,7 +133,7 @@ all: $(TARGET) $(RUN_TESTS) $(RCC_ALL)
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 $(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
-	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
+	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O) -lpthread
 
 src/keywords.h: src/keywords.gperf src/keyword_ids.h
 	$(GPERF) -m 10 --output-file=$@.tmp src/keywords.gperf
