@@ -289,7 +289,7 @@ static void add_type_internal(Node *node) {
                 mul->kind = ND_MUL;
                 mul->lhs = node->rhs;
                 mul->rhs = vla_sz;
-                mul->ty = ty_ulong;
+                mul->ty = ty_ullong;
                 node->rhs = mul;
             } else {
                 node->rhs = new_scale_mul(node->rhs, lty->base->size);
@@ -298,7 +298,7 @@ static void add_type_internal(Node *node) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;
-                cast->ty = node->rhs->ty->is_unsigned ? ty_ulong : ty_long;
+                cast->ty = node->rhs->ty->is_unsigned ? ty_ullong : ty_llong;
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
@@ -321,7 +321,7 @@ static void add_type_internal(Node *node) {
                 mul->kind = ND_MUL;
                 mul->lhs = node->rhs;
                 mul->rhs = vla_sz;
-                mul->ty = ty_ulong;
+                mul->ty = ty_ullong;
                 node->rhs = mul;
             } else {
                 node->rhs = new_scale_mul(node->rhs, rty->base->size);
@@ -330,7 +330,7 @@ static void add_type_internal(Node *node) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;
-                cast->ty = node->rhs->ty->is_unsigned ? ty_ulong : ty_long;
+                cast->ty = node->rhs->ty->is_unsigned ? ty_ullong : ty_llong;
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             }
