@@ -4105,6 +4105,16 @@ static int gen_addr(Node *node) {
     }
     case ND_MEMBER: {
         int r = gen_addr(node->lhs);
+        if (node->member->offset_expr) {
+            int o = gen(node->member->offset_expr);
+#ifdef ARCH_ARM64
+            printf("  add %s, %s, %s\n", reg64[r], reg64[r], reg64[o]);
+#else
+            printf("  add %s, %s\n", reg64[o], reg64[r]);
+#endif
+            free_reg(o);
+            return r;
+        }
 #ifdef ARCH_ARM64
         if (node->member->offset > 0 && node->member->offset <= 4095)
             printf("  add %s, %s, #%d\n", reg64[r], reg64[r], node->member->offset);

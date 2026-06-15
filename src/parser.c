@@ -374,8 +374,13 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
     var->asm_name = NULL;
 
     if (is_local) {
-        int size = ty->size < 4 ? 4 : ty->size;
-        int align = ty->align < 4 ? 4 : ty->align;
+        // VLA-containing struct: ty->size is 0 (runtime size). Like TY_VLA,
+        // ND_ALLOCA codegen writes both a restore-SP marker at var->offset and
+        // the data pointer at var->offset-8, so reserve 16 bytes (matching
+        // TY_VLA's placeholder size below).
+        bool vla_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->vla_len_expr;
+        int size = vla_struct ? 16 : (ty->size < 4 ? 4 : ty->size);
+        int align = vla_struct ? 8 : (ty->align < 4 ? 4 : ty->align);
         stack_offset = align_to(stack_offset + size, align);
         var->offset = stack_offset;
         var->next = locals;
@@ -1460,6 +1465,43 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     return ety;
 }
 
+// Build a Node expr computing align_to(x, align) at runtime:
+// (x + (align-1)) & ~(align-1). Returns x unchanged if align <= 1.
+static Node *vla_align_to_runtime(Node *x, int64_t align, Token *tok) {
+    if (align <= 1)
+        return x;
+    int64_t mask = align - 1;
+    Node *padded = new_binary(ND_ADD, x, new_num(mask, tok), tok);
+    check_type(padded);
+    Node *mask_n = new_num(~mask, tok);
+    check_type(mask_n);
+    Node *r = new_binary(ND_BITAND, padded, mask_n, tok);
+    check_type(r);
+    return r;
+}
+
+// Freeze a runtime size/offset expression into a hidden local variable at
+// struct-definition time (so later changes to the VLA dimension variables
+// don't retroactively change the layout already computed), chaining the
+// capture statement onto pending_vla_struct_capture. Returns a fresh
+// reference to the captured value.
+static Node *vla_capture(Node *expr, Token *tok) {
+    LVar *cap = new_var("", ty_long, true);
+    Node *cap_lhs = new_var_node(cap, tok);
+    Node *assign = new_binary(ND_ASSIGN, cap_lhs, expr, tok);
+    check_type(assign);
+    Node *stmt = new_unary(ND_EXPR_STMT, assign, tok);
+    if (pending_vla_struct_capture) {
+        Node *p = pending_vla_struct_capture;
+        while (p->next)
+            p = p->next;
+        p->next = stmt;
+    } else {
+        pending_vla_struct_capture = stmt;
+    }
+    return new_var_node(cap, tok);
+}
+
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     int struct_attr_align = 0;
@@ -1516,6 +1558,9 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int64_t offset = 0;
     int64_t max_size = 0;
     int max_align = 1;
+    // Once non-NULL, holds the running runtime byte offset for the next
+    // member (set after the first variable-size/VLA member is seen).
+    Node *vla_off_acc = NULL;
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
     int struct_pack = pack_align; // capture #pragma pack value at struct start
     if (struct_attr.is_packed && struct_pack == 0) struct_pack = 1;
@@ -1784,53 +1829,63 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     if (max_align < mem_ty->align)
                         max_align = mem_ty->align;
                 } else {
-                    int a = mem_ty->align;
+                    // For VLA members, mem_ty->align is a fixed placeholder (8), not the
+                    // element type's real alignment (also where __attribute__((aligned(N)))
+                    // written before the element type ends up). Use the base type's
+                    // alignment instead so layout matches GCC.
+                    int a = (mem_ty->kind == TY_VLA) ? mem_ty->base->align : mem_ty->align;
                     if (struct_pack > 0 && (struct_pack < a || a == 0))
                         a = struct_pack;
-                    offset = align_to(offset, a);
-                    mem->offset = offset;
-                    if (mem_ty->kind == TY_VLA && mem_ty->vla_len_expr) {
-                        // VLA struct member: capture size into a hidden lvar now
-                        // (before any n++ can change the VLA dimension variable).
-                        // struct size = fixed_prefix + len * base_size
-                        Node *base_sz_n = new_num(mem_ty->base->size, tok);
-                        check_type(base_sz_n);
-                        Node *vla_sz = new_binary(ND_MUL, mem_ty->vla_len_expr, base_sz_n, tok);
-                        check_type(vla_sz);
-                        Node *full_sz;
-                        if (offset > 0) {
-                            Node *off_n = new_num(offset, tok);
-                            check_type(off_n);
-                            full_sz = new_binary(ND_ADD, off_n, vla_sz, tok);
+                    bool mem_is_vla = mem_ty->kind == TY_VLA && mem_ty->vla_len_expr;
+
+                    if (!vla_off_acc) {
+                        offset = align_to(offset, a);
+                        mem->offset = offset;
+                        if (mem_is_vla) {
+                            // VLA struct member: capture size into a hidden lvar now
+                            // (before any n++ can change the VLA dimension variable).
+                            // offset of next member = fixed_prefix + len * base_size,
+                            // rounded up to this member's own alignment.
+                            Node *base_sz_n = new_num(mem_ty->base->size, tok);
+                            check_type(base_sz_n);
+                            Node *vla_sz = new_binary(ND_MUL, mem_ty->vla_len_expr, base_sz_n, tok);
+                            check_type(vla_sz);
+                            Node *full_sz;
+                            if (offset > 0) {
+                                Node *off_n = new_num(offset, tok);
+                                check_type(off_n);
+                                full_sz = new_binary(ND_ADD, off_n, vla_sz, tok);
+                                check_type(full_sz);
+                            } else {
+                                full_sz = vla_sz;
+                            }
+                            full_sz = vla_align_to_runtime(full_sz, a, tok);
+                            vla_off_acc = vla_capture(full_sz, tok);
                         } else {
-                            full_sz = vla_sz;
+                            offset += mem_ty->size;
+                            bit_pos = offset * 8;
                         }
-                        check_type(full_sz);
-                        // Apply alignment padding when the member has explicit non-default
-                        // alignment (e.g. __attribute__((aligned(16)))) that would cause subsequent
-                        // members to start at a different offset than the raw VLA extent.
-                        // Skip when the alignment equals the natural base type alignment, and
-                        // skip for packed structs.
-                        if (a > 8 && !(a & (a - 1))) {
-                            int64_t mask = a - 1;
-                            Node *padded = new_binary(ND_ADD, full_sz, new_num(mask, tok), tok);
-                            check_type(padded);
-                            Node *mask_n = new_num(~mask, tok);
-                            check_type(mask_n);
-                            full_sz = new_binary(ND_BITAND, padded, mask_n, tok);
-                            check_type(full_sz);
+                    } else {
+                        // A previous member had a variable size, so this member's
+                        // offset is itself a runtime expression.
+                        Node *aligned_off = vla_align_to_runtime(vla_off_acc, a, tok);
+                        Node *off_cap = vla_capture(aligned_off, tok);
+                        mem->offset = 0;
+                        mem->offset_expr = off_cap;
+                        Node *sz_expr;
+                        if (mem_is_vla) {
+                            Node *base_sz_n = new_num(mem_ty->base->size, tok);
+                            check_type(base_sz_n);
+                            sz_expr = new_binary(ND_MUL, mem_ty->vla_len_expr, base_sz_n, tok);
+                            check_type(sz_expr);
+                        } else {
+                            sz_expr = new_num(mem_ty->size, tok);
+                            check_type(sz_expr);
                         }
-                        // Create hidden lvar to freeze the size at struct definition time
-                        LVar *cap = new_var("", ty_long, true);
-                        Node *cap_node = new_var_node(cap, tok);
-                        Node *assign = new_binary(ND_ASSIGN, cap_node, full_sz, tok);
-                        check_type(assign);
-                        pending_vla_struct_capture = new_unary(ND_EXPR_STMT, assign, tok);
-                        // sizeof(struct s) now reads from the frozen capture variable
-                        ty->vla_len_expr = new_var_node(cap, tok);
+                        Node *new_off = new_binary(ND_ADD, new_var_node(off_cap->var, tok), sz_expr, tok);
+                        check_type(new_off);
+                        vla_off_acc = vla_capture(new_off, tok);
                     }
-                    offset += mem_ty->size;
-                    bit_pos = offset * 8;
                     ms_prev_kind = TY_FUNC;
                     ms_prev_bit_width = 0;
                     if (max_align < a)
@@ -1860,7 +1915,16 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     if (struct_attr_align > final_align)
         final_align = struct_attr_align;
     ty->align = final_align;
-    ty->size = is_union ? align_to(max_size, final_align) : align_to(offset, final_align);
+    if (vla_off_acc) {
+        // VLA-containing struct: the real runtime size lives in vla_len_expr
+        // (used by sizeof and struct-copy codegen). ty->size keeps a fixed
+        // placeholder (matching TY_VLA's) so ABI size-classification (>8,
+        // pass-by-memory) treats it like a large/variable aggregate.
+        ty->vla_len_expr = vla_capture(vla_align_to_runtime(vla_off_acc, final_align, tok), tok);
+        ty->size = 16;
+    } else {
+        ty->size = is_union ? align_to(max_size, final_align) : align_to(offset, final_align);
+    }
     *rest = tok;
     return ty;
 }
@@ -3404,6 +3468,8 @@ static Node *declaration(Token **rest, Token *tok) {
                 // lvar that ty->vla_len_expr references), then allocate the VLA data area.
                 if (pending_vla_struct_capture) {
                     cur = cur->next = pending_vla_struct_capture;
+                    while (cur->next)
+                        cur = cur->next;
                     pending_vla_struct_capture = NULL;
                 }
                 Node *vla_node = new_node(ND_ALLOCA, tok);
@@ -3508,6 +3574,8 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             // Emit VLA-struct size capture before any subsequent n++ can change it
             if (pending_vla_struct_capture) {
                 cur = cur->next = pending_vla_struct_capture;
+                while (cur->next)
+                    cur = cur->next;
                 pending_vla_struct_capture = NULL;
             }
             continue;

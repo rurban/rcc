@@ -1385,7 +1385,7 @@
   pr81588                             PASS
   pr81913                             PASS
   pr82192                             PASS
-  pr82210                             FAIL (runtime)
+  pr82210                             PASS
   pr82387                             PASS
   pr82388                             PASS
   pr82524                             PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1566/1569 passed (99%), 3 failed (0 compile/3 runtime), 102 skipped.
+Torture: 1567/1569 passed (99%), 2 failed (0 compile/2 runtime), 102 skipped.
 
-Runtime failures: pr82210 va-arg-22 va-arg-pack-1
+Runtime failures: va-arg-22 va-arg-pack-1

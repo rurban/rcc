@@ -172,6 +172,10 @@ struct Member {
     Type *ty;
     char *name;
     int offset;
+    // Non-NULL for members that follow a variable-size (VLA) member within a
+    // VLA-containing struct: a runtime expression for this member's byte
+    // offset, evaluated and added to the base address instead of `offset`.
+    Node *offset_expr;
     int bit_width; // 0 = not a bitfield
     int bit_offset; // bit position within the storage unit
     int bf_load_size; // effective R/W size for dense-packed bitfields (0 = use ty->size)
