@@ -22,3 +22,11 @@
 - for the CTFE check, set more pure attributes to known library function calls,
   which are pure in the given arguments. observe the purity of calls in CTFE
 - optional QBE backend for -O2
+- C23 (https://en.cppreference.com/c/compiler_support/23):
+  _BitInt, bool_constant, attributes: [[nodiscard]], [[maybe_unused]], [[deprecated]],
+  [[fallthrough]], [[noreturn]], [[unsequenced]] and [[reproducible]], u8, ckdint,
+  nullptr, static_assert, decimal, #elifde/#elifndef,
+  #warning, #embed, 0b constants, __has_c_attribute, __has_include, constexpr objects,
+  __VA_OPT__, Storage-class specifiers for compound literals, Relaxed requirements for
+  variadic parameter list, auto/__auto_type/typeof, enum > int, digit separators,
+  interchange and extended float types, FENV_ACCESS.
