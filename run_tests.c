@@ -192,6 +192,8 @@ static bool g_no_color = false;
 #define COL_RESET  (g_no_color ? "" : "\033[0m")
 
 static FILE *g_log_fp = NULL;
+static char g_log_final_path[PATH_MAX]; /* final destination after atomic rename */
+static char g_log_tmp_path[PATH_MAX]; /* tmp path currently being written      */
 
 static void print_result(const char *name, const char *col, const char *status) {
     if (col && *col)
@@ -213,6 +215,36 @@ static void logprintf(const char *fmt, ...) {
         vfprintf(g_log_fp, fmt, ap);
         va_end(ap);
     }
+}
+
+static int move_file_atomic(const char *src, const char *dst);
+
+/* Open log to a .tmp file; record final path for close_log(). */
+static void open_log(const char *final_path) {
+    snprintf(g_log_final_path, sizeof(g_log_final_path), "%s", final_path);
+    snprintf(g_log_tmp_path, sizeof(g_log_tmp_path), "%s.tmp", final_path);
+    g_log_fp = fopen(g_log_tmp_path, "wb");
+}
+
+/* Close log and atomically rename tmp→final. */
+static void close_log(void) {
+    if (!g_log_fp) return;
+    fclose(g_log_fp);
+    g_log_fp = NULL;
+    if (g_log_tmp_path[0])
+        move_file_atomic(g_log_tmp_path, g_log_final_path);
+    g_log_tmp_path[0] = g_log_final_path[0] = '\0';
+}
+
+/* Write a .summary atomically via a .tmp sidestep. */
+static void write_summary(const char *path, const char *content) {
+    char tmp[PATH_MAX + 4];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    fputs(content, f);
+    fclose(f);
+    move_file_atomic(tmp, path);
 }
 
 /* ── process execution ───────────────────────────────────────────── */
@@ -1798,12 +1830,14 @@ static void run_one_test(const char *src_path, const char *base,
                     failed++;
                     add_row(base, "MISMATCH", "Output differs");
                     print_change(base, "MISMATCH");
-                    char sp[512];
+                    char sp[512], sp_tmp[516];
                     snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                    FILE *sf = fopen(sp, "wb");
+                    snprintf(sp_tmp, sizeof(sp_tmp), "%s.tmp", sp);
+                    FILE *sf = fopen(sp_tmp, "wb");
                     if (sf) {
                         if (out_buf) fputs(out_buf, sf);
                         fclose(sf);
+                        move_file_atomic(sp_tmp, sp);
                     }
                 }
                 free(on);
@@ -2016,12 +2050,14 @@ static void run_one_test(const char *src_path, const char *base,
                 failed++;
                 add_row(base, "MISMATCH", "Output does not match .expect");
                 print_change(base, "MISMATCH");
-                char sp[512];
+                char sp[512], sp_tmp[516];
                 snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                FILE *sf = fopen(sp, "wb");
+                snprintf(sp_tmp, sizeof(sp_tmp), "%s.tmp", sp);
+                FILE *sf = fopen(sp_tmp, "wb");
                 if (sf) {
                     if (out_buf) fputs(out_buf, sf);
                     fclose(sf);
+                    move_file_atomic(sp_tmp, sp);
                 }
             }
             free(on);
@@ -2316,12 +2352,14 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
                     failed++;
                     add_row(base, "MISMATCH", "Output differs");
                     print_change(base, "MISMATCH");
-                    char sp[512];
+                    char sp[512], sp_tmp[516];
                     snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                    FILE *sf = fopen(sp, "wb");
+                    snprintf(sp_tmp, sizeof(sp_tmp), "%s.tmp", sp);
+                    FILE *sf = fopen(sp_tmp, "wb");
                     if (sf) {
                         if (out_buf) fputs(out_buf, sf);
                         fclose(sf);
+                        move_file_atomic(sp_tmp, sp);
                     }
                 }
                 free(on);
@@ -2415,12 +2453,14 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
                 failed++;
                 add_row(base, "MISMATCH", "Output does not match .expect");
                 print_change(base, "MISMATCH");
-                char sp[512];
+                char sp[512], sp_tmp[516];
                 snprintf(sp, sizeof(sp), "%s/test/%s.out", SCRIPT_DIR, base);
-                FILE *sf = fopen(sp, "wb");
+                snprintf(sp_tmp, sizeof(sp_tmp), "%s.tmp", sp);
+                FILE *sf = fopen(sp_tmp, "wb");
                 if (sf) {
                     if (out_buf) fputs(out_buf, sf);
                     fclose(sf);
+                    move_file_atomic(sp_tmp, sp);
                 }
             }
             free(on);
@@ -2747,13 +2787,11 @@ static void run_unit_tests(void) {
         printf("\nUnit tests: %d/%d passed (%d%%), %s%d failed%s.\n",
                passed, total, pct, red, failed, rst);
 
-        char sp[256];
+        char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-units-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=units\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", total, passed, failed);
-            fclose(sf);
-        }
+        snprintf(sc, sizeof(sc), "SUITE=units\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
+                 total, passed, failed);
+        write_summary(sp, sc);
     }
 }
 
@@ -3061,13 +3099,11 @@ static int run_tcc_suite(void) {
     if (p_src) free((void *)p_src);
 
     if (!only_test) {
-        char sp[256];
+        char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", total, passed, failed);
-            fclose(sf);
-        }
+        snprintf(sc, sizeof(sc), "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
+                 total, passed, failed);
+        write_summary(sp, sc);
     }
 
     if (!only_test) {
@@ -3480,7 +3516,7 @@ static int run_torture_suite(bool summary_only) {
     if (!only_test && !summary_only) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform);
-        g_log_fp = fopen(lp, "wb");
+        open_log(lp);
     }
 
     logprintf("\n%sGCC torture tests%s\n", COL_CYAN, COL_RESET);
@@ -3609,20 +3645,16 @@ static int run_torture_suite(bool summary_only) {
             logprintf("\nRuntime failures: %s\n", g_tort_runtime_errors);
 
         char sp[256];
+        char sc[512];
         snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n",
-                    g_tort_total, g_tort_pass, g_tort_fail_compile + g_tort_fail_runtime,
-                    g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
-            fclose(sf);
-        }
+        snprintf(sc, sizeof(sc),
+                 "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n",
+                 g_tort_total, g_tort_pass, g_tort_fail_compile + g_tort_fail_runtime,
+                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
+        write_summary(sp, sc);
     }
 
-    if (g_log_fp) {
-        fclose(g_log_fp);
-        g_log_fp = NULL;
-    }
+    close_log();
     return fail > max_fail ? 1 : 0;
 }
 
@@ -3970,13 +4002,11 @@ static int run_compliance_suite(void) {
         if (comp_skip) printf(", %d skipped", comp_skip);
         printf(".\n");
 
-        char sp[256];
+        char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-compliance-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n", comp_total, comp_pass, comp_fail);
-            fclose(sf);
-        }
+        snprintf(sc, sizeof(sc), "SUITE=compliance\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
+                 comp_total, comp_pass, comp_fail);
+        write_summary(sp, sc);
     }
     return comp_fail > 0 ? 1 : 0;
 }
@@ -4193,7 +4223,7 @@ static int run_ctest_suite(void) {
     if (!only_test) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/ctest_report_%s.log", SCRIPT_DIR, platform);
-        g_log_fp = fopen(lp, "wb");
+        open_log(lp);
     }
 
     logprintf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
@@ -4212,10 +4242,7 @@ static int run_ctest_suite(void) {
         char **files = list_c_files_sorted(src_dir);
         if (!files) {
             printf("  No c-testsuite tests found\n");
-            if (g_log_fp) {
-                fclose(g_log_fp);
-                g_log_fp = NULL;
-            }
+            close_log();
             return 0;
         }
 
@@ -4331,19 +4358,13 @@ static int run_ctest_suite(void) {
                     ctest_pass, ctest_total, ctest_pct, ctest_fail2, ctest_skip2);
 
         if (!only_test) {
-            char sp[256];
+            char sp[256], sc[256];
             snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
-            FILE *sf = fopen(sp, "wb");
-            if (sf) {
-                fprintf(sf, "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
-                        ctest_total, ctest_pass, ctest_fail2, ctest_skip2);
-                fclose(sf);
-            }
+            snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
+                     ctest_total, ctest_pass, ctest_fail2, ctest_skip2);
+            write_summary(sp, sc);
         }
-        if (g_log_fp) {
-            fclose(g_log_fp);
-            g_log_fp = NULL;
-        }
+        close_log();
         return ctest_fail2 > 0 ? 1 : 0;
     }
 
@@ -4359,10 +4380,7 @@ static int run_ctest_suite(void) {
 
     if (!fp) {
         fprintf(stderr, "c-testsuite: failed to run\n");
-        if (g_log_fp) {
-            fclose(g_log_fp);
-            g_log_fp = NULL;
-        }
+        close_log();
         return 1;
     }
 
@@ -4413,19 +4431,13 @@ static int run_ctest_suite(void) {
                 ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
 
     if (!only_test) {
-        char sp[256];
+        char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform);
-        FILE *sf = fopen(sp, "wb");
-        if (sf) {
-            fprintf(sf, "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
-                    ctest_total, ctest_pass, ctest_fail, ctest_skip);
-            fclose(sf);
-        }
+        snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
+                 ctest_total, ctest_pass, ctest_fail, ctest_skip);
+        write_summary(sp, sc);
     }
-    if (g_log_fp) {
-        fclose(g_log_fp);
-        g_log_fp = NULL;
-    }
+    close_log();
     return ctest_fail > 0 ? 1 : 0;
 }
 
