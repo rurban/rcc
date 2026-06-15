@@ -2,14 +2,16 @@
 
 **Platform**: Linux ARM64 (aarch64 cross)
 
-Generated: June 14 2026 08:55
+**Compiler**: /home/rurban/Software/rcc/arm64-cross.sh
+
+Generated: June 15 2026 22:17
 
 ## Overall Summary
 
-- **Total**: 2048
-- **Passed**: 1922
-- **Failed**: 24
-- **Overall Pass Rate**: 93%
+- **Total**: 2069
+- **Passed**: 1725
+- **Failed**: 237
+- **Overall Pass Rate**: 83%
 
 ## TCC Compatibility Tests
 
@@ -20,24 +22,31 @@ Generated: June 14 2026 08:55
 
 ## RCC Unit Tests
 
-- **Total**: 37
-- **Passed**: 36
+- **Total**: 43
+- **Passed**: 37
 - **Failed**: 1
-- **Pass Rate**: 97%
+- **Pass Rate**: 86%
 
 ## c-testsuite
 
 - **Total**: 220
-- **Passed**: 220
+- **Passed**: 0
+- **Failed**: 220
+- **Pass Rate**: 0%
+
+## NCC Compliance Tests (vs GCC)
+
+- **Total**: 15
+- **Passed**: 15
 - **Failed**: 0
 - **Pass Rate**: 100%
 
 ## GCC Torture Tests
 
 - **Total**: 1671
-- **Passed**: 1546
-- **Failed**: 23
+- **Passed**: 1553
+- **Failed**: 16
 - **Skipped**: 102
-- **Fail Compile**: 5
-- **Fail Runtime**: 18
+- **Fail Compile**: 2
+- **Fail Runtime**: 14
 - **Pass Rate (excl. skip)**: 98%

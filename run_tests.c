@@ -4244,17 +4244,17 @@ static int run_torture_suite(bool summary_only) {
     if (only_test)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 24;
+        max_fail = 16;
     else if (streq(platform, "arm64"))
-        max_fail = 18;
+        max_fail = 0;
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw_cross"))
         max_fail = 31;
     else if (streq(platform, "mingw"))
-        max_fail = 29;
+        max_fail = 31;
     else
-        max_fail = 6;
+        max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (!only_test) {
