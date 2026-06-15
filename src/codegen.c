@@ -5586,14 +5586,18 @@ static int gen(Node *node) {
             int src;
             if (node->rhs->kind == ND_FUNCALL && node->rhs->ty &&
                 (node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_COMPLEX)) {
+#ifndef ARCH_ARM64
                 int sav = -1;
                 if (dst == 0 || dst == 1) {
                     sav = dst;
                     printf("  movq %s, -%d(%%rbp)\n", reg64[dst], spill_offset(dst));
                 }
+#endif
                 gen_funcall(node->rhs, dst);
+#ifndef ARCH_ARM64
                 if (sav >= 0)
                     printf("  movq -%d(%%rbp), %s\n", spill_offset(sav), reg64[sav]);
+#endif
                 // If the call's complex return type and the destination's
                 // complex type have differently-sized real-floating bases
                 // (e.g. _Complex float -> _Complex double), convert the
