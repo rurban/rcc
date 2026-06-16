@@ -8,6 +8,13 @@
 static FILE *cg_stream;
 uint64_t time_peep_us = 0;
 
+// Inline peephole window state (reset per function body, used during Pass 1)
+static char *peep_w[3];
+static int peep_wn;
+static bool peep_inline_active;
+static void peep_add_line(char *line);
+static void peep_flush(void);
+
 static uint64_t cg_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -32,8 +39,29 @@ static bool cg_discard_result;
 static void cg_emit(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(cg_stream, fmt, ap);
+    if (!peep_inline_active) {
+        vfprintf(cg_stream, fmt, ap);
+        va_end(ap);
+        return;
+    }
+    char buf[1024];
+    vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    char *p = buf;
+    while (*p) {
+        char *nl = strchr(p, '\n');
+        if (nl) {
+            int len = nl - p;
+            char *line = arena_alloc(len + 1);
+            memcpy(line, p, len);
+            line[len] = '\0';
+            peep_add_line(line);
+            p = nl + 1;
+        } else {
+            fputs(p, cg_stream);
+            break;
+        }
+    }
 }
 #define printf(...) cg_emit(__VA_ARGS__)
 
