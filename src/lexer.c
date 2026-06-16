@@ -442,32 +442,55 @@ Token *tokenize(char *filename, char *p) {
             int fkind = 0; // 0=double, 1=float, 2=long double
             bool is_imag = false;
             if (is_float) {
-                for (int pass = 0; pass < 2; pass++) {
-                    if (*p == 'f' || *p == 'F') {
+                // _FloatN suffixes (C23): F32, F64, F128, F32x, F64x (also lowercase)
+                // Must be checked before the plain f/F suffix consumer.
+                if ((*p == 'f' || *p == 'F') && isdigit(p[1])) {
+                    p++; // skip F/f
+                    if (p[0] == '3' && p[1] == '2') {
+                        p += 2;
+                        fkind = (*p == 'x' || *p == 'X') ? (p++, 0) : 1; // F32->float, F32x->double
+                    } else if (p[0] == '6' && p[1] == '4') {
+                        p += 2;
+                        fkind = (*p == 'x' || *p == 'X') ? (p++, 2) : 0; // F64->double, F64x->long double
+                    } else if (p[0] == '1' && p[1] == '2' && p[2] == '8') {
+                        fkind = 2;
+                        p += 3; // F128->long double (correct on ARM64; stub on x86)
+                    } else if (p[0] == '1' && p[1] == '6') {
                         fkind = 1;
-                        p++;
-                    } else if (*p == 'l' || *p == 'L') {
-                        if (is_float) {
-                            fkind = 2;
-                            p++;
-                        } else
-                            break;
-                    } else if (*p == 'i' || *p == 'I') {
+                        p += 2; // F16->float (nearest supported type)
+                    }
+                    if (*p == 'i' || *p == 'I') {
                         is_imag = true;
                         p++;
                     }
-                }
-                // Also handle DD/DF/DL decimal suffixes
-                if (fkind == 0 && !is_imag &&
-                    (*p == 'd' || *p == 'D') &&
-                    (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
-                    if (p[1] == 'd' || p[1] == 'D') fkind = 0;
-                    else if (p[1] == 'f' || p[1] == 'F')
-                        fkind = 1;
-                    else
-                        fkind = 2;
-                    p += 2;
-                }
+                } else {
+                    for (int pass = 0; pass < 2; pass++) {
+                        if (*p == 'f' || *p == 'F') {
+                            fkind = 1;
+                            p++;
+                        } else if (*p == 'l' || *p == 'L') {
+                            if (is_float) {
+                                fkind = 2;
+                                p++;
+                            } else
+                                break;
+                        } else if (*p == 'i' || *p == 'I') {
+                            is_imag = true;
+                            p++;
+                        }
+                    }
+                    // Also handle DD/DF/DL decimal suffixes
+                    if (fkind == 0 && !is_imag &&
+                        (*p == 'd' || *p == 'D') &&
+                        (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
+                        if (p[1] == 'd' || p[1] == 'D') fkind = 0;
+                        else if (p[1] == 'f' || p[1] == 'F')
+                            fkind = 1;
+                        else
+                            fkind = 2;
+                        p += 2;
+                    }
+                } // end else (not _FloatN suffix)
             } else {
                 // Integer suffix (including imaginary i/I extension)
                 while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L')

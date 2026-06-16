@@ -2269,6 +2269,41 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "_Float32")) {
+            is_float = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Float32x")) {
+            is_double = true; // _Float32x >= double width -> double
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Float64")) {
+            is_double = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Float64x")) {
+            is_double = true; // _Float64x >= long double width -> long double
+            long_count = 1;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Float128")) {
+            // ARM64 Linux: long double is true binary128; x86 long double is
+            // 80-bit extended — _Float128 is not supported there
+#if defined(ARCH_ARM64) && !defined(__APPLE__)
+            is_double = true;
+            long_count = 1;
+#else
+            warn_tok(tok, "_Float128 is not supported on this platform, using long double");
+            is_double = true;
+            long_count = 1;
+#endif
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "_Bool")) {
             is_bool = true;
             tok = tok->next;
