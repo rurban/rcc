@@ -256,10 +256,15 @@ if [ -f "$LARGE_SRC" ]; then
 	_label="$1"
 	shift
 	printf "%-30s " "$_label"
-	_cm=$(time_ms "$@" 2>/dev/null) || true
-	printf "%8s ms\n" "${_cm:-FAILED}"
-	if [ -n "$_cm" ]; then
-	    large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm} ms")$nl"
+	_rc=0
+	_cm=$(time_ms "$@" 2>/dev/null) || _rc=$?
+	if [ "$_rc" -ne 0 ]; then
+	    printf "    FAIL\n"
+	else
+	    printf "%8s ms\n" "${_cm:-FAILED}"
+	    if [ -n "$_cm" ]; then
+		large_results="$large_results$(printf '| %-9s | %12s |' "$_label" "${_cm} ms")$nl"
+	    fi
 	fi
     }
 
@@ -270,7 +275,8 @@ if [ -f "$LARGE_SRC" ]; then
 	_compile_large "TCC" "$TCC" -DSQLITE_DISABLE_INTRINSIC -c "$LARGE_SRC" -o /dev/null
     fi
     if [ -n "$SLIMCC" ]; then
-	_compile_large "SLIMCC" "$SLIMCC" -c "$LARGE_SRC" -o /dev/null
+	# SLIMCC lacks __atomic_store_n; expected to FAIL
+	_compile_large "SLIMCC" "$SLIMCC" -DSQLITE_THREADSAFE=0 -D"__atomic_store_n(x,y,z)" -D"__atomic_load_n(x,z)" -c "$LARGE_SRC" -o /dev/null
     fi
     if [ -n "$KEFIR" ]; then
 	_compile_large "KEFIR" "$KEFIR" -c "$LARGE_SRC" -o /dev/null
