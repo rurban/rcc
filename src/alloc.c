@@ -71,11 +71,57 @@ struct InternedStr {
     int len;
 };
 
-#define HASH_SIZE 4096
-static InternedStr *strings[HASH_SIZE];
+// Dynamic hash table: sized per input file by str_intern_resize().
+// Heap-allocated so it doesn't permanently occupy cache during codegen.
+static InternedStr **strings = NULL;
+static uint32_t hash_size = 0;
+
+static void ensure_str_intern_init(void) {
+    if (strings)
+        return;
+    // Small default for early calls (keywords, -D defines) before read_file().
+    hash_size = 256;
+    strings = calloc(hash_size, sizeof(InternedStr *));
+}
+
+// Call after read_file() with strlen(source) before preprocess().
+// Sizes the bucket array for the expected identifier count; rehashes any
+// entries that were added during early init (keywords, -D flags).
+void str_intern_resize(size_t src_bytes) {
+    // Heuristic: ~1 unique identifier per 1000 bytes of source; load factor 0.5
+    // → target = src_bytes / 500
+    uint32_t new_size = 256;
+    size_t target = src_bytes / 500;
+    while (new_size < target && new_size < 65536)
+        new_size <<= 1;
+
+    if (!strings) {
+        hash_size = new_size;
+        strings = calloc(hash_size, sizeof(InternedStr *));
+        return;
+    }
+    if (new_size <= hash_size)
+        return; // already big enough (e.g. second file in multi-file build)
+
+    // Rehash the small initial table into the larger one.
+    InternedStr **ns = calloc(new_size, sizeof(InternedStr *));
+    for (uint32_t i = 0; i < hash_size; i++) {
+        for (InternedStr *s = strings[i]; s;) {
+            InternedStr *next = s->next;
+            uint32_t h = hash_str(s->str, s->len) % new_size;
+            s->next = ns[h];
+            ns[h] = s;
+            s = next;
+        }
+    }
+    free(strings);
+    strings = ns;
+    hash_size = new_size;
+}
 
 char *str_intern(const char *start, int len) {
-    uint32_t h = hash_str(start, len) % HASH_SIZE;
+    ensure_str_intern_init();
+    uint32_t h = hash_str(start, len) % hash_size;
 
     for (InternedStr *s = strings[h]; s; s = s->next) {
         if (s->len == len && !memcmp(s->str, start, len))

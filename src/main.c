@@ -372,6 +372,7 @@ int main(int argc, char **argv) {
 
         // Tokenize and Parse
         char *contents = read_file(in_path);
+        str_intern_resize(strlen(contents)); // size hash for this file
 
         // Always preprocess - opt_E just outputs preprocessed result
         uint64_t t0 = opt_time ? now_us() : 0;

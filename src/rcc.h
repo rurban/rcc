@@ -76,6 +76,7 @@ extern int line_num;
 void *arena_alloc(size_t size);
 char *format(char *fmt, ...);
 char *str_intern(const char *start, int len);
+void str_intern_resize(size_t src_bytes); // call after read_file(), before preprocess()
 char *path_basename(char *path);
 
 // Lexer entry point
