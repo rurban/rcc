@@ -534,6 +534,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     if (!r.out) r.out = strdup("");
     else {
         r.out = xrealloc(r.out, r.out_len + 1);
+        r.out[r.out_len] = '\0';
     }
     return r;
 }
@@ -1038,10 +1039,25 @@ static int run_test_inprocess(const char *src_path, const char *name,
         cres = p_rcc_lib_compile_file_ex(lib, src_path, include_dir, extra_link_flags);
     else
         cres = p_rcc_lib_compile_file(lib, src_path);
-    /* Restore stdout */
+    /* Restore stdout fd: rcc_lib internally fclose(stdout) while we
+     * held a dup of fd 1.  dup2 the saved fd back to fd 1, then
+     * freopen reinitializes the FILE* struct.  We must keep saved_stdout
+     * alive through freopen because freopen closes stdout's old fd (fd 1);
+     * afterwards we dup2 saved_stdout back to fd 1 so stdout writes go
+     * to the original destination (pipe, file, or console), never lost
+     * to the Windows console.  On CI where stdout is a pipe, the old
+     * code lost output because freopen("CONOUT$") consumed fd 1 and
+     * the subsequent _dup2 was a no-op (CONOUT$ already got fd 1). */
+    dup2(saved_stdout, STDOUT_FILENO);
+    /* keep saved_stdout alive — needed after freopen to restore fd 1 */
+    if (!freopen("CONOUT$", "w", stdout))
+        freopen("NUL", "w", stdout);
+    /* redirect fd 1 back to the original stdout we saved */
     dup2(saved_stdout, STDOUT_FILENO);
     close(saved_stdout);
-    freopen("CONOUT$", "w", stdout);
+    /* If CONOUT$ opened on a fd other than 1, point stdout's fd at fd 1 */
+    if (_fileno(stdout) >= 0 && _fileno(stdout) != STDOUT_FILENO)
+        _dup2(STDOUT_FILENO, _fileno(stdout));
     if (cres != 0) {
         p_rcc_lib_delete(lib);
         if (chdir_done) chdir(saved_cwd);
@@ -3823,21 +3839,11 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
     }
 
 #ifdef _WIN32
-    /* Fast path: compile+run in-process via rcc_lib.dll.  Native windows
-     * only — under wine (mingw_cross), run_test_inprocess()'s msvcrt
-     * stdio/CRT redirection deadlocks/crashes (see inproc_lock comment). */
-    if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
-        ProcResult rp;
-        if (run_test_inprocess(src_path, name, g_tort_dir, "-lm", NULL, NULL, NULL, &rp, 5) == 0) {
-            r->did_compile = true;
-            r->did_exec = true;
-            r->exec_exit = rp.exit_code;
-            r->exec_out = rp.out;
-            rp.out = NULL;
-            free(content);
-            return;
-        }
-    }
+    /* In-process compilation is fine on Windows, but in-process execution
+     * is NOT: many torture tests call exit(0) which kills run_tests.exe
+     * (no fork() on Windows).  Fall through to the external process path
+     * which compiles to a temp exe and runs it as a separate process. */
+    (void)use_rcc_lib; /* in-process compile still available for non-torture */
 #endif
 
     /* compile */
@@ -4008,26 +4014,10 @@ static void run_torture_test(const char *src, bool summary_only) {
     }
 
 #ifdef _WIN32
-    /* Fast path: compile+run in-process via rcc_lib.dll (avoids per-test
-     * wine fork+exec).  Native windows only — under wine (mingw_cross),
-     * run_test_inprocess()'s msvcrt stdio/CRT redirection deadlocks/crashes
-     * (see inproc_lock comment).  Falls through on failure. */
-    if ((!has_runner || is_mingw_native) && !streq(platform, "mingw_cross")) {
-        ProcResult rp;
-        if (run_test_inprocess(src, name, ".", "-lm", NULL, NULL, NULL, &rp, 5) == 0) {
-            if (rp.exit_code != 0) {
-                g_tort_fail_runtime++;
-                tort_add_error(&g_tort_runtime_errors, name);
-                if (!summary_only) print_result(name, COL_RED, "FAIL (runtime)");
-            } else {
-                g_tort_pass++;
-                if (!summary_only) print_result(name, COL_GREEN, "PASS");
-            }
-            free(rp.out);
-            free(content);
-            return;
-        }
-    }
+    /* In-process execution skipped for torture on Windows: many tests
+     * call exit(0) which kills run_tests.exe (no fork() on Windows).
+     * Fall through to the external process path. */
+    (void)use_rcc_lib;
 #endif
 
     char exe_path[512];
@@ -4040,11 +4030,6 @@ static void run_torture_test(const char *src, bool summary_only) {
     ca[ai++] = (char *)rccflags;
     ca[ai++] = "-I";
     ca[ai++] = ".";
-    ca[ai++] = "-o";
-    ca[ai++] = exe_path;
-    ca[ai++] = (char *)src;
-    ca[ai++] = "-lm";
-    ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, 30, 0);
 
