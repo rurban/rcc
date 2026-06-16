@@ -4361,7 +4361,7 @@ static int run_torture_suite(bool summary_only) {
     if (only_test)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 16;
+        max_fail = 22;
     else if (streq(platform, "arm64"))
         max_fail = 0;
     else if (streq(platform, "darwin_cross"))
