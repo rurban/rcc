@@ -17,8 +17,10 @@ struct Chunk {
 static Chunk *current_chunk;
 
 void *arena_alloc(size_t size) {
-    // Align to 8 bytes for performance and struct padding
-    size = (size + 7) & ~7;
+    // Align to 16 bytes: satisfies struct padding and guarantees SIMD
+    // loads (SSE2/NEON 16-byte reads in u8ident_check_ident_align16) never read
+    // past the end of a chunk into unmapped memory.
+    size = (size + 15) & ~15;
 
     if (!current_chunk || current_chunk->used + size > current_chunk->size) {
         size_t chunk_size = 1024 * 1024; // 1MB chunks

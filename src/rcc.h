@@ -527,7 +527,11 @@ uint32_t decode_utf8(char **new_pos, char *p);
 bool is32_ident1(uint32_t c);
 bool is32_ident2(uint32_t c);
 int utf8_len(char *str);
-const char *u8ident_check_ident(const char *name, int len);
+// Check identifier for Unicode script-mixing homoglyph issues (TR39).
+// The SSE2/NEON fast-path reads up to 16 bytes from `name`, potentially
+// past `len` onto the next arena allocation — safe because arena_alloc()
+// rounds every allocation up to 16 bytes and calloc() zeroes the padding.
+const char *u8ident_check_ident_align16(const char *name, int len);
 void u8ident_allow_script(const char *name);
 
 #endif // RCC_H

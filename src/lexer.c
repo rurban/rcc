@@ -562,7 +562,7 @@ Token *tokenize(char *filename, char *p) {
                     cur->name = str_intern(start, p - start);
                 }
                 if (!opt_Wno_homoglyph) {
-                    const char *w = u8ident_check_ident(cur->name, p - start);
+                    const char *w = u8ident_check_ident_align16(cur->name, p - start);
                     if (w)
                         warn_tok(cur, "%s", w);
                 }
@@ -590,7 +590,7 @@ Token *tokenize(char *filename, char *p) {
                     cur->name = str_intern(start, p - start);
                 }
                 if (!opt_Wno_homoglyph) {
-                    const char *w = u8ident_check_ident(cur->name, p - start);
+                    const char *w = u8ident_check_ident_align16(cur->name, p - start);
                     if (w)
                         warn_tok(cur, "%s", w);
                 }

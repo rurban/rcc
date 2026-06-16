@@ -157,7 +157,7 @@ static void pp_warn(char *filename, unsigned line_no, char *fmt, ...) {
 static void pp_check_ident(char *name, int len, char *filename, unsigned line_no) {
     if (opt_Wno_homoglyph)
         return;
-    const char *w = u8ident_check_ident(name, len);
+    const char *w = u8ident_check_ident_align16(name, len);
     if (w)
         pp_warn(filename, line_no, "%s", w);
 }

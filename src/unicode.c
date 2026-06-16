@@ -10,6 +10,11 @@
 #include <inttypes.h>
 #include <assert.h>
 #include <errno.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include "unicode.h"
 
 // ===== Global state =====
@@ -822,7 +827,65 @@ void u8ident_allow_script(const char *name) {
     }
 }
 
-const char *u8ident_check_ident(const char *name, int len) {
+const char *u8ident_check_ident_align16(const char *name, int len) {
+    // Fast path: pure ASCII identifiers are always valid (no homoglyph risk).
+    // Scan using SIMD if available; fall back to scalar.
+    bool has_non_ascii = false;
+#if defined(__SSE2__)
+    {
+        const unsigned char *p = (const unsigned char *)name;
+        int n = len;
+        __m128i hi = _mm_set1_epi8((char)0x80);
+        for (; n >= 16; p += 16, n -= 16) {
+            __m128i v = _mm_loadu_si128((const __m128i *)p);
+            if (_mm_movemask_epi8(_mm_and_si128(v, hi))) {
+                has_non_ascii = true;
+                break;
+            }
+        }
+        if (!has_non_ascii)
+            for (; n > 0; p++, n--)
+                if (*p & 0x80) {
+                    has_non_ascii = true;
+                    break;
+                }
+    }
+#elif defined(__ARM_NEON)
+    {
+        const unsigned char *p = (const unsigned char *)name;
+        int n = len;
+        for (; n >= 16; p += 16, n -= 16) {
+            if (vmaxvq_u8(vld1q_u8(p)) >= 0x80) {
+                has_non_ascii = true;
+                break;
+            }
+        }
+        if (!has_non_ascii)
+            for (; n > 0; p++, n--)
+                if (*p & 0x80) {
+                    has_non_ascii = true;
+                    break;
+                }
+    }
+#else
+    {
+        const unsigned char *p = (const unsigned char *)name;
+        for (int i = 0; i < len; i++)
+            if (p[i] & 0x80) {
+                has_non_ascii = true;
+                break;
+            }
+    }
+#endif
+    if (!has_non_ascii) {
+        // Pure ASCII: register Latin in context so later Cyrillic/etc. triggers
+        // a script-mixing warning, then skip the full scan.
+        ensure_u8ident_init();
+        struct ctx_t *ctx = u8ident_ctx();
+        if (!u8ident_has_script_ctx(SC_Latin, ctx))
+            u8ident_add_script_ctx(SC_Latin, ctx);
+        return NULL;
+    }
     ensure_u8ident_init();
     enum u8id_errors ret = u8ident_check_buf(name, len);
     switch (ret) {
