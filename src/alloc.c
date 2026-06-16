@@ -23,7 +23,7 @@ void *arena_alloc(size_t size) {
     size = (size + 15) & ~15;
 
     if (!current_chunk || current_chunk->used + size > current_chunk->size) {
-        size_t chunk_size = 1024 * 1024; // 1MB chunks
+        size_t chunk_size = 4096 * 1024; // 4MB chunks
         if (size > chunk_size) {
             chunk_size = size;
         }
