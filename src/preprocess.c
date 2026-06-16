@@ -1482,6 +1482,10 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         pack_align = *s - '0';
                         // fprintf(stderr, "DEBUG PP: set pack_align=%d\n", pack_align);
                         sb_puts(&out, format("# pragma pack(%d)\n", pack_align));
+                    } else {
+                        // #pragma pack() with no arg resets to default alignment
+                        pack_align = 0;
+                        sb_puts(&out, "# pragma pack()\n");
                     }
                 } else if (pp_startswith(s, "push_macro")) {
                     s += 10;
