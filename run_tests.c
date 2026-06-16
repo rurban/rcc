@@ -3017,6 +3017,7 @@ static bool is_todo_test(const char *base) {
         "test_bool",
         "test_c23_attributes",
         "test_ckdint",
+        "test_decimal",
         "test_nullptr",
         "test_static_assert",
         NULL};

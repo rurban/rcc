@@ -75,18 +75,17 @@ rcc -O1 -time:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, Decimal, `_Complex`/`__complex__` (scalar arithmetic, conversions, `__real__`/`__imag__`, imaginary literal suffixes `i`/`fi`/`Li`).
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`.
 
 Not yet: C23 (stdbit, stdckdint, bool, [[attribs]], nullptr, `static_assert`),
 trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang
-compile-time warnings, fmv, `__OPTIMIZE__`
+compile-time warnings, fmv, full \_Decimal support (aliased to float)
 
 Unsupported (skipped in torture tests):
 
 - **Nested functions** (GCC extension) — function definitions inside other functions; would require trampolines on stack-executable pages.
 - **Label-address differences in static initializers** (`&&lab1 - &&lab0`) — requires two-symbol ELF relocations not yet emitted.
 - **VLA struct member `offsetof`** — rcc stores VLA array members as fat pointers (size=16, align=8), which gives different member offsets than GCC's flat in-struct layout.
-- **`_Complex` aggregates** — `_Complex`/`__complex__` is supported for scalar locals, parameters and returns, but not yet for struct/union fields, arrays of complex, complex initializers, or the imaginary `iF`/`iL` suffix combinations.
 - `__attribute__((` **scalar_storage_order** `()))`, `__attribute__((` **mode** `()))`
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
@@ -192,11 +191,7 @@ This fork passes now:
 - [112/115 tcc tests](test_report_mingw.md) on windows native via powershell testing. (ps1 test artefacts)
 - The c-testsuite pass 220/220 tests on all platforms.
 - The ncc/compliance tests pass 15/15 tests on all platforms.
-- The old gcc-torture tests pass all on linux, mingw-cross and arm64-cross.
-  On darwin it fails: fprintf-chk-1
-  New gcc torture tests: 1559/1569 pass (99%), 0 compile failures.
-  Runtime failures: 20020411-1 20041201-1 pr38151 pr39228 pr58277-1 pr58277-2
-  pr82210 pr104604 va-arg-22 va-arg-pack-1
+- The gcc-torture tests pass all on linux, darwin, mingw. Some arm64 and mingw cross quirks still.
 
 ## Old Known Limitations
 
