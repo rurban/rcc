@@ -61,6 +61,15 @@
 #include <pthread.h>
 #endif
 
+static void *xrealloc(void *p, size_t sz) {
+    void *tmp = realloc(p, sz);
+    if (!tmp) {
+        perror("realloc");
+        exit(1);
+    }
+    return tmp;
+}
+
 #ifdef _WIN32
 /* sys/utsname.h replacement */
 struct utsname {
@@ -89,6 +98,7 @@ static char *strndup(const char *s, size_t n) {
     return p;
 }
 
+
 static int setenv(const char *name, const char *value, int overwrite) {
     if (!overwrite && getenv(name)) return 0;
     return _putenv_s(name, value);
@@ -111,7 +121,7 @@ static int scandir(const char *dir, struct dirent ***namelist,
         if (filter && !filter(e)) continue;
         if (n == cap) {
             cap = cap ? cap * 2 : 16;
-            list = realloc(list, (size_t)cap * sizeof(*list));
+            list = xrealloc(list, (size_t)cap * sizeof(*list));
         }
         struct dirent *copy = malloc(sizeof(*copy));
         memcpy(copy, e, sizeof(*copy));
@@ -336,7 +346,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
             if (r.out_len + (size_t)n + 1 > cap) {
                 cap = r.out_len + (size_t)n + 8192;
-                r.out = realloc(r.out, cap);
+                r.out = xrealloc(r.out, cap);
             }
             memcpy(r.out + r.out_len, buf, (size_t)n);
             r.out_len += (size_t)n;
@@ -349,7 +359,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
             if (r.out_len + (size_t)n + 1 > cap) {
                 cap = r.out_len + (size_t)n + 8192;
-                r.out = realloc(r.out, cap);
+                r.out = xrealloc(r.out, cap);
             }
             memcpy(r.out + r.out_len, buf, (size_t)n);
             r.out_len += (size_t)n;
@@ -382,7 +392,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
 
     if (!r.out) r.out = strdup("");
     else {
-        r.out = realloc(r.out, r.out_len + 1);
+        r.out = xrealloc(r.out, r.out_len + 1);
         r.out[r.out_len] = '\0';
     }
     return r;
@@ -444,7 +454,7 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
     while (ReadFile(ctx->pipe, buf, sizeof(buf), &n, NULL) && n > 0) {
         if (ctx->out_len + n + 1 > ctx->cap) {
             ctx->cap = ctx->out_len + n + 8192;
-            ctx->out = realloc(ctx->out, ctx->cap);
+            ctx->out = xrealloc(ctx->out, ctx->cap);
         }
         memcpy(ctx->out + ctx->out_len, buf, n);
         ctx->out_len += n;
@@ -523,8 +533,7 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     r.out_len = ctx.out_len;
     if (!r.out) r.out = strdup("");
     else {
-        r.out = realloc(r.out, r.out_len + 1);
-        r.out[r.out_len] = '\0';
+        r.out = xrealloc(r.out, r.out_len + 1);
     }
     return r;
 }
@@ -688,7 +697,7 @@ static char *strappend(char *buf, size_t *len, size_t *cap, const char *fmt, ...
     size_t n = (size_t)need;
     if (*len + n + 1 > *cap) {
         *cap = *len + n + 4096;
-        buf = realloc(buf, *cap);
+        buf = xrealloc(buf, *cap);
     }
     va_start(ap, fmt);
     vsnprintf(buf + *len, n + 1, fmt, ap);
@@ -919,7 +928,7 @@ static bool try_run_exe_inprocess(const char *exe_path, ProcResult *pr,
     while (ReadFile(out_read, buf, sizeof(buf), &n, NULL) && n > 0) {
         if (len + n + 1 > cap) {
             cap = len + n + 8192;
-            out = realloc(out, cap);
+            out = xrealloc(out, cap);
         }
         memcpy(out + len, buf, n);
         len += n;
@@ -928,7 +937,7 @@ static bool try_run_exe_inprocess(const char *exe_path, ProcResult *pr,
     while (ReadFile(err_read, buf, sizeof(buf), &n, NULL) && n > 0) {
         if (len + n + 1 > cap) {
             cap = len + n + 8192;
-            out = realloc(out, cap);
+            out = xrealloc(out, cap);
         }
         memcpy(out + len, buf, n);
         len += n;
@@ -1090,7 +1099,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     while (ReadFile(out_r, buf, sizeof(buf), &n, NULL) && n > 0) {
         if (len + n + 1 > cap) {
             cap = len + n + 8192;
-            out = realloc(out, cap);
+            out = xrealloc(out, cap);
         }
         memcpy(out + len, buf, n);
         len += n;
@@ -1320,7 +1329,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
         if (len + (size_t)n + 1 > cap) {
             cap = len + (size_t)n + 8192;
-            out = realloc(out, cap);
+            out = xrealloc(out, cap);
         }
         memcpy(out + len, buf, (size_t)n);
         len += (size_t)n;
@@ -1574,13 +1583,7 @@ static char **extract_dt_tests(const char *src_path) {
                 if (!dup) {
                     if (ncount >= ncap) {
                         ncap = ncap ? ncap * 2 : 16;
-                        char **tmp = realloc(names, (size_t)ncap * sizeof(char *));
-                        if (!tmp) {
-                            fprintf(stderr, "realloc: %s\n", strerror(errno));
-                            free(names);
-                            return NULL;
-                        }
-                        names = tmp;
+                        names = xrealloc(names, (size_t)ncap * sizeof(char *));
                     }
                     names[ncount++] = strndup(start, len);
                 }
@@ -1593,13 +1596,7 @@ static char **extract_dt_tests(const char *src_path) {
         free(names);
         return NULL;
     }
-    char **tmp = realloc(names, (size_t)(ncount + 1) * sizeof(char *));
-    if (!tmp) {
-        fprintf(stderr, "realloc: %s\n", strerror(errno));
-        free(names);
-        return NULL;
-    }
-    names = tmp;
+    names = xrealloc(names, (size_t)(ncount + 1) * sizeof(char *));
     names[ncount] = NULL;
     return names;
 }
@@ -1978,12 +1975,7 @@ static int nrows, rows_cap;
 static void add_row(const char *name, const char *status, const char *message) {
     if (nrows >= rows_cap) {
         rows_cap = rows_cap ? rows_cap * 2 : 256;
-        ReportRow *tmp = realloc(report_rows, (size_t)rows_cap * sizeof(ReportRow));
-        if (!tmp) {
-            fprintf(stderr, "realloc: %s\n", strerror(errno));
-            return;
-        }
-        report_rows = tmp;
+        report_rows = xrealloc(report_rows, (size_t)rows_cap * sizeof(ReportRow));
     }
     report_rows[nrows++] = (ReportRow){strdup(name), strdup(status), strdup(message)};
 }
@@ -2019,12 +2011,7 @@ static void load_old_states(const char *report_file) {
             while (se > ss && se[-1] == ' ') se--;
             *se = '\0';
             if (*ns && *ss) {
-                OldState *tmp = realloc(old_states, (size_t)(nold + 1) * sizeof(OldState));
-                if (!tmp) {
-                    fprintf(stderr, "realloc: %s\n", strerror(errno));
-                    break;
-                }
-                old_states = tmp;
+                old_states = xrealloc(old_states, (size_t)(nold + 1) * sizeof(OldState));
                 old_states[nold].name = strdup(ns);
                 old_states[nold].status = strdup(ss);
                 nold++;
@@ -3203,12 +3190,7 @@ static void run_unit_tests(void) {
             }
             if (n_tests >= n_alloc) {
                 n_alloc = n_alloc ? n_alloc * 2 : 16;
-                void *tmp = realloc(entries, (size_t)n_alloc * sizeof(*entries));
-                if (!tmp) {
-                    perror("realloc");
-                    exit(1);
-                }
-                entries = tmp;
+                entries = xrealloc(entries, (size_t)n_alloc * sizeof(*entries));
             }
             entries[n_tests].fname = nl[i]->d_name;
             strncpy(entries[n_tests].base, base, sizeof(entries[n_tests].base) - 1);
@@ -3815,7 +3797,7 @@ static void tort_add_error(char **list, const char *name) {
         return;
     }
     size_t need = strlen(*list) + 1 + strlen(name) + 1;
-    *list = realloc(*list, need);
+    *list = xrealloc(*list, need);
     strcat(*list, " ");
     strcat(*list, name);
 }
@@ -4250,9 +4232,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 27;
+        max_fail = 1;
     else if (streq(platform, "mingw"))
-        max_fail = 31;
+        max_fail = 1;
     else
         max_fail = 0;
 
@@ -4487,12 +4469,7 @@ static int run_compliance_suite(void) {
                 continue;
             if (n_tests >= n_alloc) {
                 n_alloc = n_alloc ? n_alloc * 2 : 16;
-                void *tmp = realloc(entries, (size_t)n_alloc * sizeof(*entries));
-                if (!tmp) {
-                    perror("realloc");
-                    exit(1);
-                }
-                entries = tmp;
+                entries = xrealloc(entries, (size_t)n_alloc * sizeof(*entries));
             }
             entries[n_tests].fname = nl[i]->d_name;
             strncpy(entries[n_tests].base, base, sizeof(entries[n_tests].base) - 1);
