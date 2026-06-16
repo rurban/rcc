@@ -53,7 +53,7 @@ rcc -O1 -time:
 
 - **Register-machine codegen** — 8-register allocator on x86-64 (r10, r11, rbx, r12–r15, rsi), 12-register on ARM64 (x10–x15, x19–x24) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the predefined spill slots. If all registers are in use, it spills the additional registers on the stack. Currently with a spill warning on -W.
 - **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
-- **Peephole optimizer** — Multi-pass assembly optimizer with:
+- **Peephole optimizer** — Integrated single-pass assembly optimizer with:
   - Copy propagation (`mov r10, rax; mov [mem], r10` → `mov [mem], rax`)
   - Store-load forwarding (`mov [rbp-N], rcx; mov r10d, [rbp-N]` → `mov r10d, ecx`)
   - Immediate folding (`mov r11d, 1; cmp r10d, r11d` → `cmp r10d, 1`)
@@ -134,7 +134,7 @@ compiler and tests, it is much faster now.
     -c                 compile-only
     -o file            set output filename
     -O0                disable peephole optimizer
-    -O1                enable peephole + CTFE optimizations
+    -O1                enable CTFE optimizations
     -g                 emit DWARF line-number debug info
     -W                 print diagnostic warnings (stack spilling)
     -Werror            error on all warnings (but not internal spill to check warnings)

@@ -7,6 +7,7 @@
 
 static FILE *cg_stream;
 uint64_t time_peep_us = 0;
+uint64_t peep_ncalls = 0;
 
 // Inline peephole window state (reset per function body, used during Pass 1)
 static char *peep_w[3];
@@ -15,11 +16,6 @@ static bool peep_inline_active;
 static void peep_add_line(char *line);
 static void peep_flush(void);
 
-static uint64_t cg_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
-}
 static Function *current_fn_def;
 static TLItem *all_items;
 static StrLit *all_strs;
@@ -2993,12 +2989,10 @@ static int phys_reg_id(const char *s) {
     return -1;
 }
 
-#ifndef ARCH_ARM64
 static int same_phys(const char *a, const char *b) {
     int ia = phys_reg_id(a), ib = phys_reg_id(b);
     return ia >= 0 && ia == ib;
 }
-#endif
 
 static int add_float_literal(double val, int size) {
     FloatLit *fl = arena_alloc(sizeof(FloatLit));
@@ -3806,6 +3800,16 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
             continue;
         }
 
+        // Check if this is a label (ends with ':'), skip the whole token
+        {
+            const char *q = p;
+            while (*q && *q != ' ' && *q != '\t' && *q != ';' && *q != '\n') q++;
+            if (q > p && *(q - 1) == ':') {
+                p = q;
+                while (*p && *p != ';' && *p != '\n') p++;
+                continue;
+            }
+        }
         // Extract mnemonic (first word)
         char mnem[64];
         int mlen = 0;
@@ -7834,18 +7838,34 @@ static int gen(Node *node) {
 #endif
             }
         }
-        if (node->default_case) {
-            if (!node->default_case->label_id)
-                node->default_case->label_id = ++rcc_label_count;
+        {
+            // When the default case body is just "break;" (or empty),
+            // redirect the default jump directly to .L.end.N so the
+            // intermediate label does not separate the break branch from
+            // its target in the peephole window.
+            Node *def = node->default_case;
+            bool def_empty = false;
+            if (def) {
+                Node *lhs = def->lhs;
+                if (!lhs || lhs->kind == ND_NULL)
+                    def_empty = true;
+                else if (lhs->kind == ND_BREAK && !lhs->next &&
+                         lhs->cleanup_begin == lhs->cleanup_end)
+                    def_empty = true;
+            }
+            if (def && !def_empty) {
+                if (!def->label_id)
+                    def->label_id = ++rcc_label_count;
 #ifdef ARCH_ARM64
-            printf("  b .L.case.%d\n", node->default_case->label_id);
-        } else {
-            printf("  b .L.end.%d\n", c);
+                printf("  b .L.case.%d\n", def->label_id);
+            } else {
+                printf("  b .L.end.%d\n", c);
 #else
-            printf("  jmp .L.case.%d\n", node->default_case->label_id);
-        } else {
-            printf("  jmp .L.end.%d\n", c);
+                printf("  jmp .L.case.%d\n", def->label_id);
+            } else {
+                printf("  jmp .L.end.%d\n", c);
 #endif
+            }
         }
         free_reg(cond);
         break_stack[ctrl_depth] = c;
@@ -7858,6 +7878,14 @@ static int gen(Node *node) {
         return -1;
     }
     case ND_CASE: {
+        // Skip label emission for an empty default case whose jump-table
+        // branch was already redirected to .L.end.N above.
+        if (node->case_val == -1) {
+            Node *lhs = node->lhs;
+            if (!lhs || lhs->kind == ND_NULL ||
+                (lhs->kind == ND_BREAK && !lhs->next && lhs->cleanup_begin == lhs->cleanup_end))
+                return -1;
+        }
         if (!node->label_id)
             node->label_id = ++rcc_label_count;
         printf(".L.case.%d:\n", node->label_id);
@@ -10146,6 +10174,28 @@ static int peep_label(char *line, char *lbl, int lbl_sz) {
     return 1;
 }
 
+#ifdef ARCH_ARM64
+// ARM64 Intel: mov reg, #imm
+static int peep_mov_imm_reg(char *line, char *reg, int reg_sz, long long *imm) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '#') return 0;
+    p++;
+    char *endp;
+    long long v = strtoll(p, &endp, 0);
+    *imm = v;
+    return 1;
+}
+#endif
+
 #ifndef ARCH_ARM64
 static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
     // AT&T: mov[lq] %reg, -N(%rbp)  (store reg to [rbp-N])
@@ -10242,6 +10292,7 @@ static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, long long *imm) {
 }
 #endif
 
+#ifndef ARCH_ARM64
 static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_sz, char *src, int src_sz) {
     if (line[0] != ' ' || line[1] != ' ') return 0;
     char *p = line + 2;
@@ -10263,27 +10314,6 @@ static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_s
     int slen = strlen(p);
     if (slen >= src_sz) return 0;
     memcpy(src, p, slen + 1);
-    return 1;
-}
-#ifndef ARCH_ARM64
-static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int mem_sz) {
-    // AT&T: mov[lq]? mem, %reg  (load from mem into reg)
-    if (strncmp(line, "  mov", 5) != 0) return 0;
-    char *p = line + 5;
-    if (*p == 'l' || *p == 'q') p++;
-    if (*p != ' ') return 0;
-    p++;
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int mlen = comma - p;
-    if (mlen >= mem_sz) return 0;
-    memcpy(mem, p, mlen);
-    mem[mlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    int rlen = strlen(p);
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen + 1);
     return 1;
 }
 #endif
@@ -10340,10 +10370,60 @@ static int peep_arm_ldr_fp(const char *line, char *reg, int reg_sz, int *off) {
 // Match "  b .LABEL" → fill label, return 1
 static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
     if (strncmp(line, "  b .", 5) != 0) return 0;
-    int len = strlen(line + 5);
+    int len = strlen(line + 4);
     if (len >= lbl_sz) return 0;
-    memcpy(lbl, line + 5, len + 1);
+    memcpy(lbl, line + 4, len + 1);
     return 1;
+}
+// Parse ARM64 2-op or 3-op: "  op dst, src1[, src2]"
+// Returns number of operands (2 or 3), fills op, dst, src1, src2.
+// src2_is_imm set to 1 if src2 starts with '#'.
+static int peep_arm64_op(char *line, char *op, int op_sz,
+                         char *dst, int dst_sz,
+                         char *src1, int s1_sz,
+                         char *src2, int s2_sz, int *src2_is_imm) {
+    if (line[0] != ' ' || line[1] != ' ') return 0;
+    char *p = line + 2;
+    char *sp = strchr(p, ' ');
+    if (!sp) return 0;
+    int olen = sp - p;
+    if (olen >= op_sz) return 0;
+    memcpy(op, p, olen);
+    op[olen] = '\0';
+    p = sp + 1;
+    // First operand: dst
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int dlen = comma - p;
+    if (dlen >= dst_sz) return 0;
+    memcpy(dst, p, dlen);
+    dst[dlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    // Second operand: src1
+    comma = strchr(p, ',');
+    if (comma) {
+        // 3-operand form
+        int s1len = comma - p;
+        if (s1len >= s1_sz) return 0;
+        memcpy(src1, p, s1len);
+        src1[s1len] = '\0';
+        p = comma + 1;
+        while (*p == ' ' || *p == '\t') p++;
+        int s2len = strlen(p);
+        if (s2len >= s2_sz) return 0;
+        memcpy(src2, p, s2len + 1);
+        *src2_is_imm = (p[0] == '#');
+        return 3;
+    } else {
+        // 2-operand form (e.g. cmp)
+        int s1len = strlen(p);
+        if (s1len >= s1_sz) return 0;
+        memcpy(src1, p, s1len + 1);
+        src2[0] = '\0';
+        *src2_is_imm = 0;
+        return 2;
+    }
 }
 #endif
 
@@ -10419,11 +10499,32 @@ static int peep_pattern4(char **lines, int li, int lj) {
     char rd[32];
     long long imm_val;
 #ifdef ARCH_ARM64
-    (void)li;
-    (void)lj;
     if (sscanf(lines[li], " mov %31s, #%lld", rd, &imm_val) != 2) return 0;
-    // We'd need peep_op to match arm64 3-op; skip for now
-    return 0;
+    if (!is_reg(rd)) return 0;
+    char op[16], dst[32], src1[32], src2[32];
+    int src2_is_imm;
+    int nops = peep_arm64_op(lines[lj], op, sizeof(op), dst, sizeof(dst),
+                             src1, sizeof(src1), src2, sizeof(src2), &src2_is_imm);
+    if (nops < 2) return 0;
+    // Only fold arithmetic/logical ops that accept immediates
+    bool is_add = !strcmp(op, "add"), is_sub = !strcmp(op, "sub");
+    bool is_and = !strcmp(op, "and"), is_orr = !strcmp(op, "orr"), is_eor = !strcmp(op, "eor");
+    if (!(is_add || is_sub || is_and || is_orr || is_eor)) return 0;
+    // Fold when REG is used as src2 or (for commutative ops) src1
+    const char *other = NULL;
+    if (nops == 3 && !strcmp(src2, rd)) {
+        other = src1;
+    } else if (nops == 3 && !strcmp(src1, rd) && (is_add || is_orr || is_eor || is_and)) {
+        other = src2;
+    }
+    if (!other) return 0;
+    // Eliminate nop: add/sub/orr/eor with 0, and with -1
+    if (imm_val == 0 && (is_add || is_sub || is_orr || is_eor)) {
+        lines[lj][0] = '\0';
+    } else {
+        lines[lj] = format("  %s %s, %s, #%lld", op, dst, other, imm_val);
+    }
+    return 1;
 #else
     if (!peep_mov_reg_imm(lines[li], rd, sizeof(rd), &imm_val) || !is_reg(rd))
         return 0;
@@ -10456,7 +10557,32 @@ static int peep_pattern4(char **lines, int li, int lj) {
     return 0;
 }
 
-// Scan up to 30 lines of remaining body text (newlines still intact) for pid use.
+// old peep on full buffers. unused
+#if 0
+// === Post-processing peephole (kept for reference / regression testing) ===
+// Pattern 5 and helpers (peep_mov_reg_mem, reg_live_in_text) are here because Pattern 5
+// requires liveness analysis of remaining body text — only viable in post-processing mode.
+#ifndef ARCH_ARM64
+static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int mem_sz) {
+    if (strncmp(line, "  mov", 5) != 0) return 0;
+    char *p = line + 5;
+    if (*p == 'l' || *p == 'q') p++;
+    if (*p != ' ') return 0;
+    p++;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int mlen = comma - p;
+    if (mlen >= mem_sz) return 0;
+    memcpy(mem, p, mlen);
+    mem[mlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int rlen = strlen(p);
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen + 1);
+    return 1;
+}
+#endif
 static int reg_live_in_text(const char *text, int pid) {
     const char *variants[6] = {NULL};
     int nv = 0;
@@ -10468,34 +10594,21 @@ static int reg_live_in_text(const char *text, int pid) {
         }
     }
 #ifndef ARCH_ARM64
-    if (pid == 0) {
-        variants[nv++] = "%rax";
-        variants[nv++] = "%eax";
-        variants[nv++] = "%al";
-    } else if (pid == 1) {
-        variants[nv++] = "%rcx";
-        variants[nv++] = "%ecx";
-        variants[nv++] = "%cl";
-    } else if (pid == 2) {
-        variants[nv++] = "%rdx";
-        variants[nv++] = "%edx";
-    } else if (pid == 3) {
-        variants[nv++] = "%rbx";
-        variants[nv++] = "%ebx";
-        variants[nv++] = "%bl";
-    }
+    if (pid == 0) { variants[nv++] = "%rax"; variants[nv++] = "%eax"; variants[nv++] = "%al"; }
+    else if (pid == 1) { variants[nv++] = "%rcx"; variants[nv++] = "%ecx"; variants[nv++] = "%cl"; }
+    else if (pid == 2) { variants[nv++] = "%rdx"; variants[nv++] = "%edx"; }
+    else if (pid == 3) { variants[nv++] = "%rbx"; variants[nv++] = "%ebx"; variants[nv++] = "%bl"; }
 #endif
     const char *p = text;
     for (int cnt = 0; cnt < 30 && *p; cnt++) {
         const char *nl = strchr(p, '\n');
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
         if (len > 0) {
-            if (*p != ' ') return 1; // label = block boundary, conservatively live
+            if (*p != ' ') return 1;
             for (int vi = 0; vi < nv && variants[vi]; vi++) {
                 size_t vlen = strlen(variants[vi]);
-                for (size_t i = 0; i + vlen <= len; i++) {
+                for (size_t i = 0; i + vlen <= len; i++)
                     if (memcmp(p + i, variants[vi], vlen) == 0) return 1;
-                }
             }
         }
         p = nl ? nl + 1 : p + len;
@@ -10503,9 +10616,6 @@ static int reg_live_in_text(const char *text, int pid) {
     }
     return 0;
 }
-
-// Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
-// rest: unprocessed body text after the window (newlines still intact) for liveness scan
 static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest) {
     char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
 #ifndef ARCH_ARM64
@@ -10547,6 +10657,19 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
             while (*val == ' ') val++;
         } else
             val = imm2;
+        // If val's physical register is the same as d3, the substitution
+        // "ldr d3, [mem]" clobbers d3 before OP can read it as the third
+        // source operand.  E.g. ldr x12,[base]; add x12,x12,x11; mov x11,x12
+        // must NOT become ldr x11,[base]; add x11,x11,x11.
+        {
+            char val_reg[32];
+            const char *vp = val;
+            int vi = 0;
+            while (vi < 31 && *vp && *vp != ',' && *vp != ' ') val_reg[vi++] = *vp++;
+            val_reg[vi] = '\0';
+            if (phys_reg_id(val_reg) >= 0 && phys_reg_id(val_reg) == phys_reg_id(d3))
+                return 0;
+        }
         lines[li] = format("  ldr %s, %s", d3, mem1);
         lines[lj] = format("  %s %s, %s, %s", op2, d3, d3, val);
         lines[lk][0] = '\0';
@@ -10555,7 +10678,7 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
 #endif
     return 0;
 }
-
+// unused
 static void emit_peephole_body(char *body_text) {
     if (opt_O0) {
         fputs(body_text, stdout);
@@ -10614,10 +10737,22 @@ static void emit_peephole_body(char *body_text) {
                 // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST
                 {
                     char d1[80], s1[80], d2[80], s2[80];
+                    long long imm;
                     if (peep_mov_reg_reg(w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
                         peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
                         !strcmp(d2, s1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                        // same on x86 and arm
                         w[jj] = format("  mov %s, %s", d1, s2);
+                        // Conservative: skip dead-predecessor deletion without full forward scan
+                        any = true;
+                        break;
+                    }
+                    // Pattern 1a: mov $SRC, REG; mov REG, DST -> mov $SRC, DST
+                    if (peep_mov_reg_imm(w[ii], d1, sizeof(d1), &imm) &&
+                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        !strcmp(s2, d1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s2) && is_reg(d2)) {
+                        // same on x86 and arm
+                        w[jj] = format("  mov $%lld, %s", imm, s2);
                         // Conservative: skip dead-predecessor deletion without full forward scan
                         any = true;
                         break;
@@ -10646,6 +10781,366 @@ static void emit_peephole_body(char *body_text) {
             }
         } while (any);
     }
+}
+#endif
+
+// === Inline peephole window (runs during Pass 1 body generation) ===
+
+static void peep_commit_line(const char *line) {
+    if (line && line[0])
+        fprintf(cg_stream, "%s\n", line);
+}
+
+#ifndef ARCH_ARM64
+// AT&T: mov[lq]? mem, reg  (load: mem is token1/first operand, reg is token2/second)
+static int peep_mov_x_reg(char *line, char *mem, int mem_sz, char *reg, int reg_sz) {
+    if (strncmp(line, "  mov", 5) != 0) return 0;
+    char *p = line + 5;
+    if (*p == 'l' || *p == 'q') p++;
+    if (*p != ' ') return 0;
+    p++;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int mlen = comma - p;
+    if (mlen >= mem_sz) return 0;
+    memcpy(mem, p, mlen);
+    mem[mlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int rlen = strlen(p);
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen + 1);
+    return 1;
+}
+#endif
+
+// === Pattern 5 (deferred liveness) ===
+//   x86:   mov mem,R ; OP other,R (R modified in place) ; mov R,dst
+//          -> mov mem,dst ; OP other,dst
+//   ARM64: ldr R,[mem] ; OP R,R,#imm ; mov dst,R
+//          -> ldr dst,[mem] ; OP dst,dst,#imm
+// Whether R is dead after the 3rd line can't be known from the inline
+// 3-line window alone (later lines haven't been emitted yet). A shape
+// match therefore doesn't rewrite immediately: the candidate is stashed
+// here and fed subsequent lines (peep_p5_feed) until R's liveness
+// resolves -- by a label/use of R (peep_p5_abort, replay verbatim), a
+// bounded lookahead with no sign of R (peep_p5_confirm, heuristically
+// dead), or end of function body (peep_p5_confirm, provably dead since
+// no more code can read R).
+static bool peep_p5_pending;
+static int peep_p5_pid;
+static char *peep_p5_li, *peep_p5_lj, *peep_p5_lk;
+static char *peep_p5_mem, *peep_p5_dst, *peep_p5_op, *peep_p5_rhs;
+static char **peep_p5_buf;
+static int peep_p5_bufn, peep_p5_bufcap;
+#define PEEP_P5_MAX_LOOKAHEAD 30
+
+static int peep_pattern5_detect(char *li, char *lj, char *lk) {
+    char r1[32], mem1[128];
+#ifndef ARCH_ARM64
+    char op2[16], other[64], acc[64], msrc[32], mdst[32];
+    if (!peep_mov_x_reg(li, mem1, sizeof(mem1), r1, sizeof(r1))) return 0;
+    if (is_reg(mem1) || !is_reg(r1)) return 0;
+    if (!peep_op_reg_reg(lj, op2, sizeof(op2), other, sizeof(other), acc, sizeof(acc))) return 0;
+    if (!same_phys(acc, r1)) return 0;
+    if (!peep_mov_reg_reg(lk, msrc, sizeof(msrc), mdst, sizeof(mdst))) return 0;
+    if (!same_phys(msrc, r1) || !is_reg(mdst)) return 0;
+    if (is_reg(other) && same_phys(other, mdst)) return 0; // would clobber dst before OP reads it
+    int pid = phys_reg_id(r1);
+    if (pid < 0) return 0;
+    peep_p5_pid = pid;
+    peep_p5_mem = format("%s", mem1);
+    peep_p5_dst = format("%s", mdst);
+    peep_p5_op = format("%s", op2);
+    peep_p5_rhs = format("%s", other);
+#else
+    char op2[16], dst2[32], src1_2[32], src2_2[64], mdst[32], msrc[32];
+    int src2_is_imm;
+    if (strncmp(li, "  ldr ", 6) != 0) return 0; // fast bail before the sscanf below
+    if (sscanf(li, " ldr %31[^,], %127[^\n]", r1, mem1) != 2) return 0;
+    int nops = peep_arm64_op(lj, op2, sizeof(op2), dst2, sizeof(dst2),
+                             src1_2, sizeof(src1_2), src2_2, sizeof(src2_2), &src2_is_imm);
+    if (nops != 3 || !src2_is_imm) return 0;
+    if (!same_phys(dst2, r1) || !same_phys(src1_2, r1)) return 0;
+    if (!peep_mov_reg_reg(lk, mdst, sizeof(mdst), msrc, sizeof(msrc))) return 0;
+    if (!same_phys(msrc, r1) || !is_reg(mdst)) return 0;
+    int pid = phys_reg_id(r1);
+    if (pid < 0) return 0;
+    peep_p5_pid = pid;
+    peep_p5_mem = format("%s", mem1);
+    // Preserve the register width from the ldr source (w vs x),
+    // otherwise a 32-bit ldr wN combined with a mov xM, xN produces
+    // a 64-bit load from a 32-bit stack slot → garbage upper bits.
+    peep_p5_dst = format("%c%s", r1[0], mdst + 1);
+    peep_p5_op = format("%s", op2);
+    peep_p5_rhs = format("%s", src2_2);
+#endif
+    return 1;
+}
+
+// Returns 1 if `line` is a label/directive (control-flow boundary, can't
+// reason past it) or textually mentions physical register `pid`.
+static int peep_p5_blocks(const char *line, int pid) {
+    if (line[0] == '\0') return 0;
+    if (line[0] != ' ' || line[1] != ' ') return 1;
+    const char *variants[16] = {NULL};
+    int nv = 0;
+    for (int vi = 0; vi < NUM_REGS; vi++) {
+        if (phys_reg_id(reg64[vi]) == pid) {
+            variants[nv++] = reg64[vi];
+            variants[nv++] = reg32[vi];
+            variants[nv++] = reg16[vi];
+            variants[nv++] = reg8[vi];
+            break;
+        }
+    }
+#ifndef ARCH_ARM64
+    if (pid == 0) {
+        variants[nv++] = "%rax";
+        variants[nv++] = "%eax";
+        variants[nv++] = "%ax";
+        variants[nv++] = "%al";
+    } else if (pid == 1) {
+        variants[nv++] = "%rcx";
+        variants[nv++] = "%ecx";
+        variants[nv++] = "%cx";
+        variants[nv++] = "%cl";
+    } else if (pid == 2) {
+        variants[nv++] = "%rdx";
+        variants[nv++] = "%edx";
+        variants[nv++] = "%dx";
+    } else if (pid == 3) {
+        variants[nv++] = "%rbx";
+        variants[nv++] = "%ebx";
+        variants[nv++] = "%bx";
+        variants[nv++] = "%bl";
+    } else if (pid == 6) {
+        variants[nv++] = "%rsi";
+        variants[nv++] = "%esi";
+        variants[nv++] = "%si";
+        variants[nv++] = "%sil";
+    } else if (pid == 7) {
+        variants[nv++] = "%rdi";
+        variants[nv++] = "%edi";
+        variants[nv++] = "%di";
+        variants[nv++] = "%dil";
+    } else if (pid == 8) {
+        variants[nv++] = "%r8";
+        variants[nv++] = "%r8d";
+        variants[nv++] = "%r8w";
+        variants[nv++] = "%r8b";
+    } else if (pid == 9) {
+        variants[nv++] = "%r9";
+        variants[nv++] = "%r9d";
+        variants[nv++] = "%r9w";
+        variants[nv++] = "%r9b";
+    }
+#endif
+    size_t len = strlen(line);
+    for (int vi = 0; vi < nv && variants[vi]; vi++) {
+        size_t vlen = strlen(variants[vi]);
+        for (size_t i = 0; i + vlen <= len; i++)
+            if (memcmp(line + i, variants[vi], vlen) == 0) return 1;
+    }
+    return 0;
+}
+
+// R proved live (or a block boundary was hit): replay everything seen so
+// far verbatim, unmodified -- no worse than Pattern 5 not having matched.
+static void peep_p5_abort(void) {
+    peep_p5_pending = false;
+    peep_commit_line(peep_p5_li);
+    peep_commit_line(peep_p5_lj);
+    peep_commit_line(peep_p5_lk);
+    for (int i = 0; i < peep_p5_bufn; i++)
+        peep_commit_line(peep_p5_buf[i]);
+    peep_p5_bufn = 0;
+}
+
+// R proved dead: apply the rewrite, then replay the rewritten lines and
+// everything buffered while resolving back through the normal per-line
+// matcher so later patterns can still combine across the boundary.
+static void peep_p5_confirm(void) {
+    peep_p5_pending = false;
+#ifndef ARCH_ARM64
+    char *new_li = format("  mov %s, %s", peep_p5_mem, peep_p5_dst);
+    char *new_lj = format("  %s %s, %s", peep_p5_op, peep_p5_rhs, peep_p5_dst);
+#else
+    char *new_li = format("  ldr %s, %s", peep_p5_dst, peep_p5_mem);
+    char *new_lj = format("  %s %s, %s, %s", peep_p5_op, peep_p5_dst, peep_p5_dst, peep_p5_rhs);
+#endif
+    char **buf = peep_p5_buf;
+    int n = peep_p5_bufn;
+    peep_p5_buf = NULL;
+    peep_p5_bufn = 0;
+    peep_p5_bufcap = 0;
+    peep_add_line(new_li);
+    peep_add_line(new_lj);
+    for (int i = 0; i < n; i++)
+        peep_add_line(buf[i]);
+    free(buf);
+}
+
+static void peep_p5_feed(char *line) {
+    if (peep_p5_blocks(line, peep_p5_pid)) {
+        peep_p5_abort();
+        peep_add_line(line);
+        return;
+    }
+    if (peep_p5_bufn == peep_p5_bufcap) {
+        peep_p5_bufcap = peep_p5_bufcap ? peep_p5_bufcap * 2 : 8;
+        peep_p5_buf = realloc(peep_p5_buf, peep_p5_bufcap * sizeof(char *));
+    }
+    peep_p5_buf[peep_p5_bufn++] = line;
+    if (peep_p5_bufn >= PEEP_P5_MAX_LOOKAHEAD)
+        peep_p5_confirm();
+}
+
+static void peep_apply_patterns(void) {
+    peep_ncalls++;
+    bool any;
+    do {
+        any = false;
+        for (int ii = 0; ii < peep_wn; ii++) {
+            if (!peep_w[ii] || !peep_w[ii][0]) continue;
+            int jj = ii + 1;
+            while (jj < peep_wn && (!peep_w[jj] || !peep_w[jj][0])) jj++;
+            if (jj >= peep_wn) break;
+            int kk = jj + 1;
+            while (kk < peep_wn && (!peep_w[kk] || !peep_w[kk][0])) kk++;
+            // Pattern 1: mov REG, SRC; mov DST, REG -> mov DST, SRC (ARM64 Intel syntax)
+            {
+                char d1[80], s1[80], d2[80], s2[80];
+                if (peep_mov_reg_reg(peep_w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
+                    peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+#ifdef ARCH_ARM64
+                    !strcmp(d1, s2) &&
+#else
+                    !strcmp(d2, s1) &&
+#endif
+                    strcmp(d1, d2) && strcmp(d1, s1) &&
+                    is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+#ifdef ARCH_ARM64
+                    peep_w[jj] = format("  mov %s, %s", d2, s1);
+#else
+                    peep_w[jj] = format("  mov %s, %s", d1, s2);
+#endif
+                    any = true;
+                    break;
+                }
+                long long imm1a;
+                if (
+#ifdef ARCH_ARM64
+                    // Pattern 1a: mov REG, #IMM; mov DST, REG -> mov DST, #IMM
+                    peep_mov_imm_reg(peep_w[ii], d1, sizeof(d1), &imm1a) &&
+#else
+                    // Pattern 1a: mov $imm, REG; mov REG, DST -> mov $imm, DST
+                    peep_mov_reg_imm(peep_w[ii], d1, sizeof(d1), &imm1a) &&
+#endif
+                    peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+#ifdef ARCH_ARM64
+                    !strcmp(d1, s2) &&
+#else
+                    !strcmp(d2, s1) &&
+#endif
+#ifdef ARCH_ARM64
+                    strcmp(d1, d2) &&
+#else
+                    strcmp(d1, s2) &&
+#endif
+                    is_reg(d1) && is_reg(d2) && is_reg(s2)) {
+#ifdef ARCH_ARM64
+                    peep_w[jj] = format("  mov %s, #%lld", d2, imm1a);
+#else
+                    peep_w[jj] = format("  mov $%lld, %s", imm1a, s2);
+#endif
+                    any = true;
+                    break;
+                }
+            }
+            // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
+            if (peep_pattern2(peep_w, ii, jj)) {
+                any = true;
+                break;
+            }
+            // Pattern 3: jmp/b .LABEL; .LABEL: -> delete branch
+            if (peep_pattern3(peep_w, ii, jj)) {
+                any = true;
+                break;
+            }
+            // Pattern 3b: b/jmp .L.end.N; .L.case.X:; .L.end.N: → delete branch
+            // (intermediate empty label between branch and its target)
+            if (kk < peep_wn) {
+                char _lbl_b[80], _lbl_kk[80];
+#ifdef ARCH_ARM64
+                // Any label between them is enough: peep_label returns 0 for non-labels
+                if (peep_arm_b(peep_w[ii], _lbl_b, sizeof(_lbl_b)) &&
+                    peep_label(peep_w[jj], _lbl_kk, sizeof(_lbl_kk)) && // just probe jj
+                    peep_label(peep_w[kk], _lbl_kk, sizeof(_lbl_kk)) &&
+#else
+                if (peep_jmp(peep_w[ii], _lbl_b, sizeof(_lbl_b)) &&
+                    peep_label(peep_w[jj], _lbl_kk, sizeof(_lbl_kk)) &&
+                    peep_label(peep_w[kk], _lbl_kk, sizeof(_lbl_kk)) &&
+#endif
+                    !strcmp(_lbl_b, _lbl_kk)) {
+                    peep_w[ii][0] = '\0';
+                    any = true;
+                    break;
+                }
+            }
+            // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
+            if (peep_pattern4(peep_w, ii, jj)) {
+                any = true;
+                break;
+            }
+            // Pattern 5 (deferred liveness): only possible when the window
+            // is exactly full with 3 live instructions; see peep_pattern5_detect.
+            if (kk < peep_wn && ii == 0 && jj == 1 && kk == 2 &&
+                peep_pattern5_detect(peep_w[0], peep_w[1], peep_w[2])) {
+                peep_p5_li = peep_w[0];
+                peep_p5_lj = peep_w[1];
+                peep_p5_lk = peep_w[2];
+                peep_w[0] = peep_w[1] = peep_w[2] = NULL;
+                peep_wn = 0;
+                peep_p5_pending = true;
+                return;
+            }
+        }
+    } while (any);
+}
+
+static void peep_add_line(char *line) {
+    if (peep_p5_pending) {
+        peep_p5_feed(line);
+        return;
+    }
+    if (peep_wn == 3) {
+        peep_commit_line(peep_w[0]);
+        peep_w[0] = peep_w[1];
+        peep_w[1] = peep_w[2];
+        peep_w[2] = NULL;
+        peep_wn = 2;
+    }
+    peep_w[peep_wn++] = line;
+    peep_apply_patterns();
+}
+
+static void peep_flush(void) {
+    // No more lines will ever come for this body: a still-pending Pattern 5
+    // candidate's register is therefore provably dead.
+    if (peep_p5_pending)
+        peep_p5_confirm();
+    for (int i = 0; i < peep_wn; i++)
+        peep_commit_line(peep_w[i]);
+    peep_wn = 0;
+    peep_w[0] = peep_w[1] = peep_w[2] = NULL;
+}
+
+static void peep_reset(void) {
+    peep_wn = 0;
+    peep_w[0] = peep_w[1] = peep_w[2] = NULL;
+    peep_p5_pending = false;
+    peep_p5_bufn = 0;
 }
 
 static const char *node_kind_name(NodeKind k) {
@@ -11537,9 +12032,15 @@ void codegen(Program *prog) {
         }
 #endif
 
+        peep_reset();
+        peep_inline_active = !opt_O0;
         for (Node *n = fn->body; n; n = n->next) {
             int r = gen(n);
             if (r != -1) free_reg(r);
+        }
+        if (peep_inline_active) {
+            peep_flush();
+            peep_inline_active = false;
         }
         fflush(body_file);
 
@@ -11855,13 +12356,8 @@ void codegen(Program *prog) {
         }
         body_text[body_len] = '\0';
         fclose(body_file);
-        // Emit body with peephole optimization
-        {
-            uint64_t _t0 = opt_time ? cg_now_us() : 0;
-            emit_peephole_body(body_text);
-            if (opt_time)
-                time_peep_us += cg_now_us() - _t0;
-        }
+        // Body already optimized inline during Pass 1
+        fwrite(body_text, 1, body_len, stdout);
         free(body_text);
 
         // === ARM64 epilogue ===
@@ -12061,25 +12557,19 @@ void codegen(Program *prog) {
             printf("  mov %s, -%d(%%rbp)\n", retreg, retbuf_offset);
         }
 
-        // Read body into lines, optimize, emit
+        // Read back body (already optimized inline during Pass 1)
         fseek(body_file, 0, SEEK_END);
         long body_len = ftell(body_file);
         fseek(body_file, 0, SEEK_SET);
 
-        // Read all body text
         char *body_text = malloc(body_len + 1);
         size_t nread = fread(body_text, 1, body_len, body_file);
         (void)nread;
         body_text[body_len] = '\0';
         fclose(body_file);
 
-        // Emit body with peephole optimization
-        {
-            uint64_t _t0 = opt_time ? cg_now_us() : 0;
-            emit_peephole_body(body_text);
-            if (opt_time)
-                time_peep_us += cg_now_us() - _t0;
-        }
+        // Body already optimized inline during Pass 1
+        fwrite(body_text, 1, body_len, stdout);
         free(body_text);
 
         // Emit epilogue

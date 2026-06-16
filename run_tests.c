@@ -3195,6 +3195,19 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         }
         if (r->compile_out && r->compile_out[0])
             fprintf(stderr, "%s", r->compile_out);
+        /* Re-run compile for diagnostics */
+        if (r->compile_cmdline) {
+            ProcResult vr = run_exe_with_cmdline(NULL, r->compile_cmdline, 30, NULL);
+            fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
+                    base, vr.exit_code,
+                    vr.timed_out ? ", timed out" : "",
+                    vr.spawn_failed ? ", spawn failed" : "");
+            if (vr.out && vr.out[0])
+                fprintf(stderr, "%s", vr.out);
+            else
+                fprintf(stderr, "(no output)\n");
+            proc_free(&vr);
+        }
         free(r->compile_out);
         r->compile_out = NULL;
         return;
@@ -3235,8 +3248,14 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         setenv("VERBOSE", "1", 1);
         {
             ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
+            fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                    base, vr.exit_code,
+                    vr.timed_out ? ", timed out" : "",
+                    vr.spawn_failed ? ", spawn failed" : "");
             if (vr.out && vr.out[0])
-                fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
+                fprintf(stderr, "%s", vr.out);
+            else
+                fprintf(stderr, "(no output)\n");
             proc_free(&vr);
         }
 #ifdef _WIN32
@@ -3420,6 +3439,19 @@ static int run_unit_tests(void) {
                     if (cr.out && cr.out[0])
                         fprintf(stderr, "%s", cr.out);
                     vlog_test_details(base, compile_cmdline, cr.out, NULL, NULL);
+                    /* Re-run compile for diagnostics */
+                    {
+                        ProcResult vr = run_exe_with_cmdline(NULL, compile_cmdline, 30, NULL);
+                        fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
+                                base, vr.exit_code,
+                                vr.timed_out ? ", timed out" : "",
+                                vr.spawn_failed ? ", spawn failed" : "");
+                        if (vr.out && vr.out[0])
+                            fprintf(stderr, "%s", vr.out);
+                        else
+                            fprintf(stderr, "(no output)\n");
+                        proc_free(&vr);
+                    }
                     free(compile_cmdline);
                     proc_free(&cr);
                     free(nl[i]);
@@ -3463,8 +3495,14 @@ static int run_unit_tests(void) {
                 setenv("VERBOSE", "1", 1);
                 {
                     ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
+                    fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                            base, vr.exit_code,
+                            vr.timed_out ? ", timed out" : "",
+                            vr.spawn_failed ? ", spawn failed" : "");
                     if (vr.out && vr.out[0])
-                        fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
+                        fprintf(stderr, "%s", vr.out);
+                    else
+                        fprintf(stderr, "(no output)\n");
                     proc_free(&vr);
                 }
 #ifdef _WIN32
