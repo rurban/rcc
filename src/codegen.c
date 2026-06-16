@@ -569,8 +569,7 @@ static void emit_alloca(void) {
     printf("  movq %%rdi, %%rax\n");
 #endif
     printf("  addq $15, %%rax\n"
-           "  andq $-16, %%rax\n"
-           "  jz .Lalloca3\n");
+           "  andq $-16, %%rax\n");
 #ifdef _WIN32
     printf(".Lalloca1:\n"
            "  cmpq $4096, %%rax\n"
@@ -583,7 +582,6 @@ static void emit_alloca(void) {
     printf(".Lalloca2:\n"
            "  subq %%rax, %%rsp\n"
            "  movq %%rsp, %%rax\n"
-           ".Lalloca3:\n"
            "  pushq %%rdx\n"
            "  ret\n");
 #endif
@@ -4599,8 +4597,10 @@ static int gen_int128(Node *node) {
         free_reg(t1);
         free_reg(t2);
 #else
-        int lhs_a = gen_addr(node->lhs);
+        // Compute rhs first to avoid volatile-register clobber on Windows:
+        // __udivti3 etc. use r10 internally, which may hold lhs_a if evaluated first.
         int rhs_a = gen_to_int128(node->rhs);
+        int lhs_a = gen_addr(node->lhs);
         printf("  movq (%s), %%rax\n", reg64[rhs_a]);
         printf("  movq 8(%s), %%rdx\n", reg64[rhs_a]);
         printf("  movq %%rax, (%s)\n", reg64[lhs_a]);
@@ -4870,6 +4870,15 @@ static int gen_int128(Node *node) {
         printf("  ldr %s, [%s, #16]\n", reg64[dst], STACK_REG);
         printf("  add %s, %s, #32\n", STACK_REG, STACK_REG);
 #else
+#ifdef _WIN32
+        // Windows x64: __udivti3 etc. take &a in rcx, &b in rdx, return in xmm0
+        printf("  movq %s, %%rcx\n", reg64[lhs]);
+        printf("  movq %s, %%rdx\n", reg64[rhs]);
+        printf("  subq $32, %%rsp\n");
+        emit_direct_call(fn);
+        printf("  addq $32, %%rsp\n");
+        printf("  movdqu %%xmm0, (%s)\n", reg64[dst]);
+#else
         printf("  movq (%s), %%rdi\n", reg64[lhs]);
         printf("  movq 8(%s), %%rsi\n", reg64[lhs]);
         printf("  movq (%s), %%rdx\n", reg64[rhs]);
@@ -4877,6 +4886,7 @@ static int gen_int128(Node *node) {
         emit_direct_call(fn);
         printf("  movq %%rax, (%s)\n", reg64[dst]);
         printf("  movq %%rdx, 8(%s)\n", reg64[dst]);
+#endif
 #endif
         free_reg(lhs);
         free_reg(rhs);
@@ -5245,6 +5255,22 @@ static int gen_int128(Node *node) {
         printf("  str x16, [%s]\n", reg64[addr]);
         printf("  str x17, [%s, #8]\n", reg64[addr]);
         printf(".L.va128_d.%d:\n", c);
+        free_reg(r);
+        return addr;
+    }
+#elif defined(_WIN32)
+    case ND_VA_ARG: {
+        // Windows x64: va_list is char*. __int128 is passed by pointer (8-byte slot).
+        // The shadow space slot holds a pointer to the 16-byte int128 value.
+        int r = gen_addr(node->lhs); // address of the char* ap variable
+        int addr = alloc_int128_addr();
+        printf("  movq (%s), %%rcx\n", reg64[r]); // rcx = ap (address of current slot)
+        printf("  addq $8, (%s)\n", reg64[r]); // ap += 8 (advance past pointer slot)
+        printf("  movq (%%rcx), %%rcx\n"); // rcx = *slot = pointer to __int128 value
+        printf("  movq (%%rcx), %%rax\n"); // rax = lo(__int128)
+        printf("  movq %%rax, (%s)\n", reg64[addr]);
+        printf("  movq 8(%%rcx), %%rax\n"); // rax = hi(__int128)
+        printf("  movq %%rax, 8(%s)\n", reg64[addr]);
         free_reg(r);
         return addr;
     }
@@ -8379,9 +8405,16 @@ static int gen(Node *node) {
 #else
 #ifdef _WIN32
             int r = gen_addr(node->lhs); // va_list is char *, need its address to write
-            // Windows x64: va_list is char *. Point to first variadic arg in
-            // caller's shadow space (rbp+16 = return addr + saved rbp; 8-byte slots).
-            printf("  leaq %d(%%rbp), %%rdx\n", 16 + va_gp_start);
+            // Windows x64: va_list is char *. Point to first variadic arg.
+            // If named params use < 4 reg slots, the first variadic arg is in the
+            // shadow space (rbp+16 for slot 0, +24 for slot 1, etc.).
+            // If all 4 reg slots are consumed by named params, the first variadic
+            // arg is on the stack starting at va_st_start (48 + k*8 where k is
+            // the number of stack-passed named params).
+            {
+                int va_first = (va_gp_start < 32) ? (16 + va_gp_start) : va_st_start;
+                printf("  leaq %d(%%rbp), %%rdx\n", va_first);
+            }
             printf("  movq %%rdx, (%s)\n", reg64[r]);
 #else
             int r = gen(node->lhs); // va_list is array-of-struct, decays to pointer
@@ -8418,6 +8451,13 @@ static int gen(Node *node) {
         printf("  str x16, [%s, #24]\n", reg64[rd]);
         free_reg(rd);
         free_reg(rs);
+#elif defined(_WIN32)
+            // Windows x64: va_list is char* (8 bytes). Just copy the pointer.
+            int rd = gen_addr(node->lhs); // address of dst char* variable
+            int rs = gen(node->rhs); // value of src char* (the pointer itself)
+            printf("  movq %s, (%s)\n", reg64[rs], reg64[rd]);
+            free_reg(rd);
+            free_reg(rs);
 #else
             int rd = gen(node->lhs);
             printf("  push %s\n", reg64[rd]);
@@ -8591,14 +8631,16 @@ static int gen(Node *node) {
 #else
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
 #ifdef _WIN32
+        // __int128 is also passed by pointer on Windows x64 (like structs > 8 bytes)
+        bool is_by_ptr = is_ptr_struct || ty->kind == TY_INT128;
         // Windows x64: va_list is char *. Read arg from current ap,
-        // advance ap by 8, return pointer-to-arg (or struct ptr value).
-        if (is_ptr_struct) {
-            // Struct >8 bytes passed by pointer: slot holds struct pointer
+        // advance ap by 8, return pointer-to-arg (or data ptr value).
+        if (is_by_ptr) {
+            // Struct/int128 >8 bytes passed by pointer: slot holds data pointer
             printf("  movq (%s), %%rcx\n", reg64[r]); // rcx = ap
-            printf("  movq (%%rcx), %%rcx\n"); // rcx = *rcx = struct ptr
+            printf("  movq (%%rcx), %%rcx\n"); // rcx = *rcx = data ptr
             printf("  addq $8, (%s)\n", reg64[r]); // ap += 8
-            printf("  movq %%rcx, %s\n", reg64[r]); // result = struct ptr
+            printf("  movq %%rcx, %s\n", reg64[r]); // result = data ptr
         } else {
             // Return old ap (address of arg slot), then advance
             printf("  movq (%s), %%rcx\n", reg64[r]); // rcx = ap
@@ -11155,6 +11197,13 @@ void codegen(Program *prog) {
                     printf("  subq $1, %%r10\n");
                     printf("  jmp .L.pcopy.%d\n", c);
                     printf(".L.pcopy_end.%d:\n", c);
+                } else if (var->ty->kind == TY_INT128) {
+                    // __int128 is passed by pointer (like a large struct) on Windows x64.
+                    // param_regs64[param_index] holds a pointer; dereference it.
+                    printf("  movq (%s), %%rax\n", param_regs64[param_index]);
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset);
+                    printf("  movq 8(%s), %%rax\n", param_regs64[param_index]);
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset - 8);
                 } else {
                     printf("  mov %s, -%d(%%rbp)\n", preg, var->offset);
                 }
@@ -11170,6 +11219,13 @@ void codegen(Program *prog) {
                         printf("  movsd %d(%%rbp), %%xmm0\n", stack_off);
                         printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset);
                     }
+                } else if (var->ty->kind == TY_INT128) {
+                    // __int128 on stack: slot holds a pointer; dereference it.
+                    printf("  movq %d(%%rbp), %%rax\n", stack_off);
+                    printf("  movq (%%rax), %%rcx\n");
+                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset);
+                    printf("  movq 8(%%rax), %%rcx\n");
+                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset - 8);
                 } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
                     // Structs > 8 bytes (and 16-byte _Complex double) are passed
                     // by pointer even on the stack; load the pointer and copy
@@ -11216,7 +11272,27 @@ void codegen(Program *prog) {
                     stack_param_index++;
                 }
             } else if (var->ty->kind == TY_INT128) {
-                // int128: lo in param_regs64[param_index], hi in param_regs64[param_index+1]
+#ifdef _WIN32
+                // Windows x64: __int128 is passed by pointer in a single GP register.
+                // Dereference the pointer to copy the 16-byte value to the local slot.
+                if (param_index < max_param_regs) {
+                    printf("  movq (%s), %%rax\n", param_regs64[param_index]); // lo
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset);
+                    printf("  movq 8(%s), %%rax\n", param_regs64[param_index]); // hi
+                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset - 8);
+                    param_index++;
+                } else {
+                    // Stack: pointer is in the shadow-space-extended stack slot.
+                    int stack_off = 48 + stack_param_index * 8;
+                    printf("  movq %d(%%rbp), %%rax\n", stack_off); // load pointer
+                    printf("  movq (%%rax), %%rcx\n"); // lo = *ptr
+                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset);
+                    printf("  movq 8(%%rax), %%rcx\n"); // hi = *(ptr+8)
+                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset - 8);
+                    stack_param_index++;
+                }
+#else
+                // x86-64 SysV: int128 lo in param_regs64[N], hi in param_regs64[N+1]
                 if (param_index + 1 < max_param_regs) {
                     printf("  movq %s, -%d(%%rbp)\n", param_regs64[param_index], var->offset);
                     printf("  movq %s, -%d(%%rbp)\n", param_regs64[param_index + 1], var->offset - 8);
@@ -11230,6 +11306,7 @@ void codegen(Program *prog) {
                     printf("  movq %%rax, -%d(%%rbp)\n", var->offset - 8);
                     stack_param_index += 2;
                 }
+#endif
             } else if (is_complex(var->ty)) {
                 // Complex types: {real, imag} like struct of two base-type elements
                 // _Complex float  (8 bytes):  one SSE eightbyte   → xmm0

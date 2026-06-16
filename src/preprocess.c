@@ -1949,6 +1949,9 @@ char *preprocess(char *filename, char *p) {
             define_macro("_WIN32", false, NULL, 0, "1");
         if (!find_macro("__LLP64__"))
             define_macro("__LLP64__", false, NULL, 0, "1");
+        // Enable mingw-w64 ANSI stdio wrappers for full C99 printf support (%hhd etc.)
+        if (!find_macro("__USE_MINGW_ANSI_STDIO"))
+            define_macro("__USE_MINGW_ANSI_STDIO", false, NULL, 0, "1");
 #endif
 #ifdef __linux__
         if (!find_macro("__linux__"))

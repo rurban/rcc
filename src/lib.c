@@ -53,8 +53,8 @@ struct RCCLib {
 
 static char *build_tmp_path(const char *basename, const char *suffix) {
     const char *tmpdir;
-    char tmpbuf[512];
 #ifdef _WIN32
+    char tmpbuf[512];
     if (!GetTempPathA(sizeof(tmpbuf), tmpbuf))
         strcpy(tmpbuf, ".");
     tmpdir = tmpbuf;

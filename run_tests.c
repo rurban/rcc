@@ -4250,7 +4250,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 2;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 31;
+        max_fail = 27;
     else if (streq(platform, "mingw"))
         max_fail = 31;
     else

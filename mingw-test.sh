@@ -20,7 +20,7 @@ if [ -n "${1:-}" ]; then
 else
     make leanclean
     make -s CC=x86_64-w64-mingw32-gcc
-    echo "==> Running full test suite sequentially via run_tests.exe..."
+    echo "==> Running full test suite sequentially in_proc via run_tests.exe..."
     echo ""
     ./run_tests.exe ./rcc.exe --all
 fi
