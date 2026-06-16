@@ -481,16 +481,17 @@ int main(int argc, char **argv) {
             }
             first_input = false;
             // Code generation (prints assembly to stdout, which is now asm_path)
-            time_peep_us = 0;
+            peep_ncalls = 0;
             t0 = opt_time ? now_us() : 0;
             codegen(prog);
             if (opt_time) {
                 uint64_t cg_total = now_us() - t0;
+                time_peep_us = (peep_ncalls * PEEP_NS_PER_CALL) / 1000;
                 fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
                         (unsigned long)(cg_total - time_peep_us));
                 if (!opt_O0)
-                    fprintf(stderr, "  peephole    %s: %6lu us\n", in_path,
-                            (unsigned long)time_peep_us);
+                    fprintf(stderr, "  peephole    %s: %6lu us (est, %lu calls)\n", in_path,
+                            (unsigned long)time_peep_us, (unsigned long)peep_ncalls);
             }
             fflush(stdout);
             // Restore stdout to console if we want to print further, but we are done.
