@@ -252,6 +252,8 @@ extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_time;
 extern int pack_align;
+extern int pack_align_stack[16];
+extern int pack_align_idx;
 extern bool sse42_available;
 extern uint64_t time_peep_us;
 extern uint64_t peep_ncalls;

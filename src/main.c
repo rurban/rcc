@@ -386,6 +386,13 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        // Reset pack_align before parsing: the preprocessor already processed
+        // #pragma pack directives (setting pack_align as a side-effect), but the
+        // parser re-processes them from the emitted "# pragma pack(N)" tokens.
+        // Without this reset, pack_align leaks from preprocess into parse.
+        pack_align = 0;
+        pack_align_idx = 0;
+
         t0 = opt_time ? now_us() : 0;
         Token *tok = tokenize(in_path, preprocessed);
         if (opt_time)
