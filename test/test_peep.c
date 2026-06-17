@@ -191,17 +191,17 @@ static int compile_and_run(const char *rcc, const char *src_text,
     /* redirect stderr only when non-verbose; on failure always show command */
     snprintf(cmd, sizeof(cmd), "%s -o %s %s %s",
              rcc, bin, src, verbose ? "" : "2>/dev/null");
-    if (verbose) fprintf(stderr, "  [%s] compile: %s\n", tag, cmd);
+    if (verbose) printf("  [%s] compile: %s\n", tag, cmd);
     int rc = system(cmd);
     if (rc != 0) {
-        fprintf(stderr, "  [%s] compile FAILED (rc=%d): %s\n", tag, rc, cmd);
+        printf("  [%s] compile FAILED (rc=%d): %s\n", tag, rc, cmd);
         remove(src);
         return -1;
     }
-    if (verbose) fprintf(stderr, "  [%s] run: %s\n", tag, bin);
+    if (verbose) printf("  [%s] run: %s\n", tag, bin);
     rc = system(bin);
     if (rc != 0) {
-        fprintf(stderr, "  [%s] run FAILED (rc=%d): %s\n", tag, rc, bin);
+        printf("  [%s] run FAILED (rc=%d): %s\n", tag, rc, bin);
         remove(src);
         remove(bin);
         return rc;
@@ -216,6 +216,7 @@ static int compile_and_run(const char *rcc, const char *src_text,
 int main(void) {
     const char *rcc = find_rcc();
     int pid = (int)getpid();
+    printf("rcc: %s\n", rcc);
     char cmd[256];
     int rc;
 
@@ -256,12 +257,17 @@ int main(void) {
         pp = popen(grep_cmd, "r");
         int n1_ld = 0;
         if (pp) { fscanf(pp, "%d", &n1_ld); pclose(pp); }
-        remove(asm2_O0);
-        remove(asm2_O1);
         if (n1_ld >= n0_ld) {
             printf("FAIL: peep2 store-load not eliminated (O0=%d O1=%d)\n", n0_ld, n1_ld);
+            printf("--- O0 assembly (%d lines) ---\n", count_lines(asm2_O0));
+            snprintf(cmd, sizeof(cmd), "cat %s", asm2_O0); fflush(stdout); system(cmd);
+            printf("--- O1 assembly (%d lines) ---\n", count_lines(asm2_O1));
+            snprintf(cmd, sizeof(cmd), "cat %s", asm2_O1); fflush(stdout); system(cmd);
+            remove(asm2_O0); remove(asm2_O1);
             return 1;
         }
+        remove(asm2_O0);
+        remove(asm2_O1);
     }
 
     /* Pattern 3: dead branch elimination — line count reduction ≥2 */
@@ -281,15 +287,23 @@ int main(void) {
         int n0 = count_lines(asm3_O0);
         int n1 = count_lines(asm3_O1);
         remove(src3);
-        remove(asm3_O0);
-        remove(asm3_O1);
-        if (n0 < 0 || n1 < 0) { printf("FAIL: cannot read assembly output\n"); return 1; }
+        if (n0 < 0 || n1 < 0) {
+            remove(asm3_O0); remove(asm3_O1);
+            printf("FAIL: cannot read assembly output\n"); return 1;
+        }
         int merged = n0 - n1;
         if (merged < 2) {
             printf("FAIL: peep3 merged only %d line(s) (need >=2), O0=%d O1=%d\n",
                    merged, n0, n1);
+            printf("--- O0 assembly (%d lines) ---\n", n0);
+            snprintf(cmd, sizeof(cmd), "cat %s", asm3_O0); fflush(stdout); system(cmd);
+            printf("--- O1 assembly (%d lines) ---\n", n1);
+            snprintf(cmd, sizeof(cmd), "cat %s", asm3_O1); fflush(stdout); system(cmd);
+            remove(asm3_O0); remove(asm3_O1);
             return 1;
         }
+        remove(asm3_O0);
+        remove(asm3_O1);
     }
 
     /* Pattern 4: imm + op fusion — compile + execute */
