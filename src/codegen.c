@@ -7830,18 +7830,34 @@ static int gen(Node *node) {
 #endif
             }
         }
-        if (node->default_case) {
-            if (!node->default_case->label_id)
-                node->default_case->label_id = ++rcc_label_count;
+        {
+            // When the default case body is just "break;" (or empty),
+            // redirect the default jump directly to .L.end.N so the
+            // intermediate label does not separate the break branch from
+            // its target in the peephole window.
+            Node *def = node->default_case;
+            bool def_empty = false;
+            if (def) {
+                Node *lhs = def->lhs;
+                if (!lhs || lhs->kind == ND_NULL)
+                    def_empty = true;
+                else if (lhs->kind == ND_BREAK && !lhs->next &&
+                         lhs->cleanup_begin == lhs->cleanup_end)
+                    def_empty = true;
+            }
+            if (def && !def_empty) {
+                if (!def->label_id)
+                    def->label_id = ++rcc_label_count;
 #ifdef ARCH_ARM64
-            printf("  b .L.case.%d\n", node->default_case->label_id);
-        } else {
-            printf("  b .L.end.%d\n", c);
+                printf("  b .L.case.%d\n", def->label_id);
+            } else {
+                printf("  b .L.end.%d\n", c);
 #else
-            printf("  jmp .L.case.%d\n", node->default_case->label_id);
-        } else {
-            printf("  jmp .L.end.%d\n", c);
+                printf("  jmp .L.case.%d\n", def->label_id);
+            } else {
+                printf("  jmp .L.end.%d\n", c);
 #endif
+            }
         }
         free_reg(cond);
         break_stack[ctrl_depth] = c;
@@ -7854,6 +7870,14 @@ static int gen(Node *node) {
         return -1;
     }
     case ND_CASE: {
+        // Skip label emission for an empty default case whose jump-table
+        // branch was already redirected to .L.end.N above.
+        if (node->case_val == -1) {
+            Node *lhs = node->lhs;
+            if (!lhs || lhs->kind == ND_NULL ||
+                (lhs->kind == ND_BREAK && !lhs->next && lhs->cleanup_begin == lhs->cleanup_end))
+                return -1;
+        }
         if (!node->label_id)
             node->label_id = ++rcc_label_count;
         printf(".L.case.%d:\n", node->label_id);
@@ -10314,9 +10338,9 @@ static int peep_arm_ldr_fp(const char *line, char *reg, int reg_sz, int *off) {
 // Match "  b .LABEL" → fill label, return 1
 static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
     if (strncmp(line, "  b .", 5) != 0) return 0;
-    int len = strlen(line + 5);
+    int len = strlen(line + 4);
     if (len >= lbl_sz) return 0;
-    memcpy(lbl, line + 5, len + 1);
+    memcpy(lbl, line + 4, len + 1);
     return 1;
 }
 // Parse ARM64 2-op or 3-op: "  op dst, src1[, src2]"
@@ -10421,6 +10445,7 @@ static int peep_pattern2(char **lines, int li, int lj) {
 }
 
 // Pattern 3: jmp/b .LABEL; .LABEL: → delete branch
+uint64_t peep_pat3_hits = 0;
 static int peep_pattern3(char **lines, int li, int lj) {
     char lbl1[80], lbl2[80];
 #ifdef ARCH_ARM64
@@ -10432,6 +10457,7 @@ static int peep_pattern3(char **lines, int li, int lj) {
     char *t = lbl2;
     while (*t == ' ') t++;
     if (!strcmp(lbl1, t)) {
+        peep_pat3_hits++;
         lines[li][0] = '\0';
         return 1;
     }
@@ -10768,6 +10794,26 @@ static void peep_apply_patterns(void) {
             if (peep_pattern3(peep_w, ii, jj)) {
                 any = true;
                 break;
+            }
+            // Pattern 3b: b/jmp .L.end.N; .L.case.X:; .L.end.N: → delete branch
+            // (intermediate empty label between branch and its target)
+            if (kk < peep_wn) {
+                char _lbl_b[80], _lbl_kk[80];
+#ifdef ARCH_ARM64
+                // Any label between them is enough: peep_label returns 0 for non-labels
+                if (peep_arm_b(peep_w[ii], _lbl_b, sizeof(_lbl_b)) &&
+                    peep_label(peep_w[jj], _lbl_kk, sizeof(_lbl_kk)) && // just probe jj
+                    peep_label(peep_w[kk], _lbl_kk, sizeof(_lbl_kk)) &&
+#else
+                if (peep_jmp(peep_w[ii], _lbl_b, sizeof(_lbl_b)) &&
+                    peep_label(peep_w[jj], _lbl_kk, sizeof(_lbl_kk)) &&
+                    peep_label(peep_w[kk], _lbl_kk, sizeof(_lbl_kk)) &&
+#endif
+                    !strcmp(_lbl_b, _lbl_kk)) {
+                    peep_w[ii][0] = '\0';
+                    any = true;
+                    break;
+                }
             }
             // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
             if (peep_pattern4(peep_w, ii, jj)) {

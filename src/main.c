@@ -490,8 +490,8 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  codegen     %s: %6lu us\n", in_path,
                         (unsigned long)(cg_total - time_peep_us));
                 if (!opt_O0)
-                    fprintf(stderr, "  peephole    %s: %6lu us (est, %lu calls)\n", in_path,
-                            (unsigned long)time_peep_us, (unsigned long)peep_ncalls);
+                    fprintf(stderr, "  peephole    %s: %6lu us (est, %lu calls, pat3=%lu)\n", in_path,
+                            (unsigned long)time_peep_us, (unsigned long)peep_ncalls, (unsigned long)peep_pat3_hits);
             }
             fflush(stdout);
             // Restore stdout to console if we want to print further, but we are done.
