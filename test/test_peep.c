@@ -127,6 +127,13 @@ static int count_lines(const char *path) {
     return n;
 }
 
+static int under_aarch64_qemu(void) {
+    /* QEMU user-mode registers binfmt_misc handlers.
+     * Check for aarch64 entry; if present the kernel transparently
+     * invokes qemu-aarch64 for ARM64 ELF binaries. */
+    return access("/proc/sys/fs/binfmt_misc/qemu-aarch64", F_OK) == 0;
+}
+
 static const char *find_rcc(void) {
     const char *env = getenv("RCC");
     if (env && access(env, X_OK) == 0) return env;
@@ -134,18 +141,22 @@ static const char *find_rcc(void) {
     if (access("./rcc.exe", X_OK) == 0) return "./rcc.exe";
     return "rcc.exe";
 #elif defined(__aarch64__)
-    if (access("./rcc-arm64", X_OK) == 0) return "./rcc-arm64";
+    if (under_aarch64_qemu() && access("./rcc-arm64", X_OK) == 0) return "./rcc-arm64";
     if (access("./rcc", X_OK) == 0) return "./rcc";
     return "rcc";
 #else
+    /* x86_64: prefer native, only try arm64 cross-binary under QEMU */
     if (access("./rcc", X_OK) == 0) return "./rcc";
-    if (access("./rcc-arm64", X_OK) == 0) return "./rcc-arm64";
     return "rcc";
 #endif
 }
 
 /* Write C source, compile with rcc, execute binary.  Returns exit code,
- * or -1 on compile failure.  Cleans up temp files. */
+ * or -1 on compile failure.  Cleans up temp files.
+ *
+ * Under aarch64 QEMU user-mode, nested system() calls need
+ * QEMU_LD_PREFIX set so that binfmt_misc can find the ARM64
+ * dynamic linker.  If it's missing we try common sysroot paths. */
 static int compile_and_run(const char *rcc, const char *src_text,
                            int pid, const char *tag) {
     char src[80], bin[80], cmd[256];
@@ -155,6 +166,23 @@ static int compile_and_run(const char *rcc, const char *src_text,
     if (!f) { printf("FAIL: cannot write %s\n", src); return -1; }
     fputs(src_text, f);
     fclose(f);
+#ifdef __aarch64__
+    if (!getenv("QEMU_LD_PREFIX")) {
+        static const char *sysroots[] = {
+            "/usr/aarch64-linux-gnu",
+            "/usr/aarch64-redhat-linux/sys-root/fc44",
+            "/usr/aarch64-redhat-linux/sys-root/fc43",
+        };
+        for (size_t i = 0; i < sizeof(sysroots)/sizeof(sysroots[0]); i++) {
+            char ld_path[256];
+            snprintf(ld_path, sizeof(ld_path), "%s/lib/ld-linux-aarch64.so.1", sysroots[i]);
+            if (access(ld_path, F_OK) == 0) {
+                setenv("QEMU_LD_PREFIX", sysroots[i], 1);
+                break;
+            }
+        }
+    }
+#endif
     snprintf(cmd, sizeof(cmd), "%s -o %s %s 2>/dev/null", rcc, bin, src);
     int rc = system(cmd);
     if (rc != 0) { remove(src); return -1; }
