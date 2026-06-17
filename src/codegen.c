@@ -10739,7 +10739,8 @@ static void peep_apply_patterns(void) {
                 char d1[80], s1[80], d2[80], s2[80];
                 if (peep_mov_reg_reg(peep_w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
                     peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                    !strcmp(d1, s2) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                    !strcmp(d1, s2) && strcmp(d1, d2) && strcmp(s1, s2) &&
+                    is_reg(d1) && is_reg(s1) && is_reg(s2)) {
                     peep_w[jj] = format("  mov %s, %s", d2, s1);
                     any = true;
                     break;
