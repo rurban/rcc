@@ -188,23 +188,27 @@ static int compile_and_run(const char *rcc, const char *src_text,
         }
     }
 #endif
-    /* redirect stderr only when non-verbose (noise from rcc diagnostics) */
+    /* redirect stderr only when non-verbose; on failure always show command */
     snprintf(cmd, sizeof(cmd), "%s -o %s %s %s",
              rcc, bin, src, verbose ? "" : "2>/dev/null");
     if (verbose) fprintf(stderr, "  [%s] compile: %s\n", tag, cmd);
     int rc = system(cmd);
     if (rc != 0) {
-        fprintf(stderr, "  [%s] compile FAILED (exit %d): %s\n", tag, rc, cmd);
+        fprintf(stderr, "  [%s] compile FAILED (rc=%d): %s\n", tag, rc, cmd);
         remove(src);
         return -1;
     }
     if (verbose) fprintf(stderr, "  [%s] run: %s\n", tag, bin);
     rc = system(bin);
-    if (rc != 0)
-        fprintf(stderr, "  [%s] run FAILED (exit %d)\n", tag, rc);
+    if (rc != 0) {
+        fprintf(stderr, "  [%s] run FAILED (rc=%d): %s\n", tag, rc, bin);
+        remove(src);
+        remove(bin);
+        return rc;
+    }
     remove(src);
     remove(bin);
-    return rc;
+    return 0;
 }
 
 /* === Main — one block per pattern, ordered 1–5 === */
