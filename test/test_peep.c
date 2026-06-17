@@ -6,6 +6,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 /* === Pattern source texts — ordered 1–5 === */
@@ -154,11 +155,15 @@ static const char *find_rcc(void) {
 /* Write C source, compile with rcc, execute binary.  Returns exit code,
  * or -1 on compile failure.  Cleans up temp files.
  *
+ * Set VERBOSE=1 in the environment to see compile/run commands and
+ * stdout/stderr on failure.
+ *
  * Under aarch64 QEMU user-mode, nested system() calls need
  * QEMU_LD_PREFIX set so that binfmt_misc can find the ARM64
  * dynamic linker.  If it's missing we try common sysroot paths. */
 static int compile_and_run(const char *rcc, const char *src_text,
                            int pid, const char *tag) {
+    int verbose = getenv("VERBOSE") != NULL;
     char src[80], bin[80], cmd[256];
     snprintf(src, sizeof(src), "/tmp/test_peep_%s_%d.c", tag, pid);
     snprintf(bin, sizeof(bin), "/tmp/test_peep_%s_%d",   tag, pid);
@@ -183,10 +188,20 @@ static int compile_and_run(const char *rcc, const char *src_text,
         }
     }
 #endif
-    snprintf(cmd, sizeof(cmd), "%s -o %s %s 2>/dev/null", rcc, bin, src);
+    /* redirect stderr only when non-verbose (noise from rcc diagnostics) */
+    snprintf(cmd, sizeof(cmd), "%s -o %s %s %s",
+             rcc, bin, src, verbose ? "" : "2>/dev/null");
+    if (verbose) fprintf(stderr, "  [%s] compile: %s\n", tag, cmd);
     int rc = system(cmd);
-    if (rc != 0) { remove(src); return -1; }
+    if (rc != 0) {
+        fprintf(stderr, "  [%s] compile FAILED (exit %d): %s\n", tag, rc, cmd);
+        remove(src);
+        return -1;
+    }
+    if (verbose) fprintf(stderr, "  [%s] run: %s\n", tag, bin);
     rc = system(bin);
+    if (rc != 0)
+        fprintf(stderr, "  [%s] run FAILED (exit %d)\n", tag, rc);
     remove(src);
     remove(bin);
     return rc;
