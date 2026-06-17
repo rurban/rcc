@@ -43,6 +43,10 @@ test/*.out
 /kimi-export*.md
 /session-ses*.md
 /omp-*.html
+.mcp.json
+/.opencode
+pngout.png
+rcc-preview2.png
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt
