@@ -3184,17 +3184,17 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
     unlink(r->tmp_exe);
 }
 
-static void run_unit_tests(void) {
+static int run_unit_tests(void) {
     static char unit_path[512];
     snprintf(unit_path, sizeof(unit_path), "%s/test", SCRIPT_DIR);
-    if (!file_exists(unit_path)) return;
+    if (!file_exists(unit_path)) return 0;
     printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
     total = passed = failed = todo = 0;
 
     struct dirent **nl;
     int n = scandir(unit_path, &nl, NULL, alphasort);
-    if (n < 0) return;
+    if (n < 0) return 0;
 
     if (g_num_workers > 1 && !only_test) {
         /* Parallel path: collect, dispatch, evaluate */
@@ -3424,6 +3424,7 @@ static void run_unit_tests(void) {
                      total, passed, failed);
         write_summary(sp, sc);
     }
+    return failed > 0 ? 1 : 0;
 }
 
 /* ── markdown report ─────────────────────────────────────────────── */
@@ -5429,8 +5430,8 @@ int main(int argc, char **argv) {
         exit_code = 1;
     if (only_test && only_test_found)
         return exit_code;
-    if (run_units)
-        run_unit_tests();
+    if (run_units && run_unit_tests() != 0)
+        exit_code = 1;
     if (only_test && only_test_found)
         return exit_code;
     if (run_compliance && run_compliance_suite() != 0)
