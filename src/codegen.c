@@ -10314,9 +10314,9 @@ static int peep_arm_ldr_fp(const char *line, char *reg, int reg_sz, int *off) {
 // Match "  b .LABEL" → fill label, return 1
 static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
     if (strncmp(line, "  b .", 5) != 0) return 0;
-    int len = strlen(line + 5);
+    int len = strlen(line + 4);
     if (len >= lbl_sz) return 0;
-    memcpy(lbl, line + 5, len + 1);
+    memcpy(lbl, line + 4, len + 1);
     return 1;
 }
 // Parse ARM64 2-op or 3-op: "  op dst, src1[, src2]"
@@ -10739,7 +10739,8 @@ static void peep_apply_patterns(void) {
                 char d1[80], s1[80], d2[80], s2[80];
                 if (peep_mov_reg_reg(peep_w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
                     peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                    !strcmp(d1, s2) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                    !strcmp(d1, s2) && strcmp(d1, d2) && strcmp(s1, s2) &&
+                    is_reg(d1) && is_reg(s1) && is_reg(s2)) {
                     peep_w[jj] = format("  mov %s, %s", d2, s1);
                     any = true;
                     break;
