@@ -3173,6 +3173,9 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         snprintf(msg, sizeof(msg), "exit=%d", r->exec_exit);
         report_rows[nrows - 1].message = strdup(msg);
         print_change(base, is_todo_test(base) ? "TODO" : "EXEC_FAIL");
+        /* print captured stdout/stderr from the failing test */
+        if (r->exec_out && r->exec_out[0])
+            fprintf(stderr, "--- %s ---\n%s", base, r->exec_out);
     } else {
         print_result(base, COL_GREEN, "PASS");
         passed++;

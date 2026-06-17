@@ -2959,6 +2959,7 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 }
 
 // Map any register name to a physical register ID (for peephole optimization)
+#ifndef ARCH_ARM64
 static int phys_reg_id(const char *s) {
     if (s[0] == '%') s++;
 #ifndef ARCH_ARM64
@@ -2988,6 +2989,7 @@ static int phys_reg_id(const char *s) {
 #endif
     return -1;
 }
+#endif
 
 #ifndef ARCH_ARM64
 static int same_phys(const char *a, const char *b) {
@@ -10238,6 +10240,7 @@ static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, long long *imm) {
 }
 #endif
 
+#ifndef ARCH_ARM64
 static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_sz, char *src, int src_sz) {
     if (line[0] != ' ' || line[1] != ' ') return 0;
     char *p = line + 2;
@@ -10261,6 +10264,7 @@ static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_s
     memcpy(src, p, slen + 1);
     return 1;
 }
+#endif
 
 // Helper: check if string is a register name
 static int is_reg(const char *s) {
