@@ -255,6 +255,7 @@ extern int pack_align;
 extern bool sse42_available;
 extern uint64_t time_peep_us;
 extern uint64_t peep_ncalls;
+extern uint64_t peep_pat3_hits;
 // Calibrated on x86_64 vs sqlite3.c: wall-clock delta (~200ms) / call count (~530K) ≈ 375 ns/call
 #define PEEP_NS_PER_CALL 375ULL
 
