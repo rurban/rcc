@@ -2959,7 +2959,6 @@ static int gen_funcall(Node *node, int hidden_ret_reg) {
 }
 
 // Map any register name to a physical register ID (for peephole optimization)
-#ifndef ARCH_ARM64
 static int phys_reg_id(const char *s) {
     if (s[0] == '%') s++;
 #ifndef ARCH_ARM64
@@ -2989,14 +2988,11 @@ static int phys_reg_id(const char *s) {
 #endif
     return -1;
 }
-#endif
 
-#ifndef ARCH_ARM64
 static int same_phys(const char *a, const char *b) {
     int ia = phys_reg_id(a), ib = phys_reg_id(b);
     return ia >= 0 && ia == ib;
 }
-#endif
 
 static int add_float_literal(double val, int size) {
     FloatLit *fl = arena_alloc(sizeof(FloatLit));
@@ -10797,6 +10793,182 @@ static void peep_commit_line(const char *line) {
         fprintf(cg_stream, "%s\n", line);
 }
 
+#ifndef ARCH_ARM64
+// AT&T: mov[lq]? mem, reg  (load: mem is token1/first operand, reg is token2/second)
+static int peep_mov_x_reg(char *line, char *mem, int mem_sz, char *reg, int reg_sz) {
+    if (strncmp(line, "  mov", 5) != 0) return 0;
+    char *p = line + 5;
+    if (*p == 'l' || *p == 'q') p++;
+    if (*p != ' ') return 0;
+    p++;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int mlen = comma - p;
+    if (mlen >= mem_sz) return 0;
+    memcpy(mem, p, mlen);
+    mem[mlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    int rlen = strlen(p);
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen + 1);
+    return 1;
+}
+#endif
+
+// === Pattern 5 (deferred liveness) ===
+//   x86:   mov mem,R ; OP other,R (R modified in place) ; mov R,dst
+//          -> mov mem,dst ; OP other,dst
+//   ARM64: ldr R,[mem] ; OP R,R,#imm ; mov dst,R
+//          -> ldr dst,[mem] ; OP dst,dst,#imm
+// Whether R is dead after the 3rd line can't be known from the inline
+// 3-line window alone (later lines haven't been emitted yet). A shape
+// match therefore doesn't rewrite immediately: the candidate is stashed
+// here and fed subsequent lines (peep_p5_feed) until R's liveness
+// resolves -- by a label/use of R (peep_p5_abort, replay verbatim), a
+// bounded lookahead with no sign of R (peep_p5_confirm, heuristically
+// dead), or end of function body (peep_p5_confirm, provably dead since
+// no more code can read R).
+static bool peep_p5_pending;
+static int peep_p5_pid;
+static char *peep_p5_li, *peep_p5_lj, *peep_p5_lk;
+static char *peep_p5_mem, *peep_p5_dst, *peep_p5_op, *peep_p5_rhs;
+static char **peep_p5_buf;
+static int peep_p5_bufn, peep_p5_bufcap;
+#define PEEP_P5_MAX_LOOKAHEAD 30
+
+static int peep_pattern5_detect(char *li, char *lj, char *lk) {
+    char r1[32], mem1[128];
+#ifndef ARCH_ARM64
+    char op2[16], other[64], acc[64], msrc[32], mdst[32];
+    if (!peep_mov_x_reg(li, mem1, sizeof(mem1), r1, sizeof(r1))) return 0;
+    if (is_reg(mem1) || !is_reg(r1)) return 0;
+    if (!peep_op_reg_reg(lj, op2, sizeof(op2), other, sizeof(other), acc, sizeof(acc))) return 0;
+    if (!same_phys(acc, r1)) return 0;
+    if (!peep_mov_reg_reg(lk, msrc, sizeof(msrc), mdst, sizeof(mdst))) return 0;
+    if (!same_phys(msrc, r1) || !is_reg(mdst)) return 0;
+    if (is_reg(other) && same_phys(other, mdst)) return 0; // would clobber dst before OP reads it
+    int pid = phys_reg_id(r1);
+    if (pid < 0) return 0;
+    peep_p5_pid = pid;
+    peep_p5_mem = format("%s", mem1);
+    peep_p5_dst = format("%s", mdst);
+    peep_p5_op = format("%s", op2);
+    peep_p5_rhs = format("%s", other);
+#else
+    char op2[16], dst2[32], src1_2[32], src2_2[64], mdst[32], msrc[32];
+    int src2_is_imm;
+    if (strncmp(li, "  ldr ", 6) != 0) return 0; // fast bail before the sscanf below
+    if (sscanf(li, " ldr %31[^,], %127[^\n]", r1, mem1) != 2) return 0;
+    int nops = peep_arm64_op(lj, op2, sizeof(op2), dst2, sizeof(dst2),
+                             src1_2, sizeof(src1_2), src2_2, sizeof(src2_2), &src2_is_imm);
+    if (nops != 3 || !src2_is_imm) return 0;
+    if (!same_phys(dst2, r1) || !same_phys(src1_2, r1)) return 0;
+    if (!peep_mov_reg_reg(lk, mdst, sizeof(mdst), msrc, sizeof(msrc))) return 0;
+    if (!same_phys(msrc, r1) || !is_reg(mdst)) return 0;
+    int pid = phys_reg_id(r1);
+    if (pid < 0) return 0;
+    peep_p5_pid = pid;
+    peep_p5_mem = format("%s", mem1);
+    peep_p5_dst = format("%s", mdst);
+    peep_p5_op = format("%s", op2);
+    peep_p5_rhs = format("%s", src2_2);
+#endif
+    return 1;
+}
+
+// Returns 1 if `line` is a label/directive (control-flow boundary, can't
+// reason past it) or textually mentions physical register `pid`.
+static int peep_p5_blocks(const char *line, int pid) {
+    if (line[0] == '\0') return 0;
+    if (line[0] != ' ' || line[1] != ' ') return 1;
+    const char *variants[8] = {NULL};
+    int nv = 0;
+    for (int vi = 0; vi < NUM_REGS; vi++) {
+        if (phys_reg_id(reg64[vi]) == pid) {
+            variants[nv++] = reg64[vi];
+            variants[nv++] = reg32[vi];
+            break;
+        }
+    }
+#ifndef ARCH_ARM64
+    if (pid == 0) {
+        variants[nv++] = "%rax";
+        variants[nv++] = "%eax";
+        variants[nv++] = "%al";
+    } else if (pid == 1) {
+        variants[nv++] = "%rcx";
+        variants[nv++] = "%ecx";
+        variants[nv++] = "%cl";
+    } else if (pid == 2) {
+        variants[nv++] = "%rdx";
+        variants[nv++] = "%edx";
+    } else if (pid == 3) {
+        variants[nv++] = "%rbx";
+        variants[nv++] = "%ebx";
+        variants[nv++] = "%bl";
+    }
+#endif
+    size_t len = strlen(line);
+    for (int vi = 0; vi < nv && variants[vi]; vi++) {
+        size_t vlen = strlen(variants[vi]);
+        for (size_t i = 0; i + vlen <= len; i++)
+            if (memcmp(line + i, variants[vi], vlen) == 0) return 1;
+    }
+    return 0;
+}
+
+// R proved live (or a block boundary was hit): replay everything seen so
+// far verbatim, unmodified -- no worse than Pattern 5 not having matched.
+static void peep_p5_abort(void) {
+    peep_p5_pending = false;
+    peep_commit_line(peep_p5_li);
+    peep_commit_line(peep_p5_lj);
+    peep_commit_line(peep_p5_lk);
+    for (int i = 0; i < peep_p5_bufn; i++)
+        peep_commit_line(peep_p5_buf[i]);
+    peep_p5_bufn = 0;
+}
+
+// R proved dead: apply the rewrite, then replay the rewritten lines and
+// everything buffered while resolving back through the normal per-line
+// matcher so later patterns can still combine across the boundary.
+static void peep_p5_confirm(void) {
+    peep_p5_pending = false;
+#ifndef ARCH_ARM64
+    char *new_li = format("  mov %s, %s", peep_p5_mem, peep_p5_dst);
+    char *new_lj = format("  %s %s, %s", peep_p5_op, peep_p5_rhs, peep_p5_dst);
+#else
+    char *new_li = format("  ldr %s, %s", peep_p5_dst, peep_p5_mem);
+    char *new_lj = format("  %s %s, %s, %s", peep_p5_op, peep_p5_dst, peep_p5_dst, peep_p5_rhs);
+#endif
+    char **buf = peep_p5_buf;
+    int n = peep_p5_bufn;
+    peep_p5_buf = NULL;
+    peep_p5_bufn = 0;
+    peep_p5_bufcap = 0;
+    peep_add_line(new_li);
+    peep_add_line(new_lj);
+    for (int i = 0; i < n; i++)
+        peep_add_line(buf[i]);
+    free(buf);
+}
+
+static void peep_p5_feed(char *line) {
+    if (peep_p5_blocks(line, peep_p5_pid)) {
+        peep_p5_abort();
+        peep_add_line(line);
+        return;
+    }
+    if (peep_p5_bufn == peep_p5_bufcap) {
+        peep_p5_bufcap = peep_p5_bufcap ? peep_p5_bufcap * 2 : 8;
+        peep_p5_buf = realloc(peep_p5_buf, peep_p5_bufcap * sizeof(char *));
+    }
+    peep_p5_buf[peep_p5_bufn++] = line;
+    if (peep_p5_bufn >= PEEP_P5_MAX_LOOKAHEAD)
+        peep_p5_confirm();
+}
+
 static void peep_apply_patterns(void) {
     peep_ncalls++;
     bool any;
@@ -10894,13 +11066,27 @@ static void peep_apply_patterns(void) {
                 any = true;
                 break;
             }
-            // Pattern 5 omitted: requires liveness of R after window which is
-            // unavailable during inline generation (future lines not yet emitted).
+            // Pattern 5 (deferred liveness): only possible when the window
+            // is exactly full with 3 live instructions; see peep_pattern5_detect.
+            if (kk < peep_wn && ii == 0 && jj == 1 && kk == 2 &&
+                peep_pattern5_detect(peep_w[0], peep_w[1], peep_w[2])) {
+                peep_p5_li = peep_w[0];
+                peep_p5_lj = peep_w[1];
+                peep_p5_lk = peep_w[2];
+                peep_w[0] = peep_w[1] = peep_w[2] = NULL;
+                peep_wn = 0;
+                peep_p5_pending = true;
+                return;
+            }
         }
     } while (any);
 }
 
 static void peep_add_line(char *line) {
+    if (peep_p5_pending) {
+        peep_p5_feed(line);
+        return;
+    }
     if (peep_wn == 3) {
         peep_commit_line(peep_w[0]);
         peep_w[0] = peep_w[1];
@@ -10913,6 +11099,10 @@ static void peep_add_line(char *line) {
 }
 
 static void peep_flush(void) {
+    // No more lines will ever come for this body: a still-pending Pattern 5
+    // candidate's register is therefore provably dead.
+    if (peep_p5_pending)
+        peep_p5_confirm();
     for (int i = 0; i < peep_wn; i++)
         peep_commit_line(peep_w[i]);
     peep_wn = 0;
@@ -10922,6 +11112,8 @@ static void peep_flush(void) {
 static void peep_reset(void) {
     peep_wn = 0;
     peep_w[0] = peep_w[1] = peep_w[2] = NULL;
+    peep_p5_pending = false;
+    peep_p5_bufn = 0;
 }
 
 static const char *node_kind_name(NodeKind k) {

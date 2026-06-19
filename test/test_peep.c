@@ -135,6 +135,14 @@ static const char peep4_nop_asm_src[] =
     "    __asm__ volatile(\"  mov x10, #0\\n  add x11, x11, x10\\n\");\n"
     "}\n";
 
+/* Pattern 5: ldr x10,[sp,#16]; add x10,x10,#7; mov x12,x10
+ * -> ldr x12,[sp,#16]; add x12,x12,#7
+ * 3 lines → 2 lines (final mov deleted once x10 is confirmed dead, min_diff=1) */
+static const char peep5_asm_src[] =
+    "void p5_asm(void) {\n"
+    "    __asm__ volatile(\"  ldr x10, [sp, #16]\\n  add x10, x10, #7\\n  mov x12, x10\\n\");\n"
+    "}\n";
+
 #else
 /* Pattern 1a: mov $42, %r10; mov %r10, %r12 → mov $42, %r12
  * 2 lines → 2 lines (min_diff=0) */
@@ -167,6 +175,14 @@ static const char peep4_asm_src[] =
 static const char peep4_nop_asm_src[] =
     "void p4_nop_asm(void) {\n"
     "    __asm__ volatile(\"  mov $0, %r10\\n  add %r10, %r11\\n\");\n"
+    "}\n";
+
+/* Pattern 5: mov -8(%rbp), %r10; add %r11, %r10; mov %r10, %r12
+ * -> mov -8(%rbp), %r12; add %r11, %r12
+ * 3 lines → 2 lines (final mov deleted once %r10 is confirmed dead, min_diff=1) */
+static const char peep5_asm_src[] =
+    "void p5_asm(void) {\n"
+    "    __asm__ volatile(\"  mov -8(%rbp), %r10\\n  add %r11, %r10\\n  mov %r10, %r12\\n\");\n"
     "}\n";
 #endif
 
@@ -298,6 +314,7 @@ int main(void) {
     ADD(peep3_asm_src,      "p3_asm",      1);
     ADD(peep4_asm_src,      "p4_asm",      0);
     ADD(peep4_nop_asm_src,  "p4_nop_asm",  1);
+    ADD(peep5_asm_src,      "p5_asm",      1);
 
     int failed = 0;
     for (int i = 0; i < n; i++) {
