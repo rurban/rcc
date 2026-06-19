@@ -3804,6 +3804,16 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
             continue;
         }
 
+        // Check if this is a label (ends with ':'), skip the whole token
+        {
+            const char *q = p;
+            while (*q && *q != ' ' && *q != '\t' && *q != ';' && *q != '\n') q++;
+            if (q > p && *(q - 1) == ':') {
+                p = q;
+                while (*p && *p != ';' && *p != '\n') p++;
+                continue;
+            }
+        }
         // Extract mnemonic (first word)
         char mnem[64];
         int mlen = 0;

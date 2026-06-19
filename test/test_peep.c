@@ -183,9 +183,9 @@ static const char *find_rcc(void) {
 #elif defined(__aarch64__)
     if (under_aarch64_qemu() && access("./rcc-arm64", X_OK) == 0)
         return "./rcc-arm64";
-    return "rcc";
+    return "./rcc";
 #else
-    return "rcc";
+    return "./rcc";
 #endif
 }
 
