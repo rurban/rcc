@@ -750,6 +750,15 @@ static int g_num_workers = 0;
 static char *arm64_sysroot;
 #endif
 
+#ifndef _WIN32
+static int under_aarch64_qemu(void) {
+    /* QEMU user-mode registers binfmt_misc handlers.
+     * Check for aarch64 entry; if present the kernel transparently
+     * invokes qemu-aarch64 for ARM64 ELF binaries. */
+    return access("/proc/sys/fs/binfmt_misc/qemu-aarch64", F_OK) == 0;
+}
+#endif
+
 static void detect_platform(const char *rcc_path) {
     struct utsname u;
     uname(&u);
@@ -826,8 +835,13 @@ static void detect_platform(const char *rcc_path) {
             if (strcmp(u.sysname, "Linux") == 0)
                 platform = "linux";
         }
-        if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0)
+        if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0) {
             is_arm64 = true;
+            if (under_aarch64_qemu())
+                platform = "arm64_cross";
+            else
+                platform = "arm64";
+        }
     }
 #endif
 }
@@ -3159,6 +3173,9 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         snprintf(msg, sizeof(msg), "exit=%d", r->exec_exit);
         report_rows[nrows - 1].message = strdup(msg);
         print_change(base, is_todo_test(base) ? "TODO" : "EXEC_FAIL");
+        /* print captured stdout/stderr from the failing test */
+        if (r->exec_out && r->exec_out[0])
+            fprintf(stderr, "--- %s ---\n%s", base, r->exec_out);
     } else {
         print_result(base, COL_GREEN, "PASS");
         passed++;
@@ -3170,17 +3187,17 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
     unlink(r->tmp_exe);
 }
 
-static void run_unit_tests(void) {
+static int run_unit_tests(void) {
     static char unit_path[512];
     snprintf(unit_path, sizeof(unit_path), "%s/test", SCRIPT_DIR);
-    if (!file_exists(unit_path)) return;
+    if (!file_exists(unit_path)) return 0;
     printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
     total = passed = failed = todo = 0;
 
     struct dirent **nl;
     int n = scandir(unit_path, &nl, NULL, alphasort);
-    if (n < 0) return;
+    if (n < 0) return 0;
 
     if (g_num_workers > 1 && !only_test) {
         /* Parallel path: collect, dispatch, evaluate */
@@ -3410,6 +3427,7 @@ static void run_unit_tests(void) {
                      total, passed, failed);
         write_summary(sp, sc);
     }
+    return failed > 0 ? 1 : 0;
 }
 
 /* ── markdown report ─────────────────────────────────────────────── */
@@ -5264,7 +5282,7 @@ int main(int argc, char **argv) {
             g_num_workers = atoi(argv[++i]);
             if (g_num_workers < 1) g_num_workers = 1;
         } else if (streq(a, "--help") || streq(a, "-h")) {
-            printf("Usage: ./run_tests [rcc-binary] [options] [test-name]\n\n");
+            printf("Usage: ./run_tests [rcc-binary] [options] [test-names...]\n\n");
             printf("Options (default: --tcc --unit-tests --compliance --ctest):\n");
             printf("  --tcc         TCC compatibility tests (tinycc/tests/tests2/)\n");
             printf("  --unit-tests  RCC Unit tests (test/test_*.c)\n");
@@ -5277,8 +5295,8 @@ int main(int argc, char **argv) {
             printf("  --no-color    Disable ANSI color output\n");
             printf("  --parallel    Run tests in parallel (auto-detect worker count)\n");
             printf("  --jobs N      Run tests with N worker threads (--jobs 1 = sequential)\n\n");
-            printf("rcc-binary  Path to rcc binary (auto-detected if not given)\n");
-            printf("test-name   Run only this one test\n");
+            printf("rcc-binary      cc, with optional options (in-proc or auto if not given)\n");
+            printf("test-names...   Run only these tests\n");
             return 0;
         }
         /* A single arg containing whitespace is a "compiler + flags" string,
@@ -5293,9 +5311,10 @@ int main(int argc, char **argv) {
             while (*flags == ' ') flags++;
             if (*flags) rccflags = flags;
         }
-        /* first non-flag arg that looks like an executable path is the rcc binary;
-           otherwise treat it as a test-name filter (rcc is auto-detected) */
-        else if (!rcc && (access(a, X_OK) == 0 || strchr(a, '/') != NULL || strchr(a, '\\') != NULL))
+        /* first non-flag arg that names a compiler (rcc, gcc, tcc, *-cross):
+           treat as the rcc binary.  Otherwise it's a test-name filter and
+           rcc stays unset → in-process rcc_lib mode. */
+        else if (!rcc && (contains(a, "rcc") || contains(a, "gcc") || contains(a, "tcc") || contains(a, "-cross")))
             rcc = a;
         else if (!only_test)
             only_test = a;
@@ -5414,8 +5433,8 @@ int main(int argc, char **argv) {
         exit_code = 1;
     if (only_test && only_test_found)
         return exit_code;
-    if (run_units)
-        run_unit_tests();
+    if (run_units && run_unit_tests() != 0)
+        exit_code = 1;
     if (only_test && only_test_found)
         return exit_code;
     if (run_compliance && run_compliance_suite() != 0)

@@ -16,7 +16,7 @@ fi
 
 if [ -n "${1:-}" ]; then
     make -s CC=x86_64-w64-mingw32-gcc
-    ./run_tests.exe ./rcc.exe "$1"
+    ./run_tests.exe ./rcc.exe "$@"
 else
     make leanclean
     make -s CC=x86_64-w64-mingw32-gcc
