@@ -170,6 +170,18 @@ static const char peep4_nop_asm_src[] =
     "}\n";
 #endif
 
+/* ── portable temp directory ─────────────────────────────────────── */
+static const char *get_tmpdir(void) {
+#ifdef _WIN32
+    const char *tmp = getenv("TEMP");
+    if (!tmp || !*tmp) tmp = getenv("TMP");
+    if (!tmp || !*tmp) tmp = ".";
+    return tmp;
+#else
+    return "/tmp";
+#endif
+}
+
 static int under_aarch64_qemu(void) {
     return access("/proc/sys/fs/binfmt_misc/qemu-aarch64", F_OK) == 0;
 }
@@ -203,9 +215,10 @@ static int check_peep(const char *rcc, const char *src, int pid,
                       const char *tag, int min_diff) {
     char srcf[80], asm0[80], asm1[80], cmd[256];
 
-    snprintf(srcf, sizeof(srcf), "/tmp/test_peep_%s_%d.c", tag, pid);
-    snprintf(asm0, sizeof(asm0), "/tmp/test_peep_%s_%d_O0.s", tag, pid);
-    snprintf(asm1, sizeof(asm1), "/tmp/test_peep_%s_%d_O1.s", tag, pid);
+    const char *td = get_tmpdir();
+    snprintf(srcf, sizeof(srcf), "%s/test_peep_%s_%d.c", td, tag, pid);
+    snprintf(asm0, sizeof(asm0), "%s/test_peep_%s_%d_O0.s", td, tag, pid);
+    snprintf(asm1, sizeof(asm1), "%s/test_peep_%s_%d_O1.s", td, tag, pid);
 
     FILE *f = fopen(srcf, "w");
     if (!f) { fprintf(stderr, "FAIL: cannot write %s\n", srcf); return -1; }

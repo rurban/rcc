@@ -3089,6 +3089,19 @@ static void unit_compile_exec(const char *src_path, const char *base,
     rr.out = NULL;
     proc_free(&rr);
     r->did_exec = true;
+
+    /* Capture backtrace on non-zero exit (unit tests expect 0, except a few).
+     * emit_backtrace spawns gdb/lldb child processes; safe to call from
+     * worker threads as it only touches thread-local/process-local state. */
+    if (r->exec_exit != 0 && !is_darwin_cross && !has_runner) {
+        size_t bt_len = r->exec_out ? strlen(r->exec_out) : 0;
+        size_t bt_cap = bt_len + 4096;
+        char *bt_buf = r->exec_out ? xrealloc(r->exec_out, bt_cap) : malloc(bt_cap);
+        if (!r->exec_out) { bt_buf[0] = '\0'; }
+        r->exec_out = bt_buf;
+        emit_backtrace(r->tmp_exe, "", src_path, rcc, rccflags, NULL,
+                       &r->exec_out, &bt_len, &bt_cap);
+    }
 }
 
 /* ── unit: parallel evaluate+report ──────────────────────────────── */
@@ -3176,6 +3189,19 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         /* print captured stdout/stderr from the failing test */
         if (r->exec_out && r->exec_out[0])
             fprintf(stderr, "--- %s ---\n%s", base, r->exec_out);
+        /* Re-run with VERBOSE env to get internal diagnostics */
+        setenv("VERBOSE", "1", 1);
+        {
+            ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", 5, NULL);
+            if (vr.out && vr.out[0])
+                fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
+            proc_free(&vr);
+        }
+#ifdef _WIN32
+        SetEnvironmentVariableA("VERBOSE", NULL);
+#else
+        unsetenv("VERBOSE");
+#endif
     } else {
         print_result(base, COL_GREEN, "PASS");
         passed++;
@@ -3375,7 +3401,6 @@ static int run_unit_tests(void) {
             ProcResult rr = run_exe_with_cmdline(tmp, "", 5, &run_cmdline);
             int ae = rr.exit_code;
             run_out = rr.out;
-            unlink(tmp);
             if (ae != expected_exit) {
                 if (is_todo_test(base)) {
                     print_result(base, COL_YELLOW, "TODO (exec)");
@@ -3391,12 +3416,29 @@ static int run_unit_tests(void) {
                 snprintf(msg, sizeof(msg), "exit=%d", ae);
                 report_rows[nrows - 1].message = strdup(msg);
                 print_change(base, is_todo_test(base) ? "TODO" : "EXEC_FAIL");
+                /* Re-run with VERBOSE env to get internal diagnostics */
+                setenv("VERBOSE", "1", 1);
+                {
+                    ProcResult vr = run_exe_with_cmdline(tmp, "", 5, NULL);
+                    if (vr.out && vr.out[0])
+                        fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
+                    proc_free(&vr);
+                }
+#ifdef _WIN32
+                SetEnvironmentVariableA("VERBOSE", NULL);
+#else
+                unsetenv("VERBOSE");
+#endif
+                /* Emit debugger backtrace */
+                if (!has_runner)
+                    emit_backtrace(tmp, "", src_path, rcc, rccflags, NULL, NULL, NULL, NULL);
             } else {
                 print_result(base, COL_GREEN, "PASS");
                 passed++;
                 add_row(base, "PASS", "");
                 print_change(base, "PASS");
             }
+            unlink(tmp);
             vlog_test_details(base, compile_cmdline, NULL, run_cmdline, run_out);
             free(compile_cmdline);
             free(run_cmdline);
