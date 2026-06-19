@@ -10144,6 +10144,28 @@ static int peep_label(char *line, char *lbl, int lbl_sz) {
     return 1;
 }
 
+#ifdef ARCH_ARM64
+// ARM64 Intel: mov reg, #imm
+static int peep_mov_imm_reg(char *line, char *reg, int reg_sz, long long *imm) {
+    if (strncmp(line, "  mov ", 6) != 0) return 0;
+    char *p = line + 6;
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int rlen = comma - p;
+    if (rlen >= reg_sz) return 0;
+    memcpy(reg, p, rlen);
+    reg[rlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '#') return 0;
+    p++;
+    char *endp;
+    long long v = strtoll(p, &endp, 0);
+    *imm = v;
+    return 1;
+}
+#endif
+
 #ifndef ARCH_ARM64
 static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
     // AT&T: mov[lq] %reg, -N(%rbp)  (store reg to [rbp-N])
@@ -10505,6 +10527,7 @@ static int peep_pattern4(char **lines, int li, int lj) {
     return 0;
 }
 
+// old peep on full buffers. unused
 #if 0
 // === Post-processing peephole (kept for reference / regression testing) ===
 // Pattern 5 and helpers (peep_mov_reg_mem, reg_live_in_text) are here because Pattern 5
@@ -10625,6 +10648,7 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
 #endif
     return 0;
 }
+// unused
 static void emit_peephole_body(char *body_text) {
     if (opt_O0) {
         fputs(body_text, stdout);
@@ -10683,10 +10707,22 @@ static void emit_peephole_body(char *body_text) {
                 // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST
                 {
                     char d1[80], s1[80], d2[80], s2[80];
+                    long long imm;
                     if (peep_mov_reg_reg(w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
                         peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
                         !strcmp(d2, s1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                        // same on x86 and arm
                         w[jj] = format("  mov %s, %s", d1, s2);
+                        // Conservative: skip dead-predecessor deletion without full forward scan
+                        any = true;
+                        break;
+                    }
+                    // Pattern 1a: mov $SRC, REG; mov REG, DST -> mov $SRC, DST
+                    if (peep_mov_reg_imm(w[ii], d1, sizeof(d1), &imm) &&
+                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        !strcmp(s2, d1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s2) && is_reg(d2)) {
+                        // same on x86 and arm
+                        w[jj] = format("  mov $%lld, %s", imm, s2);
                         // Conservative: skip dead-predecessor deletion without full forward scan
                         any = true;
                         break;
@@ -10737,32 +10773,56 @@ static void peep_apply_patterns(void) {
             if (jj >= peep_wn) break;
             int kk = jj + 1;
             while (kk < peep_wn && (!peep_w[kk] || !peep_w[kk][0])) kk++;
-#ifdef ARCH_ARM64
             // Pattern 1: mov REG, SRC; mov DST, REG -> mov DST, SRC (ARM64 Intel syntax)
             {
                 char d1[80], s1[80], d2[80], s2[80];
                 if (peep_mov_reg_reg(peep_w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
                     peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                    !strcmp(d1, s2) && strcmp(d1, d2) && strcmp(s1, s2) &&
-                    is_reg(d1) && is_reg(s1) && is_reg(s2)) {
-                    peep_w[jj] = format("  mov %s, %s", d2, s1);
-                    any = true;
-                    break;
-                }
-            }
+#ifdef ARCH_ARM64
+                    !strcmp(d1, s2) &&
 #else
-            // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST (x86 AT&T)
-            {
-                char d1[80], s1[80], d2[80], s2[80];
-                if (peep_mov_reg_reg(peep_w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
-                    peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                    !strcmp(d2, s1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+                    !strcmp(d2, s1) &&
+#endif
+                    strcmp(d1, d2) && strcmp(d1, s1) &&
+                    is_reg(d1) && is_reg(s1) && is_reg(s2)) {
+#ifdef ARCH_ARM64
+                    peep_w[jj] = format("  mov %s, %s", d2, s1);
+#else
                     peep_w[jj] = format("  mov %s, %s", d1, s2);
+#endif
+                    any = true;
+                    break;
+                }
+                long long imm1a;
+                if (
+#ifdef ARCH_ARM64
+                    // Pattern 1a: mov REG, #IMM; mov DST, REG -> mov DST, #IMM
+                    peep_mov_imm_reg(peep_w[ii], d1, sizeof(d1), &imm1a) &&
+#else
+                    // Pattern 1a: mov $imm, REG; mov REG, DST -> mov $imm, DST
+                    peep_mov_reg_imm(peep_w[ii], d1, sizeof(d1), &imm1a) &&
+#endif
+                    peep_mov_reg_reg(peep_w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+#ifdef ARCH_ARM64
+                    !strcmp(d1, s2) &&
+#else
+                    !strcmp(d2, s1) &&
+#endif
+#ifdef ARCH_ARM64
+                    strcmp(d1, d2) &&
+#else
+                    strcmp(d1, s2) &&
+#endif
+                    is_reg(d1) && is_reg(d2) && is_reg(s2)) {
+#ifdef ARCH_ARM64
+                    peep_w[jj] = format("  mov %s, #%lld", d2, imm1a);
+#else
+                    peep_w[jj] = format("  mov $%lld, %s", imm1a, s2);
+#endif
                     any = true;
                     break;
                 }
             }
-#endif
             // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
             if (peep_pattern2(peep_w, ii, jj)) {
                 any = true;
