@@ -280,7 +280,7 @@ if [ -f "$LARGE_SRC" ]; then
     fi
     if [ -n "$KEFIR" ]; then
 	_compile_large "KEFIR" "$KEFIR" -c "$LARGE_SRC" -o /dev/null
-	_compile_large "KEFIR" "$KEFIR" -O1 -c "$LARGE_SRC" -o /dev/null
+	_compile_large "KEFIR -O1" "$KEFIR" -O1 -c "$LARGE_SRC" -o /dev/null
     fi
     if [ -n "$CCC" ]; then
 	_compile_large "CCC" "$CCC" -c "$LARGE_SRC" -o /dev/null

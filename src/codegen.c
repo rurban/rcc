@@ -10477,7 +10477,6 @@ static int peep_pattern2(char **lines, int li, int lj) {
 }
 
 // Pattern 3: jmp/b .LABEL; .LABEL: → delete branch
-uint64_t peep_pat3_hits = 0;
 static int peep_pattern3(char **lines, int li, int lj) {
     char lbl1[80], lbl2[80];
 #ifdef ARCH_ARM64
@@ -10489,7 +10488,6 @@ static int peep_pattern3(char **lines, int li, int lj) {
     char *t = lbl2;
     while (*t == ' ') t++;
     if (!strcmp(lbl1, t)) {
-        peep_pat3_hits++;
         lines[li][0] = '\0';
         return 1;
     }
