@@ -33,7 +33,7 @@ if [ ! -x "$rcc_bin" ]; then
     exit 1
 fi
 
-rcc_flags=""
+rcc_flags="-fPIC"
 ld_flags=""
 inputs=""
 output=""
