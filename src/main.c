@@ -3,6 +3,9 @@
 #include "rcc.h"
 #ifdef _WIN32
 #include <process.h>
+#include <io.h>
+#define dup _dup
+#define dup2 _dup2
 #else
 #include <unistd.h>
 #define _getpid getpid
@@ -171,6 +174,7 @@ int main(int argc, char **argv) {
     bool opt_c = false;
     bool opt_E = false;
     bool opt_o = false;
+    bool opt_stdout = false;
     char libs[512] =
 #ifdef _WIN32
         " -lm"
@@ -248,6 +252,8 @@ int main(int argc, char **argv) {
             }
             out_path = argv[i];
             opt_o = true;
+            if (!strcmp(out_path, "-"))
+                opt_stdout = true;
         } else if (!strcmp(argv[i], "-pthread")) {
             add_define("_REENTRANT");
             int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
@@ -334,6 +340,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
     }
+
+    // -c -o - is impossible: ELF objects require random access (seek).
+    if (opt_c && opt_stdout) {
+        fprintf(stderr, "rcc: error: -c -o - is not supported (object files require seekable output)\n");
+        return 1;
+    }
+
+    // Save original stdout fd for -o - linking (freopen redirects it to temp .s)
+    int saved_stdout = opt_stdout ? dup(STDOUT_FILENO) : -1;
 
     int file_index = 0;
     for (OutPath *ip = reverse(input_paths); ip; ip = ip->next, file_index++) {
@@ -474,10 +489,14 @@ int main(int argc, char **argv) {
         }
 
         if (!opt_dryrun) {
-            // Redirect stdout to our assembly file (append for multi-file)
-            if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
-                fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
-                return 1;
+            // Redirect stdout to our assembly file (append for multi-file),
+            // unless outputting to stdout via -S -o -.
+            bool asm_is_stdout = opt_stdout && opt_S;
+            if (!asm_is_stdout) {
+                if (!freopen(asm_path, first_input ? "w" : "a", stdout)) {
+                    fprintf(stderr, "rcc: error: cannot open output file %s\n", asm_path);
+                    return 1;
+                }
             }
             first_input = false;
             // Code generation (prints assembly to stdout, which is now asm_path)
@@ -493,8 +512,8 @@ int main(int argc, char **argv) {
                             (unsigned long)time_peep_us);
             }
             fflush(stdout);
-            // Restore stdout to console if we want to print further, but we are done.
-            fclose(stdout);
+            if (!opt_stdout)
+                fclose(stdout);
         } else {
             first_input = false;
         }
@@ -507,14 +526,30 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Restore original stdout for -o - linking (was redirected to temp .s file)
+    if (saved_stdout != -1) {
+        dup2(saved_stdout, STDOUT_FILENO);
+        close(saved_stdout);
+#ifdef _WIN32
+        freopen("CON", "w", stdout);
+#else
+        freopen("/dev/stdout", "w", stdout);
+#endif
+    }
     // Assemble / Link if not just compiling to assembly or preprocessing
     if (!opt_S && !opt_E) {
         char cmd[1024];
+        char stdout_tmp[256] = "";
+        const char *backend_out = out_path;
+        if (opt_stdout) {
+            snprintf(stdout_tmp, sizeof(stdout_tmp), "rcc_tmp_%d_stdout.out", _getpid());
+            backend_out = stdout_tmp;
+        }
         if (opt_c) {
             if (opt_pic)
-                snprintf(cmd, sizeof(cmd), GCC " -c -fPIC -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -c -fPIC -o %s", backend_out);
             else
-                snprintf(cmd, sizeof(cmd), GCC " -c -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -c -o %s", backend_out);
         } else {
 #ifdef __APPLE__
             // Prefer lib/rcc_darwin.dylib (provides on_exit with exit-code capture
@@ -535,16 +570,16 @@ int main(int argc, char **argv) {
 #endif
             snprintf(cmd, sizeof(cmd),
                      "cc -o %s -arch arm64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -Wl,-undefined,dynamic_lookup %s",
-                     out_path, darwin_link);
+                     backend_out, darwin_link);
 #else
             if (opt_pic) {
-                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -o %s", backend_out);
             } else if (opt_pie) {
-                snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", backend_out);
             } else if (strstr(libs, "-shared")) {
-                snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -o %s", backend_out);
             } else {
-                snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
+                snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", backend_out);
             }
 #endif
         }
@@ -599,6 +634,19 @@ int main(int argc, char **argv) {
         for (OutPath *p = out_paths; p; p = p->next) {
             remove(p->path);
         }
+        // For -o -, cat the backend output to stdout
+        if (opt_stdout && status == 0) {
+            FILE *f = fopen(stdout_tmp, "rb");
+            if (f) {
+                char buf[65536];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                    fwrite(buf, 1, n, stdout);
+                fclose(f);
+            }
+        }
+        if (opt_stdout)
+            remove(stdout_tmp);
         if (status != 0) {
             return status;
         }
