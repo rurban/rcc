@@ -742,7 +742,7 @@ static const char *platform = "linux";
  * that case (NULL for rcc's own binaries). */
 static const char *platform_suffix = "linux";
 static const char *compiler_name;
-static bool is_arm64, is_darwin_cross, is_mingw_native;
+static bool is_arm64, is_darwin_cross, is_mingw_native, is_wine;
 static char runner_cmd[512];
 static bool has_runner;
 static int g_num_workers = 0;
@@ -810,6 +810,7 @@ static void detect_platform(const char *rcc_path) {
     else if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
         platform = "mingw_cross";
         is_mingw_native = true;
+        is_wine = true;
     } else {
         platform = "mingw";
         is_mingw_native = true;
@@ -844,6 +845,13 @@ static void detect_platform(const char *rcc_path) {
         }
     }
 #endif
+}
+
+/* Unit tests such as test_peep spawn many compiler subprocesses; under
+ * cross runners (wine, qemu) the overhead easily exceeds the normal 5 s
+ * budget, so give them a longer leash. */
+static int unit_run_timeout(void) {
+    return (has_runner || is_wine) ? 60 : 5;
 }
 
 /* ── rcc library API (dynamically loaded from rcc_lib.{dll,so,dylib}) ──
@@ -1727,13 +1735,27 @@ static void emit_backtrace(const char *exe_path, const char *args,
             }
             pclose(fp);
         }
-    } else if (access("/usr/bin/gdb", X_OK) == 0 && !gdb_failed) {
+    } else if ((access("/usr/bin/gdb", X_OK) == 0
+#ifdef _WIN32
+                || access("/mingw64/bin/gdb.exe", X_OK) == 0 || access("/mingw32/bin/gdb.exe", X_OK) == 0
+#endif
+                ) &&
+               !gdb_failed) {
         BT_OUT("\n=== EXEC_FAIL backtrace ===\n");
         BT_OUT("command: %s %s\n", dp, args ? args : "");
         char cmd[1024];
+#ifdef _WIN32
+        const char *gdb_path = access("/mingw64/bin/gdb.exe", X_OK) == 0
+            ? "/mingw64/bin/gdb.exe"
+            : access("/mingw32/bin/gdb.exe", X_OK) == 0
+            ? "/mingw32/bin/gdb.exe"
+            : "gdb";
+#else
+        const char *gdb_path = "gdb";
+#endif
         snprintf(cmd, sizeof(cmd),
-                 "gdb -q -batch -ex run -ex \"thread apply all bt\" --args %s %s 2>&1",
-                 dp, args ? args : "");
+                 "%s -q -batch -ex run -ex \"thread apply all bt\" --args %s %s 2>&1",
+                 gdb_path, dp, args ? args : "");
         FILE *fp = popen(cmd, "r");
         if (fp) {
             char ln[1024];
@@ -1803,6 +1825,15 @@ static void vlog_test_details(const char *name, const char *compile_cmd,
     vlog("\n");
 }
 
+/* Emit the exit code for a failed execution; timeouts are reported
+ * explicitly so they are not mistaken for a plain nonzero exit. */
+static void log_fail_exit(int exit_code, bool timed_out) {
+    if (timed_out)
+        fprintf(stderr, "    TIMEOUT\n");
+    else
+        fprintf(stderr, "    exit=%d\n", exit_code);
+}
+
 // Per-test result captured during parallel execution
 typedef struct {
     int exit_code;
@@ -1814,6 +1845,7 @@ typedef struct {
     char tmp_exe[256];
     bool did_compile;
     bool did_exec;
+    bool exec_timed_out;
     // Compliance-specific: gcc execution
     int gcc_exec_exit;
     char *gcc_exec_out;
@@ -2130,6 +2162,7 @@ static void run_one_test(const char *src_path, const char *base,
             int actual_exit = pr.exit_code;
             if (actual_exit != expected_exit) {
                 print_result(base, COL_RED, "EXEC FAIL");
+                log_fail_exit(actual_exit, pr.timed_out);
                 failed++;
                 add_row(base, "EXEC_FAIL", "non-zero exit");
                 print_change(base, "EXEC_FAIL");
@@ -2461,6 +2494,7 @@ static void run_one_test(const char *src_path, const char *base,
     const char *args = test_args(base);
     int expected_exit = test_expected_exit(base);
     int actual_exit;
+    bool exec_timed_out = false;
 
     if (streq(base, "46_grep")) {
         char save_cwd[PATH_MAX];
@@ -2486,6 +2520,7 @@ static void run_one_test(const char *src_path, const char *base,
         ProcResult rr = proc_run(ga, 20, 2);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         actual_exit = rr.exit_code;
+        exec_timed_out = rr.timed_out;
         proc_free(&rr);
         if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
     } else {
@@ -2493,11 +2528,13 @@ static void run_one_test(const char *src_path, const char *base,
                                              &vlog_run_cmd);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         actual_exit = rr.exit_code;
+        exec_timed_out = rr.timed_out;
         proc_free(&rr);
     }
 
     if (actual_exit != expected_exit) {
         print_result(base, COL_RED, "EXEC FAIL");
+        log_fail_exit(actual_exit, exec_timed_out);
         failed++;
         add_row(base, "EXEC_FAIL", "non-zero exit");
         print_change(base, "EXEC_FAIL");
@@ -2838,12 +2875,14 @@ static void compile_and_exec(const char *src_path, const char *base,
         ProcResult rr = proc_run_cwd(ga, 20, 2, TEST_DIR);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         r->exec_exit = rr.exit_code;
+        r->exec_timed_out = rr.timed_out;
         proc_free(&rr);
     } else {
         ProcResult rr = run_exe_with_cmdline(r->tmp_exe, args, args && *args ? 20 : 5,
                                              &r->run_cmdline);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         r->exec_exit = rr.exit_code;
+        r->exec_timed_out = rr.timed_out;
         proc_free(&rr);
     }
     r->exec_out = out_buf;
@@ -2978,6 +3017,7 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
     int expected_exit = test_expected_exit(base);
     if (r->exec_exit != expected_exit) {
         print_result(base, COL_RED, "EXEC FAIL");
+        log_fail_exit(r->exec_exit, r->exec_timed_out);
         failed++;
         add_row(base, "EXEC_FAIL", "non-zero exit");
         print_change(base, "EXEC_FAIL");
@@ -3083,8 +3123,9 @@ static void unit_compile_exec(const char *src_path, const char *base,
         return;
     }
 
-    ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", 5, &r->run_cmdline);
+    ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), &r->run_cmdline);
     r->exec_exit = rr.exit_code;
+    r->exec_timed_out = rr.timed_out;
     r->exec_out = rr.out;
     rr.out = NULL;
     proc_free(&rr);
@@ -3178,6 +3219,7 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
             add_row(base, "TODO", "");
         } else {
             print_result(base, COL_RED, "EXEC FAIL");
+            log_fail_exit(r->exec_exit, r->exec_timed_out);
             failed++;
             add_row(base, "EXEC_FAIL", "");
         }
@@ -3192,7 +3234,7 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         /* Re-run with VERBOSE env to get internal diagnostics */
         setenv("VERBOSE", "1", 1);
         {
-            ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", 5, NULL);
+            ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
             if (vr.out && vr.out[0])
                 fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
             proc_free(&vr);
@@ -3398,7 +3440,7 @@ static int run_unit_tests(void) {
                 continue;
             }
 
-            ProcResult rr = run_exe_with_cmdline(tmp, "", 5, &run_cmdline);
+            ProcResult rr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), &run_cmdline);
             int ae = rr.exit_code;
             run_out = rr.out;
             if (ae != expected_exit) {
@@ -3408,6 +3450,7 @@ static int run_unit_tests(void) {
                     add_row(base, "TODO", "");
                 } else {
                     print_result(base, COL_RED, "EXEC FAIL");
+                    log_fail_exit(ae, rr.timed_out);
                     failed++;
                     add_row(base, "EXEC_FAIL", "");
                 }
@@ -3419,7 +3462,7 @@ static int run_unit_tests(void) {
                 /* Re-run with VERBOSE env to get internal diagnostics */
                 setenv("VERBOSE", "1", 1);
                 {
-                    ProcResult vr = run_exe_with_cmdline(tmp, "", 5, NULL);
+                    ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
                     if (vr.out && vr.out[0])
                         fprintf(stderr, "--- %s (VERBOSE re-run) ---\n%s", base, vr.out);
                     proc_free(&vr);
@@ -3967,6 +4010,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         r->run_cmdline = cmdline_from_argv(ra);
         ProcResult rr = proc_run(ra, has_runner ? 20 : 5, 0);
         r->exec_exit = rr.exit_code;
+        r->exec_timed_out = rr.timed_out;
         if (rr.exit_code != 0 && !has_runner) {
             // emit_backtrace calls gdb via popen/fork, which is unsafe in
             // multi-threaded workers. Capture the exit output directly.
@@ -4038,6 +4082,7 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
         tort_add_error(&g_tort_runtime_errors, name);
         if (!summary_only) {
             print_result(name, COL_RED, "FAIL (runtime)");
+            log_fail_exit(r->exec_exit, r->exec_timed_out);
             if (r->exec_out && r->exec_out[0])
                 fprintf(stderr, "%s", r->exec_out);
         }
@@ -4092,6 +4137,11 @@ static void run_torture_test(const char *src, bool summary_only) {
     ca[ai++] = (char *)rccflags;
     ca[ai++] = "-I";
     ca[ai++] = ".";
+    ca[ai++] = "-o";
+    ca[ai++] = exe_path;
+    ca[ai++] = (char *)src;
+    ca[ai++] = "-lm";
+    ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, 30, 0);
 
@@ -4378,6 +4428,7 @@ static void comp_compile_exec(const char *src_path, const char *base,
         r->run_cmdline = cmdline_from_argv(ra);
         ProcResult rr = proc_run(ra, 5, 0);
         r->exec_exit = rr.exit_code;
+        r->exec_timed_out = rr.timed_out;
         r->exec_out = rr.out;
         rr.out = NULL;
         proc_free(&rr);
@@ -4789,6 +4840,7 @@ static void ctest_compile_exec(const char *src_path, const char *name,
             r->did_compile = true;
             r->did_exec = true;
             r->exec_exit = rp.exit_code;
+            r->exec_timed_out = rp.timed_out;
             r->exec_out = rp.out;
             rp.out = NULL;
             return;
@@ -4810,6 +4862,7 @@ static void ctest_compile_exec(const char *src_path, const char *name,
 
     ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", 30, &r->run_cmdline);
     r->exec_exit = rr.exit_code;
+    r->exec_timed_out = rr.timed_out;
     r->exec_out = rr.out;
     rr.out = NULL;
     proc_free(&rr);
@@ -4837,6 +4890,7 @@ static bool ctest_evaluate_report(const char *name, const char *exp_path, Parall
     bool pass = false;
     if (r->exec_exit != 0) {
         print_result(name, COL_RED, "FAIL (non-zero exit)");
+        log_fail_exit(r->exec_exit, r->exec_timed_out);
     } else {
         char *expected_raw = slurp(exp_path);
         char *expected = normalize_output(expected_raw, name);
