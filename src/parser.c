@@ -5186,7 +5186,7 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = new_node(ND_ATOMIC_FENCE, tok);
         node->body = NULL;
         node->atomic_ord = MEMORDER_SEQ_CST;
-        *rest = skip(tok, "(");
+        *rest = skip(tok->next, "(");
         *rest = skip(*rest, ")");
         return node;
     }
