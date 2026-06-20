@@ -1237,7 +1237,12 @@ static long eval_primary(char **rest, char *p, char *filename) {
         *rest = p;
         if (!m || m->is_function)
             return 0;
-        return strtol(expand_text(m->body, filename, 1, 0), NULL, 0);
+        // The body may be a full expression (e.g. "(A * 100 + B)"), not just
+        // a literal, so it must go through the expression evaluator rather
+        // than strtol(), which stops at the first non-digit (e.g. '(').
+        char *body = expand_text(m->body, filename, 1, 0);
+        char *body_rest = body;
+        return eval_pp_expr(&body_rest, body, filename);
     }
 
     *rest = p;

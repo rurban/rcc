@@ -11971,13 +11971,27 @@ void codegen(Program *prog) {
         printf("  .p2align 2\n");
 #endif
         printf("%s:\n", asm_sym_name(sym_name(fn_label)));
+#ifdef _WIN32
+        // Emit Win64 SEH unwind directives so the linker populates .pdata/.xdata
+        // with a RUNTIME_FUNCTION entry. Without this, RtlUnwind(Ex) (used by
+        // longjmp and exception handling) can't walk past this frame: under
+        // Wine that's just a logged warning, but on real Windows it crashes.
+        printf(".seh_proc %s\n", asm_sym_name(sym_name(fn_label)));
+#endif
         printf("  pushq %%rbp\n");
+#ifdef _WIN32
+        printf(".seh_pushreg %%rbp\n");
+#endif
         printf("  movq %%rsp, %%rbp\n");
 
         // Only push callee-saved registers that were actually used
         for (int j = 0; j < callee_count; j++) {
-            if (callee_mask & (1 << j))
+            if (callee_mask & (1 << j)) {
                 printf("  push %s\n", reg64[j + 2]);
+#ifdef _WIN32
+                printf(".seh_pushreg %s\n", reg64[j + 2]);
+#endif
+            }
         }
 #ifdef _WIN32
         // Windows requires probing the stack one page at a time when growing
@@ -11992,6 +12006,10 @@ void codegen(Program *prog) {
         } else
 #endif
             printf("  subq $%d, %%rsp\n", sub_amount);
+#ifdef _WIN32
+        printf(".seh_stackalloc %d\n", sub_amount);
+        printf(".seh_endprologue\n");
+#endif
 
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
 #ifdef _WIN32
@@ -12066,6 +12084,9 @@ void codegen(Program *prog) {
         }
         printf("  popq %%rbp\n");
         printf("  ret\n");
+#ifdef _WIN32
+        printf(".seh_endproc\n");
+#endif
 #endif
     }
     // Emit constructor/destructor entries
