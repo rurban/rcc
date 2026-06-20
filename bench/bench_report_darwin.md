@@ -4,50 +4,50 @@ _Generated: June 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           97 |          674 |        771 |
-| RCC -O1   |           71 |          672 |        743 |
-| TCC       |           37 |          551 |        588 |
-| GCC -O0   |           66 |          463 |        529 |
-| GCC -O2   |           92 |          283 |        375 |
-| Clang -O0 |           55 |          465 |        520 |
-| Clang -O2 |           80 |          281 |        361 |
+| RCC       |           88 |          623 |        711 |
+| RCC -O1   |           66 |          623 |        689 |
+| TCC       |           34 |          512 |        546 |
+| GCC -O0   |           61 |          433 |        494 |
+| GCC -O2   |           90 |          262 |        352 |
+| Clang -O0 |           51 |          434 |        485 |
+| Clang -O2 |           74 |          262 |        336 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:   2720 us
-  lex         bench.c:     84 us
-  parse       bench.c:    125 us
+  preprocess  bench.c:   1134 us
+  lex         bench.c:     77 us
+  parse       bench.c:     95 us
   typecheck   bench.c:      4 us
-  codegen     bench.c:   1748 us
+  codegen     bench.c:   1727 us
   peephole    bench.c:    291 us (est, 778 calls)
-  link        bench_rcc:  70011 us
+  link        bench_rcc:  84736 us
 
 RCC -O1:
-  preprocess  bench.c:   1633 us
+  preprocess  bench.c:   3971 us
   lex         bench.c:     80 us
-  parse       bench.c:     79 us
-  typecheck   bench.c:      4 us
+  parse       bench.c:     96 us
+  typecheck   bench.c:      5 us
   opt(CTFE)   bench.c:     13 us
-  codegen     bench.c:   1366 us
+  codegen     bench.c:   2007 us
   peephole    bench.c:    290 us (est, 775 calls)
-  link        bench_rcc_o1:  68933 us
+  link        bench_rcc_o1:  71217 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c: 845387 us
-  lex         sqlite3.c:  76916 us
+  preprocess  sqlite3.c: 749278 us
+  lex         sqlite3.c:  74122 us
 sqlite3.c:1: [0m[1;31merror:[0m expected specific operator
  __sync_synchronize();
  [1;31m^~~~~~~~~~~~~~~~~~[0m
 
 RCC -O1:
-  preprocess  sqlite3.c: 710521 us
-  lex         sqlite3.c:  82836 us
+  preprocess  sqlite3.c: 591996 us
+  lex         sqlite3.c:  78253 us
 sqlite3.c:1: [0m[1;31merror:[0m expected specific operator
  __sync_synchronize();
  [1;31m^~~~~~~~~~~~~~~~~~[0m
@@ -57,8 +57,8 @@ sqlite3.c:1: [0m[1;31merror:[0m expected specific operator
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| TCC       |        80 ms |
-| GCC -O0   |      1083 ms |
-| GCC -O2   |      9615 ms |
-| Clang -O0 |       934 ms |
-| Clang -O2 |      9553 ms |
+| TCC       |        69 ms |
+| GCC -O0   |       808 ms |
+| GCC -O2   |      8382 ms |
+| Clang -O0 |       799 ms |
+| Clang -O2 |      8292 ms |

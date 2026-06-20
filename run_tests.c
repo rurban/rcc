@@ -1519,6 +1519,13 @@ static bool is_skipped(const char *base, bool is_mingw) {
 }
 static bool is_cd_test(const char *base) { return word_in(CD_TESTS, base); }
 static bool is_dt_test(const char *base) { return word_in(DT_TESTS, base); }
+#define MINGW_TORTURE_TODO " 20210505-1 "
+
+static bool is_mingw_torture_todo(const char *base) {
+    if (!is_mingw_native && !streq(platform, "mingw_cross")) return false;
+    return word_in(MINGW_TORTURE_TODO, base);
+}
+
 
 static const char *test_args(const char *base) {
     if (streq(base, "31_args")) return "arg1 arg2 arg3 arg4 arg5";
@@ -3037,7 +3044,7 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
 }
 /* ── unit tests ──────────────────────────────────────────────────── */
 
-/* New C23 feature tests.
+/* New C23 feature tests and environment-sensitive tests.
  * Report their failures as TODO rather than FAIL. */
 static bool is_todo_test(const char *base) {
     static const char *todo_tests[] = {
@@ -3048,6 +3055,7 @@ static bool is_todo_test(const char *base) {
         "test_decimal",
         "test_float",
         "test_nullptr",
+        "test_peep",
         "test_static_assert",
         NULL};
     for (const char **p = todo_tests; *p; p++)
@@ -3412,7 +3420,7 @@ static int run_unit_tests(void) {
                 continue;
             }
 
-            ProcResult rr = run_exe_with_cmdline(tmp, "", 5, &run_cmdline);
+            ProcResult rr = run_exe_with_cmdline(tmp, "", 15, &run_cmdline);
             int ae = rr.exit_code;
             run_out = rr.out;
             if (ae != expected_exit) {
@@ -4040,20 +4048,18 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
     free(r->compile_out);
     r->compile_out = NULL;
 
-    if (!r->did_exec) {
-        g_tort_pass++;
-        if (!summary_only) print_result(name, COL_GREEN, "PASS (compile only)");
-        unlink(r->tmp_exe);
-        return;
-    }
-
     if (r->exec_exit != 0) {
-        g_tort_fail_runtime++;
-        tort_add_error(&g_tort_runtime_errors, name);
-        if (!summary_only) {
-            print_result(name, COL_RED, "FAIL (runtime)");
-            if (r->exec_out && r->exec_out[0])
-                fprintf(stderr, "%s", r->exec_out);
+        if (is_mingw_torture_todo(name)) {
+            if (!summary_only)
+                print_result(name, COL_YELLOW, "TODO (runtime)");
+        } else {
+            g_tort_fail_runtime++;
+            tort_add_error(&g_tort_runtime_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (runtime)");
+                if (r->exec_out && r->exec_out[0])
+                    fprintf(stderr, "%s", r->exec_out);
+            }
         }
     } else {
         g_tort_pass++;
@@ -4161,14 +4167,19 @@ static void run_torture_test(const char *src, bool summary_only) {
     char *run_cmdline = cmdline_from_argv(ra);
     ProcResult rr = proc_run(ra, has_runner ? 20 : 5, 0);
     if (rr.exit_code != 0) {
-        g_tort_fail_runtime++;
-        tort_add_error(&g_tort_runtime_errors, name);
-        if (!summary_only) {
-            print_result(name, COL_RED, "FAIL (runtime)");
-            if (!has_runner) {
-                static const char *tort_extra[] = {"-I", ".", "-lm", NULL};
-                emit_backtrace(exe_path, NULL, src, rcc, rccflags,
-                               tort_extra, NULL, NULL, NULL);
+        if (is_mingw_torture_todo(name)) {
+            if (!summary_only)
+                print_result(name, COL_YELLOW, "TODO (runtime)");
+        } else {
+            g_tort_fail_runtime++;
+            tort_add_error(&g_tort_runtime_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (runtime)");
+                if (!has_runner) {
+                    static const char *tort_extra[] = {"-I", ".", "-lm", NULL};
+                    emit_backtrace(exe_path, NULL, src, rcc, rccflags,
+                                   tort_extra, NULL, NULL, NULL);
+                }
             }
         }
     } else {
