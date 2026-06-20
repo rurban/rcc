@@ -1727,13 +1727,27 @@ static void emit_backtrace(const char *exe_path, const char *args,
             }
             pclose(fp);
         }
-    } else if (access("/usr/bin/gdb", X_OK) == 0 && !gdb_failed) {
+    } else if ((access("/usr/bin/gdb", X_OK) == 0
+#ifdef _WIN32
+                || access("/mingw64/bin/gdb.exe", X_OK) == 0 || access("/mingw32/bin/gdb.exe", X_OK) == 0
+#endif
+                ) &&
+               !gdb_failed) {
         BT_OUT("\n=== EXEC_FAIL backtrace ===\n");
         BT_OUT("command: %s %s\n", dp, args ? args : "");
         char cmd[1024];
+#ifdef _WIN32
+        const char *gdb_path = access("/mingw64/bin/gdb.exe", X_OK) == 0
+            ? "/mingw64/bin/gdb.exe"
+            : access("/mingw32/bin/gdb.exe", X_OK) == 0
+            ? "/mingw32/bin/gdb.exe"
+            : "gdb";
+#else
+        const char *gdb_path = "gdb";
+#endif
         snprintf(cmd, sizeof(cmd),
-                 "gdb -q -batch -ex run -ex \"thread apply all bt\" --args %s %s 2>&1",
-                 dp, args ? args : "");
+                 "%s -q -batch -ex run -ex \"thread apply all bt\" --args %s %s 2>&1",
+                 gdb_path, dp, args ? args : "");
         FILE *fp = popen(cmd, "r");
         if (fp) {
             char ln[1024];
@@ -4092,6 +4106,11 @@ static void run_torture_test(const char *src, bool summary_only) {
     ca[ai++] = (char *)rccflags;
     ca[ai++] = "-I";
     ca[ai++] = ".";
+    ca[ai++] = "-o";
+    ca[ai++] = exe_path;
+    ca[ai++] = (char *)src;
+    ca[ai++] = "-lm";
+    ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, 30, 0);
 
