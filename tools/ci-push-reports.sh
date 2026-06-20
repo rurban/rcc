@@ -2,13 +2,22 @@
 set -eu
 
 force_push=
-while getopts "f" opt; do
-    case "$opt" in
-        f) force_push=1 ;;
-        *) echo "Usage: $0 [-f]" >&2; exit 1 ;;
+force_plain=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -ff) force_push=1; force_plain=1; shift ;;
+        -f) force_push=1; shift ;;
+        --) shift; break ;;
+        -*) echo "Usage: $0 [-f|-ff]" >&2; exit 1 ;;
+        *) break ;;
     esac
 done
-shift $((OPTIND - 1))
+
+if [ -n "$force_plain" ]; then
+    force_flag=--force
+else
+    force_flag=--force-with-lease
+fi
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$branch" = "main" ]; then
@@ -18,7 +27,7 @@ fi
 
 if [ -n "$force_push" ]; then
     echo "Force-pushing branch '$branch' to trigger CI..."
-    git push origin "$branch" --force-with-lease
+    git push origin "$branch" "$force_flag"
 else
     echo "Pushing branch '$branch' to trigger CI..."
     git push origin "$branch"
@@ -87,6 +96,6 @@ else
 fi
 
 echo "Force-pushing amended commit..."
-git push origin "$branch" --force-with-lease
+git push origin "$branch" "$force_flag"
 
 echo "Done."
