@@ -10868,7 +10868,10 @@ static int peep_pattern5_detect(char *li, char *lj, char *lk) {
     if (pid < 0) return 0;
     peep_p5_pid = pid;
     peep_p5_mem = format("%s", mem1);
-    peep_p5_dst = format("%s", mdst);
+    // Preserve the register width from the ldr source (w vs x),
+    // otherwise a 32-bit ldr wN combined with a mov xM, xN produces
+    // a 64-bit load from a 32-bit stack slot → garbage upper bits.
+    peep_p5_dst = format("%c%s", r1[0], mdst + 1);
     peep_p5_op = format("%s", op2);
     peep_p5_rhs = format("%s", src2_2);
 #endif
