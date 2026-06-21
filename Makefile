@@ -135,6 +135,7 @@ VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2
 
 ifneq ($(findstring apple,$(MACHINE)),)
 DARWIN_O = lib/rcc_darwin.dylib
+LDFLAGS += -Wl,-rpath,@executable_path/lib
 OBJS += $(DARWIN_O)
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(DARWIN_O)
@@ -242,7 +243,7 @@ src/gcc_predefined.h: FORCE
 	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
 $(DARWIN_O): lib/rcc_darwin.c
-	$(CC) -arch arm64 -dynamiclib -install_name @rpath/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
+	$(CC) -arch arm64 -dynamiclib -install_name $(PWD)/lib/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
 $(MINGW_O): lib/rcc_mingw.c
 	$(CC) $(filter-out -flto=auto -flto=thin,$(CFLAGS)) -c lib/rcc_mingw.c -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
