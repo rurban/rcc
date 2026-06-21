@@ -171,6 +171,7 @@ int main(int argc, char **argv) {
     bool opt_c = false;
     bool opt_E = false;
     bool opt_o = false;
+    bool opt_stdout = false; // -o - : write final output to stdout
     char libs[512] =
 #ifdef _WIN32
         " -lm"
@@ -248,6 +249,8 @@ int main(int argc, char **argv) {
             }
             out_path = argv[i];
             opt_o = true;
+            if (!strcmp(out_path, "-"))
+                opt_stdout = true;
         } else if (!strcmp(argv[i], "-pthread")) {
             add_define("_REENTRANT");
             int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
@@ -333,6 +336,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // -c -o - is impossible: object files require random access (seek).
+    if (opt_c && opt_stdout) {
+        fprintf(stderr, "rcc: error: -c -o - is not supported (object files require seekable output)\n");
+        return 1;
+    }
+
     // Process each input file
     for (int fi = 0; fi < n_inputs; fi++) {
         char *cur_path = input_files[fi];
@@ -348,6 +357,7 @@ int main(int argc, char **argv) {
 
         // Tokenize and Parse
         char *contents = read_file(cur_path);
+        str_intern_resize(strlen(contents)); // size hash for this file
 
         // Always preprocess - opt_E just outputs preprocessed result
         uint64_t t0 = opt_time ? now_us() : 0;
@@ -497,6 +507,13 @@ int main(int argc, char **argv) {
         // Linking: codegen already produced .o files; add them to linker command
         char cmd[4096] = "";
         int status = 0;
+        // For -o -, link to a temp file then stream it to stdout afterwards.
+        char stdout_tmp[256] = "";
+        const char *backend_out = out_path;
+        if (opt_stdout) {
+            snprintf(stdout_tmp, sizeof(stdout_tmp), "rcc_tmp_%d_stdout.out", _getpid());
+            backend_out = stdout_tmp;
+        }
         if (obj_paths) {
             obj_paths = reverse(obj_paths);
             for (OutPath *p = obj_paths; p; p = p->next) {
@@ -509,14 +526,14 @@ int main(int argc, char **argv) {
         snprintf(cmd, sizeof(cmd), GCC " -o %s -arch arm64"
                                        " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
                                        " -Wl,-undefined,dynamic_lookup",
-                 out_path);
+                 backend_out);
 #else
         if (opt_pie)
-            snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", backend_out);
         else if (opt_pic)
-            snprintf(cmd, sizeof(cmd), GCC " -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -o %s", backend_out);
         else
-            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", out_path);
+            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", backend_out);
 #endif
 
         // Codegen already produced .o files; add them directly to linker command
@@ -569,6 +586,20 @@ int main(int argc, char **argv) {
             if (status != 0)
                 fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
         }
+
+        // For -o -, stream the linked backend output to stdout.
+        if (opt_stdout && status == 0) {
+            FILE *f = fopen(stdout_tmp, "rb");
+            if (f) {
+                char buf[65536];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                    fwrite(buf, 1, n, stdout);
+                fclose(f);
+            }
+        }
+        if (opt_stdout)
+            remove(stdout_tmp);
 
         // Cleanup temp files
         for (OutPath *p = out_paths; p; p = p->next)

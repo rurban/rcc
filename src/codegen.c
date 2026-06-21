@@ -10704,6 +10704,56 @@ static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
     memcpy(lbl, line + 5, len + 1);
     return 1;
 }
+// Parse ARM64 2-op or 3-op: "  op dst, src1[, src2]"
+// Returns number of operands (2 or 3); fills op, dst, src1, src2.
+// src2_is_imm set to 1 if src2 starts with '#'.
+static int peep_arm64_op(char *line, char *op, int op_sz,
+                         char *dst, int dst_sz,
+                         char *src1, int s1_sz,
+                         char *src2, int s2_sz, int *src2_is_imm) {
+    if (line[0] != ' ' || line[1] != ' ') return 0;
+    char *p = line + 2;
+    char *sp = strchr(p, ' ');
+    if (!sp) return 0;
+    int olen = sp - p;
+    if (olen >= op_sz) return 0;
+    memcpy(op, p, olen);
+    op[olen] = '\0';
+    p = sp + 1;
+    // First operand: dst
+    char *comma = strchr(p, ',');
+    if (!comma) return 0;
+    int dlen = comma - p;
+    if (dlen >= dst_sz) return 0;
+    memcpy(dst, p, dlen);
+    dst[dlen] = '\0';
+    p = comma + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    // Second operand: src1
+    comma = strchr(p, ',');
+    if (comma) {
+        // 3-operand form
+        int s1len = comma - p;
+        if (s1len >= s1_sz) return 0;
+        memcpy(src1, p, s1len);
+        src1[s1len] = '\0';
+        p = comma + 1;
+        while (*p == ' ' || *p == '\t') p++;
+        int s2len = strlen(p);
+        if (s2len >= s2_sz) return 0;
+        memcpy(src2, p, s2len + 1);
+        *src2_is_imm = (p[0] == '#');
+        return 3;
+    } else {
+        // 2-operand form (e.g. cmp)
+        int s1len = strlen(p);
+        if (s1len >= s1_sz) return 0;
+        memcpy(src1, p, s1len + 1);
+        src2[0] = '\0';
+        *src2_is_imm = 0;
+        return 2;
+    }
+}
 #endif
 
 // === Peephole Patterns 2-5 ===
@@ -10778,11 +10828,32 @@ static int peep_pattern4(char **lines, int li, int lj) {
     char rd[32];
     long long imm_val;
 #ifdef ARCH_ARM64
-    (void)li;
-    (void)lj;
     if (sscanf(lines[li], " mov %31s, #%lld", rd, &imm_val) != 2) return 0;
-    // We'd need peep_op to match arm64 3-op; skip for now
-    return 0;
+    if (!is_reg(rd)) return 0;
+    char op[16], dst[32], src1[32], src2[32];
+    int src2_is_imm;
+    int nops = peep_arm64_op(lines[lj], op, sizeof(op), dst, sizeof(dst),
+                             src1, sizeof(src1), src2, sizeof(src2), &src2_is_imm);
+    if (nops < 2) return 0;
+    // Only fold arithmetic/logical ops that accept immediates
+    bool is_add = !strcmp(op, "add"), is_sub = !strcmp(op, "sub");
+    bool is_and = !strcmp(op, "and"), is_orr = !strcmp(op, "orr"), is_eor = !strcmp(op, "eor");
+    if (!(is_add || is_sub || is_and || is_orr || is_eor)) return 0;
+    // Fold when REG is used as src2 or (for commutative ops) src1
+    const char *other = NULL;
+    if (nops == 3 && !strcmp(src2, rd)) {
+        other = src1;
+    } else if (nops == 3 && !strcmp(src1, rd) && (is_add || is_orr || is_eor || is_and)) {
+        other = src2;
+    }
+    if (!other) return 0;
+    // Eliminate nop: add/sub/orr/eor with 0, and with -1
+    if (imm_val == 0 && (is_add || is_sub || is_orr || is_eor)) {
+        lines[lj][0] = '\0';
+    } else {
+        lines[lj] = format("  %s %s, %s, #%lld", op, dst, other, imm_val);
+    }
+    return 1;
 #else
     if (!peep_mov_reg_imm(lines[li], rd, sizeof(rd), &imm_val) || !is_reg(rd))
         return 0;
@@ -10981,6 +11052,18 @@ static void emit_peephole_body(char *body_text) {
                         any = true;
                         break;
                     }
+#ifndef ARCH_ARM64
+                    // Pattern 1a: mov $SRC, REG; mov REG, DST -> mov $SRC, DST
+                    long long imm;
+                    if (peep_mov_reg_imm(w[ii], d1, sizeof(d1), &imm) &&
+                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
+                        !strcmp(s2, d1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s2) && is_reg(d2)) {
+                        w[jj] = format("  mov $%lld, %s", imm, s2);
+                        // Conservative: skip dead-predecessor deletion without full forward scan
+                        any = true;
+                        break;
+                    }
+#endif
                 }
                 // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
                 if (peep_pattern2(w, ii, jj)) {
