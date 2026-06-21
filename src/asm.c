@@ -377,6 +377,14 @@ static X86Reg parse_x86_reg64(const char *s) {
     return X86_NOREG;
 }
 
+// Parse "%xmmN" -> X86_XMM0+N.  parse_x86_reg64 only knows GP registers.
+static X86XmmReg parse_x86_xmm(const char *s) {
+    if (!s || *s != '%') return X86_XMM0;
+    s++;
+    if (strncmp(s, "xmm", 3) != 0) return X86_XMM0;
+    return (X86XmmReg)(X86_XMM0 + atoi(s + 3));
+}
+
 static int reg_size_x86(const char *s) {
     if (!s || *s != '%') return 8;
     s++;
@@ -1648,8 +1656,9 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // MOV variants
-    if (!strncmp(mnem, "mov", 3)) {
+    // MOV variants (but not the SSE scalar moves movsd/movss, which are
+    // handled by their dedicated encoders below).
+    if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss")) {
         // AT&T: src, dst
         bool is_movabs = strstr(mnem, "abs") != NULL;
         bool is_movsx = strstr(mnem, "sx") != NULL || strstr(mnem, "sl") != NULL;
@@ -2035,18 +2044,20 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // SSE
     if (!strcmp(mnem, "movsd")) {
         if (is_reg(0) && is_reg(1))
-            x86_movsd_rr(buf, (X86XmmReg)parse_x86_reg64(ops[0]), (X86XmmReg)parse_x86_reg64(ops[1]));
+            x86_movsd_rr(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         else if (is_mem(0) && is_reg(1))
-            x86_movsd_rm(buf, (X86XmmReg)R(1), M(0));
+            x86_movsd_rm(buf, parse_x86_xmm(ops[1]), M(0));
         else if (is_reg(0) && is_mem(1))
-            x86_movsd_mr(buf, M(1), (X86XmmReg)R(0));
+            x86_movsd_mr(buf, M(1), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "movss")) {
         if (is_reg(0) && is_reg(1))
-            x86_movss_rr(buf, (X86XmmReg)R(0), (X86XmmReg)R(1));
+            x86_movss_rr(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         else if (is_mem(0) && is_reg(1))
-            x86_movss_rm(buf, (X86XmmReg)R(1), M(0));
+            x86_movss_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else if (is_reg(0) && is_mem(1))
+            x86_movss_mr(buf, M(1), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "addsd")) {
