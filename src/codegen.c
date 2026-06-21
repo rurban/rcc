@@ -973,6 +973,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     VReg arg_regs_stk[64];
     int arg_sizes_stk[64];
     bool arg_is_float_stk[64];
+    int arg_stage_stk[64]; // per-arg staging slot (0 = not staged)
 #ifdef _WIN32
     int arg_gp_idx_stk[64];
     int arg_fp_idx_stk[64];
@@ -993,6 +994,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     VReg *arg_regs;
     int *arg_sizes;
     bool *arg_is_float;
+    int *arg_stage;
 #ifdef _WIN32
     int *arg_gp_idx;
     int *arg_fp_idx;
@@ -1014,6 +1016,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         arg_regs = arg_regs_stk;
         arg_sizes = arg_sizes_stk;
         arg_is_float = arg_is_float_stk;
+        arg_stage = arg_stage_stk;
 #ifdef _WIN32
         arg_gp_idx = arg_gp_idx_stk;
         arg_fp_idx = arg_fp_idx_stk;
@@ -1034,6 +1037,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         arg_regs = arena_alloc(sizeof(VReg) * nargs);
         arg_sizes = arena_alloc(sizeof(int) * nargs);
         arg_is_float = arena_alloc(sizeof(bool) * nargs);
+        arg_stage = arena_alloc(sizeof(int) * nargs);
 #ifdef _WIN32
         arg_gp_idx = arena_alloc(sizeof(int) * nargs);
         arg_fp_idx = arena_alloc(sizeof(int) * nargs);
@@ -2735,6 +2739,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         free_reg(r);
     }
 #else
+    // When more args need scratch registers than exist, evaluating them all up
+    // front would exhaust the register set and force colliding per-register
+    // spills.  Stage each evaluated value into a unique stack slot instead, then
+    // reload right before placement.  Mirrors the golden codegen logic.
+    for (int i = 0; i < nargs; i++)
+        arg_stage[i] = 0;
+    int nreg_args_count = 0;
+    for (int i = 0; i < nargs; i++)
+        if (arg_stack_idx[i] < 0)
+            nreg_args_count++;
+    bool use_staging = (nreg_args_count > NUM_REGS);
+
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
@@ -2756,6 +2772,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             arg_regs[i] = addr;
         } else
             arg_regs[i] = gen(argv[i]);
+
+        if (use_staging) {
+            fn_struct_ret_off += 8;
+            if (fn_struct_ret_off > fn_struct_ret_total)
+                fn_struct_ret_total = fn_struct_ret_off;
+            arg_stage[i] = current_fn_stack_size + fn_struct_ret_off;
+            asm_mov_reg_rbp(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq arg_regs[i], -arg_stage[i](%rbp)
+            // Release without triggering spill restore; value is safe in staging slot.
+            spilled_regs &= ~(1 << arg_regs[i]);
+            used_regs &= ~(1 << arg_regs[i]);
+            reg_owner[arg_regs[i]] = NULL;
+            arg_regs[i] = -1;
+        }
     }
 
     // Bitmask of scratch registers still needed for register-passed args.
@@ -2891,13 +2920,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // Two-pass placement: reg64[7]=="%rsi"==argreg64[1], so any arg whose scratch
     // register is rsi must be placed before the arg that writes to rsi, otherwise
     // the write clobbers the source value.  Pass 0: rsi-sourced args.  Pass 1: rest.
-    for (int pass = 0; pass < 2; pass++) {
+    // With staging, values are in unique stack slots so no ordering conflict
+    // exists; a single pass suffices, reloading each staged value first.
+    for (int pass = 0; pass < (use_staging ? 1 : 2); pass++) {
         for (int i = 0; i < nargs; i++) {
             if (arg_stack_idx[i] >= 0)
                 continue;
-            bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
-            if (pass == 0 && !rsi_src) continue;
-            if (pass == 1 && rsi_src) continue;
+            if (!use_staging) {
+                bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
+                if (pass == 0 && !rsi_src) continue;
+                if (pass == 1 && rsi_src) continue;
+            }
+            if (use_staging && arg_stage[i]) {
+                arg_regs[i] = alloc_reg();
+                asm_mov_rbp_reg(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq -arg_stage[i](%rbp), arg_regs[i]
+            }
             if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // movq (%s), %s
