@@ -8784,7 +8784,7 @@ static VReg gen(Node *node) {
         // Apple ARM64: va_list is char*. Just copy the pointer.
         VReg rd = gen_addr(node->lhs); // address of dst char* variable
         VReg rs = gen(node->rhs); // value of src char* (the pointer itself)
-        asm_mov_reg_mem(cg_sec, rs, rd, 8); // str rs, [rd]
+        asm_str_reg_off(cg_sec, rs, rd, 8, 0); // str rs, [rd]
         free_reg(rd);
         free_reg(rs);
 #elif defined(ARCH_ARM64)
@@ -8863,8 +8863,9 @@ static VReg gen(Node *node) {
 #ifndef _WIN32
         bool is_fp = is_flonum(ty);
 #endif
+        VReg r;
 #ifdef ARCH_ARM64
-        VReg r = gen(node->lhs);
+        r = gen(node->lhs);
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 16;
         // rcc passes ALL structs >8 bytes by pointer (not by value).
         // va_arg must read 8-byte pointer from reg save area, then dereference.
@@ -8949,7 +8950,7 @@ static VReg gen(Node *node) {
         // mov x{r}, x12
 #elif defined(_WIN32)
         // Windows x64: va_list is char *. Read arg from current ap, advance by 8.
-        VReg r = gen_addr(node->lhs); // va_list is char *, need its address to advance
+        r = gen_addr(node->lhs); // va_list is char *, need its address to advance
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
         // __int128 is also passed by pointer on Windows x64 (like structs > 8 bytes)
         bool is_by_ptr = is_ptr_struct || ty->kind == TY_INT128;
@@ -8966,7 +8967,7 @@ static VReg gen(Node *node) {
             x86_mov_rr(cg_sec, 8, REG(r), X86_RCX); // movq %rcx, r  [result = old ap]
         }
 #else
-        VReg r = gen(node->lhs);
+        r = gen(node->lhs);
         bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
         // va_arg x86: r points to va_list struct {gr_offs, fp_offs, overflow_arg_area, reg_save_area}
         X86Reg xr = REG(r);
@@ -9047,9 +9048,9 @@ static VReg gen(Node *node) {
         x86_mov_rr(cg_sec, 8, REG(r), X86_RCX); // movq %rcx, rr (va_arg result)
         (void)vaf;
 #endif
-#endif
         rcc_label_count++;
         return r;
+#endif
     }
 
     case ND_ATOMIC_LOAD: {
