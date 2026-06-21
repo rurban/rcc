@@ -719,7 +719,7 @@ static void asm_sub_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
     Arm64Reg rsrc = REG(src);
     int sf = (size == 8) ? 1 : 0;
     arm64_sub_reg(s, sf, rdst, rdst, rsrc, ARM64_LSL, 0);
-    asm_record(ASM_SUB_RR, off, 1, dst, src, -1, size, 0, 0, NULL, 0, -1, false);
+    asm_record(ASM_SUB_RR, off, 1, rdst, rsrc, -1, size, 0, 0, NULL, 0, -1, false);
 #else
     X86Reg rdst = REG(dst);
     X86Reg rsrc = REG(src);
@@ -958,7 +958,7 @@ static void asm_shr_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_lsr_imm(s, sf, REG(r), REG(r), shift);
-    asm_record(ASM_SHR_RI, off, 1, r, -1, -1, size, shift, 0, NULL, 0, -1, false);
+    asm_record(ASM_SHR_RI, off, 1, REG(r), -1, -1, size, shift, 0, NULL, 0, -1, false);
 #else
     x86_shr_ri(s, size, REG(r), shift);
     size_t count = s->len - off;
@@ -971,7 +971,7 @@ static void asm_sar_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_asr_imm(s, sf, REG(r), REG(r), shift);
-    asm_record(ASM_SAR_RI, off, 1, r, -1, -1, size, shift, 0, NULL, 0, -1, false);
+    asm_record(ASM_SAR_RI, off, 1, REG(r), -1, -1, size, shift, 0, NULL, 0, -1, false);
 #else
     x86_sar_ri(s, size, REG(r), shift);
     size_t count = s->len - off;
@@ -980,11 +980,11 @@ static void asm_sar_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 }
 
 static void asm_shl_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
-    size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_lsl_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    size_t off = s->len;
     (void)shift_reg;
     x86_shl_rcl(s, size, REG(r));
     size_t count = s->len - off;
@@ -993,11 +993,11 @@ static void asm_shl_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
 }
 
 static void asm_shr_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
-    size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_lsr_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    size_t off = s->len;
     (void)shift_reg;
     x86_shr_rcl(s, size, REG(r));
     size_t count = s->len - off;
@@ -1006,11 +1006,11 @@ static void asm_shr_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
 }
 
 static void asm_sar_cl(SecBuf *s, VReg r, int size, VReg shift_reg) {
-    size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_asr_reg(s, sf, REG(r), REG(r), REG(shift_reg));
 #else
+    size_t off = s->len;
     (void)shift_reg;
     x86_sar_rcl(s, size, REG(r));
     size_t count = s->len - off;
@@ -1037,7 +1037,9 @@ static void asm_cdq(SecBuf *s) {
 
 static void asm_idiv(SecBuf *s, VReg r, int size) {
 #ifdef ARCH_ARM64
-    // ARM64 division FIXME
+    (void)s;
+    (void)r;
+    (void)size;
 #else
     x86_idiv_r(s, size, REG(r));
 #endif
@@ -1045,7 +1047,9 @@ static void asm_idiv(SecBuf *s, VReg r, int size) {
 
 static void asm_div(SecBuf *s, VReg r, int size) {
 #ifdef ARCH_ARM64
-    // ARM64 unsigned division  FIXME
+    (void)s;
+    (void)r;
+    (void)size;
 #else
     x86_div_r(s, size, REG(r));
 #endif
@@ -1095,7 +1099,7 @@ static void asm_cmp_zero(SecBuf *s, VReg r, int size) {
 static void asm_cset(SecBuf *s, VReg r, Arm64Cond cond) {
     size_t off = s->len;
     arm64_cset(s, 0, REG(r), cond);
-    asm_record(ASM_SETCC, off, 1, r, -1, -1, 4, 0, 0, NULL, cond, -1, false);
+    asm_record(ASM_SETCC, off, 1, REG(r), -1, -1, 4, 0, 0, NULL, cond, -1, false);
 }
 #else
 static void asm_setcc(SecBuf *s, X86Reg r, X86Cond cond) {
@@ -1121,10 +1125,10 @@ static size_t asm_call_label(SecBuf *s) {
 }
 
 static void asm_call_reg(SecBuf *s, VReg r) {
-    size_t off = s->len;
 #ifdef ARCH_ARM64
     arm64_blr(s, REG(r));
 #else
+    size_t off = s->len;
     x86_call_r(s, REG(r));
     asm_record(ASM_CALL_INDIR, off, s->len - off, REG(r), -1, -1, 0, 0, 0, NULL, 0, -1, false);
 #endif
@@ -1235,11 +1239,11 @@ static void asm_ret(SecBuf *s) {
 }
 
 static void asm_leave(SecBuf *s) {
-    size_t off = s->len;
 #ifdef ARCH_ARM64
     arm64_add_extreg(s, 1, CG_ARM_SP, CG_ARM_FP, ARM64_XZR, ARM64_UXTX, 0); // mov sp, fp
     arm64_ldp(s, 1, CG_ARM_FP, CG_ARM_LR, CG_ARM_SP, 0, false, true);
 #else
+    size_t off = s->len;
     x86_leave(s);
     size_t count = s->len - off;
     asm_record(ASM_LEAVE, off, count, -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
