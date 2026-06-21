@@ -1,21 +1,11 @@
-- tcc fails:
-  - mingw: 101_cleanup 119_random_stuff 129_scopes
-  - darwin: 73_arm64 106_versym 108_constructor 119_random_stuff 120_alias
-            124_atomic_counter 128_run_atexit 140_arm64_extasm
-- torture fails (common):
-  - darwin: 20020411-1 pr58277-1 pr82210 va-arg-22 va-arg-pack-1
-  - linux: 20020411-1 pr58277-1 pr58277-2 pr82210 va-arg-22 va-arg-pack-1
-- torture fails (arm64-only, 11 tests):
-  - va_list/vprintf: fprintf-chk-1 printf-chk-1 va-arg-21 vfprintf-1
-    vfprintf-chk-1 vprintf-1 vprintf-chk-1
-    (ARM64 va_list struct layout differs from x86_64: 32-byte
-    [__stack,__gr_top,__vr_top,__gr_offs,__vr_offs] vs 24-byte va_list[1])
-  - string opts: string-opt-18 strlen-7
-    (memcpy(ptr,ptr,N)==ptr builtin replacement on ARM64)
-  - complex: pr104604 (_Complex unsigned division on ARM64)
-  - builtin overflow: pr91450-1 (__builtin_mul_overflow on ARM64)
 - run the peephole checks directly in the codegen pass.
-  it only needs to checks against the previously emitted line.
+  it only needs to check at the beginning of each node against the previously
+  last emitted line. So store at the last line of each node the pattern to
+  check against, if it would be a peep pattern. See peep patterns 1-5. Then
+  we can spare the extra peep pass, and the expensive check against a string.
+- optimize arena_alloc: for the SIMD checks we enforce for each string a
+  min-size of 16.
+  we dont need that, only for the very end of a 4MB chunk. we can keep min-size 8.
 - emit asm bytes/.o files directly, no need for GAS, we only need the linker then.
   the linker can be mold or gold. this saves a ton of space.
 - add -O2 passes, like -finline and -funroll, but no need for SSA analysis.

@@ -53,7 +53,7 @@ rcc -O1 -time:
 
 - **Register-machine codegen** — 8-register allocator on x86-64 (r10, r11, rbx, r12–r15, rsi), 12-register on ARM64 (x10–x15, x19–x24) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the predefined spill slots. If all registers are in use, it spills the additional registers on the stack. Currently with a spill warning on -W.
 - **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
-- **Peephole optimizer** — Multi-pass assembly optimizer with:
+- **Peephole optimizer** — Integrated single-pass assembly optimizer with:
   - Copy propagation (`mov r10, rax; mov [mem], r10` → `mov [mem], rax`)
   - Store-load forwarding (`mov [rbp-N], rcx; mov r10d, [rbp-N]` → `mov r10d, ecx`)
   - Immediate folding (`mov r11d, 1; cmp r10d, r11d` → `cmp r10d, 1`)
@@ -71,7 +71,7 @@ rcc -O1 -time:
 - **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 - **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register, x0–x7 argument/return registers, x8 indirect result register, x9–x15 caller-saved, x19–x28 callee-saved. Variadic args passed on the stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long double pairs on ELF use even-odd register pairs.
 - **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins. Mandatory SSE4.2 not yet.
-- No **insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
+- **Insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
 
 ## Supported C Features
 
@@ -79,7 +79,7 @@ Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (includin
 
 Not yet: C23 (stdbit, stdckdint, bool, [[attribs]], nullptr, `static_assert`),
 trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang
-compile-time warnings, fmv, full \_Decimal support (aliased to float)
+compile-time warnings, fmv, full \_Decimal/Float/Binary support (aliased to float).
 
 Unsupported (skipped in torture tests):
 
@@ -134,7 +134,7 @@ compiler and tests, it is much faster now.
     -c                 compile-only
     -o file            set output filename
     -O0                disable peephole optimizer
-    -O1                enable peephole + CTFE optimizations
+    -O1                enable CTFE optimizations
     -g                 emit DWARF line-number debug info
     -W                 print diagnostic warnings (stack spilling)
     -Werror            error on all warnings (but not internal spill to check warnings)
