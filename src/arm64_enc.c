@@ -91,15 +91,15 @@ static uint32_t logic_imm_field(int sf, uint64_t val) {
 
 void arm64_movz(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
     assert(shift16 == 0 || shift16 == 16 || shift16 == 32 || shift16 == 48);
-    secbuf_emit32le(s, SF(sf) | 0xd2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
+    secbuf_emit32le(s, SF(sf) | 0x52800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
 void arm64_movk(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
-    secbuf_emit32le(s, SF(sf) | 0xf2800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
+    secbuf_emit32le(s, SF(sf) | 0x72800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
 void arm64_movn(SecBuf *s, int sf, Arm64Reg rd, uint16_t imm16, uint16_t shift16) {
-    secbuf_emit32le(s, SF(sf) | 0x92800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
+    secbuf_emit32le(s, SF(sf) | 0x12800000u | BITS(22, 21, shift16 / 16) | BITS(20, 5, imm16) | BITS(4, 0, rd));
 }
 
 void arm64_add_imm(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, int32_t imm12, uint16_t sh) {

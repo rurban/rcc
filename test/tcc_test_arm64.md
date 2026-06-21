@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 99
-- **Failed**: 21
-- **Pass Rate**: 82%
+- **Passed**: 98
+- **Failed**: 22
+- **Pass Rate**: 81%
 
 ## Detailed Results
 
@@ -129,7 +129,7 @@ Generated: June 2026
 | 121_struct_return           | MISMATCH     | Output does not match .expect |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
-| 124_atomic_counter          | PASS         | Output matches                |
+| 124_atomic_counter          | MISMATCH     | Output does not match .expect |
 | 128_run_atexit              | MISMATCH     | Output differs                |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | MISMATCH     | Output does not match .expect |
