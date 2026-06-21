@@ -190,7 +190,7 @@
   960416-1                            PASS
   960419-1                            PASS
   960419-2                            PASS
-  960512-1                            FAIL (runtime)
+  960512-1                            PASS
   960513-1                            PASS
   960521-1                            PASS
   960608-1                            PASS
@@ -1638,10 +1638,10 @@
   va-arg-12                           PASS
   va-arg-13                           PASS
   va-arg-14                           PASS
-  va-arg-15                           FAIL (runtime)
+  va-arg-15                           PASS
   va-arg-16                           PASS
-  va-arg-17                           FAIL (runtime)
-  va-arg-18                           FAIL (runtime)
+  va-arg-17                           PASS
+  va-arg-18                           PASS
   va-arg-19                           PASS
   va-arg-20                           PASS
   va-arg-21                           PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1540/1569 passed (98%), 29 failed (0 compile/29 runtime), 102 skipped.
+Torture: 1544/1569 passed (98%), 25 failed (0 compile/25 runtime), 102 skipped.
 
-Runtime failures: 960512-1 20020411-1 20070614-1 pr32244-1 pr34971 pr38969 pr42248 pr42269-2 pr44828 pr54471 pr61375 pr63302 pr65170 pr71554 pr80501 pr82210 pr84169 pr84748 pr85582-2 pr85582-3 pr91450-1 pr91635 pr92904 pr98366 pr98474 pr98727 va-arg-15 va-arg-17 va-arg-18
+Runtime failures: 20020411-1 20070614-1 pr32244-1 pr34971 pr38969 pr42248 pr42269-2 pr44828 pr54471 pr61375 pr63302 pr65170 pr71554 pr80501 pr82210 pr84169 pr84748 pr85582-2 pr85582-3 pr91450-1 pr91635 pr92904 pr98366 pr98474 pr98727
