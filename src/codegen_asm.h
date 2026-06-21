@@ -502,15 +502,14 @@ static void asm_mov_reg_to_retval(SecBuf *s, VReg r, int size) {
 static void asm_mov_imm(SecBuf *s, VReg vr, int size, int64_t imm) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
-    //bool is_w = false; // always use 64-bit (x-reg) to match original printf codegen
     uint64_t uval = (uint64_t)imm;
     Arm64Reg r = REG(vr);
-    int sf = 1;
+    int sf = (size == 8) ? 1 : 0;
     arm64_movz(s, sf, r, (uint16_t)(uval & 0xffff), 0);
     size_t count = 1;
     uint64_t v = uval >> 16;
     int shift = 16;
-    int max_shift = 48;
+    int max_shift = sf ? 48 : 32;
     while (v && shift <= max_shift) {
         arm64_movk(s, sf, r, v & 0xffff, shift);
         v >>= 16;
@@ -534,14 +533,13 @@ static void asm_mov_imm(SecBuf *s, VReg vr, int size, int64_t imm) {
 #ifdef ARCH_ARM64
 static void asm_mov_imm_phy(SecBuf *s, Arm64Reg r, int size, int64_t imm) {
     size_t off = s->len;
-    //bool is_w = false; // always use 64-bit (x-reg) to match original printf codegen
     uint64_t uval = (uint64_t)imm;
-    int sf = 1;
+    int sf = (size == 8) ? 1 : 0;
     arm64_movz(s, sf, r, (uint16_t)(uval & 0xffff), 0);
     size_t count = 1;
     uint64_t v = uval >> 16;
     int shift = 16;
-    int max_shift = 48;
+    int max_shift = sf ? 48 : 32;
     while (v && shift <= max_shift) {
         arm64_movk(s, sf, r, v & 0xffff, shift);
         v >>= 16;
