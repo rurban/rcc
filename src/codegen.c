@@ -10226,6 +10226,26 @@ static VReg gen(Node *node) {
             free_reg(r_rhs);
         }
 #endif
+        // Extended bitfield shift: mask result to bitfield width.
+        // GCC truncates shifts of a >32-bit unsigned bitfield to its width.
+        {
+            int bw = 0;
+            if (node->lhs && node->lhs->kind == ND_MEMBER && node->lhs->member &&
+                node->lhs->member->bit_width > 32 && node->lhs->member->bit_width < 64 &&
+                node->lhs->member->ty && node->lhs->member->ty->size >= 8 &&
+                node->lhs->member->ty->is_unsigned)
+                bw = node->lhs->member->bit_width;
+            if (bw > 0) {
+                unsigned long long mask = (1ULL << bw) - 1;
+#ifdef ARCH_ARM64
+                emit_mov_imm64(ARM64_X17, mask);
+                asm_and_reg_phy(cg_sec, r_lhs, ARM64_X17, 8); // and r_lhs, r_lhs, x17
+#else
+                asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)mask); // movabsq $mask, %rax
+                asm_and_rax(cg_sec, r_lhs, 8); // andq %rax, r_lhs
+#endif
+            }
+        }
         return r_lhs;
     }
 
