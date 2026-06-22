@@ -349,7 +349,7 @@ static void cg_emit(const char *fmt, ...) {
     }
     assemble_inline(cg_obj, p, cg_inline_fixup_cb, NULL);
 }
-#define printf(...) cg_emit(__VA_ARGS__)
+#define cg_emit_asm(...) cg_emit(__VA_ARGS__)
 
 static uint64_t cg_now_us(void) {
     struct timespec ts;
@@ -1497,22 +1497,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #ifdef ARCH_ARM64
                 // rcc promotes all floats to doubles in GP registers;
                 // use 64-bit operations regardless of the source type size
-                printf("  mov %s, %s\n", reg64[r], reg64[r_arg]);
+                asm_mov_reg_reg(cg_sec, r, r_arg, 8);
                 emit_mov_imm64(REG(r_tmp), 0x7fffffffffffffffULL);
-                printf("  and %s, %s, %s\n", reg64[r], reg64[r], reg64[r_tmp]);
+                asm_and_reg_reg(cg_sec, r, r, 8);
                 emit_mov_imm64(REG(r_tmp), 0x7ff0000000000000ULL);
-                printf("  cmp %s, %s\n", reg64[r], reg64[r_tmp]);
-                printf("  cset %s, eq\n", reg32[r]);
+                asm_cmp_reg_reg(cg_sec, r, r_tmp, 8);
+                asm_cset(cg_sec, r, ARM64_EQ);
 #else
                 // Same on x86_64: floats are stored as doubles in GP regs
-                printf("  movq %s, %%xmm0\n", reg64[r_arg]);
-                printf("  movq %%xmm0, %s\n", reg64[r]);
-                printf("  movabsq $0x7fffffffffffffff, %s\n", reg64[r_tmp]);
-                printf("  andq %s, %s\n", reg64[r_tmp], reg64[r]);
-                printf("  movabsq $0x7ff0000000000000, %s\n", reg64[r_tmp]);
-                printf("  cmpq %s, %s\n", reg64[r_tmp], reg64[r]);
-                printf("  sete %%al\n");
-                printf("  movzbl %%al, %s\n", reg32[r]);
+                (void)0 /* TODO: movq to/from xmm */;
+                (void)0 /* TODO: movq to/from xmm */;
+                (void)0 /* FIXME: unconverted printf: "  movabsq $0x7fffffffffffffff, %s\n" */;
+                (void)0 /* FIXME: sized alu op */;
+                (void)0 /* FIXME: unconverted printf: "  movabsq $0x7ff0000000000000, %s\n" */;
+                (void)0 /* FIXME: cmp variant */;
+                asm_setcc(cg_sec, X86_RAX, X86_E);
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
 #endif
                 free_reg(r_tmp);
                 free_reg(r_arg);
@@ -1529,18 +1529,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 VReg r_tmp = alloc_reg();
 #ifdef ARCH_ARM64
                 // sign_mask = 0x8000000000000000
-                printf("  mov %s, #-9223372036854775808\n", reg64[r_tmp]);
-                printf("  and %s, %s, %s\n", reg64[r_y], reg64[r_y], reg64[r_tmp]); // y_sign
-                printf("  mvn %s, %s\n", reg64[r_tmp], reg64[r_tmp]); // ~sign_mask
-                printf("  and %s, %s, %s\n", reg64[r_x], reg64[r_x], reg64[r_tmp]); // |x|
-                printf("  orr %s, %s, %s\n", reg64[r_x], reg64[r_x], reg64[r_y]); // |x|+sign(y)
+                (void)0 /* FIXME: unconverted printf: "  mov %s, #-9223372036854775808\n" */;
+                asm_and_reg_reg(cg_sec, r_y, r_y, 8);
+                asm_not(cg_sec, r_tmp, 8);
+                asm_and_reg_reg(cg_sec, r_x, r_x, 8);
+                asm_or_reg_reg(cg_sec, r_x, r_x, 8);
 #else
                 // sign_mask = 0x8000000000000000
-                printf("  movabsq $-9223372036854775808, %s\n", reg64[r_tmp]);
-                printf("  andq %s, %s\n", reg64[r_tmp], reg64[r_y]); // r_y = sign bit of y
-                printf("  notq %s\n", reg64[r_tmp]); // ~sign_mask
-                printf("  andq %s, %s\n", reg64[r_tmp], reg64[r_x]); // r_x = |x|
-                printf("  orq %s, %s\n", reg64[r_y], reg64[r_x]); // r_x = copysign result
+                (void)0 /* FIXME: unconverted printf: "  movabsq $-9223372036854775808, %s\n" */;
+                (void)0 /* FIXME: sized alu op */;
+                (void)0 /* FIXME: notq */;
+                (void)0 /* FIXME: sized alu op */;
+                (void)0 /* FIXME: sized alu op */;
 #endif
                 free_reg(r_tmp);
                 free_reg(r_y);
@@ -1731,11 +1731,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 VReg rr = gen(argres);
                 if (argres->ty && argres->ty->kind == TY_PTR && argres->ty->base &&
                     argres->ty->base->kind == TY_INT128) {
-                    printf("  str %s, [%s]\n", reg64[ra], reg64[rr]);
-                    printf("  asr %s, %s, #63\n", reg64[ra], reg64[ra]);
-                    printf("  str %s, [%s, #8]\n", reg64[ra], reg64[rr]);
+                    asm_str_reg_off(cg_sec, ra, rr, 8, 0);
+                    asm_sar_imm(cg_sec, ra, 8, 63);
+                    (void)0 /* FIXME: ldr/str phy/off */;
                 } else {
-                    printf("  str %s, [%s]\n", reg(ra, res_sz), reg64[rr]);
+                    asm_str_reg_off(cg_sec, ra, rr, 8, 0);
                 }
                 free_reg(rr);
             }
@@ -1778,23 +1778,23 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             // If operands are narrower than sz_op, widen them per-operand signedness.
             if (sz_op > sz && sz == 4) {
                 if (ra_unsigned)
-                    printf("  movl %s, %s\n", reg32[ra], reg32[ra]); // zero-ext (implicit)
+                    asm_movzx(cg_sec, ra, ra, 8, 4); // movl ra, ra (zero-ext)
                 else
-                    printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                    asm_movsx(cg_sec, ra, ra, 8, 4);
                 if (rb_unsigned)
-                    printf("  movl %s, %s\n", reg32[rb], reg32[rb]);
+                    asm_mov_reg_reg(cg_sec, rb, rb, 4);
                 else
-                    printf("  movslq %s, %s\n", reg32[rb], reg64[rb]);
+                    asm_movsx(cg_sec, rb, rb, 8, 4);
             }
             if (is_add_overflow || is_sub_overflow) {
                 if (is_add_overflow)
-                    printf("  add %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                    asm_add_reg_reg(cg_sec, ra, rb, sz_op); // add rb, ra
                 else
-                    printf("  sub %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                    (void)0 /* FIXME: sub 2op */;
                 // Detect overflow into sz_store bits.
                 if (sz_op == sz_store && sz_op == sz) {
                     // Same-size, same-type: use hardware flag directly.
-                    printf("  %s %%al\n", is_unsigned_store ? "setc" : "seto");
+                    asm_setcc(cg_sec, X86_RAX, is_unsigned_store ? X86_C : X86_O); // setc/seto %al
                 } else if (sz_op == sz_store && sz_op > sz) {
                     // Widened signed ops into target type: check if mathematical
                     // result fits.  For unsigned target a negative result overflows;
@@ -1802,103 +1802,103 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     // (small inputs), so seto would always be 0 — use range check.
                     if (is_unsigned_store) {
                         // negative result can't fit in unsigned
-                        printf("  sets %%al\n");
+                        asm_setcc(cg_sec, X86_RAX, X86_S);
                     } else {
                         // signed: result fits in sz_op bits already; range-check to sz_store
-                        printf("  movl %s, %%ecx\n", reg32[ra]);
-                        printf("  movslq %%ecx, %%rcx\n");
-                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
-                        printf("  setne %%al\n");
+                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                        x86_movsx(cg_sec, 8, 4, X86_RCX, X86_RCX); // movslq %ecx, %rcx
+                        (void)0 /* FIXME: cmp variant */;
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                     }
                 } else {
                     // sz_op > sz_store: result is in full precision, range-check.
                     if (is_unsigned_store) {
-                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
                         // movl zero-extends implicitly; compare full result vs trunc
-                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
-                        printf("  setne %%al\n");
+                        (void)0 /* FIXME: cmp variant */;
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
-                        printf("  movl %s, %%ecx\n", reg32[ra]);
-                        printf("  movslq %%ecx, %%rcx\n");
-                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
-                        printf("  setne %%al\n");
+                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                        x86_movsx(cg_sec, 8, 4, X86_RCX, X86_RCX); // movslq %ecx, %rcx
+                        (void)0 /* FIXME: cmp variant */;
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                     }
                 }
                 if (argres) {
                     int rr = gen(argres);
                     if (store_to_int128) {
-                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
-                        printf("  movq %s, %%rax\n", reg64[ra]);
-                        printf("  sarq $63, %%rax\n");
-                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                        asm_mov_mem_via_reg(cg_sec, ra, rr, 8); // movq ra, (rr)
+                        x86_mov_rr(cg_sec, 8, X86_RAX, REG(ra)); // movq ra, %rax
+                        x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                     } else {
-                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                        asm_mov_mem_via_reg(cg_sec, ra, rr, sz_store); // mov ra, (rr)
                     }
                     free_reg(rr);
                 }
             } else { // mul_overflow / mul_overflow_p
                 int r2 = alloc_reg();
                 if (sz_op == 8) {
-                    printf("  movq %s, %%rax\n", reg64[ra]);
+                    asm_mov_reg_reg(cg_sec, 0, ra, 8);
                     if (is_unsigned_op && sz == sz_op) {
                         // Native unsigned 64-bit: mulq gives rdx:rax
-                        printf("  mulq %s\n", reg64[rb]);
-                        printf("  movq %%rax, %s\n", reg64[ra]);
-                        printf("  movq %%rdx, %s\n", reg64[r2]);
-                        printf("  testq %s, %s\n", reg64[r2], reg64[r2]);
-                        printf("  setne %%al\n");
+                        asm_mul_1op(cg_sec, rb, 8); // mulq rb
+                        asm_mov_reg_reg(cg_sec, ra, 0, 8);
+                        asm_mov_reg_reg(cg_sec, r2, 2, 8);
+                        asm_test_reg_reg(cg_sec, r2, r2, 8);
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
                         // Signed 64-bit (including sign-extended small operands):
                         // imulq gives rdx:rax; overflow if rdx != sign_ext(rax)
-                        printf("  imulq %s\n", reg64[rb]);
-                        printf("  movq %%rax, %s\n", reg64[ra]);
-                        printf("  movq %%rdx, %s\n", reg64[r2]);
-                        printf("  sarq $63, %%rax\n");
-                        printf("  cmpq %s, %%rax\n", reg64[r2]);
-                        printf("  setne %%al\n");
+                        x86_imul_r(cg_sec, 8, REG(rb)); // imulq rb
+                        asm_mov_reg_reg(cg_sec, ra, 0, 8);
+                        asm_mov_reg_reg(cg_sec, r2, 2, 8);
+                        (void)0 /* FIXME: shift imm */;
+                        (void)0 /* FIXME: cmp variant */;
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                         // For unsigned target with negative result: also signal overflow.
                         if (is_unsigned_store && !is_unsigned_op) {
                             // OR in the sign bit of the 64-bit result
-                            printf("  testq %s, %s\n", reg64[ra], reg64[ra]);
-                            printf("  sets %%cl\n");
-                            printf("  orb %%cl, %%al\n");
+                            asm_test_reg_reg(cg_sec, ra, ra, 8);
+                            (void)0 /* FIXME: sete */;
+                            asm_or_byte_al(cg_sec, X86_RCX); // orb %cl, %al
                         }
                     }
                 } else {
                     // 32-bit operands
                     if (is_unsigned_op) {
-                        printf("  movl %s, %%eax\n", reg32[ra]);
-                        printf("  mull %s\n", reg32[rb]);
-                        printf("  movl %%eax, %s\n", reg32[ra]);
-                        printf("  movl %%edx, %s\n", reg32[r2]);
-                        printf("  testl %s, %s\n", reg32[r2], reg32[r2]);
-                        printf("  setne %%al\n");
+                        x86_mov_rr(cg_sec, 4, X86_RAX, REG(ra)); // movl ra, %eax
+                        asm_mul_1op(cg_sec, rb, 4); // mull rb
+                        x86_mov_rr(cg_sec, 4, REG(ra), X86_RAX); // movl %eax, ra
+                        x86_mov_rr(cg_sec, 4, REG(r2), X86_RDX); // movl %edx, r2
+                        asm_test_reg_reg(cg_sec, r2, r2, 4); // testl r2, r2
+                        asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
                         // Mixed or signed operands: extend each per its own signedness,
                         // then signed 64-bit multiply (exact for 32-bit inputs).
                         if (ra_unsigned)
-                            printf("  movl %s, %%eax\n", reg32[ra]); // zero-ext
+                            asm_mov_reg_reg(cg_sec, 0, ra, 4);
                         else
-                            printf("  movslq %s, %%rax\n", reg32[ra]); // sign-ext
+                            x86_movsx(cg_sec, 8, 4, X86_RAX, REG(ra)); // movslq ra, %rax
                         if (rb_unsigned)
-                            printf("  movl %s, %%ecx\n", reg32[rb]); // zero-ext
+                            asm_mov_reg_reg(cg_sec, 1, rb, 4);
                         else
-                            printf("  movslq %s, %%rcx\n", reg32[rb]); // sign-ext
-                        printf("  imulq %%rcx, %%rax\n");
-                        printf("  movl %%eax, %s\n", reg32[ra]);
+                            x86_movsx(cg_sec, 8, 4, X86_RCX, REG(rb)); // movslq rb, %rcx
+                        x86_imul_rr(cg_sec, 8, X86_RAX, X86_RCX); // imulq %rcx, %rax
+                        asm_mov_reg_reg(cg_sec, ra, 0, 4);
                         if (is_unsigned_store && sz_store == 8) {
                             // Negative result doesn't fit in unsigned 64-bit
-                            printf("  testq %%rax, %%rax\n");
-                            printf("  sets %%al\n");
-                            printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                            x86_test_rr(cg_sec, 8, X86_RAX, X86_RAX); // testq %rax, %rax
+                            asm_setcc(cg_sec, X86_RAX, X86_S);
+                            asm_movsx(cg_sec, ra, ra, 8, 4);
                         } else {
                             // Range check: sign-extend or zero-extend truncated result back
                             if (is_unsigned_store)
-                                printf("  movl %s, %%ecx\n", reg32[ra]); // zero-ext implicit
+                                asm_mov_reg_reg(cg_sec, 1, ra, 4);
                             else
-                                printf("  movslq %s, %%rcx\n", reg32[ra]);
-                            printf("  cmpq %%rcx, %%rax\n");
-                            printf("  setne %%al\n");
+                                (void)0 /* FIXME: unconverted printf: "  movslq %s, %%rcx\n" */;
+                            (void)0 /* FIXME: cmp variant */;
+                            asm_setcc(cg_sec, X86_RAX, X86_NE);
                         }
                     }
                 }
@@ -1907,18 +1907,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     int rr = gen(argres);
                     if (store_to_int128) {
                         // Sign-extend 64-bit result to 128 bits and store
-                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
-                        printf("  movq %s, %%rax\n", reg64[ra]);
-                        printf("  sarq $63, %%rax\n");
-                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                        asm_mov_mem_via_reg(cg_sec, ra, rr, 8); // movq ra, (rr)
+                        x86_mov_rr(cg_sec, 8, X86_RAX, REG(ra)); // movq ra, %rax
+                        x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                     } else {
-                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                        asm_mov_mem_via_reg(cg_sec, ra, rr, sz_store); // mov ra, (rr)
                     }
                     free_reg(rr);
                 }
             }
             int r_result = alloc_reg();
-            printf("  movzbl %%al, %s\n", reg32[r_result]);
+            asm_movzx_phys(cg_sec, r_result, X86_RAX, 4, 1);
             free_reg(ra);
             free_reg(rb);
             return r_result;
@@ -2832,7 +2832,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         // Win64: an 8-byte _Complex is passed by value in a GP register.
         // gen() returns the address of the complex value; load it.
         if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
-            printf("  movq (%s), %s\n", reg64[arg_regs[i]], reg64[arg_regs[i]]);
+            (void)0 /* FIXME: indirect mov */;
         }
 #endif
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
@@ -3574,24 +3574,24 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
 #ifdef ARCH_ARM64
     if (base_flo) {
         if (is_flonum(from)) {
-            printf("  fmov d0, %s\n", reg64[r]);
+            (void)0 /* FIXME: fmov */;
         } else if (from->is_unsigned) {
-            printf("  ucvtf d0, %s\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+            (void)0 /* FIXME: float op */;
         } else {
-            printf("  scvtf d0, %s\n", from->size < 4 ? reg32[r] : reg(r, from->size));
+            (void)0 /* FIXME: float op */;
         }
         if (base_sz == 4) {
-            printf("  fcvt s0, d0\n");
-            printf("  str s0, [%s]\n", reg64[addr]);
-            printf("  str wzr, [%s, #4]\n", reg64[addr]);
+            (void)0 /* arm64 fcvt s0,d0 */;
+            (void)0 /* FIXME: unconverted printf: "  str s0, [%s]\n" */;
+            (void)0 /* FIXME: ldr/str phy/off */;
         } else {
-            printf("  str d0, [%s]\n", reg64[addr]);
-            printf("  str xzr, [%s, #8]\n", reg64[addr]);
+            (void)0 /* FIXME: unconverted printf: "  str d0, [%s]\n" */;
+            (void)0 /* FIXME: ldr/str phy/off */;
         }
     } else {
         if (is_flonum(from)) {
-            printf("  fmov d0, %s\n", reg64[r]);
-            printf("  fcvtzs %s, d0\n", base_sz == 8 ? reg64[r] : reg32[r]);
+            (void)0 /* FIXME: fmov */;
+            (void)0 /* FIXME: float op */;
         } else if (from->size < base_sz) {
             if (from->is_unsigned)
                 zero_extend_to(r, from->size, base_sz);
@@ -3599,11 +3599,11 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
                 sign_extend_to(r, from->size, base_sz);
         }
         if (base_sz == 4) {
-            printf("  str %s, [%s]\n", reg32[r], reg64[addr]);
-            printf("  str wzr, [%s, #4]\n", reg64[addr]);
+            asm_str_reg_off(cg_sec, r, addr, 4, 0);
+            (void)0 /* FIXME: ldr/str phy/off */;
         } else {
-            printf("  str %s, [%s]\n", reg64[r], reg64[addr]);
-            printf("  str xzr, [%s, #8]\n", reg64[addr]);
+            asm_str_reg_off(cg_sec, r, addr, 8, 0);
+            (void)0 /* FIXME: ldr/str phy/off */;
         }
     }
 #else
@@ -3614,16 +3614,16 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
             asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq reg64[r], %xmm0
         } else if (from->is_unsigned && from->size == 8) {
             int c = ++rcc_label_count;
-            printf("  testq %s, %s\n", reg64[r], reg64[r]);
-            printf("  js .L.u2cx.high.%d\n", c);
+            asm_test_reg_reg(cg_sec, r, r, 8);
+            (void)0 /* FIXME: branch/call: js .L.u2cx.high.%d */;
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
-            printf("  jmp .L.u2cx.end.%d\n", c);
-            printf(".L.u2cx.high.%d:\n", c);
+            (void)0 /* FIXME: branch/call: jmp .L.u2cx.end.%d */;
+            (void)0 /* FIXME: unconverted printf: ".L.u2cx.high.%d:\n" */;
             x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq reg64[r], %rcx
             x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq %rcx
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
-            printf(".L.u2cx.end.%d:\n", c);
+            (void)0 /* FIXME: unconverted printf: ".L.u2cx.end.%d:\n" */;
         } else if (from->is_unsigned && from->size == 4) {
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
         } else {
@@ -3669,41 +3669,41 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
     int fsz = from->base->size, tsz = to->base->size;
 #ifdef ARCH_ARM64
     if (fsz == 4) {
-        printf("  ldr s0, [%s]\n", reg64[src]);
-        printf("  ldr s1, [%s, #4]\n", reg64[src]);
-        printf("  fcvt d0, s0\n");
-        printf("  fcvt d1, s1\n");
+        (void)0 /* FIXME: unconverted printf: "  ldr s0, [%s]\n" */;
+        (void)0 /* FIXME: ldr/str phy/off */;
+        (void)0 /* arm64 fcvt d0,s0 */;
+        (void)0 /* FIXME: float op */;
     } else {
-        printf("  ldr d0, [%s]\n", reg64[src]);
-        printf("  ldr d1, [%s, #8]\n", reg64[src]);
-        printf("  fcvt s0, d0\n");
-        printf("  fcvt s1, d1\n");
+        (void)0 /* FIXME: unconverted printf: "  ldr d0, [%s]\n" */;
+        (void)0 /* FIXME: ldr/str phy/off */;
+        (void)0 /* arm64 fcvt s0,d0 */;
+        (void)0 /* FIXME: float op */;
     }
     if (tsz == 4) {
-        printf("  str s0, [%s]\n", reg64[dst]);
-        printf("  str s1, [%s, #4]\n", reg64[dst]);
+        (void)0 /* FIXME: unconverted printf: "  str s0, [%s]\n" */;
+        (void)0 /* FIXME: ldr/str phy/off */;
     } else {
-        printf("  str d0, [%s]\n", reg64[dst]);
-        printf("  str d1, [%s, #8]\n", reg64[dst]);
+        (void)0 /* FIXME: unconverted printf: "  str d0, [%s]\n" */;
+        (void)0 /* FIXME: ldr/str phy/off */;
     }
 #else
     if (fsz == 4) {
-        printf("  movss (%s), %%xmm0\n", reg64[src]);
-        printf("  movss 4(%s), %%xmm1\n", reg64[src]);
-        printf("  cvtss2sd %%xmm0, %%xmm0\n");
-        printf("  cvtss2sd %%xmm1, %%xmm1\n");
+        (void)0 /* FIXME: float op */;
+        (void)0 /* FIXME: float op */;
+        asm_cvtss2sd(cg_sec);
+        (void)0 /* FIXME: unconverted printf: "  cvtss2sd %%xmm1, %%xmm1\n" */;
     } else {
-        printf("  movsd (%s), %%xmm0\n", reg64[src]);
-        printf("  movsd 8(%s), %%xmm1\n", reg64[src]);
-        printf("  cvtsd2ss %%xmm0, %%xmm0\n");
-        printf("  cvtsd2ss %%xmm1, %%xmm1\n");
+        (void)0 /* FIXME: float op */;
+        (void)0 /* FIXME: float op */;
+        asm_cvtsd2ss(cg_sec);
+        (void)0 /* FIXME: unconverted printf: "  cvtsd2ss %%xmm1, %%xmm1\n" */;
     }
     if (tsz == 4) {
-        printf("  movss %%xmm0, (%s)\n", reg64[dst]);
-        printf("  movss %%xmm1, 4(%s)\n", reg64[dst]);
+        (void)0 /* FIXME: float op */;
+        (void)0 /* FIXME: float op */;
     } else {
-        printf("  movsd %%xmm0, (%s)\n", reg64[dst]);
-        printf("  movsd %%xmm1, 8(%s)\n", reg64[dst]);
+        (void)0 /* FIXME: float op */;
+        (void)0 /* FIXME: float op */;
     }
 #endif
 }
@@ -3719,54 +3719,54 @@ static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
     bool uns = from->base->is_unsigned;
 #ifdef ARCH_ARM64
     if (fsz == 8) {
-        printf("  ldr x0, [%s]\n", reg64[src]);
-        printf("  ldr x1, [%s, #8]\n", reg64[src]);
+        (void)0 /* FIXME: ldr/str phy/off */;
+        (void)0 /* FIXME: ldr/str phy/off */;
     } else if (fsz == 4) {
         if (uns) {
-            printf("  ldr w0, [%s]\n", reg64[src]);
-            printf("  ldr w1, [%s, #4]\n", reg64[src]);
+            (void)0 /* FIXME: ldr/str phy/off */;
+            (void)0 /* FIXME: ldr/str phy/off */;
         } else {
-            printf("  ldrsw x0, [%s]\n", reg64[src]);
-            printf("  ldrsw x1, [%s, #4]\n", reg64[src]);
+            (void)0 /* FIXME: unconverted printf: "  ldrsw x0, [%s]\n" */;
+            (void)0 /* FIXME: unconverted printf: "  ldrsw x1, [%s, #4]\n" */;
         }
     } else if (fsz == 2) {
-        printf("  %s x0, [%s]\n", uns ? "ldrh" : "ldrsh", reg64[src]);
-        printf("  %s x1, [%s, #2]\n", uns ? "ldrh" : "ldrsh", reg64[src]);
+        (void)0 /* FIXME: unconverted printf: "  %s x0, [%s]\n" */;
+        (void)0 /* FIXME: unconverted printf: "  %s x1, [%s, #2]\n" */;
     } else {
-        printf("  %s x0, [%s]\n", uns ? "ldrb" : "ldrsb", reg64[src]);
-        printf("  %s x1, [%s, #1]\n", uns ? "ldrb" : "ldrsb", reg64[src]);
+        (void)0 /* FIXME: unconverted printf: "  %s x0, [%s]\n" */;
+        (void)0 /* FIXME: unconverted printf: "  %s x1, [%s, #1]\n" */;
     }
     if (tsz == 8) {
-        printf("  str x0, [%s]\n", reg64[dst]);
-        printf("  str x1, [%s, #8]\n", reg64[dst]);
+        (void)0 /* FIXME: ldr/str phy/off */;
+        (void)0 /* FIXME: ldr/str phy/off */;
     } else if (tsz == 4) {
-        printf("  str w0, [%s]\n", reg64[dst]);
-        printf("  str w1, [%s, #4]\n", reg64[dst]);
+        (void)0 /* FIXME: ldr/str phy/off */;
+        (void)0 /* FIXME: ldr/str phy/off */;
     } else if (tsz == 2) {
-        printf("  strh w0, [%s]\n", reg64[dst]);
-        printf("  strh w1, [%s, #2]\n", reg64[dst]);
+        (void)0 /* FIXME: sized ld/st */;
+        (void)0 /* FIXME: sized ld/st */;
     } else {
-        printf("  strb w0, [%s]\n", reg64[dst]);
-        printf("  strb w1, [%s, #1]\n", reg64[dst]);
+        (void)0 /* FIXME: sized ld/st */;
+        (void)0 /* FIXME: sized ld/st */;
     }
 #else
     if (fsz == 8) {
-        printf("  mov (%s), %%rax\n", reg64[src]);
-        printf("  mov %d(%s), %%rcx\n", fsz, reg64[src]);
+        (void)0 /* FIXME: indirect mov */;
+        (void)0 /* FIXME: mov indirect/mem */;
     } else if (fsz == 4) {
         if (uns) {
-            printf("  mov (%s), %%eax\n", reg64[src]);
-            printf("  mov %d(%s), %%ecx\n", fsz, reg64[src]);
+            (void)0 /* FIXME: indirect mov */;
+            (void)0 /* FIXME: mov indirect/mem */;
         } else {
-            printf("  movslq (%s), %%rax\n", reg64[src]);
-            printf("  movslq %d(%s), %%rcx\n", fsz, reg64[src]);
+            (void)0 /* FIXME: unconverted printf: "  movslq (%s), %%rax\n" */;
+            (void)0 /* FIXME: unconverted printf: "  movslq %d(%s), %%rcx\n" */;
         }
     } else if (fsz == 2) {
-        printf("  %s (%s), %%rax\n", uns ? "movzwq" : "movswq", reg64[src]);
-        printf("  %s %d(%s), %%rcx\n", uns ? "movzwq" : "movswq", fsz, reg64[src]);
+        (void)0 /* FIXME: unconverted printf: "  %s (%s), %%rax\n" */;
+        (void)0 /* FIXME: unconverted printf: "  %s %d(%s), %%rcx\n" */;
     } else {
-        printf("  %s (%s), %%rax\n", uns ? "movzbq" : "movsbq", reg64[src]);
-        printf("  %s %d(%s), %%rcx\n", uns ? "movzbq" : "movsbq", fsz, reg64[src]);
+        (void)0 /* FIXME: unconverted printf: "  %s (%s), %%rax\n" */;
+        (void)0 /* FIXME: unconverted printf: "  %s %d(%s), %%rcx\n" */;
     }
     const char *store_real = tsz == 8 ? "%rax" : tsz == 4 ? "%eax"
         : tsz == 2                                        ? "%ax"
@@ -3774,8 +3774,8 @@ static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
     const char *store_imag = tsz == 8 ? "%rcx" : tsz == 4 ? "%ecx"
         : tsz == 2                                        ? "%cx"
                                                           : "%cl";
-    printf("  mov %s, (%s)\n", store_real, reg64[dst]);
-    printf("  mov %s, %d(%s)\n", store_imag, tsz, reg64[dst]);
+    (void)0 /* FIXME: mov indirect/mem */;
+    (void)0 /* FIXME: mov indirect/mem */;
 #endif
 }
 
@@ -4367,7 +4367,14 @@ static VReg gen_addr(Node *node) {
                 free_reg(ti);
             }
 #else
-            printf("  addq $%d, %s\n", offset, reg64[r]);
+            if (offset <= 4095)
+                asm_add_imm(cg_sec, r, 8, offset); // add r, r, #offset
+            else {
+                VReg ti = alloc_reg();
+                asm_mov_imm(cg_sec, ti, 8, offset); // mov $offset, ti
+                asm_add_reg_reg(cg_sec, r, ti, 8); // add r, r, ti
+                free_reg(ti);
+            }
 #endif
         }
         return r;
@@ -4587,11 +4594,17 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             // Complex EQ/NE: compare both parts, branch if not equal
             int r = gen(cond); // use the expression handler which now handles complex
 #ifdef ARCH_ARM64
-            printf("  cmp %s, #0\n", reg(r, 4));
-            printf("  b.eq %s\n", label);
+            asm_cmp_zero(cg_sec, r, 4);
+            {
+                size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
+                asm_fixup_add(cg_sec, o, label, 1);
+            }
 #else
-            printf("  testl %s, %s\n", reg32[r], reg32[r]);
-            printf("  je %s\n", label);
+            asm_cmp_zero(cg_sec, r, 4); // testl r, r
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E); // je label
+                asm_fixup_add(cg_sec, o, label, 1);
+            }
 #endif
             free_reg(r);
             return;
@@ -5644,13 +5657,13 @@ static VReg gen_int128(Node *node) {
         // The shadow space slot holds a pointer to the 16-byte int128 value.
         int r = gen_addr(node->lhs); // address of the char* ap variable
         int addr = alloc_int128_addr();
-        printf("  movq (%s), %%rcx\n", reg64[r]); // rcx = ap (address of current slot)
-        printf("  addq $8, (%s)\n", reg64[r]); // ap += 8 (advance past pointer slot)
-        printf("  movq (%%rcx), %%rcx\n"); // rcx = *slot = pointer to __int128 value
-        printf("  movq (%%rcx), %%rax\n"); // rax = lo(__int128)
-        printf("  movq %%rax, (%s)\n", reg64[addr]);
-        printf("  movq 8(%%rcx), %%rax\n"); // rax = hi(__int128)
-        printf("  movq %%rax, 8(%s)\n", reg64[addr]);
+        (void)0 /* FIXME: indirect mov */;
+        (void)0 /* FIXME: sized alu op */;
+        (void)0 /* FIXME: indirect mov */;
+        (void)0 /* FIXME: multi-instruction printf */;
+        asm_mov_reg_reg(cg_sec, addr, 0, 8);
+        (void)0 /* FIXME: multi-instruction printf */;
+        asm_mov_reg_reg(cg_sec, addr, 0, 8);
         free_reg(r);
         return addr;
     }
@@ -6075,13 +6088,13 @@ static VReg gen(Node *node) {
                 int sav = -1;
                 if (dst == 0 || dst == 1) {
                     sav = dst;
-                    printf("  movq %s, -%d(%%rbp)\n", reg64[dst], spill_offset(dst));
+                    (void)0 /* FIXME: unconverted printf: "  movq %s, -%d(%%rbp)\n" */;
                 }
 #endif
                 gen_funcall(node->rhs, dst);
 #ifndef ARCH_ARM64
                 if (sav >= 0)
-                    printf("  movq -%d(%%rbp), %s\n", spill_offset(sav), reg64[sav]);
+                    (void)0 /* FIXME: unconverted printf: "  movq -%d(%%rbp), %s\n" */;
 #endif
                 // If the call's complex return type and the destination's
                 // complex type have differently-sized real-floating bases
@@ -6099,15 +6112,15 @@ static VReg gen(Node *node) {
                     int base_sz = node->ty->base->size;
                     int rt = alloc_reg();
 #ifdef ARCH_ARM64
-                    printf("  ldr %s, [%s]\n", reg64[rt], reg64[dst]);
+                    asm_ldr_reg_off(cg_sec, rt, dst, 8, 0);
                     if (node->ty->size > base_sz) {
                         int rt2 = alloc_reg();
-                        printf("  ldr %s, [%s, #%d]\n", reg64[rt2], reg64[dst], base_sz);
-                        printf("  orr %s, %s, %s\n", reg64[rt], reg64[rt], reg64[rt2]);
+                        (void)0 /* FIXME: ldr/str phy/off */;
+                        asm_or_reg_reg(cg_sec, rt, rt, 8);
                         free_reg(rt2);
                     }
-                    printf("  cmp %s, #0\n", reg64[rt]);
-                    printf("  cset %s, ne\n", reg32[rt]);
+                    asm_cmp_zero(cg_sec, rt, 8);
+                    asm_cset(cg_sec, rt, ARM64_NE);
 #else
                     // The whole complex value fits in 8 bytes (_Complex float)
                     // or two 8-byte halves (_Complex double): load (and OR
@@ -7298,9 +7311,9 @@ static VReg gen(Node *node) {
             int result_off = current_fn_stack_size + fn_struct_ret_off;
             int result = alloc_reg();
 #ifdef ARCH_ARM64
-            printf("  sub %s, %s, #%d\n", reg64[result], FRAME_PTR, result_off);
+            asm_sub_imm(cg_sec, result, 8, FRAME_PTR);
 #else
-            printf("  lea -%d(%%rbp), %s\n", result_off, reg64[result]);
+            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
 #endif
             emit_scalar_to_complex(r, from, to->base, result);
             return result;
@@ -7310,33 +7323,33 @@ static VReg gen(Node *node) {
                 if (is_integer(from->base)) {
                     // int complex → float: convert via cvtsi2ss/cvtsi2sd
                     if (from->base->size <= 4)
-                        printf("  cvtsi2ssl (%s), %%xmm0\n", reg64[r]);
+                        (void)0 /* FIXME: unconverted printf: "  cvtsi2ssl (%s), %%xmm0\n" */;
                     else
-                        printf("  cvtsi2sdl (%s), %%xmm0\n", reg64[r]);
+                        (void)0 /* FIXME: unconverted printf: "  cvtsi2sdl (%s), %%xmm0\n" */;
                     if (to->size == 4)
-                        printf("  cvtsd2ss %%xmm0, %%xmm0\n");
-                    printf("  movq %%xmm0, %s\n", reg64[r]);
+                        asm_cvtsd2ss(cg_sec);
+                    (void)0 /* TODO: movq to/from xmm */;
                 } else {
                     if (from->base->size == 4 && to->size == 8) {
                         // float complex → double: promote via cvtss2sd
-                        printf("  movss (%s), %%xmm0\n", reg64[r]);
-                        printf("  cvtss2sd %%xmm0, %%xmm0\n");
-                        printf("  movq %%xmm0, %s\n", reg64[r]);
+                        (void)0 /* FIXME: float op */;
+                        asm_cvtss2sd(cg_sec);
+                        (void)0 /* TODO: movq to/from xmm */;
                     } else if (to->size == 4) {
-                        printf("  movss (%s), %%xmm0\n", reg64[r]);
-                        printf("  movq %%xmm0, %s\n", reg64[r]);
+                        (void)0 /* FIXME: float op */;
+                        (void)0 /* TODO: movq to/from xmm */;
                     } else {
-                        printf("  movsd (%s), %%xmm0\n", reg64[r]);
-                        printf("  movq %%xmm0, %s\n", reg64[r]);
+                        (void)0 /* FIXME: float op */;
+                        (void)0 /* TODO: movq to/from xmm */;
                     }
                 }
             } else {
                 // integer: convert from float or load directly
                 if (is_flonum(from->base)) {
                     if (from->base->size == 4)
-                        printf("  cvttss2si (%s), %s\n", reg64[r], reg32[r]);
+                        (void)0 /* FIXME: unconverted printf: "  cvttss2si (%s), %s\n" */;
                     else
-                        printf("  cvttsd2si (%s), %s\n", reg64[r], reg64[r]);
+                        (void)0 /* FIXME: unconverted printf: "  cvttsd2si (%s), %s\n" */;
                 } else {
 #ifdef ARCH_ARM64
                     emit_load(to, r, r, 0);
@@ -7390,19 +7403,19 @@ static VReg gen(Node *node) {
             if (addr < 0) {
                 need_free = 1;
                 addr = alloc_reg();
-                printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-                printf("  movq %%rsp, %s\n", reg64[addr]);
+                asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
+                (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
                 VReg v = gen(node->lhs);
                 if (is_complex(node->lhs->ty)) {
-                    printf("  movq (%s), %%rax\n", reg64[v]);
-                    printf("  movq %%rax, (%s)\n", reg64[addr]);
+                    asm_mov_reg_reg(cg_sec, 0, v, 8);
+                    asm_mov_reg_reg(cg_sec, addr, 0, 8);
                     if (complex_sz > 8) {
-                        printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
-                        printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr]);
+                        (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
+                        (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
                     }
                 } else {
-                    printf("  movq %s, (%s)\n", reg64[v], reg64[addr]);
-                    if (complex_sz > 8) printf("  movq $0, 8(%s)\n", reg64[addr]);
+                    (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
+                    if (complex_sz > 8) asm_movq_zero(cg_sec, addr);
                 }
                 free_reg(v);
             }
@@ -7411,27 +7424,27 @@ static VReg gen(Node *node) {
             if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
             int result_off = current_fn_stack_size + fn_struct_ret_off;
             VReg result = alloc_reg();
-            printf("  lea -%d(%%rbp), %s\n", result_off, reg64[result]);
+            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
             if (is_flonum(node->ty->base)) {
                 const char *sfx = base_sz == 4 ? "ss" : "sd";
-                printf("  mov%s (%s), %%xmm0\n", sfx, reg64[addr]);
-                printf("  mov%s %d(%s), %%xmm1\n", sfx, base_sz, reg64[addr]);
-                printf("  movabs $0x8000000000000000, %%rax\n");
-                printf("  movq %%rax, %%xmm2\n");
-                if (base_sz == 4) printf("  xorps %%xmm2, %%xmm1\n");
+                (void)0 /* FIXME: unconverted printf: "  mov%s (%s), %%xmm0\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov%s %d(%s), %%xmm1\n" */;
+                (void)0 /* FIXME: unconverted printf: "  movabs $0x8000000000000000, %%rax\n" */;
+                (void)0 /* FIXME: unconverted printf: "  movq %%rax, %%xmm2\n" */;
+                if (base_sz == 4) (void)0 /* FIXME: unconverted printf: "  xorps %%xmm2, %%xmm1\n" */;
                 else
-                    printf("  xorpd %%xmm2, %%xmm1\n");
-                printf("  mov%s %%xmm0, (%s)\n", sfx, reg64[result]);
-                printf("  mov%s %%xmm1, %d(%s)\n", sfx, base_sz, reg64[result]);
+                    (void)0 /* FIXME: float op */;
+                (void)0 /* FIXME: unconverted printf: "  mov%s %%xmm0, (%s)\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov%s %%xmm1, %d(%s)\n" */;
             } else {
-                printf("  mov (%s), %%rax\n", reg64[addr]);
-                printf("  mov %d(%s), %%rdx\n", base_sz, reg64[addr]);
-                printf("  neg %%rdx\n");
-                printf("  mov %%rax, (%s)\n", reg64[result]);
-                printf("  mov %%rdx, %d(%s)\n", base_sz, reg64[result]);
+                (void)0 /* FIXME: indirect mov */;
+                (void)0 /* FIXME: mov indirect/mem */;
+                (void)0 /* FIXME: unconverted printf: "  neg %%rdx\n" */;
+                (void)0 /* FIXME: mov indirect/mem */;
+                (void)0 /* FIXME: mov indirect/mem */;
             }
             free_reg(addr);
-            if (need_free) printf("  addq $%d, %%rsp\n", (complex_sz + 15) & ~15);
+            if (need_free) (void)0 /* FIXME: sized alu op */;
             return result;
         }
 #endif
@@ -7536,11 +7549,11 @@ static VReg gen(Node *node) {
                 // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
                 int src = gen_int128(node->lhs);
 #ifdef ARCH_ARM64
-                printf("  ldr x0, [%s]\n", reg64[src]);
-                printf("  ldr x1, [%s, #8]\n", reg64[src]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: ldr/str phy/off */;
 #else
-                printf("  movq (%s), %%rax\n", reg64[src]);
-                printf("  movq 8(%s), %%rdx\n", reg64[src]);
+                asm_mov_reg_reg(cg_sec, 0, src, 8);
+                (void)0 /* FIXME: unconverted printf: "  movq 8(%s), %%rdx\n" */;
 #endif
                 free_reg(src);
 #ifdef _WIN32
@@ -7569,7 +7582,7 @@ static VReg gen(Node *node) {
                 }
 #ifdef ARCH_ARM64
                 // Save src to x12 before loading retbuf into x11
-                printf("  mov x12, %s\n", reg64[src]);
+                (void)0 /* FIXME: mov phy */;
                 if (retbuf_offset <= 4095)
                     asm_ldur_phy(cg_sec, ARM64_X11, ARM64_X29, 3, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
                 else {
@@ -7593,37 +7606,37 @@ static VReg gen(Node *node) {
                 cg_def_label(format(".L.retcopy_end.%d", c));
                 asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
 #else
-                asm_mov_rbp(cg_sec, X86_R11, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R11
+                asm_mov_rbp(cg_sec, X86_R9, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R9
                 x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
                 cg_def_label(format(".L.retcopy.%d", c));
                 x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
                 {
-                    size_t o = asm_jcc_label(cg_sec, X86_E); // strb w16, [x11, x9]
+                    size_t o = asm_jcc_label(cg_sec, X86_E);
                     asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
                 }
                 x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
-                x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R11, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r11, rcx)
+                x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
                 x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
                 {
-                    size_t o = asm_jmp_label(cg_sec); // .L.retcopy_end.%d:
+                    size_t o = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
                 }
                 cg_def_label(format(".L.retcopy_end.%d", c));
-                x86_mov_rr(cg_sec, 8, X86_RAX, X86_R11); // movq %%r11, %%rax
-#endif
+                x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 free_reg(src);
+#endif
             } else if (node->lhs->ty && is_complex(node->lhs->ty)) {
                 // Complex expression returned as scalar: extract real part
                 int addr = gen_addr(node->lhs);
                 if (addr < 0) addr = gen(node->lhs);
                 Type *ret_ty = current_fn_def->ty->return_ty;
 #ifdef ARCH_ARM64
-                printf("  ldr w0, [%s]\n", reg64[addr]);
+                (void)0 /* FIXME: ldr/str phy/off */;
 #else
-                printf("  movl (%s), %%eax\n", reg64[addr]);
+                (void)0 /* FIXME: indirect mov */;
 #endif
                 if (ret_ty && ret_ty->size == 1)
-                    printf("  uxtb w0, w0\n");
+                    (void)0 /* FIXME: unconverted printf: "  uxtb w0, w0\n" */;
                 free_reg(addr);
             } else {
                 VReg r = gen(node->lhs);
@@ -8987,9 +9000,9 @@ static VReg gen(Node *node) {
         // codegen (e.g. unused inline-pack function), emit a harmless 0.
         int r = alloc_reg();
 #ifdef ARCH_ARM64
-        printf("  mov %s, #0\n", reg32[r]);
+        asm_movq_zero(cg_sec, r);
 #else
-        printf("  mov $0, %s\n", reg32[r]);
+        asm_movl_zero(cg_sec, r);
 #endif
         return r;
     }
@@ -9005,18 +9018,18 @@ static VReg gen(Node *node) {
         // address and "str x16,[x12]" writes new_ap into the data area instead
         // of back into the ap variable.
         asm_mov_phy_reg(cg_sec, ARM64_X17, apple_r, 1); // mov x17, x{apple_r}
-        printf("  ldr x12, [x17]\n"); // x12 = ap (current slot pointer)
+        (void)0 /* FIXME: multi-instruction printf */;
         // __int128 requires 16-byte alignment; the caller pads stack_args to even
         // before placing it, so va_arg must align ap up to 16 to match.
         if (ty->kind == TY_INT128) {
-            printf("  add x16, x12, #15\n");
-            printf("  and x12, x16, #-16\n");
+            (void)0 /* FIXME: add phy */;
+            (void)0 /* FIXME: and variant */;
         }
-        printf("  add x16, x12, #%d\n", slot_sz);
-        printf("  str x16, [x17]\n"); // ap += slot_sz (correct write-back)
+        (void)0 /* FIXME: add phy */;
+        (void)0 /* FIXME: multi-instruction printf */;
         free_reg(apple_r);
         VReg ret = alloc_reg();
-        printf("  mov %s, x12\n", reg64[ret]);
+        (void)0 /* FIXME: unconverted printf: "  mov %s, x12\n" */;
         return ret;
 #else
 #ifndef _WIN32
@@ -9590,28 +9603,28 @@ static VReg gen(Node *node) {
             need_free_lhs = 1;
             addr_lhs = alloc_reg();
 #ifdef ARCH_ARM64
-            printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
-            printf("  mov %s, sp\n", reg64[addr_lhs]);
+            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
+            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-            printf("  movq %%rsp, %s\n", reg64[addr_lhs]);
+            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
+            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
 #endif
             int v = gen(node->lhs);
             if (lhs_cx) {
                 // gen() returned address — copy complex data
 #ifdef ARCH_ARM64
-                printf("  ldr x16, [%s]\n", reg64[v]);
-                printf("  str x16, [%s]\n", reg64[addr_lhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: ldr/str phy/off */;
                 if (complex_sz > 8) {
-                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
-                    printf("  str x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                 }
 #else
-                printf("  movq (%s), %%rax\n", reg64[v]);
-                printf("  movq %%rax, (%s)\n", reg64[addr_lhs]);
+                asm_mov_reg_reg(cg_sec, 0, v, 8);
+                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
                 if (complex_sz > 8) {
-                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
-                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_lhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
                 }
 #endif
             } else {
@@ -9623,27 +9636,27 @@ static VReg gen(Node *node) {
             need_free_rhs = 1;
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
-            printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
-            printf("  mov %s, sp\n", reg64[addr_rhs]);
+            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
+            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-            printf("  movq %%rsp, %s\n", reg64[addr_rhs]);
+            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
+            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
 #endif
             int v = gen(node->rhs);
             if (rhs_cx) {
 #ifdef ARCH_ARM64
-                printf("  ldr x16, [%s]\n", reg64[v]);
-                printf("  str x16, [%s]\n", reg64[addr_rhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: ldr/str phy/off */;
                 if (complex_sz > 8) {
-                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
-                    printf("  str x16, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                 }
 #else
-                printf("  movq (%s), %%rax\n", reg64[v]);
-                printf("  movq %%rax, (%s)\n", reg64[addr_rhs]);
+                asm_mov_reg_reg(cg_sec, 0, v, 8);
+                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
                 if (complex_sz > 8) {
-                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
-                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_rhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
                 }
 #endif
             } else {
@@ -9659,9 +9672,9 @@ static VReg gen(Node *node) {
         int result_off = current_fn_stack_size + fn_struct_ret_off;
         int result = alloc_reg();
 #ifdef ARCH_ARM64
-        printf("  add %s, %s, #%d\n", reg64[result], FRAME_PTR, -result_off);
+        asm_add_imm(cg_sec, result, 8, FRAME_PTR);
 #else
-        printf("  lea -%d(%%rbp), %s\n", result_off, reg64[result]);
+        asm_lea_rbp_reg(cg_sec, result, 8, result_off);
 #endif
         if (is_flonum(node->ty->base)) {
 #ifdef ARCH_ARM64
@@ -9674,34 +9687,34 @@ static VReg gen(Node *node) {
                 fop = "fmul";
             else
                 fop = "fdiv";
-            printf("  ldr %s0, [%s]\n", ldr_sfx, reg64[addr_lhs]);
-            printf("  ldr %s1, [%s, #%d]\n", ldr_sfx, reg64[addr_lhs], base_sz);
-            printf("  ldr %s2, [%s]\n", ldr_sfx, reg64[addr_rhs]);
-            printf("  ldr %s3, [%s, #%d]\n", ldr_sfx, reg64[addr_rhs], base_sz);
+            (void)0 /* FIXME: unconverted printf: "  ldr %s0, [%s]\n" */;
+            (void)0 /* FIXME: ldr/str phy/off */;
+            (void)0 /* FIXME: unconverted printf: "  ldr %s2, [%s]\n" */;
+            (void)0 /* FIXME: ldr/str phy/off */;
             if (node->kind == ND_ADD || node->kind == ND_SUB) {
-                printf("  %s %s0, %s0, %s2\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  %s %s1, %s1, %s3\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
+                (void)0 /* FIXME: unconverted printf: "  %s %s0, %s0, %s2\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s1, %s1, %s3\n" */;
             } else if (node->kind == ND_MUL) {
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
-                printf("  fmov %s4, %s0\n", ldr_sfx, ldr_sfx);
-                printf("  fmov %s5, %s1\n", ldr_sfx, ldr_sfx);
-                printf("  %s %s4, %s4, %s2\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  %s %s5, %s5, %s3\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  fsub %s4, %s4, %s5\n", ldr_sfx, ldr_sfx);
-                printf("  %s %s0, %s0, %s3\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  %s %s1, %s1, %s2\n", fop, ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  fadd %s1, %s0, %s1\n", ldr_sfx, ldr_sfx, ldr_sfx);
-                printf("  fmov %s0, %s4\n", ldr_sfx, ldr_sfx);
+                (void)0 /* FIXME: fmov */;
+                (void)0 /* FIXME: fmov */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s4, %s4, %s2\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s5, %s5, %s3\n" */;
+                (void)0 /* FIXME: unconverted printf: "  fsub %s4, %s4, %s5\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s0, %s0, %s3\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s1, %s1, %s2\n" */;
+                (void)0 /* FIXME: unconverted printf: "  fadd %s1, %s0, %s1\n" */;
+                (void)0 /* FIXME: fmov */;
             } else {
                 // Complex float division via libcall
-                printf("  bl %s\n", base_sz == 4 ? "___divsc3" : "___divdc3");
-                printf("  str %s0, [%s]\n", ldr_sfx, reg64[result]);
-                printf("  str %s1, [%s, #%d]\n", ldr_sfx, reg64[result], base_sz);
+                (void)0 /* FIXME: branch/call: bl %s */;
+                (void)0 /* FIXME: unconverted printf: "  str %s0, [%s]\n" */;
+                (void)0 /* FIXME: ldr/str phy/off */;
                 goto cx_arith_done;
             }
             if (node->kind != ND_DIV) {
-                printf("  str %s0, [%s]\n", ldr_sfx, reg64[result]);
-                printf("  str %s1, [%s, #%d]\n", ldr_sfx, reg64[result], base_sz);
+                (void)0 /* FIXME: unconverted printf: "  str %s0, [%s]\n" */;
+                (void)0 /* FIXME: ldr/str phy/off */;
             }
 #else
             int sfx = base_sz; // 4 -> ss, 8 -> sd
@@ -9763,140 +9776,140 @@ static VReg gen(Node *node) {
 #endif
         } else {
 #ifdef ARCH_ARM64
-            printf("  ldr x16, [%s]\n", reg64[addr_lhs]);
+            (void)0 /* FIXME: ldr/str phy/off */;
             if (complex_sz <= 8) {
-                printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
                 switch (node->kind) {
                 case ND_ADD:
-                    printf("  add w16, w16, w17\n");
-                    printf("  ldrsw x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldrsw x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  add w18, w17, w18\n");
-                    printf("  bfi x16, x18, #32, #32\n");
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: unconverted printf: "  ldrsw x17, [%s, #%d]\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  ldrsw x18, [%s, #%d]\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: unconverted printf: "  bfi x16, x18, #32, #32\n" */;
                     break;
                 case ND_SUB:
-                    printf("  sub w16, w16, w17\n");
-                    printf("  ldrsw x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldrsw x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  sub w18, w17, w18\n");
-                    printf("  bfi x16, x18, #32, #32\n");
+                    (void)0 /* FIXME: sub phy */;
+                    (void)0 /* FIXME: unconverted printf: "  ldrsw x17, [%s, #%d]\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  ldrsw x18, [%s, #%d]\n" */;
+                    (void)0 /* FIXME: sub phy */;
+                    (void)0 /* FIXME: unconverted printf: "  bfi x16, x18, #32, #32\n" */;
                     break;
                 case ND_MUL: {
                     // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — integer arithmetic
-                    printf("  ldr w16, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr w18, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul w16, w16, w18\n");
-                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul w17, w17, w18\n");
-                    printf("  sub w16, w16, w17\n"); // real = ac-bd
-                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr w18, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul w17, w17, w18\n");
-                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  ldr w9, [%s]\n", reg64[addr_lhs]);
-                    printf("  mul w9, w9, w18\n");
-                    printf("  add w17, w17, w9\n"); // imag = bc+ad
-                    printf("  str w16, [%s]\n", reg64[result]);
-                    printf("  str w17, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
+                    (void)0 /* FIXME: sub phy */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w9, w9, w18\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 }
                 case ND_DIV: {
                     // (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
                     const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
-                    printf("  ldr w16, [%s]\n", reg64[addr_rhs]);
-                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul w16, w16, w16\n");
-                    printf("  mul w17, w17, w17\n");
-                    printf("  add w9, w16, w17\n"); // denom = c²+d²
-                    printf("  ldr w16, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr w17, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul w16, w16, w17\n"); // ac
-                    printf("  ldr w17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul w17, w17, w18\n"); // bd
-                    printf("  add w16, w16, w17\n"); // ac+bd
-                    printf("  %s w16, w16, w9\n", dv); // real
-                    printf("  str w16, [%s]\n", reg64[result]);
-                    printf("  ldr w16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr w17, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul w16, w16, w17\n"); // bc
-                    printf("  ldr w17, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr w18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul w17, w17, w18\n"); // ad
-                    printf("  sub w16, w16, w17\n"); // bc-ad
-                    printf("  %s w16, w16, w9\n", dv); // imag
-                    printf("  str w16, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w16\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w17\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w17\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: unconverted printf: "  %s w16, w16, w9\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w17\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
+                    (void)0 /* FIXME: sub phy */;
+                    (void)0 /* FIXME: unconverted printf: "  %s w16, w16, w9\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 }
                 default:
                     __builtin_unreachable();
                 }
-                printf("  str x16, [%s]\n", reg64[result]);
+                (void)0 /* FIXME: ldr/str phy/off */;
             } else {
-                printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
                 switch (node->kind) {
                 case ND_ADD:
-                    printf("  adds x16, x16, x17\n");
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  adc x17, x17, x18\n");
-                    printf("  str x16, [%s]\n", reg64[result]);
-                    printf("  str x17, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: adds */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  adc x17, x17, x18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 case ND_SUB:
-                    printf("  subs x16, x16, x17\n");
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  sbc x17, x17, x18\n");
-                    printf("  str x16, [%s]\n", reg64[result]);
-                    printf("  str x17, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: subs */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  sbc x17, x17, x18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 case ND_MUL: {
                     // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — 64-bit integer arithmetic
-                    printf("  ldr x16, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr x18, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul x16, x16, x18\n");
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul x17, x17, x18\n");
-                    printf("  sub x16, x16, x17\n");
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x18, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul x17, x17, x18\n");
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  ldr x9, [%s]\n", reg64[addr_lhs]);
-                    printf("  mul x9, x9, x18\n");
-                    printf("  add x17, x17, x9\n");
-                    printf("  str x16, [%s]\n", reg64[result]);
-                    printf("  str x17, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
+                    (void)0 /* FIXME: sub with phy reg */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x9, x9, x18\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 }
                 case ND_DIV: {
                     const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
-                    printf("  ldr x16, [%s]\n", reg64[addr_rhs]);
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul x16, x16, x16\n");
-                    printf("  mul x17, x17, x17\n");
-                    printf("  add x9, x16, x17\n");
-                    printf("  ldr x16, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul x16, x16, x17\n");
-                    printf("  ldr x17, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul x17, x17, x18\n");
-                    printf("  add x16, x16, x17\n");
-                    printf("  %s x16, x16, x9\n", dv);
-                    printf("  str x16, [%s]\n", reg64[result]);
-                    printf("  ldr x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                    printf("  ldr x17, [%s]\n", reg64[addr_rhs]);
-                    printf("  mul x16, x16, x17\n");
-                    printf("  ldr x17, [%s]\n", reg64[addr_lhs]);
-                    printf("  ldr x18, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                    printf("  mul x17, x17, x18\n");
-                    printf("  sub x16, x16, x17\n");
-                    printf("  %s x16, x16, x9\n", dv);
-                    printf("  str x16, [%s, #%d]\n", reg64[result], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x16\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x17\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x17\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
+                    (void)0 /* FIXME: add phy */;
+                    (void)0 /* FIXME: unconverted printf: "  %s x16, x16, x9\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x17\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
+                    (void)0 /* FIXME: sub with phy reg */;
+                    (void)0 /* FIXME: unconverted printf: "  %s x16, x16, x9\n" */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                     goto cx_arith_done;
                 }
                 default:
@@ -9935,56 +9948,56 @@ static VReg gen(Node *node) {
             const char *real_reg, *imag_reg;
             switch (node->kind) {
             case ND_ADD:
-                printf("  add %s, %s\n", rcx_w, rax_w); // a+c
-                printf("  add %s, %s\n", r8_w, rdx_w); // b+d
+                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
                 real_reg = rax_w;
                 imag_reg = rdx_w;
                 break;
             case ND_SUB:
-                printf("  sub %s, %s\n", rcx_w, rax_w); // a-c
-                printf("  sub %s, %s\n", r8_w, rdx_w); // b-d
+                (void)0 /* FIXME: sub 2op */;
+                (void)0 /* FIXME: sub 2op */;
                 real_reg = rax_w;
                 imag_reg = rdx_w;
                 break;
             case ND_MUL:
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
-                printf("  mov %s, %s\n", rax_w, r9_w);
-                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
-                printf("  mov %s, %s\n", rdx_w, rdi_w);
-                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
-                printf("  sub %s, %s\n", rdi_w, r9_w); // r9 = ac-bd (real)
-                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
-                printf("  imul %s, %s\n", rcx_w, rdx_w); // rdx = b*c
-                printf("  add %s, %s\n", rdx_w, rax_w); // rax = ad+bc (imag)
-                printf("  mov %s, %s\n", r9_w, rdx_w); // rdx = real
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: sub 2op */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
                 real_reg = rdx_w;
                 imag_reg = rax_w;
                 break;
             case ND_DIV:
                 // (a+bi)/(c+di) = ((ac+bd)/(cc+dd)) + ((bc-ad)/(cc+dd))i
-                printf("  mov %s, %s\n", rax_w, r9_w);
-                printf("  mov %s, %s\n", rdx_w, rdi_w);
-                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
-                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
-                printf("  add %s, %s\n", rdi_w, r9_w); // r9 = ac+bd (num_real)
-                printf("  mov %s, %s\n", rdx_w, rdi_w); // rdi = b
-                printf("  imul %s, %s\n", rcx_w, rdi_w); // rdi = b*c
-                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
-                printf("  sub %s, %s\n", rax_w, rdi_w); // rdi = bc-ad (num_imag)
-                printf("  mov %s, %s\n", rcx_w, rax_w); // rax = c
-                printf("  imul %s, %s\n", rcx_w, rax_w); // rax = c*c
-                printf("  mov %s, %s\n", r8_w, rdx_w); // rdx = d
-                printf("  imul %s, %s\n", r8_w, rdx_w); // rdx = d*d
-                printf("  add %s, %s\n", rdx_w, rax_w); // rax = cc+dd (denom)
-                printf("  mov %s, %s\n", rax_w, rcx_w); // rcx = denom
-                printf("  mov %s, %s\n", r9_w, rax_w); // rax = num_real
-                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
-                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = real
-                printf("  push %%rax\n"); // save real result
-                printf("  mov %s, %s\n", rdi_w, rax_w); // rax = num_imag
-                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
-                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = imag
-                printf("  pop %%rdx\n"); // rdx = real result
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: sub 2op */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  push %%rax\n" */;
+                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  %s %s\n" */;
+                (void)0 /* FIXME: unconverted printf: "  pop %%rdx\n" */;
                 real_reg = rdx_w;
                 imag_reg = rax_w;
                 break;
@@ -9992,11 +10005,11 @@ static VReg gen(Node *node) {
                 __builtin_unreachable();
             }
             if (base_sz == W) {
-                printf("  mov %s, (%s)\n", real_reg, reg64[result]);
-                printf("  mov %s, %d(%s)\n", imag_reg, base_sz, reg64[result]);
+                (void)0 /* FIXME: mov indirect/mem */;
+                (void)0 /* FIXME: mov indirect/mem */;
             } else {
-                printf("  mov %s, (%s)\n", x86_subreg(real_reg, base_sz), reg64[result]);
-                printf("  mov %s, %d(%s)\n", x86_subreg(imag_reg, base_sz), base_sz, reg64[result]);
+                (void)0 /* FIXME: mov indirect/mem */;
+                (void)0 /* FIXME: mov indirect/mem */;
             }
 #undef CX_LOAD
 #endif
@@ -10007,11 +10020,11 @@ static VReg gen(Node *node) {
         free_reg(addr_lhs);
         free_reg(addr_rhs);
 #ifdef ARCH_ARM64
-        if (need_free_lhs) printf("  add sp, sp, #%d\n", (complex_sz + 15) & ~15);
-        if (need_free_rhs) printf("  add sp, sp, #%d\n", (complex_sz + 15) & ~15);
+        if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
+        if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
 #else
-        if (need_free_lhs) printf("  addq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-        if (need_free_rhs) printf("  addq $%d, %%rsp\n", (complex_sz + 15) & ~15);
+        if (need_free_lhs) (void)0 /* FIXME: sized alu op */;
+        if (need_free_rhs) (void)0 /* FIXME: sized alu op */;
 #endif
         return result;
     }
@@ -10026,12 +10039,12 @@ static VReg gen(Node *node) {
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64
             if (node->ty->size == 4) {
-                printf("  ldr s0, [%s]\n", reg64[r]);
-                printf("  fcvt d0, s0\n");
+                (void)0 /* FIXME: unconverted printf: "  ldr s0, [%s]\n" */;
+                (void)0 /* arm64 fcvt d0,s0 */;
             } else {
-                printf("  ldr d0, [%s]\n", reg64[r]);
+                (void)0 /* FIXME: unconverted printf: "  ldr d0, [%s]\n" */;
             }
-            printf("  fmov %s, d0\n", reg64[r]);
+            (void)0 /* FIXME: fmov */;
 #else
             if (node->ty->size == 4) {
                 x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
@@ -10158,39 +10171,39 @@ static VReg gen(Node *node) {
         if (addr_lhs < 0) {
             addr_lhs = alloc_reg();
 #ifdef ARCH_ARM64
-            printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
-            printf("  mov %s, sp\n", reg64[addr_lhs]);
+            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
+            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-            printf("  movq %%rsp, %s\n", reg64[addr_lhs]);
+            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
+            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
 #endif
             int v = gen(node->lhs);
             if (is_complex(node->lhs->ty)) {
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-                printf("  ldr x16, [%s]\n", reg64[v]);
-                printf("  str x16, [%s]\n", reg64[addr_lhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: ldr/str phy/off */;
                 if (complex_sz > 8) {
-                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
-                    printf("  str x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                 }
 #else
-                printf("  movq (%s), %%rax\n", reg64[v]);
-                printf("  movq %%rax, (%s)\n", reg64[addr_lhs]);
+                asm_mov_reg_reg(cg_sec, 0, v, 8);
+                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
                 if (complex_sz > 8) {
-                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
-                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_lhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
                 }
 #endif
             } else {
 #ifdef ARCH_ARM64
-                printf("  str %s, [%s]\n", reg64[v], reg64[addr_lhs]);
+                asm_str_reg_off(cg_sec, v, addr_lhs, 8, 0);
                 if (complex_sz > 8)
-                    printf("  str xzr, [%s, #%d]\n", reg64[addr_lhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
 #else
-                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_lhs]);
+                (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
                 if (complex_sz > 8)
-                    printf("  movq $0, %d(%s)\n", base_sz, reg64[addr_lhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq $0, %d(%s)\n" */;
 #endif
             }
             free_reg(v);
@@ -10199,39 +10212,39 @@ static VReg gen(Node *node) {
         if (addr_rhs < 0) {
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
-            printf("  sub sp, sp, #%d\n", (complex_sz + 15) & ~15);
-            printf("  mov %s, sp\n", reg64[addr_rhs]);
+            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
+            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            printf("  subq $%d, %%rsp\n", (complex_sz + 15) & ~15);
-            printf("  movq %%rsp, %s\n", reg64[addr_rhs]);
+            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
+            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
 #endif
             int v = gen(node->rhs);
             if (is_complex(node->rhs->ty)) {
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-                printf("  ldr x16, [%s]\n", reg64[v]);
-                printf("  str x16, [%s]\n", reg64[addr_rhs]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: ldr/str phy/off */;
                 if (complex_sz > 8) {
-                    printf("  ldr x16, [%s, #%d]\n", reg64[v], base_sz);
-                    printf("  str x16, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)0 /* FIXME: ldr/str phy/off */;
                 }
 #else
-                printf("  movq (%s), %%rax\n", reg64[v]);
-                printf("  movq %%rax, (%s)\n", reg64[addr_rhs]);
+                asm_mov_reg_reg(cg_sec, 0, v, 8);
+                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
                 if (complex_sz > 8) {
-                    printf("  movq %d(%s), %%rax\n", base_sz, reg64[v]);
-                    printf("  movq %%rax, %d(%s)\n", base_sz, reg64[addr_rhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
                 }
 #endif
             } else {
 #ifdef ARCH_ARM64
-                printf("  str %s, [%s]\n", reg64[v], reg64[addr_rhs]);
+                asm_str_reg_off(cg_sec, v, addr_rhs, 8, 0);
                 if (complex_sz > 8)
-                    printf("  str xzr, [%s, #%d]\n", reg64[addr_rhs], base_sz);
+                    (void)0 /* FIXME: ldr/str phy/off */;
 #else
-                printf("  movq %s, (%s)\n", reg64[v], reg64[addr_rhs]);
+                (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
                 if (complex_sz > 8)
-                    printf("  movq $0, %d(%s)\n", base_sz, reg64[addr_rhs]);
+                    (void)0 /* FIXME: unconverted printf: "  movq $0, %d(%s)\n" */;
 #endif
             }
             free_reg(v);
@@ -10240,54 +10253,54 @@ static VReg gen(Node *node) {
         int result = alloc_reg();
 #ifdef ARCH_ARM64
         if (sz <= 4) {
-            printf("  mov %s, #0\n", reg32[result]);
-            printf("  ldrb w16, [%s]\n", reg64[addr_lhs]);
-            printf("  ldrb w17, [%s]\n", reg64[addr_rhs]);
-            printf("  eor w16, w16, w17\n");
-            printf("  cmp w16, #0\n");
+            asm_movq_zero(cg_sec, result);
+            (void)0 /* FIXME: sized ld/st */;
+            (void)0 /* FIXME: sized ld/st */;
+            (void)0 /* FIXME: unconverted printf: "  eor w16, w16, w17\n" */;
+            (void)0 /* FIXME: unconverted printf: "  cmp w16, #0\n" */;
         } else {
-            printf("  ldr %s, [%s]\n", reg64[result], reg64[addr_lhs]);
-            printf("  eor %s, %s, [%s]\n", reg64[result], reg64[result], reg64[addr_rhs]);
+            asm_ldr_reg_off(cg_sec, result, addr_lhs, 8, 0);
+            asm_eor_reg_reg(cg_sec, result, result, 8);
             if (sz > 8) {
-                printf("  ldr x16, [%s, #%d]\n", reg64[addr_lhs], base_sz);
-                printf("  eor x16, x16, [%s, #%d]\n", reg64[addr_rhs], base_sz);
-                printf("  orr %s, %s, x16\n", reg64[result], reg64[result]);
+                (void)0 /* FIXME: ldr/str phy/off */;
+                (void)0 /* FIXME: unconverted printf: "  eor x16, x16, [%s, #%d]\n" */;
+                (void)0 /* FIXME: unconverted printf: "  orr %s, %s, x16\n" */;
             }
-            printf("  cmp %s, #0\n", reg64[result]);
+            asm_cmp_zero(cg_sec, result, 8);
         }
         if (node->kind == ND_EQ)
-            printf("  cset %s, eq\n", reg(result, 4));
+            asm_cset(cg_sec, result, ARM64_EQ);
         else
-            printf("  cset %s, ne\n", reg(result, 4));
+            asm_cset(cg_sec, result, ARM64_NE);
 #else
         if (sz <= 4) {
-            printf("  mov $0, %s\n", reg32[result]);
-            printf("  mov (%s), %%al\n", reg64[addr_lhs]);
-            printf("  xor (%s), %%al\n", reg64[addr_rhs]);
-            printf("  movzbl %%al, %s\n", reg32[result]);
+            asm_movl_zero(cg_sec, result);
+            x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem(REG(addr_lhs), 0)); // movb (addr_lhs), %al
+            x86_xor_rm(cg_sec, 1, X86_RAX, x86_mem(REG(addr_rhs), 0)); // xorb (addr_rhs), %al
+            asm_movzx_phys(cg_sec, result, X86_RAX, 4, 1); // movzbl %al, result
         } else {
-            printf("  movq (%s), %s\n", reg64[addr_lhs], reg64[result]);
-            printf("  xorq (%s), %s\n", reg64[addr_rhs], reg64[result]);
+            x86_mov_rm(cg_sec, 8, REG(result), x86_mem(REG(addr_lhs), 0)); // movq (addr_lhs), result
+            x86_xor_rm(cg_sec, 8, REG(result), x86_mem(REG(addr_rhs), 0)); // xorq (addr_rhs), result
             if (sz > 8) {
-                printf("  movq %d(%s), %%rax\n", base_sz, reg64[addr_lhs]);
-                printf("  xorq %d(%s), %%rax\n", base_sz, reg64[addr_rhs]);
-                printf("  orq %%rax, %s\n", reg64[result]);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(addr_lhs), base_sz)); // movq base_sz(addr_lhs), %rax
+                x86_xor_rm(cg_sec, 8, X86_RAX, x86_mem(REG(addr_rhs), base_sz)); // xorq base_sz(addr_rhs), %rax
+                x86_or_rr(cg_sec, 8, REG(result), X86_RAX); // orq %rax, result
             }
         }
         if (node->kind == ND_EQ)
-            printf("  sete %%al\n");
+            asm_setcc(cg_sec, X86_RAX, X86_E);
         else
-            printf("  setne %%al\n");
-        printf("  movzbl %%al, %s\n", reg32[result]);
+            asm_setcc(cg_sec, X86_RAX, X86_NE);
+        asm_movzx_phys(cg_sec, result, X86_RAX, 4, 1);
 #endif
         free_reg(addr_lhs);
         free_reg(addr_rhs);
 #ifdef ARCH_ARM64
-        if (need_free_lhs) printf("  add sp, sp, #%d\n", (complex_sz + 15) & ~15);
-        if (need_free_rhs) printf("  add sp, sp, #%d\n", (complex_sz + 15) & ~15);
+        if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
+        if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
 #else
-        if (need_free_lhs) printf("  addq $16, %%rsp\n");
-        if (need_free_rhs) printf("  addq $16, %%rsp\n");
+        if (need_free_lhs) (void)0 /* FIXME: sized alu op */;
+        if (need_free_rhs) (void)0 /* FIXME: sized alu op */;
 #endif
         return result;
     }
@@ -11870,26 +11883,26 @@ struct ObjFile *codegen(Program *prog) {
                     }
                 } else if (var->ty->kind == TY_INT128) {
                     // __int128 on stack: slot holds a pointer; dereference it.
-                    printf("  movq %d(%%rbp), %%rax\n", stack_off);
-                    printf("  movq (%%rax), %%rcx\n");
-                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset);
-                    printf("  movq 8(%%rax), %%rcx\n");
-                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset - 8);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%rax\n" */;
+                    (void)0 /* FIXME: indirect mov */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
+                    (void)0 /* FIXME: unconverted printf: "  movq 8(%%rax), %%rcx\n" */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset - 8);
                 } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
                     // Structs > 8 bytes (and 16-byte _Complex double) are passed
                     // by pointer even on the stack; load the pointer and copy
                     // the pointee into the local slot.
                     int c = ++rcc_label_count;
-                    printf("  movq %d(%%rbp), %%r11\n", stack_off);
-                    printf("  movq $%d, %%r10\n", var->ty->size);
-                    printf(".L.pcopy.%d:\n", c);
-                    printf("  cmpq $0, %%r10\n");
-                    printf("  je .L.pcopy_end.%d\n", c);
-                    printf("  movb -1(%%r11,%%r10), %%al\n");
-                    printf("  movb %%al, -%d-1(%%rbp,%%r10)\n", var->offset);
-                    printf("  subq $1, %%r10\n");
-                    printf("  jmp .L.pcopy.%d\n", c);
-                    printf(".L.pcopy_end.%d:\n", c);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%r11\n" */;
+                    (void)0 /* FIXME: unconverted printf: "  movq $%d, %%r10\n" */;
+                    (void)0 /* FIXME: label .L.xxx.c */;
+                    asm_cmp_zero(cg_sec, 10, 8);
+                    (void)0 /* FIXME: branch/call: je .L.pcopy_end.%d */;
+                    (void)0 /* FIXME: sized mov */;
+                    (void)0 /* FIXME: sized mov */;
+                    asm_dec(cg_sec, 10, 8);
+                    (void)0 /* FIXME: branch/call: jmp .L.pcopy.%d */;
+                    (void)0 /* FIXME: label .L.xxx.c */;
                 } else {
                     int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                         : var->ty->size <= 4                              ? 4
@@ -11924,19 +11937,19 @@ struct ObjFile *codegen(Program *prog) {
                 // Windows x64: __int128 is passed by pointer in a single GP register.
                 // Dereference the pointer to copy the 16-byte value to the local slot.
                 if (param_index < max_param_regs) {
-                    printf("  movq (%s), %%rax\n", param_regs64[param_index]); // lo
-                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset);
-                    printf("  movq 8(%s), %%rax\n", param_regs64[param_index]); // hi
-                    printf("  movq %%rax, -%d(%%rbp)\n", var->offset - 8);
+                    (void)0 /* FIXME: indirect mov */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset);
+                    (void)0 /* FIXME: unconverted printf: "  movq 8(%s), %%rax\n" */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset - 8);
                     param_index++;
                 } else {
                     // Stack: pointer is in the shadow-space-extended stack slot.
                     int stack_off = 48 + stack_param_index * 8;
-                    printf("  movq %d(%%rbp), %%rax\n", stack_off); // load pointer
-                    printf("  movq (%%rax), %%rcx\n"); // lo = *ptr
-                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset);
-                    printf("  movq 8(%%rax), %%rcx\n"); // hi = *(ptr+8)
-                    printf("  movq %%rcx, -%d(%%rbp)\n", var->offset - 8);
+                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%rax\n" */;
+                    (void)0 /* FIXME: indirect mov */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
+                    (void)0 /* FIXME: multi-instruction printf */;
+                    asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset - 8);
                     stack_param_index++;
                 }
 #else
@@ -11975,25 +11988,25 @@ struct ObjFile *codegen(Program *prog) {
                     if (var->ty->size <= 8) {
                         // _Complex float: 8 bytes in one xmm reg
                         if (param_xmm_index < max_param_xmm) {
-                            printf("  movsd %s, -%d(%%rbp)\n", param_xmm[param_xmm_index], var->offset);
+                            (void)0 /* FIXME: float op */;
                             param_xmm_index++;
                         } else {
-                            printf("  movsd %d(%%rbp), %%xmm0\n", 16 + stack_param_index * 8);
-                            printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset);
+                            (void)0 /* FIXME: float op */;
+                            (void)0 /* FIXME: float op */;
                             stack_param_index++;
                         }
                     } else {
                         // _Complex double: 16 bytes, two xmm regs
                         if (param_xmm_index + 1 < max_param_xmm) {
-                            printf("  movsd %s, -%d(%%rbp)\n", param_xmm[param_xmm_index], var->offset);
-                            printf("  movsd %s, -%d(%%rbp)\n", param_xmm[param_xmm_index + 1], var->offset - base_sz);
+                            (void)0 /* FIXME: float op */;
+                            (void)0 /* FIXME: float op */;
                             param_xmm_index += 2;
                         } else {
                             int stack_off = 16 + stack_param_index * 8;
-                            printf("  movsd %d(%%rbp), %%xmm0\n", stack_off);
-                            printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset);
-                            printf("  movsd %d(%%rbp), %%xmm0\n", stack_off + 8);
-                            printf("  movsd %%xmm0, -%d(%%rbp)\n", var->offset - base_sz);
+                            (void)0 /* FIXME: float op */;
+                            (void)0 /* FIXME: float op */;
+                            (void)0 /* FIXME: float op */;
+                            (void)0 /* FIXME: float op */;
                             stack_param_index += 2;
                         }
                     }
@@ -12002,25 +12015,25 @@ struct ObjFile *codegen(Program *prog) {
                     if (var->ty->size <= 8) {
                         // _Complex int: 8 bytes in one GP reg
                         if (param_index < max_param_regs) {
-                            printf("  mov %s, -%d(%%rbp)\n", param_regs64[param_index], var->offset);
+                            (void)0 /* FIXME: mov indirect/mem */;
                             param_index++;
                         } else {
-                            printf("  mov %d(%%rbp), %%rax\n", 16 + stack_param_index * 8);
-                            printf("  mov %%rax, -%d(%%rbp)\n", var->offset);
+                            (void)0 /* FIXME: mov indirect/mem */;
+                            (void)0 /* FIXME: mov indirect/mem */;
                             stack_param_index++;
                         }
                     } else {
                         // _Complex long long: 16 bytes in two GP regs
                         if (param_index + 1 < max_param_regs) {
-                            printf("  mov %s, -%d(%%rbp)\n", param_regs64[param_index], var->offset);
-                            printf("  mov %s, -%d(%%rbp)\n", param_regs64[param_index + 1], var->offset - base_sz);
+                            (void)0 /* FIXME: mov indirect/mem */;
+                            (void)0 /* FIXME: mov indirect/mem */;
                             param_index += 2;
                         } else {
                             int stack_off = 16 + stack_param_index * 8;
-                            printf("  mov %d(%%rbp), %%rax\n", stack_off);
-                            printf("  mov %%rax, -%d(%%rbp)\n", var->offset);
-                            printf("  mov %d(%%rbp), %%rax\n", stack_off + 8);
-                            printf("  mov %%rax, -%d(%%rbp)\n", var->offset - base_sz);
+                            (void)0 /* FIXME: mov indirect/mem */;
+                            (void)0 /* FIXME: mov indirect/mem */;
+                            (void)0 /* FIXME: mov indirect/mem */;
+                            (void)0 /* FIXME: mov indirect/mem */;
                             stack_param_index += 2;
                         }
                     }
