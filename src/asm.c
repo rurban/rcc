@@ -2061,91 +2061,91 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "addsd")) {
-        x86_addsd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_addsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "subsd")) {
-        x86_subsd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_subsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "mulsd")) {
-        x86_mulsd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_mulsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "divsd")) {
-        x86_divsd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_divsd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "addss")) {
-        x86_addss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_addss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "subss")) {
-        x86_subss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_subss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "mulss")) {
-        x86_mulss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_mulss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "divss")) {
-        x86_divss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_divss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "ucomisd")) {
-        x86_ucomisd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_ucomisd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "ucomiss")) {
-        x86_ucomiss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_ucomiss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "comisd")) {
-        x86_comisd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_comisd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "cvtsi2sd")) {
         int ss = reg_size_x86(ops[0]);
-        x86_cvtsi2sd(buf, ss, (X86XmmReg)R(1), R(0));
+        x86_cvtsi2sd(buf, ss, parse_x86_xmm(ops[1]), R(0));
         return true;
     }
     if (!strcmp(mnem, "cvtsi2ss")) {
         int ss = reg_size_x86(ops[0]);
-        x86_cvtsi2ss(buf, ss, (X86XmmReg)R(1), R(0));
+        x86_cvtsi2ss(buf, ss, parse_x86_xmm(ops[1]), R(0));
         return true;
     }
     if (!strcmp(mnem, "cvttsd2si")) {
         int ds = reg_size_x86(ops[1]);
-        x86_cvttsd2si(buf, ds, R(1), (X86XmmReg)R(0));
+        x86_cvttsd2si(buf, ds, R(1), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "cvttss2si")) {
         int ds = reg_size_x86(ops[1]);
-        x86_cvttss2si(buf, ds, R(1), (X86XmmReg)R(0));
+        x86_cvttss2si(buf, ds, R(1), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "cvtsd2ss")) {
-        x86_cvtsd2ss(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_cvtsd2ss(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "cvtss2sd")) {
-        x86_cvtss2sd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_cvtss2sd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "xorpd")) {
-        x86_xorpd(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_xorpd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "xorps")) {
-        x86_xorps(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_xorps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "movaps")) {
-        x86_movaps(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_movaps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pxor")) {
-        x86_pxor(buf, (X86XmmReg)R(1), (X86XmmReg)R(0));
+        x86_pxor(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "fldl")) {

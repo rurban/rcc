@@ -42,8 +42,8 @@ Generated: June 21 2026 18:04
 ## GCC Torture Tests
 
 - **Total**: 1671
-- **Passed**: 0
-- **Failed**: 1566
+- **Passed**: 1413
+- **Failed**: 153
 - **Skipped**: 105
-- **Fail Compile**: 1566
-- **Pass Rate (excl. skip)**: 0%
+- **Fail Compile**: 12
+- **Pass Rate (excl. skip)**: 90%

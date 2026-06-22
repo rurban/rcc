@@ -63,7 +63,6 @@ DARWIN_O = lib/darwin.dylib
 TARGET_DEPS += $(DARWIN_O)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 SRCS += src/coff_write.c src/x86_enc.c
-OBJS += $(MINGW_O) -lpthread
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
 SRCS += src/elf_write.c src/x86_enc.c
@@ -90,7 +89,6 @@ BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
-SRCS += src/x86_enc.c
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
@@ -141,7 +139,7 @@ TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 TARGET_DEPS += $(DARWIN_O)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
-OBJS += $(MINGW_O) -lpthread
+OBJS += $(MINGW_O)
 else
 OBJS += $(MINGW_O)
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
@@ -153,7 +151,7 @@ all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB)
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 $(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
-	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) -lpthread
+	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ src/lib$(OBJ_EXT) $(TARGET_EXT)
 
 src/keywords.h: src/keywords.gperf src/keyword_ids.h
 	$(GPERF) -m 10 --output-file=$@.tmp src/keywords.gperf

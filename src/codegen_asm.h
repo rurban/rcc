@@ -3365,6 +3365,18 @@ static void asm_mov_rdx_rax(SecBuf *s) {
 static void asm_mov_rax_rdx(SecBuf *s) {
     x86_mov_rr(s, 8, X86_RDX, X86_RAX); // movq %rax, %rdx
 }
+// xorq %rax, %rax  — zero RAX
+static void asm_xor_rax_rax(SecBuf *s) {
+    x86_xor_rr(s, 8, X86_RAX, X86_RAX); // xorq %rax, %rax
+}
+// xorq %rdx, %rdx  — zero RDX
+static void asm_xor_rdx_rdx(SecBuf *s) {
+    x86_xor_rr(s, 8, X86_RDX, X86_RDX); // xorq %rdx, %rdx
+}
+// movl %r{rs}, %ecx  — copy virtual reg to ECX (used for shift count in CL)
+static void asm_mov_reg_ecx(SecBuf *s, VReg rs) {
+    x86_mov_rr(s, 4, X86_RCX, REG(rs)); // movl %rs, %ecx
+}
 // negq (rd)  — negate 64-bit at virtual reg's memory
 static void asm_negq_mem(SecBuf *s, VReg rd) {
     X86Mem m = {REG(rd), X86_NOREG, 1, 0};
