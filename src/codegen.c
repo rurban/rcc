@@ -4759,13 +4759,14 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     }
 
     VReg r = gen(cond);
+    int sz = cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4);
 #ifdef ARCH_ARM64
-    asm_cmp_zero(cg_sec, r, cond->ty->size);
+    asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, ARM64_EQ);
     asm_fixup_add(cg_sec, cond_off, label, 1);
 #else
-    asm_cmp_zero(cg_sec, r, cond->ty->size);
+    asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, X86_E);
     asm_fixup_add(cg_sec, cond_off, label, 1);
@@ -6111,12 +6112,12 @@ static VReg gen(Node *node) {
                     // The whole complex value fits in 8 bytes (_Complex float)
                     // or two 8-byte halves (_Complex double): load (and OR
                     // together) the raw bits and test against zero.
-                    printf("  movq (%s), %s\n", reg64[dst], reg64[rt]);
+                    x86_mov_rm(cg_sec, 8, REG(rt), x86_mem(REG(dst), 0)); // movq (dst), rt
                     if (node->ty->size > 8)
-                        printf("  orq %d(%s), %s\n", base_sz, reg64[dst], reg64[rt]);
-                    printf("  cmp $0, %s\n", reg64[rt]);
-                    printf("  setne %%al\n");
-                    printf("  movzbl %%al, %s\n", reg32[rt]);
+                        x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(dst), base_sz)); // orq base_sz(dst), rt
+                    asm_cmp_zero(cg_sec, rt, 8); // cmp $0, rt
+                    asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+                    asm_movzx_phys(cg_sec, rt, X86_RAX, 4, 1); // movzbl %al, rt
 #endif
                     free_reg(dst);
                     return rt;
