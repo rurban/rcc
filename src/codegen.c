@@ -1535,11 +1535,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 asm_or_reg_reg(cg_sec, r_x, r_x, 8);
 #else
                 // sign_mask = 0x8000000000000000
-                (void)0 /* FIXME: unconverted printf: "  movabsq $-9223372036854775808, %s\n" */;
-                (void)0 /* FIXME: sized alu op */;
-                (void)0 /* FIXME: notq */;
-                (void)0 /* FIXME: sized alu op */;
-                (void)0 /* FIXME: sized alu op */;
+                asm_movabs_phy(cg_sec, REG(r_tmp), 0x8000000000000000ULL); // movabsq $sign_mask, r_tmp
+                asm_and_reg_reg(cg_sec, r_y, r_tmp, 8); // andq r_tmp, r_y (y_sign)
+                asm_not(cg_sec, r_tmp, 8); // notq r_tmp (~sign_mask)
+                asm_and_reg_reg(cg_sec, r_x, r_tmp, 8); // andq r_tmp, r_x (|x|)
+                asm_or_reg_reg(cg_sec, r_x, r_y, 8); // orq r_y, r_x (|x|+sign(y))
 #endif
                 free_reg(r_tmp);
                 free_reg(r_y);
@@ -1789,7 +1789,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 if (is_add_overflow)
                     asm_add_reg_reg(cg_sec, ra, rb, sz_op); // add rb, ra
                 else
-                    (void)0 /* FIXME: sub 2op */;
+                    asm_sub_reg_reg(cg_sec, ra, rb, sz_op); // sub rb, ra
                 // Detect overflow into sz_store bits.
                 if (sz_op == sz_store && sz_op == sz) {
                     // Same-size, same-type: use hardware flag directly.
@@ -1801,37 +1801,37 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     // (small inputs), so seto would always be 0 — use range check.
                     if (is_unsigned_store) {
                         // negative result can't fit in unsigned
-                        asm_setcc(cg_sec, X86_RAX, X86_S);
+                        asm_setcc(cg_sec, X86_RAX, X86_S); // sets %al
                     } else {
                         // signed: result fits in sz_op bits already; range-check to sz_store
-                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                        x86_mov_rr(cg_sec, 4, X86_RCX, REG(ra)); // movl ra, %ecx
                         x86_movsx(cg_sec, 8, 4, X86_RCX, X86_RCX); // movslq %ecx, %rcx
-                        (void)0 /* FIXME: cmp variant */;
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, REG(ra)); // cmpq %rcx, ra
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                     }
                 } else {
                     // sz_op > sz_store: result is in full precision, range-check.
                     if (is_unsigned_store) {
-                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                        x86_mov_rr(cg_sec, 4, X86_RCX, REG(ra)); // movl ra, %ecx (zero-ext)
                         // movl zero-extends implicitly; compare full result vs trunc
-                        (void)0 /* FIXME: cmp variant */;
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, REG(ra)); // cmpq %rcx, ra
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
-                        asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                        x86_mov_rr(cg_sec, 4, X86_RCX, REG(ra)); // movl ra, %ecx
                         x86_movsx(cg_sec, 8, 4, X86_RCX, X86_RCX); // movslq %ecx, %rcx
-                        (void)0 /* FIXME: cmp variant */;
+                        x86_cmp_rr(cg_sec, 8, X86_RCX, REG(ra)); // cmpq %rcx, ra
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                     }
                 }
                 if (argres) {
                     int rr = gen(argres);
                     if (store_to_int128) {
-                        asm_mov_mem_via_reg(cg_sec, ra, rr, 8); // movq ra, (rr)
+                        asm_mov_reg_mem(cg_sec, ra, rr, 8); // movq ra, (rr)
                         x86_mov_rr(cg_sec, 8, X86_RAX, REG(ra)); // movq ra, %rax
                         x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                     } else {
-                        asm_mov_mem_via_reg(cg_sec, ra, rr, sz_store); // mov ra, (rr)
+                        x86_mov_mr(cg_sec, sz_store, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
                     }
                     free_reg(rr);
                 }
