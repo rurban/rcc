@@ -3469,7 +3469,9 @@ static void asm_adcq_mem8_0(SecBuf *s, VReg rd) {
     secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x01 : 0)));
     secbuf_emit8(s, 0x83); // opcode 83 /2 ib (ADC r/m64, imm8)
     // ModRM: mod=01 (disp8), reg=010 (/2 for ADC), r/m = r & 7
-    secbuf_emit8(s, (uint8_t)(0x50 | (r & 7))); // 0x40 | (2<<3) | (r&7)
+    uint8_t rm = r & 7;
+    secbuf_emit8(s, (uint8_t)(0x50 | rm)); // 0x40 | (2<<3) | rm
+    if (rm == 4) secbuf_emit8(s, 0x24); // SIB: base=RSP, no index
     secbuf_emit8(s, 8); // disp8 = 8
     secbuf_emit8(s, 0); // imm8 = 0
 }
@@ -3479,8 +3481,10 @@ static void asm_adcq_mem8_rdx(SecBuf *s, VReg rs) {
     // adc rdx, [r+8]: REX.W (rdx=2, r may need B=1)
     secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x01 : 0)));
     secbuf_emit8(s, 0x13);
-    uint8_t modrm = (uint8_t)(0x50 | (r & 7)); // mod=01, reg=rdx(2), r/m=r&7
+    uint8_t rm = r & 7;
+    uint8_t modrm = (uint8_t)(0x50 | rm); // mod=01, reg=rdx(2), r/m=rm
     secbuf_emit8(s, modrm);
+    if (rm == 4) secbuf_emit8(s, 0x24); // SIB: base=RSP, no index
     secbuf_emit8(s, (uint8_t)(8)); // disp8 = 8
 }
 // addq (rs), %rax  — add from memory to RAX
@@ -3488,14 +3492,15 @@ static void asm_addq_mem_rax(SecBuf *s, VReg rs) {
     X86Mem m = {REG(rs), X86_NOREG, 1, 0};
     x86_add_rm(s, 8, X86_RAX, m); // addq (rs), %rax
 }
-// sbbq 8(rs), %rdx  — subtract-with-borrow (x86: REX.W 1B /r)
 static void asm_sbbq_mem8_rdx(SecBuf *s, VReg rs) {
     X86Reg r = REG(rs);
     // sbb rdx, [r+8]: REX.W (rdx=2, r may need B=1)
     secbuf_emit8(s, (uint8_t)(0x48 | ((r & 8) ? 0x01 : 0)));
     secbuf_emit8(s, 0x1B);
-    uint8_t modrm = (uint8_t)(0x50 | (r & 7)); // mod=01, reg=rdx(2), r/m=r&7
+    uint8_t rm = r & 7;
+    uint8_t modrm = (uint8_t)(0x50 | rm); // mod=01, reg=rdx(2), r/m=rm
     secbuf_emit8(s, modrm);
+    if (rm == 4) secbuf_emit8(s, 0x24); // SIB: base=RSP, no index
     secbuf_emit8(s, (uint8_t)(8)); // disp8 = 8
 }
 // notq %rax  — bitwise NOT of RAX
@@ -3654,7 +3659,9 @@ static void asm_add_reg_mem8(SecBuf *s, VReg rd, VReg rsrc) {
     secbuf_emit8(s, rex);
     secbuf_emit8(s, 0x01); // ADD r/m64, r64
     // ModRM: mod=01 (disp8), reg=src, r/m=base
-    secbuf_emit8(s, (uint8_t)(0x40 | ((src & 7) << 3) | (r & 7)));
+    uint8_t rm = r & 7;
+    secbuf_emit8(s, (uint8_t)(0x40 | ((src & 7) << 3) | rm));
+    if (rm == 4) secbuf_emit8(s, 0x24); // SIB: base=RSP, no index
     secbuf_emit8(s, 8); // disp8 = 8
 }
 #endif
