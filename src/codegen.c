@@ -7552,10 +7552,10 @@ static VReg gen(Node *node) {
                 (void)0 /* FIXME: ldr/str phy/off */;
                 (void)0 /* FIXME: ldr/str phy/off */;
 #else
-                asm_mov_reg_reg(cg_sec, 0, src, 8);
-                (void)0 /* FIXME: unconverted printf: "  movq 8(%s), %%rdx\n" */;
-#endif
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
+                x86_mov_rm(cg_sec, 8, X86_RDX, x86_mem(REG(src), 8)); // movq 8(src), %rdx
                 free_reg(src);
+#endif
 #ifdef _WIN32
             } else if (node->lhs->ty && is_complex(node->lhs->ty) && node->lhs->ty->size <= 8 && current_fn_def && current_fn_def->ty &&
                        is_complex(current_fn_def->ty->return_ty) && current_fn_def->ty->return_ty->size <= 8) {
