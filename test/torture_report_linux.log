@@ -1066,7 +1066,7 @@
   pr38422                             PASS
   pr38533                             PASS
   pr38819                             PASS
-  pr38969                             PASS
+  pr38969                             FAIL (runtime)
   pr39100                             PASS
   pr39120                             PASS
   pr39228                             PASS
@@ -1311,7 +1311,7 @@
   pr68328                             PASS
   pr68376-1                           PASS
   pr68376-2                           PASS
-  pr68381                             PASS
+  pr68381                             FAIL (runtime)
   pr68390                             PASS
   pr68506                             PASS
   pr68532                             PASS
@@ -1395,7 +1395,7 @@
   pr83362                             PASS
   pr83383                             PASS
   pr83477                             PASS
-  pr84169                             FAIL (runtime)
+  pr84169                             PASS
   pr84339                             PASS
   pr84478                             PASS
   pr84521                             PASS
@@ -1408,7 +1408,7 @@
   pr85529-1                           PASS
   pr85529-2                           PASS
   pr85582-1                           PASS
-  pr85582-2                           FAIL (runtime)
+  pr85582-2                           PASS
   pr85582-3                           FAIL (runtime)
   pr85756                             PASS
   pr86231                             PASS
@@ -1435,15 +1435,15 @@
   pr90348                             PASS
   pr90949                             PASS
   pr91137                             PASS
-  pr91450-1                           FAIL (runtime)
+  pr91450-1                           PASS
   pr91450-2                           PASS
   pr91597                             PASS
   pr91632                             PASS
-  pr91635                             FAIL (runtime)
+  pr91635                             PASS
   pr92140                             PASS
   pr92618                             SKIP (vector_size)
   pr92904                             FAIL (runtime)
-  pr93213                             PASS
+  pr93213                             FAIL (runtime)
   pr93249                             PASS
   pr93402                             PASS
   pr93434                             PASS
@@ -1513,7 +1513,7 @@
   pr108292                            SKIP (vector_size)
   pr108498-1                          PASS
   pr108498-2                          PASS
-  pr108789                            PASS
+  pr108789                            FAIL (runtime)
   pr109040                            SKIP (nested-func)
   pr109778                            PASS
   pr109925                            PASS
@@ -1674,4 +1674,4 @@
 
 Torture: 1560/1569 passed (99%), 9 failed (0 compile/9 runtime), 102 skipped.
 
-Runtime failures: 960512-1 pr82210 pr84169 pr85582-2 pr85582-3 pr91450-1 pr91635 pr92904 pr98366
+Runtime failures: 960512-1 pr38969 pr68381 pr82210 pr85582-3 pr92904 pr93213 pr98366 pr108789
