@@ -1838,29 +1838,29 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else { // mul_overflow / mul_overflow_p
                 int r2 = alloc_reg();
                 if (sz_op == 8) {
-                    asm_mov_reg_reg(cg_sec, 0, ra, 8);
+                    x86_mov_rr(cg_sec, 8, X86_RAX, REG(ra)); // movq ra, %rax
                     if (is_unsigned_op && sz == sz_op) {
                         // Native unsigned 64-bit: mulq gives rdx:rax
                         asm_mul_1op(cg_sec, rb, 8); // mulq rb
-                        asm_mov_reg_reg(cg_sec, ra, 0, 8);
-                        asm_mov_reg_reg(cg_sec, r2, 2, 8);
-                        asm_test_reg_reg(cg_sec, r2, r2, 8);
+                        x86_mov_rr(cg_sec, 8, REG(ra), X86_RAX); // movq %rax, ra
+                        x86_mov_rr(cg_sec, 8, REG(r2), X86_RDX); // movq %rdx, r2
+                        x86_test_rr(cg_sec, 8, X86_RDX, X86_RDX); // testq %rdx, %rdx
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
                         // Signed 64-bit (including sign-extended small operands):
                         // imulq gives rdx:rax; overflow if rdx != sign_ext(rax)
                         x86_imul_r(cg_sec, 8, REG(rb)); // imulq rb
-                        asm_mov_reg_reg(cg_sec, ra, 0, 8);
-                        asm_mov_reg_reg(cg_sec, r2, 2, 8);
-                        (void)0 /* FIXME: shift imm */;
-                        (void)0 /* FIXME: cmp variant */;
+                        x86_mov_rr(cg_sec, 8, REG(ra), X86_RAX); // movq %rax, ra
+                        x86_mov_rr(cg_sec, 8, REG(r2), X86_RDX); // movq %rdx, r2
+                        x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
+                        x86_cmp_rr(cg_sec, 8, X86_RDX, X86_RAX); // cmpq %rax, %rdx
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                         // For unsigned target with negative result: also signal overflow.
                         if (is_unsigned_store && !is_unsigned_op) {
                             // OR in the sign bit of the 64-bit result
-                            asm_test_reg_reg(cg_sec, ra, ra, 8);
-                            (void)0 /* FIXME: sete */;
-                            asm_or_byte_al(cg_sec, X86_RCX); // orb %cl, %al
+                            x86_test_rr(cg_sec, 8, REG(ra), REG(ra)); // testq ra, ra
+                            asm_setcc(cg_sec, X86_RCX, X86_S); // sets %cl
+                            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
                         }
                     }
                 } else {
@@ -1870,33 +1870,33 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                         asm_mul_1op(cg_sec, rb, 4); // mull rb
                         x86_mov_rr(cg_sec, 4, REG(ra), X86_RAX); // movl %eax, ra
                         x86_mov_rr(cg_sec, 4, REG(r2), X86_RDX); // movl %edx, r2
-                        asm_test_reg_reg(cg_sec, r2, r2, 4); // testl r2, r2
+                        x86_test_rr(cg_sec, 4, X86_RDX, X86_RDX); // testl %edx, %edx
                         asm_setcc(cg_sec, X86_RAX, X86_NE);
                     } else {
                         // Mixed or signed operands: extend each per its own signedness,
                         // then signed 64-bit multiply (exact for 32-bit inputs).
                         if (ra_unsigned)
-                            asm_mov_reg_reg(cg_sec, 0, ra, 4);
+                            x86_mov_rr(cg_sec, 4, X86_RAX, REG(ra)); // movl ra, %eax (zero-ext)
                         else
                             x86_movsx(cg_sec, 8, 4, X86_RAX, REG(ra)); // movslq ra, %rax
                         if (rb_unsigned)
-                            asm_mov_reg_reg(cg_sec, 1, rb, 4);
+                            x86_mov_rr(cg_sec, 4, X86_RCX, REG(rb)); // movl rb, %ecx (zero-ext)
                         else
                             x86_movsx(cg_sec, 8, 4, X86_RCX, REG(rb)); // movslq rb, %rcx
                         x86_imul_rr(cg_sec, 8, X86_RAX, X86_RCX); // imulq %rcx, %rax
-                        asm_mov_reg_reg(cg_sec, ra, 0, 4);
+                        x86_mov_rr(cg_sec, 4, REG(ra), X86_RAX); // movl %eax, ra
                         if (is_unsigned_store && sz_store == 8) {
                             // Negative result doesn't fit in unsigned 64-bit
                             x86_test_rr(cg_sec, 8, X86_RAX, X86_RAX); // testq %rax, %rax
-                            asm_setcc(cg_sec, X86_RAX, X86_S);
-                            asm_movsx(cg_sec, ra, ra, 8, 4);
+                            asm_setcc(cg_sec, X86_RAX, X86_S); // sets %al
+                            x86_movsx(cg_sec, 8, 4, REG(ra), REG(ra)); // movslq ra, ra
                         } else {
                             // Range check: sign-extend or zero-extend truncated result back
                             if (is_unsigned_store)
-                                asm_mov_reg_reg(cg_sec, 1, ra, 4);
+                                x86_mov_rr(cg_sec, 4, X86_RCX, REG(ra)); // movl ra, %ecx (zero-ext)
                             else
-                                (void)0 /* FIXME: unconverted printf: "  movslq %s, %%rcx\n" */;
-                            (void)0 /* FIXME: cmp variant */;
+                                x86_movsx(cg_sec, 8, 4, X86_RCX, REG(ra)); // movslq ra, %rcx
+                            x86_cmp_rr(cg_sec, 8, X86_RCX, X86_RAX); // cmpq %rax, %rcx
                             asm_setcc(cg_sec, X86_RAX, X86_NE);
                         }
                     }
@@ -1906,12 +1906,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     int rr = gen(argres);
                     if (store_to_int128) {
                         // Sign-extend 64-bit result to 128 bits and store
-                        asm_mov_mem_via_reg(cg_sec, ra, rr, 8); // movq ra, (rr)
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 0), REG(ra)); // movq ra, (rr)
                         x86_mov_rr(cg_sec, 8, X86_RAX, REG(ra)); // movq ra, %rax
                         x86_sar_ri(cg_sec, 8, X86_RAX, 63); // sarq $63, %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(REG(rr), 8), X86_RAX); // movq %rax, 8(rr)
                     } else {
-                        asm_mov_mem_via_reg(cg_sec, ra, rr, sz_store); // mov ra, (rr)
+                        x86_mov_mr(cg_sec, sz_store, x86_mem(REG(rr), 0), REG(ra)); // mov ra, (rr)
                     }
                     free_reg(rr);
                 }
