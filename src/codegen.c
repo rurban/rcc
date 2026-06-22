@@ -3351,8 +3351,8 @@ static void emit_adrp_add(VReg r, const char *label) {
         sidx = objfile_add_sym(cg_obj, label, sec, 0, 0, bind, ST_NOTYPE);
     }
 #ifdef __APPLE__
-    // Local assembler labels start with '.'; C-level symbols start with '_'.
-    // Use GOT for all C-level symbols so ld64 can resolve both dylib and local-defined.
+    // Use GOT for C-level symbols (start with '_') so ld64 can resolve both
+    // dylib and local-defined. Local labels (start with '.') use direct page+offset.
     if (label[0] != '.') {
         size_t adrp_off = cg_sec->len;
         asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
