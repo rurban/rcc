@@ -3687,22 +3687,21 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
     }
 #else
     if (fsz == 4) {
-        (void)0 /* FIXME: float op */;
-        (void)0 /* FIXME: float op */;
-        asm_cvtss2sd(cg_sec);
-        (void)0 /* FIXME: unconverted printf: "  cvtss2sd %%xmm1, %%xmm1\n" */;
+        // _Complex float → _Complex double: load singles, widen to doubles
+        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 0)); // movss (src), %xmm0
+        asm_mov_fp_rm(cg_sec, 4, X86_XMM1, x86_mem(REG(src), 4)); // movss 4(src), %xmm1
+        x86_cvtss2sd(cg_sec, X86_XMM0, X86_XMM0); // cvtss2sd %xmm0, %xmm0
+        x86_cvtss2sd(cg_sec, X86_XMM1, X86_XMM1); // cvtss2sd %xmm1, %xmm1
+        asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_XMM0); // movsd %xmm0, (dst)
+        asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_XMM1); // movsd %xmm1, 8(dst)
     } else {
-        (void)0 /* FIXME: float op */;
-        (void)0 /* FIXME: float op */;
-        asm_cvtsd2ss(cg_sec);
-        (void)0 /* FIXME: unconverted printf: "  cvtsd2ss %%xmm1, %%xmm1\n" */;
-    }
-    if (tsz == 4) {
-        (void)0 /* FIXME: float op */;
-        (void)0 /* FIXME: float op */;
-    } else {
-        (void)0 /* FIXME: float op */;
-        (void)0 /* FIXME: float op */;
+        // _Complex double → _Complex float: load doubles, narrow to singles
+        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
+        asm_mov_fp_rm(cg_sec, 8, X86_XMM1, x86_mem(REG(src), 8)); // movsd 8(src), %xmm1
+        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
+        x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1); // cvtsd2ss %xmm1, %xmm1
+        asm_mov_fp_mr(cg_sec, 4, x86_mem(REG(dst), 0), X86_XMM0); // movss %xmm0, (dst)
+        asm_mov_fp_mr(cg_sec, 4, x86_mem(REG(dst), 4), X86_XMM1); // movss %xmm1, 4(dst)
     }
 #endif
 }
@@ -3749,32 +3748,39 @@ static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
         (void)0 /* FIXME: sized ld/st */;
     }
 #else
+    // x86_64: load both components from src into RAX/RCX, then store to dst
+    // Sign/zero-extend from source size, truncate to target size
     if (fsz == 8) {
-        (void)0 /* FIXME: indirect mov */;
-        (void)0 /* FIXME: mov indirect/mem */;
+        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
+        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(src), 8)); // movq 8(src), %rcx
     } else if (fsz == 4) {
         if (uns) {
-            (void)0 /* FIXME: indirect mov */;
-            (void)0 /* FIXME: mov indirect/mem */;
+            x86_mov_rm(cg_sec, 4, X86_RAX, x86_mem(REG(src), 0)); // movl (src), %eax
+            x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(REG(src), 4)); // movl 4(src), %ecx
         } else {
-            (void)0 /* FIXME: unconverted printf: "  movslq (%s), %%rax\n" */;
-            (void)0 /* FIXME: unconverted printf: "  movslq %d(%s), %%rcx\n" */;
+            x86_movsx_rm(cg_sec, 8, 4, X86_RAX, x86_mem(REG(src), 0)); // movslq (src), %rax
+            x86_movsx_rm(cg_sec, 8, 4, X86_RCX, x86_mem(REG(src), 4)); // movslq 4(src), %rcx
         }
     } else if (fsz == 2) {
-        (void)0 /* FIXME: unconverted printf: "  %s (%s), %%rax\n" */;
-        (void)0 /* FIXME: unconverted printf: "  %s %d(%s), %%rcx\n" */;
+        if (uns) {
+            x86_movzx_rm(cg_sec, 4, 2, X86_RAX, x86_mem(REG(src), 0)); // movzwl (src), %eax
+            x86_movzx_rm(cg_sec, 4, 2, X86_RCX, x86_mem(REG(src), 2)); // movzwl 2(src), %ecx
+        } else {
+            x86_movsx_rm(cg_sec, 4, 2, X86_RAX, x86_mem(REG(src), 0)); // movswl (src), %eax
+            x86_movsx_rm(cg_sec, 4, 2, X86_RCX, x86_mem(REG(src), 2)); // movswl 2(src), %ecx
+        }
     } else {
-        (void)0 /* FIXME: unconverted printf: "  %s (%s), %%rax\n" */;
-        (void)0 /* FIXME: unconverted printf: "  %s %d(%s), %%rcx\n" */;
+        if (uns) {
+            x86_movzx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(REG(src), 0)); // movzbl (src), %eax
+            x86_movzx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(REG(src), 1)); // movzbl 1(src), %ecx
+        } else {
+            x86_movsx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(REG(src), 0)); // movsbl (src), %eax
+            x86_movsx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(REG(src), 1)); // movsbl 1(src), %ecx
+        }
     }
-    const char *store_real = tsz == 8 ? "%rax" : tsz == 4 ? "%eax"
-        : tsz == 2                                        ? "%ax"
-                                                          : "%al";
-    const char *store_imag = tsz == 8 ? "%rcx" : tsz == 4 ? "%ecx"
-        : tsz == 2                                        ? "%cx"
-                                                          : "%cl";
-    (void)0 /* FIXME: mov indirect/mem */;
-    (void)0 /* FIXME: mov indirect/mem */;
+    // Store to dst at target size
+    x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), 0), X86_RAX); // mov %al/%ax/%eax/%rax, (dst)
+    x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), tsz), X86_RCX); // mov %cl/%cx/%ecx/%rcx, tsz(dst)
 #endif
 }
 
@@ -6267,6 +6273,16 @@ static VReg gen(Node *node) {
                 node->lhs->ty->base->kind != TY_LDOUBLE && node->rhs->ty->base->kind != TY_LDOUBLE &&
                 node->lhs->ty->base->size != node->rhs->ty->base->size) {
                 emit_complex_convert_float(src, dst, node->rhs->ty, node->lhs->ty);
+                free_reg(src);
+                return dst;
+            }
+
+            // Complex-to-complex assignment with differing integer base
+            // types (e.g. _Complex int = _Complex char): convert components.
+            if (node->lhs->ty->kind == TY_COMPLEX && node->rhs->ty && node->rhs->ty->kind == TY_COMPLEX &&
+                !is_flonum(node->lhs->ty->base) && !is_flonum(node->rhs->ty->base) &&
+                node->lhs->ty->base->size != node->rhs->ty->base->size) {
+                emit_complex_convert_int(src, dst, node->rhs->ty, node->lhs->ty);
                 free_reg(src);
                 return dst;
             }
@@ -10024,8 +10040,8 @@ static VReg gen(Node *node) {
                 x86_mov_mr(cg_sec, W, x86_mem(REG(result), 0), X86_RAX); // mov %eax/%rax, (result)
                 x86_mov_mr(cg_sec, W, x86_mem(REG(result), base_sz), X86_RDX); // mov %edx/%rdx, base_sz(result)
             } else {
-                x86_mov_mr(cg_sec, W, x86_mem(REG(result), 0), X86_RAX); // mov %eax/%rax, (result)
-                x86_mov_mr(cg_sec, W, x86_mem(REG(result), base_sz), X86_RDX); // mov %edx/%rdx, base_sz(result)
+                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), 0), X86_RAX); // mov %al/%ax, (result)
+                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), base_sz), X86_RDX); // mov %dl/%dx, base_sz(result)
             }
 #undef CX_LOAD
 #endif
@@ -10315,8 +10331,8 @@ static VReg gen(Node *node) {
         if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
         if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
 #else
-        if (need_free_lhs) (void)0 /* FIXME: sized alu op */;
-        if (need_free_rhs) (void)0 /* FIXME: sized alu op */;
+        if (need_free_lhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15);
+        if (need_free_rhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15);
 #endif
         return result;
     }
