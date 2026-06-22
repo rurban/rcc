@@ -5384,31 +5384,15 @@ static VReg gen_int128(Node *node) {
             if (is_shl) {
                 asm_shldq_cl(cg_sec); // shldq %%cl, %%rax, %%rdx
                 asm_shl_rax_cl(cg_sec); // shlq %%cl, %%rax
-                // Variable __int128 left shift: shld/shl only use count mod 64.
-                // For counts with bit 6 set (64..127) result is {0, lo<<(count&63)};
-                // for count >= 128 result is zero (handled below via test of bit 7).
-                int c = ++rcc_label_count;
+                // shld/shl only use count mod 64. For count >= 64:
+                // rdx gets the shifted lo, rax becomes 0.
                 x86_test_ri(cg_sec, 4, X86_RCX, 0x40); // testl $0x40, %ecx
                 size_t o = asm_jcc_label(cg_sec, X86_Z);
+                int c = ++rcc_label_count;
                 asm_fixup_add(cg_sec, o, format(".L.shl128_%d", c), 1);
                 asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
-                x86_test_ri(cg_sec, 4, X86_RCX, 0x3f); // testl $0x3f, %ecx
-                size_t o2 = asm_jcc_label(cg_sec, X86_Z);
-                asm_fixup_add(cg_sec, o2, format(".L.shl128_z_%d", c), 1);
-                asm_shl_rax_cl(cg_sec); // shlq %%cl, %%rax
-                size_t o3 = asm_jmp_label(cg_sec);
-                asm_fixup_add(cg_sec, o3, format(".L.shl128_e_%d", c), 0);
-                cg_def_label(format(".L.shl128_z_%d", c));
                 asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
-                cg_def_label(format(".L.shl128_e_%d", c));
                 cg_def_label(format(".L.shl128_%d", c));
-                // count >= 128 => clear both halves
-                x86_test_ri(cg_sec, 4, X86_RCX, 0x80); // testl $0x80, %ecx
-                size_t o4 = asm_jcc_label(cg_sec, X86_Z);
-                asm_fixup_add(cg_sec, o4, format(".L.shl128_nz_%d", c), 1);
-                asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
-                asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
-                cg_def_label(format(".L.shl128_nz_%d", c));
             } else {
                 asm_shrdq_cl(cg_sec); // shrdq %%cl, %%rdx, %%rax
                 asm_shift_rdx_cl(cg_sec, is_unsigned); // %s %%cl, %%rdx
@@ -5417,34 +5401,11 @@ static VReg gen_int128(Node *node) {
                 size_t o = asm_jcc_label(cg_sec, X86_Z);
                 asm_fixup_add(cg_sec, o, format(".L.shr128_%d", c), 1);
                 asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
-                x86_test_ri(cg_sec, 4, X86_RCX, 0x3f); // testl $0x3f, %ecx
-                size_t o2 = asm_jcc_label(cg_sec, X86_Z);
-                asm_fixup_add(cg_sec, o2, format(".L.shr128_z_%d", c), 1);
-                if (is_unsigned)
-                    x86_shr_rcl(cg_sec, 8, X86_RAX); // shrq %%cl, %%rax
-                else
-                    x86_sar_rcl(cg_sec, 8, X86_RAX); // sarq %%cl, %%rax
-                size_t o3 = asm_jmp_label(cg_sec);
-                asm_fixup_add(cg_sec, o3, format(".L.shr128_e_%d", c), 0);
-                cg_def_label(format(".L.shr128_z_%d", c));
                 if (is_unsigned)
                     asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                 else
-                    asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
-                cg_def_label(format(".L.shr128_e_%d", c));
+                    asm_shift_rdx_imm(cg_sec, false, 63); // sarq $63, %%rdx
                 cg_def_label(format(".L.shr128_%d", c));
-                // count >= 128 => sign/zero extend
-                x86_test_ri(cg_sec, 4, X86_RCX, 0x80); // testl $0x80, %ecx
-                size_t o4 = asm_jcc_label(cg_sec, X86_Z);
-                asm_fixup_add(cg_sec, o4, format(".L.shr128_nz_%d", c), 1);
-                if (is_unsigned) {
-                    asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
-                    asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
-                } else {
-                    asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
-                    asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
-                }
-                cg_def_label(format(".L.shr128_nz_%d", c));
             }
         }
         asm_mov_rax_mem(cg_sec, dst); // movq %%rax, (dst)
