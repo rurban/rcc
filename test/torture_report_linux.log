@@ -654,7 +654,7 @@
   20070212-3                          PASS
   20070424-1                          PASS
   20070517-1                          PASS
-  20070614-1                          FAIL (runtime)
+  20070614-1                          PASS
   20070623-1                          PASS
   20070724-1                          PASS
   20070824-1                          PASS
@@ -1060,7 +1060,7 @@
   pr38048-1                           PASS
   pr38048-2                           PASS
   pr38051                             PASS
-  pr38151                             FAIL (runtime)
+  pr38151                             PASS
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
@@ -1069,7 +1069,7 @@
   pr38969                             PASS
   pr39100                             PASS
   pr39120                             PASS
-  pr39228                             FAIL (runtime)
+  pr39228                             PASS
   pr39233                             PASS
   pr39240                             PASS
   pr39339                             PASS
@@ -1160,7 +1160,7 @@
   pr49281                             PASS
   pr49390                             PASS
   pr49419                             PASS
-  pr49644                             FAIL (runtime)
+  pr49644                             PASS
   pr49712                             PASS
   pr49768                             PASS
   pr49886                             PASS
@@ -1442,7 +1442,7 @@
   pr91635                             FAIL (runtime)
   pr92140                             PASS
   pr92618                             SKIP (vector_size)
-  pr92904                             FAIL (runtime)
+  pr92904                             PASS
   pr93213                             PASS
   pr93249                             PASS
   pr93402                             PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1551/1569 passed (98%), 18 failed (0 compile/18 runtime), 102 skipped.
+Torture: 1556/1569 passed (99%), 13 failed (0 compile/13 runtime), 102 skipped.
 
-Runtime failures: 20020411-1 20041201-1 20070614-1 pr38151 pr39228 pr44683 pr49644 pr64006 pr71554 pr84169 pr85582-3 pr89434 pr91450-1 pr91450-2 pr91635 pr92904 pr104604 pr105984
+Runtime failures: 20020411-1 20041201-1 pr44683 pr64006 pr71554 pr84169 pr85582-3 pr89434 pr91450-1 pr91450-2 pr91635 pr104604 pr105984
