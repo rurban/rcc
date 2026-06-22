@@ -5675,40 +5675,40 @@ static VReg gen_int128(Node *node) {
         int c = ++rcc_label_count;
         // gp_offset + 16 <= 48 means <= 32 (2+ register slots available)
         X86Mem m_off = {REG(r), X86_NOREG, 1, 4};
-        x86_cmp_mi(cg_sec, 4, m_off, 32); // cmpq $32, 4(r) (gp_offset)
+        x86_cmp_mi(cg_sec, 4, m_off, 32); // cmpl $32, 4(r) (gp_offset)
         emit_jcc_fixup(cg_sec, X86_A, format(".L.va128_stk.%d", c));
         // Register save area: load both 64-bit halves
         X86Mem m_off2 = {REG(r), X86_NOREG, 1, 4};
-        x86_mov_rm(cg_sec, 4, X86_RAX, m_off2); // movl 4(r), %eax (gp_offset) using 32-bit size
-        x86_add_mi(cg_sec, 4, m_off2, 16); // addq $16, 4(r)
-        X86Mem m_regsave = {REG(r), X86_NOREG, 1, 8};
-        x86_mov_rm(cg_sec, 8, X86_RCX, m_regsave); // movq 8(r), %rcx (reg_save_area)
+        x86_mov_rm(cg_sec, 4, X86_RAX, m_off2); // movl 4(r), %eax (gp_offset)
+        x86_add_mi(cg_sec, 4, m_off2, 16); // addl $16, 4(r)
+        X86Mem m_regsave = {REG(r), X86_NOREG, 1, 16};
+        x86_mov_rm(cg_sec, 8, X86_RCX, m_regsave); // movq 16(r), %rcx (reg_save_area)
         X86Mem m_src = {X86_RCX, X86_RAX, 1, 0};
-        x86_mov_rm(cg_sec, 8, X86_RAX, m_src); // movq (%rcx,%rax), %rax
-        asm_mov_rax_mem(cg_sec, addr);
+        x86_mov_rm(cg_sec, 8, X86_RAX, m_src); // movq (%rcx,%rax), %rax (lo)
+        asm_mov_rax_mem(cg_sec, addr); // movq %rax, (addr)
         X86Mem m_src8 = {X86_RCX, X86_RAX, 1, 8};
-        x86_mov_rm(cg_sec, 8, X86_RAX, m_src8); // movq 8(%rcx,%rax), %rax
-        asm_mov_rax_mem(cg_sec, addr);
+        x86_mov_rm(cg_sec, 8, X86_RAX, m_src8); // movq 8(%rcx,%rax), %rax (hi)
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 8), X86_RAX); // movq %rax, 8(addr)
         emit_jmp_fixup(cg_sec, format(".L.va128_d.%d", c));
-        // Overflow stack: 16-byte aligned, advance by 16
+        // Overflow stack: 16-byte aligned
         cg_def_label(format(".L.va128_stk.%d", c));
-        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(r), X86_NOREG, 1, 0}); // movq (r), %rax
-        x86_add_mi(cg_sec, 8, (X86Mem){REG(r), X86_NOREG, 1, 0}, 16); // addq $16, (r)
+        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(r), X86_NOREG, 1, 8}); // movq 8(r), %rax (overflow_arg_area)
         VReg t = alloc_reg();
-        asm_mov_reg_reg(cg_sec, t, r, 8);
+        asm_mov_reg_reg(cg_sec, t, r, 8); // t = r (copy va_list ptr)
         x86_lea(cg_sec, 8, REG(t), (X86Mem){X86_RAX, X86_NOREG, 1, 15}); // leaq 15(%rax), %rt
-        x86_and_ri(cg_sec, 8, REG(t), -16); // andq $-16, %rt
-        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(t), X86_NOREG, 1, 0}); // movq (rt), %rax
-        asm_mov_rax_mem(cg_sec, addr);
-        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(t), X86_NOREG, 1, 8}); // movq 8(rt), %rax
-        asm_mov_rax_mem(cg_sec, addr);
+        x86_and_ri(cg_sec, 8, REG(t), -16); // andq $-16, %rt (align)
+        x86_lea(cg_sec, 8, REG(t), (X86Mem){REG(t), X86_NOREG, 1, 16}); // leaq 16(%rt), %rt (skip aligned block)
+        x86_mov_mr(cg_sec, 8, (X86Mem){REG(r), X86_NOREG, 1, 8}, REG(t)); // movq %rt, 8(r) (update overflow)
+        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(t), X86_NOREG, 1, -16}); // movq -16(%rt), %rax (lo)
+        asm_mov_rax_mem(cg_sec, addr); // movq %rax, (addr)
+        x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){REG(t), X86_NOREG, 1, -8}); // movq -8(%rt), %rax (hi)
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 8), X86_RAX); // movq %rax, 8(addr)
         free_reg(t);
         cg_def_label(format(".L.va128_d.%d", c));
         free_reg(r);
         return addr;
     }
 #endif
-    case ND_POST_INC:
     case ND_POST_DEC:
     case ND_PRE_INC:
     case ND_PRE_DEC: {
