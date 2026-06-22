@@ -4379,7 +4379,7 @@ static VReg gen_addr(Node *node) {
 #ifdef ARCH_ARM64
             asm_add_reg_reg(cg_sec, r, o, 8); // add r, r, o
 #else
-            asm_add_reg_reg(cg_sec, o, r, 8); // add o, r
+            asm_add_reg_reg(cg_sec, r, o, 8); // add r, r, o
 #endif
             free_reg(o);
             return r;
