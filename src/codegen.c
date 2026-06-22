@@ -5362,7 +5362,7 @@ static VReg gen_int128(Node *node) {
                     asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
                     asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
                 } else if (shift < 128) {
-                    asm_shl_rax_imm(cg_sec, shift); // shlq $%d, %%rax
+                    asm_shl_rax_imm(cg_sec, shift - 64); // shlq $%d, %%rax
                     asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
                     asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
                 } else {
@@ -9993,43 +9993,43 @@ static VReg gen(Node *node) {
                 break;
             case ND_MUL:
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: sub 2op */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
+                printf("  mov %s, %s\n", rax_w, r9_w);
+                printf("  mov %s, %s\n", rax_w, rdi_w);
+                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
+                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
+                printf("  sub %s, %s\n", rdi_w, r9_w); // r9 = ac-bd (real)
+                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
+                printf("  imul %s, %s\n", rcx_w, rdx_w); // rdx = b*c
+                printf("  add %s, %s\n", rdx_w, rax_w); // rax = ad+bc (imag)
+                printf("  mov %s, %s\n", r9_w, rdx_w); // rdx = real result
                 real_reg = rdx_w;
                 imag_reg = rax_w;
                 break;
             case ND_DIV:
                 // (a+bi)/(c+di) = ((ac+bd)/(cc+dd)) + ((bc-ad)/(cc+dd))i
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: sub 2op */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  imul %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  push %%rax\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  pop %%rdx\n" */;
+                printf("  mov %s, %s\n", rax_w, r9_w);
+                printf("  mov %s, %s\n", rdx_w, rdi_w);
+                printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
+                printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
+                printf("  add %s, %s\n", rdi_w, r9_w); // r9 = ac+bd (num_real)
+                printf("  mov %s, %s\n", rdx_w, rdi_w); // rdi = b
+                printf("  imul %s, %s\n", rcx_w, rdi_w); // rdi = b*c
+                printf("  imul %s, %s\n", r8_w, rax_w); // rax = a*d
+                printf("  sub %s, %s\n", rax_w, rdi_w); // rdi = bc-ad (num_imag)
+                printf("  mov %s, %s\n", rcx_w, rax_w); // rax = c
+                printf("  imul %s, %s\n", rcx_w, rax_w); // rax = c*c
+                printf("  mov %s, %s\n", r8_w, rdx_w); // rdx = d
+                printf("  imul %s, %s\n", r8_w, rdx_w); // rdx = d*d
+                printf("  add %s, %s\n", rdx_w, rax_w); // rax = cc+dd (denom)
+                printf("  mov %s, %s\n", rax_w, rcx_w); // rcx = denom
+                printf("  mov %s, %s\n", r9_w, rax_w); // rax = num_real
+                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
+                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = real
+                printf("  push %%rax\n"); // save real result
+                printf("  mov %s, %s\n", rdi_w, rax_w); // rax = num_imag
+                printf("  %s\n", base_unsigned ? "xor %edx, %edx" : (W == 8 ? "cqo" : "cdq"));
+                printf("  %s %s\n", base_unsigned ? "div" : "idiv", rcx_w); // rax = imag
+                printf("  pop %%rdx\n"); // rdx = real result
                 real_reg = rdx_w;
                 imag_reg = rax_w;
                 break;
@@ -10037,11 +10037,11 @@ static VReg gen(Node *node) {
                 __builtin_unreachable();
             }
             if (base_sz == W) {
-                x86_mov_mr(cg_sec, W, x86_mem(REG(result), 0), X86_RAX); // mov %eax/%rax, (result)
-                x86_mov_mr(cg_sec, W, x86_mem(REG(result), base_sz), X86_RDX); // mov %edx/%rdx, base_sz(result)
+                printf("  mov %s, (%s)\n", real_reg, reg64[result]);
+                printf("  mov %s, %d(%s)\n", imag_reg, base_sz, reg64[result]);
             } else {
-                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), 0), X86_RAX); // mov %al/%ax, (result)
-                x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), base_sz), X86_RDX); // mov %dl/%dx, base_sz(result)
+                printf("  mov %s, (%s)\n", x86_subreg(real_reg, base_sz), reg64[result]);
+                printf("  mov %s, %d(%s)\n", x86_subreg(imag_reg, base_sz), base_sz, reg64[result]);
             }
 #undef CX_LOAD
 #endif
