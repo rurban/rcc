@@ -308,8 +308,8 @@ int elf_write(ObjFile *obj, const char *path) {
     int sh_rela_text_idx = has_rela_text ? shidx++ : -1;
     int sh_rela_data_idx = has_rela_data ? shidx++ : -1;
     int sh_rela_rodata_idx = has_rela_rodata ? shidx++ : -1;
-    int sh_rela_init_idx = has_rela_init ? shidx++ : -1;
-    int sh_rela_fini_idx = has_rela_fini ? shidx++ : -1;
+    __attribute__((unused)) int sh_rela_init_idx = has_rela_init ? shidx++ : -1;
+    __attribute__((unused)) int sh_rela_fini_idx = has_rela_fini ? shidx++ : -1;
     int sh_symtab_idx = shidx++;
     int sh_strtab_idx = shidx++;
     int sh_shstrtab_idx = shidx++;

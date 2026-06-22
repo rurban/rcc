@@ -233,7 +233,7 @@ static size_t asm_movsd_rip_xmm(SecBuf *s, const char *label) {
     return s->len - off;
 }
 // movss .Llabel(%rip), %xmm0 — 8 bytes: f3 0f 10 05 <disp32>
-static size_t asm_movss_rip_xmm(SecBuf *s, const char *label) {
+__attribute__((unused)) static size_t asm_movss_rip_xmm(SecBuf *s, const char *label) {
     size_t off = s->len;
     secbuf_emit32le(s, 0x05100ff3); // f3 0f 10 05
     secbuf_emit32le(s, 0); // placeholder disp32
@@ -261,7 +261,7 @@ static size_t asm_mov_got_rip_reg(SecBuf *s, int r, const char *label) {
     asm_record(ASM_MOV_RRBP, off, s->len - off, r, -1, -1, 8, 0, 0, label, 0, -1, false);
     return s->len - off;
 }
-static size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
+__attribute__((unused)) static size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
     X86Reg reg = REG(r);
     EMIT_GUARD;
     size_t off = s->len;
@@ -275,7 +275,7 @@ static size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
     secbuf_emit32le(s, 0);
     return s->len - off;
 }
-static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char *label) {
+__attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst, VReg base, const char *label) {
     X86Reg rd = REG(dst);
     X86Reg rb = REG(base);
     EMIT_GUARD;
@@ -637,7 +637,7 @@ static int alloc_int128_slot(void);
 static VReg alloc_int128_addr(void);
 static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
-static void gen_int128_nonzero(VReg addr, VReg result);
+__attribute__((unused)) static void gen_int128_nonzero(VReg addr, VReg result);
 static VReg gen_int128(Node *node);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
@@ -994,11 +994,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     VReg *arg_regs;
     int *arg_sizes;
     bool *arg_is_float;
-    int *arg_stage;
+    __attribute__((unused)) int *arg_stage;
 #ifdef _WIN32
-    int *arg_gp_idx;
+    __attribute__((unused)) int *arg_gp_idx;
     int *arg_fp_idx;
-    int *arg_stack_idx;
+    __attribute__((unused)) int *arg_stack_idx;
 #elif defined(ARCH_ARM64)
     int *arg_gp_idx;
     int *arg_fp_idx;
@@ -4714,7 +4714,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         else if (cond->kind == ND_LE)
             jmp = use_unsigned_cmp(cond) ? "b.hi" : "b.gt";
 #else
-        char *jmp = "";
+        __attribute__((unused)) char *jmp = "";
         if (cond->kind == ND_EQ)
             jmp = "jne";
         else if (cond->kind == ND_NE)
@@ -4855,7 +4855,7 @@ static VReg gen_to_int128(Node *operand) {
 }
 
 // Check whether an int128 value at addr is nonzero; result in `result` reg (0 or 1).
-static void gen_int128_nonzero(VReg addr, VReg result) {
+__attribute__((unused)) static void gen_int128_nonzero(VReg addr, VReg result) {
 #ifdef ARCH_ARM64
     int t = alloc_reg();
     asm_ldr_reg_off(cg_sec, t, addr, 8, 0);
@@ -5860,7 +5860,7 @@ static VReg gen(Node *node) {
         VReg r = alloc_reg();
         if (opt_W) reg_owner[r] = node->var->name;
 #ifndef ARCH_ARM64
-        char *label = var_label(node->var);
+        __attribute__((unused)) char *label = var_label(node->var);
 #endif
         if (node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr)) {
             if (node->var->is_local) {
@@ -10080,7 +10080,7 @@ static VReg gen(Node *node) {
         asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
         asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
         free_reg(r_rhs);
-        char *inst = "";
+        __attribute__((unused)) char *inst = "";
         if (node->kind == ND_ADD) inst = "addsd";
         else if (node->kind == ND_SUB)
             inst = "subsd";
@@ -11203,7 +11203,7 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
     return 0;
 }
 
-static void emit_peephole_body(char *body_text) {
+__attribute__((unused)) static void emit_peephole_body(char *body_text) {
     if (opt_O0) {
         fputs(body_text, stdout);
         return;
@@ -11779,18 +11779,18 @@ struct ObjFile *codegen(Program *prog) {
             ? 1
             : 0;
 #ifdef _WIN32
-        char *param_regs64[] = {"%rcx", "%rdx", "%r8", "%r9"};
-        char *param_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
-        char *param_regs16[] = {"%cx", "%dx", "%r8w", "%r9w"};
-        char *param_regs8[] = {"%cl", "%dl", "%r8b", "%r9b"};
-        char *param_xmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
+        __attribute__((unused)) char *param_regs64[] = {"%rcx", "%rdx", "%r8", "%r9"};
+        __attribute__((unused)) char *param_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
+        __attribute__((unused)) char *param_regs16[] = {"%cx", "%dx", "%r8w", "%r9w"};
+        __attribute__((unused)) char *param_regs8[] = {"%cl", "%dl", "%r8b", "%r9b"};
+        __attribute__((unused)) char *param_xmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
         int max_param_regs = 4;
         X86Reg cg_x86_paramreg[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
 #else
-        char *param_regs64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-        char *param_regs32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
-        char *param_regs16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
-        char *param_regs8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
+        __attribute__((unused)) char *param_regs64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
+        __attribute__((unused)) char *param_regs32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
+        __attribute__((unused)) char *param_regs16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
+        __attribute__((unused)) char *param_regs8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
         char *param_xmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"};
         X86Reg cg_x86_paramreg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
         int max_param_regs = 6;
@@ -11826,7 +11826,7 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param_index++;
                 }
             } else if (param_index < max_param_regs) {
-                X86Reg preg = win_gp_regs[param_index];
+                __attribute__((unused)) X86Reg preg = win_gp_regs[param_index];
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
@@ -12026,7 +12026,7 @@ struct ObjFile *codegen(Program *prog) {
                     }
                 }
             } else if (param_index < max_param_regs) {
-                X86Reg preg = lin_gp_regs[param_index];
+                __attribute__((unused)) X86Reg preg = lin_gp_regs[param_index];
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
