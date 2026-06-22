@@ -6747,16 +6747,16 @@ static VReg gen(Node *node) {
         asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0); // strb wzr, [x11, x9]
         cg_def_label(format(".L.zero_end.%d", c)); // b .L.zero.%d
 #else
-        asm_mov_imm(cg_sec, 1, 8, var->ty->size); // mov $var->ty->size, r1
-        cg_def_label(format(".L.zero.%d", c)); // movq $%d, %rcx
-        x86_cmp_ri(cg_sec, 8, REG(1), 0); // cmp $0, rcx
-        size_t zj1 = asm_jcc_label(cg_sec, X86_E); // cmpq $0, %rcx
-        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1); // fixup add for forward branch
-        x86_mov_mi(cg_sec, 1, x86_mem_idx(X86_RBP, REG(1), 1, -var->offset - 1), 0); // movb $0, -%d-1(%rbp,%rcx)
-        x86_sub_ri(cg_sec, 8, REG(1), 1); // subq $1, %rcx
-        size_t zj2 = asm_jmp_label(cg_sec); // jmp .L.zero.%d
-        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0); // fixup label
-        cg_def_label(format(".L.zero_end.%d", c)); // sub x11, %s, #%d
+        x86_mov_ri(cg_sec, 8, X86_RCX, var->ty->size); // movq $size, %rcx
+        cg_def_label(format(".L.zero.%d", c));
+        x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmpq $0, %rcx
+        size_t zj1 = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
+        x86_mov_mi(cg_sec, 1, x86_mem_idx(X86_RBP, X86_RCX, 1, -var->offset - 1), 0); // movb $0, -off-1(%rbp,%rcx)
+        x86_sub_ri(cg_sec, 8, X86_RCX, 1); // subq $1, %rcx
+        size_t zj2 = asm_jmp_label(cg_sec);
+        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
+        cg_def_label(format(".L.zero_end.%d", c));
 #endif
         return -1;
     }
