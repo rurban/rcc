@@ -9964,14 +9964,14 @@ static VReg gen(Node *node) {
             const char *real_reg, *imag_reg;
             switch (node->kind) {
             case ND_ADD:
-                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
-                (void)0 /* FIXME: unconverted printf: "  add %s, %s\n" */;
+                x86_add_rr(cg_sec, W, X86_RAX, X86_RCX); // add %ecx/%rcx, %eax/%rax (real = a+c)
+                x86_add_rr(cg_sec, W, X86_RDX, X86_R8); // add %r8d/%r8, %edx/%rdx (imag = b+d)
                 real_reg = rax_w;
                 imag_reg = rdx_w;
                 break;
             case ND_SUB:
-                (void)0 /* FIXME: sub 2op */;
-                (void)0 /* FIXME: sub 2op */;
+                x86_sub_rr(cg_sec, W, X86_RAX, X86_RCX); // sub %ecx/%rcx, %eax/%rax (real = a-c)
+                x86_sub_rr(cg_sec, W, X86_RDX, X86_R8); // sub %r8d/%r8, %edx/%rdx (imag = b-d)
                 real_reg = rax_w;
                 imag_reg = rdx_w;
                 break;
@@ -10021,11 +10021,11 @@ static VReg gen(Node *node) {
                 __builtin_unreachable();
             }
             if (base_sz == W) {
-                (void)0 /* FIXME: mov indirect/mem */;
-                (void)0 /* FIXME: mov indirect/mem */;
+                x86_mov_mr(cg_sec, W, x86_mem(REG(result), 0), X86_RAX); // mov %eax/%rax, (result)
+                x86_mov_mr(cg_sec, W, x86_mem(REG(result), base_sz), X86_RDX); // mov %edx/%rdx, base_sz(result)
             } else {
-                (void)0 /* FIXME: mov indirect/mem */;
-                (void)0 /* FIXME: mov indirect/mem */;
+                x86_mov_mr(cg_sec, W, x86_mem(REG(result), 0), X86_RAX); // mov %eax/%rax, (result)
+                x86_mov_mr(cg_sec, W, x86_mem(REG(result), base_sz), X86_RDX); // mov %edx/%rdx, base_sz(result)
             }
 #undef CX_LOAD
 #endif
@@ -10039,8 +10039,8 @@ static VReg gen(Node *node) {
         if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
         if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
 #else
-        if (need_free_lhs) (void)0 /* FIXME: sized alu op */;
-        if (need_free_rhs) (void)0 /* FIXME: sized alu op */;
+        if (need_free_lhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
+        if (need_free_rhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
 #endif
         return result;
     }
