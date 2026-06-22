@@ -363,8 +363,8 @@ int main(int argc, char **argv) {
         uint64_t t0 = opt_time ? now_us() : 0;
         char *preprocessed = preprocess(cur_path, contents);
         if (opt_time)
-            fprintf(stderr, "  preprocess  %s: %6lu us\n", cur_path,
-                    now_us() - t0);
+            fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
+                    (unsigned long long)(now_us() - t0));
 
         if (opt_E) {
             printf("%s", preprocessed);
@@ -374,15 +374,15 @@ int main(int argc, char **argv) {
         t0 = opt_time ? now_us() : 0;
         Token *tok = tokenize(cur_path, preprocessed);
         if (opt_time)
-            fprintf(stderr, "  lex         %s: %6lu us\n", cur_path,
-                    now_us() - t0);
+            fprintf(stderr, "  lex         %s: %6llu us\n", cur_path,
+                    (unsigned long long)(now_us() - t0));
 
         t0 = opt_time ? now_us() : 0;
         Program *prog = parse(tok);
         prog->in_path = cur_path;
         if (opt_time)
-            fprintf(stderr, "  parse       %s: %6lu us\n", cur_path,
-                    now_us() - t0);
+            fprintf(stderr, "  parse       %s: %6llu us\n", cur_path,
+                    (unsigned long long)(now_us() - t0));
 
         if (opt_fdump_ast)
             dump_ast(prog);
@@ -397,16 +397,16 @@ int main(int argc, char **argv) {
             }
         }
         if (opt_time)
-            fprintf(stderr, "  typecheck   %s: %6lu us\n", cur_path,
-                    now_us() - t0);
+            fprintf(stderr, "  typecheck   %s: %6llu us\n", cur_path,
+                    (unsigned long long)(now_us() - t0));
 
         // CTFE runs only with -O1; peephole skipped with -O0.
         if (opt_O1) {
             t0 = opt_time ? now_us() : 0;
             optimize(prog);
             if (opt_time)
-                fprintf(stderr, "  opt(CTFE)   %s: %6lu us\n", cur_path,
-                        now_us() - t0);
+                fprintf(stderr, "  opt(CTFE)   %s: %6llu us\n", cur_path,
+                        (unsigned long long)(now_us() - t0));
         }
 
         if (!opt_dryrun) {
@@ -415,11 +415,11 @@ int main(int argc, char **argv) {
             struct ObjFile *obj = codegen(prog);
             if (opt_time) {
                 uint64_t cg_total = now_us() - t0;
-                fprintf(stderr, "  codegen     %s: %6lu us\n", cur_path,
-                        cg_total - time_peep_us);
+                fprintf(stderr, "  codegen     %s: %6llu us\n", cur_path,
+                        (unsigned long long)(cg_total - time_peep_us));
                 if (!opt_O0)
-                    fprintf(stderr, "  peephole    %s: %6lu us\n", cur_path,
-                            time_peep_us);
+                    fprintf(stderr, "  peephole    %s: %6llu us\n", cur_path,
+                            (unsigned long long)time_peep_us);
             }
             // Write binary .o file
             char *tmp_obj_path = asm_path;

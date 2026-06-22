@@ -236,7 +236,7 @@ static uint16_t reloc_to_coff_x86_64(uint32_t elf_type) {
     }
 }
 
-static uint16_t reloc_to_coff_arm64(uint32_t elf_type) {
+__attribute__((unused)) static uint16_t reloc_to_coff_arm64(uint32_t elf_type) {
     switch (elf_type) {
     case R_AARCH64_ABS64: return IMAGE_REL_ARM64_ADDR64;
     case R_AARCH64_ABS32: return IMAGE_REL_ARM64_ADDR32;
@@ -539,7 +539,7 @@ int coff_write(ObjFile *obj, const char *path) {
         total_sym_count += syms.data[i].num_aux;
 
     uint32_t symtab_off = off;
-    uint32_t symtab_size = (uint32_t)total_sym_count * 18;
+    uint32_t symtab_size __attribute__((unused)) = (uint32_t)total_sym_count * 18;
 
     // -------------------------------------------------------------------
     // Copy section data and patch addends
