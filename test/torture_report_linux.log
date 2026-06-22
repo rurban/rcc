@@ -190,7 +190,7 @@
   960416-1                            PASS
   960419-1                            PASS
   960419-2                            PASS
-  960512-1                            FAIL (runtime)
+  960512-1                            PASS
   960513-1                            PASS
   960521-1                            PASS
   960608-1                            PASS
@@ -1479,7 +1479,7 @@
   pr97836                             PASS
   pr97888-1                           PASS
   pr97888-2                           PASS
-  pr98366                             FAIL (runtime)
+  pr98366                             PASS
   pr98474                             PASS
   pr98681                             PASS
   pr98727                             PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1560/1569 passed (99%), 9 failed (0 compile/9 runtime), 102 skipped.
+Torture: 1562/1569 passed (99%), 7 failed (0 compile/7 runtime), 102 skipped.
 
-Runtime failures: 960512-1 pr38969 pr68381 pr82210 pr85582-3 pr92904 pr93213 pr98366 pr108789
+Runtime failures: pr38969 pr68381 pr82210 pr85582-3 pr92904 pr93213 pr108789
