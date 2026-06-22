@@ -7397,8 +7397,8 @@ static VReg gen(Node *node) {
             if (addr < 0) {
                 need_free = 1;
                 addr = alloc_reg();
-                asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
-                (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
+                asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+                x86_mov_rr(cg_sec, 8, REG(addr), X86_RSP); // movq %rsp, addr
                 VReg v = gen(node->lhs);
                 if (is_complex(node->lhs->ty)) {
                     asm_mov_reg_reg(cg_sec, 0, v, 8);
@@ -9622,8 +9622,8 @@ static VReg gen(Node *node) {
             (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
             (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
-            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
+            asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+            x86_mov_rr(cg_sec, 8, REG(addr_lhs), X86_RSP); // movq %rsp, addr_lhs
 #endif
             int v = gen(node->lhs);
             if (lhs_cx) {
@@ -9655,8 +9655,8 @@ static VReg gen(Node *node) {
             (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
             (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
-            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
+            asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+            x86_mov_rr(cg_sec, 8, REG(addr_rhs), X86_RSP); // movq %rsp, addr_rhs
 #endif
             int v = gen(node->rhs);
             if (rhs_cx) {
@@ -10190,8 +10190,8 @@ static VReg gen(Node *node) {
             (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
             (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
-            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
+            asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+            x86_mov_rr(cg_sec, 8, REG(addr_lhs), X86_RSP); // movq %rsp, addr_lhs
 #endif
             int v = gen(node->lhs);
             if (is_complex(node->lhs->ty)) {
@@ -10231,8 +10231,8 @@ static VReg gen(Node *node) {
             (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
             (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
 #else
-            asm_sub_imm(cg_sec, 4, 8, (complex_sz + 15) & ~15);
-            (void)0 /* FIXME: unconverted printf: "  movq %%rsp, %s\n" */;
+            asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+            x86_mov_rr(cg_sec, 8, REG(addr_rhs), X86_RSP); // movq %rsp, addr_rhs
 #endif
             int v = gen(node->rhs);
             if (is_complex(node->rhs->ty)) {
