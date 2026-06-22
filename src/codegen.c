@@ -8929,10 +8929,20 @@ static VReg gen(Node *node) {
         emit_mov_imm64(ARM64_X16, (uint64_t)va_fp_start); // mov w16, #va_fp_start
         asm_str_w16_uoff(cg_sec, r, 7); // str w16, [x{r}, #28]
 #elif defined(_WIN32)
-        // Windows x64: va_list is char *. Point to first variadic arg in caller's
-        // shadow space (rbp+16 = return addr + saved rbp; 8-byte slots).
+        // Windows x64: va_list is char *. Point to first variadic arg.
+        // If named params use < 4 reg slots, the first variadic arg is in the
+        // shadow space (rbp+16 for slot 0, +24 for slot 1, etc.).
+        // If all 4 reg slots are consumed by named params, the first variadic
+        // arg is on the stack at rbp+48 + n_stack*8.
         VReg r = gen_addr(node->lhs); // va_list is char *, need its address to write
-        asm_lea_rbp(cg_sec, X86_RDX, 8, -(16 + va_gp_start)); // leaq (16+va_gp_start)(%rbp), %rdx
+        {
+            int n_named = 0;
+            for (LVar *v = current_fn_def->params; v; v = v->param_next) n_named++;
+            int n_stack = (n_named > 4) ? (n_named - 4) : 0;
+            int va_first = (n_named < 4) ? (16 + n_named * 8) : (48 + n_stack * 8);
+            // asm_lea_rbp negates offset, so pass -va_first to get +va_first
+            asm_lea_rbp(cg_sec, X86_RDX, 8, -va_first); // leaq va_first(%rbp), %rdx
+        }
         x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 0), X86_RDX); // movq %rdx, (%r)
 #else
 #ifdef _WIN32
@@ -8944,7 +8954,15 @@ static VReg gen(Node *node) {
         // arg is on the stack starting at va_st_start (48 + k*8 where k is
         // the number of stack-passed named params).
         {
-            int va_first = (va_gp_start < 32) ? (16 + va_gp_start) : va_st_start;
+            // Count named params directly (bypasses broken pass-1 stack_param_index)
+            int n_named = 0;
+            for (LVar *v = current_fn_def->params; v; v = v->param_next)
+                n_named++;
+            int n_stack = (n_named > 4) ? (n_named - 4) : 0;
+            int va_first = (n_named < 4) ? (16 + n_named * 8) : (48 + n_stack * 8);
+            // Also try: just use va_st_start which we set in pass 2
+            // but if that's still 48, compute from scratch
+            if (va_st_start > 48) va_first = va_st_start;
             asm_lea_signed_rbp(cg_sec, X86_RDX, 8, va_first); // leaq va_first(%rbp), %rdx
         }
         x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 0), X86_RDX); // movq %rdx, (%r)
@@ -12132,7 +12150,7 @@ struct ObjFile *codegen(Program *prog) {
             va_reg_save_ofs = current_fn_stack_size + 96;
             va_gp_start = gp_count * 8;
             va_fp_start = va_fp * 16 + 32;
-            va_st_start = 48 + stack_param_index * 8;
+            va_st_start = 48 + (gp_count > 4 ? (gp_count - 4) : 0) * 8;
             switch (gp_count) {
             case 0: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
             case 1: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rdx, -%d(%rbp) */
@@ -12839,6 +12857,10 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param_index++;
                 }
             }
+#ifdef _WIN32
+            // Fix va_st_start using correct stack_param_index from pass 2
+            va_st_start = 48 + stack_param_index * 8;
+#endif
         }
 
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX

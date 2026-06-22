@@ -1324,6 +1324,14 @@ static void asm_lea_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     x86_lea(s, size, reg, m);
     asm_record(ASM_LEA_FP, off, s->len - off, reg, -1, -1, size, 0, -offset, NULL, 0, -1, false);
 }
+
+// lea offset(%rbp), %reg — signed offset for Windows va_start (positive offsets)
+static void asm_lea_signed_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
+    size_t off = s->len;
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    x86_lea(s, size, reg, m);
+    asm_record(ASM_LEA_FP, off, s->len - off, reg, -1, -1, size, 0, offset, NULL, 0, -1, false);
+}
 static void asm_mov_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
     X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
