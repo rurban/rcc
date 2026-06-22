@@ -349,7 +349,7 @@ static void cg_emit(const char *fmt, ...) {
     }
     assemble_inline(cg_obj, p, cg_inline_fixup_cb, NULL);
 }
-#define cg_emit_asm(...) cg_emit(__VA_ARGS__)
+#define printf(...) cg_emit(__VA_ARGS__)
 
 static uint64_t cg_now_us(void) {
     struct timespec ts;
@@ -1499,20 +1499,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // use 64-bit operations regardless of the source type size
                 asm_mov_reg_reg(cg_sec, r, r_arg, 8);
                 emit_mov_imm64(REG(r_tmp), 0x7fffffffffffffffULL);
-                asm_and_reg_reg(cg_sec, r, r, 8);
+                asm_and_reg_reg(cg_sec, r, r_tmp, 8);
                 emit_mov_imm64(REG(r_tmp), 0x7ff0000000000000ULL);
                 asm_cmp_reg_reg(cg_sec, r, r_tmp, 8);
                 asm_cset(cg_sec, r, ARM64_EQ);
 #else
                 // Same on x86_64: floats are stored as doubles in GP regs
-                (void)0 /* TODO: movq to/from xmm */;
-                (void)0 /* TODO: movq to/from xmm */;
-                (void)0 /* FIXME: unconverted printf: "  movabsq $0x7fffffffffffffff, %s\n" */;
-                (void)0 /* FIXME: sized alu op */;
-                (void)0 /* FIXME: unconverted printf: "  movabsq $0x7ff0000000000000, %s\n" */;
-                (void)0 /* FIXME: cmp variant */;
-                asm_setcc(cg_sec, X86_RAX, X86_E);
-                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+                asm_mov_reg_reg(cg_sec, r, r_arg, 8); // movq r_arg, r
+                asm_movabs_phy(cg_sec, REG(r_tmp), 0x7fffffffffffffffULL); // movabsq $0x7fff..., r_tmp
+                asm_and_reg_reg(cg_sec, r, r_tmp, 8); // andq r_tmp, r (clear sign)
+                asm_movabs_phy(cg_sec, REG(r_tmp), 0x7ff0000000000000ULL); // movabsq $0x7ff0..., r_tmp
+                asm_cmp_reg_reg(cg_sec, r, r_tmp, 8); // cmpq r_tmp, r
+                asm_setcc(cg_sec, X86_RAX, X86_E); // sete %al
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, %er
 #endif
                 free_reg(r_tmp);
                 free_reg(r_arg);
