@@ -1157,6 +1157,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || (node->ty->kind == TY_COMPLEX
 #ifdef _WIN32
                                                                                                         && node->ty->size > 8
+#else
+                                                                                                        && node->ty->size > 16
 #endif
                                                                                                         ));
 
@@ -1770,15 +1772,24 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     free_reg(rr);
                 }
             } else if (is_mul_overflow || is_mul_overflow_p) {
-                VReg r2 = alloc_reg();
-                // x86 MUL uses implicit %rax/%eax; result in %rdx:%rax
+                bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
+                if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base)
+                    res_unsigned = argres->ty->base->is_unsigned;
+                // x86 MUL/IMUL use implicit %rax/%eax; result in %rdx:%rax
                 x86_mov_rr(cg_sec, sz, X86_RAX, REG(ra)); // mov ra, %rax/eax
-                asm_mul_1op(cg_sec, rb, sz); // mul rb (rdx:rax = rax * rb)
-                x86_mov_rr(cg_sec, sz, REG(ra), X86_RAX); // mov %rax/eax, ra (product)
-                x86_mov_rr(cg_sec, sz, REG(r2), X86_RDX); // mov %rdx/edx, r2 (high bits)
-                asm_cmp_zero(cg_sec, r2, sz); // cmp $0, r2
-                asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-                free_reg(r2);
+                if (res_unsigned) {
+                    asm_mul_1op(cg_sec, rb, sz); // mul rb (rdx:rax = rax * rb)
+                    x86_mov_rr(cg_sec, sz, REG(ra), X86_RAX); // mov %rax/eax, ra (product)
+                    VReg r2 = alloc_reg();
+                    x86_mov_rr(cg_sec, sz, REG(r2), X86_RDX); // mov %rdx/edx, r2 (high bits)
+                    asm_cmp_zero(cg_sec, r2, sz); // cmp $0, r2
+                    asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+                    free_reg(r2);
+                } else {
+                    x86_imul_r(cg_sec, sz, REG(rb)); // imul rb (rdx:rax = rax * rb), sets OF
+                    x86_mov_rr(cg_sec, sz, REG(ra), X86_RAX); // mov %rax/eax, ra (product)
+                    asm_setcc(cg_sec, X86_RAX, X86_O); // seto %al
+                }
                 if (argres && !is_mul_overflow_p) {
                     VReg rr = gen(argres); // load pointer value
                     asm_mov_mem_via_reg(cg_sec, ra, rr, sz); // mov ra, (rr)
@@ -2944,23 +2955,16 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else if (argv[i]->ty && is_complex(argv[i]->ty)) {
                 bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
                 if (cfloat) {
-                    // Float complex: load real and imag into xmm regs
+                    // Float complex: load real and imag into xmm regs.
+                    // Each component is 8 bytes for float/double complex.
                     int base_sz = argv[i]->ty->base ? argv[i]->ty->base->size : 8;
                     if (argv[i]->ty->size <= 8) {
-                        // _Complex float: 8 bytes -> one xmm
-                        if (base_sz == 8)
-                            x86_movsd_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
-                        else
-                            x86_movss_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
+                        // _Complex float: 8 bytes packed -> one xmm
+                        x86_movsd_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
                     } else {
                         // _Complex double: 16 bytes -> two xmm
-                        if (base_sz == 8) {
-                            x86_movsd_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
-                            x86_movsd_rm(cg_sec, (X86XmmReg)(arg_fp_idx[i] + 1), x86_mem(REG(arg_regs[i]), base_sz));
-                        } else {
-                            x86_movss_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
-                            x86_movss_rm(cg_sec, (X86XmmReg)(arg_fp_idx[i] + 1), x86_mem(REG(arg_regs[i]), base_sz));
-                        }
+                        x86_movsd_rm(cg_sec, (X86XmmReg)arg_fp_idx[i], x86_mem(REG(arg_regs[i]), 0));
+                        x86_movsd_rm(cg_sec, (X86XmmReg)(arg_fp_idx[i] + 1), x86_mem(REG(arg_regs[i]), base_sz));
                     }
                 } else {
                     // Integer complex
@@ -3048,6 +3052,35 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
+        return addr;
+    }
+#else
+    // Linux SysV: small _Complex values come back in registers (xmm0/xmm1 or
+    // rax/rdx), not via a hidden return pointer. Materialize them on the stack
+    // and return the address, matching gen()'s address-return convention.
+    if (node->ty && is_complex(node->ty) && node->ty->size <= 16) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        int base_sz = node->ty->base ? node->ty->base->size : 8;
+        bool cfloat = node->ty->base && is_flonum(node->ty->base);
+        if (cfloat) {
+            if (node->ty->size <= 8) {
+                // _Complex float: packed in xmm0 (8 bytes)
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0); // movsd %xmm0, (addr)
+            } else {
+                // _Complex double: real in xmm0, imag in xmm1
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0); // movsd %xmm0, (addr)
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1); // movsd %xmm1, base_sz(addr)
+            }
+        } else {
+            if (node->ty->size <= 8) {
+                // _Complex integer <= 64 bits: packed in rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
+            } else {
+                // _Complex long long: real in rax, imag in rdx
+                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(REG(addr), 0), X86_RAX); // mov %rax, (addr)
+                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(REG(addr), base_sz), X86_RDX); // mov %rdx, base_sz(addr)
+            }
+        }
         return addr;
     }
 #endif
@@ -4445,6 +4478,19 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         return;
     }
     if (cond->kind == ND_EQ || cond->kind == ND_NE || cond->kind == ND_LT || cond->kind == ND_LE) {
+        if (cond->lhs->ty && cond->lhs->ty->kind == TY_INT128) {
+            // __int128 comparison: gen_int128 returns a boolean VReg (0 or 1)
+            VReg r = gen_int128(cond);
+            asm_cmp_zero(cg_sec, r, 4); // cmpl $0, rr
+            free_reg(r);
+#ifdef ARCH_ARM64
+            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
+#else
+            size_t o = asm_jcc_label(cg_sec, X86_E); // je label
+#endif
+            asm_fixup_add(cg_sec, o, label, 1);
+            return;
+        }
         if (cond->lhs->ty && is_complex(cond->lhs->ty)) {
             // Complex EQ/NE: compare both parts, branch if not equal
             int r = gen(cond); // use the expression handler which now handles complex
@@ -5190,7 +5236,7 @@ static VReg gen_int128(Node *node) {
         }
 #else
         // x86-64: rax=lo, rdx=hi; use shldq/shrdq
-        asm_mov_reg_reg(cg_sec, 0, lhs, 8);
+        asm_mov_mem_rax(cg_sec, lhs); // movq (lhs), %%rax
         asm_mov_mem8_rdx(cg_sec, lhs); // movq 8(lhs), %%rdx
         free_reg(lhs);
         if (node->rhs->kind == ND_NUM) {
@@ -5203,14 +5249,14 @@ static VReg gen_int128(Node *node) {
                     asm_shl_rax_imm(cg_sec, shift); // shlq $%d, %%rax
                 } else if (shift == 64) {
                     asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
-                    asm_movl_zero(cg_sec, 0);
+                    asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
                 } else if (shift < 128) {
                     asm_shl_rax_imm(cg_sec, shift); // shlq $%d, %%rax
                     asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
-                    asm_movl_zero(cg_sec, 0);
+                    asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
                 } else {
-                    asm_movl_zero(cg_sec, 0);
-                    asm_movl_zero(cg_sec, 2);
+                    asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
+                    asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                 }
             } else {
                 if (shift < 64) {
@@ -5219,52 +5265,97 @@ static VReg gen_int128(Node *node) {
                 } else if (shift == 64) {
                     asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
                     if (is_unsigned)
-                        asm_movl_zero(cg_sec, 2);
+                        asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                     else
-                        (void)0 /* FIXME: shift imm */;
+                        asm_shift_rdx_imm(cg_sec, false, 63); // sarq $63, %%rdx
                 } else if (shift < 128) {
                     asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
                     asm_shift_rax_imm(cg_sec, is_unsigned, shift - 64); // %s $%d, %%rax
                     if (is_unsigned)
-                        asm_movl_zero(cg_sec, 2);
+                        asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                     else
-                        (void)0 /* FIXME: shift imm */;
+                        asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
                 } else {
                     if (is_unsigned) {
-                        asm_movl_zero(cg_sec, 0);
-                        asm_movl_zero(cg_sec, 2);
+                        asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
+                        asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
                     } else {
-                        (void)0 /* FIXME: shift imm */;
-                        asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
+                        asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
+                        asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
                     }
                 }
             }
         } else {
             int r_shift = gen(node->rhs);
-            asm_mov_reg_reg(cg_sec, 1, r_shift, 4);
+            asm_mov_reg_ecx(cg_sec, r_shift); // movl %r_shift, %ecx
             free_reg(r_shift);
             if (is_shl) {
                 asm_shldq_cl(cg_sec); // shldq %%cl, %%rax, %%rdx
                 asm_shl_rax_cl(cg_sec); // shlq %%cl, %%rax
-                (void)0 /* FIXME: testb */;
-                (void)0 /* FIXME: branch/call: jz .L.shl128.%d */;
+                // Variable __int128 left shift: shld/shl only use count mod 64.
+                // For counts with bit 6 set (64..127) result is {0, lo<<(count&63)};
+                // for count >= 128 result is zero (handled below via test of bit 7).
+                int c = ++rcc_label_count;
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x40); // testl $0x40, %ecx
+                size_t o = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o, format(".L.shl128_%d", c), 1);
                 asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
-                asm_movl_zero(cg_sec, 0);
-                (void)0 /* FIXME: label .L.xxx.rcc_label_count++ */;
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x3f); // testl $0x3f, %ecx
+                size_t o2 = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o2, format(".L.shl128_z_%d", c), 1);
+                asm_shl_rax_cl(cg_sec); // shlq %%cl, %%rax
+                size_t o3 = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, o3, format(".L.shl128_e_%d", c), 0);
+                cg_def_label(format(".L.shl128_z_%d", c));
+                asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
+                cg_def_label(format(".L.shl128_e_%d", c));
+                cg_def_label(format(".L.shl128_%d", c));
+                // count >= 128 => clear both halves
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x80); // testl $0x80, %ecx
+                size_t o4 = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o4, format(".L.shl128_nz_%d", c), 1);
+                asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
+                asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
+                cg_def_label(format(".L.shl128_nz_%d", c));
             } else {
                 asm_shrdq_cl(cg_sec); // shrdq %%cl, %%rdx, %%rax
                 asm_shift_rdx_cl(cg_sec, is_unsigned); // %s %%cl, %%rdx
-                (void)0 /* FIXME: testb */;
-                (void)0 /* FIXME: branch/call: jz .L.shr128.%d */;
+                int c = ++rcc_label_count;
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x40); // testl $0x40, %ecx
+                size_t o = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o, format(".L.shr128_%d", c), 1);
                 asm_mov_rdx_rax(cg_sec); // movq %%rdx, %%rax
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x3f); // testl $0x3f, %ecx
+                size_t o2 = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o2, format(".L.shr128_z_%d", c), 1);
                 if (is_unsigned)
-                    asm_movl_zero(cg_sec, 2);
+                    x86_shr_rcl(cg_sec, 8, X86_RAX); // shrq %%cl, %%rax
                 else
-                    (void)0 /* FIXME: shift imm */;
-                (void)0 /* FIXME: label .L.xxx.rcc_label_count++ */;
+                    x86_sar_rcl(cg_sec, 8, X86_RAX); // sarq %%cl, %%rax
+                size_t o3 = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, o3, format(".L.shr128_e_%d", c), 0);
+                cg_def_label(format(".L.shr128_z_%d", c));
+                if (is_unsigned)
+                    asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
+                else
+                    asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
+                cg_def_label(format(".L.shr128_e_%d", c));
+                cg_def_label(format(".L.shr128_%d", c));
+                // count >= 128 => sign/zero extend
+                x86_test_ri(cg_sec, 4, X86_RCX, 0x80); // testl $0x80, %ecx
+                size_t o4 = asm_jcc_label(cg_sec, X86_Z);
+                asm_fixup_add(cg_sec, o4, format(".L.shr128_nz_%d", c), 1);
+                if (is_unsigned) {
+                    asm_xor_rax_rax(cg_sec); // xorq %%rax, %%rax
+                    asm_xor_rdx_rdx(cg_sec); // xorq %%rdx, %%rdx
+                } else {
+                    asm_shift_rax_imm(cg_sec, false, 63); // sarq $63, %%rax
+                    asm_mov_rax_rdx(cg_sec); // movq %%rax, %%rdx
+                }
+                cg_def_label(format(".L.shr128_nz_%d", c));
             }
         }
-        asm_mov_reg_reg(cg_sec, dst, 0, 8);
+        asm_mov_rax_mem(cg_sec, dst); // movq %%rax, (dst)
         asm_mov_rdx_mem8(cg_sec, dst); // movq %%rdx, 8(dst)
 #endif
         return dst;
@@ -7373,6 +7464,20 @@ static VReg gen(Node *node) {
                 cast->tok = node->lhs->tok;
                 node->lhs = cast;
             }
+            // Implicit conversion from the expression type to the function's
+            // declared return type. The parser does not insert this cast, so
+            // we must perform it here to get correct sign/zero extension.
+            if (node->lhs->ty && ret_ty &&
+                ((is_integer(node->lhs->ty) && is_integer(ret_ty)) ||
+                 (is_flonum(node->lhs->ty) && is_flonum(ret_ty))) &&
+                (node->lhs->ty->size != ret_ty->size || node->lhs->ty->is_unsigned != ret_ty->is_unsigned)) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->lhs;
+                cast->ty = ret_ty;
+                cast->tok = node->lhs->tok;
+                node->lhs = cast;
+            }
             if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
                 // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
                 int src = gen_int128(node->lhs);
@@ -7394,6 +7499,37 @@ static VReg gen(Node *node) {
                 if (src < 0)
                     src = gen(node->lhs);
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
+                free_reg(src);
+#elif !defined(ARCH_ARM64)
+            } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
+                       is_complex(current_fn_def->ty->return_ty) && current_fn_def->ty->return_ty->size <= 16) {
+                // Linux SysV: small _Complex values are returned in registers,
+                // not via a hidden return pointer.
+                VReg src = gen_addr(node->lhs);
+                if (src < 0)
+                    src = gen(node->lhs);
+                Type *ret_ty = current_fn_def->ty->return_ty;
+                int base_sz = ret_ty->base ? ret_ty->base->size : 8;
+                bool cfloat = ret_ty->base && is_flonum(ret_ty->base);
+                if (cfloat) {
+                    if (ret_ty->size <= 8) {
+                        // _Complex float: packed in xmm0 (8 bytes)
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
+                    } else {
+                        // _Complex double: real in xmm0, imag in xmm1
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
+                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz)); // movsd base_sz(src), %xmm1
+                    }
+                } else {
+                    if (ret_ty->size <= 8) {
+                        // _Complex integer <= 64 bits: packed in rax
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
+                    } else {
+                        // _Complex long long: real in rax, imag in rdx
+                        x86_mov_rm(cg_sec, base_sz <= 4 ? 4 : 8, X86_RAX, x86_mem(REG(src), 0)); // mov (src), %rax
+                        x86_mov_rm(cg_sec, base_sz <= 4 ? 4 : 8, X86_RDX, x86_mem(REG(src), base_sz)); // mov base_sz(src), %rdx
+                    }
+                }
                 free_reg(src);
 #endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
@@ -11783,16 +11919,16 @@ struct ObjFile *codegen(Program *prog) {
 #else
                 // x86-64 SysV: int128 lo in param_regs64[N], hi in param_regs64[N+1]
                 if (param_index + 1 < max_param_regs) {
-                    (void)0 /* FIXME: movq param, -offset(%rbp) — need X86Reg not char* */;
-                    (void)0 /* FIXME: movq param+1, -(offset+8)(%rbp) */;
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), cg_x86_paramreg[param_index]); // movq param, -off(%rbp)
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), cg_x86_paramreg[param_index + 1]); // movq param+1, -(off-8)(%rbp)
                     param_index += 2;
                 } else {
                     // On stack: two consecutive 8-byte slots at [rbp + 16 + k*8]
                     int stack_off = 16 + stack_param_index * 8;
-                    x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){CG_X86_FP, X86_NOREG, 1, stack_off + 16}); // movq stack_off+16(%rbp), %rax
-                    asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset);
-                    x86_mov_rm(cg_sec, 8, X86_RAX, (X86Mem){CG_X86_FP, X86_NOREG, 1, stack_off + 16}); // movq stack_off+16(%rbp), %rax
-                    asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset - 8);
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off + 8)); // movq stack_off+8(%rbp), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
                     stack_param_index += 2;
                 }
 #endif
@@ -12456,10 +12592,105 @@ struct ObjFile *codegen(Program *prog) {
             X86Reg greg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
             int max_gp = 6;
 #endif
-            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || fn->ty->return_ty->kind == TY_COMPLEX) ? 1 : 0;
+            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+#ifdef _WIN32
+                                                                                                                           && fn->ty->return_ty->size > 8
+#else
+                                                                                                                           && fn->ty->return_ty->size > 16
+#endif
+                                                                                                                           ))
+                ? 1
+                : 0;
             int xfp = 0;
             int stack_param_index = 0;
             for (LVar *var = fn->params; var; var = var->param_next) {
+#ifndef _WIN32
+                // Linux SysV: _Complex float/double are passed in SSE regs,
+                // _Complex integer types in GP regs, matching the call-site
+                // classification in gen_funcall.
+                if (is_complex(var->ty)) {
+                    bool cfloat = var->ty->base && is_flonum(var->ty->base);
+                    if (cfloat) {
+                        int base_sz = var->ty->base ? var->ty->base->size : 8;
+                        if (var->ty->size <= 8) {
+                            // _Complex float (or other <=8-byte floating complex):
+                            // packed in one xmm reg; store the whole 8 bytes.
+                            if (xfp < 8) {
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp);
+                                xfp++;
+                            } else {
+                                int stack_off2 = 16 + stack_param_index * 8;
+                                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2));
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0);
+                                stack_param_index++;
+                            }
+                        } else {
+                            // _Complex double: real in xmm{xfp}, imag in xmm{xfp+1}
+                            if (xfp + 1 < 8) {
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp);
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -(var->offset - base_sz)), (X86XmmReg)(xfp + 1));
+                                xfp += 2;
+                            } else {
+                                int stack_off2 = 16 + stack_param_index * 8;
+                                if (stack_param_index & 1) stack_param_index++;
+                                stack_off2 = 16 + stack_param_index * 8;
+                                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2));
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0);
+                                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2 + base_sz));
+                                x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -(var->offset - base_sz)), X86_XMM0);
+                                stack_param_index += 2;
+                            }
+                        }
+                    } else {
+                        // Integer _Complex: one or two GP regs
+                        if (var->ty->size <= 8) {
+                            if (gp < max_gp) {
+                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]);
+                                gp++;
+                            } else {
+                                int stack_off2 = 16 + stack_param_index * 8;
+                                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
+                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
+                                stack_param_index++;
+                            }
+                        } else {
+                            if (gp + 1 < max_gp) {
+                                int base_sz = var->ty->base ? var->ty->base->size : 8;
+                                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(X86_RBP, -var->offset), greg[gp]);
+                                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(X86_RBP, -(var->offset - base_sz)), greg[gp + 1]);
+                                gp += 2;
+                            } else {
+                                int stack_off2 = 16 + stack_param_index * 8;
+                                if (stack_param_index & 1) stack_param_index++;
+                                stack_off2 = 16 + stack_param_index * 8;
+                                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
+                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
+                                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2 + 8));
+                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX);
+                                stack_param_index += 2;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Linux SysV: __int128 occupies two consecutive GP registers/stack slots
+                if (var->ty->kind == TY_INT128) {
+                    if (gp + 1 < max_gp) {
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]); // movq greg[gp], -off(%rbp)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), greg[gp + 1]); // movq greg[gp+1], -(off-8)(%rbp)
+                        gp += 2;
+                    } else {
+                        if (stack_param_index & 1) stack_param_index++;
+                        int stack_off2 = 16 + stack_param_index * 8;
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2 + 8)); // movq stack_off+8(%rbp), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                        stack_param_index += 2;
+                    }
+                    continue;
+                }
+#endif
                 if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8)) {
                     int sz = var->ty->size <= 4 ? 4 : 8;
                     x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -var->offset), greg[gp]); // %s:
@@ -12547,6 +12778,8 @@ struct ObjFile *codegen(Program *prog) {
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
 #ifdef _WIN32
                                                                                                                   && fn->ty->return_ty->size > 8
+#else
+                                                                                                                  && fn->ty->return_ty->size > 16
 #endif
                                                                                                                   ))) {
             int retbuf_offset = 0;
