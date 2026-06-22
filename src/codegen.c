@@ -1157,8 +1157,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || (node->ty->kind == TY_COMPLEX
 #ifdef _WIN32
                                                                                                         && node->ty->size > 8
-#else
-                                                                                                        && node->ty->size > 16
 #endif
                                                                                                         ));
 
@@ -1751,53 +1749,176 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             Node *arga = node->args;
             Node *argb = arga ? arga->next : NULL;
             Node *argres = argb ? argb->next : NULL;
-            // x86-64: use add/sub/mul tracking unsigned overflow (carry flag)
-            VReg ra = gen(arga);
-            VReg rb = gen(argb);
+            int ra = gen(arga);
+            int rb = gen(argb);
+            // sz: operation size from the operands (at least 4).
+            // sz_store: result pointer's pointed-to type (may differ).
+            // sz_op: compute in max(sz, sz_store) so we can range-check the result.
             int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
-            if (is_add_overflow) {
-                asm_add_rr_flags(cg_sec, ra, rb, sz); // add ra, rb (sets CF)
-                asm_setcc(cg_sec, X86_RAX, X86_C); // setc %al
-                if (argres) {
-                    VReg rr = gen(argres); // load pointer value (not address of pointer)
-                    asm_mov_mem_via_reg(cg_sec, ra, rr, sz); // mov ra, (rr)
-                    free_reg(rr);
-                }
-            } else if (is_sub_overflow) {
-                asm_sub_rr_flags(cg_sec, ra, rb, sz); // sub rb, ra (sets CF)
-                asm_setcc(cg_sec, X86_RAX, X86_C); // setc %al
-                if (argres) {
-                    VReg rr = gen(argres); // load pointer value
-                    asm_mov_mem_via_reg(cg_sec, ra, rr, sz); // mov ra, (rr)
-                    free_reg(rr);
-                }
-            } else if (is_mul_overflow || is_mul_overflow_p) {
-                bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
-                if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base)
-                    res_unsigned = argres->ty->base->is_unsigned;
-                // x86 MUL/IMUL use implicit %rax/%eax; result in %rdx:%rax
-                x86_mov_rr(cg_sec, sz, X86_RAX, REG(ra)); // mov ra, %rax/eax
-                if (res_unsigned) {
-                    asm_mul_1op(cg_sec, rb, sz); // mul rb (rdx:rax = rax * rb)
-                    x86_mov_rr(cg_sec, sz, REG(ra), X86_RAX); // mov %rax/eax, ra (product)
-                    VReg r2 = alloc_reg();
-                    x86_mov_rr(cg_sec, sz, REG(r2), X86_RDX); // mov %rdx/edx, r2 (high bits)
-                    asm_cmp_zero(cg_sec, r2, sz); // cmp $0, r2
-                    asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-                    free_reg(r2);
+            int sz_store = sz;
+            bool is_unsigned_store = arga && arga->ty && arga->ty->is_unsigned;
+            // is_unsigned_op: true only when BOTH operands are unsigned (affects mul instruction
+            // choice and widening strategy; mixed signed/unsigned must use signed arithmetic).
+            bool ra_unsigned = arga && arga->ty && arga->ty->is_unsigned;
+            bool rb_unsigned = argb && argb->ty && argb->ty->is_unsigned;
+            bool is_unsigned_op = ra_unsigned && rb_unsigned;
+            if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
+                if (argres->ty->base->kind == TY_INT128) {
+                    // Treat as 8-byte for computation; store 128-bit separately below
+                    sz_store = 8;
+                    is_unsigned_store = argres->ty->base->is_unsigned;
                 } else {
-                    x86_imul_r(cg_sec, sz, REG(rb)); // imul rb (rdx:rax = rax * rb), sets OF
-                    x86_mov_rr(cg_sec, sz, REG(ra), X86_RAX); // mov %rax/eax, ra (product)
-                    asm_setcc(cg_sec, X86_RAX, X86_O); // seto %al
+                    sz_store = argres->ty->base->size > 4 ? 8 : 4;
+                    is_unsigned_store = argres->ty->base->is_unsigned;
                 }
+            }
+            bool store_to_int128 = argres && argres->ty && argres->ty->kind == TY_PTR &&
+                argres->ty->base && argres->ty->base->kind == TY_INT128;
+            int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
+            // If operands are narrower than sz_op, widen them per-operand signedness.
+            if (sz_op > sz && sz == 4) {
+                if (ra_unsigned)
+                    printf("  movl %s, %s\n", reg32[ra], reg32[ra]); // zero-ext (implicit)
+                else
+                    printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                if (rb_unsigned)
+                    printf("  movl %s, %s\n", reg32[rb], reg32[rb]);
+                else
+                    printf("  movslq %s, %s\n", reg32[rb], reg64[rb]);
+            }
+            if (is_add_overflow || is_sub_overflow) {
+                if (is_add_overflow)
+                    printf("  add %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                else
+                    printf("  sub %s, %s\n", reg(rb, sz_op), reg(ra, sz_op));
+                // Detect overflow into sz_store bits.
+                if (sz_op == sz_store && sz_op == sz) {
+                    // Same-size, same-type: use hardware flag directly.
+                    printf("  %s %%al\n", is_unsigned_store ? "setc" : "seto");
+                } else if (sz_op == sz_store && sz_op > sz) {
+                    // Widened signed ops into target type: check if mathematical
+                    // result fits.  For unsigned target a negative result overflows;
+                    // for signed target the 64-bit operation cannot itself overflow
+                    // (small inputs), so seto would always be 0 — use range check.
+                    if (is_unsigned_store) {
+                        // negative result can't fit in unsigned
+                        printf("  sets %%al\n");
+                    } else {
+                        // signed: result fits in sz_op bits already; range-check to sz_store
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        printf("  movslq %%ecx, %%rcx\n");
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    }
+                } else {
+                    // sz_op > sz_store: result is in full precision, range-check.
+                    if (is_unsigned_store) {
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        // movl zero-extends implicitly; compare full result vs trunc
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    } else {
+                        printf("  movl %s, %%ecx\n", reg32[ra]);
+                        printf("  movslq %%ecx, %%rcx\n");
+                        printf("  cmpq %%rcx, %s\n", reg64[ra]);
+                        printf("  setne %%al\n");
+                    }
+                }
+                if (argres) {
+                    int rr = gen(argres);
+                    if (store_to_int128) {
+                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
+                        printf("  movq %s, %%rax\n", reg64[ra]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                    } else {
+                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    }
+                    free_reg(rr);
+                }
+            } else { // mul_overflow / mul_overflow_p
+                int r2 = alloc_reg();
+                if (sz_op == 8) {
+                    printf("  movq %s, %%rax\n", reg64[ra]);
+                    if (is_unsigned_op && sz == sz_op) {
+                        // Native unsigned 64-bit: mulq gives rdx:rax
+                        printf("  mulq %s\n", reg64[rb]);
+                        printf("  movq %%rax, %s\n", reg64[ra]);
+                        printf("  movq %%rdx, %s\n", reg64[r2]);
+                        printf("  testq %s, %s\n", reg64[r2], reg64[r2]);
+                        printf("  setne %%al\n");
+                    } else {
+                        // Signed 64-bit (including sign-extended small operands):
+                        // imulq gives rdx:rax; overflow if rdx != sign_ext(rax)
+                        printf("  imulq %s\n", reg64[rb]);
+                        printf("  movq %%rax, %s\n", reg64[ra]);
+                        printf("  movq %%rdx, %s\n", reg64[r2]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  cmpq %s, %%rax\n", reg64[r2]);
+                        printf("  setne %%al\n");
+                        // For unsigned target with negative result: also signal overflow.
+                        if (is_unsigned_store && !is_unsigned_op) {
+                            // OR in the sign bit of the 64-bit result
+                            printf("  testq %s, %s\n", reg64[ra], reg64[ra]);
+                            printf("  sets %%cl\n");
+                            printf("  orb %%cl, %%al\n");
+                        }
+                    }
+                } else {
+                    // 32-bit operands
+                    if (is_unsigned_op) {
+                        printf("  movl %s, %%eax\n", reg32[ra]);
+                        printf("  mull %s\n", reg32[rb]);
+                        printf("  movl %%eax, %s\n", reg32[ra]);
+                        printf("  movl %%edx, %s\n", reg32[r2]);
+                        printf("  testl %s, %s\n", reg32[r2], reg32[r2]);
+                        printf("  setne %%al\n");
+                    } else {
+                        // Mixed or signed operands: extend each per its own signedness,
+                        // then signed 64-bit multiply (exact for 32-bit inputs).
+                        if (ra_unsigned)
+                            printf("  movl %s, %%eax\n", reg32[ra]); // zero-ext
+                        else
+                            printf("  movslq %s, %%rax\n", reg32[ra]); // sign-ext
+                        if (rb_unsigned)
+                            printf("  movl %s, %%ecx\n", reg32[rb]); // zero-ext
+                        else
+                            printf("  movslq %s, %%rcx\n", reg32[rb]); // sign-ext
+                        printf("  imulq %%rcx, %%rax\n");
+                        printf("  movl %%eax, %s\n", reg32[ra]);
+                        if (is_unsigned_store && sz_store == 8) {
+                            // Negative result doesn't fit in unsigned 64-bit
+                            printf("  testq %%rax, %%rax\n");
+                            printf("  sets %%al\n");
+                            printf("  movslq %s, %s\n", reg32[ra], reg64[ra]);
+                        } else {
+                            // Range check: sign-extend or zero-extend truncated result back
+                            if (is_unsigned_store)
+                                printf("  movl %s, %%ecx\n", reg32[ra]); // zero-ext implicit
+                            else
+                                printf("  movslq %s, %%rcx\n", reg32[ra]);
+                            printf("  cmpq %%rcx, %%rax\n");
+                            printf("  setne %%al\n");
+                        }
+                    }
+                }
+                free_reg(r2);
                 if (argres && !is_mul_overflow_p) {
-                    VReg rr = gen(argres); // load pointer value
-                    asm_mov_mem_via_reg(cg_sec, ra, rr, sz); // mov ra, (rr)
+                    int rr = gen(argres);
+                    if (store_to_int128) {
+                        // Sign-extend 64-bit result to 128 bits and store
+                        printf("  movq %s, (%s)\n", reg64[ra], reg64[rr]);
+                        printf("  movq %s, %%rax\n", reg64[ra]);
+                        printf("  sarq $63, %%rax\n");
+                        printf("  movq %%rax, 8(%s)\n", reg64[rr]);
+                    } else {
+                        printf("  mov %s, (%s)\n", reg(ra, sz_store), reg64[rr]);
+                    }
                     free_reg(rr);
                 }
             }
             int r_result = alloc_reg();
-            asm_movzx_phys(cg_sec, r_result, X86_RAX, 4, 1); // movzbl %al, r_result
+            printf("  movzbl %%al, %s\n", reg32[r_result]);
             free_reg(ra);
             free_reg(rb);
             return r_result;
@@ -3052,35 +3173,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
-        return addr;
-    }
-#else
-    // Linux SysV: small _Complex values come back in registers (xmm0/xmm1 or
-    // rax/rdx), not via a hidden return pointer. Materialize them on the stack
-    // and return the address, matching gen()'s address-return convention.
-    if (node->ty && is_complex(node->ty) && node->ty->size <= 16) {
-        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        int base_sz = node->ty->base ? node->ty->base->size : 8;
-        bool cfloat = node->ty->base && is_flonum(node->ty->base);
-        if (cfloat) {
-            if (node->ty->size <= 8) {
-                // _Complex float: packed in xmm0 (8 bytes)
-                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0); // movsd %xmm0, (addr)
-            } else {
-                // _Complex double: real in xmm0, imag in xmm1
-                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0); // movsd %xmm0, (addr)
-                x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1); // movsd %xmm1, base_sz(addr)
-            }
-        } else {
-            if (node->ty->size <= 8) {
-                // _Complex integer <= 64 bits: packed in rax
-                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
-            } else {
-                // _Complex long long: real in rax, imag in rdx
-                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(REG(addr), 0), X86_RAX); // mov %rax, (addr)
-                x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(REG(addr), base_sz), X86_RDX); // mov %rdx, base_sz(addr)
-            }
-        }
         return addr;
     }
 #endif
@@ -7495,45 +7587,14 @@ static VReg gen(Node *node) {
                 // Win64: an 8-byte _Complex return value is returned by value
                 // in RAX — there is no hidden return pointer for it (see the
                 // param_index computation in the prologue).
-                VReg src = gen_addr(node->lhs);
+                int src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs);
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
                 free_reg(src);
-#elif !defined(ARCH_ARM64)
-            } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
-                       is_complex(current_fn_def->ty->return_ty) && current_fn_def->ty->return_ty->size <= 16) {
-                // Linux SysV: small _Complex values are returned in registers,
-                // not via a hidden return pointer.
-                VReg src = gen_addr(node->lhs);
-                if (src < 0)
-                    src = gen(node->lhs);
-                Type *ret_ty = current_fn_def->ty->return_ty;
-                int base_sz = ret_ty->base ? ret_ty->base->size : 8;
-                bool cfloat = ret_ty->base && is_flonum(ret_ty->base);
-                if (cfloat) {
-                    if (ret_ty->size <= 8) {
-                        // _Complex float: packed in xmm0 (8 bytes)
-                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
-                    } else {
-                        // _Complex double: real in xmm0, imag in xmm1
-                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
-                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz)); // movsd base_sz(src), %xmm1
-                    }
-                } else {
-                    if (ret_ty->size <= 8) {
-                        // _Complex integer <= 64 bits: packed in rax
-                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
-                    } else {
-                        // _Complex long long: real in rax, imag in rdx
-                        x86_mov_rm(cg_sec, base_sz <= 4 ? 4 : 8, X86_RAX, x86_mem(REG(src), 0)); // mov (src), %rax
-                        x86_mov_rm(cg_sec, base_sz <= 4 ? 4 : 8, X86_RDX, x86_mem(REG(src), base_sz)); // mov base_sz(src), %rdx
-                    }
-                }
-                free_reg(src);
 #endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
-                VReg src = gen_addr(node->lhs);
+                int src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs);
                 int c = ++rcc_label_count;
@@ -12595,8 +12656,6 @@ struct ObjFile *codegen(Program *prog) {
             int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
 #ifdef _WIN32
                                                                                                                            && fn->ty->return_ty->size > 8
-#else
-                                                                                                                           && fn->ty->return_ty->size > 16
 #endif
                                                                                                                            ))
                 ? 1
@@ -12778,8 +12837,6 @@ struct ObjFile *codegen(Program *prog) {
         if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
 #ifdef _WIN32
                                                                                                                   && fn->ty->return_ty->size > 8
-#else
-                                                                                                                  && fn->ty->return_ty->size > 16
 #endif
                                                                                                                   ))) {
             int retbuf_offset = 0;
