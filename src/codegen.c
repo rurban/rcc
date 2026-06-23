@@ -12886,8 +12886,27 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     continue;
                 }
-                // Linux SysV: __int128 occupies two consecutive GP registers/stack slots
+                // __int128: on Win64 passed by pointer (like struct >8), on Linux by 2 GP regs
                 if (var->ty->kind == TY_INT128) {
+#ifdef _WIN32
+                    if (gp < max_gp) {
+                        // Windows x64: __int128 is passed by pointer in a single GP register.
+                        // Dereference the pointer to copy the 16-byte value to the local slot.
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 0)); // movq (greg[gp]), %rax  (lo)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 8)); // movq 8(greg[gp]), %rax  (hi)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                        gp++;
+                    } else {
+                        int stack_off2 = 48 + stack_param_index * 8;
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %rax
+                        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx  (lo)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RCX); // movq %rcx, -off(%rbp)
+                        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx  (hi)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RCX); // movq %rcx, -(off-8)(%rbp)
+                        stack_param_index++;
+                    }
+#else
                     if (gp + 1 < max_gp) {
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]); // movq greg[gp], -off(%rbp)
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), greg[gp + 1]); // movq greg[gp+1], -(off-8)(%rbp)
@@ -12901,10 +12920,22 @@ struct ObjFile *codegen(Program *prog) {
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
                         stack_param_index += 2;
                     }
+#endif
                     continue;
                 }
 #endif
-                if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8)) {
+#ifdef _WIN32
+                // Win64: __int128 is passed by pointer in a single GP register
+                if (var->ty->kind == TY_INT128 && gp < max_gp) {
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 0)); // movq (greg[gp]), %rax  (lo)
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 8)); // movq 8(greg[gp]), %rax  (hi)
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                    gp++;
+                    continue;
+                }
+#endif
+                if (!is_flonum(var->ty) && gp < max_gp && var->ty->kind != TY_INT128 && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8)) {
                     int sz = var->ty->size <= 4 ? 4 : 8;
                     x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -var->offset), greg[gp]); // %s:
                     gp++;
