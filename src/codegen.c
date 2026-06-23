@@ -4114,10 +4114,16 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
         // Extract mnemonic (first word)
         char mnem[64];
         int mlen = 0;
-        while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '\n' && mlen < 63)
+        while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '\n' && *p != ':' && mlen < 63)
             mnem[mlen++] = tolower((unsigned char)*p++);
         mnem[mlen] = '\0';
         if (!mlen) continue;
+
+        // Label definition (e.g. ".L_skip:") — not an instruction, skip it.
+        if (*p == ':') {
+            p++;
+            continue;
+        }
 
         // Skip to rest of instruction
         while (*p == ' ' || *p == '\t') p++;
