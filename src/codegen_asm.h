@@ -450,7 +450,108 @@ static AsmOp peep_pend_op = ASM_NONE;
 static AsmInsn peep_pend[2];
 static int peep_pend_n = 0;
 
+#ifdef ARCH_ARM64
+// Emit a movz/movk immediate-load sequence directly (no asm_record — caller
+// already truncated the buffer and will set peep_pend_op itself).
+static void peep_arm64_mov_ri(Arm64Reg rd, int size, int64_t imm) {
+    int sf = (size == 8) ? 1 : 0;
+    uint64_t uval = (uint64_t)imm;
+    arm64_movz(cg_sec, sf, rd, (uint16_t)(uval & 0xffff), 0);
+    uint64_t v = uval >> 16;
+    int shift = 16;
+    int max_shift = sf ? 48 : 32;
+    while (v && shift <= max_shift) {
+        arm64_movk(cg_sec, sf, rd, (uint16_t)(v & 0xffff), (uint16_t)shift);
+        v >>= 16;
+        shift += 16;
+    }
+}
+#endif
+
 static void asm_peep_try(void) {
+#ifdef ARCH_ARM64
+    if (opt_O0 || asm_last_count < 2) return;
+    int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
+    int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
+    AsmInsn *cur = &asm_last[c0], *prv = &asm_last[c1];
+
+    if (peep_pend_op == ASM_NONE) return;
+    // Some ARM64 wrappers (raw pointer load/store) don't call asm_record, so
+    // the ring buffer can have untracked instructions between two recorded
+    // entries. Require byte-adjacency before folding, else bail (no fold) —
+    // truncating cg_sec->len on a non-adjacent pair would delete real code.
+    // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
+    if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
+        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd &&
+        cur->offset == prv->offset + prv->count) {
+        cg_sec->len = prv->offset;
+        int sf = (prv->size == 8) ? 1 : 0;
+        arm64_orr_reg(cg_sec, sf, cur->rd, ARM64_XZR, prv->rs, ARM64_LSL, 0);
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+
+    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur)
+    if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
+        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd &&
+        prv->offset == peep_pend[0].offset + peep_pend[0].count &&
+        cur->offset == prv->offset + prv->count) {
+        cg_sec->len = peep_pend[0].offset;
+        peep_arm64_mov_ri(cur->rd, cur->size, peep_pend[0].imm);
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+
+    // Pattern 4: MOV_RI(pend) + ALU_RR(cur) -> ALU_RI or NOP
+    if (peep_pend_op == ASM_MOV_RI &&
+        (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_AND_RR ||
+         cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR) &&
+        cur->rs == peep_pend[0].rd &&
+        cur->offset == peep_pend[0].offset + peep_pend[0].count) {
+        int64_t imm = peep_pend[0].imm;
+        int sf = (cur->size == 8) ? 1 : 0;
+        if (imm == 0 && (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR)) {
+            size_t off = peep_pend[0].offset, end = cur->offset + cur->count;
+            memmove(cg_sec->data + off, cg_sec->data + end, cg_sec->len - end);
+            cg_sec->len -= (end - off);
+            for (int j = 0; j < ASM_HISTORY; j++)
+                if (asm_last[j].offset > off) asm_last[j].offset -= (end - off);
+            peep_pend_op = ASM_NONE;
+            return;
+        }
+        // ADD/SUB only fold when the immediate fits the 12-bit unshifted form;
+        // AND/OR/XOR only fold when it encodes as an arm64 logical bitmask immediate.
+        bool can_fold = false;
+        if (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR) {
+            can_fold = imm >= 0 && imm < 4096;
+        } else {
+            int N, immr, imms;
+            can_fold = arm64_encode_logic_imm(sf, (uint64_t)imm, &N, &immr, &imms) != 0;
+        }
+        if (!can_fold) {
+            peep_pend_op = ASM_NONE;
+            return;
+        }
+        size_t oldlen = cg_sec->len; // before truncation; oe..oldlen is the (normally empty) tail
+        cg_sec->len = peep_pend[0].offset;
+        switch (cur->op) {
+        case ASM_ADD_RR: arm64_add_imm(cg_sec, sf, cur->rd, cur->rd, (int32_t)imm, 0); break;
+        case ASM_SUB_RR: arm64_sub_imm(cg_sec, sf, cur->rd, cur->rd, (int32_t)imm, 0); break;
+        case ASM_AND_RR: arm64_and_imm(cg_sec, sf, cur->rd, cur->rd, (uint64_t)imm); break;
+        case ASM_OR_RR: arm64_orr_imm(cg_sec, sf, cur->rd, cur->rd, (uint64_t)imm); break;
+        case ASM_XOR_RR: arm64_eor_imm(cg_sec, sf, cur->rd, cur->rd, (uint64_t)imm); break;
+        default: break;
+        }
+        size_t ne = cg_sec->len, oe = cur->offset + cur->count, tail = oldlen - oe;
+        memmove(cg_sec->data + ne, cg_sec->data + oe, tail);
+        cg_sec->len = ne + tail;
+        for (int j = 0; j < ASM_HISTORY; j++)
+            if (asm_last[j].offset > peep_pend[0].offset) asm_last[j].offset -= (oe - ne);
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+    peep_pend_op = ASM_NONE;
+#else
     if (opt_O0 || asm_last_count < 2) return;
     int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
     int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
@@ -488,9 +589,13 @@ static void asm_peep_try(void) {
     }
 
     if (peep_pend_op == ASM_NONE) return;
+    // Require byte-adjacency before folding, else bail (no fold) — truncating
+    // cg_sec->len on a non-adjacent pair would delete real code if any
+    // untracked instruction ever slips between two recorded entries.
     // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
     if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd) {
+        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd &&
+        cur->offset == prv->offset + prv->count) {
         cg_sec->len = prv->offset;
         x86_mov_rr(cg_sec, prv->size, cur->rd, prv->rs);
         peep_pend_op = ASM_NONE;
@@ -499,7 +604,9 @@ static void asm_peep_try(void) {
 
     // Pattern 1a: MOV_RI(pend) + MOV_RR(cur)
     if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd) {
+        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd &&
+        prv->offset == peep_pend[0].offset + peep_pend[0].count &&
+        cur->offset == prv->offset + prv->count) {
         cg_sec->len = peep_pend[0].offset;
         x86_mov_ri(cg_sec, cur->size, cur->rd, peep_pend[0].imm);
         peep_pend_op = ASM_NONE;
@@ -510,7 +617,8 @@ static void asm_peep_try(void) {
     if (peep_pend_op == ASM_MOV_RI &&
         (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_AND_RR ||
          cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR) &&
-        cur->rs == peep_pend[0].rd) {
+        cur->rs == peep_pend[0].rd &&
+        cur->offset == peep_pend[0].offset + peep_pend[0].count) {
         int64_t imm = peep_pend[0].imm;
         if (imm == 0 && (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR)) {
             size_t off = peep_pend[0].offset, end = cur->offset + cur->count;
@@ -519,6 +627,7 @@ static void asm_peep_try(void) {
             for (int j = 0; j < ASM_HISTORY; j++)
                 if (asm_last[j].offset > off) asm_last[j].offset -= (end - off);
         } else {
+            size_t oldlen = cg_sec->len; // before truncation; oe..oldlen is the (normally empty) tail
             cg_sec->len = peep_pend[0].offset;
             switch (cur->op) {
             case ASM_ADD_RR: x86_add_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
@@ -528,9 +637,9 @@ static void asm_peep_try(void) {
             case ASM_XOR_RR: x86_xor_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
             default: break;
             }
-            size_t ne = cg_sec->len, oe = cur->offset + cur->count;
-            memmove(cg_sec->data + ne, cg_sec->data + oe, cg_sec->len - oe);
-            cg_sec->len = ne + (cg_sec->len - oe);
+            size_t ne = cg_sec->len, oe = cur->offset + cur->count, tail = oldlen - oe;
+            memmove(cg_sec->data + ne, cg_sec->data + oe, tail);
+            cg_sec->len = ne + tail;
             for (int j = 0; j < ASM_HISTORY; j++)
                 if (asm_last[j].offset > peep_pend[0].offset) asm_last[j].offset -= (oe - ne);
         }
@@ -538,6 +647,7 @@ static void asm_peep_try(void) {
         return;
     }
     peep_pend_op = ASM_NONE;
+#endif /* !ARCH_ARM64 */
 }
 
 static void asm_peep_node_start(SecBuf *s) {
