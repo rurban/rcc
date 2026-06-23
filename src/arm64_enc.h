@@ -48,6 +48,21 @@ typedef enum {
     ARM64_X29 = 29, // FP / X29
     ARM64_X30 = 30, // LR
     ARM64_X31 = 31, // SP or XZR depending on context
+    // FP/SIMD register aliases (same numbering)
+    ARM64_S1 = 1,
+    ARM64_D1 = 1,
+    ARM64_S2 = 2,
+    ARM64_D2 = 2,
+    ARM64_S3 = 3,
+    ARM64_D3 = 3,
+    ARM64_S4 = 4,
+    ARM64_D4 = 4,
+    ARM64_S5 = 5,
+    ARM64_D5 = 5,
+    ARM64_S6 = 6,
+    ARM64_D6 = 6,
+    ARM64_S7 = 7,
+    ARM64_D7 = 7,
 } Arm64Reg;
 
 // Condition codes (cond field in B.cond / CSEL etc.)

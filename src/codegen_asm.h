@@ -588,7 +588,7 @@ static void asm_test_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
 #ifdef ARCH_ARM64
     Arm64Reg ra = REG(a), rb = REG(b);
     int sf = (size == 8) ? 1 : 0;
-    arm64_tst_reg(s, sf, ra, rb, ARM64_LSL, 0);
+    arm64_ands_reg(s, sf, ARM64_XZR, ra, rb, ARM64_LSL, 0);
 #else
     X86Reg ra = REG(a), rb = REG(b);
     x86_test_rr(s, size, ra, rb);
@@ -597,8 +597,10 @@ static void asm_test_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
 }
 
 // orb %reg, %al  — OR byte register into AL
+#ifdef ARCH_ARM64
+__attribute__((unused)) static void asm_or_byte_al(SecBuf *s, int src) {
+#else
 static void asm_or_byte_al(SecBuf *s, X86Reg src) {
-#ifndef ARCH_ARM64
     x86_or_rr(s, 1, X86_RAX, src);
 #endif
     (void)s;

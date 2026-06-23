@@ -1162,7 +1162,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     // Cross-architecture builtins (x86_64 and arm64)
     if (call_target && !has_hidden_retbuf) {
-        init_builtin_names();
         // Quick prefix check: all names here start with "__builtin_" or are
         // short aliases (abs/labs/llabs). Skip the whole block for everything else.
         bool maybe_builtin = (call_target[0] == '_' && call_target[1] == '_') ||
@@ -1528,11 +1527,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 VReg r_tmp = alloc_reg();
 #ifdef ARCH_ARM64
                 // sign_mask = 0x8000000000000000
-                (void)0 /* FIXME: unconverted printf: "  mov %s, #-9223372036854775808\n" */;
-                asm_and_reg_reg(cg_sec, r_y, r_y, 8);
-                asm_not(cg_sec, r_tmp, 8);
-                asm_and_reg_reg(cg_sec, r_x, r_x, 8);
-                asm_or_reg_reg(cg_sec, r_x, r_x, 8);
+                asm_mov_imm(cg_sec, r_tmp, 8, (int64_t)0x8000000000000000ULL); // mov r_tmp, #-9223372036854775808
+                asm_and_reg_reg(cg_sec, r_y, r_tmp, 8); // and r_y, r_y, r_tmp
+                asm_not(cg_sec, r_tmp, 8); // mvn r_tmp, r_tmp
+                asm_and_reg_reg(cg_sec, r_x, r_tmp, 8); // and r_x, r_x, r_tmp
+                asm_or_reg_reg(cg_sec, r_x, r_y, 8); // orr r_x, r_x, r_y
 #else
                 // sign_mask = 0x8000000000000000
                 asm_movabs_phy(cg_sec, REG(r_tmp), 0x8000000000000000ULL); // movabsq $sign_mask, r_tmp
@@ -1732,7 +1731,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     argres->ty->base->kind == TY_INT128) {
                     asm_str_reg_off(cg_sec, ra, rr, 8, 0);
                     asm_sar_imm(cg_sec, ra, 8, 63);
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    asm_str_reg_off(cg_sec, ra, rr, 8, 8); // str ra, [rr, #8]
                 } else {
                     asm_str_reg_off(cg_sec, ra, rr, 8, 0);
                 }
@@ -2519,10 +2518,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         } else if (argv[i]->ty->kind == TY_INT128) {
             // int128 on stack: store two 64-bit values into consecutive slots
             int addr = gen_int128(argv[i]);
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), 0); // ldr x16, [x{addr}]
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr), 1); // ldr x17, [x{addr}, #8]
+            arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)arg_stack_idx[i]); // str x16, [sp, #off]
+            arm64_str_uoff(cg_sec, 3, ARM64_X17, ARM64_SP, (uint32_t)(arg_stack_idx[i] + 1)); // str x17, [sp, #off+8]
             free_reg(addr);
             continue;
         } else {
@@ -2697,13 +2696,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #endif // sub sp, sp, #indirect_save_size
             int slot = 0;
             if (indirect_save_x8)
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_str_uoff(cg_sec, 3, ARM64_X8, ARM64_SP, (uint32_t)slot++); // str x8, [sp, #slot*8]
             for (int j = 0; j < 8; j++)
                 if (indirect_gp_mask & (1 << j))
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_str_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X0 + j), ARM64_SP, (uint32_t)slot++); // str x{j}, [sp, #slot*8]
             for (int j = 0; j < 8; j++)
                 if (indirect_fp_mask & (1 << j))
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_str_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + j), ARM64_SP, (uint32_t)(slot++ * 8)); // str d{j}, [sp, #slot*8]
         }
     }
 
@@ -2764,8 +2763,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // int128 return: spill x0:x1 to a 16-byte slot
     if (node->ty && node->ty->kind == TY_INT128) {
         int addr = alloc_int128_addr();
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(addr), 0); // str x0, [x{addr}]
+        arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(addr), 1); // str x1, [x{addr}, #8]
         return addr;
     }
 
@@ -2831,7 +2830,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         // Win64: an 8-byte _Complex is passed by value in a GP register.
         // gen() returns the address of the complex value; load it.
         if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
-            (void)0 /* FIXME: indirect mov */;
+            x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
         }
 #endif
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
@@ -3156,7 +3155,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         // did NOT provide a hidden ret buffer (hidden_ret_reg == -1), the
         // return register holds the buffer address; load the value from it.
         if (hidden_ret_reg == -1 && node->ty->size <= 8 && node->ty->size > 0) {
-            (void)0 /* FIXME: indirect mov */;
+            x86_mov_rm(cg_sec, node->ty->size, REG(ret), x86_mem(X86_RAX, 0)); // movsx (size) (%rax), %ret
         }
 #endif
         return ret;
@@ -3330,6 +3329,8 @@ static void emit_mov_imm(const char *reg, int imm) {
     }
 }
 
+#endif // ARCH_ARM64
+
 // Emit adrp+add pair for label address, with platform-appropriate relocations.
 // Linux:         R_AARCH64_ADR_PREL_PG_HI21 + R_AARCH64_ADD_ABS_LO12_NC  (ADRP+ADD)
 // Darwin local:  same (labels starting with '.' are always in this .o)
@@ -3396,7 +3397,12 @@ static void emit_adrp_got(VReg r, const char *label) {
     }
 }
 
-// TLS address load: Linux ARM64 Local Exec model via tpidr_el0 + tprel offsets.
+// TLS address load.
+// TLS address load.
+// NOTE: On Darwin/macOS, this uses the Linux local-exec model which produces
+// output that the system linker cannot handle for TLS.  Proper Darwin TLS
+// requires TLV descriptors in __thread_vars and TLVP relocations, which need
+// Mach-O writer support not yet implemented.
 static void emit_tls_addr(VReg r, LVar *var) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
@@ -3412,10 +3418,6 @@ static void emit_tls_addr(VReg r, LVar *var) {
     arm64_add_imm(cg_sec, 1, rd, rd, 0, 0); // add x{rd}, x{rd}, #:tprel_lo12_nc:label
     objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
 }
-#endif
-
-// Emit load/store-safe address for [x29, #-offset] when offset > 255
-// Returns register holding the address (must be freed by caller)
 #if 0
 static int emit_stack_addr(int offset) {
 #ifdef ARCH_ARM64
@@ -3573,24 +3575,24 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
 #ifdef ARCH_ARM64
     if (base_flo) {
         if (is_flonum(from)) {
-            (void)0 /* FIXME: fmov */;
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
         } else if (from->is_unsigned) {
-            (void)0 /* FIXME: float op */;
+            asm_ucvtf(cg_sec, ARM64_D0, r, from->size == 8 ? 1 : 0); // ucvtf d0, w/x{r}
         } else {
-            (void)0 /* FIXME: float op */;
+            asm_scvtf(cg_sec, ARM64_D0, r, from->size == 8 ? 1 : 0); // scvtf d0, w/x{r}
         }
         if (base_sz == 4) {
-            (void)0 /* arm64 fcvt s0,d0 */;
-            (void)0 /* FIXME: unconverted printf: "  str s0, [%s]\n" */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            asm_fcvt(cg_sec, 1, 0, ARM64_S0, ARM64_D0); // fcvt s0, d0
+            asm_str_fp(cg_sec, ARM64_S0, addr, 4); // str s0, [x{addr}]
+            arm64_str_uoff(cg_sec, 2, ARM64_XZR, REG(addr), 1); // str wzr, [x{addr}, #4]
         } else {
-            (void)0 /* FIXME: unconverted printf: "  str d0, [%s]\n" */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            asm_str_fp(cg_sec, ARM64_D0, addr, 8); // str d0, [x{addr}]
+            arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr), 1); // str xzr, [x{addr}, #8]
         }
     } else {
         if (is_flonum(from)) {
-            (void)0 /* FIXME: fmov */;
-            (void)0 /* FIXME: float op */;
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+            asm_fcvtzs(cg_sec, r, base_sz); // fcvtzs w/x{r}, d0
         } else if (from->size < base_sz) {
             if (from->is_unsigned)
                 zero_extend_to(r, from->size, base_sz);
@@ -3599,10 +3601,10 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
         }
         if (base_sz == 4) {
             asm_str_reg_off(cg_sec, r, addr, 4, 0);
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_str_uoff(cg_sec, 2, ARM64_XZR, REG(addr), 1); // str wzr, [x{addr}, #4]
         } else {
             asm_str_reg_off(cg_sec, r, addr, 8, 0);
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr), 1); // str xzr, [x{addr}, #8]
         }
     }
 #else
@@ -3614,15 +3616,19 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
         } else if (from->is_unsigned && from->size == 8) {
             int c = ++rcc_label_count;
             asm_test_reg_reg(cg_sec, r, r, 8);
-            (void)0 /* FIXME: branch/call: js .L.u2cx.high.%d */;
+            char *label_high = format(".L.u2cx.high.%d", c);
+            char *label_end = format(".L.u2cx.end.%d", c);
+            size_t off_js = asm_jcc_label(cg_sec, X86_S);
+            asm_fixup_add(cg_sec, off_js, label_high, 1); // js .L.u2cx.high.%d
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
-            (void)0 /* FIXME: branch/call: jmp .L.u2cx.end.%d */;
-            (void)0 /* FIXME: unconverted printf: ".L.u2cx.high.%d:\n" */;
+            size_t off_jmp = asm_jmp_label(cg_sec);
+            asm_fixup_add(cg_sec, off_jmp, label_end, 0); // jmp .L.u2cx.end.%d
+            cg_def_label(label_high); // .L.u2cx.high.%d:
             x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq reg64[r], %rcx
             x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq %rcx
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
-            (void)0 /* FIXME: unconverted printf: ".L.u2cx.end.%d:\n" */;
+            cg_def_label(label_end); // .L.u2cx.end.%d:
         } else if (from->is_unsigned && from->size == 4) {
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd reg64[r], %xmm0
         } else {
@@ -3668,22 +3674,22 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
     int fsz = from->base->size, tsz = to->base->size;
 #ifdef ARCH_ARM64
     if (fsz == 4) {
-        (void)0 /* FIXME: unconverted printf: "  ldr s0, [%s]\n" */;
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* arm64 fcvt d0,s0 */;
-        (void)0 /* FIXME: float op */;
+        asm_ldr_fp(cg_sec, ARM64_S0, src, 4); // ldr s0, [x{src}]
+        arm64_ldr_fp(cg_sec, 2, (Arm64Reg)(ARM64_S0 + 1), REG(src), 4); // ldr s1, [x{src}, #4]
+        asm_fcvt(cg_sec, 0, 1, ARM64_D0, ARM64_S0); // fcvt d0, s0
+        asm_fcvt(cg_sec, 0, 1, (Arm64Reg)(ARM64_D0 + 1), (Arm64Reg)(ARM64_S0 + 1)); // fcvt d1, s1
     } else {
-        (void)0 /* FIXME: unconverted printf: "  ldr d0, [%s]\n" */;
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* arm64 fcvt s0,d0 */;
-        (void)0 /* FIXME: float op */;
+        asm_ldr_fp(cg_sec, ARM64_D0, src, 8); // ldr d0, [x{src}]
+        arm64_ldr_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(src), 8); // ldr d1, [x{src}, #8]
+        asm_fcvt(cg_sec, 1, 0, ARM64_S0, ARM64_D0); // fcvt s0, d0
+        asm_fcvt(cg_sec, 1, 0, (Arm64Reg)(ARM64_S0 + 1), (Arm64Reg)(ARM64_D0 + 1)); // fcvt s1, d1
     }
     if (tsz == 4) {
-        (void)0 /* FIXME: unconverted printf: "  str s0, [%s]\n" */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        asm_str_fp(cg_sec, ARM64_S0, dst, 4); // str s0, [x{dst}]
+        arm64_str_fp(cg_sec, 2, (Arm64Reg)(ARM64_S0 + 1), REG(dst), 4); // str s1, [x{dst}, #4]
     } else {
-        (void)0 /* FIXME: unconverted printf: "  str d0, [%s]\n" */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        asm_str_fp(cg_sec, ARM64_D0, dst, 8); // str d0, [x{dst}]
+        arm64_str_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(dst), 8); // str d1, [x{dst}, #8]
     }
 #else
     if (fsz == 4) {
@@ -3717,35 +3723,35 @@ static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
     bool uns = from->base->is_unsigned;
 #ifdef ARCH_ARM64
     if (fsz == 8) {
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(src), 0); // ldr x0, [x{src}]
+        arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(src), 1); // ldr x1, [x{src}, #8]
     } else if (fsz == 4) {
         if (uns) {
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(src), 0); // ldr w0, [x{src}]
+            arm64_ldr_uoff(cg_sec, 2, ARM64_X1, REG(src), 1); // ldr w1, [x{src}, #4]
         } else {
-            (void)0 /* FIXME: unconverted printf: "  ldrsw x0, [%s]\n" */;
-            (void)0 /* FIXME: unconverted printf: "  ldrsw x1, [%s, #4]\n" */;
+            arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(src), 0); // ldrsw x0, [x{src}]
+            arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(src), 1); // ldrsw x1, [x{src}, #4]
         }
     } else if (fsz == 2) {
-        (void)0 /* FIXME: unconverted printf: "  %s x0, [%s]\n" */;
-        (void)0 /* FIXME: unconverted printf: "  %s x1, [%s, #2]\n" */;
+        arm64_ldrh_uoff(cg_sec, ARM64_X0, REG(src), 0); // ldrh x0, [x{src}]
+        arm64_ldrh_uoff(cg_sec, ARM64_X1, REG(src), 1); // ldrh x1, [x{src}, #2]
     } else {
-        (void)0 /* FIXME: unconverted printf: "  %s x0, [%s]\n" */;
-        (void)0 /* FIXME: unconverted printf: "  %s x1, [%s, #1]\n" */;
+        arm64_ldrb_uoff(cg_sec, ARM64_X0, REG(src), 0); // ldrb w0, [x{src}]
+        arm64_ldrb_uoff(cg_sec, ARM64_X1, REG(src), 1); // ldrb w1, [x{src}, #1]
     }
     if (tsz == 8) {
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(dst), 0); // str x0, [x{dst}]
+        arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(dst), 1); // str x1, [x{dst}, #8]
     } else if (tsz == 4) {
-        (void)0 /* FIXME: ldr/str phy/off */;
-        (void)0 /* FIXME: ldr/str phy/off */;
+        arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0); // str w0, [x{dst}]
+        arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1); // str w1, [x{dst}, #4]
     } else if (tsz == 2) {
-        (void)0 /* FIXME: sized ld/st */;
-        (void)0 /* FIXME: sized ld/st */;
+        arm64_strh_uoff(cg_sec, ARM64_X0, REG(dst), 0); // strh w0, [x{dst}]
+        arm64_strh_uoff(cg_sec, ARM64_X1, REG(dst), 1); // strh w1, [x{dst}, #2]
     } else {
-        (void)0 /* FIXME: sized ld/st */;
-        (void)0 /* FIXME: sized ld/st */;
+        arm64_strb_uoff(cg_sec, ARM64_X0, REG(dst), 0); // strb w0, [x{dst}]
+        arm64_strb_uoff(cg_sec, ARM64_X1, REG(dst), 1); // strb w1, [x{dst}, #1]
     }
 #else
     // x86_64: load both components from src into RAX/RCX, then store to dst
@@ -5283,15 +5289,15 @@ static VReg gen_int128(Node *node) {
             int shift = (int)(node->rhs->val & 127);
             int t1 = alloc_reg(), t2 = alloc_reg();
             asm_ldr_reg_off(cg_sec, t1, lhs, 8, 0);
-            (void)0 /* FIXME: ldr/str phy/off */;
+            asm_ldr_reg_off(cg_sec, t2, lhs, 8, 8);
             free_reg(lhs);
             if (shift == 0) {
                 // no-op
             } else if (is_shl) {
                 if (shift < 64) {
                     // hi = (hi<<shift) | (lo>>(64-shift)), lo = lo<<shift
-                    (void)0 /* FIXME: lsl/lsr phy */;
-                    (void)0 /* FIXME: lsl/lsr phy */;
+                    arm64_lsl_imm(cg_sec, 1, ARM64_X16, REG(t2), shift);
+                    arm64_lsr_imm(cg_sec, 1, ARM64_X17, REG(t1), 64 - shift);
                     asm_orr_x16_x16_x17(cg_sec); // orr %s, x16, x17
                     asm_shl_imm(cg_sec, t1, 8, (uint8_t)(reg64[t1]));
                 } else if (shift == 64) {
@@ -5304,8 +5310,8 @@ static VReg gen_int128(Node *node) {
             } else {
                 if (shift < 64) {
                     // lo = (lo>>shift) | (hi<<(64-shift)), hi >>= shift
-                    (void)0 /* FIXME: lsl/lsr phy */;
-                    (void)0 /* FIXME: lsl/lsr phy */;
+                    arm64_lsr_imm(cg_sec, 1, ARM64_X16, REG(t1), shift);
+                    arm64_lsl_imm(cg_sec, 1, ARM64_X17, REG(t2), 64 - shift);
                     asm_orr_x16_x16_x17(cg_sec); // orr %s, x16, x17
                     asm_shift_imm(cg_sec, t2, 8, is_unsigned, shift); // lsr/asr t2, t2, #shift
                 } else if (shift == 64) {
@@ -5323,7 +5329,7 @@ static VReg gen_int128(Node *node) {
                 }
             }
             asm_str_reg_off(cg_sec, t1, dst, 8, 0);
-            (void)0 /* FIXME: ldr/str phy/off */;
+            asm_str_reg_off(cg_sec, t2, dst, 8, 8);
             free_reg(t1);
             free_reg(t2);
         } else {
@@ -5331,18 +5337,18 @@ static VReg gen_int128(Node *node) {
             int r_shift = gen(node->rhs);
             const char *fn = is_shl ? "__ashlti3"
                                     : (is_unsigned ? "__lshrti3" : "__ashrti3");
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: mov phy */;
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(lhs), 0); // ldr x0, [lhs]
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(lhs), 1); // ldr x1, [lhs, #8]
+            arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_shift), ARM64_LSL, 0); // mov x2, r_shift
             free_reg(r_shift);
             free_reg(lhs);
             arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // sub sp, sp, #32
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: branch/call: bl %s */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_str_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // str dst, [sp, #16]
+            arm64_bl(cg_sec, 0); // bl fn (placeholder, relocated)
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X9, ARM64_SP, 2); // ldr x9, [sp, #16]
+            arm64_str_uoff(cg_sec, 3, ARM64_X0, ARM64_X9, 0); // str x0, [x9]
+            arm64_str_uoff(cg_sec, 3, ARM64_X1, ARM64_X9, 1); // str x1, [x9, #8]
+            arm64_ldr_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // ldr dst, [sp, #16]
             arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // add sp, sp, #32
         }
 #else
@@ -5662,13 +5668,13 @@ static VReg gen_int128(Node *node) {
         // The shadow space slot holds a pointer to the 16-byte int128 value.
         int r = gen_addr(node->lhs); // address of the char* ap variable
         int addr = alloc_int128_addr();
-        (void)0 /* FIXME: indirect mov */;
-        (void)0 /* FIXME: sized alu op */;
-        (void)0 /* FIXME: indirect mov */;
-        (void)0 /* FIXME: multi-instruction printf */;
-        asm_mov_reg_reg(cg_sec, addr, 0, 8);
-        (void)0 /* FIXME: multi-instruction printf */;
-        asm_mov_reg_reg(cg_sec, addr, 0, 8);
+        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(r), 0)); // movq (r), %rcx  (rcx = ap)
+        x86_add_mi(cg_sec, 8, x86_mem(REG(r), 0), 8); // addq $8, (r)  (ap += 8)
+        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RCX, 0)); // movq (%rcx), %rcx  (rcx = *slot)
+        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RCX, 0)); // movq (%rcx), %rax  (rax = lo)
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
+        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RCX, 8)); // movq 8(%rcx), %rax  (rax = hi)
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 8), X86_RAX); // movq %rax, 8(addr)
         free_reg(r);
         return addr;
     }
@@ -5779,9 +5785,9 @@ static VReg gen(Node *node) {
             // int128 → float: load lo word, convert
             asm_ldr_reg_off(cg_sec, r, addr, 8, 0);
             free_reg(addr);
-            (void)0 /* FIXME: fmov */;
-            (void)0 /* FIXME: float op */;
-            (void)0 /* FIXME: fmov */;
+            asm_fmov_d0_x(cg_sec, r); // fmov d0, x{r}
+            arm64_scvtf(cg_sec, 1, 1, ARM64_D0, ARM64_D0); // scvtf d0, d0
+            asm_fmov_x_d0(cg_sec, r); // fmov x{r}, d0
         } else {
             asm_ldr_reg_off(cg_sec, r, addr, 8, 0);
             free_reg(addr);
@@ -6088,13 +6094,13 @@ static VReg gen(Node *node) {
                 int sav = -1;
                 if (dst == 0 || dst == 1) {
                     sav = dst;
-                    (void)0 /* FIXME: unconverted printf: "  movq %s, -%d(%%rbp)\n" */;
+                    asm_mov_reg_rbp(cg_sec, dst, 8, spill_offset(dst)); // movq dst, -spill_offset(dst)(%rbp)
                 }
 #endif
                 gen_funcall(node->rhs, dst);
 #ifndef ARCH_ARM64
                 if (sav >= 0)
-                    (void)0 /* FIXME: unconverted printf: "  movq -%d(%%rbp), %s\n" */;
+                    asm_mov_rbp_reg(cg_sec, sav, 8, spill_offset(sav)); // movq -spill_offset(sav)(%rbp), sav
 #endif
                 // If the call's complex return type and the destination's
                 // complex type have differently-sized real-floating bases
@@ -6115,7 +6121,7 @@ static VReg gen(Node *node) {
                     asm_ldr_reg_off(cg_sec, rt, dst, 8, 0);
                     if (node->ty->size > base_sz) {
                         int rt2 = alloc_reg();
-                        (void)0 /* FIXME: ldr/str phy/off */;
+                        asm_ldr_reg_off(cg_sec, rt2, dst, 8, base_sz); // ldr rt2, [dst, #base_sz]
                         asm_or_reg_reg(cg_sec, rt, rt, 8);
                         free_reg(rt2);
                     }
@@ -7332,34 +7338,85 @@ static VReg gen(Node *node) {
             if (is_flonum(to)) {
                 if (is_integer(from->base)) {
                     // int complex → float: convert via cvtsi2ss/cvtsi2sd
-                    if (from->base->size <= 4)
-                        (void)0 /* FIXME: unconverted printf: "  cvtsi2ssl (%s), %%xmm0\n" */;
-                    else
-                        (void)0 /* FIXME: unconverted printf: "  cvtsi2sdl (%s), %%xmm0\n" */;
+#ifndef ARCH_ARM64
+                    if (from->base->size <= 4) {
+                        x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
+                        asm_cvtsi2ss(cg_sec, REG(r), 4); // cvtsi2ss r32, %xmm0
+                    } else {
+                        x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
+                        asm_cvtsi2sd(cg_sec, r, 4); // cvtsi2sd r32, %xmm0
+                    }
                     if (to->size == 4)
                         asm_cvtsd2ss(cg_sec);
-                    (void)0 /* TODO: movq to/from xmm */;
+                    asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+#else
+                    // ARM64: load real part, convert to float
+                    if (from->base->size <= 4)
+                        arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(r), 0); // ldr w0, [r]
+                    else
+                        arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(r), 0); // ldr x0, [r]
+                    if (from->is_unsigned)
+                        arm64_ucvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // ucvtf d0, w0/x0
+                    else
+                        arm64_scvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // scvtf d0, w0/x0
+                    if (to->size == 4)
+                        arm64_fcvt(cg_sec, 1, 2, ARM64_S0, ARM64_D0); // fcvt s0, d0
+                    arm64_fmov_f2i(cg_sec, (to->size == 4 ? 0 : 1), REG(r), (to->size == 4 ? ARM64_S0 : ARM64_D0)); // fmov r, s0/d0
+#endif
                 } else {
+#ifndef ARCH_ARM64
                     if (from->base->size == 4 && to->size == 8) {
                         // float complex → double: promote via cvtss2sd
-                        (void)0 /* FIXME: float op */;
+                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
                         asm_cvtss2sd(cg_sec);
-                        (void)0 /* TODO: movq to/from xmm */;
+                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
                     } else if (to->size == 4) {
-                        (void)0 /* FIXME: float op */;
-                        (void)0 /* TODO: movq to/from xmm */;
+                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
                     } else {
-                        (void)0 /* FIXME: float op */;
-                        (void)0 /* TODO: movq to/from xmm */;
+                        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
                     }
+#else
+                    if (from->base->size == 4 && to->size == 8) {
+                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                        arm64_fcvt(cg_sec, 1, 2, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                    } else if (to->size == 4) {
+                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                        arm64_fmov_f2i(cg_sec, 0, REG(r), ARM64_S0); // fmov r, s0
+                    } else {
+                        arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
+                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                    }
+#endif
                 }
             } else {
                 // integer: convert from float or load directly
                 if (is_flonum(from->base)) {
-                    if (from->base->size == 4)
-                        (void)0 /* FIXME: unconverted printf: "  cvttss2si (%s), %s\n" */;
-                    else
-                        (void)0 /* FIXME: unconverted printf: "  cvttsd2si (%s), %s\n" */;
+#ifndef ARCH_ARM64
+                    if (from->base->size == 4) {
+                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                        asm_cvttsd2si(cg_sec, r, 4); // cvttss2si %xmm0, r
+                    } else {
+                        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                        asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, r
+                    }
+#else
+                    if (from->base->size == 4) {
+                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                        if (to->is_unsigned)
+                            arm64_fcvtzu(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzu w{r}, s0
+                        else
+                            arm64_fcvtzs(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzs w{r}, s0
+                    } else {
+                        arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
+                        if (to->is_unsigned)
+                            arm64_fcvtzu(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzu x{r}, d0
+                        else
+                            arm64_fcvtzs(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzs x{r}, d0
+                    }
+#endif
                 } else {
 #ifdef ARCH_ARM64
                     emit_load(to, r, r, 0);
@@ -7420,11 +7477,11 @@ static VReg gen(Node *node) {
                     asm_mov_reg_reg(cg_sec, 0, v, 8);
                     asm_mov_reg_reg(cg_sec, addr, 0, 8);
                     if (complex_sz > 8) {
-                        (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
-                        (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), base_sz), X86_RAX); // movq %rax, base_sz(addr)
                     }
                 } else {
-                    (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), REG(v)); // movq v, (addr)
                     if (complex_sz > 8) asm_movq_zero(cg_sec, addr);
                 }
                 free_reg(v);
@@ -7436,25 +7493,24 @@ static VReg gen(Node *node) {
             VReg result = alloc_reg();
             asm_lea_rbp_reg(cg_sec, result, 8, result_off);
             if (is_flonum(node->ty->base)) {
-                const char *sfx = base_sz == 4 ? "ss" : "sd";
-                (void)0 /* FIXME: unconverted printf: "  mov%s (%s), %%xmm0\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov%s %d(%s), %%xmm1\n" */;
-                (void)0 /* FIXME: unconverted printf: "  movabs $0x8000000000000000, %%rax\n" */;
-                (void)0 /* FIXME: unconverted printf: "  movq %%rax, %%xmm2\n" */;
-                if (base_sz == 4) (void)0 /* FIXME: unconverted printf: "  xorps %%xmm2, %%xmm1\n" */;
+                asm_mov_fp_rm(cg_sec, base_sz, X86_XMM0, x86_mem(REG(addr), 0)); // movss/sd (addr), %xmm0
+                asm_mov_fp_rm(cg_sec, base_sz, X86_XMM1, x86_mem(REG(addr), base_sz)); // movss/sd base_sz(addr), %xmm1
+                asm_movabs_phy(cg_sec, X86_RAX, 0x8000000000000000ULL); // movabs $0x8000000000000000, %rax
+                x86_movq_r_xmm(cg_sec, X86_XMM2, X86_RAX); // movq %rax, %xmm2
+                if (base_sz == 4) x86_xorps(cg_sec, X86_XMM1, X86_XMM2); // xorps %xmm2, %xmm1
                 else
-                    (void)0 /* FIXME: float op */;
-                (void)0 /* FIXME: unconverted printf: "  mov%s %%xmm0, (%s)\n" */;
-                (void)0 /* FIXME: unconverted printf: "  mov%s %%xmm1, %d(%s)\n" */;
+                    x86_xorpd(cg_sec, X86_XMM1, X86_XMM2); // xorpd %xmm2, %xmm1
+                asm_mov_fp_mr(cg_sec, base_sz, x86_mem(REG(result), 0), X86_XMM0); // movss/sd %xmm0, (result)
+                asm_mov_fp_mr(cg_sec, base_sz, x86_mem(REG(result), base_sz), X86_XMM1); // movss/sd %xmm1, base_sz(result)
             } else {
-                (void)0 /* FIXME: indirect mov */;
-                (void)0 /* FIXME: mov indirect/mem */;
-                (void)0 /* FIXME: unconverted printf: "  neg %%rdx\n" */;
-                (void)0 /* FIXME: mov indirect/mem */;
-                (void)0 /* FIXME: mov indirect/mem */;
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(addr), 0)); // mov (addr), %rax
+                x86_mov_rm(cg_sec, 8, X86_RDX, x86_mem(REG(addr), base_sz)); // mov base_sz(addr), %rdx
+                x86_neg_r(cg_sec, 8, X86_RDX); // neg %rdx
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(result), 0), X86_RAX); // mov %rax, (result)
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(result), base_sz), X86_RDX); // mov %rdx, base_sz(result)
             }
             free_reg(addr);
-            if (need_free) (void)0 /* FIXME: sized alu op */;
+            if (need_free) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
             return result;
         }
 #endif
@@ -7559,8 +7615,9 @@ static VReg gen(Node *node) {
                 // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
                 int src = gen_int128(node->lhs);
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(src), 0); // ldr x0, [src]
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(src), 1); // ldr x1, [src, #8]
+                free_reg(src);
 #else
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
                 x86_mov_rm(cg_sec, 8, X86_RDX, x86_mem(REG(src), 8)); // movq 8(src), %rdx
@@ -7592,7 +7649,7 @@ static VReg gen(Node *node) {
                 }
 #ifdef ARCH_ARM64
                 // Save src to x12 before loading retbuf into x11
-                (void)0 /* FIXME: mov phy */;
+                asm_mov_phy_reg(cg_sec, ARM64_X12, src, 1); // mov x12, src
                 if (retbuf_offset <= 4095)
                     asm_ldur_phy(cg_sec, ARM64_X11, ARM64_X29, 3, -retbuf_offset); // ldur x11, [x29, #-retbuf_offset]
                 else {
@@ -7641,12 +7698,17 @@ static VReg gen(Node *node) {
                 if (addr < 0) addr = gen(node->lhs);
                 Type *ret_ty = current_fn_def->ty->return_ty;
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(addr), 0); // ldr w0, [addr]
 #else
-                (void)0 /* FIXME: indirect mov */;
+                x86_mov_rm(cg_sec, 4, X86_RAX, x86_mem(REG(addr), 0)); // movl (addr), %eax
 #endif
-                if (ret_ty && ret_ty->size == 1)
-                    (void)0 /* FIXME: unconverted printf: "  uxtb w0, w0\n" */;
+                if (ret_ty && ret_ty->size == 1) {
+#ifdef ARCH_ARM64
+                    arm64_uxtb(cg_sec, ARM64_X0, ARM64_X0); // uxtb w0, w0
+#else
+                    asm_movzx(cg_sec, 0, 0, 4, 1); // movzbl %al, %eax
+#endif
+                }
                 free_reg(addr);
             } else {
                 VReg r = gen(node->lhs);
@@ -9046,18 +9108,18 @@ static VReg gen(Node *node) {
         // address and "str x16,[x12]" writes new_ap into the data area instead
         // of back into the ap variable.
         asm_mov_phy_reg(cg_sec, ARM64_X17, apple_r, 1); // mov x17, x{apple_r}
-        (void)0 /* FIXME: multi-instruction printf */;
+        arm64_ldr_uoff(cg_sec, 3, ARM64_X12, ARM64_X17, 0); // ldr x12, [x17]
         // __int128 requires 16-byte alignment; the caller pads stack_args to even
         // before placing it, so va_arg must align ap up to 16 to match.
         if (ty->kind == TY_INT128) {
-            (void)0 /* FIXME: add phy */;
-            (void)0 /* FIXME: and variant */;
+            arm64_add_imm(cg_sec, 1, ARM64_X16, ARM64_X12, 15, 0); // add x16, x12, #15
+            arm64_and_imm(cg_sec, 1, ARM64_X12, ARM64_X16, ~15ULL); // and x12, x16, #-16
         }
-        (void)0 /* FIXME: add phy */;
-        (void)0 /* FIXME: multi-instruction printf */;
+        arm64_add_imm(cg_sec, 1, ARM64_X16, ARM64_X12, slot_sz, 0); // add x16, x12, #slot_sz
+        asm_str_reg(cg_sec, ARM64_X16, ARM64_X17); // str x16, [x17]
         free_reg(apple_r);
         VReg ret = alloc_reg();
-        (void)0 /* FIXME: unconverted printf: "  mov %s, x12\n" */;
+        asm_mov_vreg_x12(cg_sec, ret); // mov x{ret}, x12
         return ret;
 #else
 #ifndef _WIN32
@@ -9653,8 +9715,8 @@ static VReg gen(Node *node) {
             need_free_lhs = 1;
             addr_lhs = alloc_reg();
 #ifdef ARCH_ARM64
-            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
-            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
+            arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #N
+            asm_mov_reg_sp(cg_sec, REG(addr_lhs)); // mov x{addr_lhs}, sp
 #else
             asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
             x86_mov_rr(cg_sec, 8, REG(addr_lhs), X86_RSP); // movq %rsp, addr_lhs
@@ -9663,18 +9725,18 @@ static VReg gen(Node *node) {
             if (lhs_cx) {
                 // gen() returned address — copy complex data
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                asm_ldr_x16_reg_uoff(cg_sec, v, 0); // ldr x16, [v]
+                asm_str_x16_reg_uoff(cg_sec, addr_lhs, 0); // str x16, [addr_lhs]
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    asm_ldr_x16_reg_uoff(cg_sec, v, base_sz); // ldr x16, [v, #base_sz]
+                    asm_str_x16_reg_uoff(cg_sec, addr_lhs, base_sz); // str x16, [addr_lhs, #base_sz]
                 }
 #else
                 asm_mov_reg_reg(cg_sec, 0, v, 8);
                 asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
                 }
 #endif
             } else {
@@ -9686,8 +9748,8 @@ static VReg gen(Node *node) {
             need_free_rhs = 1;
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
-            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
-            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
+            arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #N
+            asm_mov_reg_sp(cg_sec, REG(addr_rhs)); // mov x{addr_rhs}, sp
 #else
             asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
             x86_mov_rr(cg_sec, 8, REG(addr_rhs), X86_RSP); // movq %rsp, addr_rhs
@@ -9695,18 +9757,18 @@ static VReg gen(Node *node) {
             int v = gen(node->rhs);
             if (rhs_cx) {
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                asm_ldr_x16_reg_uoff(cg_sec, v, 0); // ldr x16, [v]
+                asm_str_x16_reg_uoff(cg_sec, addr_rhs, 0); // str x16, [addr_rhs]
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    asm_ldr_x16_reg_uoff(cg_sec, v, base_sz); // ldr x16, [v, #base_sz]
+                    asm_str_x16_reg_uoff(cg_sec, addr_rhs, base_sz); // str x16, [addr_rhs, #base_sz]
                 }
 #else
                 asm_mov_reg_reg(cg_sec, 0, v, 8);
                 asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
                 }
 #endif
             } else {
@@ -9728,43 +9790,50 @@ static VReg gen(Node *node) {
 #endif
         if (is_flonum(node->ty->base)) {
 #ifdef ARCH_ARM64
-            const char *ldr_sfx = base_sz == 4 ? "s" : "d";
-            const char *fop = "";
-            if (node->kind == ND_ADD) fop = "fadd";
-            else if (node->kind == ND_SUB)
-                fop = "fsub";
-            else if (node->kind == ND_MUL)
-                fop = "fmul";
-            else
-                fop = "fdiv";
-            (void)0 /* FIXME: unconverted printf: "  ldr %s0, [%s]\n" */;
-            (void)0 /* FIXME: ldr/str phy/off */;
-            (void)0 /* FIXME: unconverted printf: "  ldr %s2, [%s]\n" */;
-            (void)0 /* FIXME: ldr/str phy/off */;
+            int ftype = base_sz == 4 ? 0 : 1;
+            int sf = base_sz == 4 ? 0 : 1;
+            asm_ldr_fp(cg_sec, 0, addr_lhs, base_sz);
+            asm_ldr_fp_off(cg_sec, 1, addr_lhs, base_sz, (uint32_t)base_sz);
+            asm_ldr_fp(cg_sec, 2, addr_rhs, base_sz);
+            asm_ldr_fp_off(cg_sec, 3, addr_rhs, base_sz, (uint32_t)base_sz);
             if (node->kind == ND_ADD || node->kind == ND_SUB) {
-                (void)0 /* FIXME: unconverted printf: "  %s %s0, %s0, %s2\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s1, %s1, %s3\n" */;
+                if (node->kind == ND_ADD) {
+                    arm64_fadd(cg_sec, ftype, 0, 0, 2);
+                    arm64_fadd(cg_sec, ftype, 1, 1, 3);
+                } else {
+                    arm64_fsub(cg_sec, ftype, 0, 0, 2);
+                    arm64_fsub(cg_sec, ftype, 1, 1, 3);
+                }
             } else if (node->kind == ND_MUL) {
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
-                (void)0 /* FIXME: fmov */;
-                (void)0 /* FIXME: fmov */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s4, %s4, %s2\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s5, %s5, %s3\n" */;
-                (void)0 /* FIXME: unconverted printf: "  fsub %s4, %s4, %s5\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s0, %s0, %s3\n" */;
-                (void)0 /* FIXME: unconverted printf: "  %s %s1, %s1, %s2\n" */;
-                (void)0 /* FIXME: unconverted printf: "  fadd %s1, %s0, %s1\n" */;
-                (void)0 /* FIXME: fmov */;
+                int t = alloc_reg();
+                arm64_fmov_f2i(cg_sec, sf, REG(t), 0);
+                arm64_fmov_i2f(cg_sec, sf, 4, REG(t));
+                free_reg(t);
+                t = alloc_reg();
+                arm64_fmov_f2i(cg_sec, sf, REG(t), 1);
+                arm64_fmov_i2f(cg_sec, sf, 5, REG(t));
+                free_reg(t);
+                arm64_fmul(cg_sec, ftype, 4, 4, 2);
+                arm64_fmul(cg_sec, ftype, 5, 5, 3);
+                arm64_fsub(cg_sec, ftype, 4, 4, 5);
+                arm64_fmul(cg_sec, ftype, 0, 0, 3);
+                arm64_fmul(cg_sec, ftype, 1, 1, 2);
+                arm64_fadd(cg_sec, ftype, 1, 0, 1);
+                t = alloc_reg();
+                arm64_fmov_f2i(cg_sec, sf, REG(t), 4);
+                arm64_fmov_i2f(cg_sec, sf, 0, REG(t));
+                free_reg(t);
             } else {
                 // Complex float division via libcall
-                (void)0 /* FIXME: branch/call: bl %s */;
-                (void)0 /* FIXME: unconverted printf: "  str %s0, [%s]\n" */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_bl(cg_sec, 0); // bl placeholder
+                asm_str_fp(cg_sec, 0, result, base_sz);
+                arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
                 goto cx_arith_done;
             }
             if (node->kind != ND_DIV) {
-                (void)0 /* FIXME: unconverted printf: "  str %s0, [%s]\n" */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                asm_str_fp(cg_sec, 0, result, base_sz);
+                arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
             }
 #else
             int sfx = base_sz; // 4 -> ss, 8 -> sd
@@ -9826,140 +9895,156 @@ static VReg gen(Node *node) {
 #endif
         } else {
 #ifdef ARCH_ARM64
-            (void)0 /* FIXME: ldr/str phy/off */;
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), 0);
             if (complex_sz <= 8) {
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
                 switch (node->kind) {
                 case ND_ADD:
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: unconverted printf: "  ldrsw x17, [%s, #%d]\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  ldrsw x18, [%s, #%d]\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: unconverted printf: "  bfi x16, x18, #32, #32\n" */;
+                    arm64_add_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_add_reg(cg_sec, 0, ARM64_X18, ARM64_X17, ARM64_X18, ARM64_LSL, 0);
+                    arm64_ubfx(cg_sec, 1, ARM64_X16, ARM64_X16, 0, 32);
+                    arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 32);
                     break;
                 case ND_SUB:
-                    (void)0 /* FIXME: sub phy */;
-                    (void)0 /* FIXME: unconverted printf: "  ldrsw x17, [%s, #%d]\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  ldrsw x18, [%s, #%d]\n" */;
-                    (void)0 /* FIXME: sub phy */;
-                    (void)0 /* FIXME: unconverted printf: "  bfi x16, x18, #32, #32\n" */;
+                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_sub_reg(cg_sec, 0, ARM64_X18, ARM64_X17, ARM64_X18, ARM64_LSL, 0);
+                    arm64_ubfx(cg_sec, 1, ARM64_X16, ARM64_X16, 0, 32);
+                    arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 32);
                     break;
                 case ND_MUL: {
                     // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — integer arithmetic
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
-                    (void)0 /* FIXME: sub phy */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w9, w9, w18\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X18);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X9, REG(addr_lhs), 0);
+                    arm64_mul(cg_sec, 0, ARM64_X9, ARM64_X9, ARM64_X18);
+                    arm64_add_reg(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X17, REG(result), (uint32_t)(base_sz / 4));
                     goto cx_arith_done;
                 }
                 case ND_DIV: {
                     // (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
                     const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w16\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w17\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w17\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: unconverted printf: "  %s w16, w16, w9\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w16, w16, w17\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul w17, w17, w18\n" */;
-                    (void)0 /* FIXME: sub phy */;
-                    (void)0 /* FIXME: unconverted printf: "  %s w16, w16, w9\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)dv;
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_rhs), 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X16);
+                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X17);
+                    arm64_add_reg(cg_sec, 0, ARM64_X9, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_add_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    if (node->ty->base->is_unsigned)
+                        arm64_udiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                    else
+                        arm64_sdiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 4));
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
+                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    if (node->ty->base->is_unsigned)
+                        arm64_udiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                    else
+                        arm64_sdiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), (uint32_t)(base_sz / 4));
                     goto cx_arith_done;
                 }
                 default:
                     __builtin_unreachable();
                 }
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
             } else {
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
                 switch (node->kind) {
                 case ND_ADD:
-                    (void)0 /* FIXME: adds */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  adc x17, x17, x18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_adds_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_adc(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X17, REG(result), (uint32_t)(base_sz / 8));
                     goto cx_arith_done;
                 case ND_SUB:
-                    (void)0 /* FIXME: subs */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  sbc x17, x17, x18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_subs_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_sbc(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X17, REG(result), (uint32_t)(base_sz / 8));
                     goto cx_arith_done;
                 case ND_MUL: {
                     // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — 64-bit integer arithmetic
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
-                    (void)0 /* FIXME: sub with phy reg */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x9, x9, x18\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X9, REG(addr_lhs), 0);
+                    arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18);
+                    arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X17, REG(result), (uint32_t)(base_sz / 8));
                     goto cx_arith_done;
                 }
                 case ND_DIV: {
                     const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x16\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x17\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x17\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
-                    (void)0 /* FIXME: add phy */;
-                    (void)0 /* FIXME: unconverted printf: "  %s x16, x16, x9\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x16, x16, x17\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: unconverted printf: "  mul x17, x17, x18\n" */;
-                    (void)0 /* FIXME: sub with phy reg */;
-                    (void)0 /* FIXME: unconverted printf: "  %s x16, x16, x9\n" */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    (void)dv;
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X16);
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X17);
+                    arm64_add_reg(cg_sec, 1, ARM64_X9, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_add_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    if (node->ty->base->is_unsigned)
+                        arm64_udiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X9);
+                    else
+                        arm64_sdiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X9);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 8));
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_lhs), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 8));
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X18);
+                    arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
+                    if (node->ty->base->is_unsigned)
+                        arm64_udiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X9);
+                    else
+                        arm64_sdiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X9);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), (uint32_t)(base_sz / 8));
                     goto cx_arith_done;
                 }
                 default:
@@ -10070,8 +10155,8 @@ static VReg gen(Node *node) {
         free_reg(addr_lhs);
         free_reg(addr_rhs);
 #ifdef ARCH_ARM64
-        if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
-        if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
+        if (need_free_lhs) arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // add sp, sp, #complex_sz
+        if (need_free_rhs) arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // add sp, sp, #complex_sz
 #else
         if (need_free_lhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
         if (need_free_rhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
@@ -10089,12 +10174,12 @@ static VReg gen(Node *node) {
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64
             if (node->ty->size == 4) {
-                (void)0 /* FIXME: unconverted printf: "  ldr s0, [%s]\n" */;
-                (void)0 /* arm64 fcvt d0,s0 */;
+                asm_ldr_fp(cg_sec, ARM64_S0, r, 4); // ldr s0, [x{r}]
+                asm_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
             } else {
-                (void)0 /* FIXME: unconverted printf: "  ldr d0, [%s]\n" */;
+                asm_ldr_fp(cg_sec, ARM64_D0, r, 8); // ldr d0, [x{r}]
             }
-            (void)0 /* FIXME: fmov */;
+            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
 #else
             if (node->ty->size == 4) {
                 x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
@@ -10221,8 +10306,8 @@ static VReg gen(Node *node) {
         if (addr_lhs < 0) {
             addr_lhs = alloc_reg();
 #ifdef ARCH_ARM64
-            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
-            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
+            arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #complex_sz
+            asm_mov_reg_sp(cg_sec, REG(addr_lhs)); // mov addr_lhs, sp
 #else
             asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
             x86_mov_rr(cg_sec, 8, REG(addr_lhs), X86_RSP); // movq %rsp, addr_lhs
@@ -10231,29 +10316,29 @@ static VReg gen(Node *node) {
             if (is_complex(node->lhs->ty)) {
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), 0); // ldr x16, [v]
+                arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), 0); // str x16, [addr_lhs]
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(base_sz / 8)); // ldr x16, [v, #base_sz]
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 8)); // str x16, [addr_lhs, #base_sz]
                 }
 #else
                 asm_mov_reg_reg(cg_sec, 0, v, 8);
                 asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
                 }
 #endif
             } else {
 #ifdef ARCH_ARM64
                 asm_str_reg_off(cg_sec, v, addr_lhs, 8, 0);
                 if (complex_sz > 8)
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr_lhs), (uint32_t)(base_sz / 8)); // str xzr, [addr_lhs, #base_sz]
 #else
-                (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
+                asm_mov_reg_mem(cg_sec, v, addr_lhs, 8); // movq v, (addr_lhs)
                 if (complex_sz > 8)
-                    (void)0 /* FIXME: unconverted printf: "  movq $0, %d(%s)\n" */;
+                    x86_mov_mi(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), 0); // movq $0, base_sz(addr_lhs)
 #endif
             }
             free_reg(v);
@@ -10262,8 +10347,8 @@ static VReg gen(Node *node) {
         if (addr_rhs < 0) {
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
-            (void)0 /* FIXME: unconverted printf: "  sub sp, sp, #%d\n" */;
-            (void)0 /* FIXME: unconverted printf: "  mov %s, sp\n" */;
+            arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #complex_sz
+            asm_mov_reg_sp(cg_sec, REG(addr_rhs)); // mov addr_rhs, sp
 #else
             asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
             x86_mov_rr(cg_sec, 8, REG(addr_rhs), X86_RSP); // movq %rsp, addr_rhs
@@ -10272,29 +10357,29 @@ static VReg gen(Node *node) {
             if (is_complex(node->rhs->ty)) {
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: ldr/str phy/off */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), 0); // ldr x16, [v]
+                arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), 0); // str x16, [addr_rhs]
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: ldr/str phy/off */;
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(base_sz / 8)); // ldr x16, [v, #base_sz]
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(base_sz / 8)); // str x16, [addr_rhs, #base_sz]
                 }
 #else
                 asm_mov_reg_reg(cg_sec, 0, v, 8);
                 asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
                 if (complex_sz > 8) {
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%s), %%rax\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  movq %%rax, %d(%s)\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
                 }
 #endif
             } else {
 #ifdef ARCH_ARM64
                 asm_str_reg_off(cg_sec, v, addr_rhs, 8, 0);
                 if (complex_sz > 8)
-                    (void)0 /* FIXME: ldr/str phy/off */;
+                    arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr_rhs), (uint32_t)(base_sz / 8)); // str xzr, [addr_rhs, #base_sz]
 #else
-                (void)0 /* FIXME: unconverted printf: "  movq %s, (%s)\n" */;
+                asm_mov_reg_mem(cg_sec, v, addr_rhs, 8); // movq v, (addr_rhs)
                 if (complex_sz > 8)
-                    (void)0 /* FIXME: unconverted printf: "  movq $0, %d(%s)\n" */;
+                    x86_mov_mi(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), 0); // movq $0, base_sz(addr_rhs)
 #endif
             }
             free_reg(v);
@@ -10304,17 +10389,23 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
         if (sz <= 4) {
             asm_movq_zero(cg_sec, result);
-            (void)0 /* FIXME: sized ld/st */;
-            (void)0 /* FIXME: sized ld/st */;
-            (void)0 /* FIXME: unconverted printf: "  eor w16, w16, w17\n" */;
-            (void)0 /* FIXME: unconverted printf: "  cmp w16, #0\n" */;
+            if (sz == 2) {
+                arm64_ldrh_uoff(cg_sec, ARM64_X16, REG(addr_lhs), 0); // ldrh w16, [addr_lhs]
+                arm64_ldrh_uoff(cg_sec, ARM64_X17, REG(addr_rhs), 0); // ldrh w17, [addr_rhs]
+            } else {
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), 0); // ldr w16, [addr_lhs]
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), 0); // ldr w17, [addr_rhs]
+            }
+            arm64_eor_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // eor w16, w16, w17
+            arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X16, 0, 0); // cmp w16, #0
         } else {
             asm_ldr_reg_off(cg_sec, result, addr_lhs, 8, 0);
             asm_eor_reg_reg(cg_sec, result, result, 8);
             if (sz > 8) {
-                (void)0 /* FIXME: ldr/str phy/off */;
-                (void)0 /* FIXME: unconverted printf: "  eor x16, x16, [%s, #%d]\n" */;
-                (void)0 /* FIXME: unconverted printf: "  orr %s, %s, x16\n" */;
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 8)); // ldr x16, [addr_lhs, #base_sz]
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), (uint32_t)(base_sz / 8)); // ldr x17, [addr_rhs, #base_sz]
+                arm64_eor_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // eor x16, x16, x17
+                arm64_orr_reg(cg_sec, 1, REG(result), REG(result), ARM64_X16, ARM64_LSL, 0); // orr result, result, x16
             }
             asm_cmp_zero(cg_sec, result, 8);
         }
@@ -10346,8 +10437,8 @@ static VReg gen(Node *node) {
         free_reg(addr_lhs);
         free_reg(addr_rhs);
 #ifdef ARCH_ARM64
-        if (need_free_lhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
-        if (need_free_rhs) (void)0 /* FIXME: unconverted printf: "  add sp, sp, #%d\n" */;
+        if (need_free_lhs) arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // add sp, sp, #complex_sz
+        if (need_free_rhs) arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // add sp, sp, #complex_sz
 #else
         if (need_free_lhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15);
         if (need_free_rhs) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15);
@@ -11530,8 +11621,7 @@ struct ObjFile *codegen(Program *prog) {
                 // __asm__("target") on a function: alias the C name to the asm_name
                 // The function body is emitted under asm_name; we need the C name to point to it.
                 // Create a symbol alias by emitting both names at the same section offset.
-                // The target symbol will be added when the function is emitted below.
-                // FIXME: proper alias via objfile
+                // The target symbol will be added when the function body is emitted below.
                 continue;
             }
 #ifdef _WIN32
@@ -11933,26 +12023,28 @@ struct ObjFile *codegen(Program *prog) {
                     }
                 } else if (var->ty->kind == TY_INT128) {
                     // __int128 on stack: slot holds a pointer; dereference it.
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%rax\n" */;
-                    (void)0 /* FIXME: indirect mov */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
+                    x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx  (lo)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
-                    (void)0 /* FIXME: unconverted printf: "  movq 8(%%rax), %%rcx\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx  (hi)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset - 8);
                 } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
                     // Structs > 8 bytes (and 16-byte _Complex double) are passed
                     // by pointer even on the stack; load the pointer and copy
                     // the pointee into the local slot.
                     int c = ++rcc_label_count;
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%r11\n" */;
-                    (void)0 /* FIXME: unconverted printf: "  movq $%d, %%r10\n" */;
-                    (void)0 /* FIXME: label .L.xxx.c */;
+                    x86_mov_rm(cg_sec, 8, X86_R11, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %r11
+                    x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                    cg_def_label(format(".L.pcopy.%d", c));
                     asm_cmp_zero(cg_sec, 10, 8);
-                    (void)0 /* FIXME: branch/call: je .L.pcopy_end.%d */;
-                    (void)0 /* FIXME: sized mov */;
-                    (void)0 /* FIXME: sized mov */;
+                    size_t jze3 = asm_jcc_label(cg_sec, X86_E);
+                    asm_fixup_add(cg_sec, jze3, format(".L.pcopy_end.%d", c), 0);
+                    asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
+                    asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
                     asm_dec(cg_sec, 10, 8);
-                    (void)0 /* FIXME: branch/call: jmp .L.pcopy.%d */;
-                    (void)0 /* FIXME: label .L.xxx.c */;
+                    size_t jmp3 = asm_jmp_label(cg_sec);
+                    asm_fixup_add(cg_sec, jmp3, format(".L.pcopy.%d", c), 0);
+                    cg_def_label(format(".L.pcopy_end.%d", c));
                 } else {
                     int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                         : var->ty->size <= 4                              ? 4
@@ -11987,18 +12079,18 @@ struct ObjFile *codegen(Program *prog) {
                 // Windows x64: __int128 is passed by pointer in a single GP register.
                 // Dereference the pointer to copy the 16-byte value to the local slot.
                 if (param_index < max_param_regs) {
-                    (void)0 /* FIXME: indirect mov */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(cg_x86_paramreg[param_index], 0)); // movq (preg), %rax  (lo)
                     asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset);
-                    (void)0 /* FIXME: unconverted printf: "  movq 8(%s), %%rax\n" */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(cg_x86_paramreg[param_index], 8)); // movq 8(preg), %rax  (hi)
                     asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, var->offset - 8);
                     param_index++;
                 } else {
                     // Stack: pointer is in the shadow-space-extended stack slot.
                     int stack_off = 48 + stack_param_index * 8;
-                    (void)0 /* FIXME: unconverted printf: "  movq %d(%%rbp), %%rax\n" */;
-                    (void)0 /* FIXME: indirect mov */;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
+                    x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx  (lo)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
-                    (void)0 /* FIXME: multi-instruction printf */;
+                    x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx  (hi)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset - 8);
                     stack_param_index++;
                 }
@@ -12038,25 +12130,25 @@ struct ObjFile *codegen(Program *prog) {
                     if (var->ty->size <= 8) {
                         // _Complex float: 8 bytes in one xmm reg
                         if (param_xmm_index < max_param_xmm) {
-                            (void)0 /* FIXME: float op */;
+                            asm_movsd_xmm_rbp(cg_sec, param_xmm_index, var->offset); // movsd xmm_i, -off(%rbp)
                             param_xmm_index++;
                         } else {
-                            (void)0 /* FIXME: float op */;
-                            (void)0 /* FIXME: float op */;
+                            asm_movsd_rm_rbp(cg_sec, 0, 16 + stack_param_index * 8); // movsd stack_off(%rbp), %xmm0
+                            asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd %xmm0, -off(%rbp)
                             stack_param_index++;
                         }
                     } else {
                         // _Complex double: 16 bytes, two xmm regs
                         if (param_xmm_index + 1 < max_param_xmm) {
-                            (void)0 /* FIXME: float op */;
-                            (void)0 /* FIXME: float op */;
+                            asm_movsd_xmm_rbp(cg_sec, param_xmm_index, var->offset); // movsd xmm_i, -off(%rbp)
+                            asm_movsd_xmm_rbp(cg_sec, param_xmm_index + 1, var->offset - base_sz); // movsd xmm_i+1, -(off-base_sz)(%rbp)
                             param_xmm_index += 2;
                         } else {
                             int stack_off = 16 + stack_param_index * 8;
-                            (void)0 /* FIXME: float op */;
-                            (void)0 /* FIXME: float op */;
-                            (void)0 /* FIXME: float op */;
-                            (void)0 /* FIXME: float op */;
+                            asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), %xmm0
+                            asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd %xmm0, -off(%rbp)
+                            asm_movsd_rm_rbp(cg_sec, 0, stack_off + 8); // movsd stack_off+8(%rbp), %xmm0
+                            asm_movsd_mr_rbp(cg_sec, 0, var->offset - base_sz); // movsd %xmm0, -(off-base_sz)(%rbp)
                             stack_param_index += 2;
                         }
                     }
@@ -12065,25 +12157,25 @@ struct ObjFile *codegen(Program *prog) {
                     if (var->ty->size <= 8) {
                         // _Complex int: 8 bytes in one GP reg
                         if (param_index < max_param_regs) {
-                            (void)0 /* FIXME: mov indirect/mem */;
+                            asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], 8, var->offset); // movq preg, -off(%rbp)
                             param_index++;
                         } else {
-                            (void)0 /* FIXME: mov indirect/mem */;
-                            (void)0 /* FIXME: mov indirect/mem */;
+                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, 16 + stack_param_index * 8)); // movq stack_off(%rbp), %rax
+                            x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
                             stack_param_index++;
                         }
                     } else {
                         // _Complex long long: 16 bytes in two GP regs
                         if (param_index + 1 < max_param_regs) {
-                            (void)0 /* FIXME: mov indirect/mem */;
-                            (void)0 /* FIXME: mov indirect/mem */;
+                            asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], 8, var->offset); // movq preg, -off(%rbp)
+                            asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index + 1], 8, var->offset - base_sz); // movq preg+1, -(off-base_sz)(%rbp)
                             param_index += 2;
                         } else {
                             int stack_off = 16 + stack_param_index * 8;
-                            (void)0 /* FIXME: mov indirect/mem */;
-                            (void)0 /* FIXME: mov indirect/mem */;
-                            (void)0 /* FIXME: mov indirect/mem */;
-                            (void)0 /* FIXME: mov indirect/mem */;
+                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
+                            x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off + 8)); // movq stack_off+8(%rbp), %rax
+                            x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - base_sz)), X86_RAX); // movq %rax, -(off-base_sz)(%rbp)
                             stack_param_index += 2;
                         }
                     }
@@ -12386,7 +12478,7 @@ struct ObjFile *codegen(Program *prog) {
                     // Use byte-copy from caller's stack to local slot
                     int c = ++rcc_label_count;
                     if (var->offset <= 4095)
-                        (void)0 /* FIXME: sub with phy reg */;
+                        arm64_sub_imm(cg_sec, 1, ARM64_X13, ARM64_X29, var->offset, 0); // sub x13, x29, #var->offset
                     else {
                         int v = var->offset;
                         asm_mov_imm(cg_sec, 13, 8, v & 0xffff);
@@ -12397,19 +12489,26 @@ struct ObjFile *codegen(Program *prog) {
                             v >>= 16;
                             s += 16;
                         }
-                        (void)0 /* FIXME: sub with phy reg */;
+                        arm64_sub_reg(cg_sec, 1, ARM64_X13, ARM64_X29, ARM64_X13, ARM64_LSL, 0); // sub x13, x29, x13
                     }
                     // x11 = source (caller's stack)
-                    (void)0 /* FIXME: add phy */;
+                    arm64_add_imm(cg_sec, 1, ARM64_X11, ARM64_X29, spoff, 0); // add x11, x29, #spoff
                     asm_mov_imm(cg_sec, 9, 8, sz);
-                    (void)0 /* FIXME: label .L.xxx.c */;
+                    cg_label_ht_add(format(".L.pcopy.%d", c), cg_sec->len); // .L.pcopy.c:
                     asm_cmp_zero(cg_sec, 9, 8);
-                    (void)0 /* FIXME: branch/call: b.eq .L.pcopy_end.%d */;
+                    {
+                        size_t _off = asm_jcc_label(cg_sec, ARM64_EQ);
+                        asm_fixup_add(cg_sec, _off, format(".L.pcopy_end.%d", c), 1);
+                    } // b.eq .L.pcopy_end.c
                     asm_dec(cg_sec, 9, 8);
-                    (void)0 /* FIXME: sized ld/st */;
-                    (void)0 /* FIXME: sized ld/st */;
-                    (void)0 /* FIXME: branch/call: b .L.pcopy.%d */;
-                    (void)0 /* FIXME: label .L.xxx.c */;
+                    asm_ldrb_w16_x9_phy(cg_sec, ARM64_X11); // ldrb w16, [x11, x9]
+                    asm_strb_w16_x9_phy(cg_sec, ARM64_X13); // strb w16, [x13, x9]
+                    {
+                        size_t _off = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, _off, format(".L.pcopy.%d", c), 1);
+                    } // b .L.pcopy.c
+                    cg_label_ht_add(format(".L.pcopy_end.%d", c), cg_sec->len);
+                    asm_fixup_resolve(cg_sec, format(".L.pcopy_end.%d", c), cg_sec->len); // .L.pcopy_end.c:
                     stack_param += (sz + 7) / 8;
                 } else if (is_flonum(var->ty)) {
                     if (fp_param < 8) {
@@ -12427,16 +12526,17 @@ struct ObjFile *codegen(Program *prog) {
                 } else if (var->ty->kind == TY_INT128) {
                     // int128: two consecutive GP registers
                     if (gp_param + 1 < 8) {
-                        (void)0 /* FIXME: ldr/str phy/off */;
-                        (void)0 /* FIXME: ldr/str phy/off */;
+                        arm64_sub_imm(cg_sec, 1, ARM64_X16, ARM64_X29, var->offset, 0);
+                        arm64_str_uoff(cg_sec, 3, (Arm64Reg)gp_param, ARM64_X16, 0); // sub x16, x29, #offset; str x{gp_param}, [x16]
+                        arm64_str_uoff(cg_sec, 3, (Arm64Reg)(gp_param + 1), ARM64_X16, 1); // str x{gp_param+1}, [x16, #8]
                         gp_param += 2;
                     } else {
                         // int128 on stack: two 8-byte slots from caller's frame
                         int spoff = 16 + stack_param * 8;
-                        (void)0 /* FIXME: ldr/str phy/off */;
-                        (void)0 /* FIXME: ldr/str phy/off */;
-                        (void)0 /* FIXME: ldr/str phy/off */;
-                        (void)0 /* FIXME: ldr/str phy/off */;
+                        arm64_ldr_uoff(cg_sec, 3, ARM64_X11, ARM64_X29, (uint32_t)(spoff / 8)); // ldr x11, [x29, #spoff]
+                        arm64_stur(cg_sec, 1, ARM64_X11, ARM64_X29, -var->offset); // stur x11, [x29, #-var->offset]
+                        arm64_ldr_uoff(cg_sec, 3, ARM64_X11, ARM64_X29, (uint32_t)((spoff + 8) / 8)); // ldr x11, [x29, #spoff+8]
+                        arm64_stur(cg_sec, 1, ARM64_X11, ARM64_X29, -(var->offset - 8)); // stur x11, [x29, #-(var->offset-8)]
                         stack_param += 2;
                     }
                 } else if (gp_param < 8) {
@@ -12947,11 +13047,32 @@ struct ObjFile *codegen(Program *prog) {
                 (void)0 /* directive: .p2align */;
                 cg_def_label(format("___GLOBAL_dtor_item->fn->name")); // ___GLOBAL_dtor_%s:
                 asm_stp_fp_lr(cg_sec);
-                (void)0 /* FIXME: mov phy */;
-                (void)0 /* FIXME: emit_adrp_page_add */;
-                (void)0 /* FIXME: mov phy */;
-                (void)0 /* FIXME: emit_adrp_page_add x2 */;
-                (void)0 /* FIXME: branch/call: bl ___cxa_atexit */;
+                asm_mov_fp_sp(cg_sec); // mov x29, sp
+                { // adrp x0, dtor_label@PAGE; add x0, x0, dtor_label@PAGEOFF
+                    const char *lbl = asm_sym_name(sym_name(item->fn->name));
+                    int sidx = objfile_find_sym(cg_obj, lbl);
+                    if (sidx < 0) sidx = objfile_add_sym(cg_obj, lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
+                    size_t a_off = cg_sec->len;
+                    asm_adrp(cg_sec, ARM64_X0);
+                    objfile_add_reloc(cg_obj, SEC_TEXT, a_off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
+                    size_t d_off = cg_sec->len;
+                    asm_add_rd_rd_0(cg_sec, ARM64_X0);
+                    objfile_add_reloc(cg_obj, SEC_TEXT, d_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
+                }
+                asm_mov_imm_phy(cg_sec, ARM64_X1, 8, 0); // mov x1, #0
+                { // adrp x2, ___dso_handle@PAGE; add x2, x2, ___dso_handle@PAGEOFF
+                    const char *lbl = "___dso_handle";
+                    int sidx = objfile_find_sym(cg_obj, lbl);
+                    if (sidx < 0) sidx = objfile_add_sym(cg_obj, lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
+                    size_t a_off = cg_sec->len;
+                    asm_adrp(cg_sec, ARM64_X2);
+                    objfile_add_reloc(cg_obj, SEC_TEXT, a_off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
+                    size_t d_off = cg_sec->len;
+                    asm_add_rd_rd_0(cg_sec, ARM64_X2);
+                    objfile_add_reloc(cg_obj, SEC_TEXT, d_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
+                }
+                asm_call_label(cg_sec); // bl ___cxa_atexit (fixup below)
+                asm_fixup_add(cg_sec, cg_sec->len - 4, "___cxa_atexit", 0);
                 asm_ldp_fp_lr(cg_sec);
                 asm_ret(cg_sec);
             }
