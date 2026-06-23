@@ -2826,7 +2826,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool is_oldstyle = !fn_type_w || (fn_type_w->kind == TY_FUNC && fn_type_w->is_oldstyle);
     int reg_nargs = nargs < max_gp_args - (has_hidden_retbuf ? 1 : 0) ? nargs : max_gp_args - (has_hidden_retbuf ? 1 : 0);
     for (int i = 0; i < reg_nargs; i++) {
-        if (((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) || (is_complex(argv[i]->ty) && argv[i]->ty->size > 8))
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             arg_regs[i] = gen_addr(argv[i]);
         else
             arg_regs[i] = gen(argv[i]);
@@ -2855,7 +2855,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         // Win64: large structs (>8 bytes) are passed by pointer on the stack
-        VReg r = (((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) || (is_complex(argv[i]->ty) && argv[i]->ty->size > 8))
+        VReg r = ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             ? gen_addr(argv[i])
             : gen(argv[i]);
         int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
