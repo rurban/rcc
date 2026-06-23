@@ -639,6 +639,7 @@ static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
 __attribute__((unused)) static void gen_int128_nonzero(VReg addr, VReg result);
 static VReg gen_int128(Node *node);
+static void emit_peephole_body(char *body_text);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -8756,6 +8757,10 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
+            if (!opt_O0) {
+                emit_peephole_body(out);
+                olen = strlen(out);
+            }
             // Split on ';' for multi-instruction inline asm (e.g. "mov %0, #1; mov %1, #2")
             char *inst = out;
             while (*inst) {
@@ -8940,6 +8945,10 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
+            if (!opt_O0) {
+                emit_peephole_body(out);
+                olen = strlen(out);
+            }
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
@@ -10852,6 +10861,7 @@ static const char *to32(const char *r64) {
 #endif
 
 // Fast peephole parsing helpers (avoid sscanf in hot loop)
+
 static int peep_mov_reg_reg(char *line, char *dst, int dst_sz, char *src, int src_sz) {
     if (strncmp(line, "  mov ", 6) != 0) return 0;
     char *p = line + 6;
@@ -11359,14 +11369,12 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
     return 0;
 }
 
-__attribute__((unused)) static void emit_peephole_body(char *body_text) {
-    if (opt_O0) {
-        fputs(body_text, stdout);
-        return;
-    }
+static void emit_peephole_body(char *body_text) {
+    if (opt_O0) return;
 
     // 3-line sliding window: w[0]=oldest pending, w[2]=newest
     char *w[3] = {NULL, NULL, NULL};
+    char *wp = body_text;
     int wn = 0;
     const char *rest = body_text; // points into body_text after window (newlines intact)
     char *p = body_text; // scan pointer; \n replaced with \0 as lines are parsed
@@ -11388,13 +11396,23 @@ __attribute__((unused)) static void emit_peephole_body(char *body_text) {
 
         if (!line) {
             for (int i = 0; i < wn; i++)
-                if (w[i] && w[i][0]) fprintf(stdout, "%s\n", w[i]);
+                if (w[i] && w[i][0]) {
+                    int _len = strlen(w[i]);
+                    memmove(wp, w[i], _len);
+                    wp += _len;
+                    *wp++ = '\n';
+                }
             break;
         }
 
         // Commit oldest when window is full
         if (wn == 3) {
-            if (w[0] && w[0][0]) fprintf(stdout, "%s\n", w[0]);
+            if (w[0] && w[0][0]) {
+                int _len = strlen(w[0]);
+                memmove(wp, w[0], _len);
+                wp += _len;
+                *wp++ = '\n';
+            }
             w[0] = w[1];
             w[1] = w[2];
             w[2] = NULL;
