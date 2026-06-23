@@ -3361,9 +3361,8 @@ static void emit_adrp_add(VReg r, const char *label) {
         sidx = objfile_add_sym(cg_obj, label, sec, 0, 0, bind, ST_NOTYPE);
     }
 #ifdef __APPLE__
-    // Use GOT for C-level symbols (start with '_') so ld64 can resolve both
-    // dylib and local-defined. Local labels (start with '.') use direct page+offset.
-    if (label[0] != '.') {
+    // Darwin always uses GOT (matching system assembler behavior)
+    {
         size_t adrp_off = cg_sec->len;
         asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
         objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
