@@ -3341,6 +3341,7 @@ static void emit_mov_imm(const char *reg, int imm) {
 //     - undefined dylib symbols: ld64 rejects ARM64_RELOC_PAGEOFF12 for these
 //     - locally defined C globals: ld64 synthesises a GOT entry when GOT relocs used
 //   In both cases GOT access is correct on Darwin.
+#ifdef ARCH_ARM64
 static void emit_adrp_add(VReg r, const char *label) {
     if (cg_dry_run) return;
     Arm64Reg rd = REG(r);
@@ -3418,6 +3419,7 @@ static void emit_tls_addr(VReg r, LVar *var) {
     arm64_add_imm(cg_sec, 1, rd, rd, 0, 0); // add x{rd}, x{rd}, #:tprel_lo12_nc:label
     objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
 }
+#endif // ARCH_ARM64
 #if 0
 static int emit_stack_addr(int offset) {
 #ifdef ARCH_ARM64
