@@ -449,7 +449,7 @@
   20020402-3                          PASS
   20020404-1                          PASS
   20020406-1                          PASS
-  20020411-1                          FAIL (runtime)
+  20020411-1                          PASS
   20020412-1                          PASS
   20020413-1                          PASS
   20020418-1                          PASS
@@ -592,7 +592,7 @@
   20041114-1                          PASS
   20041124-1                          PASS
   20041126-1                          PASS
-  20041201-1                          FAIL (runtime)
+  20041201-1                          PASS
   20041210-1                          PASS
   20041212-1                          PASS
   20041213-2                          PASS
@@ -1121,7 +1121,7 @@
   pr44468                             PASS
   pr44555                             PASS
   pr44575                             PASS
-  pr44683                             FAIL (runtime)
+  pr44683                             PASS
   pr44828                             PASS
   pr44852                             PASS
   pr44858                             PASS
@@ -1268,7 +1268,7 @@
   pr63641                             PASS
   pr63659                             PASS
   pr63843                             PASS
-  pr64006                             FAIL (runtime)
+  pr64006                             PASS
   pr64242                             PASS
   pr64255                             PASS
   pr64260                             PASS
@@ -1342,7 +1342,7 @@
   pr71335                             PASS
   pr71494                             SKIP (nested-func)
   pr71550                             PASS
-  pr71554                             FAIL (runtime)
+  pr71554                             PASS
   pr71626-1                           SKIP (vector_size)
   pr71626-2                           SKIP (vector_size)
   pr71631                             PASS
@@ -1395,7 +1395,7 @@
   pr83362                             PASS
   pr83383                             PASS
   pr83477                             PASS
-  pr84169                             FAIL (runtime)
+  pr84169                             PASS
   pr84339                             PASS
   pr84478                             PASS
   pr84521                             PASS
@@ -1427,7 +1427,7 @@
   pr88904                             PASS
   pr89195                             PASS
   pr89369                             PASS
-  pr89434                             FAIL (runtime)
+  pr89434                             PASS
   pr89634                             PASS
   pr89826                             PASS
   pr90025                             PASS
@@ -1435,11 +1435,11 @@
   pr90348                             PASS
   pr90949                             PASS
   pr91137                             PASS
-  pr91450-1                           FAIL (runtime)
-  pr91450-2                           FAIL (runtime)
+  pr91450-1                           PASS
+  pr91450-2                           PASS
   pr91597                             PASS
   pr91632                             PASS
-  pr91635                             FAIL (runtime)
+  pr91635                             PASS
   pr92140                             PASS
   pr92618                             SKIP (vector_size)
   pr92904                             PASS
@@ -1499,11 +1499,11 @@
   pr103405                            SKIP (nested-func)
   pr103417                            PASS
   pr104196                            PASS
-  pr104604                            FAIL (runtime)
+  pr104604                            PASS
   pr104814                            PASS
   pr104839                            PASS
   pr105613                            SKIP (vector_size)
-  pr105984                            FAIL (runtime)
+  pr105984                            PASS
   pr106032                            PASS
   pr106523                            PASS
   pr107131                            PASS
@@ -1672,6 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1556/1569 passed (99%), 13 failed (0 compile/13 runtime), 102 skipped.
+Torture: 1568/1569 passed (99%), 1 failed (0 compile/1 runtime), 102 skipped.
 
-Runtime failures: 20020411-1 20041201-1 pr44683 pr64006 pr71554 pr84169 pr85582-3 pr89434 pr91450-1 pr91450-2 pr91635 pr104604 pr105984
+Runtime failures: pr85582-3
