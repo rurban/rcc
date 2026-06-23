@@ -1409,7 +1409,7 @@
   pr85529-2                           PASS
   pr85582-1                           PASS
   pr85582-2                           PASS
-  pr85582-3                           FAIL (runtime)
+  pr85582-3                           PASS
   pr85756                             PASS
   pr86231                             PASS
   pr86492                             PASS
@@ -1672,6 +1672,4 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1568/1569 passed (99%), 1 failed (0 compile/1 runtime), 102 skipped.
-
-Runtime failures: pr85582-3
+Torture: 1569/1569 passed (100%), 0 failed, 102 skipped.

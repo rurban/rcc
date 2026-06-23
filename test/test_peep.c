@@ -308,13 +308,14 @@ int main(void) {
     ADD(peep4_src,  "p4",  0);
     ADD(peep5_src,  "p5",  0);
 
-    /* Inline-asm: pattern 3 and pattern 4 nop delete dead code */
+    /* Inline-asm: text peephole removed (broke asm goto labels).
+     * Binary peephole only handles compiler-generated code, not inline asm. */
     ADD(peep1_asm_src,      "p1_asm",      0);
     ADD(peep1a_asm_src,     "p1a_asm",     0);
-    ADD(peep3_asm_src,      "p3_asm",      1);
+    ADD(peep3_asm_src,      "p3_asm",      0);
     ADD(peep4_asm_src,      "p4_asm",      0);
-    ADD(peep4_nop_asm_src,  "p4_nop_asm",  1);
-    ADD(peep5_asm_src,      "p5_asm",      1);
+    ADD(peep4_nop_asm_src,  "p4_nop_asm",  0);
+    ADD(peep5_asm_src,      "p5_asm",      0);
 
     int failed = 0;
     for (int i = 0; i < n; i++) {
