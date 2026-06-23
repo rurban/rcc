@@ -71,6 +71,7 @@
 #define IMAGE_SYM_CLASS_STATIC        3
 #define IMAGE_SYM_CLASS_WEAK_EXTERNAL 105
 #define IMAGE_WEAK_EXTERN_SEARCH_LIBRARY 1
+#define IMAGE_SYM_ABSOLUTE (-1)
 
 // Symbol type
 #define IMAGE_SYM_TYPE_FUNC           0x20
@@ -491,7 +492,10 @@ int coff_write(ObjFile *obj, const char *path) {
                             &def.long_name, &def.strtab_off);
             free(defname);
             def.value = 0;
-            def.section_number = 0;
+            // Matches GNU as: the default resolution symbol for an
+            // unresolved weak external is absolute value 0, not an
+            // undefined external (which would itself need resolving).
+            def.section_number = IMAGE_SYM_ABSOLUTE;
             def.type = 0;
             def.storage_class = IMAGE_SYM_CLASS_EXTERNAL;
             def.num_aux = 0;
