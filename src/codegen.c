@@ -8758,10 +8758,6 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
-            if (!opt_O0) {
-                emit_peephole_body(out);
-                olen = strlen(out);
-            }
             // Split on ';' for multi-instruction inline asm (e.g. "mov %0, #1; mov %1, #2")
             char *inst = out;
             while (*inst) {
@@ -8946,10 +8942,6 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
-            if (!opt_O0) {
-                emit_peephole_body(out);
-                olen = strlen(out);
-            }
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
