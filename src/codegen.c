@@ -12911,7 +12911,50 @@ struct ObjFile *codegen(Program *prog) {
                     continue;
                 }
 #endif
-                if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8)) {
+#ifdef _WIN32
+                // Win64: __int128 is passed by pointer (like large struct)
+                if (var->ty->kind == TY_INT128) {
+                    if (gp < max_gp) {
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 0)); // movq (greg[gp]), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 8)); // movq 8(greg[gp]), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                        gp++;
+                    } else {
+                        int stack_off2 = 48 + stack_param_index * 8;
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %rax
+                        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx (lo)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RCX); // movq %rcx, -off(%rbp)
+                        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx (hi)
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RCX); // movq %rcx, -(off-8)(%rbp)
+                        stack_param_index++;
+                    }
+                    continue;
+                }
+                // Win64: _Complex > 8 bytes passed by pointer like large struct
+                bool is_large_complex = is_complex(var->ty) && var->ty->size > 8;
+                if (is_large_complex && gp < max_gp) {
+                    // Complex > 8 in GP reg: copy pointee to local slot
+                    int c = ++rcc_label_count;
+                    x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]); // movq greg[gp], %r11
+                    x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                    cg_def_label(format(".L.param2.%d", c));
+                    x86_cmp_ri(cg_sec, 8, X86_R10, 0);
+                    size_t js = cg_sec->len;
+                    x86_jcc_rel32(cg_sec, X86_E, 0);
+                    asm_fixup_add(cg_sec, js, format(".L.param2_end.%d", c), 1);
+                    asm_movb_r11_r10_al(cg_sec, -1);
+                    asm_movb_al_rbp_r10(cg_sec, var->offset);
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1);
+                    size_t jp = cg_sec->len;
+                    x86_jmp_rel32(cg_sec, 0);
+                    asm_fixup_add(cg_sec, jp, format(".L.param2.%d", c), 0);
+                    cg_def_label(format(".L.param2_end.%d", c));
+                    gp++;
+                    continue;
+                }
+#endif
+                if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8)) {
                     int sz = var->ty->size <= 4 ? 4 : 8;
                     x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -var->offset), greg[gp]); // %s:
                     gp++;
@@ -12938,7 +12981,7 @@ struct ObjFile *codegen(Program *prog) {
                     gp++; // Win64: advance combined position counter
 #endif
                     xfp++;
-                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8 && gp < max_gp) {
+                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8 && gp < max_gp) {
                     int c = ++rcc_label_count;
                     x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]);
                     x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size);
@@ -12970,7 +13013,7 @@ struct ObjFile *codegen(Program *prog) {
                             x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0
                             x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movsd xmm0, -var->offset(%rbp)
                         }
-                    } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
+                    } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
                         int c = ++rcc_label_count;
                         x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size);
                         cg_def_label(format(".L.param2.%d", c));
