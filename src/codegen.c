@@ -11956,19 +11956,9 @@ struct ObjFile *codegen(Program *prog) {
             ? 1
             : 0;
 #ifdef _WIN32
-        __attribute__((unused)) char *param_regs64[] = {"%rcx", "%rdx", "%r8", "%r9"};
-        __attribute__((unused)) char *param_regs32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
-        __attribute__((unused)) char *param_regs16[] = {"%cx", "%dx", "%r8w", "%r9w"};
-        __attribute__((unused)) char *param_regs8[] = {"%cl", "%dl", "%r8b", "%r9b"};
-        __attribute__((unused)) char *param_xmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
         int max_param_regs = 4;
         X86Reg cg_x86_paramreg[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
 #else
-        __attribute__((unused)) char *param_regs64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-        __attribute__((unused)) char *param_regs32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
-        __attribute__((unused)) char *param_regs16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
-        __attribute__((unused)) char *param_regs8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
-        char *param_xmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"};
         X86Reg cg_x86_paramreg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
         int max_param_regs = 6;
         int max_param_xmm = 8;
@@ -12003,7 +11993,6 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param_index++;
                 }
             } else if (param_index < max_param_regs) {
-                __attribute__((unused)) X86Reg preg = win_gp_regs[param_index];
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
@@ -12013,16 +12002,16 @@ struct ObjFile *codegen(Program *prog) {
                     int c = ++rcc_label_count;
                     asm_mov_preg_r11(cg_sec, cg_x86_paramreg[param_index]); // movq preg, %r11
                     x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
-                    cg_def_label(format(".L.param.%d", c));
+                    cg_def_label(format(".L.pcopy.%d", c)); // .L.pcopy.%d:\n", c
                     x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
                     size_t jze1 = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, jze1, format(".L.param_end.%d", c), 0);
+                    asm_fixup_add(cg_sec, jze1, format(".L.pcopy_end.%d", c), 0);
                     asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
-                    asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
+                    asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10) !!
                     x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp1 = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, jmp1, format(".L.param.%d", c), 0);
-                    cg_def_label(format(".L.param_end.%d", c));
+                    asm_fixup_add(cg_sec, jmp1, format(".L.pcopy.%d", c), 0);
+                    cg_def_label(format(".L.pcopy_end.%d", c));
                 } else if (var->ty->kind == TY_INT128) {
                     // __int128 is passed by pointer (like a large struct) on Windows x64.
                     // param_regs64[param_index] holds a pointer; dereference it.
@@ -12073,8 +12062,9 @@ struct ObjFile *codegen(Program *prog) {
                     int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                         : var->ty->size <= 4                              ? 4
                                                                           : 8;
-                    asm_mov_rbp_tmpreg(cg_sec, stack_off, psz); // mov stack_off(%rbp), %rax
-                    asm_mov_tmpreg_rbp(cg_sec, var->offset, psz); // mov %rax, -(off)(%rbp)
+                    // tmpreg = sized %rax
+                    asm_mov_rbp_tmpreg(cg_sec, stack_off, psz); // mov stack_off(%rbp), tmpreg
+                    asm_mov_tmpreg_rbp(cg_sec, var->offset, psz); // mov tempreg, -(off)(%rbp)
                 }
                 stack_param_index++;
             }
@@ -12090,11 +12080,11 @@ struct ObjFile *codegen(Program *prog) {
                 } else {
                     int stack_off2 = 16 + stack_param_index * 8;
                     if (var->ty->size == 4) {
-                        asm_movss_rm_rbp(cg_sec, 0, stack_off2); // movss stack_off(%rbp), xmm0
-                        asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
+                        asm_movss_rm_rbp(cg_sec, 0, stack_off2); // movss off2(%rbp), xmm0
+                        asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off2)(%rbp)
                     } else {
-                        asm_movsd_rm_rbp(cg_sec, 0, stack_off2); // movsd stack_off(%rbp), xmm0
-                        asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd xmm0, -(off)(%rbp)
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off2); // movsd off2(%rbp), xmm0
+                        asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd xmm0, -(off2)(%rbp)
                     }
                     stack_param_index++;
                 }
@@ -12205,7 +12195,7 @@ struct ObjFile *codegen(Program *prog) {
                     }
                 }
             } else if (param_index < max_param_regs) {
-                __attribute__((unused)) X86Reg preg = lin_gp_regs[param_index];
+                // X86Reg preg = lin_gp_regs[param_index];
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
@@ -12213,16 +12203,16 @@ struct ObjFile *codegen(Program *prog) {
                     int c = ++rcc_label_count;
                     asm_mov_preg_r11(cg_sec, cg_x86_paramreg[param_index]); // movq preg, %r11
                     x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
-                    cg_def_label(format(".L.param.%d", c));
+                    cg_def_label(format(".L.pcopy.%d", c));
                     x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
                     size_t jze2 = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, jze2, format(".L.param_end.%d", c), 0);
+                    asm_fixup_add(cg_sec, jze2, format(".L.pcopy_end.%d", c), 0);
                     asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
                     asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
                     x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp2 = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, jmp2, format(".L.param.%d", c), 0);
-                    cg_def_label(format(".L.param_end.%d", c));
+                    asm_fixup_add(cg_sec, jmp2, format(".L.pcopy.%d", c), 0);
+                    cg_def_label(format(".L.pcopy_end.%d", c));
                 } else {
                     asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], psz, var->offset); // mov preg, -(off)(%rbp)
                 }
@@ -12266,7 +12256,8 @@ struct ObjFile *codegen(Program *prog) {
             va_reg_save_ofs = current_fn_stack_size + 96;
             va_gp_start = gp_count * 8;
             va_fp_start = va_fp * 16 + 32;
-            va_st_start = 48 + (gp_count > 4 ? (gp_count - 4) : 0) * 8;
+            va_st_start = 48 + stack_param_index * 8;
+            // va_st_start = 48 + (gp_count > 4 ? (gp_count - 4) : 0) * 8;
             switch (gp_count) {
             case 0: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
             case 1: asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs - 8); /* fallthrough */ /* movq %rdx, -%d(%rbp) */
@@ -12550,6 +12541,10 @@ struct ObjFile *codegen(Program *prog) {
                 } else if (var->ty->kind == TY_INT128) {
                     // int128: two consecutive GP registers
                     if (gp_param + 1 < 8) {
+                        /* ?? was: (no x16)
+                           printf("  str %s, [%s, #-%d]\n", gpreg[gp_param], FRAME_PTR, var->offset);
+                           printf("  str %s, [%s, #-%d]\n", gpreg[gp_param + 1], FRAME_PTR, var->offset - 8);
+                         */
                         arm64_sub_imm(cg_sec, 1, ARM64_X16, ARM64_X29, var->offset, 0);
                         arm64_str_uoff(cg_sec, 3, (Arm64Reg)gp_param, ARM64_X16, 0); // sub x16, x29, #offset; str x{gp_param}, [x16]
                         arm64_str_uoff(cg_sec, 3, (Arm64Reg)(gp_param + 1), ARM64_X16, 1); // str x{gp_param+1}, [x16, #8]
