@@ -2220,7 +2220,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
-        arg_sizes[i] = argv[i]->ty->size;
+        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
         if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
             arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
