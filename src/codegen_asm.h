@@ -11,6 +11,9 @@
 #else
 #include "x86_enc.h"
 #endif
+
+extern bool opt_O0;
+extern SecBuf *cg_sec;
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -404,12 +407,11 @@ typedef struct {
     bool is_store;
 } AsmInsn;
 
+static void asm_peep_try(void);
 #define ASM_HISTORY 4
 static AsmInsn asm_last[ASM_HISTORY];
 static int asm_last_idx = 0;
 static int asm_last_count = 0;
-static AsmInsn asm_prev_node_last;
-static bool asm_prev_node_valid = false;
 
 // for peep
 static void asm_record(AsmOp op, size_t offset, size_t count,
@@ -441,23 +443,100 @@ static void asm_record(AsmOp op, size_t offset, size_t count,
     rec->is_store = is_store;
     asm_last_idx = (asm_last_idx + 1) % ASM_HISTORY;
     if (asm_last_count < ASM_HISTORY) asm_last_count++;
+    if (!opt_O0) asm_peep_try();
 }
 
-static void asm_peep_save_prev(void) {
-    if (asm_last_count > 0) {
-        int prev = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
-        asm_prev_node_last = asm_last[prev];
-        asm_prev_node_valid = true;
-    } else {
-        asm_prev_node_valid = false;
+static AsmOp peep_pend_op = ASM_NONE;
+static AsmInsn peep_pend[2];
+static int peep_pend_n = 0;
+
+static void asm_peep_try(void) {
+    if (opt_O0 || peep_pend_op == ASM_NONE || asm_last_count < 2) return;
+    int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
+    int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
+    AsmInsn *cur = &asm_last[c0], *prv = &asm_last[c1];
+
+    // Pattern 3: JMP .L (pend); .L: (cur) -> delete JMP
+    if (peep_pend_op == ASM_JMP && cur->op == ASM_LABEL &&
+        cur->label && peep_pend[0].label && !strcmp(cur->label, peep_pend[0].label)) {
+        size_t off = peep_pend[0].offset, sz = peep_pend[0].count;
+        memmove(cg_sec->data + off, cg_sec->data + off + sz, cg_sec->len - off - sz);
+        cg_sec->len -= sz;
+        for (int j = 0; j < ASM_HISTORY; j++)
+            if (asm_last[j].offset > off) asm_last[j].offset -= sz;
+        peep_pend_op = ASM_NONE;
+        return;
     }
+
+    // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
+    if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
+        prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd) {
+        cg_sec->len = prv->offset;
+        x86_mov_rr(cg_sec, prv->size, cur->rd, prv->rs);
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+
+    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur)
+    if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
+        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd) {
+        cg_sec->len = peep_pend[0].offset;
+        x86_mov_ri(cg_sec, cur->size, cur->rd, peep_pend[0].imm);
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+
+    // Pattern 4: MOV_RI(pend) + ALU_RR(cur) -> ALU_RI or NOP
+    if (peep_pend_op == ASM_MOV_RI &&
+        (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_AND_RR ||
+         cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR) &&
+        cur->rs == peep_pend[0].rd) {
+        int64_t imm = peep_pend[0].imm;
+        if (imm == 0 && (cur->op == ASM_ADD_RR || cur->op == ASM_SUB_RR || cur->op == ASM_OR_RR || cur->op == ASM_XOR_RR)) {
+            size_t off = peep_pend[0].offset, end = cur->offset + cur->count;
+            memmove(cg_sec->data + off, cg_sec->data + end, cg_sec->len - end);
+            cg_sec->len -= (end - off);
+            for (int j = 0; j < ASM_HISTORY; j++)
+                if (asm_last[j].offset > off) asm_last[j].offset -= (end - off);
+        } else {
+            cg_sec->len = peep_pend[0].offset;
+            switch (cur->op) {
+            case ASM_ADD_RR: x86_add_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
+            case ASM_SUB_RR: x86_sub_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
+            case ASM_AND_RR: x86_and_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
+            case ASM_OR_RR: x86_or_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
+            case ASM_XOR_RR: x86_xor_ri(cg_sec, cur->size, cur->rd, (int32_t)imm); break;
+            default: break;
+            }
+            size_t ne = cg_sec->len, oe = cur->offset + cur->count;
+            memmove(cg_sec->data + ne, cg_sec->data + oe, cg_sec->len - oe);
+            cg_sec->len = ne + (cg_sec->len - oe);
+            for (int j = 0; j < ASM_HISTORY; j++)
+                if (asm_last[j].offset > peep_pend[0].offset) asm_last[j].offset -= (oe - ne);
+        }
+        peep_pend_op = ASM_NONE;
+        return;
+    }
+    peep_pend_op = ASM_NONE;
 }
 
 static void asm_peep_node_start(SecBuf *s) {
     (void)s;
-    asm_peep_save_prev();
+    peep_pend_op = ASM_NONE;
+    peep_pend_n = 0;
+    if (asm_last_count == 0) return;
+    int i0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
+    peep_pend[0] = asm_last[i0];
+    peep_pend_n = 1;
+    AsmOp op = peep_pend[0].op;
+    if (op == ASM_MOV_RR || op == ASM_MOV_RI) peep_pend_op = op;
+    else if (op == ASM_JMP_LABEL || op == ASM_JMP)
+        peep_pend_op = ASM_JMP;
 }
-static void asm_peep_node_end(SecBuf *s) { (void)s; }
+static void asm_peep_node_end(SecBuf *s) {
+    (void)s;
+    peep_pend_op = ASM_NONE;
+}
 
 // ============================================================================
 // MOV / data movement
