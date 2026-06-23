@@ -4839,7 +4839,7 @@ static VReg alloc_int128_addr(void) {
     VReg r = alloc_reg();
 #ifdef ARCH_ARM64
     if (slot <= 4095) {
-        asm_sub_imm(cg_sec, r, 8, FRAME_PTR);
+        asm_sub_reg_fp_imm(cg_sec, r, slot); // sub r, x29, #slot
     } else {
         int v = slot;
         asm_mov_imm(cg_sec, r, 8, v & 0xffff);
@@ -7349,7 +7349,7 @@ static VReg gen(Node *node) {
             int result_off = current_fn_stack_size + fn_struct_ret_off;
             int result = alloc_reg();
 #ifdef ARCH_ARM64
-            asm_sub_imm(cg_sec, result, 8, FRAME_PTR);
+            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
 #else
             asm_lea_rbp_reg(cg_sec, result, 8, result_off);
 #endif
@@ -9804,7 +9804,7 @@ static VReg gen(Node *node) {
         int result_off = current_fn_stack_size + fn_struct_ret_off;
         int result = alloc_reg();
 #ifdef ARCH_ARM64
-        asm_add_imm(cg_sec, result, 8, FRAME_PTR);
+        asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
 #else
         asm_lea_rbp_reg(cg_sec, result, 8, result_off);
 #endif
