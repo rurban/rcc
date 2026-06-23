@@ -9015,10 +9015,8 @@ static VReg gen(Node *node) {
         // arg is on the stack at rbp+48 + n_stack*8.
         VReg r = gen_addr(node->lhs); // va_list is char *, need its address to write
         {
-            int n_named = 0;
-            for (LVar *v = current_fn_def->params; v; v = v->param_next) n_named++;
-            int n_stack = (n_named > 4) ? (n_named - 4) : 0;
-            int va_first = (n_named < 4) ? (16 + n_named * 8) : (48 + n_stack * 8);
+            // Use va_gp_start (already includes hidden struct ret ptr) — matches codegen.c.main
+            int va_first = (va_gp_start < 32) ? (16 + va_gp_start) : va_st_start;
             // asm_lea_rbp negates offset, so pass -va_first to get +va_first
             asm_lea_rbp(cg_sec, X86_RDX, 8, -va_first); // leaq va_first(%rbp), %rdx
         }
