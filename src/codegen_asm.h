@@ -451,23 +451,43 @@ static AsmInsn peep_pend[2];
 static int peep_pend_n = 0;
 
 static void asm_peep_try(void) {
-    if (opt_O0 || peep_pend_op == ASM_NONE || asm_last_count < 2) return;
+    if (opt_O0 || asm_last_count < 2) return;
     int c0 = (asm_last_idx - 1 + ASM_HISTORY) % ASM_HISTORY;
     int c1 = (asm_last_idx - 2 + ASM_HISTORY) % ASM_HISTORY;
     AsmInsn *cur = &asm_last[c0], *prv = &asm_last[c1];
 
-    // Pattern 3: JMP .L (pend); .L: (cur) -> delete JMP
-    if (peep_pend_op == ASM_JMP && cur->op == ASM_LABEL &&
-        cur->label && peep_pend[0].label && !strcmp(cur->label, peep_pend[0].label)) {
-        size_t off = peep_pend[0].offset, sz = peep_pend[0].count;
-        memmove(cg_sec->data + off, cg_sec->data + off + sz, cg_sec->len - off - sz);
-        cg_sec->len -= sz;
-        for (int j = 0; j < ASM_HISTORY; j++)
-            if (asm_last[j].offset > off) asm_last[j].offset -= sz;
-        peep_pend_op = ASM_NONE;
-        return;
+    // Pattern 5: always check last 3 insns for LOAD + ALU + MOV chain
+    if (asm_last_count >= 3) {
+        int h0 = (asm_last_idx - 3 + ASM_HISTORY) % ASM_HISTORY;
+        AsmInsn *a0 = &asm_last[h0], *a1 = prv, *a2 = cur;
+        if ((a0->op == ASM_MOV_LOAD || a0->op == ASM_MOV_RRBP) &&
+            (a1->op >= ASM_ADD_RR && a1->op <= ASM_XOR_RR) &&
+            a2->op == ASM_MOV_RR &&
+            a1->rs == a2->rs && a0->rd == a1->rd && a0->rd == a2->rs &&
+            a2->rd != a0->rd) {
+            cg_sec->len = a0->offset;
+            if (a0->op == ASM_MOV_LOAD)
+                x86_mov_rm(cg_sec, a0->size, a2->rd, x86_mem(a0->rs, a0->off));
+            else
+                x86_mov_rr(cg_sec, a0->size, a2->rd, a0->rs);
+            switch (a1->op) {
+            case ASM_ADD_RR: x86_add_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
+            case ASM_SUB_RR: x86_sub_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
+            case ASM_AND_RR: x86_and_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
+            case ASM_OR_RR: x86_or_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
+            case ASM_XOR_RR: x86_xor_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
+            default: break;
+            }
+            size_t tail = a2->offset + a2->count;
+            memmove(cg_sec->data + cg_sec->len, cg_sec->data + tail,
+                    cg_sec->len - tail + a0->offset);
+            cg_sec->len -= (tail - cg_sec->len);
+            peep_pend_op = ASM_NONE;
+            return;
+        }
     }
 
+    if (peep_pend_op == ASM_NONE) return;
     // Pattern 1: MOV_RR(prv) + MOV_RR(cur) -> fold
     if (peep_pend_op == ASM_MOV_RR && cur->op == ASM_MOV_RR &&
         prv->op == ASM_MOV_RR && prv->rd == cur->rs && prv->rd != cur->rd) {

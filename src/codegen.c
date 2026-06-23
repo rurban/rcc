@@ -11326,13 +11326,13 @@ static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest)
     if (peep_mov_reg_mem(lines[li], r1, sizeof(r1), mem1, sizeof(mem1)) &&
         peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
         peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
-        !strcmp(r1, imm2) && !strcmp(imm2, r3) &&
-        is_reg(d3) && !is_reg(mem1)) {
+        !strcmp(r1, imm2) && !strcmp(r1, d3) &&
+        is_reg(r3) && !is_reg(mem1)) {
         int r1_pid = phys_reg_id(r1);
         if (r1_pid >= 0 && reg_live_in_text(rest, r1_pid))
             return 0;
-        lines[li] = format("  mov %s, %s", mem1, d3);
-        lines[lj] = format("  %s %s, %s", op2, r2, d3);
+        lines[li] = format("  mov %s, %s", mem1, r3);
+        lines[lj] = format("  %s %s, %s", op2, r2, r3);
         lines[lk][0] = '\0';
         return 1;
     }
