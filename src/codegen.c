@@ -12062,12 +12062,12 @@ struct ObjFile *codegen(Program *prog) {
                     x86_mov_rm(cg_sec, 8, X86_R11, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %r11
                     x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
                     cg_def_label(format(".L.pcopy.%d", c));
-                    asm_cmp_zero(cg_sec, 10, 8);
+                    x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
                     size_t jze3 = asm_jcc_label(cg_sec, X86_E);
                     asm_fixup_add(cg_sec, jze3, format(".L.pcopy_end.%d", c), 0);
                     asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
                     asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
-                    asm_dec(cg_sec, 10, 8);
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
                     size_t jmp3 = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, jmp3, format(".L.pcopy.%d", c), 0);
                     cg_def_label(format(".L.pcopy_end.%d", c));
