@@ -12541,13 +12541,12 @@ struct ObjFile *codegen(Program *prog) {
                 } else if (var->ty->kind == TY_INT128) {
                     // int128: two consecutive GP registers
                     if (gp_param + 1 < 8) {
-                        /* ?? was: (no x16)
+                        /* golden:
                            printf("  str %s, [%s, #-%d]\n", gpreg[gp_param], FRAME_PTR, var->offset);
                            printf("  str %s, [%s, #-%d]\n", gpreg[gp_param + 1], FRAME_PTR, var->offset - 8);
-                         */
-                        arm64_sub_imm(cg_sec, 1, ARM64_X16, ARM64_X29, var->offset, 0);
-                        arm64_str_uoff(cg_sec, 3, (Arm64Reg)gp_param, ARM64_X16, 0); // sub x16, x29, #offset; str x{gp_param}, [x16]
-                        arm64_str_uoff(cg_sec, 3, (Arm64Reg)(gp_param + 1), ARM64_X16, 1); // str x{gp_param+1}, [x16, #8]
+                           GNU as converts str x{n}, [x29, #-offset] to stur */
+                        arm64_stur(cg_sec, 1, (Arm64Reg)gp_param, ARM64_X29, -var->offset); // stur x{gp_param}, [x29, #-offset]
+                        arm64_stur(cg_sec, 1, (Arm64Reg)(gp_param + 1), ARM64_X29, -(var->offset - 8)); // stur x{gp_param+1}, [x29, #-(offset-8)]
                         gp_param += 2;
                     } else {
                         // int128 on stack: two 8-byte slots from caller's frame
@@ -12559,6 +12558,24 @@ struct ObjFile *codegen(Program *prog) {
                         stack_param += 2;
                     }
                 } else if (gp_param < 8) {
+                    if (is_complex(var->ty) && var->ty->size > 8) {
+                        // _Complex double (16 bytes): two consecutive GP registers
+                        if (gp_param + 1 < 8) {
+                            arm64_stur(cg_sec, 1, (Arm64Reg)gp_param, ARM64_X29, -var->offset); // stur x{gp_param}, [x29, #-offset]
+                            arm64_stur(cg_sec, 1, (Arm64Reg)(gp_param + 1), ARM64_X29, -(var->offset - 8)); // stur x{gp_param+1}, [x29, #-(offset-8)]
+                            gp_param += 2;
+                            continue;
+                        } else {
+                            // complex > 8 bytes on stack
+                            int spoff = 16 + stack_param * 8;
+                            arm64_ldr_uoff(cg_sec, 3, ARM64_X11, ARM64_X29, (uint32_t)(spoff / 8)); // ldr x11, [x29, #spoff]
+                            arm64_stur(cg_sec, 1, ARM64_X11, ARM64_X29, -var->offset); // stur x11, [x29, #-offset]
+                            arm64_ldr_uoff(cg_sec, 3, ARM64_X11, ARM64_X29, (uint32_t)((spoff + 8) / 8)); // ldr x11, [x29, #spoff+8]
+                            arm64_stur(cg_sec, 1, ARM64_X11, ARM64_X29, -(var->offset - 8)); // stur x11, [x29, #-(offset-8)]
+                            stack_param += 2;
+                            continue;
+                        }
+                    }
                     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
 
                         int c = ++rcc_label_count;
