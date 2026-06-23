@@ -5377,11 +5377,10 @@ int main(int argc, char **argv) {
         free(dir);
     }
 
-    rccflags = "-O0"; // TEMP: -O0 to bypass not-yet-complete peephole at -O1
+    rccflags = "-O1";
     bool run_tcc = false, run_units = false, run_torture = false;
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
-    rccflags = "-O0"; // TEMP: -O0 to bypass not-yet-complete peephole at -O1
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
