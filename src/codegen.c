@@ -248,10 +248,18 @@ __attribute__((unused)) static size_t asm_movss_rip_xmm(SecBuf *s, const char *l
     return s->len - off;
 }
 // mov sym@GOTPCREL(%rip), reg  — load GOT entry pointer (x86 only)
+// On COFF/PE there is no separate GOT cell for our weak-symbol scheme: an
+// unresolved weak external resolves directly to the absolute address 0 (see
+// coff_write.c), so the address must be computed with lea, not loaded with
+// mov (which would dereference whatever lands at that resolved address).
 static size_t asm_mov_got_rip_reg(SecBuf *s, int r, const char *label) {
     size_t off = s->len;
     X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+#ifdef _WIN32
+    x86_lea(s, 8, REG(r), m); // lea sym(%rip), reg
+#else
     x86_mov_rm(s, 8, REG(r), m); // mov sym@GOTPCREL(%rip), reg
+#endif
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0)
