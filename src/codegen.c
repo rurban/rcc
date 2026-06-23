@@ -10,7 +10,7 @@
 #include <time.h>
 
 static ObjFile *cg_obj;
-static SecBuf *cg_sec;
+SecBuf *cg_sec;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
 uint64_t time_peep_us = 0;
