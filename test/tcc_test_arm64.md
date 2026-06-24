@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 106
-- **Failed**: 14
-- **Pass Rate**: 88%
+- **Passed**: 108
+- **Failed**: 12
+- **Pass Rate**: 90%
 
 ## Detailed Results
 
@@ -61,7 +61,7 @@ Generated: June 2026
 | 30_hanoi                    | PASS         | Output matches                |
 | 31_args                     | PASS         | Output matches                |
 | 32_led                      | PASS         | Output matches                |
-| 33_ternary_op               | EXEC_FAIL    | non-zero exit                 |
+| 33_ternary_op               | PASS         | Output matches                |
 | 34_array_assignment         | PASS         | Output matches                |
 | 35_sizeof                   | PASS         | Output matches                |
 | 36_array_initialisers       | PASS         | Output matches                |
@@ -141,7 +141,7 @@ Generated: June 2026
 | 137_funcall_struct_args     | PASS         | Output matches                |
 | 138_arm64_encoding          | PASS         | Output matches                |
 | 140_arm64_extasm            | PASS         | Output matches                |
-| 142_int_conversion          | EXEC_FAIL    | non-zero exit                 |
+| 142_int_conversion          | PASS         | Output matches                |
 | 143_void_expr               | PASS         | Output matches                |
 | 144_tls                     | COMPILE_FAIL | rcc returned non-zero         |
 | 46_grep                     | PASS         | Output matches                |
