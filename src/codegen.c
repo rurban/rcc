@@ -11740,9 +11740,10 @@ struct ObjFile *codegen(Program *prog) {
                             secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]); // .set %s, %s
                         size_t rel_off = cg_sec->len;
                         secbuf_emit64le(cg_sec, 0); // .quad 0 (addend in reloc)
-                        int sidx = objfile_find_sym(cg_obj, rel->label);
+                        const char *rel_label = sym_name(rel->label);
+                        int sidx = objfile_find_sym(cg_obj, rel_label);
                         if (sidx < 0)
-                            sidx = objfile_add_sym(cg_obj, rel->label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+                            sidx = objfile_add_sym(cg_obj, rel_label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
 #ifdef ARCH_ARM64
                         objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
 #else
@@ -13139,7 +13140,7 @@ struct ObjFile *codegen(Program *prog) {
             if (item->kind == TL_FUNC && item->fn->is_destructor) {
                 (void)0 /* section directive */;
                 (void)0 /* directive: .p2align */;
-                cg_def_label(format("___GLOBAL_dtor_item->fn->name")); // ___GLOBAL_dtor_%s:
+                cg_def_label(format("___GLOBAL_dtor_%s", item->fn->name)); // ___GLOBAL_dtor_%s:
                 asm_stp_fp_lr(cg_sec);
                 asm_mov_fp_sp(cg_sec); // mov x29, sp
                 { // adrp x0, dtor_label@PAGE; add x0, x0, dtor_label@PAGEOFF
