@@ -442,7 +442,7 @@ static bool fn_uses_alloca;
 
 #ifdef ARCH_ARM64
 // Arm64: 12 allocatable GP registers
-// x0-x7: args/return, x8: indirect result, x9-x15: caller-saved,
+#define NUM_REGS 12
 // x16-x18: reserved, x19-x28: callee-saved, x29: fp, x30: lr, sp/xzr
 // We use x10-x15 (6 caller-saved) and x19-x24 (6 callee-saved) = 12 allocatable
 static char *reg64[] = {"x10", "x11", "x12", "x13", "x14", "x15", "x19", "x20", "x21", "x22", "x23", "x24"};
@@ -12432,7 +12432,7 @@ struct ObjFile *codegen(Program *prog) {
         int cs_off = (fn->is_variadic && va_save_size > 0) ? va_save_size + 16 : 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
-                arm64_str_uoff(cg_sec, 3, cg_arm_reg[j + 6], ARM64_SP, cs_off / 8); // str x{cs}, [sp, #cs_off]
+                arm64_str_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // str x{cs}, [sp, #cs_off]
                 cs_off += 8;
             }
         }
@@ -12686,7 +12686,7 @@ struct ObjFile *codegen(Program *prog) {
         cs_off = 16;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
-                arm64_ldr_uoff(cg_sec, 3, cg_arm_reg[j + 6], ARM64_SP, cs_off / 8); // ldr x{cs}, [sp, #cs_off]
+                arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // ldr x{cs}, [sp, #cs_off]
                 cs_off += 8;
             }
         }
