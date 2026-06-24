@@ -13015,14 +13015,18 @@ struct ObjFile *codegen(Program *prog) {
                             x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movsd xmm0, -var->offset(%rbp)
                         }
                     } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
+                        // Structs > 8 bytes (and 16-byte _Complex double) are passed
+                        // by pointer even on the stack; load the pointer and copy
+                        // the pointee into the local slot.
                         int c = ++rcc_label_count;
+                        x86_mov_rm(cg_sec, 8, X86_R11, x86_mem(X86_RBP, stack_off2)); // movq stack_off2(%rbp), %r11
                         x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size);
                         cg_def_label(format(".L.param2.%d", c));
                         x86_cmp_ri(cg_sec, 8, X86_R10, 0);
                         size_t js2 = cg_sec->len;
                         x86_jcc_rel32(cg_sec, X86_E, 0);
                         asm_fixup_add(cg_sec, js2, format(".L.param2_end.%d", c), 1);
-                        asm_movb_rbp_r10_al(cg_sec, stack_off2);
+                        asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
                         asm_movb_al_rbp_r10(cg_sec, var->offset);
                         x86_sub_ri(cg_sec, 8, X86_R10, 1);
                         size_t jp2 = cg_sec->len;

@@ -2,21 +2,21 @@
 
 **Platform**: Linux ARM64 (aarch64 cross)
 
-Generated: June 24 2026 11:21
+Generated: June 24 2026 12:24
 
 ## Overall Summary
 
 - **Total**: 2072
-- **Passed**: 1841
-- **Failed**: 124
+- **Passed**: 1844
+- **Failed**: 121
 - **Overall Pass Rate**: 88%
 
 ## TCC Compatibility Tests
 
 - **Total**: 120
-- **Passed**: 114
-- **Failed**: 6
-- **Pass Rate**: 95%
+- **Passed**: 117
+- **Failed**: 3
+- **Pass Rate**: 97%
 
 ## RCC Unit Tests
 
