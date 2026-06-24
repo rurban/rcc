@@ -3901,6 +3901,7 @@ typedef enum {
     SKIP_VECTOR_SIZE,
     SKIP_MODE,
     SKIP_MISSING_INCLUDE,
+    SKIP_C99_RUNTIME,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3916,6 +3917,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_MODE: return "attribute-mode";
     case SKIP_MISSING_INCLUDE: return "missing-include";
+    case SKIP_C99_RUNTIME: return "c99-runtime";
     default: return "unknown";
     }
 }
@@ -3944,6 +3946,11 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_VECTOR_SIZE;
     if (contains(content, "__attribute__((mode"))
         return SKIP_MODE;
+#ifdef _WIN32
+    // msvcrt.dll doesn't support C99 format specifiers like %hhd, %lld
+    if (contains(content, "dg-require-effective-target c99_runtime"))
+        return SKIP_C99_RUNTIME;
+#endif
     return SKIP_NONE;
 }
 
