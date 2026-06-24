@@ -1809,7 +1809,8 @@ static void asm_ldur_fp(SecBuf *s, VReg r, int off) {
 }
 
 static void asm_stur_phy(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int sf, int32_t off) {
-    if (sf == 0) arm64_sturb(s, rt, rn, off);
+    if (sf == 0)
+        arm64_sturb(s, rt, rn, off);
     else if (sf == 1)
         arm64_sturh(s, rt, rn, off);
     else if (sf == 2)

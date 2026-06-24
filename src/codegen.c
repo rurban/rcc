@@ -12558,11 +12558,12 @@ struct ObjFile *codegen(Program *prog) {
                         stack_param += 2;
                     }
                 } else if (gp_param < 8) {
+                    int sf = var->ty->size <= 4 ? 0 : 1; // word or dword
                     if (is_complex(var->ty) && var->ty->size > 8) {
                         // _Complex double (16 bytes): two consecutive GP registers
                         if (gp_param + 1 < 8) {
-                            arm64_stur(cg_sec, 1, (Arm64Reg)gp_param, ARM64_X29, -var->offset); // stur x{gp_param}, [x29, #-offset]
-                            arm64_stur(cg_sec, 1, (Arm64Reg)(gp_param + 1), ARM64_X29, -(var->offset - 8)); // stur x{gp_param+1}, [x29, #-(offset-8)]
+                            arm64_stur(cg_sec, sf, (Arm64Reg)gp_param, ARM64_X29, -var->offset); // stur x{gp_param}, [x29, #-offset]
+                            arm64_stur(cg_sec, sf, (Arm64Reg)(gp_param + 1), ARM64_X29, -(var->offset - 8)); // stur x{gp_param+1}, [x29, #-(offset-8)]
                             gp_param += 2;
                             continue;
                         } else {
