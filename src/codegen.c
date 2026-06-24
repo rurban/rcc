@@ -12768,7 +12768,18 @@ struct ObjFile *codegen(Program *prog) {
             if (callee_mask & (1 << j))
                 asm_push(cg_sec, REG(j + 2)); // push rREG(j + 2)
         }
-        asm_sub_rsp_imm(cg_sec, sub_amount); // subq $sub_amount, %rsp
+#ifdef _WIN32
+        // Windows requires probing the stack one page at a time when growing
+        // it by more than a page: a single large `sub %rsp` can jump over the
+        // guard page straight into unmapped memory. mingw-w64 and MSVC call
+        // ___chkstk_ms to touch each page in turn.
+        if (sub_amount >= 4096) {
+            x86_mov_ri(cg_sec, 4, X86_RAX, sub_amount); // movl $sub_amount, %eax
+            emit_direct_call("___chkstk_ms"); // call ___chkstk_ms
+            x86_sub_rr(cg_sec, 8, X86_RSP, X86_RAX); // subq %rax, %rsp
+        } else
+#endif
+            asm_sub_rsp_imm(cg_sec, sub_amount); // subq $sub_amount, %rsp
 
         // Save variadic argument registers to the reg_save_area
         // (must happen before param saves, which may clobber xmm0 via cvtsd2ss)
