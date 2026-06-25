@@ -70,6 +70,9 @@
 #define NO_SECT 0
 #define REFERENCE_FLAG_UNDEFINED_NON_LAZY 0
 #define REFERENCE_FLAG_UNDEFINED_LAZY 1
+// n_desc flags
+#define N_WEAK_REF 0x0040 // undefined symbol is a weak reference (may be missing)
+#define N_WEAK_DEF 0x0080 // defined symbol is a weak (coalesced) definition
 
 // ---------------------------------------------------------------------------
 // Write helpers (little-endian)
@@ -233,7 +236,8 @@ int macho_write(ObjFile *obj, const char *path) {
             : (os->section == SEC_BSS)                                      ? 3
             : (os->section == SEC_RODATA)                                   ? 4
                                                                             : NO_SECT;
-        n->desc = 0;
+        // A weak (coalesced) definition carries N_WEAK_DEF.
+        n->desc = (os->bind == SB_WEAK) ? (uint16_t)N_WEAK_DEF : 0;
         n->value = os->offset;
     }
     int nextdefsym = nsyms - iextdefsym;
@@ -249,6 +253,11 @@ int macho_write(ObjFile *obj, const char *path) {
         n->type = N_UNDF | N_EXT;
         n->sect = NO_SECT;
         n->desc = (uint16_t)REFERENCE_FLAG_UNDEFINED_NON_LAZY;
+        // A weak undefined reference (__attribute__((weak)) prototype that is
+        // never defined) must carry N_WEAK_REF so dyld resolves it to 0 instead
+        // of failing with "symbol not found in flat namespace".
+        if (os->bind == SB_WEAK)
+            n->desc |= (uint16_t)N_WEAK_REF;
         n->value = 0;
     }
     int nundefsym = nsyms - iundefsym;

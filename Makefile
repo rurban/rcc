@@ -59,8 +59,6 @@ MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
 SRCS += src/macho_write.c src/arm64_enc.c
-DARWIN_O = lib/darwin.dylib
-TARGET_DEPS += $(DARWIN_O)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 SRCS += src/coff_write.c src/x86_enc.c
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
@@ -132,11 +130,17 @@ DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 
 ifneq ($(findstring apple,$(MACHINE)),)
+# The dyld-interpose runtime shim (on_exit/exit handling) needs a real Apple
+# toolchain (-arch/-dynamiclib/-install_name) to build, so only require it
+# when actually running on a Darwin host. A Linux host cross-building with
+# MACHINE=*apple* (used for compile-only Mach-O codegen testing, since we
+# can't execute Mach-O binaries on Linux) must skip it.
+ifeq ($(shell uname -s),Darwin)
 DARWIN_O = lib/rcc_darwin.dylib
 LDFLAGS += -Wl,-rpath,@executable_path/lib
 OBJS += $(DARWIN_O)
+endif
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
-TARGET_DEPS += $(DARWIN_O)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
 OBJS += $(MINGW_O)
