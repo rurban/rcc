@@ -165,6 +165,62 @@ static void cg_weak_declare(const char *name) {
         cg_obj->syms[sidx].bind = SB_WEAK;
 }
 
+#ifdef _WIN32
+// Win64 SEH unwind recording. Mirrors the .seh_* directives the golden
+// codegen.c.main emitted (.seh_proc/.seh_pushreg/.seh_stackalloc/
+// .seh_endprologue/.seh_endproc); coff_write turns the captured entries into
+// .pdata/.xdata. The X86Reg enum value equals the Win64 unwind register
+// number (RBP=5, RBX=3, R12..R15=12..15, RSI=6), so it is used directly.
+static UnwindEntry *cg_uw; // current function's unwind entry (NULL when inactive)
+static uint32_t cg_uw_start; // .text offset of the current function start
+
+static void uw_begin(void) { // .seh_proc
+    if (cg_dry_run || !cg_obj) {
+        cg_uw = NULL;
+        return;
+    }
+    cg_uw = objfile_add_unwind(cg_obj);
+    cg_uw_start = (uint32_t)cg_sec->len;
+    cg_uw->func_start = cg_uw_start;
+}
+static void uw_pushreg(int reg) { // .seh_pushreg
+    if (!cg_uw) return;
+    UnwindCode *c = &cg_uw->codes[cg_uw->code_count++];
+    c->code_offset = (uint8_t)((uint32_t)cg_sec->len - cg_uw_start);
+    c->op = UWOP_PUSH_NONVOL;
+    c->info = (uint8_t)reg;
+}
+static void uw_stackalloc(int size) { // .seh_stackalloc
+    if (!cg_uw) return;
+    UnwindCode *c = &cg_uw->codes[cg_uw->code_count++];
+    c->code_offset = (uint8_t)((uint32_t)cg_sec->len - cg_uw_start);
+    if (size <= 128) {
+        c->op = UWOP_ALLOC_SMALL;
+        c->info = (uint8_t)(size / 8 - 1);
+    } else if (size <= 8 * 0xffff) {
+        c->op = UWOP_ALLOC_LARGE;
+        c->info = 0;
+        c->extra[0] = (uint16_t)(size / 8);
+        c->extra_count = 1;
+    } else {
+        c->op = UWOP_ALLOC_LARGE;
+        c->info = 1;
+        c->extra[0] = (uint16_t)(size & 0xffff);
+        c->extra[1] = (uint16_t)((uint32_t)size >> 16);
+        c->extra_count = 2;
+    }
+}
+static void uw_endprologue(void) { // .seh_endprologue
+    if (!cg_uw) return;
+    cg_uw->prolog_size = (uint8_t)((uint32_t)cg_sec->len - cg_uw_start);
+}
+static void uw_endproc(void) { // .seh_endproc
+    if (!cg_uw) return;
+    cg_uw->func_end = (uint32_t)cg_sec->len;
+    cg_uw = NULL;
+}
+#endif
+
 #if defined(__APPLE__) && defined(ARCH_ARM64)
 static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
     size_t off = asm_jmp_label(s);
@@ -12766,13 +12822,23 @@ struct ObjFile *codegen(Program *prog) {
         } else {
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
         }
+#ifdef _WIN32
+        uw_begin(); // .seh_proc
+#endif
         asm_push(cg_sec, X86_RBP); // push rX86_RBP
+#ifdef _WIN32
+        uw_pushreg(X86_RBP); // .seh_pushreg %rbp
+#endif
         asm_mov_rsp_rbp(cg_sec); // movq %rsp, %rbp
 
         // Only push callee-saved registers that were actually used
         for (int j = 0; j < callee_count; j++) {
-            if (callee_mask & (1 << j))
+            if (callee_mask & (1 << j)) {
                 asm_push(cg_sec, REG(j + 2)); // push rREG(j + 2)
+#ifdef _WIN32
+                uw_pushreg(REG(j + 2)); // .seh_pushreg %s
+#endif
+            }
         }
 #ifdef _WIN32
         // Windows requires probing the stack one page at a time when growing
@@ -12786,6 +12852,10 @@ struct ObjFile *codegen(Program *prog) {
         } else
 #endif
             asm_sub_rsp_imm(cg_sec, sub_amount); // subq $sub_amount, %rsp
+#ifdef _WIN32
+        uw_stackalloc(sub_amount); // .seh_stackalloc sub_amount
+        uw_endprologue(); // .seh_endprologue
+#endif
 
         // Save variadic argument registers to the reg_save_area
         // (must happen before param saves, which may clobber xmm0 via cvtsd2ss)
@@ -13128,6 +13198,9 @@ struct ObjFile *codegen(Program *prog) {
         }
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
+#ifdef _WIN32
+        uw_endproc(); // .seh_endproc
+#endif
 #endif
     }
     // Emit constructor/destructor entries
