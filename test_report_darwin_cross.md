@@ -2,41 +2,36 @@
 
 **Platform**: macOS ARM64 (darwin cross, compile+link only)
 
-Generated: June 10 2026 16:31
+**Compiler**: /home/rurban/Software/rcc-work/darwin-cross.sh
+
+Generated: June 25 2026 20:25
 
 ## Overall Summary
 
-- **Total**: 2026
-- **Passed**: 1674
-- **Failed**: 237
-- **Overall Pass Rate**: 82%
+- **Total**: 1837
+- **Passed**: 1727
+- **Failed**: 3
+- **Overall Pass Rate**: 94%
 
-## TCC Compatibility Tests + Unit tests
+## TCC Compatibility Tests
 
 - **Total**: 120
-- **Passed**: 120
+- **Passed**: 119
+- **Failed**: 1
+- **Pass Rate**: 99%
+
+## RCC Unit Tests
+
+- **Total**: 46
+- **Passed**: 41
 - **Failed**: 0
-- **Pass Rate**: 100%
-
-## c-testsuite
-
-- **Total**: 220
-- **Passed**: 0
-- **Failed**: 220
-- **Pass Rate**: 0%
-
-## NCC Compliance Tests (vs GCC)
-
-- **Total**: 15
-- **Passed**: 0
-- **Failed**: 15
-- **Pass Rate**: 0%
+- **Pass Rate**: 89%
 
 ## GCC Torture Tests
 
 - **Total**: 1671
-- **Passed**: 1554
+- **Passed**: 1567
 - **Failed**: 2
-- **Skipped**: 115
+- **Skipped**: 102
 - **Fail Compile**: 2
 - **Pass Rate (excl. skip)**: 99%

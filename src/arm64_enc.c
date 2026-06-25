@@ -23,7 +23,6 @@ static bool try_encode_logic_imm(int sf, uint64_t val, int *N_out, int *immr_out
     // For 32-bit ops, only the lower 32 bits matter per ARM64 W-register semantics
     if (!sf) val &= 0xFFFFFFFFull;
     if (val == 0 || val == ~0ull) return false;
-    int max_e = sf ? 64 : 32;
     int len;
     uint64_t mask;
     // Try each rotation length (2,4,8,16,32,64)
