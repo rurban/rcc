@@ -221,41 +221,6 @@ static void uw_endproc(void) { // .seh_endproc
 }
 #endif
 
-#if defined(__APPLE__) && defined(ARCH_ARM64)
-static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
-    size_t off = asm_jmp_label(s);
-    if (!cg_dry_run) {
-        int sidx = objfile_find_sym(cg_obj, label);
-        if (sidx < 0)
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
-        objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_JUMP26, 0);
-    }
-    asm_fixup_add(s, off, label, 0);
-    return off;
-}
-static size_t cg_emit_jcc_reloc(SecBuf *s, Arm64Cond cond, const char *label) {
-    size_t off = asm_jcc_label(s, cond);
-    if (!cg_dry_run) {
-        int sidx = objfile_find_sym(cg_obj, label);
-        if (sidx < 0)
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_LOCAL, ST_FUNC);
-        objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_JUMP26, 0);
-    }
-    asm_fixup_add(s, off, label, 1);
-    return off;
-}
-#elif defined(ARCH_ARM64)
-static size_t cg_emit_jmp_reloc(SecBuf *s, const char *label) {
-    size_t off = asm_jmp_label(s);
-    asm_fixup_add(s, off, label, 0);
-    return off;
-}
-static size_t cg_emit_jcc_reloc(SecBuf *s, Arm64Cond cond, const char *label) {
-    size_t off = asm_jcc_label(s, cond);
-    asm_fixup_add(s, off, label, 1);
-    return off;
-}
-#endif
 
 #ifndef ARCH_ARM64
 static size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
@@ -277,21 +242,6 @@ static size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
 static size_t asm_movsd_rip_xmm(SecBuf *s, const char *label) {
     size_t off = s->len;
     secbuf_emit32le(s, 0x05100ff2); // f2 0f 10 05
-    secbuf_emit32le(s, 0); // placeholder disp32
-    if (!cg_dry_run) {
-        int sidx = objfile_find_sym(cg_obj, label);
-        if (sidx < 0) {
-            bool il = label[0] == '.';
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
-        }
-        objfile_add_reloc(cg_obj, SEC_TEXT, off + 4, sidx, R_X86_64_PC32, -4);
-    }
-    return s->len - off;
-}
-// movss .Llabel(%rip), %xmm0 — 8 bytes: f3 0f 10 05 <disp32>
-__attribute__((unused)) static size_t asm_movss_rip_xmm(SecBuf *s, const char *label) {
-    size_t off = s->len;
-    secbuf_emit32le(s, 0x05100ff3); // f3 0f 10 05
     secbuf_emit32le(s, 0); // placeholder disp32
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
@@ -381,10 +331,10 @@ static void cg_inline_fixup_cb(size_t patch_off, const char *label, void *ctx) {
     asm_fixup_ht_add(patch_off - 1, dup, 0);
 }
 
-// Bridge for the remaining printf("  <asm line>\n", ...)-based codegen: assembles
-// the formatted line directly into cg_obj->text via assemble_inline(), instead of
-// writing assembly text to a stream. Local label definitions ("name:") go through
-// cg_def_label so they integrate with the same fixup table as the asm_*() wrappers.
+// Bridge for the remaining printf("  <asm line>\n", ...)-based codegen (x86 only):
+// assembles the formatted line directly into cg_obj->text via assemble_inline().
+// ARM64 uses direct asm_*() wrappers exclusively.
+#ifndef ARCH_ARM64
 static void cg_emit(const char *fmt, ...) {
     if (cg_dry_run) return;
     char buf[512];
@@ -414,6 +364,7 @@ static void cg_emit(const char *fmt, ...) {
     assemble_inline(cg_obj, p, cg_inline_fixup_cb, NULL);
 }
 #define printf(...) cg_emit(__VA_ARGS__)
+#endif /* !ARCH_ARM64 */
 
 static uint64_t cg_now_us(void) {
     struct timespec ts;
@@ -701,9 +652,7 @@ static int alloc_int128_slot(void);
 static VReg alloc_int128_addr(void);
 static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
-__attribute__((unused)) static void gen_int128_nonzero(VReg addr, VReg result);
 static VReg gen_int128(Node *node);
-static void emit_peephole_body(char *body_text);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -1493,13 +1442,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             if (addr) {
                 VReg r = gen(addr);
 #ifdef ARCH_ARM64
-                // prfm: pld/pst + l1/l2/l3 + keep/strm
-                const char *hint = "pldl1keep";
-                if (rw == 1 && locality == 0) hint = "pstl1strm";
-                else if (rw == 1)
-                    hint = "pstl1keep";
-                else if (locality == 0)
-                    hint = "pldl1strm";
                 {
                     // prfm: pldl1keep=0, pldl1strm=1, pstl1keep=9, pstl1strm=13
                     int prfop = 0; // pldl1keep
@@ -1741,11 +1683,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             int ra = gen(arga);
             int rb = gen(argb);
             int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
-            // Result type determines overflow check signedness and store width
-            int res_sz = sz;
+            // Result type determines overflow check signedness
             bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
             if (argres && argres->ty && argres->ty->kind == TY_PTR && argres->ty->base) {
-                res_sz = argres->ty->base->size > 4 ? 8 : 4;
                 res_unsigned = argres->ty->base->is_unsigned;
             }
             int r_result = alloc_reg();
@@ -2217,7 +2157,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         VReg ra = gen(node->args);
         // Round up to 16 bytes and adjust sp
         asm_add_imm(cg_sec, ra, 8, 15); // add ra, ra, #15
-        asm_and_imm(cg_sec, ra, 8, (uint64_t)-16); // and ra, ra, #-16
+        asm_and_imm(cg_sec, ra, 8, -16); // and ra, ra, #-16
         asm_sub_sp_sp_reg(cg_sec, REG(ra)); // sub sp, sp, ra
         asm_mov_reg_sp(cg_sec, REG(ra)); // mov ra, sp
         // Save current sp/ptr to the alloca var slot
@@ -3277,43 +3217,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #endif
 }
 
-// Map any register name to a physical register ID (for peephole optimization)
-static int phys_reg_id(const char *s) {
-    if (s[0] == '%') s++;
-#ifndef ARCH_ARM64
-    if (!strncmp(s, "r10", 3)) return 10;
-    if (!strncmp(s, "r11", 3)) return 11;
-    if (!strncmp(s, "r12", 3)) return 12;
-    if (!strncmp(s, "r13", 3)) return 13;
-    if (!strncmp(s, "r14", 3)) return 14;
-    if (!strncmp(s, "r15", 3)) return 15;
-    if (!strncmp(s, "rax", 3) || !strncmp(s, "eax", 3) || !strcmp(s, "al") || !strcmp(s, "ax")) return 0;
-    if (!strncmp(s, "rcx", 3) || !strncmp(s, "ecx", 3) || !strcmp(s, "cl") || !strcmp(s, "cx")) return 1;
-    if (!strncmp(s, "rdx", 3) || !strncmp(s, "edx", 3) || !strcmp(s, "dl") || !strcmp(s, "dx")) return 2;
-    if (!strncmp(s, "rbx", 3) || !strncmp(s, "ebx", 3) || !strcmp(s, "bl") || !strcmp(s, "bx")) return 3;
-    if (!strncmp(s, "rsp", 3) || !strncmp(s, "esp", 3)) return 4;
-    if (!strncmp(s, "rbp", 3) || !strncmp(s, "ebp", 3)) return 5;
-    if (!strncmp(s, "rsi", 3) || !strncmp(s, "esi", 3) || !strcmp(s, "sil") || !strcmp(s, "si")) return 6;
-    if (!strncmp(s, "r8", 2) && (s[2] == '\0' || s[2] == 'd' || s[2] == 'w' || s[2] == 'b')) return 8;
-    if (!strncmp(s, "r9", 2) && (s[2] == '\0' || s[2] == 'd' || s[2] == 'w' || s[2] == 'b')) return 9;
-#else
-    if ((s[0] == 'x' || s[0] == 'w') && s[1] >= '0' && s[1] <= '9') {
-        int n = s[1] - '0';
-        if (s[2] >= '0' && s[2] <= '9') n = n * 10 + (s[2] - '0');
-        if (n >= 0 && n <= 30 && (s[2] == '\0' || (s[2] >= '0' && s[2] <= '9' && s[3] == '\0')))
-            return n;
-    }
-    if (!strcmp(s, "xzr") || !strcmp(s, "wzr")) return 31;
-#endif
-    return -1;
-}
-
-#ifndef ARCH_ARM64
-static int same_phys(const char *a, const char *b) {
-    int ia = phys_reg_id(a), ib = phys_reg_id(b);
-    return ia >= 0 && ia == ib;
-}
-#endif
 
 static int add_float_literal(double val, int size) {
     FloatLit *fl = arena_alloc(sizeof(FloatLit));
@@ -3750,8 +3653,10 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
 // e.g. a smaller hidden-retbuf result being widened in place) is safe even
 // when to->size > from->size.
 static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
-    int fsz = from->base->size, tsz = to->base->size;
+    (void)to; // used via to->base->size in ARCH_ARM64 path
+    int fsz = from->base->size;
 #ifdef ARCH_ARM64
+    int tsz = to->base->size;
     if (fsz == 4) {
         asm_ldr_fp(cg_sec, ARM64_S0, src, 4); // ldr s0, [x{src}]
         arm64_ldr_fp(cg_sec, 2, (Arm64Reg)(ARM64_S0 + 1), REG(src), 4); // ldr s1, [x{src}, #4]
@@ -3915,7 +3820,7 @@ static void emit_store(Type *ty, VReg src, VReg base, int off) {
     if (off == 0) {
         asm_str_reg_off(cg_sec, src, base, sz, 0); // str {src}, [base]
     } else if (off > -256 && off < 256) {
-        asm_stur_sz(cg_sec, src, base, sz, off); // stur {src}, [base, #off]
+        asm_stur_sz(cg_sec, src, REG(base), sz, off); // stur {src}, [base, #off]
     } else {
         VReg ta = alloc_reg();
         if (off < 0) {
@@ -4812,17 +4717,8 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         }
         free_reg(r_lhs);
 
-#ifdef ARCH_ARM64
-        const char *jmp = "b";
-        if (cond->kind == ND_EQ)
-            jmp = "b.ne";
-        else if (cond->kind == ND_NE)
-            jmp = "b.eq";
-        else if (cond->kind == ND_LT)
-            jmp = use_unsigned_cmp(cond) ? "b.hs" : "b.ge";
-        else if (cond->kind == ND_LE)
-            jmp = use_unsigned_cmp(cond) ? "b.hi" : "b.gt";
-#else
+        (void)cond; // used in branch emission below
+#ifndef ARCH_ARM64
         __attribute__((unused)) char *jmp = "";
         if (cond->kind == ND_EQ)
             jmp = "jne";
@@ -4909,7 +4805,7 @@ static VReg alloc_int128_addr(void) {
         v >>= 16;
         int s = 16;
         while (v) {
-            asm_movk(cg_sec, r, 1, (uint16_t)(v & 0xffff), s);
+            asm_movk(cg_sec, REG(r), 1, (uint16_t)(v & 0xffff), s);
             v >>= 16;
             s += 16;
         }
@@ -4963,26 +4859,6 @@ static VReg gen_to_int128(Node *operand) {
     return widen_to_int128(val, ty->is_unsigned);
 }
 
-// Check whether an int128 value at addr is nonzero; result in `result` reg (0 or 1).
-__attribute__((unused)) static void gen_int128_nonzero(VReg addr, VReg result) {
-#ifdef ARCH_ARM64
-    int t = alloc_reg();
-    asm_ldr_reg_off(cg_sec, t, addr, 8, 0);
-    asm_ldr_x16_uoff(cg_sec, addr, 1); // ldr x16, [%s, #8]
-    asm_orr_x16(cg_sec, t, t); // orr %s, %s, x16
-    asm_cmp_zero(cg_sec, t, 8);
-    asm_cset(cg_sec, result, ARM64_NE);
-    free_reg(t);
-#else
-    int t = alloc_reg();
-    asm_mov_mem_rax(cg_sec, addr);
-    asm_mov_mem8_reg(cg_sec, t, addr);
-    asm_or_reg_reg(cg_sec, 0, t, 8);
-    asm_setcc(cg_sec, X86_RAX, X86_NE);
-    asm_movzx_phys(cg_sec, result, X86_RAX, 4, 1);
-    free_reg(t);
-#endif
-}
 
 static VReg gen_int128(Node *node) {
     if (!node) return R_NONE;
@@ -5321,6 +5197,7 @@ static VReg gen_int128(Node *node) {
         bool is_unsigned = node->ty && node->ty->is_unsigned;
         char *fn = (char *)(is_unsigned ? (is_mod ? "__umodti3" : "__udivti3")
                                         : (is_mod ? "__modti3" : "__divti3"));
+        (void)fn; // used in x86 path
         int lhs = gen_to_int128(node->lhs);
         int rhs = gen_to_int128(node->rhs);
         int dst = alloc_int128_addr();
@@ -5384,12 +5261,12 @@ static VReg gen_int128(Node *node) {
                     arm64_lsl_imm(cg_sec, 1, ARM64_X16, REG(t2), shift);
                     arm64_lsr_imm(cg_sec, 1, ARM64_X17, REG(t1), 64 - shift);
                     asm_orr_x16_x16_x17(cg_sec); // orr %s, x16, x17
-                    asm_shl_imm(cg_sec, t1, 8, (uint8_t)(reg64[t1]));
+                    asm_shl_imm(cg_sec, t1, 8, (uint8_t)shift); // shl t1, #shift
                 } else if (shift == 64) {
                     asm_mov_reg_reg(cg_sec, t2, t1, 8);
                     asm_mov_xzr_phy(cg_sec, REG(t1)); // mov %s, xzr
                 } else {
-                    asm_shl_imm(cg_sec, t2, 8, (uint8_t)(reg64[t1]));
+                    asm_shl_imm(cg_sec, t2, 8, (uint8_t)shift); // shl t2, #shift
                     asm_mov_xzr_phy(cg_sec, REG(t1)); // mov %s, xzr
                 }
             } else {
@@ -5420,8 +5297,7 @@ static VReg gen_int128(Node *node) {
         } else {
             // Variable shift: call libgcc
             int r_shift = gen(node->rhs);
-            const char *fn = is_shl ? "__ashlti3"
-                                    : (is_unsigned ? "__lshrti3" : "__ashrti3");
+            (void)(is_shl || is_unsigned); // used in x86 path
             arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(lhs), 0); // ldr x0, [lhs]
             arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(lhs), 1); // ldr x1, [lhs, #8]
             arm64_orr_reg(cg_sec, 1, ARM64_X2, ARM64_XZR, REG(r_shift), ARM64_LSL, 0); // mov x2, r_shift
@@ -7278,7 +7154,6 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
             asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
             {
-                int sf = (to->size == 8) ? 1 : 0;
                 if (to->is_unsigned)
                     asm_fcvtzu(cg_sec, r, to->size); // fcvtzu w/x{r}, d0
                 else
@@ -9090,28 +8965,6 @@ static VReg gen(Node *node) {
         }
         x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 0), X86_RDX); // movq %rdx, (%r)
 #else
-#ifdef _WIN32
-        VReg r = gen_addr(node->lhs); // va_list is char *, need its address to write
-        // Windows x64: va_list is char *. Point to first variadic arg.
-        // If named params use < 4 reg slots, the first variadic arg is in the
-        // shadow space (rbp+16 for slot 0, +24 for slot 1, etc.).
-        // If all 4 reg slots are consumed by named params, the first variadic
-        // arg is on the stack starting at va_st_start (48 + k*8 where k is
-        // the number of stack-passed named params).
-        {
-            // Count named params directly (bypasses broken pass-1 stack_param_index)
-            int n_named = 0;
-            for (LVar *v = current_fn_def->params; v; v = v->param_next)
-                n_named++;
-            int n_stack = (n_named > 4) ? (n_named - 4) : 0;
-            int va_first = (n_named < 4) ? (16 + n_named * 8) : (48 + n_stack * 8);
-            // Also try: just use va_st_start which we set in pass 2
-            // but if that's still 48, compute from scratch
-            if (va_st_start > 48) va_first = va_st_start;
-            asm_lea_signed_rbp(cg_sec, X86_RDX, 8, va_first); // leaq va_first(%rbp), %rdx
-        }
-        x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 0), X86_RDX); // movq %rdx, (%r)
-#else
         VReg r = gen(node->lhs); // va_list is array-of-struct, decays to pointer
         x86_mov_mi(cg_sec, 4, x86_mem(REG(r), 0), va_gp_start); // movl $va_gp_start, (r)
         x86_mov_mi(cg_sec, 4, x86_mem(REG(r), 4), va_fp_start); // movl $va_fp_start, 4(r)
@@ -9119,7 +8972,6 @@ static VReg gen(Node *node) {
         x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 8), X86_RDX); // movq %rdx, 8(r)
         asm_lea_rbp(cg_sec, X86_RDX, 8, va_reg_save_ofs); // leaq -va_reg_save_ofs(%rbp), %rdx
         x86_mov_mr(cg_sec, 8, x86_mem(REG(r), 16), X86_RDX); // movq %rdx, 16(r)
-#endif
 #endif
         free_reg(r);
         return -1;
@@ -9426,8 +9278,6 @@ static VReg gen(Node *node) {
         VReg r = alloc_reg();
         int ord = node->atomic_ord;
 #ifdef ARCH_ARM64
-        char *sz_suffix = (sz == 1) ? "b" : (sz == 2) ? "h"
-                                                      : "";
         bool use_acquire = (ord == MEMORDER_ACQUIRE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST || ord == MEMORDER_CONSUME);
         if (use_acquire) {
             if (sz == 1) asm_ldarb(cg_sec, r, r_addr); // ldarb r, [r_addr]
@@ -9472,8 +9322,6 @@ static VReg gen(Node *node) {
         if (sz < 1 || sz > 8) sz = 4;
         int ord = node->atomic_ord;
 #ifdef ARCH_ARM64
-        char *sz_suffix = (sz == 1) ? "b" : (sz == 2) ? "h"
-                                                      : "";
         bool use_release = (ord == MEMORDER_RELEASE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST);
         if (use_release) {
             if (sz == 1) asm_stlrb(cg_sec, r_val, r_addr); // stlrb r_val, [r_addr]
@@ -9510,7 +9358,6 @@ static VReg gen(Node *node) {
             asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_xchg.%d", lbl), 1);
         }
-        (void)(sz == sz); // suppress unused variable warnings for sz-specific paths
 #else
         asm_xchg_mem(cg_sec, r_addr, r_val, sz); // xchg (r_addr), r_val
         if (sz < 4) {
@@ -10287,21 +10134,13 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
         asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
         asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
-        char *inst = "";
-        if (node->kind == ND_ADD) inst = "fadd";
+        if (node->kind == ND_ADD) asm_fadd(cg_sec, 1); // fadd d0, d0, d1
         else if (node->kind == ND_SUB)
-            inst = "fsub";
+            asm_fsub(cg_sec, 1); // fsub d0, d0, d1
         else if (node->kind == ND_MUL)
-            inst = "fmul";
+            asm_fmul(cg_sec, 1); // fmul d0, d0, d1
         else if (node->kind == ND_DIV)
-            inst = "fdiv";
-        if (node->kind == ND_ADD) asm_fadd(cg_sec, 1); // asm_fadd(1)
-        else if (node->kind == ND_SUB)
-            asm_fsub(cg_sec, 1); // fcvt s0, d0
-        else if (node->kind == ND_MUL)
-            asm_fmul(cg_sec, 1); // fcvt d0, s0
-        else if (node->kind == ND_DIV)
-            asm_fdiv(cg_sec, 1); // asm_fdiv(1)
+            asm_fdiv(cg_sec, 1); // fdiv d0, d0, d1
         if (node->ty->kind == TY_FLOAT) {
             asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=double->single)
             asm_fcvt(cg_sec, 1, 0, 0, 0); // asm_fcvt(1, 0, 0, 0)
@@ -10535,7 +10374,6 @@ static VReg gen(Node *node) {
         bool is_unsigned = use_unsigned(node->ty);
         VReg r_rhs = gen(node->rhs);
 #ifdef ARCH_ARM64
-        int sf = (sz == 8) ? 1 : 0;
         if (node->kind == ND_DIV) {
             if (is_unsigned)
                 asm_udiv_reg_reg(cg_sec, r_lhs, r_rhs, sz); // udiv r_lhs, r_lhs, r_rhs
@@ -10578,7 +10416,6 @@ static VReg gen(Node *node) {
     if (node->kind == ND_SHL || node->kind == ND_SHR) {
         int sz = op_size(node->ty);
 #ifdef ARCH_ARM64
-        const char *shift_op = node->kind == ND_SHL ? "lsl" : (use_unsigned(node->ty) ? "lsr" : "asr");
         int sf = (sz == 8) ? 1 : 0;
         if (node->rhs->kind == ND_NUM) {
             int s = (int)node->rhs->val;
@@ -10911,647 +10748,8 @@ static VReg gen(Node *node) {
     return -1;
 }
 
-#ifndef ARCH_ARM64
-// Helper: map 64-bit register name to 32-bit
-static const char *to32(const char *r64) {
-    if (r64[0] == '%') r64++;
-    if (!strcmp(r64, "rax")) return "%eax";
-    if (!strcmp(r64, "rcx")) return "%ecx";
-    if (!strcmp(r64, "rdx")) return "%edx";
-    if (!strcmp(r64, "r8")) return "%r8d";
-    if (!strcmp(r64, "r9")) return "%r9d";
-    if (!strcmp(r64, "r10")) return "%r10d";
-    if (!strcmp(r64, "r11")) return "%r11d";
-    if (!strcmp(r64, "rbx")) return "%ebx";
-    if (!strcmp(r64, "r12")) return "%r12d";
-    if (!strcmp(r64, "r13")) return "%r13d";
-    if (!strcmp(r64, "r14")) return "%r14d";
-    if (!strcmp(r64, "r15")) return "%r15d";
-    if (!strcmp(r64, "rsi")) return "%esi";
-    return NULL;
-}
-#endif
 
 // Fast peephole parsing helpers (avoid sscanf in hot loop)
-
-static int peep_mov_reg_reg(char *line, char *dst, int dst_sz, char *src, int src_sz) {
-    if (strncmp(line, "  mov ", 6) != 0) return 0;
-    char *p = line + 6;
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int dlen = comma - p;
-    if (dlen >= dst_sz) return 0;
-    memcpy(dst, p, dlen);
-    dst[dlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    int slen = strlen(p);
-    if (slen >= src_sz) return 0;
-    memcpy(src, p, slen + 1);
-    return 1;
-}
-static int peep_label(char *line, char *lbl, int lbl_sz) {
-    char *col = strchr(line, ':');
-    if (!col || col == line) return 0;
-    int len = col - line;
-    if (len >= lbl_sz) return 0;
-    memcpy(lbl, line, len);
-    lbl[len] = '\0';
-    return 1;
-}
-
-#ifndef ARCH_ARM64
-static int peep_mov_rbp_reg(char *line, int *off, char *reg, int reg_sz) {
-    // AT&T: mov[lq] %reg, -N(%rbp)  (store reg to [rbp-N])
-    if (strncmp(line, "  mov", 5) != 0) return 0;
-    char *p = line + 5;
-    if (*p == 'l' || *p == 'q') p++;
-    if (*p != ' ') return 0;
-    p++;
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int rlen = comma - p;
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen);
-    reg[rlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p != '-') return 0;
-    char *end;
-    long n = strtol(p + 1, &end, 10);
-    if (strncmp(end, "(%rbp)", 6) != 0) return 0;
-    *off = (int)n;
-    return 1;
-}
-static int peep_mov_reg_rbp(char *line, char *dst, int dst_sz, char *szword, int *off) {
-    // AT&T: mov[lq] -N(%%rbp), %%reg  (load from [rbp-N] into reg)
-    if (strncmp(line, "  mov", 5) != 0) return 0;
-    char *p = line + 5;
-    char sizechar = *p;
-    if (sizechar == 'l') {
-        if (szword) strcpy(szword, "dword");
-        p++;
-    } else if (sizechar == 'q') {
-        if (szword) strcpy(szword, "qword");
-        p++;
-    } else
-        return 0;
-    if (*p != ' ') return 0;
-    p++;
-    if (*p != '-') return 0;
-    char *end;
-    long n = strtol(p + 1, &end, 10);
-    if (strncmp(end, "(%rbp), ", 8) != 0) return 0;
-    p = end + 8;
-    int rlen = strlen(p);
-    if (rlen >= dst_sz) return 0;
-    memcpy(dst, p, rlen + 1);
-    *off = (int)n;
-    return 1;
-}
-static int peep_mov_rbp_imm(char *line, int *off, int *val) {
-    // AT&T: movl $imm, -N(%%rbp)
-    if (strncmp(line, "  movl $", 8) != 0) return 0;
-    char *p = line + 8;
-    if (*p != '-' && !isdigit((unsigned char)*p)) return 0;
-    char *end;
-    long v = strtol(p, &end, 10);
-    if (end == p) return 0;
-    if (strncmp(end, ", -", 3) != 0) return 0;
-    p = end + 3;
-    long n = strtol(p, &end, 10);
-    if (end == p || strncmp(end, "(%rbp)", 6) != 0) return 0;
-    *val = (int)v;
-    *off = (int)n;
-    return 1;
-}
-static int peep_jmp(char *line, char *lbl, int lbl_sz) {
-    if (strncmp(line, "  jmp ", 6) != 0) return 0;
-    char *p = line + 6;
-    int len = strlen(p);
-    if (len >= lbl_sz) return 0;
-    memcpy(lbl, p, len + 1);
-    return 1;
-}
-static int peep_mov_reg_imm(char *line, char *reg, int reg_sz, long long *imm) {
-    // AT&T: mov[lq]? $imm, %reg
-    if (strncmp(line, "  mov", 5) != 0) return 0;
-    char *p = line + 5;
-    if (*p == 'l' || *p == 'q') p++;
-    if (*p != ' ') return 0;
-    p++;
-    if (*p != '$') return 0;
-    p++;
-    char *endp;
-    long long v = strtoll(p, &endp, 0);
-    if (endp == p) return 0;
-    *imm = v;
-    if (*endp != ',') return 0;
-    p = endp + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    int rlen = strlen(p);
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen + 1);
-    return 1;
-}
-#endif
-
-static int peep_op_reg_reg(char *line, char *op, int op_sz, char *dst, int dst_sz, char *src, int src_sz) {
-    if (line[0] != ' ' || line[1] != ' ') return 0;
-    char *p = line + 2;
-    char *sp = strchr(p, ' ');
-    if (!sp) return 0;
-    int olen = sp - p;
-    if (olen >= op_sz) return 0;
-    memcpy(op, p, olen);
-    op[olen] = '\0';
-    p = sp + 1;
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int dlen = comma - p;
-    if (dlen >= dst_sz) return 0;
-    memcpy(dst, p, dlen);
-    dst[dlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    int slen = strlen(p);
-    if (slen >= src_sz) return 0;
-    memcpy(src, p, slen + 1);
-    return 1;
-}
-#ifndef ARCH_ARM64
-static int peep_mov_reg_mem(char *line, char *reg, int reg_sz, char *mem, int mem_sz) {
-    // AT&T: mov[lq]? mem, %reg  (load from mem into reg)
-    if (strncmp(line, "  mov", 5) != 0) return 0;
-    char *p = line + 5;
-    if (*p == 'l' || *p == 'q') p++;
-    if (*p != ' ') return 0;
-    p++;
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int mlen = comma - p;
-    if (mlen >= mem_sz) return 0;
-    memcpy(mem, p, mlen);
-    mem[mlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    int rlen = strlen(p);
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen + 1);
-    return 1;
-}
-#endif
-
-// Helper: check if string is a register name
-static int is_reg(const char *s) {
-    if (s[0] == '%') s++;
-#ifndef ARCH_ARM64
-    // x86 registers
-    if (s[0] == 'r' || s[0] == 'e' || !strncmp(s, "si", 2) || !strncmp(s, "bl", 2) || !strncmp(s, "bx", 2))
-        return 1;
-#else
-    // ARM64 registers: xN, wN
-    if ((s[0] == 'x' || s[0] == 'w') && s[1] >= '0' && s[1] <= '9')
-        return 1;
-    if ((s[0] == 'x' || s[0] == 'w') && s[1] == '1' && s[2] >= '0' && s[2] <= '9')
-        return 1;
-#endif
-    return 0;
-}
-
-// Check if a physical register is used after line 'after' before being overwritten
-
-// ARM64 peep helpers (parser-style, no sscanf)
-#ifdef ARCH_ARM64
-// Match "  str %[^,], [x29, #-N]" → fill reg, offset, return 1
-static int peep_arm_str_fp(const char *line, char *reg, int reg_sz, int *off) {
-    if (strncmp(line, "  str ", 6) != 0) return 0;
-    const char *p = line + 6;
-    const char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int rlen = comma - p;
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen);
-    reg[rlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ') p++;
-    return sscanf(p, "[x29, #-%d]", off) == 1;
-}
-// Match "  ldr %[^,], [x29, #-N]" → fill reg, offset, return 1
-static int peep_arm_ldr_fp(const char *line, char *reg, int reg_sz, int *off) {
-    if (strncmp(line, "  ldr ", 6) != 0) return 0;
-    const char *p = line + 6;
-    const char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int rlen = comma - p;
-    if (rlen >= reg_sz) return 0;
-    memcpy(reg, p, rlen);
-    reg[rlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ') p++;
-    return sscanf(p, "[x29, #-%d]", off) == 1;
-}
-// Match "  b .LABEL" → fill label, return 1
-static int peep_arm_b(const char *line, char *lbl, int lbl_sz) {
-    if (strncmp(line, "  b .", 5) != 0) return 0;
-    int len = strlen(line + 5);
-    if (len >= lbl_sz) return 0;
-    memcpy(lbl, line + 5, len + 1);
-    return 1;
-}
-// Parse ARM64 2-op or 3-op: "  op dst, src1[, src2]"
-// Returns number of operands (2 or 3); fills op, dst, src1, src2.
-// src2_is_imm set to 1 if src2 starts with '#'.
-static int peep_arm64_op(char *line, char *op, int op_sz,
-                         char *dst, int dst_sz,
-                         char *src1, int s1_sz,
-                         char *src2, int s2_sz, int *src2_is_imm) {
-    if (line[0] != ' ' || line[1] != ' ') return 0;
-    char *p = line + 2;
-    char *sp = strchr(p, ' ');
-    if (!sp) return 0;
-    int olen = sp - p;
-    if (olen >= op_sz) return 0;
-    memcpy(op, p, olen);
-    op[olen] = '\0';
-    p = sp + 1;
-    // First operand: dst
-    char *comma = strchr(p, ',');
-    if (!comma) return 0;
-    int dlen = comma - p;
-    if (dlen >= dst_sz) return 0;
-    memcpy(dst, p, dlen);
-    dst[dlen] = '\0';
-    p = comma + 1;
-    while (*p == ' ' || *p == '\t') p++;
-    // Second operand: src1
-    comma = strchr(p, ',');
-    if (comma) {
-        // 3-operand form
-        int s1len = comma - p;
-        if (s1len >= s1_sz) return 0;
-        memcpy(src1, p, s1len);
-        src1[s1len] = '\0';
-        p = comma + 1;
-        while (*p == ' ' || *p == '\t') p++;
-        int s2len = strlen(p);
-        if (s2len >= s2_sz) return 0;
-        memcpy(src2, p, s2len + 1);
-        *src2_is_imm = (p[0] == '#');
-        return 3;
-    } else {
-        // 2-operand form (e.g. cmp)
-        int s1len = strlen(p);
-        if (s1len >= s1_sz) return 0;
-        memcpy(src1, p, s1len + 1);
-        src2[0] = '\0';
-        *src2_is_imm = 0;
-        return 2;
-    }
-}
-#endif
-
-// === Peephole Patterns 2-5 ===
-
-// Pattern 2: store REG, [fp-N]; load REG2, [fp-N] → mov REG2, REG
-static int peep_pattern2(char **lines, int li, int lj) {
-#ifdef ARCH_ARM64
-    char sr[32], dr[32];
-    int off1, off2;
-    if (peep_arm_str_fp(lines[li], sr, sizeof(sr), &off1) &&
-        peep_arm_ldr_fp(lines[lj], dr, sizeof(dr), &off2) &&
-        off1 == off2) {
-        // Reject mismatched sizes (e.g. str xN,[fp] / ldr wN,[fp]) because
-        // mov wN, xN is not a valid ARM64 instruction.
-        if (sr[0] != dr[0])
-            return 0;
-        lines[lj] = format("  mov %s, %s", dr, sr);
-        return 1;
-    }
-#else
-    int off1, off2;
-    char sr[32], dr[32], sz[16];
-    if (peep_mov_rbp_reg(lines[li], &off1, sr, sizeof(sr))) {
-        if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
-            off1 == off2 && !strcmp(sz, "dword")) {
-            const char *r32 = to32(sr);
-            if (r32) {
-                lines[lj] = format("  mov %s, %s", r32, dr);
-                return 1;
-            }
-        }
-        if (peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
-            off1 == off2 && !strcmp(sz, "qword")) {
-            lines[lj] = format("  mov %s, %s", sr, dr);
-            return 1;
-        }
-    }
-    { // 2b: movl $VAL, -N(%rbp); movl -N(%rbp), %REG
-        int off1, off2, val;
-        char dr[32], sz[16];
-        if (peep_mov_rbp_imm(lines[li], &off1, &val) &&
-            peep_mov_reg_rbp(lines[lj], dr, sizeof(dr), sz, &off2) &&
-            off1 == off2 && !strcmp(sz, "dword")) {
-            lines[lj] = format("  movl $%d, %s", val, dr);
-            return 1;
-        }
-    }
-#endif
-    return 0;
-}
-
-// Pattern 3: jmp/b .LABEL; .LABEL: → delete branch
-static int peep_pattern3(char **lines, int li, int lj) {
-    char lbl1[80], lbl2[80];
-#ifdef ARCH_ARM64
-    if (!peep_arm_b(lines[li], lbl1, sizeof(lbl1))) return 0;
-#else
-    if (!peep_jmp(lines[li], lbl1, sizeof(lbl1))) return 0;
-#endif
-    if (!peep_label(lines[lj], lbl2, sizeof(lbl2))) return 0;
-    char *t = lbl2;
-    while (*t == ' ') t++;
-    if (!strcmp(lbl1, t)) {
-        lines[li][0] = '\0';
-        return 1;
-    }
-    return 0;
-}
-
-// Pattern 4: mov REG, #IMM; OP REG2, REG → OP REG2, #IMM
-static int peep_pattern4(char **lines, int li, int lj) {
-    char rd[32];
-    long long imm_val;
-#ifdef ARCH_ARM64
-    if (sscanf(lines[li], " mov %31s, #%lld", rd, &imm_val) != 2) return 0;
-    if (!is_reg(rd)) return 0;
-    char op[16], dst[32], src1[32], src2[32];
-    int src2_is_imm;
-    int nops = peep_arm64_op(lines[lj], op, sizeof(op), dst, sizeof(dst),
-                             src1, sizeof(src1), src2, sizeof(src2), &src2_is_imm);
-    if (nops < 2) return 0;
-    // Only fold arithmetic/logical ops that accept immediates
-    bool is_add = !strcmp(op, "add"), is_sub = !strcmp(op, "sub");
-    bool is_and = !strcmp(op, "and"), is_orr = !strcmp(op, "orr"), is_eor = !strcmp(op, "eor");
-    if (!(is_add || is_sub || is_and || is_orr || is_eor)) return 0;
-    // Fold when REG is used as src2 or (for commutative ops) src1
-    const char *other = NULL;
-    if (nops == 3 && !strcmp(src2, rd)) {
-        other = src1;
-    } else if (nops == 3 && !strcmp(src1, rd) && (is_add || is_orr || is_eor || is_and)) {
-        other = src2;
-    }
-    if (!other) return 0;
-    // Eliminate nop: add/sub/orr/eor with 0, and with -1
-    if (imm_val == 0 && (is_add || is_sub || is_orr || is_eor)) {
-        lines[lj][0] = '\0';
-    } else {
-        lines[lj] = format("  %s %s, %s, #%lld", op, dst, other, imm_val);
-    }
-    return 1;
-#else
-    if (!peep_mov_reg_imm(lines[li], rd, sizeof(rd), &imm_val) || !is_reg(rd))
-        return 0;
-    long long v_check = strtoll(strchr(lines[li], '$') + 1, NULL, 0);
-    if (v_check != (int)v_check) return 0;
-    char op[16], od[64], os[32];
-    if (!peep_op_reg_reg(lines[lj], op, sizeof(op), od, sizeof(od), os, sizeof(os)) ||
-        !same_phys(od, rd)) return 0;
-    char *opname = op;
-    int olen = strlen(op);
-    if (olen > 1 && (op[olen - 1] == 'l' || op[olen - 1] == 'q' || op[olen - 1] == 'w' || op[olen - 1] == 'b')) {
-        static char opbase[16];
-        memcpy(opbase, op, olen - 1);
-        opbase[olen - 1] = '\0';
-        opname = opbase;
-    }
-    if (!strcmp(opname, "cmp") || !strcmp(opname, "add") || !strcmp(opname, "sub") ||
-        !strcmp(opname, "and") || !strcmp(opname, "or") || !strcmp(opname, "xor") ||
-        !strcmp(opname, "imul")) {
-        if (((!strcmp(opname, "add") || !strcmp(opname, "sub") || !strcmp(opname, "or") || !strcmp(opname, "xor")) && imm_val == 0) ||
-            (!strcmp(opname, "imul") && imm_val == 1)) {
-            lines[lj][0] = '\0';
-        } else {
-            lines[lj] = format("  %s $%lld, %s", op, imm_val, os);
-        }
-        // Conservative: skip dead-predecessor deletion without forward scan
-        return 1;
-    }
-#endif
-    return 0;
-}
-
-// Scan up to 30 lines of remaining body text (newlines still intact) for pid use.
-static int reg_live_in_text(const char *text, int pid) {
-    const char *variants[6] = {NULL};
-    int nv = 0;
-    for (int vi = 0; vi < NUM_REGS; vi++) {
-        if (phys_reg_id(reg64[vi]) == pid) {
-            variants[nv++] = reg64[vi];
-            variants[nv++] = reg32[vi];
-            break;
-        }
-    }
-#ifndef ARCH_ARM64
-    if (pid == 0) {
-        variants[nv++] = "%rax";
-        variants[nv++] = "%eax";
-        variants[nv++] = "%al";
-    } else if (pid == 1) {
-        variants[nv++] = "%rcx";
-        variants[nv++] = "%ecx";
-        variants[nv++] = "%cl";
-    } else if (pid == 2) {
-        variants[nv++] = "%rdx";
-        variants[nv++] = "%edx";
-    } else if (pid == 3) {
-        variants[nv++] = "%rbx";
-        variants[nv++] = "%ebx";
-        variants[nv++] = "%bl";
-    }
-#endif
-    const char *p = text;
-    for (int cnt = 0; cnt < 30 && *p; cnt++) {
-        const char *nl = strchr(p, '\n');
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        if (len > 0) {
-            if (*p != ' ') return 1; // label = block boundary, conservatively live
-            for (int vi = 0; vi < nv && variants[vi]; vi++) {
-                size_t vlen = strlen(variants[vi]);
-                for (size_t i = 0; i + vlen <= len; i++) {
-                    if (memcmp(p + i, variants[vi], vlen) == 0) return 1;
-                }
-            }
-        }
-        p = nl ? nl + 1 : p + len;
-        if (!nl) break;
-    }
-    return 0;
-}
-
-// Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R → mov dst, [mem]; OP dst, IMMx
-// rest: unprocessed body text after the window (newlines still intact) for liveness scan
-static int peep_pattern5(char **lines, int li, int lj, int lk, const char *rest) {
-    char r1[32], mem1[128], op2[16], r2[32], imm2[32], d3[32], r3[32];
-#ifndef ARCH_ARM64
-    if (peep_mov_reg_mem(lines[li], r1, sizeof(r1), mem1, sizeof(mem1)) &&
-        peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
-        peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
-        !strcmp(r1, imm2) && !strcmp(r1, d3) &&
-        is_reg(r3) && !is_reg(mem1)) {
-        int r1_pid = phys_reg_id(r1);
-        if (r1_pid >= 0 && reg_live_in_text(rest, r1_pid))
-            return 0;
-        lines[li] = format("  mov %s, %s", mem1, r3);
-        lines[lj] = format("  %s %s, %s", op2, r2, r3);
-        lines[lk][0] = '\0';
-        return 1;
-    }
-#else
-    // ARM64: ldr R, [mem]; OP R, R, #IMM; mov dst, R -> ldr dst, [mem]; OP dst, dst, #IMM
-    if (sscanf(lines[li], " ldr %31[^,], %127[^\n]", r1, mem1) == 2 &&
-        peep_op_reg_reg(lines[lj], op2, sizeof(op2), r2, sizeof(r2), imm2, sizeof(imm2)) &&
-        peep_mov_reg_reg(lines[lk], d3, sizeof(d3), r3, sizeof(r3)) &&
-        !strcmp(r1, r2) && !strcmp(r2, r3) &&
-        is_reg(d3) && !is_reg(mem1)) {
-        // Verify the middle instruction is OP R, R, ... (second operand must be R)
-        char *p = imm2;
-        while (*p == ' ' || *p == '\t') p++;
-        int r2len = strlen(r2);
-        if (strncmp(p, r2, r2len) != 0 || (p[r2len] != '\0' && p[r2len] != ',' && p[r2len] != ' '))
-            return 0;
-        // Must be a 3-operand instruction (imm2 contains a second comma after r2)
-        if (strchr(p + r2len, ',') == NULL)
-            return 0;
-        int r1_pid = phys_reg_id(r1);
-        if (r1_pid >= 0 && reg_live_in_text(rest, r1_pid))
-            return 0;
-        char *val = strchr(imm2, ',');
-        if (val) {
-            val++;
-            while (*val == ' ') val++;
-        } else
-            val = imm2;
-        lines[li] = format("  ldr %s, %s", d3, mem1);
-        lines[lj] = format("  %s %s, %s, %s", op2, d3, d3, val);
-        lines[lk][0] = '\0';
-        return 1;
-    }
-#endif
-    return 0;
-}
-
-static void emit_peephole_body(char *body_text) {
-    if (opt_O0) return;
-
-    // 3-line sliding window: w[0]=oldest pending, w[2]=newest
-    char *w[3] = {NULL, NULL, NULL};
-    char *wp = body_text;
-    int wn = 0;
-    const char *rest = body_text; // points into body_text after window (newlines intact)
-    char *p = body_text; // scan pointer; \n replaced with \0 as lines are parsed
-
-    for (;;) {
-        char *line = NULL;
-        if (*p) {
-            char *nl = strchr(p, '\n');
-            if (nl) {
-                *nl = '\0';
-                line = p;
-                p = nl + 1;
-            } else {
-                line = p;
-                p += strlen(p);
-            }
-            rest = p;
-        }
-
-        if (!line) {
-            for (int i = 0; i < wn; i++)
-                if (w[i] && w[i][0]) {
-                    int _len = strlen(w[i]);
-                    memmove(wp, w[i], _len);
-                    wp += _len;
-                    *wp++ = '\n';
-                }
-            break;
-        }
-
-        // Commit oldest when window is full
-        if (wn == 3) {
-            if (w[0] && w[0][0]) {
-                int _len = strlen(w[0]);
-                memmove(wp, w[0], _len);
-                wp += _len;
-                *wp++ = '\n';
-            }
-            w[0] = w[1];
-            w[1] = w[2];
-            w[2] = NULL;
-            wn = 2;
-        }
-        w[wn++] = line;
-
-        // Repeatedly try patterns on all adjacent non-empty pairs in the window
-        bool any;
-        do {
-            any = false;
-            for (int ii = 0; ii < wn; ii++) {
-                if (!w[ii] || !w[ii][0]) continue;
-                int jj = ii + 1;
-                while (jj < wn && (!w[jj] || !w[jj][0])) jj++;
-                if (jj >= wn) break;
-                int kk = jj + 1;
-                while (kk < wn && (!w[kk] || !w[kk][0])) kk++;
-
-                // Pattern 1: mov SRC, REG; mov REG, DST -> mov SRC, DST
-                {
-                    char d1[80], s1[80], d2[80], s2[80];
-                    if (peep_mov_reg_reg(w[ii], d1, sizeof(d1), s1, sizeof(s1)) &&
-                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                        !strcmp(d2, s1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s1) && is_reg(s2)) {
-                        w[jj] = format("  mov %s, %s", d1, s2);
-                        // Conservative: skip dead-predecessor deletion without full forward scan
-                        any = true;
-                        break;
-                    }
-#ifndef ARCH_ARM64
-                    // Pattern 1a: mov $SRC, REG; mov REG, DST -> mov $SRC, DST
-                    long long imm;
-                    if (peep_mov_reg_imm(w[ii], d1, sizeof(d1), &imm) &&
-                        peep_mov_reg_reg(w[jj], d2, sizeof(d2), s2, sizeof(s2)) &&
-                        !strcmp(s2, d1) && strcmp(d1, d2) && is_reg(d1) && is_reg(s2) && is_reg(d2)) {
-                        w[jj] = format("  mov $%lld, %s", imm, s2);
-                        // Conservative: skip dead-predecessor deletion without full forward scan
-                        any = true;
-                        break;
-                    }
-#endif
-                }
-                // Pattern 2: store REG, [fp-N]; load REG2, [fp-N] -> mov REG2, REG
-                if (peep_pattern2(w, ii, jj)) {
-                    any = true;
-                    break;
-                }
-                // Pattern 3: jmp/b .LABEL; .LABEL: -> delete branch
-                if (peep_pattern3(w, ii, jj)) {
-                    any = true;
-                    break;
-                }
-                // Pattern 4: mov REG, IMM; OP REG2, REG -> OP REG2, IMM
-                if (peep_pattern4(w, ii, jj)) {
-                    any = true;
-                    break;
-                }
-                // Pattern 5: mov R, [mem]; OP R, IMMx; mov dst, R -> mov dst, [mem]; OP dst, IMMx
-                if (kk < wn && peep_pattern5(w, ii, jj, kk, rest)) {
-                    any = true;
-                    break;
-                }
-            }
-        } while (any);
-    }
-}
 
 static const char *node_kind_name(NodeKind k) {
     switch (k) {
@@ -12038,11 +11236,6 @@ struct ObjFile *codegen(Program *prog) {
         int max_param_xmm = 8;
 #endif
         // Physical param register tables for prologue
-#ifdef _WIN32
-        static const X86Reg win_gp_regs[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
-#else
-        static const X86Reg lin_gp_regs[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
-#endif
         for (LVar *var = fn->params; var; var = var->param_next) {
 #ifdef _WIN32
             if (is_flonum(var->ty)) {
@@ -12536,9 +11729,6 @@ struct ObjFile *codegen(Program *prog) {
         int fp_param = 0;
         int stack_param = 0;
         {
-            char *gpreg[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
-            char *wpreg[] = {"w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"};
-            char *fpreg[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
             for (LVar *var = fn->params; var; var = var->param_next) {
                 int hfa_elem_size = 0;
                 int hfa_count = (!is_flonum(var->ty) && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION))
@@ -12751,7 +11941,6 @@ struct ObjFile *codegen(Program *prog) {
             if (frame_size <= 4095)
                 arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_X29, frame_size, 0); // sub sp, x29, #frame_size
             else {
-                int fs = frame_size;
                 emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
                 arm64_sub_extreg(cg_sec, 1, ARM64_SP, ARM64_X29, ARM64_X16, ARM64_UXTX, 0); // sub sp, x29, x16
             }
@@ -12769,7 +11958,6 @@ struct ObjFile *codegen(Program *prog) {
         if (frame_size <= 4095)
             arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, frame_size, 0); // add sp, sp, #frame_size
         else {
-            int fs = frame_size;
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
             arm64_add_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // add sp, sp, x16
         }

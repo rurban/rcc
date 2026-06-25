@@ -700,7 +700,7 @@ static void asm_mov_retval(SecBuf *s, VReg r, int size) {
 #endif
 }
 // Move virtual register r to return register (x0/rax)
-static void asm_mov_reg_to_retval(SecBuf *s, VReg r, int size) {
+__attribute__((unused)) static void asm_mov_reg_to_retval(SecBuf *s, VReg r, int size) {
 #ifdef ARCH_ARM64
     (void)size;
     arm64_orr_reg(s, 1, 0, ARM64_XZR, REG(r), ARM64_LSL, 0); // mov x0, x{r}
@@ -740,7 +740,7 @@ static void asm_mov_imm(SecBuf *s, VReg vr, int size, int64_t imm) {
 }
 
 #ifdef ARCH_ARM64
-static void asm_mov_imm_phy(SecBuf *s, Arm64Reg r, int size, int64_t imm) {
+__attribute__((unused)) static void asm_mov_imm_phy(SecBuf *s, Arm64Reg r, int size, int64_t imm) {
     size_t off = s->len;
     uint64_t uval = (uint64_t)imm;
     int sf = (size == 8) ? 1 : 0;
@@ -758,7 +758,7 @@ static void asm_mov_imm_phy(SecBuf *s, Arm64Reg r, int size, int64_t imm) {
     asm_record(ASM_MOV_RI, off, count, r, -1, -1, size, imm, 0, NULL, 0, -1, false);
 }
 #else
-static void asm_mov_imm_phy(SecBuf *s, X86Reg r, int size, int64_t imm) {
+__attribute__((unused)) static void asm_mov_imm_phy(SecBuf *s, X86Reg r, int size, int64_t imm) {
     size_t off = s->len;
     if (size == 8 && imm >= INT32_MIN && imm <= INT32_MAX)
         x86_mov_ri(s, 8, r, (int32_t)imm);
@@ -792,7 +792,7 @@ static void asm_xor_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
 static void asm_movq_zero(SecBuf *s, VReg r) { asm_xor_reg_reg(s, r, r, 8); }
 
 // test reg, reg  — set flags without modifying registers
-static void asm_test_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
+__attribute__((unused)) static void asm_test_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     Arm64Reg ra = REG(a), rb = REG(b);
@@ -804,18 +804,7 @@ static void asm_test_reg_reg(SecBuf *s, VReg a, VReg b, int size) {
 #endif
     (void)off;
 }
-
-// orb %reg, %al  — OR byte register into AL
-#ifdef ARCH_ARM64
-__attribute__((unused)) static void asm_or_byte_al(SecBuf *s, int src) {
-#else
-static void asm_or_byte_al(SecBuf *s, X86Reg src) {
-    x86_or_rr(s, 1, X86_RAX, src);
-#endif
-    (void)s;
-    (void)src;
-}
-static void asm_movl_zero(SecBuf *s, VReg r) { asm_xor_reg_reg(s, r, r, 4); }
+__attribute__((unused)) static void asm_movl_zero(SecBuf *s, VReg r) { asm_xor_reg_reg(s, r, r, 4); }
 
 #ifdef ARCH_ARM64
 static void asm_movk(SecBuf *s, Arm64Reg rd, int sf, uint16_t imm16, int shift) {
@@ -1118,7 +1107,7 @@ static void asm_and_reg_phy(SecBuf *s, VReg dst, Arm64Reg src, int size) {
 #endif
 
 // and rr, %rax — used after asm_movabs_phy(X86_RAX, mask) for bitfield masking
-static void asm_and_rax(SecBuf *s, VReg r, int size) {
+__attribute__((unused)) static void asm_and_rax(SecBuf *s, VReg r, int size) {
 #ifndef ARCH_ARM64
     size_t off = s->len;
     X86Reg rdst = REG(r);
@@ -1257,7 +1246,7 @@ static void asm_cqo(SecBuf *s) {
 }
 #endif
 
-static void asm_cdq(SecBuf *s) {
+__attribute__((unused)) static void asm_cdq(SecBuf *s) {
 #ifdef ARCH_ARM64
     // ARM64: sxtw x0, w0
     //asm_sxtw(s, V_X0, V_X1); // FIXME
@@ -1267,7 +1256,7 @@ static void asm_cdq(SecBuf *s) {
 #endif
 }
 
-static void asm_idiv(SecBuf *s, VReg r, int size) {
+__attribute__((unused)) static void asm_idiv(SecBuf *s, VReg r, int size) {
 #ifdef ARCH_ARM64
     (void)s;
     (void)r;
@@ -1277,7 +1266,7 @@ static void asm_idiv(SecBuf *s, VReg r, int size) {
 #endif
 }
 
-static void asm_div(SecBuf *s, VReg r, int size) {
+__attribute__((unused)) static void asm_div(SecBuf *s, VReg r, int size) {
 #ifdef ARCH_ARM64
     (void)s;
     (void)r;
@@ -1454,7 +1443,7 @@ static void asm_adr_x16_label(SecBuf *s, const char *label) {
 #endif
 
 #ifdef ARCH_ARM64
-static void asm_bti_c(SecBuf *s) {
+__attribute__((unused)) static void asm_bti_c(SecBuf *s) {
     arm64_bti_c(s); // hint #34 = bti c
 }
 #endif
@@ -1502,7 +1491,7 @@ static void asm_stp_sp(SecBuf *s, Arm64Reg rt1, Arm64Reg rt2, int32_t imm7, bool
     arm64_stp(s, 1, rt1, rt2, CG_ARM_SP, imm7, pre, post);
 }
 
-static void asm_ldp_sp(SecBuf *s, Arm64Reg rt1, Arm64Reg rt2, int32_t imm7, bool pre, bool post) {
+__attribute__((unused)) static void asm_ldp_sp(SecBuf *s, Arm64Reg rt1, Arm64Reg rt2, int32_t imm7, bool pre, bool post) {
     arm64_ldp(s, 1, rt1, rt2, CG_ARM_SP, imm7, pre, post);
 }
 
@@ -1537,7 +1526,7 @@ static void asm_lea_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
 }
 
 // lea offset(%rbp), %reg — signed offset for Windows va_start (positive offsets)
-static void asm_lea_signed_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
+__attribute__((unused)) static void asm_lea_signed_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
     X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
     x86_lea(s, size, reg, m);
@@ -1666,7 +1655,7 @@ static void asm_and_self_imm(SecBuf *s, Arm64Reg rd, uint64_t imm) {
 static void asm_sub_sp_sp_reg(SecBuf *s, Arm64Reg rs) {
     arm64_sub_extreg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_UXTX, 0); // sub sp, sp, rs
 }
-static void asm_add_sp_sp_reg(SecBuf *s, Arm64Reg rs) {
+__attribute__((unused)) static void asm_add_sp_sp_reg(SecBuf *s, Arm64Reg rs) {
     arm64_add_extreg(s, 1, ARM64_SP, ARM64_SP, rs, ARM64_UXTX, 0); // add sp, sp, rs
 }
 // mov rd, sp
@@ -1696,7 +1685,7 @@ static void asm_str_fp_reg(SecBuf *s, VReg reg) {
 static void asm_ldr_fp_reg(SecBuf *s, VReg reg) {
     arm64_ldr_imm(s, 1, CG_ARM_FP, REG(reg), 0, false); // ldr x29, [x{reg}]
 }
-static void asm_ldur_x16_fp_minus(SecBuf *s, int off) {
+__attribute__((unused)) static void asm_ldur_x16_fp_minus(SecBuf *s, int off) {
     arm64_ldur(s, 1, ARM64_X16, CG_ARM_FP, -off);
 }
 // rd = x29 - imm  (handles large |imm| via scratch x16)
@@ -1727,7 +1716,7 @@ static void asm_str_reg(SecBuf *s, Arm64Reg rd, Arm64Reg rs) {
     arm64_str_uoff(s, 3, rd, rs, 0);
 }
 // ldur rd, [x29, #-off] — unscaled load from frame
-static void asm_ldur_fp_phy(SecBuf *s, Arm64Reg rd, int32_t off) {
+__attribute__((unused)) static void asm_ldur_fp_phy(SecBuf *s, Arm64Reg rd, int32_t off) {
     arm64_ldur(s, 1, rd, CG_ARM_FP, -off);
 }
 // stur rd, [x29, #-off] — unscaled store to frame
@@ -1735,7 +1724,7 @@ static void asm_stur_fp_phy(SecBuf *s, Arm64Reg rd, int32_t off) {
     arm64_stur(s, 1, rd, CG_ARM_FP, -off);
 }
 // asr rd, r{src}, #63 — arithmetic shift right by 63
-static void asm_asr_63(SecBuf *s, Arm64Reg rd, VReg src) {
+__attribute__((unused)) static void asm_asr_63(SecBuf *s, Arm64Reg rd, VReg src) {
     arm64_asr_imm(s, 1, rd, REG(src), 63); // asr rd, x{src}, #63
 }
 static void asm_cmn_imm(SecBuf *s, VReg r, int sf, int imm) {
@@ -1804,7 +1793,7 @@ static void asm_sub_reg_fp_phy(SecBuf *s, VReg dst, Arm64Reg src, int size) {
 static void asm_stur_fp(SecBuf *s, VReg r, int off) {
     arm64_stur(s, 1, REG(r), CG_ARM_FP, -off); // stur x{r}, [x29, #-off]
 }
-static void asm_ldur_fp(SecBuf *s, VReg r, int off) {
+__attribute__((unused)) static void asm_ldur_fp(SecBuf *s, VReg r, int off) {
     arm64_ldur(s, 1, REG(r), CG_ARM_FP, -off); // ldur x{r}, [x29, #-off]
 }
 
@@ -1819,7 +1808,7 @@ static void asm_stur_phy(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int sf, int32_t of
         arm64_stur(s, 1, rt, rn, off);
 }
 
-static void asm_ldur_phy(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int sf, int32_t off) {
+__attribute__((unused)) static void asm_ldur_phy(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int sf, int32_t off) {
     if (sf == 0) arm64_ldurb(s, (int)rt, (int)rn, off);
     else if (sf == 1)
         arm64_ldurh(s, (int)rt, (int)rn, off);
@@ -1878,7 +1867,7 @@ __attribute__((unused)) static void asm_inc(SecBuf *s, X86Reg r, int size) {
 // Bit operations
 // ============================================================================
 
-static void asm_bswap(SecBuf *s, VReg vr, int size) {
+__attribute__((unused)) static void asm_bswap(SecBuf *s, VReg vr, int size) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     Arm64Reg r = REG(vr);
@@ -1936,7 +1925,7 @@ __attribute__((unused)) static void asm_rev(SecBuf *s, VReg vr, int size) {
 }
 
 #ifdef ARCH_ARM64
-static void asm_rev16(SecBuf *s, VReg vr, int size) {
+__attribute__((unused)) static void asm_rev16(SecBuf *s, VReg vr, int size) {
     size_t off = s->len;
     int sf = (size == 8) ? 1 : 0;
     Arm64Reg r = REG(vr);
@@ -1950,17 +1939,17 @@ static void asm_rev16(SecBuf *s, VReg vr, int size) {
 // ============================================================================
 
 #ifdef ARCH_ARM64
-static void asm_cvtsi2ss(SecBuf *s, Arm64Reg src, int size) {
+__attribute__((unused)) static void asm_cvtsi2ss(SecBuf *s, Arm64Reg src, int size) {
     // ARM64: single-precision uses same scvtf path as double for now
     arm64_scvtf(s, size == 8, 0, 0, src);
 }
 #else
-static void asm_cvtsi2ss(SecBuf *s, X86Reg src, int size) {
+__attribute__((unused)) static void asm_cvtsi2ss(SecBuf *s, X86Reg src, int size) {
     x86_cvtsi2ss(s, size, X86_XMM0, src); // cvtsi2ss src, %xmm0
 }
 #endif
 
-static void asm_cvtsi2sd(SecBuf *s, VReg src_r, int size) {
+__attribute__((unused)) static void asm_cvtsi2sd(SecBuf *s, VReg src_r, int size) {
 #ifdef ARCH_ARM64
     arm64_scvtf(s, size == 8, 1, 0, REG(src_r)); // scvtf d0, w/x{src_r} (ftype=1=double dst)
 #else
@@ -1974,14 +1963,14 @@ static void asm_cvttsd2si(SecBuf *s, VReg dst_r, int size) {
     x86_cvttsd2si(s, size, REG(dst_r), X86_XMM0);
 #endif
 }
-static void asm_cvtss2sd(SecBuf *s) {
+__attribute__((unused)) static void asm_cvtss2sd(SecBuf *s) {
 #ifdef ARCH_ARM64
     arm64_fcvt(s, 1, 0, 0, 0); // fcvt d0, s0
 #else
     x86_cvtss2sd(s, X86_XMM0, X86_XMM0);
 #endif
 }
-static void asm_cvtsd2ss(SecBuf *s) {
+__attribute__((unused)) static void asm_cvtsd2ss(SecBuf *s) {
 #ifdef ARCH_ARM64
     arm64_fcvt(s, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest, ftype=1=double src)
 #else
@@ -2358,8 +2347,6 @@ static void asm_dmb(SecBuf *s) {
     arm64_dmb(s, 0xb);
     asm_record(ASM_FENCE, off, 1, -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
 }
-static void asm_dmb_ishld(SecBuf *s) { return asm_dmb(s); }
-static void asm_dmb_ishst(SecBuf *s) { return asm_dmb(s); }
 #endif /* ARCH_ARM64 for dmb */
 
 // ============================================================================
@@ -2384,7 +2371,7 @@ __attribute__((unused)) static void asm_nop(SecBuf *s) {
     asm_record(ASM_NOP, off, (size_t)(s->len - off), -1, -1, -1, 0, 0, 0, NULL, 0, -1, false);
 }
 
-static void asm_mfence(SecBuf *s) {
+__attribute__((unused)) static void asm_mfence(SecBuf *s) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     asm_dmb(s);
@@ -2412,7 +2399,7 @@ __attribute__((unused)) static void asm_and64_imm(SecBuf *s, VReg r, uint64_t im
     x86_and_ri(s, 8, REG(r), (int32_t)imm64);
 #endif
 }
-static void asm_or_imm(SecBuf *s, VReg r, int size, int32_t imm) {
+__attribute__((unused)) static void asm_or_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_orr_imm(s, sf, REG(r), REG(r), imm);
@@ -2420,7 +2407,7 @@ static void asm_or_imm(SecBuf *s, VReg r, int size, int32_t imm) {
     x86_or_ri(s, size, REG(r), imm);
 #endif
 }
-static void asm_xor_imm(SecBuf *s, VReg r, int size, int32_t imm) {
+__attribute__((unused)) static void asm_xor_imm(SecBuf *s, VReg r, int size, int32_t imm) {
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
     arm64_eor_imm(s, sf, REG(r), REG(r), imm);
@@ -2454,7 +2441,7 @@ static void asm_fcvt(SecBuf *s, int opc, int ftype, Arm64Reg rd, Arm64Reg rn) {
 }
 #endif
 
-static void asm_stur(SecBuf *s, VReg src, VReg base, int sf, int off) {
+__attribute__((unused)) static void asm_stur(SecBuf *s, VReg src, VReg base, int sf, int off) {
 #ifdef ARCH_ARM64
     arm64_stur(s, sf, REG(src), REG(base), off);
 #else
@@ -2486,7 +2473,7 @@ __attribute__((unused)) static void asm_ldur(SecBuf *s, int dst, int base, int s
 }
 #ifdef ARCH_ARM64
 // unscaled load for any size (byte/half/word/dword), negative offsets ok
-static void asm_ldur_sz(SecBuf *s, int dst, int base, int sz, int off) {
+__attribute__((unused)) static void asm_ldur_sz(SecBuf *s, int dst, int base, int sz, int off) {
     switch (sz) {
     case 1: arm64_ldurb(s, REG(dst), base, off); break;
     case 2: arm64_ldurh(s, REG(dst), base, off); break;
@@ -2641,7 +2628,7 @@ static void asm_movsd_rm_rbp(SecBuf *s, X86XmmReg xmm_dst, int offset) {
     x86_movsd_rm(s, (X86XmmReg)xmm_dst, m); // movsd -offset(%%rbp), xmm_dst
 }
 // cvtsd2ss from XMM param_xmm[i], store to rbp — convert param double to float
-static void asm_cvtsd2ss_xmm_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
+__attribute__((unused)) static void asm_cvtsd2ss_xmm_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
     x86_cvtsd2ss(s, X86_XMM0, (X86XmmReg)xmm_src); // cvtsd2ss xmm_src, xmm0
     X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
     x86_movss_mr(s, m, X86_XMM0); // movss xmm0, -(offset)(%%rbp)
@@ -2689,7 +2676,7 @@ static void asm_movb_al_rbp_r10(SecBuf *s, int offset) {
     secbuf_emit8(s, (uint8_t)((d >> 24) & 0xFF));
 }
 // movb offset-1(%%rbp,%%r10), %%al  — load byte from stack struct
-static void asm_movb_rbp_r10_al(SecBuf *s, int offset) {
+__attribute__((unused)) static void asm_movb_rbp_r10_al(SecBuf *s, int offset) {
     // movb (stack_offset-1)(%%rbp, %%r10, 1), %%al
     secbuf_emit8(s, 0x42); // REX.X
     secbuf_emit8(s, 0x8A); // MOV r8, r/m8
@@ -2718,7 +2705,7 @@ static void asm_mov_tmpreg_rbp(SecBuf *s, int offset, int sz) {
 // ============================================================================
 
 // tzcnt dst, src  — count trailing zeros (= ctz)
-static void asm_tzcnt(SecBuf *s, VReg dst, VReg src, int size) {
+__attribute__((unused)) static void asm_tzcnt(SecBuf *s, VReg dst, VReg src, int size) {
 #ifdef ARCH_ARM64
     // ARM64: rbit + clz
     Arm64Reg rdst = REG(dst);
@@ -2734,7 +2721,7 @@ static void asm_tzcnt(SecBuf *s, VReg dst, VReg src, int size) {
 }
 
 // bsf dst, src  — bit scan forward (= tzcnt, undefined for 0)
-static void asm_bsf(SecBuf *s, VReg dst, VReg src, int size) {
+__attribute__((unused)) static void asm_bsf(SecBuf *s, VReg dst, VReg src, int size) {
 #ifdef ARCH_ARM64
     Arm64Reg rdst = REG(dst);
     Arm64Reg rsrc = REG(src);
@@ -2785,7 +2772,7 @@ static void asm_cls(SecBuf *s, VReg dst, VReg src, int size) {
 // ============================================================================
 
 // rol reg, imm  — rotate left by immediate
-static void asm_rol_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
+__attribute__((unused)) static void asm_rol_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 #ifdef ARCH_ARM64
     // ARM64: ror by (bits - shift) == rol
     int sf = (size == 8) ? 1 : 0;
@@ -2803,7 +2790,7 @@ static void asm_rol_imm(SecBuf *s, VReg r, int size, uint8_t shift) {
 // cmovcc dst, src  — conditional move (x86) / csel (ARM64)
 // cond: X86Cond (x86) or Arm64Cond (ARM64)
 #ifdef ARCH_ARM64
-static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, Arm64Cond cond) {
+__attribute__((unused)) static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, Arm64Cond cond) {
     Arm64Reg rdst = REG(dst);
     Arm64Reg rsrc = REG(src);
     int sf = (size == 8) ? 1 : 0;
@@ -2812,7 +2799,7 @@ static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, Arm64Cond cond) {
     arm64_csel(s, sf, rdst, rsrc, rdst, (Arm64Cond)cond);
 }
 #else
-static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, X86Cond cond) {
+__attribute__((unused)) static void asm_cmov(SecBuf *s, VReg dst, VReg src, int size, X86Cond cond) {
     x86_cmovcc(s, size, (X86Cond)cond, REG(dst), REG(src)); // cmovcc dst, src
 }
 #endif
@@ -2838,7 +2825,7 @@ static void asm_cneg_mi(SecBuf *s, VReg vr, int size) {
 // ============================================================================
 
 // leaq 1(src), dst  /  leal 1(src), dst — lea with 1-byte displacement
-static void asm_lea_disp1(SecBuf *s, VReg dst, VReg src, int size) {
+__attribute__((unused)) static void asm_lea_disp1(SecBuf *s, VReg dst, VReg src, int size) {
 #ifdef ARCH_ARM64
     Arm64Reg rdst = REG(dst);
     Arm64Reg rsrc = REG(src);
@@ -2933,7 +2920,7 @@ static void asm_smull(SecBuf *s, VReg dst, VReg a, VReg b) {
 
 #ifndef ARCH_ARM64
 // mul src  — unsigned multiply: rdx:rax = rax * src
-__attribute__((unused)) static void asm_mul_1op(SecBuf *s, VReg src, int size) {
+static void asm_mul_1op(SecBuf *s, VReg src, int size) {
     size_t off = s->len;
     x86_imul_r(s, size, REG(src)); // imul src (unsigned 1-op not in x86_enc; use mul)
     // Note: x86_imul_r emits IMUL (signed), for unsigned we need MUL opcode
@@ -2990,7 +2977,7 @@ static void asm_fmov_gp_to_d(SecBuf *s, Arm64Reg fp_rd, VReg gp_rs) {
 }
 
 // ubfx x17, x{r}, #52, #11  — extract exponent bits from double
-static void asm_ubfx_x17_exp(SecBuf *s, VReg r) {
+__attribute__((unused)) static void asm_ubfx_x17_exp(SecBuf *s, VReg r) {
     arm64_ubfx(s, 1, ARM64_X17, REG(r), 52, 11); // ubfx x17, x{r}, #52, #11
 }
 
@@ -3154,12 +3141,12 @@ static void asm_ldr_d0_fp_off(SecBuf *s, int32_t spoff) {
 }
 
 // ldrb w11, [x29, #spoff]  — load byte from stack slot (stack param)
-static void asm_ldrb_w11_fp_off(SecBuf *s, int32_t spoff) {
+__attribute__((unused)) static void asm_ldrb_w11_fp_off(SecBuf *s, int32_t spoff) {
     arm64_ldrb_uoff(s, ARM64_X11, ARM64_X29, (uint32_t)spoff); // ldrb w11, [x29, #spoff]
 }
 
 // ldrh w11, [x29, #spoff]  — load halfword from stack slot
-static void asm_ldrh_w11_fp_off(SecBuf *s, int32_t spoff) {
+__attribute__((unused)) static void asm_ldrh_w11_fp_off(SecBuf *s, int32_t spoff) {
     arm64_ldrh_uoff(s, 11, ARM64_X29, (uint32_t)(spoff / 2)); // ldrh w11, [x29, #spoff]
 }
 
@@ -3257,10 +3244,10 @@ __attribute__((unused)) static void asm_rev16_real(SecBuf *s, VReg r, int size) 
 // ARM64: ldr{b,h} [base, #uimm] — unsigned offset load byte/halfword
 // ============================================================================
 #ifdef ARCH_ARM64
-static void asm_ldrb_uoff(SecBuf *s, VReg dst, VReg base, uint32_t uimm) {
+__attribute__((unused)) static void asm_ldrb_uoff(SecBuf *s, VReg dst, VReg base, uint32_t uimm) {
     arm64_ldrb_uoff(s, REG(dst), REG(base), uimm); // ldrb w{dst}, [x{base}, #uimm]
 }
-static void asm_ldrh_uoff(SecBuf *s, VReg dst, VReg base, uint32_t uimm) {
+__attribute__((unused)) static void asm_ldrh_uoff(SecBuf *s, VReg dst, VReg base, uint32_t uimm) {
     arm64_ldrh_uoff(s, REG(dst), REG(base), uimm); // ldrh w{dst}, [x{base}, #uimm]
 }
 static void asm_strb_uoff(SecBuf *s, VReg src, VReg base, uint32_t uimm) {
@@ -3273,7 +3260,7 @@ static void asm_strh_uoff(SecBuf *s, VReg src, VReg base, uint32_t uimm) {
 // ============================================================================
 // ARM64: ldrb w16, [x{base}, x9] / strb w16, [x{dst}, x9]
 // ============================================================================
-static void asm_ldrb_w16_x9(SecBuf *s, int base) {
+__attribute__((unused)) static void asm_ldrb_w16_x9(SecBuf *s, int base) {
     arm64_ldr_reg(s, 0, 16, REG(base), 9, false, 0); // ldrb w16, [x{base}, x9]
 }
 static void asm_strb_w16_x9(SecBuf *s, int dst) {
@@ -3286,7 +3273,7 @@ static void asm_strb_wzr_x9(SecBuf *s, int dst) {
 static void asm_strb_w16_x9_phy(SecBuf *s, Arm64Reg dst) {
     arm64_str_reg(s, 0, 16, dst, 9, false, 0); // strb w16, [x{dst}, x9]
 }
-static void asm_ldrb_w16_x9_phy(SecBuf *s, Arm64Reg base) {
+__attribute__((unused)) static void asm_ldrb_w16_x9_phy(SecBuf *s, Arm64Reg base) {
     arm64_ldr_reg(s, 0, 16, base, 9, false, 0); // ldrb w16, [x{base}, x9]
 }
 
@@ -3299,7 +3286,7 @@ static void asm_str_xzr_w11_x9(SecBuf *s) {
 static void asm_str_xzr_sp_x16(SecBuf *s) {
     arm64_str_reg(s, 3, ARM64_XZR, ARM64_SP, 16, false, 0); // str xzr, [sp, x16]
 }
-static void asm_ldrb_w17_sp_x16(SecBuf *s) {
+__attribute__((unused)) static void asm_ldrb_w17_sp_x16(SecBuf *s) {
     arm64_ldr_reg(s, 0, 17, ARM64_SP, 16, false, 0); // ldrb w17, [sp, x16]
 }
 
@@ -3319,17 +3306,17 @@ static void asm_mov_x9_vreg(SecBuf *s, VReg r) {
 static void asm_mov_x16_vreg(SecBuf *s, VReg r) {
     arm64_orr_reg(s, 1, ARM64_X16, ARM64_XZR, REG(r), ARM64_LSL, 0); // mov x16, x{r}
 }
-static void asm_mov_vreg_x12(SecBuf *s, VReg r) {
+__attribute__((unused)) static void asm_mov_vreg_x12(SecBuf *s, VReg r) {
     arm64_orr_reg(s, 1, REG(r), ARM64_XZR, ARM64_X12, ARM64_LSL, 0); // mov x{r}, x12
 }
 static void asm_mov_x9_from_vreg(SecBuf *s, VReg r_value, int size) {
     int sf = (size == 8) ? 1 : 0;
     arm64_orr_reg(s, sf, ARM64_X9, ARM64_XZR, REG(r_value), ARM64_LSL, 0); // mov w9/x9, r_value
 }
-static void asm_mov_x16_x12(SecBuf *s) {
+__attribute__((unused)) static void asm_mov_x16_x12(SecBuf *s) {
     arm64_orr_reg(s, 1, ARM64_X16, ARM64_XZR, ARM64_X12, ARM64_LSL, 0); // mov x16, x12
 }
-static void asm_mov_x12_x16(SecBuf *s) {
+__attribute__((unused)) static void asm_mov_x12_x16(SecBuf *s) {
     arm64_orr_reg(s, 1, ARM64_X12, ARM64_XZR, ARM64_X16, ARM64_LSL, 0); // mov x12, x16
 }
 
@@ -3383,16 +3370,16 @@ static void asm_csel_vs_zero(SecBuf *s, VReg r, int size) {
 static void asm_add_x16_fp_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 1, ARM64_X16, ARM64_X29, imm, 0); // add x16, x29, #imm
 }
-static void asm_add_x16_imm(SecBuf *s, int32_t imm) {
+__attribute__((unused)) static void asm_add_x16_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 1, ARM64_X16, ARM64_X16, imm, 0); // add x16, x16, #imm
 }
-static void asm_add_w16_imm(SecBuf *s, int32_t imm) {
+__attribute__((unused)) static void asm_add_w16_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 0, ARM64_X16, ARM64_X16, imm, 0); // add w16, w16, #imm
 }
-static void asm_add_x12_imm(SecBuf *s, int32_t imm) {
+__attribute__((unused)) static void asm_add_x12_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 1, ARM64_X12, ARM64_X12, imm, 0); // add x12, x12, #imm
 }
-static void asm_add_x12_x12_x17(SecBuf *s) {
+__attribute__((unused)) static void asm_add_x12_x12_x17(SecBuf *s) {
     arm64_add_reg(s, 1, ARM64_X12, ARM64_X12, ARM64_X17, ARM64_LSL, 0); // add x12, x12, x17
 }
 
@@ -3402,28 +3389,28 @@ static void asm_add_x12_x12_x17(SecBuf *s) {
 static void asm_str_x16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_str_uoff(s, 3, ARM64_X16, REG(base_r), uimm); // str x16, [x{base_r}, #uimm*8]
 }
-static void asm_ldr_x16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+__attribute__((unused)) static void asm_ldr_x16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_ldr_uoff(s, 3, ARM64_X16, REG(base_r), uimm); // ldr x16, [x{base_r}, #uimm*8]
 }
-static void asm_str_w16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+__attribute__((unused)) static void asm_str_w16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_str_uoff(s, 2, ARM64_X16, REG(base_r), uimm); // str w16, [x{base_r}, #uimm*8]
 }
-static void asm_ldr_w16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+__attribute__((unused)) static void asm_ldr_w16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_ldr_uoff(s, 2, ARM64_X16, REG(base_r), uimm); // ldr w16, [x{base_r}, #uimm*8]
 }
-static void asm_ldr_x12_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+__attribute__((unused)) static void asm_ldr_x12_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_ldr_uoff(s, 3, ARM64_X12, REG(base_r), uimm); // ldr x12, [x{base_r}, #uimm*8]
 }
-static void asm_str_x12_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+__attribute__((unused)) static void asm_str_x12_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_str_uoff(s, 3, ARM64_X12, REG(base_r), uimm); // str x12, [x{base_r}, #uimm*8]
 }
-static void asm_ldr_x12_0(SecBuf *s) {
+__attribute__((unused)) static void asm_ldr_x12_0(SecBuf *s) {
     arm64_ldr_uoff(s, 3, ARM64_X12, ARM64_X12, 0); // ldr x12, [x12]
 }
-static void asm_ldr_x16_0(SecBuf *s) {
+__attribute__((unused)) static void asm_ldr_x16_0(SecBuf *s) {
     arm64_ldr_uoff(s, 3, ARM64_X16, ARM64_X12, 0); // ldr x16, [x12]
 }
-static void asm_and_x12_imm(SecBuf *s, uint64_t imm_enc) {
+__attribute__((unused)) static void asm_and_x12_imm(SecBuf *s, uint64_t imm_enc) {
     arm64_and_imm(s, 1, ARM64_X12, ARM64_X12, imm_enc); // and x12, x12, #imm_enc
 }
 
@@ -3461,15 +3448,15 @@ static void asm_asr_x16_63(SecBuf *s) {
     arm64_asr_imm(s, 1, ARM64_X16, ARM64_X16, 63); // asr x16, x16, #63
 }
 // orr rd, rn, x16  (OR virtual reg with x16)
-static void asm_orr_x16(SecBuf *s, VReg rd, VReg rn) {
+__attribute__((unused)) static void asm_orr_x16(SecBuf *s, VReg rd, VReg rn) {
     arm64_orr_reg(s, 1, REG(rd), REG(rn), ARM64_X16, ARM64_LSL, 0); // orr rd, rn, x16
 }
 // orr x16, x16, x17  (OR of fixed physical regs into x16)
-static void asm_orr_x16_x16_x17(SecBuf *s) {
+__attribute__((unused)) static void asm_orr_x16_x16_x17(SecBuf *s) {
     arm64_orr_reg(s, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // orr x16, x16, x17
 }
 // mvn rd, rn  (bitwise NOT)
-static void asm_mvn_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
+__attribute__((unused)) static void asm_mvn_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
     arm64_mvn(s, 1, rd, rn, ARM64_LSL, 0); // mvn rd, rn
 }
 // negs rd, rn  (negate with flags for int128 borrow chain)
@@ -3501,39 +3488,39 @@ static void asm_subs_phy(SecBuf *s, VReg rd, VReg rn, VReg rm) {
 // ARM64 overflow builtin helpers (sign/zero extend, bitfield extract)
 // ============================================================================
 // sxtb rd, rn  (sign-extend byte)
-static void asm_sxtb_phy(SecBuf *s, VReg rd, VReg rn) {
+__attribute__((unused)) static void asm_sxtb_phy(SecBuf *s, VReg rd, VReg rn) {
     arm64_sxtb(s, 1, REG(rd), REG(rn)); // sxtb x{rd}, x{rn}
 }
 // sxth rd, rn  (sign-extend halfword)
-static void asm_sxth_phy(SecBuf *s, VReg rd, VReg rn) {
+__attribute__((unused)) static void asm_sxth_phy(SecBuf *s, VReg rd, VReg rn) {
     arm64_sxth(s, 1, REG(rd), REG(rn)); // sxth x{rd}, x{rn}
 }
 // sxtw rd, rn  (sign-extend word to doubleword)
-static void asm_sxtw_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
+__attribute__((unused)) static void asm_sxtw_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
     arm64_sxtw(s, rd, rn); // sxtw x{rd}, w{rn}
 }
 // uxtw rd, rn  (zero-extend word to doubleword)
-static void asm_uxtw_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
-    arm64_orr_reg(s, 1, rd, ARM64_XZR, rn, ARM64_UXTW, 0); // uxtw x{rd}, w{rn}
+__attribute__((unused)) static void asm_uxtw_phy(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
+    arm64_orr_reg(s, 1, rd, ARM64_XZR, rn, (Arm64Shift)ARM64_UXTW, 0); // uxtw x{rd}, w{rn}
 }
 // cinc rd, rn, ne  (conditional increment, result is always ne)
-static void asm_cinc_ne(SecBuf *s, VReg rd, VReg rn) {
+__attribute__((unused)) static void asm_cinc_ne(SecBuf *s, VReg rd, VReg rn) {
     arm64_csinc(s, 0, REG(rd), REG(rn), REG(rn), ARM64_NE); // cinc rd, rn, ne
 }
 // sbfx rd, rn, #0, #width  (signed bitfield extract for overflow range check)
-static void asm_sbfx_0(SecBuf *s, VReg rd, VReg rn, int width) {
+__attribute__((unused)) static void asm_sbfx_0(SecBuf *s, VReg rd, VReg rn, int width) {
     arm64_sbfx(s, 1, REG(rd), REG(rn), 0, width); // sbfx rd, rn, #0, #width
 }
 // ubfx rd, rn, #lsb, #width  (unsigned bitfield extract)
-static void asm_ubfx(SecBuf *s, VReg rd, VReg rn, int lsb, int width) {
+__attribute__((unused)) static void asm_ubfx(SecBuf *s, VReg rd, VReg rn, int lsb, int width) {
     arm64_ubfx(s, 1, REG(rd), REG(rn), lsb, width); // ubfx rd, rn, #lsb, #width
 }
 // tst rn, rm  (ANDS xzr, rn, rm — bitwise test, sets flags)
-static void asm_tst_phy(SecBuf *s, VReg rn, VReg rm) {
+__attribute__((unused)) static void asm_tst_phy(SecBuf *s, VReg rn, VReg rm) {
     arm64_ands_reg(s, 1, ARM64_XZR, REG(rn), REG(rm), ARM64_LSL, 0); // tst rn, rm
 }
 // tst rn, rn  (test self — sets flags for negative/sign check)
-static void asm_tst_self(SecBuf *s, VReg rn) {
+__attribute__((unused)) static void asm_tst_self(SecBuf *s, VReg rn) {
     arm64_ands_reg(s, 1, ARM64_XZR, REG(rn), REG(rn), ARM64_LSL, 0); // tst rn, rn
 }
 // cmp rn, rm  (SUBS xzr, rn, rm)
@@ -3586,7 +3573,7 @@ static void asm_mov_mem8_rdx(SecBuf *s, VReg rs) {
     x86_mov_rm(s, 8, X86_RDX, m); // movq 8(rs), %rdx
 }
 // movq 8(rs), r{rd}  — load high 64-bit from virtual reg to any virtual reg
-static void asm_mov_mem8_reg(SecBuf *s, VReg rd, VReg rs) {
+__attribute__((unused)) static void asm_mov_mem8_reg(SecBuf *s, VReg rd, VReg rs) {
     X86Mem m = {REG(rs), X86_NOREG, 1, 8};
     x86_mov_rm(s, 8, REG(rd), m); // movq 8(rs), r{rd}
 }
@@ -3922,11 +3909,11 @@ static void asm_fmov_x_d0(SecBuf *s, VReg rd) {
     arm64_fmov_f2i(s, 1, REG(rd), ARM64_D0); // fmov x{rd}, d0
 }
 // ldp x{t1}, x{t2}, [x{base}]  — load pair (va_arg helper)
-static void asm_ldp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
+__attribute__((unused)) static void asm_ldp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
     arm64_ldp(s, 1, REG(t1), REG(t2), REG(base), 0, false, false); // ldp x{t1}, x{t2}, [x{base}]
 }
 // stp x{t1}, x{t2}, [x{base}]  — store pair (va_arg helper)
-static void asm_stp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
+__attribute__((unused)) static void asm_stp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
     arm64_stp(s, 1, REG(t1), REG(t2), REG(base), 0, false, false); // stp x{t1}, x{t2}, [x{base}]
 }
 #endif

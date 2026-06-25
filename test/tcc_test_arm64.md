@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 108
-- **Failed**: 12
-- **Pass Rate**: 90%
+- **Passed**: 113
+- **Failed**: 7
+- **Pass Rate**: 94%
 
 ## Detailed Results
 
@@ -70,7 +70,7 @@ Generated: June 2026
 | 39_typedef                  | PASS         | Output matches                |
 | 40_stdio                    | PASS         | Output matches                |
 | 41_hashif                   | PASS         | Output matches                |
-| 42_function_pointer         | EXEC_FAIL    | non-zero exit                 |
+| 42_function_pointer         | PASS         | Output matches                |
 | 43_void_param               | PASS         | Output matches                |
 | 44_scoped_declarations      | PASS         | Output matches                |
 | 45_empty_for                | PASS         | Output matches                |
@@ -96,7 +96,7 @@ Generated: June 2026
 | 79_vla_continue             | PASS         | Output matches                |
 | 80_flexarray                | PASS         | Output matches                |
 | 81_types                    | PASS         | Output matches                |
-| 82_attribs_position         | EXEC_FAIL    | non-zero exit                 |
+| 82_attribs_position         | PASS         | Output matches                |
 | 83_utf8_in_identifiers      | PASS         | Output matches                |
 | 84_hex-float                | PASS         | Output matches                |
 | 85_asm-outside-function     | PASS         | Output matches                |
@@ -115,7 +115,7 @@ Generated: June 2026
 | 101_cleanup                 | PASS         | Output matches                |
 | 102_alignas                 | PASS         | Output matches                |
 | 103_implicit_memmove        | PASS         | Output matches                |
-| 104_inline                  | EXEC_FAIL    | non-zero exit                 |
+| 104_inline                  | PASS         | Output matches                |
 | 105_local_extern            | PASS         | Output matches                |
 | 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | PASS         | Output matches                |
@@ -129,7 +129,7 @@ Generated: June 2026
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
-| 124_atomic_counter          | MISMATCH     | Output does not match .expect |
+| 124_atomic_counter          | PASS         | Output matches                |
 | 128_run_atexit              | MISMATCH     | Output differs                |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | PASS         | Output matches                |
@@ -146,5 +146,5 @@ Generated: June 2026
 | 144_tls                     | COMPILE_FAIL | rcc returned non-zero         |
 | 46_grep                     | PASS         | Output matches                |
 | 125_atomic_misc             | PASS         | Output matches                |
-| 129_scopes                  | EXEC_FAIL    | non-zero exit                 |
+| 129_scopes                  | PASS         | Output matches                |
 | 139_arm64_errors            | PASS         | Output matches                |

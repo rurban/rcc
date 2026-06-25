@@ -5087,7 +5087,7 @@ static int run_ctest_suite(void) {
                 /* list_c_files_sorted returns full paths; extract basename */
                 const char *base = strrchr(*f, '/');
                 base = base ? base + 1 : *f;
-                char *dot = strrchr(base, '.');
+                const char *dot = strrchr(base, '.');
                 if (!dot || strcmp(dot, ".c") != 0) continue;
 
                 char name[16];
@@ -5124,7 +5124,7 @@ static int run_ctest_suite(void) {
                 /* list_c_files_sorted returns full paths; extract basename */
                 const char *base = strrchr(*f, '/');
                 base = base ? base + 1 : *f;
-                char *dot = strrchr(base, '.');
+                const char *dot = strrchr(base, '.');
                 if (!dot || strcmp(dot, ".c") != 0) continue;
                 ctest_total++;
 
