@@ -737,8 +737,8 @@ static void emit_direct_call(char *name) {
 #ifdef ARCH_ARM64
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
         // Same-section function: patch displacement directly, no relocation.
-        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)(off));
-        uint32_t insn = 0x94000000 | ((uint32_t)disp & 0x03FFFFFF);
+        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)off);
+        uint32_t insn = 0x94000000 | (((uint32_t)(disp / 4)) & 0x03FFFFFF);
         secbuf_patch32le(cg_sec, off, insn);
         return;
     }
