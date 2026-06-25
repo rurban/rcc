@@ -735,9 +735,15 @@ static void emit_direct_call(char *name) {
     size_t off = asm_call_label(cg_sec); // bl %s
     int sidx = objfile_find_sym(cg_obj, label);
 #ifdef ARCH_ARM64
+    if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
+        // Same-section function: patch displacement directly, no relocation.
+        int32_t disp = (int32_t)((int64_t)cg_obj->syms[sidx].offset - (int64_t)(off));
+        uint32_t insn = 0x94000000 | ((uint32_t)disp & 0x03FFFFFF);
+        secbuf_patch32le(cg_sec, off, insn);
+        return;
+    }
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
-    // bl label
     objfile_add_reloc(cg_obj, SEC_TEXT, off, sidx, R_AARCH64_CALL26, 0);
 #else
     if (sidx >= 0 && cg_obj->syms[sidx].section == SEC_TEXT) {
