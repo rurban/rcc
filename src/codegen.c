@@ -2781,6 +2781,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
     } else {
         int callee = gen(node->lhs);
+        if (indirect_save_size > 0) {
+            int slot = 0;
+            if (indirect_save_x8)
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X8, ARM64_SP, (uint32_t)slot++); // ldr x8, [sp]
+            for (int j = 0; j < 8; j++)
+                if (indirect_gp_mask & (1 << j))
+                    arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X0 + j), ARM64_SP, (uint32_t)slot++); // ldr x{j}, [sp, #slot*8]
+            for (int j = 0; j < 8; j++)
+                if (indirect_fp_mask & (1 << j))
+                    arm64_ldr_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + j), ARM64_SP, (uint32_t)(slot++ * 8)); // ldr d{j}, [sp, #slot*8]
+            arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, indirect_save_size, 0); // add sp, sp, #indirect_save_size
+        }
         asm_call_reg(cg_sec, callee); // call callee
         free_reg(callee);
     }

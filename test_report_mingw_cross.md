@@ -2,14 +2,14 @@
 
 **Platform**: Windows x86_64 (mingw cross)
 
-Generated: June 25 2026 12:00
+Generated: June 25 2026 13:06
 
 ## Overall Summary
 
-- **Total**: 2068
-- **Passed**: 1955
+- **Total**: 1834
+- **Passed**: 1721
 - **Failed**: 0
-- **Overall Pass Rate**: 94%
+- **Overall Pass Rate**: 93%
 
 ## TCC Compatibility Tests
 
@@ -24,20 +24,6 @@ Generated: June 25 2026 12:00
 - **Passed**: 39
 - **Failed**: 0
 - **Pass Rate**: 86%
-
-## c-testsuite
-
-- **Total**: 220
-- **Passed**: 220
-- **Failed**: 0
-- **Pass Rate**: 100%
-
-## NCC Compliance Tests (vs GCC)
-
-- **Total**: 14
-- **Passed**: 14
-- **Failed**: 0
-- **Pass Rate**: 100%
 
 ## GCC Torture Tests
 

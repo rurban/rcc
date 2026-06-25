@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 114
-- **Failed**: 6
-- **Pass Rate**: 95%
+- **Passed**: 118
+- **Failed**: 2
+- **Pass Rate**: 98%
 
 ## Detailed Results
 
@@ -70,7 +70,7 @@ Generated: June 2026
 | 39_typedef                  | PASS      | Output matches                |
 | 40_stdio                    | PASS      | Output matches                |
 | 41_hashif                   | PASS      | Output matches                |
-| 42_function_pointer         | EXEC_FAIL | non-zero exit                 |
+| 42_function_pointer         | PASS      | Output matches                |
 | 43_void_param               | PASS      | Output matches                |
 | 44_scoped_declarations      | PASS      | Output matches                |
 | 45_empty_for                | PASS      | Output matches                |
@@ -96,7 +96,7 @@ Generated: June 2026
 | 79_vla_continue             | PASS      | Output matches                |
 | 80_flexarray                | PASS      | Output matches                |
 | 81_types                    | PASS      | Output matches                |
-| 82_attribs_position         | EXEC_FAIL | non-zero exit                 |
+| 82_attribs_position         | PASS      | Output matches                |
 | 83_utf8_in_identifiers      | PASS      | Output matches                |
 | 84_hex-float                | PASS      | Output matches                |
 | 85_asm-outside-function     | PASS      | Output matches                |
@@ -125,7 +125,7 @@ Generated: June 2026
 | 111_conversion              | PASS      | Output matches                |
 | 117_builtins                | PASS      | Output matches                |
 | 118_switch                  | PASS      | Output matches                |
-| 119_random_stuff            | EXEC_FAIL | non-zero exit                 |
+| 119_random_stuff            | PASS      | Output matches                |
 | 121_struct_return           | PASS      | Output matches                |
 | 122_vla_reuse               | PASS      | Output matches                |
 | 123_vla_bug                 | PASS      | Output matches                |
@@ -146,5 +146,5 @@ Generated: June 2026
 | 144_tls                     | PASS      | Output matches                |
 | 46_grep                     | PASS      | Output matches                |
 | 125_atomic_misc             | PASS      | Output matches                |
-| 129_scopes                  | EXEC_FAIL | non-zero exit                 |
+| 129_scopes                  | PASS      | Output matches                |
 | 139_arm64_errors            | PASS      | Output matches                |
