@@ -298,11 +298,11 @@ TEST_RUNNER = ./run_tests --parallel
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
-	$(TEST_RUNNER)
+	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER)
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
-	$(TEST_RUNNER) --all
+	ulimit -f 2097152; $(TEST_RUNNER) --all
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
-	$(TEST_RUNNER) --torture
+	ulimit -f 2097152; $(TEST_RUNNER) --torture
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all

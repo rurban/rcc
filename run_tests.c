@@ -360,6 +360,11 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
             n = read(read_fd, buf, sizeof(buf));
             if (n > 0) {
                 if (r.out_len + (size_t)n + 1 > cap) {
+                    if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
+                        kill(pid, SIGKILL);
+                        r.timed_out = true;
+                        break;
+                    }
                     cap = r.out_len + (size_t)n + 8192;
                     r.out = xrealloc(r.out, cap);
                 }
@@ -374,6 +379,9 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
             r.timed_out = true;
             while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
                 if (r.out_len + (size_t)n + 1 > cap) {
+                    if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
+                        break;
+                    }
                     cap = r.out_len + (size_t)n + 8192;
                     r.out = xrealloc(r.out, cap);
                 }
@@ -1391,6 +1399,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     char *out = malloc(cap);
     while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
         if (len + (size_t)n + 1 > cap) {
+            if (cap >= 10 * 1024 * 1024) break; // 10MB hard limit
             cap = len + (size_t)n + 8192;
             out = xrealloc(out, cap);
         }
