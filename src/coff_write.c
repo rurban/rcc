@@ -90,7 +90,8 @@
 // ---------------------------------------------------------------------------
 typedef struct {
     char short_name[8]; // zero-padded 8-byte section name
-    int sec_id; // SEC_TEXT / SEC_DATA / SEC_RODATA / SEC_BSS
+    int sec_id; // SEC_TEXT / SEC_DATA / SEC_RODATA / SEC_BSS / SEC_INIT_ARRAY /
+    // SEC_FINI_ARRAY / SEC_XDATA / SEC_PDATA
     uint32_t characteristics;
     size_t raw_size; // bytes in file
     size_t virt_size; // virtual size (.bss: bss_size, others: raw_size)
@@ -334,9 +335,7 @@ static void fill_short_name(char short_name[8], const char *name,
 // Main COFF writer
 // ---------------------------------------------------------------------------
 int coff_write(ObjFile *obj, const char *path) {
-#ifdef ARCH_ARM64
-    uint16_t machine = IMAGE_FILE_MACHINE_ARM64;
-#elif defined(__aarch64__)
+#if defined(ARCH_ARM64) || defined(__aarch64__)
     uint16_t machine = IMAGE_FILE_MACHINE_ARM64;
 #else
     uint16_t machine = IMAGE_FILE_MACHINE_AMD64;

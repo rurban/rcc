@@ -104,7 +104,8 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v) {
 // ---------------------------------------------------------------------------
 
 void objfile_init(ObjFile *obj) {
-    memset(obj, 0, sizeof(*obj));
+    // wrong -Wstringop-overflow= warning. known gcc bug
+    memset(obj, 0, sizeof(ObjFile));
     secbuf_init(&obj->text);
     secbuf_init(&obj->data);
     secbuf_init(&obj->rodata);
