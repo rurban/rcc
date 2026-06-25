@@ -129,7 +129,23 @@ void objfile_free(ObjFile *obj) {
     free(obj->init_array_relocs);
     free(obj->fini_array_relocs);
     free(obj->data_tls_relocs);
+    free(obj->unwind);
     memset(obj, 0, sizeof(*obj));
+}
+
+UnwindEntry *objfile_add_unwind(ObjFile *obj) {
+    if (obj->unwind_count == obj->unwind_cap) {
+        obj->unwind_cap = obj->unwind_cap ? obj->unwind_cap * 2 : 16;
+        UnwindEntry *tmp = realloc(obj->unwind, (size_t)obj->unwind_cap * sizeof(UnwindEntry));
+        if (!tmp) {
+            fprintf(stderr, "objfile: out of memory\n");
+            exit(1);
+        }
+        obj->unwind = tmp;
+    }
+    UnwindEntry *e = &obj->unwind[obj->unwind_count++];
+    memset(e, 0, sizeof(*e));
+    return e;
 }
 
 int objfile_add_sym(ObjFile *obj, const char *name, int section,

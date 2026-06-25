@@ -114,6 +114,33 @@ struct ObjReloc {
 #define FIXUP_ARM64_B19  4
 
 // ---------------------------------------------------------------------------
+// Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by
+// coff_write as .pdata (RUNTIME_FUNCTION) and .xdata (UNWIND_INFO). Without
+// it RtlUnwindEx (used by longjmp and exceptions) cannot walk past a frame:
+// Wine merely logs a warning, but real Windows crashes.
+// ---------------------------------------------------------------------------
+#define UWOP_PUSH_NONVOL 0 // OpInfo = register number; rsp += 8
+#define UWOP_ALLOC_LARGE 1 // OpInfo=0: extra 16-bit slot = size/8; OpInfo=1: 2 slots = size
+#define UWOP_ALLOC_SMALL 2 // OpInfo = size/8 - 1 (size 8..128)
+#define UWOP_SET_FPREG   3 // establish frame pointer
+
+typedef struct UnwindCode {
+    uint8_t code_offset; // prolog offset just past the described instruction
+    uint8_t op; // UWOP_* (stored in the low nibble on emit)
+    uint8_t info; // OpInfo: register number or alloc-size code
+    uint16_t extra[2]; // extra size slots for UWOP_ALLOC_LARGE
+    int extra_count; // 0, 1, or 2
+} UnwindCode;
+
+typedef struct UnwindEntry {
+    uint32_t func_start; // .text offset of function start
+    uint32_t func_end; // .text offset one past the last byte
+    uint8_t prolog_size; // bytes in prolog (through .seh_endprologue)
+    UnwindCode codes[16]; // captured in prolog order, reversed at emit time
+    int code_count; // number of UnwindCode entries (not counting extra slots)
+} UnwindEntry;
+
+// ---------------------------------------------------------------------------
 // Complete assembled object
 // ---------------------------------------------------------------------------
 typedef struct ObjFile ObjFile;
@@ -152,6 +179,12 @@ struct ObjFile {
     ObjReloc *data_tls_relocs;
     int data_tls_reloc_count;
     int data_tls_reloc_cap;
+
+    // Win64 SEH unwind entries (one per emitted function); only populated on
+    // _WIN32 x86-64 codegen, ignored by elf_write/macho_write.
+    UnwindEntry *unwind;
+    int unwind_count;
+    int unwind_cap;
 };
 
 void objfile_init(ObjFile *obj);
@@ -165,6 +198,9 @@ int objfile_find_sym(ObjFile *obj, const char *name);
 
 void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
                        int sym_idx, uint32_t type, int64_t addend);
+
+// Append a fresh zeroed Win64 unwind entry and return a pointer to it.
+UnwindEntry *objfile_add_unwind(ObjFile *obj);
 
 // Object file writers
 int elf_write(ObjFile *obj, const char *path);

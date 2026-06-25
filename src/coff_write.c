@@ -25,11 +25,20 @@
 #define IMAGE_SCN_MEM_EXECUTE            0x20000000
 #define IMAGE_SCN_MEM_READ               0x40000000
 #define IMAGE_SCN_MEM_WRITE              0x80000000
+#define IMAGE_SCN_ALIGN_4BYTES           0x00300000
 #define IMAGE_SCN_ALIGN_8BYTES           0x00400000
 #define IMAGE_SCN_ALIGN_16BYTES          0x00500000
 
 #define COFF_CHAR_TEXT  \
     (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES)
+// .pdata / .xdata: read-only initialized data, 4-byte aligned (matches GNU as)
+#define COFF_CHAR_XDATA \
+    (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_4BYTES)
+
+// Logical section ids for the Win64 unwind sections. These never index
+// coff_sec_idx[] (no ObjSym targets them); they are handled specially.
+#define SEC_XDATA  100
+#define SEC_PDATA  101
 #define COFF_CHAR_DATA  \
     (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_ALIGN_16BYTES)
 #define COFF_CHAR_RDATA \
@@ -336,7 +345,7 @@ int coff_write(ObjFile *obj, const char *path) {
     // -------------------------------------------------------------------
     // Enumerate sections
     // -------------------------------------------------------------------
-    CoffSec sections[6];
+    CoffSec sections[8]; // +2 for Win64 .xdata/.pdata
     int num_sec = 0;
 
     // .text
@@ -415,11 +424,104 @@ int coff_write(ObjFile *obj, const char *path) {
         num_sec++;
     }
 
+    // -------------------------------------------------------------------
+    // Win64 SEH unwind: build .xdata (UNWIND_INFO) and .pdata
+    // (RUNTIME_FUNCTION) from the unwind entries recorded during codegen.
+    // .pdata RUNTIME_FUNCTION fields are RVAs, materialized via ADDR32NB
+    // relocations against the .text / .xdata section symbols with the byte
+    // offset stored in place as the addend.
+    // -------------------------------------------------------------------
+    uint8_t *xdata_buf = NULL, *pdata_buf = NULL;
+    size_t xdata_len = 0, pdata_len = 0;
+    int xdata_pos = -1;
+    if (machine == IMAGE_FILE_MACHINE_AMD64 && obj->unwind_count > 0) {
+        int n = obj->unwind_count;
+        uint32_t *xoff = malloc((size_t)n * sizeof(uint32_t));
+
+        // First pass: per-entry size and running .xdata offset.
+        size_t total = 0;
+        for (int i = 0; i < n; i++) {
+            UnwindEntry *e = &obj->unwind[i];
+            int slots = 0;
+            for (int k = 0; k < e->code_count; k++)
+                slots += 1 + e->codes[k].extra_count;
+            int padded = slots + (slots & 1); // pad to 4-byte alignment
+            xoff[i] = (uint32_t)total;
+            total += 4 + (size_t)padded * 2;
+        }
+        xdata_len = total;
+        xdata_buf = malloc(xdata_len ? xdata_len : 1);
+
+        size_t p = 0;
+        for (int i = 0; i < n; i++) {
+            UnwindEntry *e = &obj->unwind[i];
+            int slots = 0;
+            for (int k = 0; k < e->code_count; k++)
+                slots += 1 + e->codes[k].extra_count;
+            xdata_buf[p++] = 0x01; // Version 1, Flags 0
+            xdata_buf[p++] = e->prolog_size; // SizeOfProlog
+            xdata_buf[p++] = (uint8_t)slots; // CountOfCodes (slots, excl. padding)
+            xdata_buf[p++] = 0x00; // FrameRegister=0, FrameOffset=0
+            // Unwind codes in reverse prolog order; extra slots follow their code.
+            for (int k = e->code_count - 1; k >= 0; k--) {
+                UnwindCode *c = &e->codes[k];
+                xdata_buf[p++] = c->code_offset;
+                xdata_buf[p++] = (uint8_t)(c->op | (c->info << 4));
+                for (int x = 0; x < c->extra_count; x++) {
+                    xdata_buf[p++] = (uint8_t)(c->extra[x] & 0xff);
+                    xdata_buf[p++] = (uint8_t)(c->extra[x] >> 8);
+                }
+            }
+            if (slots & 1) { // pad to even slot count (4-byte alignment)
+                xdata_buf[p++] = 0;
+                xdata_buf[p++] = 0;
+            }
+        }
+
+        // .pdata: RUNTIME_FUNCTION[n] = { BeginAddress, EndAddress, UnwindData }
+        pdata_len = (size_t)n * 12;
+        pdata_buf = malloc(pdata_len);
+        for (int i = 0; i < n; i++) {
+            UnwindEntry *e = &obj->unwind[i];
+            uint8_t *b = pdata_buf + (size_t)i * 12;
+            uint32_t vals[3] = {e->func_start, e->func_end, xoff[i]};
+            for (int j = 0; j < 3; j++) {
+                b[j * 4 + 0] = (uint8_t)(vals[j]);
+                b[j * 4 + 1] = (uint8_t)(vals[j] >> 8);
+                b[j * 4 + 2] = (uint8_t)(vals[j] >> 16);
+                b[j * 4 + 3] = (uint8_t)(vals[j] >> 24);
+            }
+        }
+        free(xoff);
+
+        memset(sections[num_sec].short_name, 0, 8);
+        memcpy(sections[num_sec].short_name, ".xdata", 6);
+        sections[num_sec].sec_id = SEC_XDATA;
+        sections[num_sec].characteristics = COFF_CHAR_XDATA;
+        sections[num_sec].raw_size = xdata_len;
+        sections[num_sec].virt_size = xdata_len;
+        sections[num_sec].relocs = NULL;
+        sections[num_sec].reloc_count = 0;
+        xdata_pos = num_sec;
+        num_sec++;
+
+        memset(sections[num_sec].short_name, 0, 8);
+        memcpy(sections[num_sec].short_name, ".pdata", 6);
+        sections[num_sec].sec_id = SEC_PDATA;
+        sections[num_sec].characteristics = COFF_CHAR_XDATA;
+        sections[num_sec].raw_size = pdata_len;
+        sections[num_sec].virt_size = pdata_len;
+        sections[num_sec].relocs = NULL; // emitted specially (section-symbol relative)
+        sections[num_sec].reloc_count = 3 * n;
+        num_sec++;
+    }
+
     // Build SEC_* → COFF section index (1-based) map
     int coff_sec_idx[SEC_NUM];
     memset(coff_sec_idx, 0, sizeof(coff_sec_idx));
     for (int i = 0; i < num_sec; i++)
-        coff_sec_idx[sections[i].sec_id] = i + 1;
+        if (sections[i].sec_id >= 0 && sections[i].sec_id < SEC_NUM)
+            coff_sec_idx[sections[i].sec_id] = i + 1;
 
     // -------------------------------------------------------------------
     // Build string table and symbol table
@@ -610,6 +712,8 @@ int coff_write(ObjFile *obj, const char *path) {
         free(rodata_copy);
         free(init_array_copy);
         free(fini_array_copy);
+        free(xdata_buf);
+        free(pdata_buf);
         return -1;
     }
 
@@ -651,11 +755,38 @@ int coff_write(ObjFile *obj, const char *path) {
             wbuf(f, init_array_copy, sz);
         else if (sections[i].sec_id == SEC_FINI_ARRAY)
             wbuf(f, fini_array_copy, sz);
+        else if (sections[i].sec_id == SEC_XDATA)
+            wbuf(f, xdata_buf, sz);
+        else if (sections[i].sec_id == SEC_PDATA)
+            wbuf(f, pdata_buf, sz);
         // .bss has raw_size 0, handled above
     }
 
     // --- Relocations ---
+    // .text / .xdata section-symbol COFF indices for the .pdata RVA relocs.
+    // Section symbols are emitted first, one per section in order, so
+    // coff_sym_idx[<section position>] gives the section symbol's index.
+    int text_sec_sym = coff_sym_idx[0]; // .text is always sections[0]
+    int xdata_sec_sym = (xdata_pos >= 0) ? coff_sym_idx[xdata_pos] : 0;
     for (int i = 0; i < num_sec; i++) {
+        if (sections[i].sec_id == SEC_PDATA) {
+            // 3 ADDR32NB relocs per RUNTIME_FUNCTION: Begin/End → .text,
+            // UnwindData → .xdata. Addends are already stored in pdata_buf.
+            int n = sections[i].reloc_count / 3;
+            for (int k = 0; k < n; k++) {
+                uint32_t base = (uint32_t)k * 12;
+                w32(f, base + 0);
+                w32(f, (uint32_t)text_sec_sym);
+                w16(f, IMAGE_REL_AMD64_ADDR32NB);
+                w32(f, base + 4);
+                w32(f, (uint32_t)text_sec_sym);
+                w16(f, IMAGE_REL_AMD64_ADDR32NB);
+                w32(f, base + 8);
+                w32(f, (uint32_t)xdata_sec_sym);
+                w16(f, IMAGE_REL_AMD64_ADDR32NB);
+            }
+            continue;
+        }
         for (int j = 0; j < sections[i].reloc_count; j++) {
             ObjReloc *r = &sections[i].relocs[j];
             int sym_idx = (r->sym_idx >= 0 && r->sym_idx < obj->sym_count)
@@ -700,6 +831,8 @@ int coff_write(ObjFile *obj, const char *path) {
     free(rodata_copy);
     free(init_array_copy);
     free(fini_array_copy);
+    free(xdata_buf);
+    free(pdata_buf);
     return 0;
 }
 #endif /* _WIN32 */
