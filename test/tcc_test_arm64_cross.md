@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 117
-- **Failed**: 3
-- **Pass Rate**: 97%
+- **Passed**: 114
+- **Failed**: 6
+- **Pass Rate**: 95%
 
 ## Detailed Results
 
@@ -35,7 +35,7 @@ Generated: June 2026
 | 19_pointer_arithmetic       | PASS      | Output matches                |
 | 20_pointer_comparison       | PASS      | Output matches                |
 | 21_char_array               | PASS      | Output matches                |
-| 22_floating_point           | PASS      | Output matches                |
+| 22_floating_point           | EXEC_FAIL | non-zero exit                 |
 | 23_type_coercion            | PASS      | Output matches                |
 | 24_math_library             | PASS      | Output matches                |
 | 25_quicksort                | PASS      | Output matches                |
@@ -55,7 +55,7 @@ Generated: June 2026
 | 39_typedef                  | PASS      | Output matches                |
 | 40_stdio                    | PASS      | Output matches                |
 | 41_hashif                   | PASS      | Output matches                |
-| 42_function_pointer         | PASS      | Output matches                |
+| 42_function_pointer         | EXEC_FAIL | non-zero exit                 |
 | 43_void_param               | PASS      | Output matches                |
 | 44_scoped_declarations      | PASS      | Output matches                |
 | 45_empty_for                | PASS      | Output matches                |
@@ -75,7 +75,7 @@ Generated: June 2026
 | 70_floating_point_literals  | PASS      | Output matches                |
 | 71_macro_empty_arg          | PASS      | Output matches                |
 | 72_long_long_constant       | PASS      | Output matches                |
-| 73_arm64                    | PASS      | Output matches                |
+| 73_arm64                    | MISMATCH  | Output does not match .expect |
 | 75_array_in_struct_init     | PASS      | Output matches                |
 | 76_dollars_in_identifiers   | PASS      | Output matches                |
 | 77_push_pop_macro           | PASS      | Output matches                |
@@ -83,7 +83,7 @@ Generated: June 2026
 | 79_vla_continue             | PASS      | Output matches                |
 | 80_flexarray                | PASS      | Output matches                |
 | 81_types                    | PASS      | Output matches                |
-| 82_attribs_position         | PASS      | Output matches                |
+| 82_attribs_position         | EXEC_FAIL | non-zero exit                 |
 | 83_utf8_in_identifiers      | PASS      | Output matches                |
 | 84_hex-float                | PASS      | Output matches                |
 | 85_asm-outside-function     | PASS      | Output matches                |
@@ -121,7 +121,7 @@ Generated: June 2026
 | 116_bound_setjmp2           | SKIP      | Skipped                       |
 | 117_builtins                | PASS      | Output matches                |
 | 118_switch                  | PASS      | Output matches                |
-| 119_random_stuff            | PASS      | Output matches                |
+| 119_random_stuff            | EXEC_FAIL | non-zero exit                 |
 | 120_alias                   | SKIP      | Skipped                       |
 | 121_struct_return           | PASS      | Output matches                |
 | 122_vla_reuse               | PASS      | Output matches                |
@@ -131,7 +131,7 @@ Generated: June 2026
 | 126_bound_global            | SKIP      | Skipped                       |
 | 127_asm_goto                | SKIP      | Skipped                       |
 | 128_run_atexit              | PASS      | Output matches                |
-| 129_scopes                  | PASS      | Output matches                |
+| 129_scopes                  | EXEC_FAIL | non-zero exit                 |
 | 130_large_argument          | PASS      | Output matches                |
 | 131_return_struct_in_reg    | PASS      | Output matches                |
 | 132_bound_test              | PASS      | Output matches                |
@@ -140,9 +140,9 @@ Generated: June 2026
 | 135_func_arg_struct_compare | PASS      | Output matches                |
 | 136_atomic_gcc_style        | PASS      | Output matches                |
 | 137_funcall_struct_args     | PASS      | Output matches                |
-| 138_arm64_encoding          | MISMATCH  | Output does not match .expect |
-| 139_arm64_errors            | MISMATCH  | Output differs                |
-| 140_arm64_extasm            | EXEC_FAIL | non-zero exit                 |
+| 138_arm64_encoding          | PASS      | Output matches                |
+| 139_arm64_errors            | PASS      | Output matches                |
+| 140_arm64_extasm            | PASS      | Output matches                |
 | 141_riscv_asm               | SKIP      | Skipped                       |
 | 142_int_conversion          | PASS      | Output matches                |
 | 143_void_expr               | PASS      | Output matches                |
