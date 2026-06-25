@@ -8,7 +8,7 @@ trap 'make -s clean; make -s' EXIT
 
 echo "==> Building rcc-darwin (host binary, Darwin-targeted codegen)..."
 make -s clean
-make -s CC=gcc CFLAGS="-std=c11 -Wall -Wextra -O2 -g -fPIC -D__APPLE__ -DARCH_ARM64" \
+make -s MACHINE=arm64-apple-darwin23 CC=gcc CFLAGS="-std=c11 -Wall -Wextra -O2 -g -fPIC -D__APPLE__ -DARCH_ARM64" \
     TARGET=rcc-darwin OBJ_EXT=.darwin.o
 
 if [ -n "${1:-}" ]; then

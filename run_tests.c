@@ -330,39 +330,60 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
 
     int read_fd = capture == 1 ? err_pipe[0] : out_pipe[0];
 
-    // Use select() with timeout — thread-safe, no process-global alarm
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(read_fd, &fds);
-    struct timeval tv = {.tv_sec = timeout_sec, .tv_usec = 0};
-    int sel_ret = select(read_fd + 1, &fds, NULL, NULL, &tv);
+    // Hard per-test ceiling: never let a single test run longer than 2 minutes,
+    // even if the caller passed a larger (or zero/unbounded) timeout.
+    if (timeout_sec <= 0 || timeout_sec > 120)
+        timeout_sec = 120;
 
+    // Read the child's output under an overall deadline.  select() must guard
+    // EVERY read, not just the first: a test that prints some output and then
+    // spins forever (an endless loop in mis-compiled code) keeps the pipe open,
+    // so a plain blocking read() would hang the harness indefinitely.  We loop
+    // select()+read() with a shrinking timeout so the total wait is bounded by
+    // timeout_sec; when the deadline passes we SIGKILL the child.
     size_t cap = 8192;
     r.out = malloc(cap);
     r.out_len = 0;
     char buf[8192];
     ssize_t n;
-    if (sel_ret > 0) {
-        while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
-            if (r.out_len + (size_t)n + 1 > cap) {
-                cap = r.out_len + (size_t)n + 8192;
-                r.out = xrealloc(r.out, cap);
+    time_t deadline = time(NULL) + timeout_sec;
+    for (;;) {
+        time_t now = time(NULL);
+        long remaining = (long)(deadline - now);
+        if (remaining < 0) remaining = 0;
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(read_fd, &fds);
+        struct timeval tv = {.tv_sec = remaining, .tv_usec = 0};
+        int sel_ret = select(read_fd + 1, &fds, NULL, NULL, &tv);
+        if (sel_ret > 0) {
+            n = read(read_fd, buf, sizeof(buf));
+            if (n > 0) {
+                if (r.out_len + (size_t)n + 1 > cap) {
+                    cap = r.out_len + (size_t)n + 8192;
+                    r.out = xrealloc(r.out, cap);
+                }
+                memcpy(r.out + r.out_len, buf, (size_t)n);
+                r.out_len += (size_t)n;
+                continue;
             }
-            memcpy(r.out + r.out_len, buf, (size_t)n);
-            r.out_len += (size_t)n;
-        }
-    } else if (sel_ret == 0) {
-        // Timeout: kill the child
-        kill(pid, SIGKILL);
-        r.timed_out = true;
-        // Drain any remaining output (non-blocking after kill)
-        while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
-            if (r.out_len + (size_t)n + 1 > cap) {
-                cap = r.out_len + (size_t)n + 8192;
-                r.out = xrealloc(r.out, cap);
+            break; // EOF (n == 0) or read error
+        } else if (sel_ret == 0) {
+            // Deadline reached: kill the child and drain any pending output.
+            kill(pid, SIGKILL);
+            r.timed_out = true;
+            while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
+                if (r.out_len + (size_t)n + 1 > cap) {
+                    cap = r.out_len + (size_t)n + 8192;
+                    r.out = xrealloc(r.out, cap);
+                }
+                memcpy(r.out + r.out_len, buf, (size_t)n);
+                r.out_len += (size_t)n;
             }
-            memcpy(r.out + r.out_len, buf, (size_t)n);
-            r.out_len += (size_t)n;
+            break;
+        } else {
+            if (errno == EINTR) continue;
+            break; // select error
         }
     }
     close(read_fd);
@@ -466,6 +487,10 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
 static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture, const char *cwd) {
     ProcResult r = {0};
     r.exit_code = -1;
+
+    // Hard per-test ceiling: never let a single test run longer than 2 minutes.
+    if (timeout_sec <= 0 || timeout_sec > 120)
+        timeout_sec = 120;
 
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     HANDLE read_h, write_h;
