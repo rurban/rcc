@@ -3361,8 +3361,9 @@ static void emit_adrp_add(VReg r, const char *label) {
         sidx = objfile_add_sym(cg_obj, label, sec, 0, 0, bind, ST_NOTYPE);
     }
 #ifdef __APPLE__
-    // Darwin always uses GOT (matching system assembler behavior)
-    {
+    // Darwin uses GOT for data symbols.
+    // Exception: .L. flow-control labels are local text labels, use direct access.
+    if (label[0] != '.' || (label[1] != 'L' || label[2] != '.')) {
         size_t adrp_off = cg_sec->len;
         asm_adrp(cg_sec, rd); // adrp xrd, label@GOTPAGE
         objfile_add_reloc(cg_obj, SEC_TEXT, adrp_off, sidx, R_AARCH64_ADR_GOT_PAGE, 0);
@@ -11741,9 +11742,14 @@ struct ObjFile *codegen(Program *prog) {
                         size_t rel_off = cg_sec->len;
                         secbuf_emit64le(cg_sec, 0); // .quad 0 (addend in reloc)
                         const char *rel_label = sym_name(rel->label);
-                        int sidx = objfile_find_sym(cg_obj, rel_label);
+                        int sidx;
+                        // .L. labels are local text labels; use SB_LOCAL SEC_TEXT for section-relative reloc
+                        bool is_local_label = (rel_label[0] == '.' && rel_label[1] == 'L' && rel_label[2] == '.');
+                        sidx = objfile_find_sym(cg_obj, rel_label);
                         if (sidx < 0)
-                            sidx = objfile_add_sym(cg_obj, rel_label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+                            sidx = objfile_add_sym(cg_obj, rel_label,
+                                                   is_local_label ? SEC_TEXT : SEC_UNDEF, 0, 0,
+                                                   is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
 #ifdef ARCH_ARM64
                         objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
 #else
