@@ -64,6 +64,15 @@ jobs:
       - name: Build
         run: make
 
+      - name: Cache pre-commit
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/prek
+          key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: |
+            pre-commit-${{ matrix.os }}-
+
       - name: Run tests
         id: tests
         continue-on-error: true
@@ -71,12 +80,6 @@ jobs:
           ./rcc --version
           ./rcc -print-search-dirs
           make check-all
-
-      - name: Cache pre-commit
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.cache/pre-commit
-          key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Check for source changes
         id: changed
