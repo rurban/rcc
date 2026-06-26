@@ -291,9 +291,9 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = ./run_tests.exe -v
+TEST_RUNNER = ./run_tests.exe
 else
-TEST_RUNNER = ./run_tests -v
+TEST_RUNNER = ./run_tests
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
