@@ -12442,7 +12442,8 @@ struct ObjFile *codegen(Program *prog) {
         }
     }
     if (has_dtor) {
-        // On all platforms: emit destructor stubs that call __cxa_atexit
+#if defined(__APPLE__)
+        // macOS: emit destructor stubs that call __cxa_atexit at startup
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor) {
                 cg_set_section(SEC_TEXT);
@@ -12481,6 +12482,7 @@ struct ObjFile *codegen(Program *prog) {
                 asm_ret(cg_sec);
             }
         }
+#endif
     }
 #if defined(__APPLE__)
     if (has_ctor || has_dtor) {
