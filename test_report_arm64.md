@@ -2,21 +2,21 @@
 
 **Platform**: macOS ARM64 (native)
 
-Generated: June 26 2026 09:11
+Generated: June 26 2026 09:13
 
 ## Overall Summary
 
 - **Total**: 2072
-- **Passed**: 1889
-- **Failed**: 71
+- **Passed**: 1890
+- **Failed**: 70
 - **Overall Pass Rate**: 91%
 
 ## TCC Compatibility Tests
 
 - **Total**: 120
-- **Passed**: 115
-- **Failed**: 5
-- **Pass Rate**: 95%
+- **Passed**: 116
+- **Failed**: 4
+- **Pass Rate**: 96%
 
 ## RCC Unit Tests
 
