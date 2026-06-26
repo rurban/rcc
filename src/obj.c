@@ -112,6 +112,7 @@ void objfile_init(ObjFile *obj) {
     secbuf_init(&obj->init_array);
     secbuf_init(&obj->fini_array);
     secbuf_init(&obj->data_tls);
+    secbuf_init(&obj->thread_vars);
 }
 
 void objfile_free(ObjFile *obj) {
@@ -121,6 +122,7 @@ void objfile_free(ObjFile *obj) {
     secbuf_free(&obj->init_array);
     secbuf_free(&obj->fini_array);
     secbuf_free(&obj->data_tls);
+    secbuf_free(&obj->thread_vars);
     for (int i = 0; i < obj->sym_count; i++)
         free(obj->syms[i].name);
     free(obj->syms);
@@ -130,6 +132,7 @@ void objfile_free(ObjFile *obj) {
     free(obj->init_array_relocs);
     free(obj->fini_array_relocs);
     free(obj->data_tls_relocs);
+    free(obj->thread_vars_relocs);
     free(obj->unwind);
     memset(obj, 0, sizeof(*obj));
 }
@@ -224,6 +227,11 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
         relocs = &obj->data_tls_relocs;
         count = &obj->data_tls_reloc_count;
         cap = &obj->data_tls_reloc_cap;
+        break;
+    case SEC_THREAD_VARS:
+        relocs = &obj->thread_vars_relocs;
+        count = &obj->thread_vars_reloc_count;
+        cap = &obj->thread_vars_reloc_cap;
         break;
     default: return;
     }

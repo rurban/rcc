@@ -24,6 +24,7 @@ static void cg_set_section(int sec) {
     case SEC_INIT_ARRAY: cg_sec = &cg_obj->init_array; break;
     case SEC_FINI_ARRAY: cg_sec = &cg_obj->fini_array; break;
     case SEC_TDATA: cg_sec = &cg_obj->data_tls; break;
+    case SEC_THREAD_VARS: cg_sec = &cg_obj->thread_vars; break;
     default: cg_sec = &cg_obj->text; break;
     }
 }
@@ -3415,9 +3416,26 @@ static void emit_adrp_got(VReg r, const char *label) {
 // Darwin requires __thread_vars section with TLV descriptors, __thread_data
 // for initial values, $tlv$init functions, and __tlv_bootstrap thunks.
 static void emit_tls_addr(VReg r, LVar *var) {
-    (void)r;
-    (void)var;
-    error_tok(NULL, "TLS (__thread) is not yet supported on macOS/ARM64 — needs Mach-O __thread_vars section support");
+    if (cg_dry_run) return;
+    Arm64Reg rd = REG(r);
+    const char *label = asm_sym_name(var_sym_label(var));
+    int sidx = objfile_find_sym(cg_obj, label);
+    if (sidx < 0)
+        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_TLS);
+    int tlv_boot = objfile_find_sym(cg_obj, "__tlv_bootstrap");
+    if (tlv_boot < 0)
+        tlv_boot = objfile_add_sym(cg_obj, "__tlv_bootstrap", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+    size_t page_off = cg_sec->len;
+    arm64_adrp(cg_sec, rd, 0);
+    objfile_add_reloc(cg_obj, SEC_TEXT, page_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_HI12, 0);
+    size_t off_off = cg_sec->len;
+    arm64_ldr_uoff(cg_sec, 3, rd, rd, 0);
+    objfile_add_reloc(cg_obj, SEC_TEXT, off_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
+    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, rd, 0);
+    arm64_orr_reg(cg_sec, 1, ARM64_X0, ARM64_XZR, rd, ARM64_LSL, 0); // mov x0, rd (descriptor arg)
+    arm64_blr(cg_sec, ARM64_X16);
+    if (rd != ARM64_X0)
+        arm64_add_reg(cg_sec, 1, rd, ARM64_X0, ARM64_XZR, ARM64_LSL, 0);
 }
 static int emit_stack_addr(int offset) {
 #ifdef ARCH_ARM64
@@ -11058,13 +11076,45 @@ struct ObjFile *codegen(Program *prog) {
                 secbuf_align(cg_sec, 8);
 #endif
                 size_t off = cg_sec->len;
-                if (!var->is_static)
-                    objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
-                else
-                    objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
-                cg_label_ht_add(sym_name_str, off);
-                if (reserved)
-                    objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+                if (var->is_tls) {
+                    char *init_name = format("%s$tlv$init", label);
+                    objfile_add_sym(cg_obj, init_name, SEC_TDATA, off, var->ty->size,
+                                    SB_LOCAL, ST_OBJECT);
+                    int tlv_boot = objfile_find_sym(cg_obj, "__tlv_bootstrap");
+                    if (tlv_boot < 0)
+                        tlv_boot = objfile_add_sym(cg_obj, "__tlv_bootstrap", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+                    cg_set_section(SEC_THREAD_VARS);
+                    secbuf_align(cg_sec, 8);
+                    size_t desc_off = cg_sec->len;
+                    secbuf_emit64le(cg_sec, 0);
+                    objfile_add_reloc(cg_obj, SEC_THREAD_VARS, desc_off, tlv_boot, R_AARCH64_ABS64, 0);
+                    secbuf_emit64le(cg_sec, 0);
+                    int init_sidx = objfile_find_sym(cg_obj, init_name);
+                    secbuf_emit64le(cg_sec, 0);
+                    objfile_add_reloc(cg_obj, SEC_THREAD_VARS, desc_off + 16, init_sidx, R_AARCH64_ABS64, 0);
+                    if (!var->is_static)
+                        objfile_add_sym(cg_obj, sym_name_str, SEC_THREAD_VARS, desc_off, 24,
+                                        SB_GLOBAL, ST_TLS);
+                    else
+                        objfile_add_sym(cg_obj, sym_name_str, SEC_THREAD_VARS, desc_off, 24,
+                                        SB_LOCAL, ST_TLS);
+                    cg_label_ht_add(sym_name_str, desc_off);
+                    if (reserved)
+                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), SEC_THREAD_VARS,
+                                        desc_off, 24, var->is_static ? SB_LOCAL : SB_GLOBAL, ST_TLS);
+                    cg_set_section(SEC_TDATA);
+                } else
+#endif
+                {
+                    if (!var->is_static)
+                        objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                    else
+                        objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                    cg_label_ht_add(sym_name_str, off);
+                    if (reserved)
+                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
+                }
                 if (var->is_tls && !var->has_init && !var->init_data && !var->relocs) {
                     for (int _zi = 0; _zi < var->ty->size; _zi++) secbuf_emit8(cg_sec, 0);
                 }
