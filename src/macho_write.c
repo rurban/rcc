@@ -34,8 +34,9 @@
 // Section flags
 #define S_REGULAR             0x0
 #define S_ZEROFILL            0x1
-#define S_CSTRING_LITERALS    0x2
 #define S_ATTR_SOME_INSTRUCTIONS  0x00000400
+#define S_CSTRING_LITERALS    0x2
+#define S_MOD_INIT_FUNC_POINTERS    0x9
 #define S_ATTR_PURE_INSTRUCTIONS  0x80000000
 
 // Relocation types x86-64
@@ -138,6 +139,7 @@ static uint8_t obj_section_to_macho(int section) {
     case SEC_DATA: return 2;
     case SEC_BSS: return 3;
     case SEC_RODATA: return 4;
+    case SEC_INIT_ARRAY: return 5;
     default: return 0;
     }
 }
@@ -216,6 +218,7 @@ int macho_write(ObjFile *obj, const char *path) {
         n->sect = (os->section == SEC_TEXT) ? 1 : (os->section == SEC_DATA) ? 2
             : (os->section == SEC_BSS)                                      ? 3
             : (os->section == SEC_RODATA)                                   ? 4
+            : (os->section == SEC_INIT_ARRAY)                               ? 5
                                                                             : NO_SECT;
         n->desc = 0;
         n->value = os->offset;
@@ -235,6 +238,7 @@ int macho_write(ObjFile *obj, const char *path) {
         n->sect = (os->section == SEC_TEXT) ? 1 : (os->section == SEC_DATA) ? 2
             : (os->section == SEC_BSS)                                      ? 3
             : (os->section == SEC_RODATA)                                   ? 4
+            : (os->section == SEC_INIT_ARRAY)                               ? 5
                                                                             : NO_SECT;
         // A weak (coalesced) definition carries N_WEAK_DEF.
         n->desc = (os->bind == SB_WEAK) ? (uint16_t)N_WEAK_DEF : 0;
@@ -267,10 +271,9 @@ int macho_write(ObjFile *obj, const char *path) {
     // -----------------------------------------------------------------------
     // Mach-O section indices are 1-based.
     // We always emit at least __TEXT,__text.
-    // __DATA,__data, __DATA,__bss, __TEXT,__const (rodata) as needed.
     // Mach-O .o has one segment "" (empty name) containing all sections.
-    // Sections: 1=__text, 2=__data, 3=__bss, 4=__const (rodata)
-    int nsections = 4;
+    // Sections: 1=__text, 2=__data, 3=__bss, 4=__const (rodata), 5=__mod_init_func
+    int nsections = 5;
 
     // -----------------------------------------------------------------------
     // Compute sizes / offsets
@@ -293,22 +296,26 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t bss_off = align(data_off + data_size, 8); // no actual bytes
     uint64_t rodata_off = align(bss_off, 8); // bss uses no file space
     uint64_t rodata_size = obj->rodata.len;
+    uint64_t init_off = align(rodata_off + rodata_size, 8);
+    uint64_t init_size = obj->init_array.len;
 
     // Relocations follow section data
-    uint64_t reloc_text_off = align(rodata_off + rodata_size, 4);
+    uint64_t reloc_text_off = align(init_off + init_size, 4);
     uint32_t reloc_text_cnt = (uint32_t)obj->text_reloc_count;
     uint64_t reloc_data_off = reloc_text_off + reloc_text_cnt * 8;
     uint32_t reloc_data_cnt = (uint32_t)obj->data_reloc_count;
     uint64_t reloc_rod_off = reloc_data_off + reloc_data_cnt * 8;
     uint32_t reloc_rod_cnt = (uint32_t)obj->rodata_reloc_count;
+    uint64_t reloc_init_off = reloc_rod_off + reloc_rod_cnt * 8;
+    uint32_t reloc_init_cnt = (uint32_t)obj->init_array_reloc_count;
 
-    uint64_t symtab_off = align(reloc_rod_off + reloc_rod_cnt * 8, 8);
+    uint64_t symtab_off = align(reloc_init_off + reloc_init_cnt * 8, 8);
     uint32_t symtab_size = (uint32_t)nsyms * 16; // sizeof nlist_64 = 16
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
 
-    // segment vm size = from text_off to end of rodata, plus BSS VM allocation
-    uint64_t seg_filesize = (rodata_off + rodata_size) - text_off;
+    // segment vm size = from text_off to end of init_array, plus BSS VM allocation
+    uint64_t seg_filesize = (init_off + init_size) - text_off;
     uint64_t seg_vmsize = seg_filesize + obj->bss_size;
 
     // -----------------------------------------------------------------------
@@ -415,6 +422,24 @@ int macho_write(ObjFile *obj, const char *path) {
         w32(f, 0);
     }
 
+    // Section 5: __DATA,__mod_init_func
+    {
+        const char sn[16] = "__mod_init_func";
+        const char sg[16] = "__DATA";
+        wbuf(f, sn, 16);
+        wbuf(f, sg, 16);
+        w64(f, 0); // addr
+        w64(f, init_size);
+        w32(f, (uint32_t)init_off);
+        w32(f, 3); // align (2^3=8)
+        w32(f, (uint32_t)reloc_init_off);
+        w32(f, reloc_init_cnt);
+        w32(f, S_MOD_INIT_FUNC_POINTERS);
+        w32(f, 0);
+        w32(f, 0);
+        w32(f, 0);
+    }
+
     // LC_BUILD_VERSION
     w32(f, LC_BUILD_VERSION);
     w32(f, build_version_lc_size);
@@ -450,9 +475,11 @@ int macho_write(ObjFile *obj, const char *path) {
     // bss: no bytes
     wzeros(f, rodata_off - (data_off + data_size));
     if (rodata_size) wbuf(f, obj->rodata.data, rodata_size);
+    wzeros(f, init_off - (rodata_off + rodata_size));
+    if (init_size) wbuf(f, obj->init_array.data, init_size);
 
     // Relocations (Mach-O relocation_info: 8 bytes each)
-    wzeros(f, reloc_text_off - (rodata_off + rodata_size));
+    wzeros(f, reloc_text_off - (init_off + init_size));
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
@@ -518,8 +545,28 @@ int macho_write(ObjFile *obj, const char *path) {
         w32(f, pack);
     }
 
+    // Init array relocs
+    for (int i = 0; i < obj->init_array_reloc_count; i++) {
+        ObjReloc *r = &obj->init_array_relocs[i];
+        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
+        uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
+        uint32_t sym_num;
+        if (is_arm64) {
+            ext = true;
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        } else if (!ext && r->sym_idx >= 0) {
+            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+        } else {
+            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+        }
+        w32(f, (uint32_t)r->offset);
+        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
+            ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
+        w32(f, pack);
+    }
+
     // Symbol table (nlist_64, 16 bytes each)
-    wzeros(f, symtab_off - (reloc_rod_off + reloc_rod_cnt * 8));
+    wzeros(f, symtab_off - (reloc_init_off + reloc_init_cnt * 8));
     for (int i = 0; i < nsyms; i++) {
         w32(f, nlist[i].strx);
         w8(f, nlist[i].type);
