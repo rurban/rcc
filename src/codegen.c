@@ -2551,14 +2551,24 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             free_reg(addr);
             continue;
         } else {
-            r = gen(argv[i]);
-            if (arg_is_float[i]) {
-                asm_fmov_i2f(cg_sec, 0, r, 1);
-                asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off);
+            // For struct args <=8 bytes, use gen_addr + ldr x16 to avoid
+            // putting the value in a managed register (prevents spill conflicts).
+            if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION)) {
+                int addr = gen_addr(argv[i]);
+                int sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                arm64_ldr_uoff(cg_sec, sz == 8 ? 3 : 2, ARM64_X16, REG(addr), 0); // ldr x16/w16, [addr]
+                arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)(off / 8)); // str x16, [sp]
+                free_reg(addr);
             } else {
-                arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8));
+                r = gen(argv[i]);
+                if (arg_is_float[i]) {
+                    asm_fmov_i2f(cg_sec, 0, r, 1);
+                    asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off);
+                } else {
+                    arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8));
+                }
+                free_reg(r);
             }
-            free_reg(r);
         }
     }
 
