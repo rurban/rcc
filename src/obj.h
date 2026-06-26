@@ -42,7 +42,8 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v);
 #define SEC_INIT_ARRAY  4
 #define SEC_FINI_ARRAY  5
 #define SEC_TDATA       6
-#define SEC_NUM         7 // number of sections
+#define SEC_THREAD_VARS  7
+#define SEC_NUM         8 // number of sections
 
 // ---------------------------------------------------------------------------
 // Symbol table
@@ -152,6 +153,7 @@ struct ObjFile {
     SecBuf fini_array;
     SecBuf data_tls; // .tdata — initialized TLS data
     size_t bss_size; // .bss is zero-initialized; just track its size
+    SecBuf thread_vars; // __thread_vars — TLV descriptors
     ObjSym *syms;
     int sym_count;
     int sym_cap;
@@ -180,6 +182,10 @@ struct ObjFile {
     int data_tls_reloc_count;
     int data_tls_reloc_cap;
 
+
+    ObjReloc *thread_vars_relocs;
+    int thread_vars_reloc_count;
+    int thread_vars_reloc_cap;
     // Win64 SEH unwind entries (one per emitted function); only populated on
     // _WIN32 x86-64 codegen, ignored by elf_write/macho_write.
     UnwindEntry *unwind;
