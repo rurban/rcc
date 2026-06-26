@@ -5,9 +5,9 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 112
-- **Failed**: 8
-- **Pass Rate**: 93%
+- **Passed**: 114
+- **Failed**: 6
+- **Pass Rate**: 95%
 
 ## Detailed Results
 
@@ -50,7 +50,7 @@ Generated: June 2026
 | 19_pointer_arithmetic       | PASS         | Output matches                |
 | 20_pointer_comparison       | PASS         | Output matches                |
 | 21_char_array               | PASS         | Output matches                |
-| 22_floating_point           | EXEC_FAIL    | non-zero exit                 |
+| 22_floating_point           | PASS         | Output matches                |
 | 23_type_coercion            | PASS         | Output matches                |
 | 24_math_library             | PASS         | Output matches                |
 | 25_quicksort                | PASS         | Output matches                |
@@ -129,7 +129,7 @@ Generated: June 2026
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
-| 124_atomic_counter          | MISMATCH     | Output does not match .expect |
+| 124_atomic_counter          | PASS         | Output matches                |
 | 128_run_atexit              | MISMATCH     | Output differs                |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | PASS         | Output matches                |

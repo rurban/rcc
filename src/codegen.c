@@ -3828,16 +3828,25 @@ static void emit_store(Type *ty, VReg src, VReg base, int off) {
     } else if (off > -256 && off < 256) {
         asm_stur_sz(cg_sec, src, REG(base), sz, off); // stur {src}, [base, #off]
     } else {
-        VReg ta = alloc_reg();
-        if (off < 0) {
-            asm_mov_imm(cg_sec, ta, 8, -off); // mov ta, #-off
-            asm_sub_reg3(cg_sec, ta, base, ta, 8); // sub ta, base, ta
+        // Offset outside STUR range: use X17 scratch
+        if (off < 0 && -off <= 4095) {
+            arm64_sub_imm(cg_sec, 1, ARM64_X17, REG(base), -off, 0); // sub x17, base, #-off
+        } else if (off >= 0 && off <= 4095) {
+            arm64_add_imm(cg_sec, 1, ARM64_X17, REG(base), off, 0); // add x17, base, #off
         } else {
-            asm_mov_imm(cg_sec, ta, 8, off); // mov ta, #off
-            asm_add_reg_reg(cg_sec, ta, base, 8); // add ta, ta, base
+            int abs_off = off < 0 ? -off : off;
+            emit_mov_imm64(ARM64_X17, (uint64_t)abs_off);
+            if (off < 0)
+                arm64_sub_reg(cg_sec, 1, ARM64_X17, REG(base), ARM64_X17, ARM64_LSL, 0);
+            else
+                arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, REG(base), ARM64_LSL, 0);
         }
-        asm_str_reg_off(cg_sec, src, ta, sz, 0); // str src, [ta]
-        free_reg(ta);
+        switch (sz) {
+        case 1: arm64_strb_uoff(cg_sec, REG(src), ARM64_X17, 0); break;
+        case 2: arm64_strh_uoff(cg_sec, REG(src), ARM64_X17, 0); break;
+        case 4: arm64_str_uoff(cg_sec, 2, REG(src), ARM64_X17, 0); break;
+        default: arm64_str_uoff(cg_sec, 3, REG(src), ARM64_X17, 0); break;
+        }
     }
 }
 
@@ -3849,21 +3858,25 @@ static void emit_store_offset(Type *ty, VReg r, Arm64Reg base, int offset) {
         return;
     }
     int abs_off = off < 0 ? -off : off;
-    int ta = alloc_reg();
-    asm_mov_imm(cg_sec, ta, 8, abs_off & 0xffff); // mov ta, #abs_off_lo
-    int v = abs_off >> 16;
-    int s = 16;
-    while (v) {
-        asm_movk(cg_sec, REG(ta), 1, (uint16_t)(v & 0xffff), s); // movk ta, #v, lsl #s
-        v >>= 16;
-        s += 16;
+    // Use X17 scratch instead of alloc_reg to avoid spill pressure
+    if (abs_off <= 4095) {
+        if (off < 0)
+            arm64_sub_imm(cg_sec, 1, ARM64_X17, base, abs_off, 0); // sub x17, base, #abs_off
+        else
+            arm64_add_imm(cg_sec, 1, ARM64_X17, base, abs_off, 0); // add x17, base, #abs_off
+    } else {
+        emit_mov_imm64(ARM64_X17, (uint64_t)abs_off);
+        if (off < 0)
+            arm64_sub_reg(cg_sec, 1, ARM64_X17, base, ARM64_X17, ARM64_LSL, 0);
+        else
+            arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, base, ARM64_LSL, 0);
     }
-    if (off < 0)
-        arm64_sub_reg(cg_sec, 1, REG(ta), base, REG(ta), ARM64_LSL, 0); // sub ta, base, ta
-    else
-        arm64_add_reg(cg_sec, 1, REG(ta), REG(ta), base, ARM64_LSL, 0); // add ta, ta, base
-    asm_str_reg_off(cg_sec, r, ta, sz, 0); // str r, [ta]
-    free_reg(ta);
+    switch (sz) {
+    case 1: arm64_strb_uoff(cg_sec, REG(r), ARM64_X17, 0); break;
+    case 2: arm64_strh_uoff(cg_sec, REG(r), ARM64_X17, 0); break;
+    case 4: arm64_str_uoff(cg_sec, 2, REG(r), ARM64_X17, 0); break;
+    default: arm64_str_uoff(cg_sec, 3, REG(r), ARM64_X17, 0); break;
+    }
 }
 #endif
 
@@ -3884,31 +3897,34 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
                 arm64_sxth(cg_sec, 1, REG(r), REG(r)); // sxth x{r}, w{r}
         }
     } else {
+        // Offset outside LDUR range: use X17 as scratch for address computation
+        // (never in the register pool, avoids spill pressure)
         Arm64Reg bp = arm64_base_phys(base);
-        int ta = alloc_reg();
-        if (off < 0) {
-            asm_mov_imm(cg_sec, ta, 8, -off); // mov ta, #-off
-            arm64_sub_reg(cg_sec, 1, REG(ta), bp, REG(ta), ARM64_LSL, 0); // sub ta, base, ta
+        if (off < 0 && -off <= 4095) {
+            arm64_sub_imm(cg_sec, 1, ARM64_X17, bp, -off, 0); // sub x17, base, #-off
+        } else if (off >= 0 && off <= 4095) {
+            arm64_add_imm(cg_sec, 1, ARM64_X17, bp, off, 0); // add x17, base, #off
         } else {
-            asm_mov_imm(cg_sec, ta, 8, off & 0xffff);
-            int v = off >> 16;
-            int s = 16;
-            while (v) {
-                asm_movk(cg_sec, REG(ta), 1, (uint16_t)(v & 0xffff), s);
-                v >>= 16;
-                s += 16;
-            }
-            arm64_add_reg(cg_sec, 1, REG(ta), REG(ta), bp, ARM64_LSL, 0); // add ta, ta, base
+            int abs_off = off < 0 ? -off : off;
+            emit_mov_imm64(ARM64_X17, (uint64_t)abs_off);
+            if (off < 0)
+                arm64_sub_reg(cg_sec, 1, ARM64_X17, bp, ARM64_X17, ARM64_LSL, 0);
+            else
+                arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, bp, ARM64_LSL, 0);
         }
-        asm_ldr_reg_off(cg_sec, r, ta, ty->size, 0); // ldr r, [ta]
-        // Sign-extend narrow signed types (ARM64 ldr{b,h} zero-extend)
+        // Load from [x17] with correct size
+        switch (ty->size) {
+        case 1: arm64_ldrb_uoff(cg_sec, REG(r), ARM64_X17, 0); break;
+        case 2: arm64_ldrh_uoff(cg_sec, REG(r), ARM64_X17, 0); break;
+        case 4: arm64_ldr_uoff(cg_sec, 2, REG(r), ARM64_X17, 0); break;
+        default: arm64_ldr_uoff(cg_sec, 3, REG(r), ARM64_X17, 0); break;
+        }
         if (!ty->is_unsigned) {
             if (ty->size == 1)
-                arm64_sxtb(cg_sec, 1, REG(r), REG(r)); // sxtb x{r}, w{r}
+                arm64_sxtb(cg_sec, 1, REG(r), REG(r));
             else if (ty->size == 2)
-                arm64_sxth(cg_sec, 1, REG(r), REG(r)); // sxth x{r}, w{r}
+                arm64_sxth(cg_sec, 1, REG(r), REG(r));
         }
-        free_reg(ta);
     }
 #else
 #ifndef X86_BASE_RBP
@@ -11199,6 +11215,8 @@ struct ObjFile *codegen(Program *prog) {
         current_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
+        memset(spill_slot, 0, sizeof(spill_slot));
+        next_spill_slot = 8;
 #ifndef ARCH_ARM64
         init_spill_slots();
 #endif
@@ -11615,6 +11633,9 @@ struct ObjFile *codegen(Program *prog) {
         secbuf_free(&_dummy);
         cg_dry_run = false;
         used_regs = 0;
+        spilled_regs = 0;
+        spill_count = 0;
+        memset(reg_owner, 0, sizeof(reg_owner));
         fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
         cg_label_ht_reset();
         asm_fixup_ht_reset();
@@ -11641,6 +11662,9 @@ struct ObjFile *codegen(Program *prog) {
             if (callee_mask & (1 << j)) n_callee_saved++;
 
         int need = fn->stack_size + fn_struct_ret_total + 32;
+        // Include register spill slots in frame (discovered during dry run)
+        if (need < next_spill_slot)
+            need = next_spill_slot;
         int va_save_size = 0;
 #ifndef __APPLE__
         // AAPCS64 (Linux): save all GP and FP arg regs for variadic functions
