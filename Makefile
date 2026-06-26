@@ -291,10 +291,9 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = ./run_tests.exe --parallel
-BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
+TEST_RUNNER = ./run_tests.exe -v
 else
-TEST_RUNNER = ./run_tests --parallel
+TEST_RUNNER = ./run_tests -v
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)

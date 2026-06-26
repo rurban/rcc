@@ -64,6 +64,29 @@ jobs:
       - name: Build
         run: make
 
+      - name: Smoke test (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+          ./rcc -o /tmp/smoke /tmp/smoke.c
+          /tmp/smoke
+          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+          ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+          /tmp/smoke2
+          rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+
+      - name: Smoke test (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+          ./rcc -o /tmp/smoke /tmp/smoke.c
+          /tmp/smoke
+          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+          ./rcc -o /tmp/smoke2 /tmp/smoke2.c
+          /tmp/smoke2
+          rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+
+
       - name: Cache pre-commit
         if: matrix.os == 'ubuntu-latest'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
