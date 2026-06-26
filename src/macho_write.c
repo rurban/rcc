@@ -59,9 +59,10 @@
 #define ARM64_RELOC_PAGEOFF12        4
 #define ARM64_RELOC_GOT_LOAD_PAGE21  5
 #define ARM64_RELOC_GOT_LOAD_PAGEOFF12 6
-#define ARM64_RELOC_POINTER_TO_GOT   7
-#define ARM64_RELOC_ADDEND           10
 
+// Darwin ARM64 TLS: General Dynamic model via TLV descriptors
+#define ARM64_RELOC_TLVP_LOAD_PAGE21   8
+#define ARM64_RELOC_TLVP_LOAD_PAGEOFF12 9
 // Nlist types
 #define N_UNDF  0x0
 #define N_ABS   0x2
@@ -157,9 +158,8 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
         case R_AARCH64_ADD_ABS_LO12_NC: return ARM64_RELOC_PAGEOFF12;
         case R_AARCH64_ADR_GOT_PAGE: return ARM64_RELOC_GOT_LOAD_PAGE21;
         case R_AARCH64_LD64_GOT_LO12_NC: return ARM64_RELOC_GOT_LOAD_PAGEOFF12;
-        case R_AARCH64_TLSLE_ADD_TPREL_HI12: return ARM64_RELOC_ADDEND;
-        case R_AARCH64_TLSLE_ADD_TPREL_LO12: return ARM64_RELOC_ADDEND;
-        default: return ARM64_RELOC_UNSIGNED;
+        case R_AARCH64_TLSLE_ADD_TPREL_HI12: return ARM64_RELOC_TLVP_LOAD_PAGE21;
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12: return ARM64_RELOC_TLVP_LOAD_PAGEOFF12;
         }
     } else {
         switch (elf_type) {
@@ -172,8 +172,8 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
         default: return X86_64_RELOC_UNSIGNED;
         }
     }
+    return 0;
 }
-
 // ---------------------------------------------------------------------------
 // Main Mach-O writer
 // ---------------------------------------------------------------------------
@@ -488,20 +488,19 @@ int macho_write(ObjFile *obj, const char *path) {
         uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
         bool pcrel = (r->type == R_X86_64_PC32 || r->type == R_X86_64_PLT32 ||
                       r->type == R_AARCH64_CALL26 || r->type == R_AARCH64_JUMP26 ||
-                      r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE);
-        uint32_t sym_num;
+                      r->type == R_AARCH64_ADR_PREL_PG_HI21 || r->type == R_AARCH64_ADR_GOT_PAGE ||
+                      r->type == R_AARCH64_TLSLE_ADD_TPREL_HI12 || r->type == R_AARCH64_TLSLE_ADD_TPREL_LO12);
         // ARM64 relocs must use r_extern=1 (symbol index), not section ordinals.
         // ld64 rejects r_extern=0 for branch/page/pcrel types.
+        uint32_t sym_num;
         if (is_arm64) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            // Local relocation: symbolnum = section ordinal of target
             sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
-        // r_address (4), then packed field (symbolnum:24, pcrel:1, length:2, ext:1, type:4)
         w32(f, (uint32_t)r->offset);
         uint32_t pack = (sym_num & 0xffffff) |
             ((uint32_t)pcrel << 24) |
