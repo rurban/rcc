@@ -9419,6 +9419,8 @@ static VReg gen(Node *node) {
             asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_xchg.%d", lbl), 1);
         }
+        if (node->atomic_ord == MEMORDER_SEQ_CST || node->atomic_ord == MEMORDER_ACQ_REL)
+            asm_dmb(cg_sec); // dmb ish
 #else
         asm_xchg_mem(cg_sec, r_addr, r_val, sz); // xchg (r_addr), r_val
         if (sz < 4) {
