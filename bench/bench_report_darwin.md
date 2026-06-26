@@ -4,68 +4,66 @@ _Generated: June 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           83 |          583 |        666 |
-| RCC -O1   |           86 |          591 |        677 |
-| TCC       |           35 |          515 |        550 |
-| GCC -O0   |           75 |          434 |        509 |
-| GCC -O2   |           98 |          264 |        362 |
-| Clang -O0 |           58 |          434 |        492 |
-| Clang -O2 |           83 |          263 |        346 |
+| RCC       |           72 |          570 |        642 |
+| RCC -O1   |           48 |          624 |        672 |
+| TCC       |           37 |          514 |        551 |
+| GCC -O0   |           71 |          434 |        505 |
+| GCC -O2   |           96 |          262 |        358 |
+| Clang -O0 |           58 |          433 |        491 |
+| Clang -O2 |           79 |          262 |        341 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:    992 us
-  lex         bench.c:     71 us
-  parse       bench.c:     72 us
-  typecheck   bench.c:      4 us
-  codegen     bench.c:   1227 us
-  peephole    bench.c:    291 us (est, 778 calls)
-  link        bench_rcc:  56397 us
+  preprocess  bench.c:   1023 us
+  lex         bench.c:     74 us
+  parse       bench.c:     87 us
+  typecheck   bench.c:      5 us
+  codegen     bench.c:     86 us
+  peephole    bench.c:     48 us
+  link        bench_rcc:  49070 us
 
 RCC -O1:
-  preprocess  bench.c:   1399 us
-  lex         bench.c:     75 us
-  parse       bench.c:     85 us
+  preprocess  bench.c:   1145 us
+  lex         bench.c:     74 us
+  parse       bench.c:     75 us
   typecheck   bench.c:      4 us
-  opt(CTFE)   bench.c:     13 us
-  codegen     bench.c:   1422 us
-  peephole    bench.c:    290 us (est, 775 calls)
-  link        bench_rcc_o1:  61911 us
+  opt(CTFE)   bench.c:     14 us
+  codegen     bench.c:     79 us
+  peephole    bench.c:     48 us
+  link        bench_rcc_o1:  43868 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c: 1022856 us
-  lex         sqlite3.c:  77870 us
-  parse       sqlite3.c:  72454 us
-  typecheck   sqlite3.c:  21279 us
-  codegen     sqlite3.c: 487274 us
-  peephole    sqlite3.c: 203934 us (est, 543824 calls)
-  link        null: 4910610 us
+  preprocess  sqlite3.c: 1079115 us
+  lex         sqlite3.c:  84307 us
+  parse       sqlite3.c:  78268 us
+  typecheck   sqlite3.c:  19099 us
+  codegen     sqlite3.c: 387002 us
+  peephole    sqlite3.c: 2138753 us
 
 RCC -O1:
-  preprocess  sqlite3.c: 764841 us
-  lex         sqlite3.c:  82697 us
-  parse       sqlite3.c:  77253 us
-  typecheck   sqlite3.c:  19825 us
-  opt(CTFE)   sqlite3.c:  22362 us
-  codegen     sqlite3.c: 558281 us
-  peephole    sqlite3.c: 202702 us (est, 540540 calls)
-  link        null: 5031769 us
+  preprocess  sqlite3.c: 641131 us
+  lex         sqlite3.c:  80809 us
+  parse       sqlite3.c:  83193 us
+  typecheck   sqlite3.c:  16243 us
+  opt(CTFE)   sqlite3.c:  17332 us
+  codegen     sqlite3.c: 378279 us
+  peephole    sqlite3.c: 2087359 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |      6562 ms |
-| RCC -O1   |      6382 ms |
-| TCC       |        73 ms |
-| GCC -O0   |       815 ms |
-| GCC -O2   |      8485 ms |
-| Clang -O0 |       823 ms |
-| Clang -O2 |      8325 ms |
+| RCC       |      3572 ms |
+| RCC -O1   |      3257 ms |
+| TCC       |        74 ms |
+| GCC -O0   |       871 ms |
+| GCC -O2   |      8429 ms |
+| Clang -O0 |       837 ms |
+| Clang -O2 |      8414 ms |
