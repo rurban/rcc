@@ -2537,13 +2537,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         } else {
             r = gen(argv[i]);
-            int sz = arg_sizes[i] <= 4 ? 4 : 8;
+            // ARM64 stack slots are always 8 bytes; 32-bit mov wN zero-extends
             if (arg_is_float[i]) {
-                // float stack arg: move to d0 then store as double
                 asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
                 asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off); // str d0, [sp, #off]
             } else {
-                arm64_str_uoff(cg_sec, sz == 8 ? 3 : 2, REG(r), ARM64_SP, (uint32_t)(off / (sz == 8 ? 8 : 4))); // str x{r}, [sp, #off]
+                arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8)); // str x{r}, [sp, #off/8]
             }
             free_reg(r);
         }
