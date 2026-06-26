@@ -3412,23 +3412,13 @@ static void emit_adrp_got(VReg r, const char *label) {
 // output that the system linker cannot handle for TLS.  Proper Darwin TLS
 // requires TLV descriptors in __thread_vars and TLVP relocations, which need
 // Mach-O writer support not yet implemented.
+// Darwin requires __thread_vars section with TLV descriptors, __thread_data
+// for initial values, $tlv$init functions, and __tlv_bootstrap thunks.
 static void emit_tls_addr(VReg r, LVar *var) {
-    if (cg_dry_run) return;
-    Arm64Reg rd = REG(r);
-    const char *label = asm_sym_name(var_sym_label(var));
-    int sidx = objfile_find_sym(cg_obj, label);
-    if (sidx < 0)
-        sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_TLS);
-    arm64_mrs(cg_sec, rd, 0x5e82); // mrs x{rd}, tpidr_el0
-    size_t hi_off = cg_sec->len;
-    arm64_add_imm(cg_sec, 1, rd, rd, 0, 1); // add x{rd}, x{rd}, #:tprel_hi12:label, lsl #12
-    objfile_add_reloc(cg_obj, SEC_TEXT, hi_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_HI12, 0);
-    size_t lo_off = cg_sec->len;
-    arm64_add_imm(cg_sec, 1, rd, rd, 0, 0); // add x{rd}, x{rd}, #:tprel_lo12_nc:label
-    objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
+    (void)r;
+    (void)var;
+    error_tok(NULL, "TLS (__thread) is not yet supported on macOS/ARM64 — needs Mach-O __thread_vars section support");
 }
-#endif // ARCH_ARM64
-#if 0
 static int emit_stack_addr(int offset) {
 #ifdef ARCH_ARM64
     int ta = alloc_reg();
