@@ -211,6 +211,7 @@ int macho_write(ObjFile *obj, const char *path) {
     for (int i = 0; i < obj->sym_count; i++) {
         ObjSym *os = &obj->syms[i];
         if (os->bind != SB_LOCAL) continue;
+        if (os->section == SEC_UNDEF) continue; // undefined symbols go below
         sym_map[i] = nsyms;
         Nlist *n = &nlist[nsyms++];
         n->strx = mstrtab_add(&mst, os->name);
@@ -247,21 +248,22 @@ int macho_write(ObjFile *obj, const char *path) {
     int nextdefsym = nsyms - iextdefsym;
     int iundefsym = nsyms;
 
-    // Undefined (external) symbols
+    // Undefined symbols (all SEC_UNDEF, both local and global)
     for (int i = 0; i < obj->sym_count; i++) {
         ObjSym *os = &obj->syms[i];
         if (os->section != SEC_UNDEF) continue;
         sym_map[i] = nsyms;
         Nlist *n = &nlist[nsyms++];
         n->strx = mstrtab_add(&mst, os->name);
-        n->type = N_UNDF | N_EXT;
+        n->type = (os->bind == SB_LOCAL) ? N_UNDF : (N_UNDF | N_EXT);
         n->sect = NO_SECT;
-        n->desc = (uint16_t)REFERENCE_FLAG_UNDEFINED_NON_LAZY;
-        // A weak undefined reference (__attribute__((weak)) prototype that is
-        // never defined) must carry N_WEAK_REF so dyld resolves it to 0 instead
-        // of failing with "symbol not found in flat namespace".
-        if (os->bind == SB_WEAK)
-            n->desc |= (uint16_t)N_WEAK_REF;
+        if (os->bind == SB_LOCAL) {
+            n->desc = 0;
+        } else {
+            n->desc = (uint16_t)REFERENCE_FLAG_UNDEFINED_NON_LAZY;
+            if (os->bind == SB_WEAK)
+                n->desc |= (uint16_t)N_WEAK_REF;
+        }
         n->value = 0;
     }
     int nundefsym = nsyms - iundefsym;

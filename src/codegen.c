@@ -12442,21 +12442,14 @@ struct ObjFile *codegen(Program *prog) {
         }
     }
     if (has_dtor) {
-#if defined(__APPLE__)
-        // FIXME: Destructor stubs via __cxa_atexit add undefined symbols
-        // (___cxa_atexit, ___dso_handle) that break LC_DYSYMTAB counts.
-        // Temporarily disabled; constructor-only works.
-        (void)has_dtor;
-#else
-        // On non-Apple platforms, emit destructor stubs
+        // On all platforms: emit destructor stubs that call __cxa_atexit
         for (TLItem *item = prog->items; item; item = item->next) {
             if (item->kind == TL_FUNC && item->fn->is_destructor) {
-                (void)0; // section directive
-                (void)0; // directive: .p2align
+                cg_set_section(SEC_TEXT);
                 cg_def_label(format("___GLOBAL_dtor_%s", item->fn->name));
                 asm_stp_fp_lr(cg_sec);
                 asm_mov_fp_sp(cg_sec);
-                {
+                { // adrp x0, dtor_label@PAGE; add x0, x0, dtor_label@PAGEOFF
                     const char *lbl = asm_sym_name(sym_name(item->fn->name));
                     int sidx = objfile_find_sym(cg_obj, lbl);
                     if (sidx < 0) sidx = objfile_add_sym(cg_obj, lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
@@ -12468,7 +12461,7 @@ struct ObjFile *codegen(Program *prog) {
                     objfile_add_reloc(cg_obj, SEC_TEXT, d_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
                 }
                 asm_mov_imm_phy(cg_sec, ARM64_X1, 8, 0);
-                {
+                { // adrp x2, ___dso_handle@PAGE; add x2, x2, ___dso_handle@PAGEOFF
                     const char *lbl = "___dso_handle";
                     int sidx = objfile_find_sym(cg_obj, lbl);
                     if (sidx < 0) sidx = objfile_add_sym(cg_obj, lbl, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
@@ -12479,13 +12472,15 @@ struct ObjFile *codegen(Program *prog) {
                     asm_add_rd_rd_0(cg_sec, ARM64_X2);
                     objfile_add_reloc(cg_obj, SEC_TEXT, d_off, sidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
                 }
-                asm_call_label(cg_sec);
-                asm_fixup_add(cg_sec, cg_sec->len - 4, "___cxa_atexit", 0);
+                size_t call_off = asm_call_label(cg_sec);
+                int cxa_sidx = objfile_find_sym(cg_obj, "___cxa_atexit");
+                if (cxa_sidx < 0)
+                    cxa_sidx = objfile_add_sym(cg_obj, "___cxa_atexit", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
+                objfile_add_reloc(cg_obj, SEC_TEXT, call_off, cxa_sidx, R_AARCH64_CALL26, 0);
                 asm_ldp_fp_lr(cg_sec);
                 asm_ret(cg_sec);
             }
         }
-#endif
     }
 #if defined(__APPLE__)
     if (has_ctor || has_dtor) {
@@ -12501,18 +12496,17 @@ struct ObjFile *codegen(Program *prog) {
                 objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, off, sidx, R_AARCH64_ABS64, 0);
             }
         }
-        // FIXME: Destructor stubs disabled on macOS until LC_DYSYMTAB is fixed
-        // for (TLItem *item = prog->items; item; item = item->next) {
-        //     if (item->kind == TL_FUNC && item->fn->is_destructor) {
-        //         size_t off = cg_sec->len;
-        //         secbuf_emit64le(cg_sec, 0);
-        //         const char *stub = format("___GLOBAL_dtor_%s", item->fn->name);
-        //         int sidx = objfile_find_sym(cg_obj, stub);
-        //         if (sidx < 0)
-        //             sidx = objfile_add_sym(cg_obj, stub, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
-        //         objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, off, sidx, R_AARCH64_ABS64, 0);
-        //     }
-        // }
+        for (TLItem *item = prog->items; item; item = item->next) {
+            if (item->kind == TL_FUNC && item->fn->is_destructor) {
+                size_t off = cg_sec->len;
+                secbuf_emit64le(cg_sec, 0);
+                const char *stub = format("___GLOBAL_dtor_%s", item->fn->name);
+                int sidx = objfile_find_sym(cg_obj, stub);
+                if (sidx < 0)
+                    sidx = objfile_add_sym(cg_obj, stub, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
+                objfile_add_reloc(cg_obj, SEC_INIT_ARRAY, off, sidx, R_AARCH64_ABS64, 0);
+            }
+        }
     }
 #else
     if (has_ctor) {
