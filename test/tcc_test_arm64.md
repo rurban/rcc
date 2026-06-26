@@ -5,8 +5,8 @@ Generated: June 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 114
-- **Failed**: 6
+- **Passed**: 115
+- **Failed**: 5
 - **Pass Rate**: 95%
 
 ## Detailed Results
@@ -119,7 +119,7 @@ Generated: June 2026
 | 105_local_extern            | PASS         | Output matches                |
 | 106_versym                  | PASS         | Output matches                |
 | 107_stack_safe              | PASS         | Output matches                |
-| 108_constructor             | MISMATCH     | Output does not match .expect |
+| 108_constructor             | PASS         | Output matches                |
 | 109_float_struct_calling    | PASS         | Output matches                |
 | 110_average                 | PASS         | Output matches                |
 | 111_conversion              | PASS         | Output matches                |
@@ -129,8 +129,8 @@ Generated: June 2026
 | 121_struct_return           | PASS         | Output matches                |
 | 122_vla_reuse               | PASS         | Output matches                |
 | 123_vla_bug                 | PASS         | Output matches                |
-| 124_atomic_counter          | PASS         | Output matches                |
-| 128_run_atexit              | MISMATCH     | Output differs                |
+| 124_atomic_counter          | MISMATCH     | Output does not match .expect |
+| 128_run_atexit              | PASS         | Output matches                |
 | 130_large_argument          | PASS         | Output matches                |
 | 131_return_struct_in_reg    | PASS         | Output matches                |
 | 132_bound_test              | PASS         | Output matches                |
