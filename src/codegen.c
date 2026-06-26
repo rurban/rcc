@@ -118,19 +118,10 @@ static void cg_def_sym(const char *name, int sec, SymBind bind, SymType type) {
 
 static void cg_def_label(const char *name) {
     if (cg_dry_run) return;
-#ifdef __APPLE__
-    // MH_SUBSECTIONS_VIA_SYMBOLS treats every symbol as a subsection boundary.
-    // Flow-control labels (.L.xxx) have no outgoing relocations referencing them
-    // (branches use offset-encoded B/BL with no reloc), so the linker dead-strips
-    // their subsection — dropping the epilogue and placing stubs in its place.
-    // These labels are resolved purely in-memory via asm_fixup_resolve; they must
-    // NOT appear in the Mach-O symbol table.
-    if (name[0] == '.' && name[1] == 'L' && name[2] == '.') {
-        cg_label_ht_add(name, cg_sec->len);
-        asm_fixup_resolve(cg_sec, name, cg_sec->len);
-        return;
-    }
-#endif
+    // .L. labels referenced by relocations (e.g. &&label values) must be in the
+    // symbol table so the linker can resolve ARM64_RELOC_UNSIGNED relocations.
+    // We use SB_LOCAL to avoid creating subsection boundaries that the linker
+    // might dead-strip — local symbols are not subsection boundaries.
     cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
@@ -2525,24 +2516,47 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         int off = arg_stack_idx[i] * 8;
         VReg r;
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) {
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+            if (is_variadic && !(i < named_count)) {
+                int vaddr = gen_addr(argv[i]);
+                int vsz = argv[i]->ty->size;
+                for (int voff = 0; voff < vsz; voff += 8) {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(vaddr), (uint32_t)(voff / 8));
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)(arg_stack_idx[i] + voff / 8));
+                }
+                free_reg(vaddr);
+                continue;
+            }
+            // HFA overflow: struct data goes on stack as value, not pointer
+            if (arg_hfa_count[i] > 0 && arg_fp_idx[i] < 0) {
+                int vaddr = gen_addr(argv[i]);
+                int vsz = argv[i]->ty->size;
+                for (int voff = 0; voff < vsz; voff += 8) {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(vaddr), (uint32_t)(voff / 8));
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)(arg_stack_idx[i] + voff / 8));
+                }
+                free_reg(vaddr);
+                continue;
+            }
+#endif
             r = gen_addr(argv[i]);
+            arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8)); // str x{r}, [sp, #off]
+            free_reg(r);
         } else if (argv[i]->ty->kind == TY_INT128) {
-            // int128 on stack: store two 64-bit values into consecutive slots
             int addr = gen_int128(argv[i]);
-            arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), 0); // ldr x16, [x{addr}]
-            arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr), 1); // ldr x17, [x{addr}, #8]
-            arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)arg_stack_idx[i]); // str x16, [sp, #off]
-            arm64_str_uoff(cg_sec, 3, ARM64_X17, ARM64_SP, (uint32_t)(arg_stack_idx[i] + 1)); // str x17, [sp, #off+8]
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), 0);
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr), 1);
+            arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)arg_stack_idx[i]);
+            arm64_str_uoff(cg_sec, 3, ARM64_X17, ARM64_SP, (uint32_t)(arg_stack_idx[i] + 1));
             free_reg(addr);
             continue;
         } else {
             r = gen(argv[i]);
-            // ARM64 stack slots are always 8 bytes; 32-bit mov wN zero-extends
             if (arg_is_float[i]) {
-                asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off); // str d0, [sp, #off]
+                asm_fmov_i2f(cg_sec, 0, r, 1);
+                asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off);
             } else {
-                arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8)); // str x{r}, [sp, #off/8]
+                arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8));
             }
             free_reg(r);
         }
@@ -2798,15 +2812,14 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     } else {
         int sz = node->ty ? (node->ty->size < 8 ? 4 : 8) : 8;
         asm_mov_retval(cg_sec, r, sz); // mov x{r}, x0 (return value)
-#ifdef ARCH_ARM64
         // AAPCS64: narrow return values sign/zero-extend to full register width
-        if (node->ty && node->ty->size < sz && node->ty->size < 4) {
+        // Skip void functions (size 1 with TY_VOID kind)
+        if (node->ty && node->ty->kind != TY_VOID && node->ty->size < sz && node->ty->size < 4) {
             if (node->ty->is_unsigned)
                 zero_extend_to(r, node->ty->size, 8);
             else
                 sign_extend_to(r, node->ty->size, 8);
         }
-#endif
     }
     return r;
 #else
@@ -6055,11 +6068,7 @@ static VReg gen(Node *node) {
 #endif
             }
 #ifdef ARCH_ARM64
-            // Sign-extend narrow signed types to full register width (emit_load does unsigned loads)
-            if (!use_unsigned(node->ty) && node->ty->size < 4)
-                sign_extend_to(r, node->ty->size, 8);
-            else if (use_unsigned(node->ty) && node->ty->size < 4)
-                zero_extend_to(r, node->ty->size, 8);
+            // emit_load already handles sign/zero-extension for narrow types
 #endif
         }
         return r;
@@ -9117,45 +9126,76 @@ static VReg gen(Node *node) {
             }
         } else {
             int gp_size = 8;
-            // ldr w16, [x{r}, #24]  — __gr_offs
-            asm_ldr_w16_uoff(cg_sec, r, 6); // ldr w16, [x{r}, #24]
-            arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X16, 0, 0); // cmp w16, #0
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+            // Apple ARM64 variadic: ALL struct args go on overflow stack, not GP regs.
+            // HFA structs ≤8 bytes (e.g. {float}, {double}) are not is_ptr_val_struct
+            // but still skip the GP save area because they went directly to stack.
+            bool is_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION);
+            if (is_struct && !is_ptr_val_struct) {
+                // Force branch to overflow — gp_size irrelevant, struct on stack
+                // cmp w16, #0; b.ge .L.va_overflow — but we want ALWAYS overflow
+                size_t _force_jmp = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, _force_jmp, format(".L.va_overflow.%d", rcc_label_count), 0);
+            } else
+#endif
             {
-                size_t _cj = asm_jcc_label(cg_sec, ARM64_GE);
-                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
-            }
-            // ldr x12, [x{r}, #8]  — __gr_top
-            asm_ldr_x12_uoff(cg_sec, r, 1); // ldr x12, [x{r}, #8]
-            asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
-            asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
-            if (is_ptr_val_struct) {
-                asm_ldr_x12_0(cg_sec); // ldr x12, [x12]
-            }
-            asm_add_w16_imm(cg_sec, gp_size); // add w16, w16, #gp_size
-            // str w16, [x{r}, #24]
-            asm_str_w16_uoff(cg_sec, r, 6); // str w16, [x{r}, #24]
-            {
-                size_t _jmp = asm_jmp_label(cg_sec);
-                asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
+                // ldr w16, [x{r}, #24]  — __gr_offs
+                asm_ldr_w16_uoff(cg_sec, r, 6); // ldr w16, [x{r}, #24]
+                arm64_subs_imm(cg_sec, 0, ARM64_XZR, ARM64_X16, 0, 0); // cmp w16, #0
+                {
+                    size_t _cj = asm_jcc_label(cg_sec, ARM64_GE);
+                    asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
+                }
+                // ldr x12, [x{r}, #8]  — __gr_top
+                asm_ldr_x12_uoff(cg_sec, r, 1); // ldr x12, [x{r}, #8]
+                asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
+                asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
+                if (is_ptr_val_struct) {
+                    asm_ldr_x12_0(cg_sec); // ldr x12, [x12]
+                }
+                asm_add_w16_imm(cg_sec, gp_size); // add w16, w16, #gp_size
+                // str w16, [x{r}, #24]
+                asm_str_w16_uoff(cg_sec, r, 6); // str w16, [x{r}, #24]
+                {
+                    size_t _jmp = asm_jmp_label(cg_sec);
+                    asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
+                }
             }
         }
 
         cg_def_label(format(".L.va_overflow.%d", rcc_label_count));
         // ldr x12, [x{r}]  — __stack
         asm_ldr_x12_uoff(cg_sec, r, 0); // ldr x12, [x{r}]
-        if (is_ptr_struct || is_ptr_val_struct) {
+#if defined(__APPLE__) && defined(ARCH_ARM64)
+        if (is_ptr_val_struct) {
+            // Apple ARM64: variadic struct by value on overflow stack — data is inline, no ptr deref.
+            // Just advance __stack past the struct data and set x12 to original __stack.
+            int ovf_sz = (ty->size + 7) & ~7;
+            asm_mov_x16_x12(cg_sec); // mov x16, x12
+            if (ovf_sz <= 4095)
+                arm64_add_imm(cg_sec, 1, ARM64_X16, ARM64_X12, ovf_sz, 0); // add x16, x12, #ovf_sz
+            else {
+                emit_mov_imm64(ARM64_X17, (uint64_t)ovf_sz);
+                arm64_add_reg(cg_sec, 1, ARM64_X16, ARM64_X12, ARM64_X17, ARM64_LSL, 0); // add x16, x12, x17
+            }
+            asm_str_x16_uoff(cg_sec, r, 0); // str x16, [x{r}]  — store updated __stack
+            // x12 already holds original __stack = pointer to struct data
+        } else if (is_ptr_struct)
+#else
+        if (is_ptr_struct || is_ptr_val_struct)
+#endif
+        {
+            // Pointer-passed struct: load pointer from stack, advance __stack by 8
             asm_ldr_x16_0(cg_sec); // ldr x16, [x12]
             asm_add_x12_imm(cg_sec, 8); // add x12, x12, #8
             asm_str_x12_uoff(cg_sec, r, 0); // str x12, [x{r}]
             asm_mov_x12_x16(cg_sec); // mov x12, x16
         } else {
+            // Non-struct arg on overflow stack: advance __stack by alignment
             int align = ty->align;
             int ovf_size = ty->size <= 8 ? 8 : (ty->size + 7) & ~7;
-            // x16 = old __stack.  Compute new in x17, store to ap, then
-            // move old __stack to x12 (result).
             if (align > 8) {
                 asm_add_x12_imm(cg_sec, align - 1); // add x12, x12, #align-1
-                // and x12, x12, #-align (logic immediate encoding)
                 asm_and_x12_imm(cg_sec, (uint64_t)(int64_t)(-align)); // and x12, x12, #-align
             }
             asm_mov_x16_x12(cg_sec); // mov x16, x12
@@ -9165,7 +9205,7 @@ static VReg gen(Node *node) {
 
         cg_def_label(format(".L.va_done.%d", rcc_label_count));
         cg_def_label(format(".L.va_done_x.%d", rcc_label_count)); // extra for jmp fixup compatibility
-        // mov x{r}, x12
+        asm_mov_vreg_x12(cg_sec, r); // mov x{r}, x12
 #elif defined(_WIN32)
         // Windows x64: va_list is char *. Read arg from current ap, advance by 8.
         r = gen_addr(node->lhs); // va_list is char *, need its address to advance
@@ -11010,6 +11050,11 @@ struct ObjFile *codegen(Program *prog) {
             } else {
                 cg_set_section(var->is_tls ? SEC_TDATA : SEC_DATA);
                 secbuf_align(cg_sec, var->ty->align > 1 ? var->ty->align : 1);
+#ifdef __APPLE__
+                // Apple ARM64: ensure at least 8-byte alignment for data symbols
+                // (needed for proper relocation handling, fixes 119_random_stuff)
+                secbuf_align(cg_sec, 8);
+#endif
                 size_t off = cg_sec->len;
                 if (!var->is_static)
                     objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
@@ -11801,19 +11846,19 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     // x11 = source (caller's stack)
                     arm64_add_imm(cg_sec, 1, ARM64_X11, ARM64_X29, spoff, 0); // add x11, x29, #spoff
-                    asm_mov_imm(cg_sec, 9, 8, sz);
+                    asm_mov_imm_phy(cg_sec, ARM64_X9, 8, sz); // mov x9, #sz
                     cg_label_ht_add(format(".L.pcopy.%d", c), cg_sec->len); // .L.pcopy.c:
-                    asm_cmp_zero(cg_sec, 9, 8);
+                    arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
                     {
                         size_t _off = asm_jcc_label(cg_sec, ARM64_EQ);
                         asm_fixup_add(cg_sec, _off, format(".L.pcopy_end.%d", c), 1);
                     } // b.eq .L.pcopy_end.c
-                    asm_dec(cg_sec, 9, 8);
+                    arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
                     asm_ldrb_w16_x9_phy(cg_sec, ARM64_X11); // ldrb w16, [x11, x9]
                     asm_strb_w16_x9_phy(cg_sec, ARM64_X13); // strb w16, [x13, x9]
                     {
                         size_t _off = asm_jmp_label(cg_sec);
-                        asm_fixup_add(cg_sec, _off, format(".L.pcopy.%d", c), 1);
+                        asm_fixup_add(cg_sec, _off, format(".L.pcopy.%d", c), 0);
                     } // b .L.pcopy.c
                     cg_label_ht_add(format(".L.pcopy_end.%d", c), cg_sec->len);
                     asm_fixup_resolve(cg_sec, format(".L.pcopy_end.%d", c), cg_sec->len); // .L.pcopy_end.c:
