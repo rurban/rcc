@@ -3422,6 +3422,8 @@ static void emit_tls_addr(VReg r, LVar *var) {
     int sidx = objfile_find_sym(cg_obj, label);
     if (sidx < 0)
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_TLS);
+#if defined(__APPLE__)
+    // Darwin ARM64: TLVP (General Dynamic) model via TLV descriptors
     int tlv_boot = objfile_find_sym(cg_obj, "__tlv_bootstrap");
     if (tlv_boot < 0)
         tlv_boot = objfile_add_sym(cg_obj, "__tlv_bootstrap", SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
@@ -3436,6 +3438,17 @@ static void emit_tls_addr(VReg r, LVar *var) {
     arm64_blr(cg_sec, ARM64_X16);
     if (rd != ARM64_X0)
         arm64_add_reg(cg_sec, 1, rd, ARM64_X0, ARM64_XZR, ARM64_LSL, 0);
+#else
+    // Linux ARM64: Local Exec TLS model
+    // mrs x{rd}, tpidr_el0
+    arm64_mrs(cg_sec, rd, 0x5e82); // mrs x{rd}, tpidr_el0
+    size_t hi_off = cg_sec->len;
+    arm64_add_imm(cg_sec, 1, rd, rd, 0, 1); // add x{rd}, x{rd}, #:tprel_hi12:label, lsl #12
+    objfile_add_reloc(cg_obj, SEC_TEXT, hi_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_HI12, 0);
+    size_t lo_off = cg_sec->len;
+    arm64_add_imm(cg_sec, 1, rd, rd, 0, 0); // add x{rd}, x{rd}, #:tprel_lo12_nc:label
+    objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
+#endif
 }
 static int emit_stack_addr(int offset) {
 #ifdef ARCH_ARM64

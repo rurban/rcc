@@ -22,5 +22,6 @@ export QEMU_LD_PREFIX="$SYSROOT"
 make leanclean
 make -s CC=aarch64-linux-gnu-gcc
 make -s run_tests_arm64
+ln -sf rcc-arm64 rcc
 export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
 timeout 10m qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --tcc --no-color
