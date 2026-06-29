@@ -2391,6 +2391,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = is_unsigned ? ty_uchar : ty_char;
             if (is_char && is_signed && !is_unsigned) {
                 ty = copy_type(ty_char);
+                ty->is_unsigned = false;
                 ty->is_signed_char = true;
             }
         } else if (is_short) {

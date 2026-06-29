@@ -2462,7 +2462,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 int tmp_slot = current_fn_stack_size + fn_struct_ret_off;
                 addr = alloc_reg();
                 emit_mov_imm64(ARM64_X16, (uint64_t)tmp_slot);
-                asm_sub_reg3(cg_sec, REG(addr), ARM64_X29, ARM64_X16, 8); // sub x{addr}, x29, x16
+                asm_sub_reg3(cg_sec, addr, ARM64_X29, ARM64_X16, 8); // sub x{addr}, x29, x16
                 // Zero out the slot using stp xzr, xzr, [x{addr}, #zb]
                 for (int zb = 0; zb < alloc; zb += 16) {
                     int32_t imm7 = zb / 8; // in units of 8 bytes
@@ -3465,7 +3465,7 @@ static int emit_stack_addr(int offset) {
             v >>= 16;
             s += 16;
         }
-        asm_sub_reg3(cg_sec, ta, 29, ta, 8); // sub ta, x29, ta
+        asm_sub_reg3(cg_sec, ta, ARM64_X29, REG(ta), 8); // sub ta, x29, ta
     }
     return ta;
 #else
@@ -3613,7 +3613,7 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
             asm_scvtf(cg_sec, ARM64_D0, r, from->size == 8 ? 1 : 0); // scvtf d0, w/x{r}
         }
         if (base_sz == 4) {
-            asm_fcvt(cg_sec, 1, 0, ARM64_S0, ARM64_D0); // fcvt s0, d0
+            asm_fcvt(cg_sec, 0, 1, ARM64_S0, ARM64_D0); // fcvt s0, d0
             asm_str_fp(cg_sec, ARM64_S0, addr, 4); // str s0, [x{addr}]
             arm64_str_uoff(cg_sec, 2, ARM64_XZR, REG(addr), 1); // str wzr, [x{addr}, #4]
         } else {
@@ -3714,8 +3714,8 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
     } else {
         asm_ldr_fp(cg_sec, ARM64_D0, src, 8); // ldr d0, [x{src}]
         arm64_ldr_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(src), 8); // ldr d1, [x{src}, #8]
-        asm_fcvt(cg_sec, 1, 0, ARM64_S0, ARM64_D0); // fcvt s0, d0
-        asm_fcvt(cg_sec, 1, 0, (Arm64Reg)(ARM64_S0 + 1), (Arm64Reg)(ARM64_D0 + 1)); // fcvt s1, d1
+        asm_fcvt(cg_sec, 0, 1, ARM64_S0, ARM64_D0); // fcvt s0, d0
+        asm_fcvt(cg_sec, 0, 1, (Arm64Reg)(ARM64_S0 + 1), (Arm64Reg)(ARM64_D0 + 1)); // fcvt s1, d1
     }
     if (tsz == 4) {
         asm_str_fp(cg_sec, ARM64_S0, dst, 4); // str s0, [x{dst}]
@@ -5145,8 +5145,8 @@ static VReg gen_int128(Node *node) {
         asm_ldr_reg_off(cg_sec, t2, lhs, 8, 8);
         asm_ldr_reg_off(cg_sec, t3, rhs, 8, 0);
         asm_ldr_reg_off(cg_sec, t4, rhs, 8, 8);
-        asm_adds_phy(cg_sec, t1, t1, t3);
-        asm_adc_phy(cg_sec, t2, t2, t4); // adc %s, %s, %s
+        asm_adds_phy(cg_sec, t1, t1, REG(t3));
+        asm_adc_phy(cg_sec, t2, t2, REG(t4)); // adc %s, %s, %s
         asm_str_reg_off(cg_sec, t1, dst, 8, 0);
         asm_str_reg_off(cg_sec, t2, dst, 8, 8);
         free_reg(t1);
@@ -5176,8 +5176,8 @@ static VReg gen_int128(Node *node) {
         asm_ldr_reg_off(cg_sec, t2, lhs, 8, 8);
         asm_ldr_reg_off(cg_sec, t3, rhs, 8, 0);
         asm_ldr_reg_off(cg_sec, t4, rhs, 8, 8);
-        asm_subs_phy(cg_sec, t1, t1, t3);
-        asm_sbc_phy(cg_sec, t2, t2, t4); // sbc %s, %s, %s
+        asm_subs_phy(cg_sec, t1, t1, REG(t3));
+        asm_sbc_phy(cg_sec, t2, t2, REG(t4)); // sbc %s, %s, %s
         asm_str_reg_off(cg_sec, t1, dst, 8, 0);
         asm_str_reg_off(cg_sec, t2, dst, 8, 8);
         free_reg(t1);
@@ -9849,8 +9849,11 @@ static VReg gen(Node *node) {
                 arm64_fmov_i2f(cg_sec, sf, 0, REG(t));
                 free_reg(t);
             } else {
-                // Complex float division via libcall
-                arm64_bl(cg_sec, 0); // bl placeholder
+                // Complex float division via libgcc: d0/d1 = lhs, d2/d3 = rhs.
+                int result_spill = spill_offset(result);
+                asm_stur_fp(cg_sec, result, result_spill); // str x{result}, [x29, #-spill_offset]
+                emit_direct_call(base_sz == 4 ? "__divsc3" : "__divdc3"); // bl __divsc3/__divdc3
+                asm_ldur_fp(cg_sec, result, result_spill); // ldr x{result}, [x29, #-spill_offset]
                 asm_str_fp(cg_sec, 0, result, base_sz);
                 arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
                 goto cx_arith_done;
@@ -10226,8 +10229,20 @@ static VReg gen(Node *node) {
     if (is_flonum(node->ty) && (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV)) {
         VReg r_rhs = gen(node->rhs);
 #ifdef ARCH_ARM64
+        bool rhs_in_x16 = false;
+        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+            // alloc_reg() reused r_lhs for rhs and spilled the original lhs.
+            // Preserve rhs in x16, then reload lhs before feeding d0/d1.
+            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
+            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
+            spilled_regs &= ~(1 << r_lhs);
+            rhs_in_x16 = true;
+        }
         asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
-        asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
+        if (rhs_in_x16)
+            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
+        else
+            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
         if (node->kind == ND_ADD) asm_fadd(cg_sec, 1); // fadd d0, d0, d1
         else if (node->kind == ND_SUB)
             asm_fsub(cg_sec, 1); // fsub d0, d0, d1
@@ -10240,6 +10255,8 @@ static VReg gen(Node *node) {
             asm_fcvt(cg_sec, 1, 0, 0, 0); // asm_fcvt(1, 0, 0, 0)
         }
         asm_fmov_f2i(cg_sec, r_lhs, 0, 1); // asm_fmov_f2i(r_lhs, 0, 1)
+        if (!rhs_in_x16 && r_rhs != r_lhs)
+            free_reg(r_rhs);
 #else
         asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
         asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
@@ -10273,8 +10290,19 @@ static VReg gen(Node *node) {
         node->lhs->ty && node->rhs->ty && (is_flonum(node->lhs->ty) || is_flonum(node->rhs->ty))) {
         VReg r_rhs = gen(node->rhs);
 #ifdef ARCH_ARM64
+        bool rhs_in_x16 = false;
+        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+            // Preserve rhs in x16, then reload the spilled lhs for comparison.
+            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
+            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
+            spilled_regs &= ~(1 << r_lhs);
+            rhs_in_x16 = true;
+        }
         asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
-        asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
+        if (rhs_in_x16)
+            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
+        else
+            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
         asm_fcmp(cg_sec, 1); // fcmp d0, d1
         if (node->kind == ND_EQ) asm_cset(cg_sec, r_lhs, ARM64_EQ); // cset rr_lhs
         else if (node->kind == ND_NE)
@@ -10302,7 +10330,8 @@ static VReg gen(Node *node) {
         }
         asm_movzx_phys(cg_sec, r_lhs, X86_RAX, 4, 1); // movzbl %%al, %s
 #endif
-        free_reg(r_rhs);
+        if (r_rhs != r_lhs)
+            free_reg(r_rhs);
         return r_lhs;
     }
 

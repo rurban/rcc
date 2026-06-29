@@ -19,6 +19,10 @@ fi
 # from the environment there, -L only covers the run_tests process itself.
 export QEMU_LD_PREFIX="$SYSROOT"
 
+# Host wrappers such as stdbuf set LD_PRELOAD to x86_64 libraries; qemu then
+# propagates that into ARM64 test binaries and their output no longer matches.
+unset LD_PRELOAD
+
 make leanclean
 make -s CC=aarch64-linux-gnu-gcc
 make -s run_tests_arm64

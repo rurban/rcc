@@ -5,7 +5,11 @@
 // clang-format off
 Type *ty_void    = &(Type){.kind=TY_VOID,    .size=1,  .align=1};
 Type *ty_bool    = &(Type){.kind=TY_BOOL,    .size=1,  .align=1,  .is_unsigned=true};
+#ifdef __aarch64__
+Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1,  .is_unsigned=true};
+#else
 Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1};
+#endif
 Type *ty_uchar   = &(Type){.kind=TY_CHAR,    .size=1,  .align=1,  .is_unsigned=true};
 Type *ty_short   = &(Type){.kind=TY_SHORT,   .size=2,  .align=2};
 Type *ty_ushort  = &(Type){.kind=TY_SHORT,   .size=2,  .align=2,  .is_unsigned=true};

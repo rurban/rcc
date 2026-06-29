@@ -33,12 +33,10 @@ static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
                                         ARM64_X13, ARM64_X14, ARM64_X15,
                                         ARM64_X19, ARM64_X20, ARM64_X21,
                                         ARM64_X22, ARM64_X23, ARM64_X24};
-// convert VReg => Arm64Reg
-#define REG(r)  (((r) < 0 || (r) >= 12) ? (error("Invalid register %d", r),0) : cg_arm_reg[r])
+#define REG(r)  (((r) < 0 || (r) >= 12) ? (error("Invalid register %d", r),0) : cg_arm_reg[(r)])
 #define CG_ARM_FP      ARM64_X29
 #define CG_ARM_LR      ARM64_X30
 #define CG_ARM_SP      ARM64_X31
-#define CG_ARM_XZR     ARM64_X31
 #else
 static const X86Reg cg_x86_reg[8] = {X86_R10, X86_R11, X86_RBX, X86_R12,
                                      X86_R13, X86_R14, X86_R15, X86_RSI};
@@ -950,21 +948,19 @@ static void asm_sub_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
 #endif
 }
 
-__attribute__((unused)) static void asm_sub_reg3(SecBuf *s, int dst, int src1, int src2, int size) {
 #ifdef ARCH_ARM64
+__attribute__((unused)) static void asm_sub_reg3(SecBuf *s, VReg dst, Arm64Reg src1, Arm64Reg src2, int size) {
     Arm64Reg rdst = REG(dst);
-    Arm64Reg rsrc1 = REG(src1);
-    Arm64Reg rsrc2 = REG(src2);
     int sf = (size == 8) ? 1 : 0;
-    arm64_sub_reg(s, sf, rdst, rsrc1, rsrc2, ARM64_LSL, 0);
-#else
-    X86Reg rdst = REG(dst);
-    X86Reg rsrc1 = REG(src1);
-    X86Reg rsrc2 = REG(src2);
-    x86_mov_rr(s, size, rdst, rsrc1);
-    x86_sub_rr(s, size, rdst, rsrc2);
-#endif
+    arm64_sub_reg(s, sf, rdst, src1, src2, ARM64_LSL, 0);
 }
+#else
+__attribute__((unused)) static void asm_sub_reg3(SecBuf *s, VReg dst, X86Reg src1, X86Reg src2, int size) {
+    X86Reg rdst = REG(dst);
+    x86_mov_rr(s, size, rdst, src1);
+    x86_sub_rr(s, size, rdst, src2);
+}
+#endif
 
 static void asm_sub_imm(SecBuf *s, VReg vr, int size, int32_t imm) {
     size_t off = s->len;
@@ -3468,21 +3464,42 @@ static void asm_ngc(SecBuf *s, VReg rd, VReg rn) {
     arm64_sbc(s, 1, REG(rd), ARM64_XZR, REG(rn)); // ngc rd, rn  (SBC rd, xzr, rn)
 }
 // adc rd, rn, rm  (add with carry, for int128)
-static void asm_adc_phy(SecBuf *s, VReg rd, VReg rn, VReg rm) {
-    arm64_adc(s, 1, REG(rd), REG(rn), REG(rm)); // adc rd, rn, rm
+#ifdef ARCH_ARM64
+static void asm_adc_phy(SecBuf *s, VReg rd, VReg rn, Arm64Reg rm) {
+    arm64_adc(s, 1, REG(rd), REG(rn), rm); // adc rd, rn, rm
 }
+#else
+static void asm_adc_phy(SecBuf *s, VReg rd, VReg rn, X86Reg rm) {
+    // x86: adc rm, rn is implicit via flags; handled differently in gen_int128
+}
+#endif
 // sbc rd, rn, rm  (subtract with carry, for int128)
-static void asm_sbc_phy(SecBuf *s, VReg rd, VReg rn, VReg rm) {
-    arm64_sbc(s, 1, REG(rd), REG(rn), REG(rm)); // sbc rd, rn, rm
+#ifdef ARCH_ARM64
+static void asm_sbc_phy(SecBuf *s, VReg rd, VReg rn, Arm64Reg rm) {
+    arm64_sbc(s, 1, REG(rd), REG(rn), rm); // sbc rd, rn, rm
 }
+#else
+static void asm_sbc_phy(SecBuf *s, VReg rd, VReg rn, X86Reg rm) {
+}
+#endif
 // adds rd, rn, rm  (add with flags, for int128)
-static void asm_adds_phy(SecBuf *s, VReg rd, VReg rn, VReg rm) {
-    arm64_adds_reg(s, 1, REG(rd), REG(rn), REG(rm), ARM64_LSL, 0); // adds rd, rn, rm
+#ifdef ARCH_ARM64
+static void asm_adds_phy(SecBuf *s, VReg rd, VReg rn, Arm64Reg rm) {
+    arm64_adds_reg(s, 1, REG(rd), REG(rn), rm, ARM64_LSL, 0); // adds rd, rn, rm
 }
+#else
+static void asm_adds_phy(SecBuf *s, VReg rd, VReg rn, X86Reg rm) {
+}
+#endif
 // subs rd, rn, rm  (sub with flags, for int128)
-static void asm_subs_phy(SecBuf *s, VReg rd, VReg rn, VReg rm) {
-    arm64_subs_reg(s, 1, REG(rd), REG(rn), REG(rm), ARM64_LSL, 0); // subs rd, rn, rm
+#ifdef ARCH_ARM64
+static void asm_subs_phy(SecBuf *s, VReg rd, VReg rn, Arm64Reg rm) {
+    arm64_subs_reg(s, 1, REG(rd), REG(rn), rm, ARM64_LSL, 0); // subs rd, rn, rm
 }
+#else
+static void asm_subs_phy(SecBuf *s, VReg rd, VReg rn, X86Reg rm) {
+}
+#endif
 
 // ============================================================================
 // ARM64 overflow builtin helpers (sign/zero extend, bitfield extract)

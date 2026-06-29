@@ -5201,9 +5201,17 @@ static int run_ctest_suite(void) {
     logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
 
     char cmd[PATH_MAX * 2 + 128];
+#ifdef __aarch64__
+    const char *stdbuf = "";
+#else
     const char *stdbuf = access("/usr/bin/stdbuf", X_OK) == 0 ? "stdbuf -oL " : "";
+#endif
     snprintf(cmd, sizeof(cmd),
+#ifdef __aarch64__
+             "cd '%s' && env -u LD_PRELOAD CC='%s' CFLAGS='-O1 -lm' %s./single-exec posix 2>/dev/null",
+#else
              "cd '%s' && env CC='%s' CFLAGS='-O1 -lm' %s./single-exec posix 2>/dev/null",
+#endif
              ctest_dir, rcc, stdbuf);
 
     FILE *fp = popen(cmd, "r");
@@ -5403,6 +5411,12 @@ int main(int argc, char **argv) {
     if (GetConsoleMode(hout, &mode))
         SetConsoleMode(hout, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
+#ifdef __aarch64__
+    /* Host stdbuf injects an x86_64 LD_PRELOAD that target ARM64 children
+     * cannot load; drop it before spawning compiled test binaries. */
+    unsetenv("LD_PRELOAD");
+#endif
+
 
     /* resolve script dir and chdir to it */
     {
