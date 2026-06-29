@@ -1476,17 +1476,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (is_signbit) {
             Node *arg = node->args;
             if (arg && !arg->next) {
-                int r_arg = gen(arg);
-                int r = alloc_reg();
+                VReg r_arg = gen(arg);
 #ifdef ARCH_ARM64
-                asm_shr_imm(cg_sec, r, 8, 63); // shr $63, rr
+                asm_shr_imm(cg_sec, r_arg, 8, 63); // shr $63, r_arg
 #else
+                VReg r = alloc_reg();
                 asm_movq_r_xmm(cg_sec, 0, r_arg); // movq r_arg, %xmm0
                 asm_movq_xmm_r(cg_sec, r, 0); // movq %xmm0, r
                 asm_shr_imm(cg_sec, r, 8, 63); // shrq $63, rr
-#endif
                 free_reg(r_arg);
                 return r;
+#endif
+                free_reg(r_arg);
+                return r_arg;
             }
         }
 
@@ -6979,19 +6981,22 @@ static VReg gen(Node *node) {
         VReg r3 = alloc_reg();
         emit_load(node->lhs->ty, r3, r, 0);
         if (is_flonum(node->lhs->ty)) {
-            // Float inc/dec: use fp arithmetic and store the updated bit pattern.
+            // Float inc/dec: load r3 bits into d0/s0, add/sub 1.0, store back.
             int id = add_float_literal(1.0, sz);
             int tmp = alloc_reg();
             emit_adrp_add(tmp, format(".LF%d", id));
             if (sz == 4) {
+                asm_fmov_i2f(cg_sec, 0, r3, 0); // fmov s0, w{r3}
                 asm_ldr_fp(cg_sec, 1, tmp, 4); // ldr s1, [x{tmp}]
                 (is_inc ? asm_fadd(cg_sec, 0) : asm_fsub(cg_sec, 0)); // fadd/fsub s0, s0, s1
+                asm_fmov_f2i(cg_sec, r3, 0, 0); // fmov w{r3}, s0
             } else {
+                asm_fmov_i2f(cg_sec, 0, r3, 1); // fmov d0, x{r3}
                 asm_ldr_fp(cg_sec, 1, tmp, 8); // ldr d1, [x{tmp}]
                 (is_inc ? asm_fadd(cg_sec, 1) : asm_fsub(cg_sec, 1)); // fadd/fsub d0, d0, d1
+                asm_fmov_f2i(cg_sec, r3, 0, 1); // fmov x{r3}, d0
             }
             free_reg(tmp);
-            asm_fmov_f2i(cg_sec, r3, 0, 1); // fmov x{r3}, d0
         } else {
             int delta = 1;
             if (node->lhs->ty->kind == TY_PTR || node->lhs->ty->kind == TY_ARRAY)
@@ -7000,6 +7005,15 @@ static VReg gen(Node *node) {
                 asm_add_imm(cg_sec, r3, sz, delta); // add r3, r3, #delta
             else
                 asm_sub_imm(cg_sec, r3, sz, delta); // sub r3, r3, #delta
+            // Narrow unsigned/signed types: extend so that comparisons against
+            // the returned register (e.g. --z > 0, unsigned char z) see the
+            // correctly truncated value, not the raw 32-bit add/sub result.
+            if (node->lhs->ty->size < 4) {
+                if (node->lhs->ty->is_unsigned)
+                    zero_extend_to(r3, node->lhs->ty->size, 4);
+                else
+                    sign_extend_to(r3, node->lhs->ty->size, 4);
+            }
         }
         emit_store(node->lhs->ty, r3, r, 0);
         // r3 already holds the new value; r2 holds the original. Return
