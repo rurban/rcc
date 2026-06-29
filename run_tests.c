@@ -887,6 +887,25 @@ static int unit_run_timeout(void) {
     return (has_runner || is_wine) ? 60 : 5;
 }
 
+/* Compilation timeout for torture tests: base 30 s, scaled by the
+ * dg-timeout-factor directive (if any) and by 4× when running under a
+ * cross-runner (qemu adds ~4× overhead even for the rcc compile step,
+ * which itself spawns the cross linker).  Clamped to 300 s. */
+static int torture_compile_timeout(const char *content) {
+    int base = has_runner ? 120 : 30;
+    if (content) {
+        const char *p = strstr(content, "dg-timeout-factor");
+        if (p) {
+            p += 17; /* strlen("dg-timeout-factor") */
+            while (*p == ' ' || *p == '\t') p++;
+            int factor = atoi(p);
+            if (factor > 1) base = base * factor;
+        }
+    }
+    if (base > 300) base = 300;
+    return base;
+}
+
 /* ── rcc library API (dynamically loaded from rcc_lib.{dll,so,dylib}) ──
  * Shared typedefs for both the Windows (LoadLibrary) and POSIX (dlopen)
  * loaders below. */
@@ -4044,7 +4063,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         ca[ai++] = "-lm";
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 0);
+        ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
         if (cr.exit_code != 0) {
             if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||
@@ -4222,7 +4241,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     ca[ai++] = "-lm";
     ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
-    ProcResult cr = proc_run(ca, 30, 0);
+    ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
     if (cr.exit_code != 0) {
         if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||

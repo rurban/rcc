@@ -43,8 +43,8 @@ Generated: June 29 2026 16:50
 
 - **Total**: 1671
 - **Passed**: 1520
-- **Failed**: 49
+- **Failed**: 45
 - **Skipped**: 102
-- **Fail Compile**: 4
+- **Fail Compile**: 0
 - **Fail Runtime**: 45
 - **Pass Rate (excl. skip)**: 96%
