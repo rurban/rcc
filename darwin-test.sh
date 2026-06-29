@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build rcc-darwin and run the TCC test suite for arm64-darwin.
 # Tests compile+link only (can't execute Mach-O on Linux).
+# Pre-requisites: tools/install-osxcross.sh
 # Usage: ./darwin-test.sh [test-name]
 set -e
 
