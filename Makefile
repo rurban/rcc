@@ -291,17 +291,17 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = ./run_tests.exe
+TEST_RUNNER = ./run_tests.exe ./rcc.exe
 else
-TEST_RUNNER = ./run_tests
+TEST_RUNNER = ./run_tests ./rcc
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
-	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER)
+	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
-	ulimit -f 2097152; $(TEST_RUNNER) --all
+	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
-	ulimit -f 2097152; $(TEST_RUNNER) --torture
+	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all

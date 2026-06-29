@@ -4,13 +4,13 @@
 
 **Compiler**: /home/rurban/Software/rcc-work/darwin-cross.sh
 
-Generated: June 25 2026 20:25
+Generated: June 29 2026 23:29
 
 ## Overall Summary
 
 - **Total**: 1837
-- **Passed**: 1727
-- **Failed**: 3
+- **Passed**: 1729
+- **Failed**: 1
 - **Overall Pass Rate**: 94%
 
 ## TCC Compatibility Tests
@@ -30,8 +30,7 @@ Generated: June 25 2026 20:25
 ## GCC Torture Tests
 
 - **Total**: 1671
-- **Passed**: 1567
-- **Failed**: 2
+- **Passed**: 1569
+- **Failed**: 0
 - **Skipped**: 102
-- **Fail Compile**: 2
-- **Pass Rate (excl. skip)**: 99%
+- **Pass Rate (excl. skip)**: 100%
