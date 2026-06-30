@@ -3560,7 +3560,7 @@ static void asm_cmp_phy_phy(SecBuf *s, VReg rn, VReg rm) {
 static void asm_ccmp_eq(SecBuf *s, VReg rn, VReg rm) {
     // CCMP rn, rm, #nzcv, cond  — instruction: 0xBA4..000 | (rm<<16) | (cond<<12) | (rn<<5) | nzcv
     // CCMP xrn, xrm, #0, eq: sf=1, op=2, S=1, o2=0, o3=0, cond=EQ=0, rn, rm, nzcv=0
-    uint32_t insn = 0xBA400000U;
+    uint32_t insn = 0xFA400000U; // CCMP (sf=1, op=1=S, 1 11010 000...)
     insn |= (uint32_t)(REG(rm) & 0x1f) << 16;
     insn |= (uint32_t)(0) << 12; // cond=EQ=0
     insn |= (uint32_t)(REG(rn) & 0x1f) << 5;
