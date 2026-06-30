@@ -6790,7 +6790,7 @@ static VReg gen(Node *node) {
         if (var->ty->size <= 4095) {
             emit_mov_imm64(ARM64_X9, (uint64_t)var->ty->size); // mov x9, #size
         } else {
-            emit_mov_imm64(ARM64_X12, (uint64_t)var->ty->size);
+            emit_mov_imm64(ARM64_X9, (uint64_t)var->ty->size);
         }
         cg_def_label(format(".L.zero.%d", c));
         arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
