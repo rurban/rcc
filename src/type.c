@@ -5,7 +5,7 @@
 // clang-format off
 Type *ty_void    = &(Type){.kind=TY_VOID,    .size=1,  .align=1};
 Type *ty_bool    = &(Type){.kind=TY_BOOL,    .size=1,  .align=1,  .is_unsigned=true};
-#ifdef __aarch64__
+#if defined(__aarch64__) && !defined(__APPLE__)
 Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1,  .is_unsigned=true};
 #else
 Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1};

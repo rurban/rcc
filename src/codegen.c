@@ -693,6 +693,7 @@ static const char *var_sym_label(LVar *var) {
     return sym_name(var->name);
 }
 
+static const char *asm_sym_name(const char *name);
 // Assembly label for a function: respects __asm__ names (used as-is) and
 // applies sym_name() to regular C identifiers.
 static const char *func_label(char *name) {
@@ -701,9 +702,9 @@ static const char *func_label(char *name) {
         if (item->fn->name == name) {
             if (item->fn->asm_name)
                 return item->fn->asm_name;
-            return sym_name(item->fn->name);
+            return asm_sym_name(sym_name(item->fn->name));
         }
-    return sym_name(name);
+    return asm_sym_name(sym_name(name));
 }
 
 // Assembly-safe symbol name: quotes non-ASCII identifiers for LLVM assembler
@@ -3226,8 +3227,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (node->ty && node->ty->kind == TY_INT128) {
         int addr = alloc_int128_addr();
 #ifdef ARCH_ARM64
-        asm_str_reg_off(cg_sec, 0, addr, 8, 0); // str x0, [addr]
-        asm_str_reg_off(cg_sec, 1, addr, 8, 1); // str x1, [addr, #8]
+        asm_str_reg_off_phy(cg_sec, ARM64_X0, addr, 8, 0); // str x0, [addr]
+        asm_str_reg_off_phy(cg_sec, ARM64_X1, addr, 8, 1); // str x1, [addr, #8]
 #else
         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 8), X86_RDX); // movq %rdx, 8(reg)
@@ -11180,7 +11181,7 @@ struct ObjFile *codegen(Program *prog) {
                         for (; pos < rel->offset; pos++)
                             secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]); // .set %s, %s
                         size_t rel_off = cg_sec->len;
-                        secbuf_emit64le(cg_sec, 0); // .quad 0 (addend in reloc)
+                        secbuf_emit64le(cg_sec, (uint64_t)rel->addend); // .quad addend (reloc addend embedded in data)
                         const char *rel_label = sym_name(rel->label);
                         int sidx;
                         // .L. labels are local text labels; use SB_LOCAL SEC_TEXT for section-relative reloc
