@@ -2002,6 +2002,18 @@ __attribute__((unused)) static void asm_str_reg_off(SecBuf *s, int src_r, int ba
     x86_mov_mr(s, size, m, REG(src_r));
 #endif
 }
+
+#ifdef ARCH_ARM64
+// str phy_reg, [base_r, #uimm] — store physical register to VReg base + offset
+__attribute__((unused)) static void asm_str_reg_off_phy(SecBuf *s, Arm64Reg src_phy, VReg base_r, int size, uint32_t uimm) {
+    switch (size) {
+    case 1: arm64_strb_uoff(s, src_phy, REG(base_r), uimm); break;
+    case 2: arm64_strh_uoff(s, src_phy, REG(base_r), uimm); break;
+    case 4: arm64_str_uoff(s, 2, src_phy, REG(base_r), uimm / 4); break;
+    default: arm64_str_uoff(s, 3, src_phy, REG(base_r), uimm / 8); break;
+    }
+}
+#endif
 #ifdef ARCH_ARM64
 // ARM64 load fp reg dst_fp_r from [base_r, #byte_off]; size=4→S, 8→D
 static void asm_ldr_fp_off(SecBuf *s, Arm64Reg dst_fp_r, VReg base_r, int size, uint32_t byte_off) {
