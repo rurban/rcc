@@ -1,5 +1,5 @@
-/* ANSI-C code produced by gperf version 3.2 */
-/* Command-line: gperf -m 10 --output-file=src/keywords.h.tmp src/keywords.gperf  */
+/* C code produced by gperf version 3.0.3 */
+/* Command-line: /Library/Developer/CommandLineTools/usr/bin/gperf -m 10 --output-file=src/keywords.h.tmp src/keywords.gperf  */
 /* Computed positions: -k'1,3,8,11-12,17,19,$' */
 
 #if !((' ' == 32) && ('!' == 33) && ('"' == 34) && ('#' == 35) \
@@ -26,7 +26,7 @@
       && ('w' == 119) && ('x' == 120) && ('y' == 121) && ('z' == 122) \
       && ('{' == 123) && ('|' == 124) && ('}' == 125) && ('~' == 126))
 /* The character set is not based on ISO-646.  */
-#error "gperf generated tables don't work with this execution character set. Please report a bug to <bug-gperf@gnu.org>."
+error "gperf generated tables don't work with this execution character set. Please report a bug to <bug-gnu-gperf@gnu.org>."
 #endif
 
 #line 1 "src/keywords.gperf"
@@ -51,7 +51,9 @@ inline
 #endif
 #endif
 static unsigned int
-hash (const char *str, size_t len)
+hash (str, len)
+     const char *str;
+     size_t len;
 {
   static const unsigned short asso_values[] =
     {
@@ -75,20 +77,10 @@ hash (const char *str, size_t len)
     {
       default:
         hval += asso_values[(unsigned char)str[18]];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 18:
       case 17:
         hval += asso_values[(unsigned char)str[16]];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 16:
       case 15:
@@ -96,29 +88,14 @@ hash (const char *str, size_t len)
       case 13:
       case 12:
         hval += asso_values[(unsigned char)str[11]];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 11:
         hval += asso_values[(unsigned char)str[10]];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 10:
       case 9:
       case 8:
         hval += asso_values[(unsigned char)str[7]];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 7:
       case 6:
@@ -126,11 +103,6 @@ hash (const char *str, size_t len)
       case 4:
       case 3:
         hval += asso_values[(unsigned char)str[2]+1];
-#if (defined __cplusplus && (__cplusplus >= 201703L || (__cplusplus >= 201103L && defined __clang__ && __clang_major__ + (__clang_minor__ >= 9) > 3))) || (__STDC_VERSION__ >= 202000L && ((defined __GNUC__ && __GNUC__ >= 10) || (defined __clang__ && __clang_major__ >= 9)))
-      [[fallthrough]];
-#elif (defined __GNUC__ && __GNUC__ >= 7) || (defined __clang__ && __clang_major__ >= 10)
-      __attribute__ ((__fallthrough__));
-#endif
       /*FALLTHROUGH*/
       case 2:
       case 1:
@@ -180,10 +152,6 @@ static const unsigned char lengthtable[] =
      0,  0,  0,  0,  0,  0, 20
   };
 
-#if (defined __GNUC__ && __GNUC__ + (__GNUC_MINOR__ >= 6) > 4) || (defined __clang__ && __clang_major__ >= 3)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#endif
 static const struct keyword_entry keyword_table[] =
   {
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
@@ -801,12 +769,11 @@ static const struct keyword_entry keyword_table[] =
 #line 165 "src/keywords.gperf"
     {"__builtin_apply_args", ID___BUILTIN_APPLY_ARGS, KW_BUILTIN}
   };
-#if (defined __GNUC__ && __GNUC__ + (__GNUC_MINOR__ >= 6) > 4) || (defined __clang__ && __clang_major__ >= 3)
-#pragma GCC diagnostic pop
-#endif
 
 const struct keyword_entry *
-keyword_lookup (const char *str, size_t len)
+keyword_lookup (str, len)
+     const char *str;
+     size_t len;
 {
   if (len <= MAX_WORD_LENGTH && len >= MIN_WORD_LENGTH)
     {
@@ -821,5 +788,5 @@ keyword_lookup (const char *str, size_t len)
               return &keyword_table[key];
           }
     }
-  return (struct keyword_entry *) 0;
+  return 0;
 }
