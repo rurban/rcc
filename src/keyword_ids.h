@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 
+// keyword_entry.flags
 enum {
     KW_NONE = 0,
     KW_CONTROL = 1 << 0,
@@ -20,6 +21,7 @@ enum {
     KW_MODE = 1 << 11,
 };
 
+// keyword_entry.id
 enum {
     ID_NONE = 0,
     ID_IF,
