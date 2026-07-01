@@ -25,9 +25,11 @@
 #define IMAGE_SCN_MEM_EXECUTE            0x20000000
 #define IMAGE_SCN_MEM_READ               0x40000000
 #define IMAGE_SCN_MEM_WRITE              0x80000000
+#define IMAGE_SCN_ALIGN_1BYTES           0x00100000
 #define IMAGE_SCN_ALIGN_4BYTES           0x00300000
 #define IMAGE_SCN_ALIGN_8BYTES           0x00400000
 #define IMAGE_SCN_ALIGN_16BYTES          0x00500000
+#define IMAGE_SCN_MEM_DISCARDABLE        0x02000000
 
 #define COFF_CHAR_TEXT  \
     (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_16BYTES)
@@ -39,6 +41,12 @@
 // coff_sec_idx[] (no ObjSym targets them); they are handled specially.
 #define SEC_XDATA  100
 #define SEC_PDATA  101
+// Logical section ids for the DWARF debug sections (-g). Like the unwind
+// sections these are >= SEC_NUM so they never index coff_sec_idx[].
+#define SEC_DEBUG_LINE    102
+#define SEC_DEBUG_INFO    103
+#define SEC_DEBUG_ABBREV  104
+#define SEC_DEBUG_ARANGES 105
 #define COFF_CHAR_DATA  \
     (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_ALIGN_16BYTES)
 #define COFF_CHAR_RDATA \
@@ -47,6 +55,9 @@
     (IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_ALIGN_16BYTES)
 #define COFF_CHAR_INIT_ARRAY \
     (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_8BYTES)
+// DWARF .debug_* : read-only, discardable, 1-byte aligned (matches GNU as)
+#define COFF_CHAR_DEBUG \
+    (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_DISCARDABLE | IMAGE_SCN_MEM_READ | IMAGE_SCN_ALIGN_1BYTES)
 
 // x86-64 COFF relocation types
 #define IMAGE_REL_AMD64_ADDR64  1
@@ -90,8 +101,10 @@
 // ---------------------------------------------------------------------------
 typedef struct {
     char short_name[8]; // zero-padded 8-byte section name
+    bool long_name; // name > 8 bytes: header uses "/<off>", symbol uses strtab off
+    uint32_t name_stroff; // strtab offset of the full name (valid if long_name)
     int sec_id; // SEC_TEXT / SEC_DATA / SEC_RODATA / SEC_BSS / SEC_INIT_ARRAY /
-    // SEC_FINI_ARRAY / SEC_XDATA / SEC_PDATA
+    // SEC_FINI_ARRAY / SEC_XDATA / SEC_PDATA / SEC_DEBUG_*
     uint32_t characteristics;
     size_t raw_size; // bytes in file
     size_t virt_size; // virtual size (.bss: bss_size, others: raw_size)
@@ -344,8 +357,19 @@ int coff_write(ObjFile *obj, const char *path) {
     // -------------------------------------------------------------------
     // Enumerate sections
     // -------------------------------------------------------------------
-    CoffSec sections[8]; // +2 for Win64 .xdata/.pdata
+    // base 6 (.text/.data/.rdata/.bss/.ctors/.dtors) + 2 unwind + 4 DWARF debug
+    CoffSec sections[12];
     int num_sec = 0;
+
+    // String table is built up-front: DWARF debug section names exceed the
+    // 8-byte inline limit and must be stored here during section enumeration.
+    CStrtab strtab;
+    cstrtab_init(&strtab);
+    // Zero the long-name fields for every slot; most sections use short names.
+    for (int i = 0; i < (int)(sizeof(sections) / sizeof(sections[0])); i++) {
+        sections[i].long_name = false;
+        sections[i].name_stroff = 0;
+    }
 
     // .text
     memset(sections[num_sec].short_name, 0, 8);
@@ -515,6 +539,45 @@ int coff_write(ObjFile *obj, const char *path) {
         num_sec++;
     }
 
+    // -------------------------------------------------------------------
+    // DWARF debug sections (-g). Populated by objfile_flush_debug_line() in
+    // codegen. Their names all exceed 8 bytes, so the section header stores
+    // "/<strtab-offset>" and the section symbol stores the strtab offset.
+    // .debug_line/.debug_info/.debug_aranges each carry one ADDR64 relocation
+    // (the DWARF address placeholder) against the .text section symbol.
+    // -------------------------------------------------------------------
+    if (objfile_has_debug(obj)) {
+        struct {
+            const char *name;
+            int sec_id;
+            SecBuf *buf;
+            int reloc_count;
+        } dbg[4] = {
+            {".debug_line", SEC_DEBUG_LINE, &obj->debug_line_section,
+             obj->debug_has_line_addr ? 1 : 0},
+            {".debug_info", SEC_DEBUG_INFO, &obj->debug_info_section,
+             obj->debug_has_low_pc ? 1 : 0},
+            {".debug_abbrev", SEC_DEBUG_ABBREV, &obj->debug_abbrev_section, 0},
+            {".debug_aranges", SEC_DEBUG_ARANGES, &obj->debug_aranges_section,
+             obj->debug_has_aranges_addr ? 1 : 0},
+        };
+        for (int i = 0; i < 4; i++) {
+            if (dbg[i].buf->len == 0)
+                continue;
+            CoffSec *s = &sections[num_sec];
+            memset(s->short_name, 0, 8);
+            s->long_name = true;
+            s->name_stroff = cstrtab_add(&strtab, dbg[i].name);
+            s->sec_id = dbg[i].sec_id;
+            s->characteristics = COFF_CHAR_DEBUG;
+            s->raw_size = dbg[i].buf->len;
+            s->virt_size = dbg[i].buf->len;
+            s->relocs = NULL; // emitted specially (against .text section symbol)
+            s->reloc_count = dbg[i].reloc_count;
+            num_sec++;
+        }
+    }
+
     // Build SEC_* → COFF section index (1-based) map
     int coff_sec_idx[SEC_NUM];
     memset(coff_sec_idx, 0, sizeof(coff_sec_idx));
@@ -523,19 +586,23 @@ int coff_write(ObjFile *obj, const char *path) {
             coff_sec_idx[sections[i].sec_id] = i + 1;
 
     // -------------------------------------------------------------------
-    // Build string table and symbol table
+    // Build symbol table (string table already initialized above)
     // -------------------------------------------------------------------
-    CStrtab strtab;
-    cstrtab_init(&strtab);
-
     SymArr syms = {NULL, 0, 0};
     int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
 
     // Section symbols (each with 1 aux entry)
     for (int i = 0; i < num_sec; i++) {
         CoffSymRec ss = {0};
-        memcpy(ss.short_name, sections[i].short_name, 8);
-        ss.long_name = false;
+        if (sections[i].long_name) {
+            memset(ss.short_name, 0, 4);
+            memcpy(ss.short_name + 4, &sections[i].name_stroff, 4);
+            ss.long_name = true;
+            ss.strtab_off = sections[i].name_stroff;
+        } else {
+            memcpy(ss.short_name, sections[i].short_name, 8);
+            ss.long_name = false;
+        }
         ss.section_number = (int16_t)(i + 1);
         ss.type = 0;
         ss.storage_class = IMAGE_SYM_CLASS_STATIC;
@@ -727,7 +794,15 @@ int coff_write(ObjFile *obj, const char *path) {
 
     // --- Section headers (40 bytes each) ---
     for (int i = 0; i < num_sec; i++) {
-        wbuf(f, sections[i].short_name, 8);
+        if (sections[i].long_name) {
+            // Long section name: "/" + decimal strtab offset, zero-padded to 8.
+            char namebuf[9];
+            memset(namebuf, 0, sizeof(namebuf));
+            snprintf(namebuf, sizeof(namebuf), "/%u", sections[i].name_stroff);
+            wbuf(f, namebuf, 8);
+        } else {
+            wbuf(f, sections[i].short_name, 8);
+        }
         w32(f, (uint32_t)sections[i].virt_size);
         w32(f, 0); // virtual_addr
         w32(f, (uint32_t)sections[i].raw_size);
@@ -758,6 +833,14 @@ int coff_write(ObjFile *obj, const char *path) {
             wbuf(f, xdata_buf, sz);
         else if (sections[i].sec_id == SEC_PDATA)
             wbuf(f, pdata_buf, sz);
+        else if (sections[i].sec_id == SEC_DEBUG_LINE)
+            wbuf(f, obj->debug_line_section.data, sz);
+        else if (sections[i].sec_id == SEC_DEBUG_INFO)
+            wbuf(f, obj->debug_info_section.data, sz);
+        else if (sections[i].sec_id == SEC_DEBUG_ABBREV)
+            wbuf(f, obj->debug_abbrev_section.data, sz);
+        else if (sections[i].sec_id == SEC_DEBUG_ARANGES)
+            wbuf(f, obj->debug_aranges_section.data, sz);
         // .bss has raw_size 0, handled above
     }
 
@@ -784,6 +867,28 @@ int coff_write(ObjFile *obj, const char *path) {
                 w32(f, (uint32_t)xdata_sec_sym);
                 w16(f, IMAGE_REL_AMD64_ADDR32NB);
             }
+            continue;
+        }
+        // DWARF debug sections: one ADDR64 relocation for the address
+        // placeholder, resolved against the .text section symbol.
+        if (sections[i].sec_id == SEC_DEBUG_LINE ||
+            sections[i].sec_id == SEC_DEBUG_INFO ||
+            sections[i].sec_id == SEC_DEBUG_ARANGES) {
+            if (sections[i].reloc_count == 0)
+                continue;
+#if defined(ARCH_ARM64) || defined(__aarch64__)
+            uint16_t addr64 = IMAGE_REL_ARM64_ADDR64;
+#else
+            uint16_t addr64 = IMAGE_REL_AMD64_ADDR64;
+#endif
+            uint32_t roff = (sections[i].sec_id == SEC_DEBUG_LINE)
+                ? (uint32_t)obj->debug_line_addr_off
+                : (sections[i].sec_id == SEC_DEBUG_INFO)
+                ? (uint32_t)obj->debug_low_pc_offset
+                : (uint32_t)obj->debug_aranges_addr_off;
+            w32(f, roff);
+            w32(f, (uint32_t)text_sec_sym);
+            w16(f, addr64);
             continue;
         }
         for (int j = 0; j < sections[i].reloc_count; j++) {

@@ -192,6 +192,7 @@ int elf_write(ObjFile *obj, const char *path) {
     strtab_init(&symstrtab);
     strtab_init(&shstrtab);
     bool has_tdata = obj->data_tls.len > 0;
+    bool has_debug = objfile_has_debug(obj);
 
     // Section name strings
     uint32_t shn_empty = strtab_add(&shstrtab, "");
@@ -201,6 +202,11 @@ int elf_write(ObjFile *obj, const char *path) {
     uint32_t shn_rodata = strtab_add(&shstrtab, ".rodata");
     uint32_t shn_tdata = strtab_add(&shstrtab, ".tdata");
     uint32_t shn_note = strtab_add(&shstrtab, ".note.GNU-stack");
+    uint32_t shn_debug_line = strtab_add(&shstrtab, ".debug_line");
+    uint32_t shn_rela_debug_line = strtab_add(&shstrtab, ".rela.debug_line");
+    uint32_t shn_debug_info = strtab_add(&shstrtab, ".debug_info");
+    uint32_t shn_debug_abbrev = strtab_add(&shstrtab, ".debug_abbrev");
+    uint32_t shn_debug_aranges = strtab_add(&shstrtab, ".debug_aranges");
     uint32_t shn_init_array = strtab_add(&shstrtab, ".init_array");
     uint32_t shn_fini_array = strtab_add(&shstrtab, ".fini_array");
     uint32_t shn_rela_txt = strtab_add(&shstrtab, ".rela.text");
@@ -208,6 +214,8 @@ int elf_write(ObjFile *obj, const char *path) {
     uint32_t shn_rela_rod = strtab_add(&shstrtab, ".rela.rodata");
     uint32_t shn_rela_init = strtab_add(&shstrtab, ".rela.init_array");
     uint32_t shn_rela_fini = strtab_add(&shstrtab, ".rela.fini_array");
+    uint32_t shn_rela_debug_info = strtab_add(&shstrtab, ".rela.debug_info");
+    uint32_t shn_rela_debug_aranges = strtab_add(&shstrtab, ".rela.debug_aranges");
     uint32_t shn_symtab = strtab_add(&shstrtab, ".symtab");
     uint32_t shn_strtab = strtab_add(&shstrtab, ".strtab");
     uint32_t shn_shstrtab = strtab_add(&shstrtab, ".shstrtab");
@@ -301,13 +309,33 @@ int elf_write(ObjFile *obj, const char *path) {
     bool has_rela_rodata = obj->rodata_reloc_count > 0;
     bool has_rela_init = obj->init_array_reloc_count > 0;
     bool has_rela_fini = obj->fini_array_reloc_count > 0;
+    bool has_rela_debug_info = has_debug && obj->debug_has_low_pc;
+    bool has_rela_debug_aranges = has_debug && obj->debug_has_aranges_addr;
+    bool has_rela_debug_line = has_debug && obj->debug_has_line_addr;
 
+    // Section layout:
+    // 0=NULL, 1=.text, 2=.data, 3=.bss, 4=.rodata, 5=.tdata(if tls),
+    // 6=.note.GNU-stack (5 if no tls)
+    // then optional .debug_line, .debug_info, .debug_abbrev
+    // then optional .init_array, .fini_array
+    // then optional .rela.*
+
+    // then .symtab, .strtab, .shstrtab
+    // Note: .note is always at index 5 (no tdata) or 6 (with tdata)
+    // It has no variable; shidx starts after it.
     int shidx = has_tdata ? 7 : 6;
+    int sh_debug_line_idx = has_debug ? shidx++ : -1;
+    int sh_debug_info_idx = has_debug ? shidx++ : -1;
+    int sh_debug_abbrev_idx = has_debug ? shidx++ : -1;
+    int sh_debug_aranges_idx = has_debug ? shidx++ : -1;
     int sh_init_array_idx = has_init_array ? shidx++ : -1;
     int sh_fini_array_idx = has_fini_array ? shidx++ : -1;
     int sh_rela_text_idx = has_rela_text ? shidx++ : -1;
     int sh_rela_data_idx = has_rela_data ? shidx++ : -1;
     int sh_rela_rodata_idx = has_rela_rodata ? shidx++ : -1;
+    int sh_rela_debug_info_idx = has_rela_debug_info ? shidx++ : -1;
+    int sh_rela_debug_aranges_idx = has_rela_debug_aranges ? shidx++ : -1;
+    int sh_rela_debug_line_idx = has_rela_debug_line ? shidx++ : -1;
     __attribute__((unused)) int sh_rela_init_idx = has_rela_init ? shidx++ : -1;
     __attribute__((unused)) int sh_rela_fini_idx = has_rela_fini ? shidx++ : -1;
     int sh_symtab_idx = shidx++;
@@ -317,10 +345,13 @@ int elf_write(ObjFile *obj, const char *path) {
     (void)sh_rela_text_idx;
     (void)sh_rela_data_idx;
     (void)sh_rela_rodata_idx;
-
-    // -----------------------------------------------------------------------
-    // File layout
-    // -----------------------------------------------------------------------
+    (void)sh_debug_line_idx;
+    (void)sh_debug_aranges_idx;
+    (void)sh_debug_info_idx;
+    (void)sh_debug_abbrev_idx;
+    (void)sh_rela_debug_info_idx;
+    (void)sh_rela_debug_aranges_idx;
+    (void)sh_rela_debug_line_idx;
     uint64_t text_off = align16(64); // 64 = sizeof ELF header
     uint64_t text_size = obj->text.len;
     uint64_t data_off = align16(text_off + text_size);
@@ -331,7 +362,16 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t tdata_size = (uint64_t)obj->data_tls.len;
     uint64_t note_off = align16(has_tdata ? tdata_off + tdata_size : rodata_off + rodata_size);
 
-    uint64_t init_arr_off = align16(note_off); // .note is empty
+    uint64_t debug_line_off = align16(note_off);
+    uint64_t debug_line_size = has_debug ? obj->debug_line_section.len : 0;
+    uint64_t debug_info_off = align16(debug_line_off + debug_line_size);
+    uint64_t debug_info_size = has_debug ? obj->debug_info_section.len : 0;
+    uint64_t debug_abbrev_off = align16(debug_info_off + debug_info_size);
+    uint64_t debug_abbrev_size = has_debug ? obj->debug_abbrev_section.len : 0;
+    uint64_t debug_aranges_off = align16(debug_abbrev_off + debug_abbrev_size);
+    uint64_t debug_aranges_size = has_debug ? obj->debug_aranges_section.len : 0;
+
+    uint64_t init_arr_off = align16(debug_aranges_off + debug_aranges_size);
     uint64_t init_arr_size = obj->init_array.len;
     uint64_t fini_arr_off = align16(init_arr_off + init_arr_size);
     uint64_t fini_arr_size = obj->fini_array.len;
@@ -345,8 +385,14 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t rela_ini_size = (uint64_t)obj->init_array_reloc_count * 24;
     uint64_t rela_fin_off = align16(rela_ini_off + rela_ini_size);
     uint64_t rela_fin_size = (uint64_t)obj->fini_array_reloc_count * 24;
+    uint64_t rela_debug_line_off = align16(rela_fin_off + rela_fin_size);
+    uint64_t rela_debug_line_size = has_rela_debug_line ? 24 : 0;
+    uint64_t rela_debug_info_off = align16(rela_debug_line_off + rela_debug_line_size);
+    uint64_t rela_debug_info_size = has_rela_debug_info ? 24 : 0;
+    uint64_t rela_debug_aranges_off = align16(rela_debug_info_off + rela_debug_info_size);
+    uint64_t rela_debug_aranges_size = has_rela_debug_aranges ? 24 : 0;
 
-    uint64_t symtab_off = align16(rela_fin_off + rela_fin_size);
+    uint64_t symtab_off = align16(rela_debug_aranges_off + rela_debug_aranges_size);
     uint64_t symtab_size = (uint64_t)ea.len * 24;
     uint64_t strtab_off = align16(symtab_off + symtab_size);
     uint64_t strtab_size = symstrtab.len;
@@ -378,7 +424,18 @@ int elf_write(ObjFile *obj, const char *path) {
         wzeros(f, tdata_off - (rodata_off + rodata_size));
         wbuf(f, obj->data_tls.data, tdata_size);
     }
-    wzeros(f, init_arr_off - (has_tdata ? tdata_off + tdata_size : rodata_off + rodata_size));
+    wzeros(f, note_off - (has_tdata ? tdata_off + tdata_size : rodata_off + rodata_size));
+    if (has_debug) {
+        wzeros(f, debug_line_off - note_off);
+        if (debug_line_size) wbuf(f, obj->debug_line_section.data, debug_line_size);
+        wzeros(f, debug_info_off - (debug_line_off + debug_line_size));
+        if (debug_info_size) wbuf(f, obj->debug_info_section.data, debug_info_size);
+        wzeros(f, debug_abbrev_off - (debug_info_off + debug_info_size));
+        if (debug_abbrev_size) wbuf(f, obj->debug_abbrev_section.data, debug_abbrev_size);
+        wzeros(f, debug_aranges_off - (debug_abbrev_off + debug_abbrev_size));
+        if (debug_aranges_size) wbuf(f, obj->debug_aranges_section.data, debug_aranges_size);
+        wzeros(f, init_arr_off - (debug_aranges_off + debug_aranges_size));
+    }
     if (init_arr_size) wbuf(f, obj->init_array.data, init_arr_size);
     wzeros(f, fini_arr_off - (init_arr_off + init_arr_size));
     if (fini_arr_size) wbuf(f, obj->fini_array.data, fini_arr_size);
@@ -427,7 +484,43 @@ int elf_write(ObjFile *obj, const char *path) {
         w64(f, ELF64_R_INFO((uint32_t)es, r->type));
         wi64(f, r->addend);
     }
-    wzeros(f, symtab_off - (rela_fin_off + rela_fin_size));
+    wzeros(f, rela_debug_line_off - (rela_fin_off + rela_fin_size));
+
+    if (has_rela_debug_line) {
+#ifdef __aarch64__
+        uint32_t r_type = R_AARCH64_ABS64;
+#else
+        uint32_t r_type = R_X86_64_64;
+#endif
+        w64(f, obj->debug_line_addr_off);
+        w64(f, ELF64_R_INFO(1, r_type));
+        wi64(f, 0);
+    }
+    wzeros(f, rela_debug_info_off - (rela_debug_line_off + rela_debug_line_size));
+
+    if (has_rela_debug_info) {
+#ifdef __aarch64__
+        uint32_t r_type = R_AARCH64_ABS64;
+#else
+        uint32_t r_type = R_X86_64_64;
+#endif
+        w64(f, obj->debug_low_pc_offset);
+        w64(f, ELF64_R_INFO(1, r_type));
+        wi64(f, 0);
+    }
+    wzeros(f, rela_debug_aranges_off - (rela_debug_info_off + rela_debug_info_size));
+
+    if (has_rela_debug_aranges) {
+#ifdef __aarch64__
+        uint32_t r_type = R_AARCH64_ABS64;
+#else
+        uint32_t r_type = R_X86_64_64;
+#endif
+        w64(f, obj->debug_aranges_addr_off);
+        w64(f, ELF64_R_INFO(1, r_type));
+        wi64(f, 0);
+    }
+    wzeros(f, symtab_off - (rela_debug_aranges_off + rela_debug_aranges_size));
 
     for (int i = 0; i < ea.len; i++)
         write_sym(f, ea.data[i].name, ea.data[i].info, ea.data[i].other,
@@ -454,6 +547,17 @@ int elf_write(ObjFile *obj, const char *path) {
     if (has_tdata)
         write_shdr(f, shn_tdata, SHT_PROGBITS, SHF_TLS | SHF_WRITE | SHF_ALLOC, tdata_off, tdata_size, 0, 0, 1, 0);
     write_shdr(f, shn_note, SHT_PROGBITS, 0, note_off, 0, 0, 0, 1, 0);
+
+    if (has_debug) {
+        write_shdr(f, shn_debug_line, SHT_PROGBITS, 0,
+                   debug_line_off, debug_line_size, 0, 0, 1, 0);
+        write_shdr(f, shn_debug_info, SHT_PROGBITS, 0,
+                   debug_info_off, debug_info_size, 0, 0, 1, 0);
+        write_shdr(f, shn_debug_abbrev, SHT_PROGBITS, 0,
+                   debug_abbrev_off, debug_abbrev_size, 0, 0, 1, 0);
+        write_shdr(f, shn_debug_aranges, SHT_PROGBITS, 0,
+                   debug_aranges_off, debug_aranges_size, 0, 0, 1, 0);
+    }
 
     if (has_init_array)
         write_shdr(f, shn_init_array, SHT_INIT_ARRAY, SHF_ALLOC | SHF_WRITE,
@@ -482,6 +586,21 @@ int elf_write(ObjFile *obj, const char *path) {
         write_shdr(f, shn_rela_fini, SHT_RELA, SHF_INFO_LINK,
                    rela_fin_off, rela_fin_size,
                    (uint32_t)sh_symtab_idx, (uint32_t)sh_fini_array_idx, 8, 24);
+
+    if (has_rela_debug_line)
+        write_shdr(f, shn_rela_debug_line, SHT_RELA, SHF_INFO_LINK,
+                   rela_debug_line_off, rela_debug_line_size,
+                   (uint32_t)sh_symtab_idx, (uint32_t)sh_debug_line_idx, 8, 24);
+
+    if (has_rela_debug_info)
+        write_shdr(f, shn_rela_debug_info, SHT_RELA, SHF_INFO_LINK,
+                   rela_debug_info_off, rela_debug_info_size,
+                   (uint32_t)sh_symtab_idx, (uint32_t)sh_debug_info_idx, 8, 24);
+
+    if (has_rela_debug_aranges)
+        write_shdr(f, shn_rela_debug_aranges, SHT_RELA, SHF_INFO_LINK,
+                   rela_debug_aranges_off, rela_debug_aranges_size,
+                   (uint32_t)sh_symtab_idx, (uint32_t)sh_debug_aranges_idx, 8, 24);
 
     write_shdr(f, shn_symtab, SHT_SYMTAB, 0,
                symtab_off, symtab_size,

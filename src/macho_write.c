@@ -35,6 +35,7 @@
 #define S_REGULAR             0x0
 #define S_ZEROFILL            0x1
 #define S_ATTR_SOME_INSTRUCTIONS  0x00000400
+#define S_ATTR_DEBUG          0x02000000
 #define S_CSTRING_LITERALS    0x2
 #define S_MOD_INIT_FUNC_POINTERS    0x9
 #define S_ATTR_PURE_INSTRUCTIONS  0x80000000
@@ -284,7 +285,10 @@ int macho_write(ObjFile *obj, const char *path) {
     // We always emit at least __TEXT,__text.
     // Mach-O .o has one segment "" (empty name) containing all sections.
     // Sections: 1=__text, 2=__data, 3=__bss, 4=__const (rodata), 5=__mod_init_func, 6=__thread_data, 7=__thread_vars
-    int nsections = 7;
+    // With -g, four __DWARF sections follow: 8=__debug_line, 9=__debug_info,
+    // 10=__debug_abbrev, 11=__debug_aranges.
+    bool has_debug = objfile_has_debug(obj);
+    int nsections = 7 + (has_debug ? 4 : 0);
 
     // -----------------------------------------------------------------------
     // Compute sizes / offsets
@@ -314,8 +318,20 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t tvars_off = align(tdata_off + tdata_size, 8);
     uint64_t tvars_size = obj->thread_vars.len;
 
+    // DWARF debug sections (-g). Byte-aligned, contiguous after __thread_vars.
+    uint64_t dbgline_off = tvars_off + tvars_size;
+    uint64_t dbgline_size = has_debug ? obj->debug_line_section.len : 0;
+    uint64_t dbginfo_off = dbgline_off + dbgline_size;
+    uint64_t dbginfo_size = has_debug ? obj->debug_info_section.len : 0;
+    uint64_t dbgabbrev_off = dbginfo_off + dbginfo_size;
+    uint64_t dbgabbrev_size = has_debug ? obj->debug_abbrev_section.len : 0;
+    uint64_t dbgaranges_off = dbgabbrev_off + dbgabbrev_size;
+    uint64_t dbgaranges_size = has_debug ? obj->debug_aranges_section.len : 0;
+    uint64_t sections_end = has_debug ? dbgaranges_off + dbgaranges_size
+                                      : tvars_off + tvars_size;
+
     // Relocations follow section data
-    uint64_t reloc_text_off = align(tvars_off + tvars_size, 4);
+    uint64_t reloc_text_off = align(sections_end, 4);
     uint32_t reloc_text_cnt = (uint32_t)obj->text_reloc_count;
     uint64_t reloc_data_off = reloc_text_off + reloc_text_cnt * 8;
     uint32_t reloc_data_cnt = (uint32_t)obj->data_reloc_count;
@@ -326,13 +342,23 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t reloc_init_off = reloc_tvars_off + reloc_tvars_cnt * 8;
     uint32_t reloc_init_cnt = (uint32_t)obj->init_array_reloc_count;
 
-    uint64_t symtab_off = align(reloc_init_off + reloc_init_cnt * 8, 8);
+    // DWARF address relocations: one UNSIGNED/quad each for __debug_line,
+    // __debug_info and __debug_aranges, all against the __text section (ordinal 1).
+    uint64_t reloc_dbgline_off = reloc_init_off + reloc_init_cnt * 8;
+    uint32_t reloc_dbgline_cnt = has_debug && obj->debug_has_line_addr ? 1 : 0;
+    uint64_t reloc_dbginfo_off = reloc_dbgline_off + reloc_dbgline_cnt * 8;
+    uint32_t reloc_dbginfo_cnt = has_debug && obj->debug_has_low_pc ? 1 : 0;
+    uint64_t reloc_dbgaranges_off = reloc_dbginfo_off + reloc_dbginfo_cnt * 8;
+    uint32_t reloc_dbgaranges_cnt = has_debug && obj->debug_has_aranges_addr ? 1 : 0;
+
+    uint64_t symtab_off = align(reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8, 8);
     uint32_t symtab_size = (uint32_t)nsyms * 16; // sizeof nlist_64 = 16
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
 
-    // segment vm size = from text_off to end of thread_vars, plus BSS VM allocation
-    uint64_t seg_filesize = (tvars_off + tvars_size) - text_off;
+    // segment vm size = from text_off to end of the last section (debug sections
+    // included, when present), plus BSS VM allocation
+    uint64_t seg_filesize = sections_end - text_off;
 
     uint64_t seg_vmsize = seg_filesize + obj->bss_size;
 
@@ -493,6 +519,38 @@ int macho_write(ObjFile *obj, const char *path) {
         w32(f, 0);
     }
 
+    // Sections 8-11: __DWARF debug sections (-g). All byte-aligned, marked
+    // S_ATTR_DEBUG. Only the address-bearing ones carry a relocation.
+    if (has_debug) {
+        struct {
+            const char *name;
+            uint64_t size, off, reloff;
+            uint32_t nreloc;
+        } dbg[4] = {
+            {"__debug_line", dbgline_size, dbgline_off, reloc_dbgline_off, reloc_dbgline_cnt},
+            {"__debug_info", dbginfo_size, dbginfo_off, reloc_dbginfo_off, reloc_dbginfo_cnt},
+            {"__debug_abbrev", dbgabbrev_size, dbgabbrev_off, 0, 0},
+            {"__debug_aranges", dbgaranges_size, dbgaranges_off, reloc_dbgaranges_off, reloc_dbgaranges_cnt},
+        };
+        for (int i = 0; i < 4; i++) {
+            char sn[16] = {0};
+            const char sg[16] = "__DWARF";
+            memcpy(sn, dbg[i].name, strlen(dbg[i].name));
+            wbuf(f, sn, 16);
+            wbuf(f, sg, 16);
+            w64(f, 0); // addr (0, like every other rcc section; resolved via relocs)
+            w64(f, dbg[i].size);
+            w32(f, (uint32_t)dbg[i].off);
+            w32(f, 0); // align 2^0 = 1
+            w32(f, (uint32_t)(dbg[i].nreloc ? dbg[i].reloff : 0));
+            w32(f, dbg[i].nreloc);
+            w32(f, S_ATTR_DEBUG | S_REGULAR);
+            w32(f, 0);
+            w32(f, 0);
+            w32(f, 0);
+        }
+    }
+
     // LC_BUILD_VERSION
     w32(f, LC_BUILD_VERSION);
     w32(f, build_version_lc_size);
@@ -534,7 +592,14 @@ int macho_write(ObjFile *obj, const char *path) {
     if (tdata_size) wbuf(f, obj->data_tls.data, tdata_size);
     wzeros(f, tvars_off - (tdata_off + tdata_size));
     if (tvars_size) wbuf(f, obj->thread_vars.data, tvars_size);
-    wzeros(f, reloc_text_off - (tvars_off + tvars_size));
+    // DWARF debug section data (contiguous, byte-aligned)
+    if (has_debug) {
+        if (dbgline_size) wbuf(f, obj->debug_line_section.data, dbgline_size);
+        if (dbginfo_size) wbuf(f, obj->debug_info_section.data, dbginfo_size);
+        if (dbgabbrev_size) wbuf(f, obj->debug_abbrev_section.data, dbgabbrev_size);
+        if (dbgaranges_size) wbuf(f, obj->debug_aranges_section.data, dbgaranges_size);
+    }
+    wzeros(f, reloc_text_off - sections_end);
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
@@ -639,8 +704,30 @@ int macho_write(ObjFile *obj, const char *path) {
         w32(f, pack);
     }
 
+    // DWARF address relocations. Each is a non-scattered, non-pcrel, non-extern
+    // UNSIGNED reloc of length 3 (8 bytes) against the __text section (ordinal 1);
+    // r_type UNSIGNED is 0 for both x86-64 and arm64. The in-place placeholder is
+    // 0, so the linker resolves it to the final address of __text.
+    if (has_debug) {
+        // r_symbolnum=1, pcrel=0, length=3 (bits 25-26), extern=0, type=UNSIGNED(0)
+        const uint32_t dbg_pack = (1u & 0xffffff) | (3u << 25);
+        struct {
+            uint32_t addr, cnt;
+        } dr[3] = {
+            {(uint32_t)obj->debug_line_addr_off, reloc_dbgline_cnt},
+            {(uint32_t)obj->debug_low_pc_offset, reloc_dbginfo_cnt},
+            {(uint32_t)obj->debug_aranges_addr_off, reloc_dbgaranges_cnt},
+        };
+        for (int i = 0; i < 3; i++) {
+            if (!dr[i].cnt)
+                continue;
+            w32(f, dr[i].addr);
+            w32(f, dbg_pack);
+        }
+    }
+
     // Symbol table (nlist_64, 16 bytes each)
-    wzeros(f, symtab_off - (reloc_init_off + reloc_init_cnt * 8));
+    wzeros(f, symtab_off - (reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8));
     for (int i = 0; i < nsyms; i++) {
         w32(f, nlist[i].strx);
         w8(f, nlist[i].type);

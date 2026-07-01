@@ -523,6 +523,10 @@ void objfile_free(struct ObjFile *obj);
 int elf_write(struct ObjFile *obj, const char *path);
 int macho_write(struct ObjFile *obj, const char *path);
 int coff_write(struct ObjFile *obj, const char *path);
+int objfile_add_debug_file(struct ObjFile *obj, char *filename);
+void objfile_add_debug_line(struct ObjFile *obj, uint64_t text_offset, int file_idx, int line);
+void objfile_flush_debug_line(struct ObjFile *obj, uint64_t text_end);
+bool objfile_has_debug(struct ObjFile *obj);
 
 // VLA
 Type *vla_of(Type *base, Node *expr, int64_t arr_len);
