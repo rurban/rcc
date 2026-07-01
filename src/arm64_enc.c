@@ -197,10 +197,10 @@ void arm64_mul(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     secbuf_emit32le(s, dp3(sf, 0x1b000000u, rd, rn, rm, ARM64_XZR));
 }
 void arm64_smull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    secbuf_emit32le(s, 0x9b200000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
+    secbuf_emit32le(s, 0x9b200000u | (31u << 10) | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 void arm64_umull(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
-    secbuf_emit32le(s, 0x9ba00000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
+    secbuf_emit32le(s, 0x9ba00000u | (31u << 10) | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
 void arm64_smulh(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     secbuf_emit32le(s, 0x9b407c00u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
