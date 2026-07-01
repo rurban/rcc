@@ -8367,7 +8367,7 @@ static VReg gen(Node *node) {
                 else {
                     VReg tmp = alloc_reg();
                     asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
+                    asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
                     free_reg(tmp);
                 }
                 {
@@ -8422,7 +8422,7 @@ static VReg gen(Node *node) {
                 } else {
                     VReg tmp = alloc_reg();
                     asm_mov_imm(cg_sec, tmp, 8, (int64_t)cs->case_val); // mov tmp, #case_val
-                    asm_cmp_reg_reg(cg_sec, cond, tmp, 8); // cmp rtmp, rcond
+                    asm_cmp_reg_reg(cg_sec, cond, tmp, sz); // cmp rtmp, rcond
                     free_reg(tmp);
                 }
                 {
