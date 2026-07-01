@@ -383,26 +383,17 @@ static char *current_fn;
 static int current_fn_stack_size = 0; // fn->stack_size of the function being generated
 
 // Debug info (DWARF .loc directives, enabled by -g)
-#define MAX_DEBUG_FILES 128
-static char *debug_files[MAX_DEBUG_FILES];
-static int debug_file_count = 0;
 static int last_debug_file = 0;
 static int last_debug_line = 0;
 
 static int get_debug_file_idx(char *filename) {
     if (!filename) return 1;
-    for (int i = 0; i < debug_file_count; i++)
-        if (debug_files[i] == filename)
-            return i + 1;
-    if (debug_file_count >= MAX_DEBUG_FILES)
-        return 1;
-    int idx = ++debug_file_count;
-    debug_files[idx - 1] = filename;
-    (void)0 /* .file {idx} \"{filename}\" */;
+    int idx = objfile_add_debug_file(cg_obj, filename);
     return idx;
 }
 
 static void emit_loc(Node *node) {
+    if (cg_dry_run) return; // Pass 1 uses a throwaway buffer; offsets are not real
     if (!node->tok || !node->tok->filename)
         return;
     int line = node->tok->lineno;
@@ -410,7 +401,7 @@ static void emit_loc(Node *node) {
     int fidx = get_debug_file_idx(node->tok->filename);
     if (fidx == last_debug_file && line == last_debug_line)
         return;
-    (void)0 /* .loc {fidx} {line} 0 */;
+    objfile_add_debug_line(cg_obj, cg_sec->len, fidx, line);
     last_debug_file = fidx;
     last_debug_line = line;
 }
@@ -11016,7 +11007,6 @@ struct ObjFile *codegen(Program *prog) {
         }
     all_strs = prog->strs;
     alloca_needed = false;
-    debug_file_count = 0;
     last_debug_file = 0;
     last_debug_line = 0;
     // Assembly header
@@ -12754,5 +12744,8 @@ struct ObjFile *codegen(Program *prog) {
             }
         }
     }
+    // Flush DWARF debug line info
+    if (objfile_has_debug(cg_obj))
+        objfile_flush_debug_line(cg_obj, cg_obj->text.len);
     return cg_obj;
 }

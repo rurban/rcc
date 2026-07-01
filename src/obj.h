@@ -142,6 +142,16 @@ typedef struct UnwindEntry {
 } UnwindEntry;
 
 // ---------------------------------------------------------------------------
+// Debug info entries (for -g / DWARF)
+// ---------------------------------------------------------------------------
+#define MAX_DEBUG_FILES 128
+typedef struct {
+    uint64_t text_offset; // offset in .text section
+    uint32_t file_idx;
+    uint32_t line;
+} DebugLineEntry;
+
+// ---------------------------------------------------------------------------
 // Complete assembled object
 // ---------------------------------------------------------------------------
 typedef struct ObjFile ObjFile;
@@ -191,7 +201,29 @@ struct ObjFile {
     UnwindEntry *unwind;
     int unwind_count;
     int unwind_cap;
+    // Debug info (for -g DWARF)
+    char *debug_files[MAX_DEBUG_FILES];
+    int debug_file_count;
+    DebugLineEntry *debug_lines;
+    int debug_line_count;
+    int debug_line_cap;
+    SecBuf debug_line_section; // serialized DWARF .debug_line
+    SecBuf debug_info_section; // minimal DWARF .debug_info
+    SecBuf debug_abbrev_section; // DWARF .debug_abbrev
+    SecBuf debug_aranges_section; // DWARF .debug_aranges (address range lookup)
+    size_t debug_low_pc_offset; // offset of DW_AT_low_pc in .debug_info (needs reloc)
+    bool debug_has_low_pc; // true if DW_AT_low_pc needs R_X86_64_64 vs .text
+    size_t debug_aranges_addr_off; // offset of address in .debug_aranges (needs reloc)
+    bool debug_has_aranges_addr; // true if .debug_aranges address needs reloc
+    size_t debug_line_addr_off; // offset of DW_LNE_set_address value in .debug_line
+    bool debug_has_line_addr; // true if DW_LNE_set_address needs reloc
 };
+
+// Debug info helpers (for -g)
+int objfile_add_debug_file(ObjFile *obj, char *filename);
+void objfile_add_debug_line(ObjFile *obj, uint64_t text_offset, int file_idx, int line);
+void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end);
+bool objfile_has_debug(ObjFile *obj);
 
 void objfile_init(ObjFile *obj);
 void objfile_free(ObjFile *obj);

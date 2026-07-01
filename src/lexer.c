@@ -335,7 +335,11 @@ Token *tokenize(char *filename, char *p) {
                         cur_lineno = n;
                         p = q + 1;
                         while (*p && *p != '\n') p++;
-                        if (*p == '\n') cur_lineno++;
+                        // `# N "file"` numbers the *next* physical line N.
+                        // Consume the directive's trailing newline here (rather
+                        // than counting it) so cur_lineno stays N for that line;
+                        // otherwise the main loop counts it again -> off by one.
+                        if (*p == '\n') p++;
                         continue;
                     }
                 }
