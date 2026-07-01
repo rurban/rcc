@@ -3938,9 +3938,9 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
         // Sign-extend narrow signed types (ARM64 ldur{b,h} zero-extend)
         if (!ty->is_unsigned) {
             if (ty->size == 1)
-                arm64_sxtb(cg_sec, 1, REG(r), REG(r)); // sxtb x{r}, w{r}
+                arm64_sxtb(cg_sec, 0, REG(r), REG(r)); // sxtb w{r}, w{r}
             else if (ty->size == 2)
-                arm64_sxth(cg_sec, 1, REG(r), REG(r)); // sxth x{r}, w{r}
+                arm64_sxth(cg_sec, 0, REG(r), REG(r)); // sxth w{r}, w{r}
         }
     } else {
         // Offset outside LDUR range: use X17 as scratch for address computation
@@ -3967,9 +3967,9 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
         }
         if (!ty->is_unsigned) {
             if (ty->size == 1)
-                arm64_sxtb(cg_sec, 1, REG(r), REG(r));
+                arm64_sxtb(cg_sec, 0, REG(r), REG(r));
             else if (ty->size == 2)
-                arm64_sxth(cg_sec, 1, REG(r), REG(r));
+                arm64_sxth(cg_sec, 0, REG(r), REG(r));
         }
     }
 #else
