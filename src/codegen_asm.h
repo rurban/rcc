@@ -1013,6 +1013,24 @@ static void asm_imul_imm(SecBuf *s, VReg dst, VReg src, int size, int32_t imm) {
     x86_imul_rri(s, size, REG(dst), REG(src), imm);
 }
 #endif
+#ifdef ARCH_ARM64
+// mul rd, rn, rm  — ARM64 3-operand multiply
+static void asm_mul_rd_rn_rm(SecBuf *s, VReg rd, VReg rn, VReg rm, int size) {
+    arm64_mul(s, (size == 8) ? 1 : 0, REG(rd), REG(rn), REG(rm)); // mul rd, rn, rm
+}
+// add rd, rn, rm  — ARM64 3-operand add
+static void asm_add_rd_rn_rm(SecBuf *s, VReg rd, VReg rn, VReg rm, int size) {
+    arm64_add_reg(s, (size == 8) ? 1 : 0, REG(rd), REG(rn), REG(rm), ARM64_LSL, 0); // add rd, rn, rm
+}
+// asr rd, rn, #shift  — ARM64 3-operand arithmetic shift right immediate
+static void asm_asr_rd_rn_imm(SecBuf *s, VReg rd, VReg rn, int size, uint8_t shift) {
+    arm64_asr_imm(s, (size == 8) ? 1 : 0, REG(rd), REG(rn), shift); // asr rd, rn, #shift
+}
+// lsr rd, rn, #shift  — ARM64 3-operand logical shift right immediate
+static void asm_lsr_rd_rn_imm(SecBuf *s, VReg rd, VReg rn, int size, uint8_t shift) {
+    arm64_lsr_imm(s, (size == 8) ? 1 : 0, REG(rd), REG(rn), shift); // lsr rd, rn, #shift
+}
+#endif
 __attribute__((unused)) static void asm_sdiv_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
 #ifdef ARCH_ARM64
     Arm64Reg rdst = REG(dst);
@@ -2193,6 +2211,14 @@ static void asm_fcvtzu(SecBuf *s, VReg r, int sz) {
     int sf = (sz == 8) ? 1 : 0;
     arm64_fcvtzu(s, sf, 1, REG(r), 0); // fcvtzu w/x{r}, d0
 }
+// fcvtzs x16, d0 — float→signed int into x16 scratch
+static void asm_fcvtzs_x16(SecBuf *s) {
+    arm64_fcvtzs(s, 1, 1, ARM64_X16, 0); // fcvtzs x16, d0
+}
+// fcvtzu x16, d0 — float→unsigned int into x16 scratch
+static void asm_fcvtzu_x16(SecBuf *s) {
+    arm64_fcvtzu(s, 1, 1, ARM64_X16, 0); // fcvtzu x16, d0
+}
 // fcvtzs w/x{r}, d0 — float→signed int conversion
 static void asm_fcvtzs(SecBuf *s, VReg r, int sz) {
     int sf = (sz == 8) ? 1 : 0;
@@ -3080,7 +3106,7 @@ static void asm_ins_vd1_x2(SecBuf *s, int vn) {
     // opcode: 0x4E_imm5_xxx_1_1100_Rn_Rd: 0x4E000000 | (imm5<<16) | (7<<12) | (1<<10) | (rn<<5) | rd
     // Actually: ins = 0x4E000000|(Q=1)<<30|(op=0)<<29|(imm5<<16)|(imm4<<12)|(1<<10)|(Rn<<5)|Rd
     // imm5=0b10001, imm4=0b0111
-    secbuf_emit32le(s, 0x4E180C00u | (2u << 5) | (uint32_t)vn); // ins v{vn}.d[1], x2 ... approx
+    secbuf_emit32le(s, 0x4E181C00u | (2u << 5) | (uint32_t)vn); // mov v{vn}.d[1], x2
 }
 
 // mov x8, x{r}  — move hidden ret pointer to x8 for ARM64 ABI
@@ -3384,6 +3410,9 @@ __attribute__((unused)) static void asm_add_x16_imm(SecBuf *s, int32_t imm) {
 __attribute__((unused)) static void asm_add_w16_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 0, ARM64_X16, ARM64_X16, imm, 0); // add w16, w16, #imm
 }
+__attribute__((unused)) static void asm_add_w17_w16_imm(SecBuf *s, int32_t imm) {
+    arm64_add_imm(s, 0, ARM64_X17, ARM64_X16, imm, 0); // add w17, w16, #imm
+}
 __attribute__((unused)) static void asm_add_x12_imm(SecBuf *s, int32_t imm) {
     arm64_add_imm(s, 1, ARM64_X12, ARM64_X12, imm, 0); // add x12, x12, #imm
 }
@@ -3400,6 +3429,12 @@ static void asm_str_x16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
 __attribute__((unused)) static void asm_ldr_x16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_ldr_uoff(s, 3, ARM64_X16, REG(base_r), uimm); // ldr x16, [x{base_r}, #uimm*8]
 }
+__attribute__((unused)) static void asm_str_w17_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+    arm64_str_uoff(s, 2, ARM64_X17, REG(base_r), uimm); // str w17, [x{base_r}, #uimm*8]
+}
+__attribute__((unused)) static void asm_str_x17_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
+    arm64_str_uoff(s, 3, ARM64_X17, REG(base_r), uimm); // str x17, [x{base_r}, #uimm*8]
+}
 __attribute__((unused)) static void asm_str_w16_uoff(SecBuf *s, VReg base_r, uint32_t uimm) {
     arm64_str_uoff(s, 2, ARM64_X16, REG(base_r), uimm); // str w16, [x{base_r}, #uimm*8]
 }
@@ -3414,6 +3449,9 @@ __attribute__((unused)) static void asm_str_x12_uoff(SecBuf *s, VReg base_r, uin
 }
 __attribute__((unused)) static void asm_ldr_x12_0(SecBuf *s) {
     arm64_ldr_uoff(s, 3, ARM64_X12, ARM64_X12, 0); // ldr x12, [x12]
+}
+__attribute__((unused)) static void asm_ldr_x12_x16_0(SecBuf *s) {
+    arm64_ldr_uoff(s, 3, ARM64_X12, ARM64_X16, 0); // ldr x12, [x16]
 }
 __attribute__((unused)) static void asm_ldr_x16_0(SecBuf *s) {
     arm64_ldr_uoff(s, 3, ARM64_X16, ARM64_X12, 0); // ldr x16, [x12]
