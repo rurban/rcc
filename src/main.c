@@ -151,7 +151,7 @@ int main(int argc, char **argv) {
 #elif defined(__aarch64__)
     // ARM64 host — no SSE4.2, native ARM64 target is implicit
 #elif !defined(ARCH_ARM64)
-    fprintf(stderr, "unsupported host architecture\n");
+    fprintf(stderr, "rcc: unsupported host architecture\n");
     return 1;
 #endif
 
@@ -324,7 +324,7 @@ int main(int argc, char **argv) {
             }
             add_include_path(path);
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
-            fprintf(stderr, "warning: ignored unknown option %s\n", argv[i]);
+            fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
             if (n_inputs < 64)
                 input_files[n_inputs++] = argv[i];
@@ -332,13 +332,13 @@ int main(int argc, char **argv) {
     }
 
     if (n_inputs == 0) {
-        fprintf(stderr, "error: no input files\n");
+        fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
     }
 
     // -c -o - is impossible: object files require random access (seek).
     if (opt_c && opt_stdout) {
-        fprintf(stderr, "error: -c -o - is not supported (object files require seekable output)\n");
+        fprintf(stderr, "rcc: error: -c -o - is not supported (object files require seekable output)\n");
         return 1;
     }
 
@@ -435,7 +435,7 @@ int main(int argc, char **argv) {
             wr = elf_write(obj, tmp_obj_path);
 #endif
             if (wr != 0) {
-                fprintf(stderr, "error: cannot write object file %s\n", tmp_obj_path);
+                fprintf(stderr, "rcc: error: cannot write object file %s\n", tmp_obj_path);
                 return 1;
             }
             objfile_free(obj);
@@ -466,16 +466,18 @@ int main(int argc, char **argv) {
                 // doesn't understand.
                 snprintf(cmd, sizeof(cmd), "%s -d -r --no-show-raw-insn \"%s\" > \"%s\"",
                          objdump, tmp_obj_path, asm_path);
-                int status = system(cmd);
+                bool ok = system(cmd) == 0;
                 // The data/rodata/bss dump is best-effort: PE objdump exits
                 // non-zero when one of the -j sections is absent (e.g. a
                 // .o with no data at all), which is a normal, not an error.
                 snprintf(cmd, sizeof(cmd), "%s -s -j .data -j .rodata -j .bss \"%s\" >> \"%s\"",
                          objdump, tmp_obj_path, asm_path);
-                status = system(cmd);
+                if (system(cmd) != 0)
+                    fprintf(stderr, "rcc: error: objdump failed for -S output\n");
                 remove(tmp_obj_path);
-                if (status != 0) {
-                    fprintf(stderr, "error: objdump failed for -S output\n");
+                if (!ok) {
+                    fprintf(stderr, "rcc: error: objdump failed for -S output\n");
+                    return 1;
                 }
             }
         }
@@ -505,7 +507,7 @@ int main(int argc, char **argv) {
             for (OutPath *p = out_paths; p; p = p->next) {
                 if (strcmp(p->path, out_path) != 0) {
                     if (rename(p->path, out_path) != 0) {
-                        fprintf(stderr, "error: rename %s -> %s failed\n", p->path, out_path);
+                        fprintf(stderr, "rcc: error: rename %s -> %s failed\n", p->path, out_path);
                         status = 1;
                     }
                 }
@@ -592,7 +594,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  link        %s: %6lu us\n", out_path,
                         (unsigned long)(now_us() - t_link));
             if (status != 0)
-                fprintf(stderr, "error: linker %s failed with code %d\n", cmd, status);
+                fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
         }
 
         // For -o -, stream the linked backend output to stdout.

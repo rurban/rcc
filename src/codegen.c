@@ -2391,11 +2391,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else if (fp_reg_args < max_fp_args) {
                 arg_fp_idx[i] = fp_reg_args++;
                 // Named FP args in variadic functions go in FP regs only (no GP copy)
-            } else if (is_variadic && arg_sizes[i] > 8) {
-                arg_stack_idx[i] = stack_args++;
-            } else if (gp_reg_args < max_gp_args) {
-                arg_gp_idx[i] = gp_reg_args++;
             } else {
+                // All FP regs consumed: arg goes on stack (AAPCS64 §6.4.2)
                 arg_stack_idx[i] = stack_args++;
             }
             continue;
@@ -11879,6 +11876,8 @@ struct ObjFile *codegen(Program *prog) {
             for (LVar *var = fn->params; var; var = var->param_next) {
                 if (is_flonum(var->ty)) {
                     if (fp_param < 8) fp_param++;
+                    else
+                        stack_param++;
                 } else if (gp_param < 8) {
                     gp_param++;
                 } else {
