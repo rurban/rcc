@@ -2383,8 +2383,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 if (arg_sizes[i] == 4) arg_sizes[i] = 8; // float -> double promotion for variadic
                 if (fp_reg_args < max_fp_args)
                     arg_fp_idx[i] = fp_reg_args++;
-                else if (gp_reg_args < max_gp_args)
-                    arg_gp_idx[i] = gp_reg_args++;
                 else
                     arg_stack_idx[i] = stack_args++;
 #endif
@@ -2392,10 +2390,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 arg_fp_idx[i] = fp_reg_args++;
                 // Named FP args in variadic functions go in FP regs only (no GP copy)
             } else {
-                // All FP regs consumed: arg goes on stack (AAPCS64 §6.4.2)
+                // All FP regs consumed: arg goes on stack (AAPCS64 6.4.2)
                 arg_stack_idx[i] = stack_args++;
             }
-            continue;
         }
         if (arg_hfa_count[i] > 0 && !is_variadic) {
             if (fp_reg_args + arg_hfa_count[i] <= max_fp_args) {
