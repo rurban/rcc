@@ -5573,8 +5573,6 @@ int main(int argc, char **argv) {
     }
 
     /* rewrite shorthand cross-compiler paths.
-       FIXME: should be able to run rcc-arm64 via gcc-aarch64 */
-    /* rewrite shorthand cross-compiler paths.
        Only when cross-compiling — not on native ARM64 or x86 builds */
 #if !defined(ARM64_NATIVE) && !defined(__aarch64__)
     if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
@@ -5594,7 +5592,7 @@ int main(int argc, char **argv) {
     if (g_verbose)
         printf("rcc=%s, platform=%s\n", rcc, platform);
 
-    if (compiler_name) {
+    if (compiler_name && !contains(rcc, "-cross.sh")) {
         static char suffix_buf[PATH_MAX];
         snprintf(suffix_buf, sizeof(suffix_buf), "%s_%s", platform, compiler_name);
         platform_suffix = suffix_buf;
