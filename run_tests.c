@@ -2077,8 +2077,17 @@ static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
  * is given (see main()); disabled by an explicit binary/runner arg, by
  * "compiler flags" args (e.g. "ccc -O2"), and for cross-compile targets. */
 static bool use_rcc_lib;
-static const char *only_test;
+#define MAX_ONLY_TESTS 64
+static const char *only_tests[MAX_ONLY_TESTS];
+static int only_test_count;
 static bool only_test_found; /* single-test mode: stop after the suite containing it */
+
+static bool is_only_test(const char *name) {
+    for (int i = 0; i < only_test_count; i++)
+        if (streq(name, only_tests[i]))
+            return true;
+    return false;
+}
 static int total, passed, failed, todo, regressions, fixes, changed_cnt;
 
 typedef struct {
@@ -2146,7 +2155,7 @@ static const char *old_status_for(const char *name) {
 }
 
 static void print_change(const char *base, const char *new_status) {
-    if (only_test) return;
+    if (only_test_count > 0) return;
     const char *old = old_status_for(base);
     if (!old) return;
     const char *oc = streq(old, "COMPILE_OK") ? "PASS" : old;
@@ -3339,7 +3348,7 @@ static int run_unit_tests(void) {
     int n = scandir(unit_path, &nl, NULL, alphasort);
     if (n < 0) return 0;
 
-    if (g_num_workers > 1 && !only_test) {
+    if (g_num_workers > 1 && only_test_count == 0) {
         /* Parallel path: collect, dispatch, evaluate */
         int n_tests = 0;
         struct {
@@ -3409,8 +3418,8 @@ static int run_unit_tests(void) {
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
 
-            if (only_test) {
-                if (!streq(base, only_test)) {
+            if (only_test_count > 0) {
+                if (!is_only_test(base)) {
                     free(nl[i]);
                     continue;
                 }
@@ -3582,7 +3591,7 @@ static int run_unit_tests(void) {
         free(nl);
     }
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         int pct = total > 0 ? passed * 100 / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
@@ -3716,7 +3725,7 @@ static int run_tcc_suite(void) {
     char **files = list_c_files_sorted(TEST_DIR);
     const char *p_src = NULL;
     if (files) {
-        if (g_num_workers > 1 && !only_test) {
+        if (g_num_workers > 1 && only_test_count == 0) {
             /* Parallel path: collect, dispatch, evaluate */
             /* First pass: count tests */
             int n_tests = 0, n_cd = 0;
@@ -3888,8 +3897,8 @@ static int run_tcc_suite(void) {
                     if (is_mingw) p_src = "-mno-ms-bitfields";
                 }
 
-                if (only_test) {
-                    if (!streq(base, only_test)) {
+                if (only_test_count > 0) {
+                    if (!is_only_test(base)) {
                         p_src = NULL;
                         continue;
                     }
@@ -3911,7 +3920,7 @@ static int run_tcc_suite(void) {
     }
     if (p_src) free((void *)p_src);
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
@@ -3919,7 +3928,7 @@ static int run_tcc_suite(void) {
         write_summary(sp, sc);
     }
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         int pct = total > 0 ? passed * 100 / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
@@ -4327,7 +4336,7 @@ static int run_torture_suite(bool summary_only) {
     }
 
     /* open log file for torture output */
-    if (!only_test && !summary_only) {
+    if (only_test_count == 0 && !summary_only) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
@@ -4342,19 +4351,22 @@ static int run_torture_suite(bool summary_only) {
         return 1;
     }
 
-    if (only_test) {
-        char sp[512];
-        if (strstr(only_test, ".c")) snprintf(sp, sizeof(sp), "%s", only_test);
-        else
-            snprintf(sp, sizeof(sp), "%s.c", only_test);
-        if (file_exists(sp)) {
-            only_test_found = true;
-            run_torture_test(sp, summary_only);
+    if (only_test_count > 0) {
+        for (int ti = 0; ti < only_test_count; ti++) {
+            const char *ot = only_tests[ti];
+            char sp[512];
+            if (strstr(ot, ".c")) snprintf(sp, sizeof(sp), "%s", ot);
+            else
+                snprintf(sp, sizeof(sp), "%s.c", ot);
+            if (file_exists(sp)) {
+                only_test_found = true;
+                run_torture_test(sp, summary_only);
+            }
         }
     } else {
         char **files = list_c_files_sorted(".");
         if (files) {
-            if (g_num_workers > 1 && !only_test && !summary_only) {
+            if (g_num_workers > 1 && only_test_count == 0 && !summary_only) {
                 /* Save tort_dir for parallel compile */
                 snprintf(g_tort_dir, sizeof(g_tort_dir), "%s", tort_dir);
                 /* First pass: count */
@@ -4418,7 +4430,7 @@ static int run_torture_suite(bool summary_only) {
     if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
 
     int max_fail;
-    if (only_test)
+    if (only_test_count > 0)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
         max_fail = 22;
@@ -4434,7 +4446,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
-    if (!only_test) {
+    if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
         int pct = eff > 0 ? g_tort_pass * 100 / eff : 0;
         const char *red = fail > max_fail ? COL_RED : "";
@@ -4643,7 +4655,7 @@ static int run_compliance_suite(void) {
     int n = scandir(comp_dir, &nl, NULL, alphasort);
     if (n < 0) return 0;
 
-    if (g_num_workers > 1 && !only_test && gcc_path) {
+    if (g_num_workers > 1 && only_test_count == 0 && gcc_path) {
         /* Parallel path: collect, dispatch, evaluate */
         struct {
             const char *fname;
@@ -4727,8 +4739,8 @@ static int run_compliance_suite(void) {
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
 
-            if (only_test) {
-                if (!streq(base, only_test)) {
+            if (only_test_count > 0) {
+                if (!is_only_test(base)) {
                     free(nl[i]);
                     continue;
                 }
@@ -4826,7 +4838,7 @@ static int run_compliance_suite(void) {
      * parallel and sequential paths, so `make check-all` (--parallel) gets a
      * compliance section in the unified report just like the sequential run. */
     int comp_total = comp_pass + comp_fail;
-    if (!only_test) {
+    if (only_test_count == 0) {
         int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
         const char *red = comp_fail > 0 ? COL_RED : "";
         const char *rst = comp_fail > 0 ? COL_RESET : "";
@@ -4849,9 +4861,9 @@ static int run_compliance_suite(void) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* "210", "00210" or "00210.c" -> "00210"; false if not a c-testsuite name */
-static bool ctest_test_num(char *out, size_t outsz) {
+static bool ctest_test_num(const char *name, char *out, size_t outsz) {
     char buf[32];
-    strncpy(buf, only_test, sizeof(buf) - 1);
+    strncpy(buf, name, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
     char *dot = strstr(buf, ".c");
     if (dot) *dot = '\0';
@@ -4867,9 +4879,9 @@ static bool ctest_test_num(char *out, size_t outsz) {
  * compile and run each test independently with a native C runner
  * requested test directly, the same way run_one_test() does for the TCC
  * suite (proc_run() to compile, run_exe() to execute under any runner). */
-static int run_ctest_one(const char *ctest_dir) {
+static int run_ctest_one(const char *ctest_dir, const char *test_name) {
     char num[6];
-    if (!ctest_test_num(num, sizeof(num))) return -1;
+    if (!ctest_test_num(test_name, num, sizeof(num))) return -1;
 
     char src_path[2 * PATH_MAX], exp_path[2 * PATH_MAX], bin_path[2 * PATH_MAX];
     snprintf(src_path, sizeof(src_path), "%s/tests/single-exec/%s.c", ctest_dir, num);
@@ -5021,12 +5033,15 @@ static int run_ctest_suite(void) {
 
     /* the native runner handles per-test filters directly; for a numeric test
      * name, compile and run just that one test directly */
-    if (only_test) {
-        int r = run_ctest_one(ctest_dir);
-        if (r >= 0) {
-            only_test_found = true;
-            return r;
+    if (only_test_count > 0) {
+        for (int ti = 0; ti < only_test_count; ti++) {
+            int r = run_ctest_one(ctest_dir, only_tests[ti]);
+            if (r >= 0) {
+                only_test_found = true;
+                /* Continue to next test name — don't return early */
+            }
         }
+        if (only_test_found) return 0;
         return 0;
     }
 
@@ -5069,7 +5084,7 @@ static int run_ctest_suite(void) {
     }
 
     /* open log file for c-testsuite output */
-    if (!only_test) {
+    if (only_test_count == 0) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/ctest_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
@@ -5206,7 +5221,7 @@ static int run_ctest_suite(void) {
             fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
                     ctest_pass, ctest_total, ctest_pct, ctest_fail2, ctest_skip2);
 
-        if (!only_test) {
+        if (only_test_count == 0) {
             char sp[256], sc[256];
             snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
             snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
@@ -5287,7 +5302,7 @@ static int run_ctest_suite(void) {
         fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
                 ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
@@ -5523,8 +5538,8 @@ int main(int argc, char **argv) {
            rcc stays unset → in-process rcc_lib mode. */
         else if (!rcc && (contains(a, "rcc") || contains(a, "gcc") || contains(a, "tcc") || contains(a, "-cross")))
             rcc = a;
-        else if (!only_test)
-            only_test = a;
+        else if (only_test_count < MAX_ONLY_TESTS)
+            only_tests[only_test_count++] = a;
     }
 
     if (!rcc) {
@@ -5622,7 +5637,7 @@ int main(int argc, char **argv) {
 
     /* for cross-compilers, suites that require native execution don't apply */
     if (!run_tcc && !run_units && !run_torture && !run_compliance && !run_ctest) {
-        if (only_test) {
+        if (only_test_count > 0) {
             /* single-test mode: search the filterable suites in order and
              * stop at the first one containing the test */
             run_tcc = run_units = run_compliance = run_ctest = run_torture = true;
@@ -5636,26 +5651,31 @@ int main(int argc, char **argv) {
     int exit_code = 0;
     if (run_tcc && run_tcc_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_units && run_unit_tests() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_compliance && run_compliance_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_ctest && run_ctest_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_torture && run_torture_suite(summary_only) != 0)
         exit_code = 1;
 
-    if (only_test) {
+    if (only_test_count > 0) {
         if (!only_test_found) {
-            fprintf(stderr, "Test '%s' not found in any suite\n", only_test);
+            fprintf(stderr, "Test%s '", only_test_count > 1 ? "s" : "");
+            for (int i = 0; i < only_test_count; i++) {
+                if (i > 0) fprintf(stderr, "', '");
+                fprintf(stderr, "%s", only_tests[i]);
+            }
+            fprintf(stderr, "' not found in any suite\n");
             return 1;
         }
         return exit_code;
