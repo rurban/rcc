@@ -2729,47 +2729,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
     // Pre-pass: long double args.
-    // For named long double params in rcc-compiled callees: pass as double (fmov d_idx, reg).
-    // For unnamed variadic long double args (e.g. printf "%Lf"): use quad format for ABI compat.
+    // Pre-pass: long double args. Pass as 64-bit double in d register.
+    // rcc handles its own va_arg, so no quad conversion is needed.
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
-            bool is_named_arg = (i < named_count);
-            if (is_named_arg) {
-                // Named long double param: rcc callee reads as double from d_idx
-                asm_fmov_gp_to_d(cg_sec, arg_fp_idx[i], arg_regs[i]); // fmov d{fp_idx}, x{arg_regs[i]}
-            } else {
-                // Unnamed variadic long double: convert rcc's 64-bit double to
-                // IEEE 754 quad (128-bit) so glibc's va_arg can read it.
-                int cl = ++rcc_label_count;
-                VReg vr = arg_regs[i];
-                asm_cmp_zero(cg_sec, vr, 8); // cmp x{vr}, #0
-                size_t jz = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq .L.quad_z.{cl}
-                asm_ubfx_x17_exp(cg_sec, vr); // ubfx x17, x{vr}, #52, #11
-                asm_mov_x16_15360(cg_sec); // mov x16, #15360
-                asm_add_x17_x17_x16(cg_sec); // add x17, x17, x16
-                asm_lsl_x16_r_12(cg_sec, vr); // lsl x16, x{vr}, #12
-                asm_lsr_x16_x16_12(cg_sec); // lsr x16, x16, #12
-                asm_and_x1_x16_0xf(cg_sec); // and x1, x16, #0xF
-                asm_lsl_x1_60(cg_sec); // lsl x1, x1, #60
-                asm_lsr_x2_x16_4(cg_sec); // lsr x2, x16, #4
-                asm_lsl_x17_48(cg_sec); // lsl x17, x17, #48
-                asm_orr_x2_x2_x17(cg_sec); // orr x2, x2, x17
-                asm_asr_63(cg_sec, ARM64_X17, vr); // asr x17, x{vr}, #63
-                asm_and_x17_1(cg_sec); // and x17, x17, #1
-                asm_lsl_x17_63(cg_sec); // lsl x17, x17, #63
-                asm_orr_x2_x2_x17(cg_sec); // orr x2, x2, x17
-                size_t jdone = asm_jmp_label(cg_sec); // b .L.quad_d.{cl}
-                asm_fixup_add(cg_sec, jz, format(".L.quad_z.%d", cl), 1);
-                asm_fixup_add(cg_sec, jdone, format(".L.quad_d.%d", cl), 0);
-                cg_def_label(format(".L.quad_z.%d", cl)); // .L.quad_z.{cl}:
-                asm_mov_x1_0(cg_sec); // mov x1, #0
-                asm_mov_x2_0(cg_sec); // mov x2, #0
-                cg_def_label(format(".L.quad_d.%d", cl)); // .L.quad_d.{cl}:
-                asm_ins_vd0_x1(cg_sec, arg_fp_idx[i]); // ins v{fp_idx}.d[0], x1
-                asm_ins_vd1_x2(cg_sec, arg_fp_idx[i]); // ins v{fp_idx}.d[1], x2
-            }
+            asm_fmov_gp_to_d(cg_sec, arg_fp_idx[i], arg_regs[i]); // fmov d{fp_idx}, x{arg_regs[i]}
             free_reg(arg_regs[i]);
         }
     }

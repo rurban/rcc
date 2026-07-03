@@ -1578,8 +1578,8 @@
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
-  shiftopt-1                          PASS
-  signed1bitfield-1                   PASS
+  shiftopt-1                          FAIL (runtime)
+  signed1bitfield-1                   FAIL (runtime)
   simd-1                              SKIP (vector_size)
   simd-2                              SKIP (vector_size)
   simd-4                              SKIP (vector_size)
@@ -1672,4 +1672,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1569/1569 passed (100%), 0 failed, 102 skipped.
+Torture: 1567/1569 passed (99%), 2 failed (0 compile/2 runtime), 102 skipped.
+
+Runtime failures: shiftopt-1 signed1bitfield-1

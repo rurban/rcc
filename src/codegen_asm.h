@@ -3037,9 +3037,7 @@ static void asm_lsr_x16_x16_12(SecBuf *s) {
 
 // and x1, x16, #0xF  — low nibble
 static void asm_and_x1_x16_0xf(SecBuf *s) {
-    int N, immr, imms;
-    uint64_t enc = arm64_encode_logic_imm(1, 0xF, &N, &immr, &imms);
-    arm64_and_imm(s, 1, ARM64_X1, ARM64_X16, enc); // and x1, x16, #0xF
+    arm64_and_imm(s, 1, ARM64_X1, ARM64_X16, 0xF); // and x1, x16, #0xF
 }
 
 // lsl x1, x1, #60  — position low nibble at top
@@ -3064,9 +3062,7 @@ static void asm_orr_x2_x2_x17(SecBuf *s) {
 
 // and x17, x17, #1  — isolate sign bit
 static void asm_and_x17_1(SecBuf *s) {
-    int N, immr, imms;
-    uint64_t enc = arm64_encode_logic_imm(1, 1, &N, &immr, &imms);
-    arm64_and_imm(s, 1, ARM64_X17, ARM64_X17, enc); // and x17, x17, #1
+    arm64_and_imm(s, 1, ARM64_X17, ARM64_X17, 1); // and x17, x17, #1
 }
 
 // lsl x17, x17, #63  — position sign bit
