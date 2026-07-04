@@ -1217,17 +1217,20 @@ static long eval_primary(char **rest, char *p, char *filename) {
         if (*p == ')') p++;
         *rest = p;
         // C23 standard attributes with their introduction versions
-        static const struct { const char *name; long ver; } attrs[] = {
-            {"deprecated",   201904L},
-            {"fallthrough",  201904L},
+        static const struct {
+            const char *name;
+            long ver;
+        } attrs[] = {
+            {"deprecated", 201904L},
+            {"fallthrough", 201904L},
             {"maybe_unused", 201904L},
-            {"nodiscard",    202003L},
-            {"noreturn",     202202L},
-            {"_Noreturn",    202202L},
-            {"unsequenced",  202207L},
+            {"nodiscard", 202003L},
+            {"noreturn", 202202L},
+            {"_Noreturn", 202202L},
+            {"unsequenced", 202207L},
             {"reproducible", 202207L},
         };
-        for (size_t i = 0; i < sizeof(attrs)/sizeof(attrs[0]); i++)
+        for (size_t i = 0; i < sizeof(attrs) / sizeof(attrs[0]); i++)
             if (strcmp(buf, attrs[i].name) == 0)
                 return attrs[i].ver;
         return 0;
@@ -1742,6 +1745,19 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         exit(1);
                     }
                 }
+            } else if (pp_startswith(s, "error") && active) {
+                s += 5;
+                while (s < end && isspace((unsigned char)*s))
+                    s++;
+                char *msg = pp_strndup(s, end - s);
+                fprintf(stderr, "%s:%d: error: #error %s\n", fpath, line_no, strip_bluepaint(expand_text(msg, filename, line_no, 0)));
+                exit(1);
+            } else if (pp_startswith(s, "warning") && active) {
+                s += 7;
+                while (s < end && isspace((unsigned char)*s))
+                    s++;
+                char *msg = pp_strndup(s, end - s);
+                fprintf(stderr, "%s:%d: warning: #warning %s\n", fpath, line_no, strip_bluepaint(expand_text(msg, filename, line_no, 0)));
             } else if ((pp_startswith(s, "if") && !pp_startswith(s, "ifdef") && !pp_startswith(s, "ifndef"))) {
                 // Handle #if - only if it's not #ifdef, #ifndef, or #elif
                 // Note: check elif first since "elif" starts with "if"

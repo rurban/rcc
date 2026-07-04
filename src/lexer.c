@@ -411,36 +411,35 @@ Token *tokenize(char *filename, char *p) {
 
             if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
                 p += 2;
-                while (isxdigit(*p)) p++;
+                while (isxdigit(*p) || *p == '\'') p++;
                 if (*p == '.') {
                     is_float = true;
                     p++;
-                    while (isxdigit(*p)) p++;
+                    while (isxdigit(*p) || *p == '\'') p++;
                 }
                 if (*p == 'p' || *p == 'P') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p)) p++;
+                    while (isdigit(*p) || *p == '\'') p++;
                 }
             } else if (*p == '0' && (p[1] == 'b' || p[1] == 'B')) {
                 p += 2;
-                while (*p == '0' || *p == '1') p++;
+                while (*p == '0' || *p == '1' || *p == '\'') p++;
             } else {
-                while (isdigit(*p)) p++;
+                while (isdigit(*p) || *p == '\'') p++;
                 if (*p == '.' && p[1] != '.') {
                     is_float = true;
                     p++;
-                    while (isdigit(*p)) p++;
+                    while (isdigit(*p) || *p == '\'') p++;
                 }
                 if (*p == 'e' || *p == 'E') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p)) p++;
+                    while (isdigit(*p) || *p == '\'') p++;
                 }
             }
-
 
             // Check for float/imaginary suffix: f/F, l/L, i/I in any order
             int fkind = 0; // 0=double, 1=float, 2=long double
@@ -507,40 +506,56 @@ Token *tokenize(char *filename, char *p) {
             if (is_float) {
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
                 if (is_imag)
-                    cur->val = fkind | 4; // bit 2 = imaginary flag
+                    cur->val = fkind | 4;
                 else
                     cur->val = fkind;
+                // Strip C23 digit separators before calling libc
+                char fbuf[128];
+                int flen = 0;
+                for (char *rp = q; rp < p && flen < 127; rp++)
+                    if (*rp != '\'') fbuf[flen++] = *rp;
+                fbuf[flen] = '\0';
                 if (fkind == 1)
-                    cur->fval = (double)strtof(q, NULL);
+                    cur->fval = (double)strtof(fbuf, NULL);
                 else
-                    cur->fval = strtod(q, NULL);
+                    cur->fval = strtod(fbuf, NULL);
             } else if (is_imag) {
-                // Integer imaginary (e.g., 200i): emit as TK_FNUM with val=4|8
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
-                cur->val = 4 | 8; // bit 2 = imaginary, bit 3 = integer-based
+                cur->val = 4 | 8;
                 if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
                     int64_t iv = 0;
                     char *bp = q + 2;
-                    while (*bp == '0' || *bp == '1') {
-                        iv = iv * 2 + (*bp - '0');
+                    while (*bp == '0' || *bp == '1' || *bp == '\'') {
+                        if (*bp != '\'') iv = iv * 2 + (*bp - '0');
                         bp++;
                     }
                     cur->fval = (double)iv;
                 } else {
-                    cur->fval = (double)strtoull(q, NULL, 0);
+                    int64_t iv = 0;
+                    for (char *rp = q; rp < p; rp++)
+                        if (isdigit(*rp)) iv = iv * 10 + (*rp - '0');
+                    cur->fval = (double)iv;
                 }
             } else {
                 cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
                 if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
                     int64_t val = 0;
                     char *bp = q + 2;
-                    while (*bp == '0' || *bp == '1') {
-                        val = val * 2 + (*bp - '0');
+                    while (*bp == '0' || *bp == '1' || *bp == '\'') {
+                        if (*bp != '\'') val = val * 2 + (*bp - '0');
                         bp++;
                     }
                     cur->val = val;
+                } else if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
+                    int64_t val = 0;
+                    for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+                        if (*rp != '\'') val = val * 16 + (isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
+                    cur->val = val;
                 } else {
-                    cur->val = strtoull(q, NULL, 0);
+                    int64_t val = 0;
+                    for (char *rp = q; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+                        if (isdigit(*rp)) val = val * 10 + (*rp - '0');
+                    cur->val = val;
                 }
             }
             cur->len = (int)(p - q);
