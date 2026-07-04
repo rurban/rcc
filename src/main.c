@@ -2,6 +2,7 @@
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include "asm.h"
+#include "link.h"
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -514,6 +515,7 @@ int main(int argc, char **argv) {
             }
             return status;
         }
+
         // Linking: codegen already produced .o files; add them to linker command
         char cmd[4096] = "";
         int status = 0;
@@ -524,6 +526,42 @@ int main(int argc, char **argv) {
             snprintf(stdout_tmp, sizeof(stdout_tmp), "rcc_tmp_%d_stdout.out", _getpid());
             backend_out = stdout_tmp;
         }
+        // Try the native linker first.
+        {
+            int n_link_objs = 0;
+            for (OutPath *p = out_paths; p; p = p->next) n_link_objs++;
+            if (n_link_objs > 0) {
+                char **link_objs = arena_alloc((size_t)n_link_objs * sizeof(char *));
+                int i = 0;
+                for (OutPath *p = out_paths; p; p = p->next)
+                    link_objs[i++] = p->path;
+                uint64_t t_link = opt_time ? now_us() : 0;
+                int native = rcc_link(backend_out, link_objs, n_link_objs,
+                                      libs, opt_pie, opt_pic, false);
+                if (opt_time)
+                    fprintf(stderr, "  native link %s: %6lu us\n", out_path,
+                            (unsigned long)(now_us() - t_link));
+                if (native == 0) {
+                    if (opt_stdout) {
+                        FILE *f = fopen(stdout_tmp, "rb");
+                        if (f) {
+                            char buf[65536];
+                            size_t n;
+                            while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                                fwrite(buf, 1, n, stdout);
+                            fclose(f);
+                        }
+                        remove(stdout_tmp);
+                    }
+                    for (OutPath *p = out_paths; p; p = p->next)
+                        remove(p->path);
+                    return 0;
+                }
+                // Native linker failed or unsupported; fall through to GCC.
+            }
+        }
+
+
         if (obj_paths) {
             obj_paths = reverse(obj_paths);
             for (OutPath *p = obj_paths; p; p = p->next) {

@@ -49,7 +49,7 @@ BINDIR = $(PREFIX)/bin
 INCDIR = $(PREFIX)/include/rcc
 LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
-TARGET_DEPS = $(OBJS) src/rcc.h
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
 TARGET_EXT = $(OBJS)
 RUN_TESTS = run_tests
 
@@ -58,12 +58,12 @@ VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
 ifneq ($(findstring apple,$(MACHINE)),)
-SRCS += src/macho_write.c src/arm64_enc.c
+SRCS += src/macho_write.c src/link_macho.c src/arm64_enc.c
 else ifneq ($(findstring mingw,$(MACHINE)),)
-SRCS += src/coff_write.c src/x86_enc.c
+SRCS += src/coff_write.c src/link_pe.c src/x86_enc.c
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
 else
-SRCS += src/elf_write.c src/x86_enc.c
+SRCS += src/elf_write.c src/link_elf.c src/x86_enc.c
 TARGET_DEPS += $(MINGW_O)
 TARGET_EXT += $(MINGW_O)
 endif

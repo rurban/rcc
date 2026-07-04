@@ -1,1675 +1,1677 @@
 
 [0;36mGCC torture tests[0m
-  900409-1                            PASS
-  920202-1                            PASS
-  920302-1                            PASS
-  920409-1                            PASS
-  920410-1                            PASS
-  920411-1                            PASS
+  900409-1                            FAIL (runtime)
+  920202-1                            FAIL (runtime)
+  920302-1                            FAIL (runtime)
+  920409-1                            FAIL (runtime)
+  920410-1                            FAIL (runtime)
+  920411-1                            FAIL (runtime)
   920415-1                            SKIP (nested-func)
-  920428-1                            PASS
+  920428-1                            FAIL (runtime)
   920428-2                            SKIP (trampolines)
-  920429-1                            PASS
-  920501-1                            PASS
-  920501-2                            PASS
-  920501-3                            PASS
-  920501-4                            PASS
-  920501-5                            PASS
-  920501-6                            PASS
+  920429-1                            FAIL (runtime)
+  920501-1                            FAIL (runtime)
+  920501-2                            FAIL (runtime)
+  920501-3                            FAIL (runtime)
+  920501-4                            FAIL (runtime)
+  920501-5                            FAIL (runtime)
+  920501-6                            FAIL (runtime)
   920501-7                            SKIP (trampolines)
-  920501-8                            PASS
-  920501-9                            PASS
-  920506-1                            PASS
-  920520-1                            PASS
-  920603-1                            PASS
-  920604-1                            PASS
-  920612-1                            PASS
+  920501-8                            FAIL (runtime)
+  920501-9                            FAIL (runtime)
+  920506-1                            FAIL (runtime)
+  920520-1                            FAIL (runtime)
+  920603-1                            FAIL (runtime)
+  920604-1                            FAIL (runtime)
+  920612-1                            FAIL (runtime)
   920612-2                            SKIP (trampolines)
-  920618-1                            PASS
-  920625-1                            PASS
-  920710-1                            PASS
-  920711-1                            PASS
-  920721-1                            PASS
-  920721-2                            PASS
-  920721-3                            PASS
+  920618-1                            FAIL (runtime)
+  920625-1                            FAIL (runtime)
+  920710-1                            FAIL (runtime)
+  920711-1                            FAIL (runtime)
+  920721-1                            FAIL (runtime)
+  920721-2                            FAIL (runtime)
+  920721-3                            FAIL (runtime)
   920721-4                            SKIP (nested-func)
-  920726-1                            PASS
-  920728-1                            PASS
-  920730-1                            PASS
-  920731-1                            PASS
-  920810-1                            PASS
-  920812-1                            PASS
-  920829-1                            PASS
-  920908-1                            PASS
-  920908-2                            PASS
-  920909-1                            PASS
-  920922-1                            PASS
-  920929-1                            PASS
-  921006-1                            PASS
-  921007-1                            PASS
-  921013-1                            PASS
-  921016-1                            PASS
+  920726-1                            FAIL (runtime)
+  920728-1                            FAIL (runtime)
+  920730-1                            FAIL (runtime)
+  920731-1                            FAIL (runtime)
+  920810-1                            FAIL (runtime)
+  920812-1                            FAIL (runtime)
+  920829-1                            FAIL (runtime)
+  920908-1                            FAIL (runtime)
+  920908-2                            FAIL (runtime)
+  920909-1                            FAIL (runtime)
+  920922-1                            FAIL (runtime)
+  920929-1                            FAIL (runtime)
+  921006-1                            FAIL (runtime)
+  921007-1                            FAIL (runtime)
+  921013-1                            FAIL (runtime)
+  921016-1                            FAIL (runtime)
   921017-1                            SKIP (trampolines)
-  921019-1                            PASS
-  921019-2                            PASS
-  921029-1                            PASS
-  921104-1                            PASS
+  921019-1                            FAIL (runtime)
+  921019-2                            FAIL (runtime)
+  921029-1                            FAIL (runtime)
+  921104-1                            FAIL (runtime)
   921110-1                            PASS
-  921112-1                            PASS
-  921113-1                            PASS
-  921117-1                            PASS
-  921123-1                            PASS
-  921123-2                            PASS
-  921124-1                            PASS
-  921202-1                            PASS
-  921202-2                            PASS
-  921204-1                            PASS
-  921207-1                            PASS
-  921208-1                            PASS
-  921208-2                            PASS
+  921112-1                            FAIL (runtime)
+  921113-1                            FAIL (runtime)
+  921117-1                            FAIL (runtime)
+  921123-1                            FAIL (runtime)
+  921123-2                            FAIL (runtime)
+  921124-1                            FAIL (runtime)
+  921202-1                            FAIL (runtime)
+  921202-2                            FAIL (runtime)
+  921204-1                            FAIL (runtime)
+  921207-1                            FAIL (runtime)
+  921208-1                            FAIL (runtime)
+  921208-2                            FAIL (runtime)
   921215-1                            SKIP (trampolines)
-  921218-1                            PASS
-  921218-2                            PASS
-  930106-1                            PASS
-  930111-1                            PASS
-  930123-1                            PASS
-  930126-1                            PASS
-  930208-1                            PASS
+  921218-1                            FAIL (runtime)
+  921218-2                            FAIL (runtime)
+  930106-1                            FAIL (runtime)
+  930111-1                            FAIL (runtime)
+  930123-1                            FAIL (runtime)
+  930126-1                            FAIL (runtime)
+  930208-1                            FAIL (runtime)
   930406-1                            SKIP (nested-func)
-  930408-1                            PASS
-  930429-1                            PASS
-  930429-2                            PASS
-  930513-1                            PASS
-  930513-2                            PASS
-  930518-1                            PASS
-  930526-1                            PASS
-  930527-1                            PASS
-  930529-1                            PASS
-  930603-1                            PASS
-  930603-2                            PASS
-  930603-3                            PASS
-  930608-1                            PASS
-  930614-1                            PASS
-  930614-2                            PASS
-  930621-1                            PASS
-  930622-1                            PASS
-  930622-2                            PASS
-  930628-1                            PASS
-  930630-1                            PASS
-  930702-1                            PASS
-  930713-1                            PASS
-  930718-1                            PASS
-  930719-1                            PASS
-  930725-1                            PASS
-  930818-1                            PASS
-  930916-1                            PASS
-  930921-1                            PASS
-  930929-1                            PASS
-  930930-1                            PASS
-  930930-2                            PASS
+  930408-1                            FAIL (runtime)
+  930429-1                            FAIL (runtime)
+  930429-2                            FAIL (runtime)
+  930513-1                            FAIL (runtime)
+  930513-2                            FAIL (runtime)
+  930518-1                            FAIL (runtime)
+  930526-1                            FAIL (runtime)
+  930527-1                            FAIL (runtime)
+  930529-1                            FAIL (runtime)
+  930603-1                            FAIL (runtime)
+  930603-2                            FAIL (runtime)
+  930603-3                            FAIL (runtime)
+  930608-1                            FAIL (runtime)
+  930614-1                            FAIL (runtime)
+  930614-2                            FAIL (runtime)
+  930621-1                            FAIL (runtime)
+  930622-1                            FAIL (runtime)
+  930622-2                            FAIL (runtime)
+  930628-1                            FAIL (runtime)
+  930630-1                            FAIL (runtime)
+  930702-1                            FAIL (runtime)
+  930713-1                            FAIL (runtime)
+  930718-1                            FAIL (runtime)
+  930719-1                            FAIL (runtime)
+  930725-1                            FAIL (runtime)
+  930818-1                            FAIL (runtime)
+  930916-1                            FAIL (runtime)
+  930921-1                            FAIL (runtime)
+  930929-1                            FAIL (runtime)
+  930930-1                            FAIL (runtime)
+  930930-2                            FAIL (runtime)
   931002-1                            SKIP (trampolines)
-  931004-1                            PASS
-  931004-2                            PASS
-  931004-3                            PASS
-  931004-4                            PASS
-  931004-5                            PASS
-  931004-6                            PASS
-  931004-7                            PASS
-  931004-8                            PASS
-  931004-9                            PASS
-  931004-10                           PASS
-  931004-11                           PASS
-  931004-12                           PASS
-  931004-13                           PASS
-  931004-14                           PASS
-  931005-1                            PASS
-  931009-1                            PASS
-  931012-1                            PASS
-  931017-1                            PASS
-  931018-1                            PASS
-  931031-1                            PASS
-  931102-1                            PASS
-  931102-2                            PASS
-  931110-1                            PASS
-  931110-2                            PASS
-  931208-1                            PASS
-  931228-1                            PASS
-  940115-1                            PASS
-  940122-1                            PASS
-  941014-1                            PASS
-  941014-2                            PASS
-  941015-1                            PASS
-  941021-1                            PASS
-  941025-1                            PASS
-  941031-1                            PASS
-  941101-1                            PASS
-  941110-1                            PASS
-  941202-1                            PASS
-  950221-1                            PASS
-  950322-1                            PASS
-  950426-1                            PASS
-  950426-2                            PASS
-  950503-1                            PASS
-  950511-1                            PASS
-  950512-1                            PASS
-  950605-1                            PASS
-  950607-1                            PASS
-  950607-2                            PASS
-  950612-1                            PASS
-  950621-1                            PASS
-  950628-1                            PASS
-  950704-1                            PASS
-  950706-1                            PASS
-  950710-1                            PASS
-  950714-1                            PASS
-  950809-1                            PASS
-  950906-1                            PASS
-  950915-1                            PASS
-  950929-1                            PASS
-  951003-1                            PASS
-  951115-1                            PASS
-  951204-1                            PASS
-  960116-1                            PASS
-  960117-1                            PASS
-  960209-1                            PASS
-  960215-1                            PASS
-  960218-1                            PASS
-  960219-1                            PASS
-  960301-1                            PASS
-  960302-1                            PASS
-  960311-1                            PASS
-  960311-2                            PASS
-  960311-3                            PASS
-  960312-1                            PASS
-  960317-1                            PASS
-  960321-1                            PASS
-  960326-1                            PASS
-  960327-1                            PASS
-  960402-1                            PASS
-  960405-1                            PASS
-  960416-1                            PASS
-  960419-1                            PASS
-  960419-2                            PASS
-  960512-1                            PASS
-  960513-1                            PASS
-  960521-1                            PASS
-  960608-1                            PASS
-  960801-1                            PASS
-  960802-1                            PASS
-  960830-1                            PASS
-  960909-1                            PASS
-  961004-1                            PASS
-  961017-1                            PASS
-  961017-2                            PASS
-  961026-1                            PASS
-  961112-1                            PASS
-  961122-1                            PASS
-  961122-2                            PASS
-  961125-1                            PASS
-  961206-1                            PASS
-  961213-1                            PASS
-  961223-1                            PASS
+  931004-1                            FAIL (runtime)
+  931004-2                            FAIL (runtime)
+  931004-3                            FAIL (runtime)
+  931004-4                            FAIL (runtime)
+  931004-5                            FAIL (runtime)
+  931004-6                            FAIL (runtime)
+  931004-7                            FAIL (runtime)
+  931004-8                            FAIL (runtime)
+  931004-9                            FAIL (runtime)
+  931004-10                           FAIL (runtime)
+  931004-11                           FAIL (runtime)
+  931004-12                           FAIL (runtime)
+  931004-13                           FAIL (runtime)
+  931004-14                           FAIL (runtime)
+  931005-1                            FAIL (runtime)
+  931009-1                            FAIL (runtime)
+  931012-1                            FAIL (runtime)
+  931017-1                            FAIL (runtime)
+  931018-1                            FAIL (runtime)
+  931031-1                            FAIL (runtime)
+  931102-1                            FAIL (runtime)
+  931102-2                            FAIL (runtime)
+  931110-1                            FAIL (runtime)
+  931110-2                            FAIL (runtime)
+  931208-1                            FAIL (runtime)
+  931228-1                            FAIL (runtime)
+  940115-1                            FAIL (runtime)
+  940122-1                            FAIL (runtime)
+  941014-1                            FAIL (runtime)
+  941014-2                            FAIL (runtime)
+  941015-1                            FAIL (runtime)
+  941021-1                            FAIL (runtime)
+  941025-1                            FAIL (runtime)
+  941031-1                            FAIL (runtime)
+  941101-1                            FAIL (runtime)
+  941110-1                            FAIL (runtime)
+  941202-1                            FAIL (runtime)
+  950221-1                            FAIL (runtime)
+  950322-1                            FAIL (runtime)
+  950426-1                            FAIL (runtime)
+  950426-2                            FAIL (runtime)
+  950503-1                            FAIL (runtime)
+  950511-1                            FAIL (runtime)
+  950512-1                            FAIL (runtime)
+  950605-1                            FAIL (runtime)
+  950607-1                            FAIL (runtime)
+  950607-2                            FAIL (runtime)
+  950612-1                            FAIL (runtime)
+  950621-1                            FAIL (runtime)
+  950628-1                            FAIL (runtime)
+  950704-1                            FAIL (runtime)
+  950706-1                            FAIL (runtime)
+  950710-1                            FAIL (runtime)
+  950714-1                            FAIL (runtime)
+  950809-1                            FAIL (runtime)
+  950906-1                            FAIL (runtime)
+  950915-1                            FAIL (runtime)
+  950929-1                            FAIL (runtime)
+  951003-1                            FAIL (runtime)
+  951115-1                            FAIL (runtime)
+  951204-1                            FAIL (runtime)
+  960116-1                            FAIL (runtime)
+  960117-1                            FAIL (runtime)
+  960209-1                            FAIL (runtime)
+  960215-1                            FAIL (runtime)
+  960218-1                            FAIL (runtime)
+  960219-1                            FAIL (runtime)
+  960301-1                            FAIL (runtime)
+  960302-1                            FAIL (runtime)
+  960311-1                            FAIL (runtime)
+  960311-2                            FAIL (runtime)
+  960311-3                            FAIL (runtime)
+  960312-1                            FAIL (runtime)
+  960317-1                            FAIL (runtime)
+  960321-1                            FAIL (runtime)
+  960326-1                            FAIL (runtime)
+  960327-1                            FAIL (runtime)
+  960402-1                            FAIL (runtime)
+  960405-1                            FAIL (runtime)
+  960416-1                            FAIL (runtime)
+  960419-1                            FAIL (runtime)
+  960419-2                            FAIL (runtime)
+  960512-1                            FAIL (runtime)
+  960513-1                            FAIL (runtime)
+  960521-1                            FAIL (runtime)
+  960608-1                            FAIL (runtime)
+  960801-1                            FAIL (runtime)
+  960802-1                            FAIL (runtime)
+  960830-1                            FAIL (runtime)
+  960909-1                            FAIL (runtime)
+  961004-1                            FAIL (runtime)
+  961017-1                            FAIL (runtime)
+  961017-2                            FAIL (runtime)
+  961026-1                            FAIL (runtime)
+  961112-1                            FAIL (runtime)
+  961122-1                            FAIL (runtime)
+  961122-2                            FAIL (runtime)
+  961125-1                            FAIL (runtime)
+  961206-1                            FAIL (runtime)
+  961213-1                            FAIL (runtime)
+  961223-1                            FAIL (runtime)
   970214-1                            SKIP (nested-func)
   970214-2                            SKIP (nested-func)
   970217-1                            SKIP (nested-func)
-  970923-1                            PASS
-  980205                              PASS
+  970923-1                            FAIL (runtime)
+  980205                              FAIL (runtime)
   980223                              SKIP (nested-func)
-  980424-1                            PASS
-  980505-1                            PASS
-  980505-2                            PASS
-  980506-1                            PASS
-  980506-2                            PASS
-  980506-3                            PASS
+  980424-1                            FAIL (runtime)
+  980505-1                            FAIL (runtime)
+  980505-2                            FAIL (runtime)
+  980506-1                            FAIL (runtime)
+  980506-2                            FAIL (runtime)
+  980506-3                            FAIL (runtime)
   980526-1                            SKIP (nested-func)
-  980526-2                            PASS
-  980526-3                            PASS
-  980602-1                            PASS
-  980602-2                            PASS
-  980604-1                            PASS
-  980605-1                            PASS
-  980608-1                            PASS
-  980612-1                            PASS
-  980617-1                            PASS
-  980618-1                            PASS
-  980701-1                            PASS
-  980707-1                            PASS
-  980709-1                            PASS
-  980716-1                            PASS
-  980929-1                            PASS
-  981001-1                            PASS
-  981019-1                            PASS
-  981130-1                            PASS
-  981206-1                            PASS
-  990106-1                            PASS
-  990106-2                            PASS
-  990117-1                            PASS
-  990127-1                            PASS
-  990127-2                            PASS
-  990128-1                            PASS
-  990130-1                            PASS
-  990208-1                            PASS
-  990211-1                            PASS
-  990222-1                            PASS
-  990324-1                            PASS
-  990326-1                            PASS
-  990404-1                            PASS
+  980526-2                            FAIL (runtime)
+  980526-3                            FAIL (runtime)
+  980602-1                            FAIL (runtime)
+  980602-2                            FAIL (runtime)
+  980604-1                            FAIL (runtime)
+  980605-1                            FAIL (runtime)
+  980608-1                            FAIL (runtime)
+  980612-1                            FAIL (runtime)
+  980617-1                            FAIL (runtime)
+  980618-1                            FAIL (runtime)
+  980701-1                            FAIL (runtime)
+  980707-1                            FAIL (runtime)
+  980709-1                            FAIL (runtime)
+  980716-1                            FAIL (runtime)
+  980929-1                            FAIL (runtime)
+  981001-1                            FAIL (runtime)
+  981019-1                            FAIL (runtime)
+  981130-1                            FAIL (runtime)
+  981206-1                            FAIL (runtime)
+  990106-1                            FAIL (runtime)
+  990106-2                            FAIL (runtime)
+  990117-1                            FAIL (runtime)
+  990127-1                            FAIL (runtime)
+  990127-2                            FAIL (runtime)
+  990128-1                            FAIL (runtime)
+  990130-1                            FAIL (runtime)
+  990208-1                            FAIL (runtime)
+  990211-1                            FAIL (runtime)
+  990222-1                            FAIL (runtime)
+  990324-1                            FAIL (runtime)
+  990326-1                            FAIL (runtime)
+  990404-1                            FAIL (runtime)
   990413-2                            SKIP (x86-only)
-  990513-1                            PASS
-  990524-1                            PASS
-  990525-1                            PASS
-  990525-2                            PASS
-  990527-1                            PASS
-  990531-1                            PASS
-  990604-1                            PASS
-  990628-1                            PASS
-  990804-1                            PASS
-  990811-1                            PASS
-  990826-0                            PASS
-  990827-1                            PASS
-  990829-1                            PASS
-  990923-1                            PASS
-  991014-1                            PASS
-  991016-1                            PASS
-  991019-1                            PASS
-  991023-1                            PASS
-  991030-1                            PASS
-  991112-1                            PASS
-  991118-1                            PASS
-  991201-1                            PASS
-  991202-1                            PASS
-  991202-2                            PASS
-  991202-3                            PASS
-  991216-1                            PASS
-  991216-2                            PASS
-  991216-4                            PASS
-  991221-1                            PASS
-  991227-1                            PASS
+  990513-1                            FAIL (runtime)
+  990524-1                            FAIL (runtime)
+  990525-1                            FAIL (runtime)
+  990525-2                            FAIL (runtime)
+  990527-1                            FAIL (runtime)
+  990531-1                            FAIL (runtime)
+  990604-1                            FAIL (runtime)
+  990628-1                            FAIL (runtime)
+  990804-1                            FAIL (runtime)
+  990811-1                            FAIL (runtime)
+  990826-0                            FAIL (runtime)
+  990827-1                            FAIL (runtime)
+  990829-1                            FAIL (runtime)
+  990923-1                            FAIL (runtime)
+  991014-1                            FAIL (runtime)
+  991016-1                            FAIL (runtime)
+  991019-1                            FAIL (runtime)
+  991023-1                            FAIL (runtime)
+  991030-1                            FAIL (runtime)
+  991112-1                            FAIL (runtime)
+  991118-1                            FAIL (runtime)
+  991201-1                            FAIL (runtime)
+  991202-1                            FAIL (runtime)
+  991202-2                            FAIL (runtime)
+  991202-3                            FAIL (runtime)
+  991216-1                            FAIL (runtime)
+  991216-2                            FAIL (runtime)
+  991216-4                            FAIL (runtime)
+  991221-1                            FAIL (runtime)
+  991227-1                            FAIL (runtime)
   991228-1                            SKIP (nested-func)
-  20000112-1                          PASS
-  20000113-1                          PASS
-  20000121-1                          PASS
-  20000205-1                          PASS
-  20000217-1                          PASS
-  20000223-1                          PASS
-  20000224-1                          PASS
-  20000225-1                          PASS
-  20000227-1                          PASS
-  20000313-1                          PASS
-  20000314-1                          PASS
-  20000314-2                          PASS
-  20000314-3                          PASS
-  20000402-1                          PASS
-  20000403-1                          PASS
-  20000412-1                          PASS
-  20000412-2                          PASS
-  20000412-3                          PASS
-  20000412-4                          PASS
-  20000412-5                          PASS
-  20000412-6                          PASS
-  20000419-1                          PASS
-  20000422-1                          PASS
-  20000503-1                          PASS
-  20000511-1                          PASS
-  20000519-1                          PASS
-  20000519-2                          PASS
-  20000523-1                          PASS
-  20000528-1                          PASS
-  20000603-1                          PASS
-  20000605-1                          PASS
-  20000605-2                          PASS
-  20000605-3                          PASS
-  20000622-1                          PASS
-  20000703-1                          PASS
-  20000706-1                          PASS
-  20000706-2                          PASS
-  20000706-3                          PASS
-  20000706-4                          PASS
-  20000706-5                          PASS
-  20000707-1                          PASS
-  20000715-1                          PASS
-  20000715-2                          PASS
-  20000717-1                          PASS
-  20000717-2                          PASS
-  20000717-3                          PASS
-  20000717-4                          PASS
-  20000717-5                          PASS
-  20000722-1                          PASS
-  20000726-1                          PASS
-  20000731-1                          PASS
-  20000731-2                          PASS
-  20000801-1                          PASS
-  20000801-2                          PASS
-  20000801-3                          PASS
-  20000801-4                          PASS
-  20000808-1                          PASS
-  20000815-1                          PASS
-  20000818-1                          PASS
-  20000819-1                          PASS
+  20000112-1                          FAIL (runtime)
+  20000113-1                          FAIL (runtime)
+  20000121-1                          FAIL (runtime)
+  20000205-1                          FAIL (runtime)
+  20000217-1                          FAIL (runtime)
+  20000223-1                          FAIL (runtime)
+  20000224-1                          FAIL (runtime)
+  20000225-1                          FAIL (runtime)
+  20000227-1                          FAIL (runtime)
+  20000313-1                          FAIL (runtime)
+  20000314-1                          FAIL (runtime)
+  20000314-2                          FAIL (runtime)
+  20000314-3                          FAIL (runtime)
+  20000402-1                          FAIL (runtime)
+  20000403-1                          FAIL (runtime)
+  20000412-1                          FAIL (runtime)
+  20000412-2                          FAIL (runtime)
+  20000412-3                          FAIL (runtime)
+  20000412-4                          FAIL (runtime)
+  20000412-5                          FAIL (runtime)
+  20000412-6                          FAIL (runtime)
+  20000419-1                          FAIL (runtime)
+  20000422-1                          FAIL (runtime)
+  20000503-1                          FAIL (runtime)
+  20000511-1                          FAIL (runtime)
+  20000519-1                          FAIL (runtime)
+  20000519-2                          FAIL (runtime)
+  20000523-1                          FAIL (runtime)
+  20000528-1                          FAIL (runtime)
+  20000603-1                          FAIL (runtime)
+  20000605-1                          FAIL (runtime)
+  20000605-2                          FAIL (runtime)
+  20000605-3                          FAIL (runtime)
+  20000622-1                          FAIL (runtime)
+  20000703-1                          FAIL (runtime)
+  20000706-1                          FAIL (runtime)
+  20000706-2                          FAIL (runtime)
+  20000706-3                          FAIL (runtime)
+  20000706-4                          FAIL (runtime)
+  20000706-5                          FAIL (runtime)
+  20000707-1                          FAIL (runtime)
+  20000715-1                          FAIL (runtime)
+  20000715-2                          FAIL (runtime)
+  20000717-1                          FAIL (runtime)
+  20000717-2                          FAIL (runtime)
+  20000717-3                          FAIL (runtime)
+  20000717-4                          FAIL (runtime)
+  20000717-5                          FAIL (runtime)
+  20000722-1                          FAIL (runtime)
+  20000726-1                          FAIL (runtime)
+  20000731-1                          FAIL (runtime)
+  20000731-2                          FAIL (runtime)
+  20000801-1                          FAIL (runtime)
+  20000801-2                          FAIL (runtime)
+  20000801-3                          FAIL (runtime)
+  20000801-4                          FAIL (runtime)
+  20000808-1                          FAIL (runtime)
+  20000815-1                          FAIL (runtime)
+  20000818-1                          FAIL (runtime)
+  20000819-1                          FAIL (runtime)
   20000822-1                          SKIP (trampolines)
-  20000910-1                          PASS
-  20000910-2                          PASS
-  20000914-1                          PASS
-  20000917-1                          PASS
-  20001009-1                          PASS
-  20001009-2                          PASS
-  20001011-1                          PASS
-  20001013-1                          PASS
-  20001017-1                          PASS
-  20001017-2                          PASS
-  20001024-1                          PASS
-  20001026-1                          PASS
-  20001027-1                          PASS
-  20001031-1                          PASS
-  20001101                            PASS
-  20001108-1                          PASS
-  20001111-1                          PASS
-  20001112-1                          PASS
-  20001121-1                          PASS
-  20001124-1                          PASS
-  20001130-1                          PASS
-  20001130-2                          PASS
-  20001203-1                          PASS
-  20001203-2                          PASS
-  20001221-1                          PASS
-  20001228-1                          PASS
-  20001229-1                          PASS
-  20010106-1                          PASS
-  20010114-1                          PASS
-  20010116-1                          PASS
-  20010118-1                          PASS
-  20010119-1                          PASS
-  20010122-1                          PASS
-  20010123-1                          PASS
-  20010129-1                          PASS
-  20010206-1                          PASS
+  20000910-1                          FAIL (runtime)
+  20000910-2                          FAIL (runtime)
+  20000914-1                          FAIL (runtime)
+  20000917-1                          FAIL (runtime)
+  20001009-1                          FAIL (runtime)
+  20001009-2                          FAIL (runtime)
+  20001011-1                          FAIL (runtime)
+  20001013-1                          FAIL (runtime)
+  20001017-1                          FAIL (runtime)
+  20001017-2                          FAIL (runtime)
+  20001024-1                          FAIL (runtime)
+  20001026-1                          FAIL (runtime)
+  20001027-1                          FAIL (runtime)
+  20001031-1                          FAIL (runtime)
+  20001101                            FAIL (runtime)
+  20001108-1                          FAIL (runtime)
+  20001111-1                          FAIL (runtime)
+  20001112-1                          FAIL (runtime)
+  20001121-1                          FAIL (runtime)
+  20001124-1                          FAIL (runtime)
+  20001130-1                          FAIL (runtime)
+  20001130-2                          FAIL (runtime)
+  20001203-1                          FAIL (runtime)
+  20001203-2                          FAIL (runtime)
+  20001221-1                          FAIL (runtime)
+  20001228-1                          FAIL (runtime)
+  20001229-1                          FAIL (runtime)
+  20010106-1                          FAIL (runtime)
+  20010114-1                          FAIL (runtime)
+  20010116-1                          FAIL (runtime)
+  20010118-1                          FAIL (runtime)
+  20010119-1                          FAIL (runtime)
+  20010122-1                          FAIL (runtime)
+  20010123-1                          FAIL (runtime)
+  20010129-1                          FAIL (runtime)
+  20010206-1                          FAIL (runtime)
   20010209-1                          SKIP (nested-func)
-  20010221-1                          PASS
-  20010222-1                          PASS
-  20010224-1                          PASS
-  20010325-1                          PASS
-  20010329-1                          PASS
-  20010403-1                          PASS
-  20010409-1                          PASS
-  20010422-1                          PASS
-  20010518-1                          PASS
-  20010518-2                          PASS
-  20010520-1                          PASS
-  20010604-1                          PASS
+  20010221-1                          FAIL (runtime)
+  20010222-1                          FAIL (runtime)
+  20010224-1                          FAIL (runtime)
+  20010325-1                          FAIL (runtime)
+  20010329-1                          FAIL (runtime)
+  20010403-1                          FAIL (runtime)
+  20010409-1                          FAIL (runtime)
+  20010422-1                          FAIL (runtime)
+  20010518-1                          FAIL (runtime)
+  20010518-2                          FAIL (runtime)
+  20010520-1                          FAIL (runtime)
+  20010604-1                          FAIL (runtime)
   20010605-1                          SKIP (nested-func)
   20010605-2                          SKIP (nested-func)
-  20010711-1                          PASS
-  20010717-1                          PASS
-  20010723-1                          PASS
-  20010904-1                          PASS
-  20010904-2                          PASS
-  20010910-1                          PASS
-  20010915-1                          PASS
-  20010924-1                          PASS
-  20010925-1                          PASS
-  20011008-3                          PASS
-  20011019-1                          PASS
-  20011024-1                          PASS
-  20011109-1                          PASS
-  20011109-2                          PASS
-  20011113-1                          PASS
-  20011114-1                          PASS
-  20011115-1                          PASS
-  20011121-1                          PASS
-  20011126-1                          PASS
-  20011126-2                          PASS
-  20011128-1                          PASS
-  20011217-1                          PASS
-  20011219-1                          PASS
-  20011223-1                          PASS
-  20020103-1                          PASS
-  20020107-1                          PASS
+  20010711-1                          FAIL (runtime)
+  20010717-1                          FAIL (runtime)
+  20010723-1                          FAIL (runtime)
+  20010904-1                          FAIL (runtime)
+  20010904-2                          FAIL (runtime)
+  20010910-1                          FAIL (runtime)
+  20010915-1                          FAIL (runtime)
+  20010924-1                          FAIL (runtime)
+  20010925-1                          FAIL (runtime)
+  20011008-3                          FAIL (runtime)
+  20011019-1                          FAIL (runtime)
+  20011024-1                          FAIL (runtime)
+  20011109-1                          FAIL (runtime)
+  20011109-2                          FAIL (runtime)
+  20011113-1                          FAIL (runtime)
+  20011114-1                          FAIL (runtime)
+  20011115-1                          FAIL (runtime)
+  20011121-1                          FAIL (runtime)
+  20011126-1                          FAIL (runtime)
+  20011126-2                          FAIL (runtime)
+  20011128-1                          FAIL (runtime)
+  20011217-1                          FAIL (runtime)
+  20011219-1                          FAIL (runtime)
+  20011223-1                          FAIL (runtime)
+  20020103-1                          FAIL (runtime)
+  20020107-1                          FAIL (runtime)
   20020108-1                          SKIP (attribute-mode)
-  20020118-1                          PASS
-  20020127-1                          PASS
-  20020129-1                          PASS
-  20020201-1                          PASS
-  20020206-1                          PASS
-  20020206-2                          PASS
-  20020213-1                          PASS
-  20020215-1                          PASS
-  20020216-1                          PASS
-  20020219-1                          PASS
-  20020225-1                          PASS
-  20020225-2                          PASS
-  20020226-1                          PASS
-  20020227-1                          PASS
-  20020307-1                          PASS
-  20020314-1                          PASS
-  20020320-1                          PASS
-  20020321-1                          PASS
-  20020328-1                          PASS
-  20020402-1                          PASS
-  20020402-2                          PASS
-  20020402-3                          PASS
-  20020404-1                          PASS
-  20020406-1                          PASS
-  20020411-1                          PASS
-  20020412-1                          PASS
-  20020413-1                          PASS
-  20020418-1                          PASS
-  20020423-1                          PASS
-  20020503-1                          PASS
-  20020506-1                          PASS
-  20020508-1                          PASS
-  20020508-2                          PASS
-  20020508-3                          PASS
-  20020510-1                          PASS
-  20020529-1                          PASS
-  20020611-1                          PASS
-  20020614-1                          PASS
-  20020615-1                          PASS
-  20020619-1                          PASS
-  20020716-1                          PASS
-  20020720-1                          PASS
-  20020805-1                          PASS
-  20020810-1                          PASS
-  20020819-1                          PASS
-  20020904-1                          PASS
-  20020911-1                          PASS
-  20020916-1                          PASS
-  20020920-1                          PASS
-  20021010-1                          PASS
-  20021010-2                          PASS
-  20021011-1                          PASS
-  20021015-1                          PASS
-  20021024-1                          PASS
-  20021111-1                          PASS
-  20021113-1                          PASS
-  20021118-1                          PASS
-  20021118-2                          PASS
-  20021118-3                          PASS
-  20021119-1                          PASS
-  20021120-1                          PASS
-  20021120-2                          PASS
-  20021120-3                          PASS
-  20021127-1                          PASS
-  20021204-1                          PASS
-  20021219-1                          PASS
-  20030105-1                          PASS
-  20030109-1                          PASS
-  20030117-1                          PASS
-  20030120-1                          PASS
-  20030120-2                          PASS
-  20030125-1                          PASS
-  20030128-1                          PASS
-  20030203-1                          PASS
-  20030209-1                          PASS
-  20030216-1                          PASS
-  20030218-1                          PASS
-  20030221-1                          PASS
-  20030222-1                          PASS
-  20030224-2                          PASS
-  20030307-1                          PASS
-  20030313-1                          PASS
-  20030316-1                          PASS
-  20030323-1                          PASS
-  20030330-1                          PASS
-  20030401-1                          PASS
-  20030403-1                          PASS
-  20030404-1                          PASS
-  20030408-1                          PASS
+  20020118-1                          FAIL (runtime)
+  20020127-1                          FAIL (runtime)
+  20020129-1                          FAIL (runtime)
+  20020201-1                          FAIL (runtime)
+  20020206-1                          FAIL (runtime)
+  20020206-2                          FAIL (runtime)
+  20020213-1                          FAIL (runtime)
+  20020215-1                          FAIL (runtime)
+  20020216-1                          FAIL (runtime)
+  20020219-1                          FAIL (runtime)
+  20020225-1                          FAIL (runtime)
+  20020225-2                          FAIL (runtime)
+  20020226-1                          FAIL (runtime)
+  20020227-1                          FAIL (runtime)
+  20020307-1                          FAIL (runtime)
+  20020314-1                          FAIL (runtime)
+  20020320-1                          FAIL (runtime)
+  20020321-1                          FAIL (runtime)
+  20020328-1                          FAIL (runtime)
+  20020402-1                          FAIL (runtime)
+  20020402-2                          FAIL (runtime)
+  20020402-3                          FAIL (runtime)
+  20020404-1                          FAIL (runtime)
+  20020406-1                          FAIL (runtime)
+  20020411-1                          FAIL (runtime)
+  20020412-1                          FAIL (runtime)
+  20020413-1                          FAIL (runtime)
+  20020418-1                          FAIL (runtime)
+  20020423-1                          FAIL (runtime)
+  20020503-1                          FAIL (runtime)
+  20020506-1                          FAIL (runtime)
+  20020508-1                          FAIL (runtime)
+  20020508-2                          FAIL (runtime)
+  20020508-3                          FAIL (runtime)
+  20020510-1                          FAIL (runtime)
+  20020529-1                          FAIL (runtime)
+  20020611-1                          FAIL (runtime)
+  20020614-1                          FAIL (runtime)
+  20020615-1                          FAIL (runtime)
+  20020619-1                          FAIL (runtime)
+  20020716-1                          FAIL (runtime)
+  20020720-1                          FAIL (runtime)
+  20020805-1                          FAIL (runtime)
+  20020810-1                          FAIL (runtime)
+  20020819-1                          FAIL (runtime)
+  20020904-1                          FAIL (runtime)
+  20020911-1                          FAIL (runtime)
+  20020916-1                          FAIL (runtime)
+  20020920-1                          FAIL (runtime)
+  20021010-1                          FAIL (runtime)
+  20021010-2                          FAIL (runtime)
+  20021011-1                          FAIL (runtime)
+  20021015-1                          FAIL (runtime)
+  20021024-1                          FAIL (runtime)
+  20021111-1                          FAIL (runtime)
+  20021113-1                          FAIL (runtime)
+  20021118-1                          FAIL (runtime)
+  20021118-2                          FAIL (runtime)
+  20021118-3                          FAIL (runtime)
+  20021119-1                          FAIL (runtime)
+  20021120-1                          FAIL (runtime)
+  20021120-2                          FAIL (runtime)
+  20021120-3                          FAIL (runtime)
+  20021127-1                          FAIL (runtime)
+  20021204-1                          FAIL (runtime)
+  20021219-1                          FAIL (runtime)
+  20030105-1                          FAIL (runtime)
+  20030109-1                          FAIL (runtime)
+  20030117-1                          FAIL (runtime)
+  20030120-1                          FAIL (runtime)
+  20030120-2                          FAIL (runtime)
+  20030125-1                          FAIL (runtime)
+  20030128-1                          FAIL (runtime)
+  20030203-1                          FAIL (runtime)
+  20030209-1                          FAIL (runtime)
+  20030216-1                          FAIL (runtime)
+  20030218-1                          FAIL (runtime)
+  20030221-1                          FAIL (runtime)
+  20030222-1                          FAIL (runtime)
+  20030224-2                          FAIL (runtime)
+  20030307-1                          FAIL (runtime)
+  20030313-1                          FAIL (runtime)
+  20030316-1                          FAIL (runtime)
+  20030323-1                          FAIL (runtime)
+  20030330-1                          FAIL (runtime)
+  20030401-1                          FAIL (runtime)
+  20030403-1                          FAIL (runtime)
+  20030404-1                          FAIL (runtime)
+  20030408-1                          FAIL (runtime)
   20030501-1                          SKIP (nested-func)
-  20030606-1                          PASS
-  20030613-1                          PASS
-  20030626-1                          PASS
-  20030626-2                          PASS
-  20030714-1                          PASS
-  20030715-1                          PASS
-  20030717-1                          PASS
-  20030718-1                          PASS
-  20030811-1                          PASS
-  20030821-1                          PASS
-  20030828-1                          PASS
-  20030828-2                          PASS
-  20030903-1                          PASS
-  20030909-1                          PASS
+  20030606-1                          FAIL (runtime)
+  20030613-1                          FAIL (runtime)
+  20030626-1                          FAIL (runtime)
+  20030626-2                          FAIL (runtime)
+  20030714-1                          FAIL (runtime)
+  20030715-1                          FAIL (runtime)
+  20030717-1                          FAIL (runtime)
+  20030718-1                          FAIL (runtime)
+  20030811-1                          FAIL (runtime)
+  20030821-1                          FAIL (runtime)
+  20030828-1                          FAIL (runtime)
+  20030828-2                          FAIL (runtime)
+  20030903-1                          FAIL (runtime)
+  20030909-1                          FAIL (runtime)
   20030910-1                          SKIP (nested-func)
-  20030913-1                          PASS
-  20030914-1                          PASS
-  20030914-2                          PASS
-  20030916-1                          PASS
-  20030920-1                          PASS
-  20030928-1                          PASS
-  20031003-1                          PASS
-  20031010-1                          PASS
-  20031011-1                          PASS
-  20031012-1                          PASS
-  20031020-1                          PASS
-  20031201-1                          PASS
-  20031204-1                          PASS
-  20031211-1                          PASS
-  20031211-2                          PASS
-  20031214-1                          PASS
-  20031215-1                          PASS
-  20031216-1                          PASS
-  20040208-1                          PASS
-  20040218-1                          PASS
-  20040223-1                          PASS
-  20040302-1                          PASS
-  20040307-1                          PASS
-  20040308-1                          PASS
-  20040309-1                          PASS
-  20040311-1                          PASS
-  20040313-1                          PASS
-  20040319-1                          PASS
-  20040331-1                          PASS
-  20040409-1                          PASS
-  20040409-1w                         PASS
-  20040409-2                          PASS
-  20040409-2w                         PASS
-  20040409-3                          PASS
-  20040409-3w                         PASS
-  20040411-1                          PASS
-  20040423-1                          PASS
+  20030913-1                          FAIL (runtime)
+  20030914-1                          FAIL (runtime)
+  20030914-2                          FAIL (runtime)
+  20030916-1                          FAIL (runtime)
+  20030920-1                          FAIL (runtime)
+  20030928-1                          FAIL (runtime)
+  20031003-1                          FAIL (runtime)
+  20031010-1                          FAIL (runtime)
+  20031011-1                          FAIL (runtime)
+  20031012-1                          FAIL (runtime)
+  20031020-1                          FAIL (runtime)
+  20031201-1                          FAIL (runtime)
+  20031204-1                          FAIL (runtime)
+  20031211-1                          FAIL (runtime)
+  20031211-2                          FAIL (runtime)
+  20031214-1                          FAIL (runtime)
+  20031215-1                          FAIL (runtime)
+  20031216-1                          FAIL (runtime)
+  20040208-1                          FAIL (runtime)
+  20040218-1                          FAIL (runtime)
+  20040223-1                          FAIL (runtime)
+  20040302-1                          FAIL (runtime)
+  20040307-1                          FAIL (runtime)
+  20040308-1                          FAIL (runtime)
+  20040309-1                          FAIL (runtime)
+  20040311-1                          FAIL (runtime)
+  20040313-1                          FAIL (runtime)
+  20040319-1                          FAIL (runtime)
+  20040331-1                          FAIL (runtime)
+  20040409-1                          FAIL (runtime)
+  20040409-1w                         FAIL (runtime)
+  20040409-2                          FAIL (runtime)
+  20040409-2w                         FAIL (runtime)
+  20040409-3                          FAIL (runtime)
+  20040409-3w                         FAIL (runtime)
+  20040411-1                          FAIL (runtime)
+  20040423-1                          FAIL (runtime)
   20040520-1                          SKIP (nested-func)
-  20040625-1                          PASS
-  20040629-1                          PASS
-  20040703-1                          PASS
-  20040704-1                          PASS
-  20040705-1                          PASS
-  20040705-2                          PASS
-  20040706-1                          PASS
-  20040707-1                          PASS
-  20040709-1                          PASS
-  20040709-2                          PASS
-  20040709-3                          PASS
-  20040805-1                          PASS
-  20040811-1                          PASS
-  20040820-1                          PASS
-  20040823-1                          PASS
-  20040831-1                          PASS
-  20040917-1                          PASS
-  20041011-1                          PASS
-  20041019-1                          PASS
-  20041112-1                          PASS
-  20041113-1                          PASS
-  20041114-1                          PASS
-  20041124-1                          PASS
-  20041126-1                          PASS
-  20041201-1                          PASS
-  20041210-1                          PASS
-  20041212-1                          PASS
-  20041213-2                          PASS
-  20041214-1                          PASS
-  20041218-1                          PASS
-  20041218-2                          PASS
-  20050104-1                          PASS
-  20050106-1                          PASS
+  20040625-1                          FAIL (runtime)
+  20040629-1                          FAIL (runtime)
+  20040703-1                          FAIL (runtime)
+  20040704-1                          FAIL (runtime)
+  20040705-1                          FAIL (runtime)
+  20040705-2                          FAIL (runtime)
+  20040706-1                          FAIL (runtime)
+  20040707-1                          FAIL (runtime)
+  20040709-1                          FAIL (runtime)
+  20040709-2                          FAIL (runtime)
+  20040709-3                          FAIL (runtime)
+  20040805-1                          FAIL (runtime)
+  20040811-1                          FAIL (runtime)
+  20040820-1                          FAIL (runtime)
+  20040823-1                          FAIL (runtime)
+  20040831-1                          FAIL (runtime)
+  20040917-1                          FAIL (runtime)
+  20041011-1                          FAIL (runtime)
+  20041019-1                          FAIL (runtime)
+  20041112-1                          FAIL (runtime)
+  20041113-1                          FAIL (runtime)
+  20041114-1                          FAIL (runtime)
+  20041124-1                          FAIL (runtime)
+  20041126-1                          FAIL (runtime)
+  20041201-1                          FAIL (runtime)
+  20041210-1                          FAIL (runtime)
+  20041212-1                          FAIL (runtime)
+  20041213-2                          FAIL (runtime)
+  20041214-1                          FAIL (runtime)
+  20041218-1                          FAIL (runtime)
+  20041218-2                          FAIL (runtime)
+  20050104-1                          FAIL (runtime)
+  20050106-1                          FAIL (runtime)
   20050107-1                          SKIP (attribute-mode)
-  20050111-1                          PASS
+  20050111-1                          FAIL (runtime)
   20050119-1                          SKIP (attribute-mode)
   20050119-2                          SKIP (attribute-mode)
-  20050121-1                          PASS
-  20050124-1                          PASS
-  20050125-1                          PASS
-  20050131-1                          PASS
-  20050203-1                          PASS
-  20050215-1                          PASS
-  20050218-1                          PASS
-  20050224-1                          PASS
+  20050121-1                          FAIL (runtime)
+  20050124-1                          FAIL (runtime)
+  20050125-1                          FAIL (runtime)
+  20050131-1                          FAIL (runtime)
+  20050203-1                          FAIL (runtime)
+  20050215-1                          FAIL (runtime)
+  20050218-1                          FAIL (runtime)
+  20050224-1                          FAIL (runtime)
   20050316-1                          SKIP (nested-func)
   20050316-2                          SKIP (nested-func)
   20050316-3                          SKIP (nested-func)
-  20050410-1                          PASS
-  20050502-1                          PASS
-  20050502-2                          PASS
+  20050410-1                          FAIL (runtime)
+  20050502-1                          FAIL (runtime)
+  20050502-2                          FAIL (runtime)
   20050604-1                          SKIP (nested-func)
   20050607-1                          SKIP (nested-func)
-  20050613-1                          PASS
-  20050713-1                          PASS
-  20050826-1                          PASS
-  20050826-2                          PASS
-  20050929-1                          PASS
-  20051012-1                          PASS
-  20051021-1                          PASS
-  20051104-1                          PASS
-  20051110-1                          PASS
-  20051110-2                          PASS
-  20051113-1                          PASS
-  20051215-1                          PASS
-  20060102-1                          PASS
-  20060110-1                          PASS
-  20060110-2                          PASS
-  20060127-1                          PASS
-  20060412-1                          PASS
+  20050613-1                          FAIL (runtime)
+  20050713-1                          FAIL (runtime)
+  20050826-1                          FAIL (runtime)
+  20050826-2                          FAIL (runtime)
+  20050929-1                          FAIL (runtime)
+  20051012-1                          FAIL (runtime)
+  20051021-1                          FAIL (runtime)
+  20051104-1                          FAIL (runtime)
+  20051110-1                          FAIL (runtime)
+  20051110-2                          FAIL (runtime)
+  20051113-1                          FAIL (runtime)
+  20051215-1                          FAIL (runtime)
+  20060102-1                          FAIL (runtime)
+  20060110-1                          FAIL (runtime)
+  20060110-2                          FAIL (runtime)
+  20060127-1                          FAIL (runtime)
+  20060412-1                          FAIL (runtime)
   20060420-1                          SKIP (vector_size)
-  20060905-1                          PASS
-  20060910-1                          PASS
-  20060929-1                          PASS
-  20060930-1                          PASS
-  20060930-2                          PASS
-  20061031-1                          PASS
-  20061101-1                          PASS
-  20061101-2                          PASS
+  20060905-1                          FAIL (runtime)
+  20060910-1                          FAIL (runtime)
+  20060929-1                          FAIL (runtime)
+  20060930-1                          FAIL (runtime)
+  20060930-2                          FAIL (runtime)
+  20061031-1                          FAIL (runtime)
+  20061101-1                          FAIL (runtime)
+  20061101-2                          FAIL (runtime)
   20061220-1                          SKIP (nested-func)
-  20070201-1                          PASS
-  20070212-1                          PASS
-  20070212-2                          PASS
-  20070212-3                          PASS
-  20070424-1                          PASS
-  20070517-1                          PASS
-  20070614-1                          PASS
-  20070623-1                          PASS
-  20070724-1                          PASS
-  20070824-1                          PASS
+  20070201-1                          FAIL (runtime)
+  20070212-1                          FAIL (runtime)
+  20070212-2                          FAIL (runtime)
+  20070212-3                          FAIL (runtime)
+  20070424-1                          FAIL (runtime)
+  20070517-1                          FAIL (runtime)
+  20070614-1                          FAIL (runtime)
+  20070623-1                          FAIL (runtime)
+  20070724-1                          FAIL (runtime)
+  20070824-1                          FAIL (runtime)
   20070919-1                          SKIP (nested-func)
-  20071011-1                          PASS
-  20071018-1                          PASS
-  20071029-1                          PASS
-  20071030-1                          PASS
-  20071108-1                          PASS
-  20071120-1                          PASS
-  20071202-1                          PASS
-  20071205-1                          PASS
-  20071210-1                          PASS
-  20071211-1                          PASS
-  20071213-1                          PASS
-  20071216-1                          PASS
-  20071219-1                          PASS
-  20071220-1                          PASS
-  20071220-2                          PASS
-  20080117-1                          PASS
-  20080122-1                          PASS
-  20080222-1                          PASS
-  20080408-1                          PASS
-  20080424-1                          PASS
-  20080502-1                          PASS
-  20080506-1                          PASS
-  20080506-2                          PASS
-  20080519-1                          PASS
-  20080522-1                          PASS
-  20080529-1                          PASS
-  20080604-1                          PASS
-  20080719-1                          PASS
-  20080813-1                          PASS
-  20081103-1                          PASS
-  20081112-1                          PASS
-  20081117-1                          PASS
-  20081218-1                          PASS
-  20090113-1                          PASS
-  20090113-2                          PASS
-  20090113-3                          PASS
-  20090207-1                          PASS
+  20071011-1                          FAIL (runtime)
+  20071018-1                          FAIL (runtime)
+  20071029-1                          FAIL (runtime)
+  20071030-1                          FAIL (runtime)
+  20071108-1                          FAIL (runtime)
+  20071120-1                          FAIL (runtime)
+  20071202-1                          FAIL (runtime)
+  20071205-1                          FAIL (runtime)
+  20071210-1                          FAIL (runtime)
+  20071211-1                          FAIL (runtime)
+  20071213-1                          FAIL (runtime)
+  20071216-1                          FAIL (runtime)
+  20071219-1                          FAIL (runtime)
+  20071220-1                          FAIL (runtime)
+  20071220-2                          FAIL (runtime)
+  20080117-1                          FAIL (runtime)
+  20080122-1                          FAIL (runtime)
+  20080222-1                          FAIL (runtime)
+  20080408-1                          FAIL (runtime)
+  20080424-1                          FAIL (runtime)
+  20080502-1                          FAIL (runtime)
+  20080506-1                          FAIL (runtime)
+  20080506-2                          FAIL (runtime)
+  20080519-1                          FAIL (runtime)
+  20080522-1                          FAIL (runtime)
+  20080529-1                          FAIL (runtime)
+  20080604-1                          FAIL (runtime)
+  20080719-1                          FAIL (runtime)
+  20080813-1                          FAIL (runtime)
+  20081103-1                          FAIL (runtime)
+  20081112-1                          FAIL (runtime)
+  20081117-1                          FAIL (runtime)
+  20081218-1                          FAIL (runtime)
+  20090113-1                          FAIL (runtime)
+  20090113-2                          FAIL (runtime)
+  20090113-3                          FAIL (runtime)
+  20090207-1                          FAIL (runtime)
   20090219-1                          SKIP (nested-func)
-  20090527-1                          PASS
-  20090623-1                          PASS
-  20090711-1                          PASS
-  20090814-1                          PASS
-  20091229-1                          PASS
-  20100209-1                          PASS
-  20100316-1                          PASS
-  20100416-1                          PASS
-  20100430-1                          PASS
-  20100708-1                          PASS
-  20100805-1                          PASS
-  20100827-1                          PASS
-  20101011-1                          PASS
-  20101013-1                          PASS
-  20101025-1                          PASS
-  20110418-1                          PASS
-  20111208-1                          PASS
-  20111212-1                          PASS
-  20111227-1                          PASS
-  20120105-1                          PASS
-  20120111-1                          PASS
-  20120207-1                          PASS
-  20120427-1                          PASS
-  20120427-2                          PASS
-  20120615-1                          PASS
-  20120808-1                          PASS
-  20120817-1                          PASS
-  20120919-1                          PASS
-  20121108-1                          PASS
-  20131127-1                          PASS
-  20140212-1                          PASS
-  20140212-2                          PASS
-  20140326-1                          PASS
-  20140425-1                          PASS
-  20140622-1                          PASS
-  20140828-1                          PASS
-  20141022-1                          PASS
-  20141107-1                          PASS
-  20141125-1                          PASS
-  20150611-1                          PASS
-  20170111-1                          PASS
-  20170401-1                          PASS
-  20170401-2                          PASS
-  20170419-1                          PASS
-  20171008-1                          PASS
-  20180112-1                          PASS
-  20180131-1                          PASS
-  20180226-1                          PASS
-  20180921-1                          PASS
-  20181120-1                          PASS
-  20190228-1                          PASS
-  20190820-1                          PASS
-  20190901-1                          PASS
-  20191023-1                          PASS
-  20210505-1                          PASS
-  20221006-1                          PASS
-  20230509-1                          PASS
-  20230510-1                          PASS
-  20230630-1                          PASS
+  20090527-1                          FAIL (runtime)
+  20090623-1                          FAIL (runtime)
+  20090711-1                          FAIL (runtime)
+  20090814-1                          FAIL (runtime)
+  20091229-1                          FAIL (runtime)
+  20100209-1                          FAIL (runtime)
+  20100316-1                          FAIL (runtime)
+  20100416-1                          FAIL (runtime)
+  20100430-1                          FAIL (runtime)
+  20100708-1                          FAIL (runtime)
+  20100805-1                          FAIL (runtime)
+  20100827-1                          FAIL (runtime)
+  20101011-1                          FAIL (runtime)
+  20101013-1                          FAIL (runtime)
+  20101025-1                          FAIL (runtime)
+  20110418-1                          FAIL (runtime)
+  20111208-1                          FAIL (runtime)
+  20111212-1                          FAIL (runtime)
+  20111227-1                          FAIL (runtime)
+  20120105-1                          FAIL (runtime)
+  20120111-1                          FAIL (runtime)
+  20120207-1                          FAIL (runtime)
+  20120427-1                          FAIL (runtime)
+  20120427-2                          FAIL (runtime)
+  20120615-1                          FAIL (runtime)
+  20120808-1                          FAIL (runtime)
+  20120817-1                          FAIL (runtime)
+  20120919-1                          FAIL (runtime)
+  20121108-1                          FAIL (runtime)
+  20131127-1                          FAIL (runtime)
+  20140212-1                          FAIL (runtime)
+  20140212-2                          FAIL (runtime)
+  20140326-1                          FAIL (runtime)
+  20140425-1                          FAIL (runtime)
+  20140622-1                          FAIL (runtime)
+  20140828-1                          FAIL (runtime)
+  20141022-1                          FAIL (runtime)
+  20141107-1                          FAIL (runtime)
+  20141125-1                          FAIL (runtime)
+  20150611-1                          FAIL (runtime)
+  20170111-1                          FAIL (runtime)
+  20170401-1                          FAIL (runtime)
+  20170401-2                          FAIL (runtime)
+  20170419-1                          FAIL (runtime)
+  20171008-1                          FAIL (runtime)
+  20180112-1                          FAIL (runtime)
+  20180131-1                          FAIL (runtime)
+  20180226-1                          FAIL (runtime)
+  20180921-1                          FAIL (runtime)
+  20181120-1                          FAIL (runtime)
+  20190228-1                          FAIL (runtime)
+  20190820-1                          FAIL (runtime)
+  20190901-1                          FAIL (runtime)
+  20191023-1                          FAIL (runtime)
+  20210505-1                          FAIL (runtime)
+  20221006-1                          FAIL (runtime)
+  20230509-1                          FAIL (runtime)
+  20230510-1                          FAIL (runtime)
+  20230630-1                          FAIL (runtime)
   20230630-2                          SKIP (scalar_storage_order)
-  20230630-3                          PASS
+  20230630-3                          FAIL (runtime)
   20230630-4                          SKIP (scalar_storage_order)
-  20230802-1                          PASS
-  20241029-1                          PASS
-  alias-1                             PASS
-  alias-2                             PASS
-  alias-3                             PASS
-  alias-4                             PASS
-  alias-access-path-1                 PASS
-  alias-access-path-2                 PASS
-  align-1                             PASS
-  align-2                             PASS
-  align-3                             PASS
-  align-nest                          PASS
-  alloca-1                            PASS
-  anon-1                              PASS
-  arith-1                             PASS
-  arith-rand-ll                       PASS
-  arith-rand                          PASS
-  ashldi-1                            PASS
-  ashrdi-1                            PASS
-  bcp-1                               PASS
-  bf-layout-1                         PASS
+  20230802-1                          FAIL (runtime)
+  20241029-1                          FAIL (runtime)
+  alias-1                             FAIL (runtime)
+  alias-2                             FAIL (runtime)
+  alias-3                             FAIL (runtime)
+  alias-4                             FAIL (runtime)
+  alias-access-path-1                 FAIL (runtime)
+  alias-access-path-2                 FAIL (runtime)
+  align-1                             FAIL (runtime)
+  align-2                             FAIL (runtime)
+  align-3                             FAIL (runtime)
+  align-nest                          FAIL (runtime)
+  alloca-1                            FAIL (runtime)
+  anon-1                              FAIL (runtime)
+  arith-1                             FAIL (runtime)
+  arith-rand-ll                       FAIL (runtime)
+  arith-rand                          FAIL (runtime)
+  ashldi-1                            FAIL (runtime)
+  ashrdi-1                            FAIL (runtime)
+  bcp-1                               FAIL (runtime)
+  bf-layout-1                         FAIL (runtime)
   bf-pack-1                           SKIP (nested-func)
-  bf-sign-1                           PASS
-  bf-sign-2                           PASS
-  bf64-1                              PASS
-  bitfld-1                            PASS
-  bitfld-2                            PASS
-  bitfld-3                            PASS
-  bitfld-4                            PASS
-  bitfld-5                            PASS
-  bitfld-6                            PASS
-  bitfld-7                            PASS
-  bitfld-8                            PASS
-  bitfld-9                            PASS
-  bitfld-10                           PASS
-  bitfld-signed1-1                    PASS
-  bitops-1                            PASS
-  bswap-1                             PASS
-  bswap-2                             PASS
-  bswap-3                             PASS
-  built-in-setjmp                     PASS
-  builtin-bitops-1                    PASS
-  builtin-constant                    PASS
-  builtin-prefetch-1                  PASS
-  builtin-prefetch-2                  PASS
-  builtin-prefetch-3                  PASS
-  builtin-prefetch-4                  PASS
-  builtin-prefetch-5                  PASS
-  builtin-prefetch-6                  PASS
+  bf-sign-1                           FAIL (runtime)
+  bf-sign-2                           FAIL (runtime)
+  bf64-1                              FAIL (runtime)
+  bitfld-1                            FAIL (runtime)
+  bitfld-2                            FAIL (runtime)
+  bitfld-3                            FAIL (runtime)
+  bitfld-4                            FAIL (runtime)
+  bitfld-5                            FAIL (runtime)
+  bitfld-6                            FAIL (runtime)
+  bitfld-7                            FAIL (runtime)
+  bitfld-8                            FAIL (runtime)
+  bitfld-9                            FAIL (runtime)
+  bitfld-10                           FAIL (runtime)
+  bitfld-signed1-1                    FAIL (runtime)
+  bitops-1                            FAIL (runtime)
+  bswap-1                             FAIL (runtime)
+  bswap-2                             FAIL (runtime)
+  bswap-3                             FAIL (runtime)
+  built-in-setjmp                     FAIL (runtime)
+  builtin-bitops-1                    FAIL (runtime)
+  builtin-constant                    FAIL (runtime)
+  builtin-prefetch-1                  FAIL (runtime)
+  builtin-prefetch-2                  FAIL (runtime)
+  builtin-prefetch-3                  FAIL (runtime)
+  builtin-prefetch-4                  FAIL (runtime)
+  builtin-prefetch-5                  FAIL (runtime)
+  builtin-prefetch-6                  FAIL (runtime)
   builtin-types-compatible-p          SKIP (nested-func)
-  call-trap-1                         PASS
+  call-trap-1                         FAIL (runtime)
   cbrt                                SKIP (attribute-mode)
-  cmpdi-1                             PASS
-  cmpsf-1                             PASS
-  cmpsi-1                             PASS
-  cmpsi-2                             PASS
-  comp-goto-1                         PASS
+  cmpdi-1                             FAIL (runtime)
+  cmpsf-1                             FAIL (runtime)
+  cmpsi-1                             FAIL (runtime)
+  cmpsi-2                             FAIL (runtime)
+  comp-goto-1                         FAIL (runtime)
   comp-goto-2                         SKIP (trampolines)
-  compare-1                           PASS
-  compare-2                           PASS
-  compare-3                           PASS
+  compare-1                           FAIL (runtime)
+  compare-2                           FAIL (runtime)
+  compare-3                           FAIL (runtime)
   complex-1                           SKIP (nested-func)
   complex-2                           SKIP (nested-func)
-  complex-3                           PASS
+  complex-3                           FAIL (runtime)
   complex-4                           SKIP (nested-func)
   complex-5                           SKIP (nested-func)
   complex-6                           SKIP (nested-func)
   complex-7                           SKIP (nested-func)
   compndlit-1                         SKIP (nested-func)
-  const-addr-expr-1                   PASS
-  conversion                          PASS
-  cvt-1                               PASS
-  dbra-1                              PASS
-  divcmp-1                            PASS
-  divcmp-2                            PASS
-  divcmp-3                            PASS
-  divcmp-4                            PASS
-  divcmp-5                            PASS
-  divconst-1                          PASS
-  divconst-2                          PASS
-  divconst-3                          PASS
-  divmod-1                            PASS
-  doloop-1                            PASS
-  doloop-2                            PASS
+  const-addr-expr-1                   FAIL (runtime)
+  conversion                          FAIL (runtime)
+  cvt-1                               FAIL (runtime)
+  dbra-1                              FAIL (runtime)
+  divcmp-1                            FAIL (runtime)
+  divcmp-2                            FAIL (runtime)
+  divcmp-3                            FAIL (runtime)
+  divcmp-4                            FAIL (runtime)
+  divcmp-5                            FAIL (runtime)
+  divconst-1                          FAIL (runtime)
+  divconst-2                          FAIL (runtime)
+  divconst-3                          FAIL (runtime)
+  divmod-1                            FAIL (runtime)
+  doloop-1                            FAIL (runtime)
+  doloop-2                            FAIL (runtime)
   eeprof-1                            SKIP (finstrument)
-  enum-1                              PASS
-  enum-2                              PASS
-  enum-3                              PASS
-  extzvsi                             PASS
+  enum-1                              FAIL (runtime)
+  enum-2                              FAIL (runtime)
+  enum-3                              FAIL (runtime)
+  extzvsi                             FAIL (runtime)
   ffs-1                               SKIP (nested-func)
-  ffs-2                               PASS
-  float-floor                         PASS
-  floatunsisf-1                       PASS
-  fprintf-1                           PASS
-  fprintf-2                           PASS
-  fprintf-chk-1                       PASS
-  frame-address                       PASS
-  func-ptr-1                          PASS
-  gofast                              PASS
-  ifcvt-onecmpl-abs-1                 PASS
-  index-1                             PASS
-  inst-check                          PASS
-  int-compare                         PASS
-  ipa-sra-1                           PASS
-  ipa-sra-2                           PASS
-  longlong                            PASS
-  loop-1                              PASS
-  loop-2                              PASS
-  loop-2b                             PASS
-  loop-2c                             PASS
-  loop-2d                             PASS
-  loop-2e                             PASS
-  loop-2f                             PASS
-  loop-2g                             PASS
-  loop-3                              PASS
-  loop-3b                             PASS
-  loop-3c                             PASS
-  loop-4                              PASS
-  loop-4b                             PASS
-  loop-5                              PASS
-  loop-6                              PASS
-  loop-7                              PASS
-  loop-8                              PASS
-  loop-9                              PASS
-  loop-10                             PASS
-  loop-11                             PASS
-  loop-12                             PASS
-  loop-13                             PASS
-  loop-14                             PASS
-  loop-15                             PASS
-  loop-ivopts-1                       PASS
-  loop-ivopts-2                       PASS
-  lshrdi-1                            PASS
-  lto-tbaa-1                          PASS
-  mayalias-1                          PASS
-  mayalias-2                          PASS
-  mayalias-3                          PASS
-  medce-1                             PASS
-  memchr-1                            PASS
+  ffs-2                               FAIL (runtime)
+  float-floor                         FAIL (runtime)
+  floatunsisf-1                       FAIL (runtime)
+  fprintf-1                           FAIL (runtime)
+  fprintf-2                           FAIL (runtime)
+  fprintf-chk-1                       FAIL (runtime)
+  frame-address                       FAIL (runtime)
+  func-ptr-1                          FAIL (runtime)
+  gofast                              FAIL (runtime)
+  ifcvt-onecmpl-abs-1                 FAIL (runtime)
+  index-1                             FAIL (runtime)
+  inst-check                          FAIL (runtime)
+  int-compare                         FAIL (runtime)
+  ipa-sra-1                           FAIL (runtime)
+  ipa-sra-2                           FAIL (runtime)
+  longlong                            FAIL (runtime)
+  loop-1                              FAIL (runtime)
+  loop-2                              FAIL (runtime)
+  loop-2b                             FAIL (runtime)
+  loop-2c                             FAIL (runtime)
+  loop-2d                             FAIL (runtime)
+  loop-2e                             FAIL (runtime)
+  loop-2f                             FAIL (runtime)
+  loop-2g                             FAIL (runtime)
+  loop-3                              FAIL (runtime)
+  loop-3b                             FAIL (runtime)
+  loop-3c                             FAIL (runtime)
+  loop-4                              FAIL (runtime)
+  loop-4b                             FAIL (runtime)
+  loop-5                              FAIL (runtime)
+  loop-6                              FAIL (runtime)
+  loop-7                              FAIL (runtime)
+  loop-8                              FAIL (runtime)
+  loop-9                              FAIL (runtime)
+  loop-10                             FAIL (runtime)
+  loop-11                             FAIL (runtime)
+  loop-12                             FAIL (runtime)
+  loop-13                             FAIL (runtime)
+  loop-14                             FAIL (runtime)
+  loop-15                             FAIL (runtime)
+  loop-ivopts-1                       FAIL (runtime)
+  loop-ivopts-2                       FAIL (runtime)
+  lshrdi-1                            FAIL (runtime)
+  lto-tbaa-1                          FAIL (runtime)
+  mayalias-1                          FAIL (runtime)
+  mayalias-2                          FAIL (runtime)
+  mayalias-3                          FAIL (runtime)
+  medce-1                             FAIL (runtime)
+  memchr-1                            FAIL (runtime)
   memclr                              SKIP (attribute-mode)
-  memcpy-1                            PASS
-  memcpy-2                            PASS
-  memcpy-a1                           PASS
-  memcpy-a2                           PASS
-  memcpy-a4                           PASS
-  memcpy-a8                           PASS
-  memcpy-bi                           PASS
-  memset-1                            PASS
-  memset-2                            PASS
-  memset-3                            PASS
-  memset-4                            PASS
-  minmaxcmp-1                         PASS
+  memcpy-1                            FAIL (runtime)
+  memcpy-2                            FAIL (runtime)
+  memcpy-a1                           FAIL (runtime)
+  memcpy-a2                           FAIL (runtime)
+  memcpy-a4                           FAIL (runtime)
+  memcpy-a8                           FAIL (runtime)
+  memcpy-bi                           FAIL (runtime)
+  memset-1                            FAIL (runtime)
+  memset-2                            FAIL (runtime)
+  memset-3                            FAIL (runtime)
+  memset-4                            FAIL (runtime)
+  minmaxcmp-1                         FAIL (runtime)
   misalign                            SKIP (attribute-mode)
-  mod-1                               PASS
-  mode-dependent-address              PASS
-  mul-sext                            PASS
-  multdi-1                            PASS
-  multi-ix                            PASS
+  mod-1                               FAIL (runtime)
+  mode-dependent-address              FAIL (runtime)
+  mul-sext                            FAIL (runtime)
+  multdi-1                            FAIL (runtime)
+  multi-ix                            FAIL (runtime)
   nest-align-1                        SKIP (nested-func)
   nest-stdar-1                        SKIP (nested-func)
   nestfunc-1                          SKIP (trampolines)
   nestfunc-2                          SKIP (trampolines)
   nestfunc-3                          SKIP (trampolines)
-  nestfunc-4                          PASS
+  nestfunc-4                          FAIL (runtime)
   nestfunc-5                          SKIP (trampolines)
   nestfunc-6                          SKIP (trampolines)
   nestfunc-7                          SKIP (nested-func)
-  p18298                              PASS
-  packed-1                            PASS
-  packed-2                            PASS
-  packed-aligned                      PASS
-  pending-4                           PASS
-  postmod-1                           PASS
-  pr7284-1                            PASS
-  pr10352-1                           PASS
-  pr15262-1                           PASS
-  pr15262-2                           PASS
-  pr15262                             PASS
-  pr15296                             PASS
-  pr16790-1                           PASS
-  pr17078-1                           PASS
-  pr17133                             PASS
-  pr17252                             PASS
-  pr17377                             PASS
-  pr19005                             PASS
-  pr19449                             PASS
-  pr19515                             PASS
-  pr19606                             PASS
-  pr19687                             PASS
-  pr19689                             PASS
-  pr20100-1                           PASS
-  pr20187-1                           PASS
-  pr20466-1                           PASS
-  pr20527-1                           PASS
-  pr20601-1                           PASS
-  pr20621-1                           PASS
-  pr21173                             PASS
-  pr21331                             PASS
-  pr21964-1                           PASS
-  pr22061-1                           PASS
-  pr22061-2                           PASS
+  p18298                              FAIL (runtime)
+  packed-1                            FAIL (runtime)
+  packed-2                            FAIL (runtime)
+  packed-aligned                      FAIL (runtime)
+  pending-4                           FAIL (runtime)
+  postmod-1                           FAIL (runtime)
+  pr7284-1                            FAIL (runtime)
+  pr10352-1                           FAIL (runtime)
+  pr15262-1                           FAIL (runtime)
+  pr15262-2                           FAIL (runtime)
+  pr15262                             FAIL (runtime)
+  pr15296                             FAIL (runtime)
+  pr16790-1                           FAIL (runtime)
+  pr17078-1                           FAIL (runtime)
+  pr17133                             FAIL (runtime)
+  pr17252                             FAIL (runtime)
+  pr17377                             FAIL (runtime)
+  pr19005                             FAIL (runtime)
+  pr19449                             FAIL (runtime)
+  pr19515                             FAIL (runtime)
+  pr19606                             FAIL (runtime)
+  pr19687                             FAIL (runtime)
+  pr19689                             FAIL (runtime)
+  pr20100-1                           FAIL (runtime)
+  pr20187-1                           FAIL (runtime)
+  pr20466-1                           FAIL (runtime)
+  pr20527-1                           FAIL (runtime)
+  pr20601-1                           FAIL (runtime)
+  pr20621-1                           FAIL (runtime)
+  pr21173                             FAIL (runtime)
+  pr21331                             FAIL (runtime)
+  pr21964-1                           FAIL (runtime)
+  pr22061-1                           FAIL (runtime)
+  pr22061-2                           FAIL (runtime)
   pr22061-3                           SKIP (nested-func)
   pr22061-4                           SKIP (nested-func)
-  pr22098-1                           PASS
-  pr22098-2                           PASS
-  pr22098-3                           PASS
-  pr22141-1                           PASS
-  pr22141-2                           PASS
-  pr22348                             PASS
-  pr22429                             PASS
-  pr22493-1                           PASS
-  pr22630                             PASS
-  pr23047                             PASS
+  pr22098-1                           FAIL (runtime)
+  pr22098-2                           FAIL (runtime)
+  pr22098-3                           FAIL (runtime)
+  pr22141-1                           FAIL (runtime)
+  pr22141-2                           FAIL (runtime)
+  pr22348                             FAIL (runtime)
+  pr22429                             FAIL (runtime)
+  pr22493-1                           FAIL (runtime)
+  pr22630                             FAIL (runtime)
+  pr23047                             FAIL (runtime)
   pr23135                             SKIP (vector_size)
-  pr23324                             PASS
-  pr23467                             PASS
-  pr23604                             PASS
-  pr23941                             PASS
+  pr23324                             FAIL (runtime)
+  pr23467                             FAIL (runtime)
+  pr23604                             FAIL (runtime)
+  pr23941                             FAIL (runtime)
   pr24135                             SKIP (trampolines)
-  pr24141                             PASS
-  pr24142                             PASS
-  pr24716                             PASS
-  pr24851                             PASS
-  pr25125                             PASS
-  pr25737                             PASS
-  pr27073                             PASS
-  pr27260                             PASS
-  pr27285                             PASS
-  pr27364                             PASS
-  pr27671-1                           PASS
-  pr28289                             PASS
-  pr28403                             PASS
-  pr28651                             PASS
-  pr28778                             PASS
-  pr28865                             PASS
-  pr28982a                            PASS
-  pr28982b                            PASS
-  pr29006                             PASS
-  pr29156                             PASS
-  pr29695-1                           PASS
-  pr29695-2                           PASS
-  pr29797-1                           PASS
-  pr29797-2                           PASS
-  pr29798                             PASS
-  pr30185                             PASS
-  pr30778                             PASS
-  pr31072                             PASS
-  pr31136                             PASS
-  pr31169                             PASS
-  pr31448-2                           PASS
-  pr31448                             PASS
-  pr31605                             PASS
-  pr32244-1                           PASS
-  pr32500                             PASS
-  pr33142                             PASS
-  pr33382                             PASS
-  pr33631                             PASS
-  pr33669                             PASS
-  pr33779-1                           PASS
-  pr33779-2                           PASS
-  pr33870-1                           PASS
-  pr33870                             PASS
-  pr33992                             PASS
-  pr34070-1                           PASS
-  pr34070-2                           PASS
-  pr34099-2                           PASS
-  pr34099                             PASS
-  pr34130                             PASS
-  pr34154                             PASS
-  pr34176                             PASS
-  pr34415                             PASS
-  pr34456                             PASS
-  pr34768-1                           PASS
-  pr34768-2                           PASS
-  pr34971                             PASS
-  pr34982                             PASS
-  pr35163                             PASS
-  pr35231                             PASS
-  pr35390                             PASS
-  pr35456                             PASS
-  pr35472                             PASS
-  pr35800                             PASS
-  pr36034-1                           PASS
-  pr36034-2                           PASS
-  pr36038                             PASS
-  pr36077                             PASS
-  pr36321                             PASS
-  pr36339                             PASS
-  pr36343                             PASS
-  pr36691                             PASS
-  pr36765                             PASS
-  pr37102                             PASS
-  pr37125                             PASS
-  pr37573                             PASS
-  pr37780                             PASS
-  pr37882                             PASS
-  pr37924                             PASS
-  pr37931                             PASS
-  pr38048-1                           PASS
-  pr38048-2                           PASS
-  pr38051                             PASS
-  pr38151                             PASS
-  pr38212                             PASS
-  pr38236                             PASS
-  pr38422                             PASS
-  pr38533                             PASS
-  pr38819                             PASS
-  pr38969                             PASS
-  pr39100                             PASS
-  pr39120                             PASS
-  pr39228                             PASS
-  pr39233                             PASS
-  pr39240                             PASS
-  pr39339                             PASS
-  pr39501                             PASS
-  pr40022                             PASS
-  pr40057                             PASS
-  pr40386                             PASS
-  pr40404                             PASS
-  pr40493                             PASS
-  pr40579                             PASS
-  pr40657                             PASS
-  pr40668                             PASS
-  pr40747                             PASS
-  pr41239                             PASS
-  pr41317                             PASS
-  pr41395-1                           PASS
-  pr41395-2                           PASS
-  pr41463                             PASS
-  pr41750                             PASS
-  pr41917                             PASS
-  pr41919                             PASS
+  pr24141                             FAIL (runtime)
+  pr24142                             FAIL (runtime)
+  pr24716                             FAIL (runtime)
+  pr24851                             FAIL (runtime)
+  pr25125                             FAIL (runtime)
+  pr25737                             FAIL (runtime)
+  pr27073                             FAIL (runtime)
+  pr27260                             FAIL (runtime)
+  pr27285                             FAIL (runtime)
+  pr27364                             FAIL (runtime)
+  pr27671-1                           FAIL (runtime)
+  pr28289                             FAIL (runtime)
+  pr28403                             FAIL (runtime)
+  pr28651                             FAIL (runtime)
+  pr28778                             FAIL (runtime)
+  pr28865                             FAIL (runtime)
+  pr28982a                            FAIL (runtime)
+  pr28982b                            FAIL (runtime)
+  pr29006                             FAIL (runtime)
+  pr29156                             FAIL (runtime)
+  pr29695-1                           FAIL (runtime)
+  pr29695-2                           FAIL (runtime)
+  pr29797-1                           FAIL (runtime)
+  pr29797-2                           FAIL (runtime)
+  pr29798                             FAIL (runtime)
+  pr30185                             FAIL (runtime)
+  pr30778                             FAIL (runtime)
+  pr31072                             FAIL (runtime)
+  pr31136                             FAIL (runtime)
+  pr31169                             FAIL (runtime)
+  pr31448-2                           FAIL (runtime)
+  pr31448                             FAIL (runtime)
+  pr31605                             FAIL (runtime)
+  pr32244-1                           FAIL (runtime)
+  pr32500                             FAIL (runtime)
+  pr33142                             FAIL (runtime)
+  pr33382                             FAIL (runtime)
+  pr33631                             FAIL (runtime)
+  pr33669                             FAIL (runtime)
+  pr33779-1                           FAIL (runtime)
+  pr33779-2                           FAIL (runtime)
+  pr33870-1                           FAIL (runtime)
+  pr33870                             FAIL (runtime)
+  pr33992                             FAIL (runtime)
+  pr34070-1                           FAIL (runtime)
+  pr34070-2                           FAIL (runtime)
+  pr34099-2                           FAIL (runtime)
+  pr34099                             FAIL (runtime)
+  pr34130                             FAIL (runtime)
+  pr34154                             FAIL (runtime)
+  pr34176                             FAIL (runtime)
+  pr34415                             FAIL (runtime)
+  pr34456                             FAIL (runtime)
+  pr34768-1                           FAIL (runtime)
+  pr34768-2                           FAIL (runtime)
+  pr34971                             FAIL (runtime)
+  pr34982                             FAIL (runtime)
+  pr35163                             FAIL (runtime)
+  pr35231                             FAIL (runtime)
+  pr35390                             FAIL (runtime)
+  pr35456                             FAIL (runtime)
+  pr35472                             FAIL (runtime)
+  pr35800                             FAIL (runtime)
+  pr36034-1                           FAIL (runtime)
+  pr36034-2                           FAIL (runtime)
+  pr36038                             FAIL (runtime)
+  pr36077                             FAIL (runtime)
+  pr36321                             FAIL (runtime)
+  pr36339                             FAIL (runtime)
+  pr36343                             FAIL (runtime)
+  pr36691                             FAIL (runtime)
+  pr36765                             FAIL (runtime)
+  pr37102                             FAIL (runtime)
+  pr37125                             FAIL (runtime)
+  pr37573                             FAIL (runtime)
+  pr37780                             FAIL (runtime)
+  pr37882                             FAIL (runtime)
+  pr37924                             FAIL (runtime)
+  pr37931                             FAIL (runtime)
+  pr38048-1                           FAIL (runtime)
+  pr38048-2                           FAIL (runtime)
+  pr38051                             FAIL (runtime)
+  pr38151                             FAIL (runtime)
+  pr38212                             FAIL (runtime)
+  pr38236                             FAIL (runtime)
+  pr38422                             FAIL (runtime)
+  pr38533                             FAIL (runtime)
+  pr38819                             FAIL (runtime)
+  pr38969                             FAIL (runtime)
+  pr39100                             FAIL (runtime)
+  pr39120                             FAIL (runtime)
+  pr39228                             FAIL (runtime)
+  pr39233                             FAIL (runtime)
+  pr39240                             FAIL (runtime)
+  pr39339                             FAIL (runtime)
+  pr39501                             FAIL (runtime)
+  pr40022                             FAIL (runtime)
+  pr40057                             FAIL (runtime)
+  pr40386                             FAIL (runtime)
+  pr40404                             FAIL (runtime)
+  pr40493                             FAIL (runtime)
+  pr40579                             FAIL (runtime)
+  pr40657                             FAIL (runtime)
+  pr40668                             FAIL (runtime)
+  pr40747                             FAIL (runtime)
+  pr41239                             FAIL (runtime)
+  pr41317                             FAIL (runtime)
+  pr41395-1                           FAIL (runtime)
+  pr41395-2                           FAIL (runtime)
+  pr41463                             FAIL (runtime)
+  pr41750                             FAIL (runtime)
+  pr41917                             FAIL (runtime)
+  pr41919                             FAIL (runtime)
   pr41935                             SKIP (not-implemented)
-  pr42006                             PASS
-  pr42142                             PASS
-  pr42154                             PASS
-  pr42231                             PASS
-  pr42248                             PASS
-  pr42269-2                           PASS
-  pr42512                             PASS
-  pr42544                             PASS
-  pr42570                             PASS
-  pr42614                             PASS
-  pr42691                             PASS
-  pr42721                             PASS
-  pr42833                             PASS
-  pr43008                             PASS
-  pr43220                             PASS
-  pr43236                             PASS
-  pr43269                             PASS
-  pr43385                             PASS
-  pr43438                             PASS
-  pr43560                             PASS
-  pr43629                             PASS
-  pr43784                             PASS
-  pr43835                             PASS
-  pr43987                             PASS
-  pr44164                             PASS
-  pr44202-1                           PASS
-  pr44468                             PASS
-  pr44555                             PASS
-  pr44575                             PASS
-  pr44683                             PASS
-  pr44828                             PASS
-  pr44852                             PASS
-  pr44858                             PASS
-  pr44942                             PASS
-  pr45034                             PASS
-  pr45070                             PASS
-  pr45262                             PASS
-  pr45695                             PASS
-  pr46019                             PASS
-  pr46309                             PASS
-  pr46316                             PASS
-  pr46909-1                           PASS
-  pr46909-2                           PASS
-  pr47148                             PASS
-  pr47155                             PASS
-  pr47237                             PASS
-  pr47299                             PASS
-  pr47337                             PASS
-  pr47538                             PASS
-  pr47925                             PASS
-  pr48197                             PASS
-  pr48571-1                           PASS
-  pr48717                             PASS
-  pr48809                             PASS
-  pr48814-1                           PASS
-  pr48814-2                           PASS
-  pr48973-1                           PASS
-  pr48973-2                           PASS
-  pr49039                             PASS
-  pr49073                             PASS
-  pr49123                             PASS
-  pr49161                             PASS
-  pr49186                             PASS
-  pr49218                             PASS
-  pr49279                             PASS
-  pr49281                             PASS
-  pr49390                             PASS
-  pr49419                             PASS
-  pr49644                             PASS
-  pr49712                             PASS
-  pr49768                             PASS
-  pr49886                             PASS
-  pr50865                             PASS
-  pr51023                             PASS
-  pr51323                             PASS
+  pr42006                             FAIL (runtime)
+  pr42142                             FAIL (runtime)
+  pr42154                             FAIL (runtime)
+  pr42231                             FAIL (runtime)
+  pr42248                             FAIL (runtime)
+  pr42269-2                           FAIL (runtime)
+  pr42512                             FAIL (runtime)
+  pr42544                             FAIL (runtime)
+  pr42570                             FAIL (runtime)
+  pr42614                             FAIL (runtime)
+  pr42691                             FAIL (runtime)
+  pr42721                             FAIL (runtime)
+  pr42833                             FAIL (runtime)
+  pr43008                             FAIL (runtime)
+  pr43220                             FAIL (runtime)
+  pr43236                             FAIL (runtime)
+  pr43269                             FAIL (runtime)
+  pr43385                             FAIL (runtime)
+  pr43438                             FAIL (runtime)
+  pr43560                             FAIL (runtime)
+  pr43629                             FAIL (runtime)
+  pr43784                             FAIL (runtime)
+  pr43835                             FAIL (runtime)
+  pr43987                             FAIL (runtime)
+  pr44164                             FAIL (runtime)
+  pr44202-1                           FAIL (runtime)
+  pr44468                             FAIL (runtime)
+  pr44555                             FAIL (runtime)
+  pr44575                             FAIL (runtime)
+  pr44683                             FAIL (runtime)
+  pr44828                             FAIL (runtime)
+  pr44852                             FAIL (runtime)
+  pr44858                             FAIL (runtime)
+  pr44942                             FAIL (runtime)
+  pr45034                             FAIL (runtime)
+  pr45070                             FAIL (runtime)
+  pr45262                             FAIL (runtime)
+  pr45695                             FAIL (runtime)
+  pr46019                             FAIL (runtime)
+  pr46309                             FAIL (runtime)
+  pr46316                             FAIL (runtime)
+  pr46909-1                           FAIL (runtime)
+  pr46909-2                           FAIL (runtime)
+  pr47148                             FAIL (runtime)
+  pr47155                             FAIL (runtime)
+  pr47237                             FAIL (runtime)
+  pr47299                             FAIL (runtime)
+  pr47337                             FAIL (runtime)
+  pr47538                             FAIL (runtime)
+  pr47925                             FAIL (runtime)
+  pr48197                             FAIL (runtime)
+  pr48571-1                           FAIL (runtime)
+  pr48717                             FAIL (runtime)
+  pr48809                             FAIL (runtime)
+  pr48814-1                           FAIL (runtime)
+  pr48814-2                           FAIL (runtime)
+  pr48973-1                           FAIL (runtime)
+  pr48973-2                           FAIL (runtime)
+  pr49039                             FAIL (runtime)
+  pr49073                             FAIL (runtime)
+  pr49123                             FAIL (runtime)
+  pr49161                             FAIL (runtime)
+  pr49186                             FAIL (runtime)
+  pr49218                             FAIL (runtime)
+  pr49279                             FAIL (runtime)
+  pr49281                             FAIL (runtime)
+  pr49390                             FAIL (runtime)
+  pr49419                             FAIL (runtime)
+  pr49644                             FAIL (runtime)
+  pr49712                             FAIL (runtime)
+  pr49768                             FAIL (runtime)
+  pr49886                             FAIL (runtime)
+  pr50865                             FAIL (runtime)
+  pr51023                             FAIL (runtime)
+  pr51323                             FAIL (runtime)
   pr51447                             SKIP (nested-func)
-  pr51466                             PASS
-  pr51581-1                           PASS
-  pr51581-2                           PASS
-  pr51877                             PASS
-  pr51933                             PASS
-  pr52129                             PASS
-  pr52209                             PASS
-  pr52286                             PASS
-  pr52760                             PASS
-  pr52979-1                           PASS
-  pr52979-2                           PASS
-  pr53084                             PASS
-  pr53160                             PASS
-  pr53465                             PASS
+  pr51466                             FAIL (runtime)
+  pr51581-1                           FAIL (runtime)
+  pr51581-2                           FAIL (runtime)
+  pr51877                             FAIL (runtime)
+  pr51933                             FAIL (runtime)
+  pr52129                             FAIL (runtime)
+  pr52209                             FAIL (runtime)
+  pr52286                             FAIL (runtime)
+  pr52760                             FAIL (runtime)
+  pr52979-1                           FAIL (runtime)
+  pr52979-2                           FAIL (runtime)
+  pr53084                             FAIL (runtime)
+  pr53160                             FAIL (runtime)
+  pr53465                             FAIL (runtime)
   pr53645-2                           SKIP (vector_size)
   pr53645                             SKIP (vector_size)
-  pr53688                             PASS
-  pr54471                             PASS
-  pr54937                             PASS
-  pr54985                             PASS
-  pr55137                             PASS
-  pr55750                             PASS
-  pr55875                             PASS
-  pr56051                             PASS
-  pr56205                             PASS
-  pr56250                             PASS
-  pr56799                             PASS
-  pr56837                             PASS
-  pr56866                             PASS
-  pr56899                             PASS
-  pr56962                             PASS
-  pr56982                             PASS
-  pr57124                             PASS
-  pr57130                             PASS
-  pr57131                             PASS
-  pr57144                             PASS
-  pr57281                             PASS
-  pr57321                             PASS
-  pr57344-1                           PASS
-  pr57344-2                           PASS
-  pr57344-3                           PASS
-  pr57344-4                           PASS
-  pr57568                             PASS
-  pr57829                             PASS
-  pr57860                             PASS
-  pr57861                             PASS
-  pr57875                             PASS
-  pr57876                             PASS
-  pr57877                             PASS
-  pr58209                             PASS
-  pr58277-1                           PASS
-  pr58277-2                           PASS
-  pr58364                             PASS
-  pr58365                             PASS
-  pr58385                             PASS
-  pr58387                             PASS
-  pr58419                             PASS
-  pr58431                             PASS
-  pr58564                             PASS
-  pr58570                             PASS
-  pr58574                             PASS
-  pr58640-2                           PASS
-  pr58640                             PASS
-  pr58662                             PASS
-  pr58726                             PASS
-  pr58831                             PASS
-  pr58943                             PASS
-  pr58984                             PASS
-  pr59014-2                           PASS
-  pr59014                             PASS
-  pr59101                             PASS
-  pr59221                             PASS
-  pr59229                             PASS
-  pr59358                             PASS
-  pr59387                             PASS
-  pr59388                             PASS
-  pr59413                             PASS
-  pr59643                             PASS
-  pr59747                             PASS
-  pr60003                             PASS
-  pr60017                             PASS
-  pr60062                             PASS
-  pr60072                             PASS
-  pr60454                             PASS
-  pr60822                             PASS
+  pr53688                             FAIL (runtime)
+  pr54471                             FAIL (runtime)
+  pr54937                             FAIL (runtime)
+  pr54985                             FAIL (runtime)
+  pr55137                             FAIL (runtime)
+  pr55750                             FAIL (runtime)
+  pr55875                             FAIL (runtime)
+  pr56051                             FAIL (runtime)
+  pr56205                             FAIL (runtime)
+  pr56250                             FAIL (runtime)
+  pr56799                             FAIL (runtime)
+  pr56837                             FAIL (runtime)
+  pr56866                             FAIL (runtime)
+  pr56899                             FAIL (runtime)
+  pr56962                             FAIL (runtime)
+  pr56982                             FAIL (runtime)
+  pr57124                             FAIL (runtime)
+  pr57130                             FAIL (runtime)
+  pr57131                             FAIL (runtime)
+  pr57144                             FAIL (runtime)
+  pr57281                             FAIL (runtime)
+  pr57321                             FAIL (runtime)
+  pr57344-1                           FAIL (runtime)
+  pr57344-2                           FAIL (runtime)
+  pr57344-3                           FAIL (runtime)
+  pr57344-4                           FAIL (runtime)
+  pr57568                             FAIL (runtime)
+  pr57829                             FAIL (runtime)
+  pr57860                             FAIL (runtime)
+  pr57861                             FAIL (runtime)
+  pr57875                             FAIL (runtime)
+  pr57876                             FAIL (runtime)
+  pr57877                             FAIL (runtime)
+  pr58209                             FAIL (runtime)
+  pr58277-1                           FAIL (runtime)
+  pr58277-2                           FAIL (runtime)
+  pr58364                             FAIL (runtime)
+  pr58365                             FAIL (runtime)
+  pr58385                             FAIL (runtime)
+  pr58387                             FAIL (runtime)
+  pr58419                             FAIL (runtime)
+  pr58431                             FAIL (runtime)
+  pr58564                             FAIL (runtime)
+  pr58570                             FAIL (runtime)
+  pr58574                             FAIL (runtime)
+  pr58640-2                           FAIL (runtime)
+  pr58640                             FAIL (runtime)
+  pr58662                             FAIL (runtime)
+  pr58726                             FAIL (runtime)
+  pr58831                             FAIL (runtime)
+  pr58943                             FAIL (runtime)
+  pr58984                             FAIL (runtime)
+  pr59014-2                           FAIL (runtime)
+  pr59014                             FAIL (runtime)
+  pr59101                             FAIL (runtime)
+  pr59221                             FAIL (runtime)
+  pr59229                             FAIL (runtime)
+  pr59358                             FAIL (runtime)
+  pr59387                             FAIL (runtime)
+  pr59388                             FAIL (runtime)
+  pr59413                             FAIL (runtime)
+  pr59643                             FAIL (runtime)
+  pr59747                             FAIL (runtime)
+  pr60003                             FAIL (runtime)
+  pr60017                             FAIL (runtime)
+  pr60062                             FAIL (runtime)
+  pr60072                             FAIL (runtime)
+  pr60454                             FAIL (runtime)
+  pr60822                             FAIL (runtime)
   pr60960                             SKIP (vector_size)
-  pr61306-1                           PASS
-  pr61306-2                           PASS
-  pr61306-3                           PASS
-  pr61375                             PASS
-  pr61517                             PASS
-  pr61673                             PASS
-  pr61682                             PASS
-  pr61725                             PASS
-  pr62151                             PASS
-  pr63209                             PASS
-  pr63302                             PASS
-  pr63641                             PASS
-  pr63659                             PASS
-  pr63843                             PASS
-  pr64006                             PASS
-  pr64242                             PASS
-  pr64255                             PASS
-  pr64260                             PASS
-  pr64682                             PASS
-  pr64718                             PASS
-  pr64756                             PASS
-  pr64957                             PASS
-  pr64979                             PASS
-  pr65053-1                           PASS
-  pr65053-2                           PASS
-  pr65170                             PASS
-  pr65215-1                           PASS
-  pr65215-2                           PASS
-  pr65215-3                           PASS
-  pr65215-4                           PASS
-  pr65215-5                           PASS
-  pr65216                             PASS
-  pr65369                             PASS
-  pr65401                             PASS
-  pr65418-1                           PASS
-  pr65418-2                           PASS
+  pr61306-1                           FAIL (runtime)
+  pr61306-2                           FAIL (runtime)
+  pr61306-3                           FAIL (runtime)
+  pr61375                             FAIL (runtime)
+  pr61517                             FAIL (runtime)
+  pr61673                             FAIL (runtime)
+  pr61682                             FAIL (runtime)
+  pr61725                             FAIL (runtime)
+  pr62151                             FAIL (runtime)
+  pr63209                             FAIL (runtime)
+  pr63302                             FAIL (runtime)
+  pr63641                             FAIL (runtime)
+  pr63659                             FAIL (runtime)
+  pr63843                             FAIL (runtime)
+  pr64006                             FAIL (runtime)
+  pr64242                             FAIL (runtime)
+  pr64255                             FAIL (runtime)
+  pr64260                             FAIL (runtime)
+  pr64682                             FAIL (runtime)
+  pr64718                             FAIL (runtime)
+  pr64756                             FAIL (runtime)
+  pr64957                             FAIL (runtime)
+  pr64979                             FAIL (runtime)
+  pr65053-1                           FAIL (runtime)
+  pr65053-2                           FAIL (runtime)
+  pr65170                             FAIL (runtime)
+  pr65215-1                           FAIL (runtime)
+  pr65215-2                           FAIL (runtime)
+  pr65215-3                           FAIL (runtime)
+  pr65215-4                           FAIL (runtime)
+  pr65215-5                           FAIL (runtime)
+  pr65216                             FAIL (runtime)
+  pr65369                             FAIL (runtime)
+  pr65401                             FAIL (runtime)
+  pr65418-1                           FAIL (runtime)
+  pr65418-2                           FAIL (runtime)
   pr65427                             SKIP (vector_size)
-  pr65648                             PASS
-  pr65956                             PASS
-  pr66187                             PASS
-  pr66233                             PASS
-  pr66556                             PASS
-  pr66757                             PASS
-  pr66940                             PASS
-  pr67037                             PASS
-  pr67226                             PASS
-  pr67714                             PASS
-  pr67781                             PASS
-  pr67929_1                           PASS
-  pr68143_1                           PASS
-  pr68185                             PASS
-  pr68249                             PASS
-  pr68250                             PASS
-  pr68321                             PASS
-  pr68328                             PASS
-  pr68376-1                           PASS
-  pr68376-2                           PASS
-  pr68381                             PASS
-  pr68390                             PASS
-  pr68506                             PASS
-  pr68532                             PASS
-  pr68624                             PASS
-  pr68648                             PASS
-  pr68841                             PASS
-  pr68911                             PASS
-  pr69097-1                           PASS
-  pr69097-2                           PASS
-  pr69320-1                           PASS
-  pr69320-2                           PASS
-  pr69320-3                           PASS
-  pr69320-4                           PASS
-  pr69403                             PASS
-  pr69447                             PASS
-  pr69691                             PASS
-  pr70005                             PASS
-  pr70127                             PASS
-  pr70222-1                           PASS
-  pr70222-2                           PASS
-  pr70429                             PASS
+  pr65648                             FAIL (runtime)
+  pr65956                             FAIL (runtime)
+  pr66187                             FAIL (runtime)
+  pr66233                             FAIL (runtime)
+  pr66556                             FAIL (runtime)
+  pr66757                             FAIL (runtime)
+  pr66940                             FAIL (runtime)
+  pr67037                             FAIL (runtime)
+  pr67226                             FAIL (runtime)
+  pr67714                             FAIL (runtime)
+  pr67781                             FAIL (runtime)
+  pr67929_1                           FAIL (runtime)
+  pr68143_1                           FAIL (runtime)
+  pr68185                             FAIL (runtime)
+  pr68249                             FAIL (runtime)
+  pr68250                             FAIL (runtime)
+  pr68321                             FAIL (runtime)
+  pr68328                             FAIL (runtime)
+  pr68376-1                           FAIL (runtime)
+  pr68376-2                           FAIL (runtime)
+  pr68381                             FAIL (runtime)
+  pr68390                             FAIL (runtime)
+  pr68506                             FAIL (runtime)
+  pr68532                             FAIL (runtime)
+  pr68624                             FAIL (runtime)
+  pr68648                             FAIL (runtime)
+  pr68841                             FAIL (runtime)
+  pr68911                             FAIL (runtime)
+  pr69097-1                           FAIL (runtime)
+  pr69097-2                           FAIL (runtime)
+  pr69320-1                           FAIL (runtime)
+  pr69320-2                           FAIL (runtime)
+  pr69320-3                           FAIL (runtime)
+  pr69320-4                           FAIL (runtime)
+  pr69403                             FAIL (runtime)
+  pr69447                             FAIL (runtime)
+  pr69691                             FAIL (runtime)
+  pr70005                             FAIL (runtime)
+  pr70127                             FAIL (runtime)
+  pr70222-1                           FAIL (runtime)
+  pr70222-2                           FAIL (runtime)
+  pr70429                             FAIL (runtime)
   pr70460                             SKIP (not-implemented)
-  pr70566                             PASS
-  pr70586                             PASS
-  pr70602                             PASS
+  pr70566                             FAIL (runtime)
+  pr70586                             FAIL (runtime)
+  pr70602                             FAIL (runtime)
   pr70903                             SKIP (vector_size)
-  pr71083                             PASS
-  pr71335                             PASS
+  pr71083                             FAIL (runtime)
+  pr71335                             FAIL (runtime)
   pr71494                             SKIP (nested-func)
-  pr71550                             PASS
-  pr71554                             PASS
+  pr71550                             FAIL (runtime)
+  pr71554                             FAIL (runtime)
   pr71626-1                           SKIP (vector_size)
   pr71626-2                           SKIP (vector_size)
-  pr71631                             PASS
-  pr71700                             PASS
-  pr77718                             PASS
-  pr77766                             PASS
-  pr77767                             PASS
-  pr78170                             PASS
-  pr78378                             PASS
-  pr78436                             PASS
-  pr78438                             PASS
-  pr78477                             PASS
-  pr78559                             PASS
-  pr78586                             PASS
-  pr78617                             PASS
-  pr78622                             PASS
-  pr78675                             PASS
-  pr78720                             PASS
-  pr78726                             PASS
-  pr78791                             PASS
-  pr78856                             PASS
-  pr79043                             PASS
-  pr79121                             PASS
-  pr79286                             PASS
-  pr79327                             PASS
-  pr79354                             PASS
-  pr79388                             PASS
-  pr79450                             PASS
-  pr79737-1                           PASS
-  pr79737-2                           PASS
-  pr80153                             PASS
-  pr80421                             PASS
-  pr80501                             PASS
-  pr80692                             PASS
-  pr81281                             PASS
-  pr81423                             PASS
-  pr81503                             PASS
-  pr81555                             PASS
-  pr81556                             PASS
-  pr81588                             PASS
-  pr81913                             PASS
-  pr82192                             PASS
-  pr82210                             PASS
-  pr82387                             PASS
-  pr82388                             PASS
-  pr82524                             PASS
-  pr82954                             PASS
-  pr83269                             PASS
-  pr83298                             PASS
-  pr83362                             PASS
-  pr83383                             PASS
-  pr83477                             PASS
-  pr84169                             PASS
-  pr84339                             PASS
-  pr84478                             PASS
-  pr84521                             PASS
-  pr84524                             PASS
-  pr84748                             PASS
-  pr85095                             PASS
-  pr85156                             PASS
+  pr71631                             FAIL (runtime)
+  pr71700                             FAIL (runtime)
+  pr77718                             FAIL (runtime)
+  pr77766                             FAIL (runtime)
+  pr77767                             FAIL (runtime)
+  pr78170                             FAIL (runtime)
+  pr78378                             FAIL (runtime)
+  pr78436                             FAIL (runtime)
+  pr78438                             FAIL (runtime)
+  pr78477                             FAIL (runtime)
+  pr78559                             FAIL (runtime)
+  pr78586                             FAIL (runtime)
+  pr78617                             FAIL (runtime)
+  pr78622                             FAIL (runtime)
+  pr78675                             FAIL (runtime)
+  pr78720                             FAIL (runtime)
+  pr78726                             FAIL (runtime)
+  pr78791                             FAIL (runtime)
+  pr78856                             FAIL (runtime)
+  pr79043                             FAIL (runtime)
+  pr79121                             FAIL (runtime)
+  pr79286                             FAIL (runtime)
+  pr79327                             FAIL (runtime)
+  pr79354                             FAIL (runtime)
+  pr79388                             FAIL (runtime)
+  pr79450                             FAIL (runtime)
+  pr79737-1                           FAIL (runtime)
+  pr79737-2                           FAIL (runtime)
+  pr80153                             FAIL (runtime)
+  pr80421                             FAIL (runtime)
+  pr80501                             FAIL (runtime)
+  pr80692                             FAIL (runtime)
+  pr81281                             FAIL (runtime)
+  pr81423                             FAIL (runtime)
+  pr81503                             FAIL (runtime)
+  pr81555                             FAIL (runtime)
+  pr81556                             FAIL (runtime)
+  pr81588                             FAIL (runtime)
+  pr81913                             FAIL (runtime)
+  pr82192                             FAIL (runtime)
+  pr82210                             FAIL (runtime)
+  pr82387                             FAIL (runtime)
+  pr82388                             FAIL (runtime)
+  pr82524                             FAIL (runtime)
+  pr82954                             FAIL (runtime)
+  pr83269                             FAIL (runtime)
+  pr83298                             FAIL (runtime)
+  pr83362                             FAIL (runtime)
+  pr83383                             FAIL (runtime)
+  pr83477                             FAIL (runtime)
+  pr84169                             FAIL (runtime)
+  pr84339                             FAIL (runtime)
+  pr84478                             FAIL (runtime)
+  pr84521                             FAIL (runtime)
+  pr84524                             FAIL (runtime)
+  pr84748                             FAIL (runtime)
+  pr85095                             FAIL (runtime)
+  pr85156                             FAIL (runtime)
   pr85169                             SKIP (vector_size)
   pr85331                             SKIP (vector_size)
-  pr85529-1                           PASS
-  pr85529-2                           PASS
-  pr85582-1                           PASS
-  pr85582-2                           PASS
-  pr85582-3                           PASS
-  pr85756                             PASS
-  pr86231                             PASS
-  pr86492                             PASS
-  pr86528                             PASS
+  pr85529-1                           FAIL (runtime)
+  pr85529-2                           FAIL (runtime)
+  pr85582-1                           FAIL (runtime)
+  pr85582-2                           FAIL (runtime)
+  pr85582-3                           FAIL (runtime)
+  pr85756                             FAIL (runtime)
+  pr86231                             FAIL (runtime)
+  pr86492                             FAIL (runtime)
+  pr86528                             FAIL (runtime)
   pr86659-1                           SKIP (scalar_storage_order)
   pr86659-2                           SKIP (scalar_storage_order)
-  pr86714                             PASS
-  pr86844                             PASS
-  pr87053                             PASS
-  pr87290                             PASS
+  pr86714                             FAIL (runtime)
+  pr86844                             FAIL (runtime)
+  pr87053                             FAIL (runtime)
+  pr87290                             FAIL (runtime)
   pr87623                             SKIP (scalar_storage_order)
-  pr88693                             PASS
-  pr88714                             PASS
-  pr88739                             PASS
-  pr88904                             PASS
-  pr89195                             PASS
-  pr89369                             PASS
-  pr89434                             PASS
-  pr89634                             PASS
-  pr89826                             PASS
-  pr90025                             PASS
-  pr90311                             PASS
-  pr90348                             PASS
-  pr90949                             PASS
-  pr91137                             PASS
-  pr91450-1                           PASS
-  pr91450-2                           PASS
-  pr91597                             PASS
-  pr91632                             PASS
-  pr91635                             PASS
-  pr92140                             PASS
+  pr88693                             FAIL (runtime)
+  pr88714                             FAIL (runtime)
+  pr88739                             FAIL (runtime)
+  pr88904                             FAIL (runtime)
+  pr89195                             FAIL (runtime)
+  pr89369                             FAIL (runtime)
+  pr89434                             FAIL (runtime)
+  pr89634                             FAIL (runtime)
+  pr89826                             FAIL (runtime)
+  pr90025                             FAIL (runtime)
+  pr90311                             FAIL (runtime)
+  pr90348                             FAIL (runtime)
+  pr90949                             FAIL (runtime)
+  pr91137                             FAIL (runtime)
+  pr91450-1                           FAIL (runtime)
+  pr91450-2                           FAIL (runtime)
+  pr91597                             FAIL (runtime)
+  pr91632                             FAIL (runtime)
+  pr91635                             FAIL (runtime)
+  pr92140                             FAIL (runtime)
   pr92618                             SKIP (vector_size)
-  pr92904                             PASS
-  pr93213                             PASS
-  pr93249                             PASS
-  pr93402                             PASS
-  pr93434                             PASS
-  pr93494                             PASS
-  pr93582                             PASS
-  pr93744-1                           PASS
-  pr93744-2                           PASS
-  pr93744-3                           PASS
-  pr93908                             PASS
-  pr93945                             PASS
-  pr94130                             PASS
-  pr94134                             PASS
+  pr92904                             FAIL (runtime)
+  pr93213                             FAIL (runtime)
+  pr93249                             FAIL (runtime)
+  pr93402                             FAIL (runtime)
+  pr93434                             FAIL (runtime)
+  pr93494                             FAIL (runtime)
+  pr93582                             FAIL (runtime)
+  pr93744-1                           FAIL (runtime)
+  pr93744-2                           FAIL (runtime)
+  pr93744-3                           FAIL (runtime)
+  pr93908                             FAIL (runtime)
+  pr93945                             FAIL (runtime)
+  pr94130                             FAIL (runtime)
+  pr94134                             FAIL (runtime)
   pr94412                             SKIP (vector_size)
   pr94524-1                           SKIP (vector_size)
   pr94524-2                           SKIP (vector_size)
-  pr94567                             PASS
+  pr94567                             FAIL (runtime)
   pr94591                             SKIP (vector_size)
-  pr94724                             PASS
-  pr94734                             PASS
-  pr94809                             PASS
-  pr95731                             PASS
-  pr96549                             PASS
-  pr97073                             PASS
-  pr97325                             PASS
-  pr97386-1                           PASS
-  pr97386-2                           PASS
-  pr97404                             PASS
-  pr97421-1                           PASS
-  pr97421-2                           PASS
-  pr97421-3                           PASS
-  pr97695                             PASS
-  pr97764                             PASS
-  pr97836                             PASS
-  pr97888-1                           PASS
-  pr97888-2                           PASS
-  pr98366                             PASS
-  pr98474                             PASS
-  pr98681                             PASS
-  pr98727                             PASS
-  pr98736                             PASS
-  pr98853-1                           PASS
-  pr98853-2                           PASS
-  pr99079                             PASS
-  pr99751                             PASS
-  pr100453                            PASS
-  pr101188                            PASS
-  pr101335                            PASS
-  pr102134                            PASS
-  pr103052                            PASS
-  pr103209                            PASS
-  pr103255                            PASS
-  pr103376                            PASS
+  pr94724                             FAIL (runtime)
+  pr94734                             FAIL (runtime)
+  pr94809                             FAIL (runtime)
+  pr95731                             FAIL (runtime)
+  pr96549                             FAIL (runtime)
+  pr97073                             FAIL (runtime)
+  pr97325                             FAIL (runtime)
+  pr97386-1                           FAIL (runtime)
+  pr97386-2                           FAIL (runtime)
+  pr97404                             FAIL (runtime)
+  pr97421-1                           FAIL (runtime)
+  pr97421-2                           FAIL (runtime)
+  pr97421-3                           FAIL (runtime)
+  pr97695                             FAIL (runtime)
+  pr97764                             FAIL (runtime)
+  pr97836                             FAIL (runtime)
+  pr97888-1                           FAIL (runtime)
+  pr97888-2                           FAIL (runtime)
+  pr98366                             FAIL (runtime)
+  pr98474                             FAIL (runtime)
+  pr98681                             FAIL (runtime)
+  pr98727                             FAIL (runtime)
+  pr98736                             FAIL (runtime)
+  pr98853-1                           FAIL (runtime)
+  pr98853-2                           FAIL (runtime)
+  pr99079                             FAIL (runtime)
+  pr99751                             FAIL (runtime)
+  pr100453                            FAIL (runtime)
+  pr101188                            FAIL (runtime)
+  pr101335                            FAIL (runtime)
+  pr102134                            FAIL (runtime)
+  pr103052                            FAIL (runtime)
+  pr103209                            FAIL (runtime)
+  pr103255                            FAIL (runtime)
+  pr103376                            FAIL (runtime)
   pr103405                            SKIP (nested-func)
-  pr103417                            PASS
-  pr104196                            PASS
-  pr104604                            PASS
-  pr104814                            PASS
-  pr104839                            PASS
+  pr103417                            FAIL (runtime)
+  pr104196                            FAIL (runtime)
+  pr104604                            FAIL (runtime)
+  pr104814                            FAIL (runtime)
+  pr104839                            FAIL (runtime)
   pr105613                            SKIP (vector_size)
-  pr105984                            PASS
-  pr106032                            PASS
-  pr106523                            PASS
-  pr107131                            PASS
-  pr107879                            PASS
-  pr107881-1                          PASS
-  pr108064                            PASS
+  pr105984                            FAIL (runtime)
+  pr106032                            FAIL (runtime)
+  pr106523                            FAIL (runtime)
+  pr107131                            FAIL (runtime)
+  pr107879                            FAIL (runtime)
+  pr107881-1                          FAIL (runtime)
+  pr108064                            FAIL (runtime)
   pr108292                            SKIP (vector_size)
-  pr108498-1                          PASS
-  pr108498-2                          PASS
-  pr108789                            PASS
+  pr108498-1                          FAIL (runtime)
+  pr108498-2                          FAIL (runtime)
+  pr108789                            FAIL (runtime)
   pr109040                            SKIP (nested-func)
-  pr109778                            PASS
-  pr109925                            PASS
-  pr110115                            PASS
-  pr110165-1                          PASS
-  pr110166-1                          PASS
-  pr110252-1                          PASS
-  pr110252-2                          PASS
-  pr110252-3                          PASS
-  pr110252-4                          PASS
-  pr110666-1                          PASS
+  pr109778                            FAIL (runtime)
+  pr109925                            FAIL (runtime)
+  pr110115                            FAIL (runtime)
+  pr110165-1                          FAIL (runtime)
+  pr110166-1                          FAIL (runtime)
+  pr110252-1                          FAIL (runtime)
+  pr110252-2                          FAIL (runtime)
+  pr110252-3                          FAIL (runtime)
+  pr110252-4                          FAIL (runtime)
+  pr110666-1                          FAIL (runtime)
   pr110817-1                          SKIP (vector_size)
   pr110817-2                          SKIP (vector_size)
   pr110817-3                          SKIP (vector_size)
-  pr110914                            PASS
-  pr110954-1                          PASS
-  pr111151                            PASS
-  pr111331-1                          PASS
-  pr111331-2                          PASS
-  pr111331-3                          PASS
-  pr111408                            PASS
-  pr111422                            PASS
-  pr111431-1                          PASS
-  pr111469-1                          PASS
-  pr111613                            PASS
-  pr111863-1                          PASS
-  pr112581-1                          PASS
-  pr112758                            PASS
-  pr113010                            PASS
-  pr113787                            PASS
-  pr114207                            PASS
-  pr114396                            PASS
-  pr114552                            PASS
-  pr114965                            PASS
-  pr115033                            PASS
-  pr115277                            PASS
-  pr116799                            PASS
-  pr117095                            PASS
-  pr117432                            PASS
-  pr117498                            PASS
-  pr118623                            PASS
-  pr118638                            PASS
-  pr118915                            PASS
-  pr119030                            PASS
-  pr119071                            PASS
-  pr119291                            PASS
-  pr119428                            PASS
-  printf-1                            PASS
-  printf-2                            PASS
-  printf-chk-1                        PASS
-  pta-field-1                         PASS
-  pta-field-2                         PASS
-  ptr-arith-1                         PASS
-  pure-1                              PASS
-  pushpop_macro                       PASS
-  regstack-1                          PASS
-  restrict-1                          PASS
-  return-addr                         PASS
+  pr110914                            FAIL (runtime)
+  pr110954-1                          FAIL (runtime)
+  pr111151                            FAIL (runtime)
+  pr111331-1                          FAIL (runtime)
+  pr111331-2                          FAIL (runtime)
+  pr111331-3                          FAIL (runtime)
+  pr111408                            FAIL (runtime)
+  pr111422                            FAIL (runtime)
+  pr111431-1                          FAIL (runtime)
+  pr111469-1                          FAIL (runtime)
+  pr111613                            FAIL (runtime)
+  pr111863-1                          FAIL (runtime)
+  pr112581-1                          FAIL (runtime)
+  pr112758                            FAIL (runtime)
+  pr113010                            FAIL (runtime)
+  pr113787                            FAIL (runtime)
+  pr114207                            FAIL (runtime)
+  pr114396                            FAIL (runtime)
+  pr114552                            FAIL (runtime)
+  pr114965                            FAIL (runtime)
+  pr115033                            FAIL (runtime)
+  pr115277                            FAIL (runtime)
+  pr116799                            FAIL (runtime)
+  pr117095                            FAIL (runtime)
+  pr117432                            FAIL (runtime)
+  pr117498                            FAIL (runtime)
+  pr118623                            FAIL (runtime)
+  pr118638                            FAIL (runtime)
+  pr118915                            FAIL (runtime)
+  pr119030                            FAIL (runtime)
+  pr119071                            FAIL (runtime)
+  pr119291                            FAIL (runtime)
+  pr119428                            FAIL (runtime)
+  printf-1                            FAIL (runtime)
+  printf-2                            FAIL (runtime)
+  printf-chk-1                        FAIL (runtime)
+  pta-field-1                         FAIL (runtime)
+  pta-field-2                         FAIL (runtime)
+  ptr-arith-1                         FAIL (runtime)
+  pure-1                              FAIL (runtime)
+  pushpop_macro                       FAIL (runtime)
+  regstack-1                          FAIL (runtime)
+  restrict-1                          FAIL (runtime)
+  return-addr                         FAIL (runtime)
   scal-to-vec1                        SKIP (vector_size)
   scal-to-vec2                        SKIP (vector_size)
   scal-to-vec3                        SKIP (vector_size)
-  scope-1                             PASS
-  shiftdi-2                           PASS
-  shiftdi                             PASS
-  shiftopt-1                          PASS
-  signed1bitfield-1                   PASS
+  scope-1                             FAIL (runtime)
+  shiftdi-2                           FAIL (runtime)
+  shiftdi                             FAIL (runtime)
+  shiftopt-1                          FAIL (runtime)
+  signed1bitfield-1                   FAIL (runtime)
   simd-1                              SKIP (vector_size)
   simd-2                              SKIP (vector_size)
   simd-4                              SKIP (vector_size)
   simd-5                              SKIP (vector_size)
   simd-6                              SKIP (vector_size)
-  ssad-run                            PASS
-  stdarg-1                            PASS
-  stdarg-2                            PASS
-  stdarg-3                            PASS
-  stdarg-4                            PASS
-  stkalign                            PASS
-  strcmp-1                            PASS
-  strcpy-1                            PASS
-  strcpy-2                            PASS
-  strct-pack-1                        PASS
-  strct-pack-2                        PASS
-  strct-pack-3                        PASS
-  strct-pack-4                        PASS
-  strct-stdarg-1                      PASS
-  strct-varg-1                        PASS
-  string-opt-5                        PASS
-  string-opt-17                       PASS
-  string-opt-18                       PASS
-  strlen-1                            PASS
-  strlen-2                            PASS
-  strlen-3                            PASS
-  strlen-4                            PASS
-  strlen-5                            PASS
-  strlen-6                            PASS
-  strlen-7                            PASS
-  strncmp-1                           PASS
-  struct-aliasing-1                   PASS
-  struct-cpy-1                        PASS
-  struct-ini-1                        PASS
-  struct-ini-2                        PASS
-  struct-ini-3                        PASS
-  struct-ini-4                        PASS
-  struct-ret-1                        PASS
-  struct-ret-2                        PASS
-  switch-1                            PASS
-  tstdi-1                             PASS
-  unroll-1                            PASS
-  usad-run                            PASS
-  user-printf                         PASS
-  usmul                               PASS
-  va-arg-1                            PASS
-  va-arg-2                            PASS
-  va-arg-4                            PASS
-  va-arg-5                            PASS
-  va-arg-6                            PASS
-  va-arg-7                            PASS
-  va-arg-8                            PASS
-  va-arg-9                            PASS
-  va-arg-10                           PASS
-  va-arg-11                           PASS
-  va-arg-12                           PASS
-  va-arg-13                           PASS
-  va-arg-14                           PASS
-  va-arg-15                           PASS
-  va-arg-16                           PASS
-  va-arg-17                           PASS
-  va-arg-18                           PASS
-  va-arg-19                           PASS
-  va-arg-20                           PASS
-  va-arg-21                           PASS
-  va-arg-22                           PASS
-  va-arg-23                           PASS
-  va-arg-24                           PASS
-  va-arg-26                           PASS
-  va-arg-pack-1                       PASS
-  va-arg-trap-1                       PASS
-  vfprintf-1                          PASS
-  vfprintf-chk-1                      PASS
-  vla-dealloc-1                       PASS
-  vprintf-1                           PASS
-  vprintf-chk-1                       PASS
-  vrp-1                               PASS
-  vrp-2                               PASS
-  vrp-3                               PASS
-  vrp-4                               PASS
-  vrp-5                               PASS
-  vrp-6                               PASS
-  vrp-7                               PASS
-  wchar_t-1                           PASS
-  widechar-1                          PASS
-  widechar-2                          PASS
-  widechar-3                          PASS
-  zero-struct-1                       PASS
-  zero-struct-2                       PASS
-  zerolen-1                           PASS
+  ssad-run                            FAIL (runtime)
+  stdarg-1                            FAIL (runtime)
+  stdarg-2                            FAIL (runtime)
+  stdarg-3                            FAIL (runtime)
+  stdarg-4                            FAIL (runtime)
+  stkalign                            FAIL (runtime)
+  strcmp-1                            FAIL (runtime)
+  strcpy-1                            FAIL (runtime)
+  strcpy-2                            FAIL (runtime)
+  strct-pack-1                        FAIL (runtime)
+  strct-pack-2                        FAIL (runtime)
+  strct-pack-3                        FAIL (runtime)
+  strct-pack-4                        FAIL (runtime)
+  strct-stdarg-1                      FAIL (runtime)
+  strct-varg-1                        FAIL (runtime)
+  string-opt-5                        FAIL (runtime)
+  string-opt-17                       FAIL (runtime)
+  string-opt-18                       FAIL (runtime)
+  strlen-1                            FAIL (runtime)
+  strlen-2                            FAIL (runtime)
+  strlen-3                            FAIL (runtime)
+  strlen-4                            FAIL (runtime)
+  strlen-5                            FAIL (runtime)
+  strlen-6                            FAIL (runtime)
+  strlen-7                            FAIL (runtime)
+  strncmp-1                           FAIL (runtime)
+  struct-aliasing-1                   FAIL (runtime)
+  struct-cpy-1                        FAIL (runtime)
+  struct-ini-1                        FAIL (runtime)
+  struct-ini-2                        FAIL (runtime)
+  struct-ini-3                        FAIL (runtime)
+  struct-ini-4                        FAIL (runtime)
+  struct-ret-1                        FAIL (runtime)
+  struct-ret-2                        FAIL (runtime)
+  switch-1                            FAIL (runtime)
+  tstdi-1                             FAIL (runtime)
+  unroll-1                            FAIL (runtime)
+  usad-run                            FAIL (runtime)
+  user-printf                         FAIL (runtime)
+  usmul                               FAIL (runtime)
+  va-arg-1                            FAIL (runtime)
+  va-arg-2                            FAIL (runtime)
+  va-arg-4                            FAIL (runtime)
+  va-arg-5                            FAIL (runtime)
+  va-arg-6                            FAIL (runtime)
+  va-arg-7                            FAIL (runtime)
+  va-arg-8                            FAIL (runtime)
+  va-arg-9                            FAIL (runtime)
+  va-arg-10                           FAIL (runtime)
+  va-arg-11                           FAIL (runtime)
+  va-arg-12                           FAIL (runtime)
+  va-arg-13                           FAIL (runtime)
+  va-arg-14                           FAIL (runtime)
+  va-arg-15                           FAIL (runtime)
+  va-arg-16                           FAIL (runtime)
+  va-arg-17                           FAIL (runtime)
+  va-arg-18                           FAIL (runtime)
+  va-arg-19                           FAIL (runtime)
+  va-arg-20                           FAIL (runtime)
+  va-arg-21                           FAIL (runtime)
+  va-arg-22                           FAIL (runtime)
+  va-arg-23                           FAIL (runtime)
+  va-arg-24                           FAIL (runtime)
+  va-arg-26                           FAIL (runtime)
+  va-arg-pack-1                       FAIL (runtime)
+  va-arg-trap-1                       FAIL (runtime)
+  vfprintf-1                          FAIL (runtime)
+  vfprintf-chk-1                      FAIL (runtime)
+  vla-dealloc-1                       FAIL (runtime)
+  vprintf-1                           FAIL (runtime)
+  vprintf-chk-1                       FAIL (runtime)
+  vrp-1                               FAIL (runtime)
+  vrp-2                               FAIL (runtime)
+  vrp-3                               FAIL (runtime)
+  vrp-4                               FAIL (runtime)
+  vrp-5                               FAIL (runtime)
+  vrp-6                               FAIL (runtime)
+  vrp-7                               FAIL (runtime)
+  wchar_t-1                           FAIL (runtime)
+  widechar-1                          FAIL (runtime)
+  widechar-2                          FAIL (runtime)
+  widechar-3                          FAIL (runtime)
+  zero-struct-1                       FAIL (runtime)
+  zero-struct-2                       FAIL (runtime)
+  zerolen-1                           FAIL (runtime)
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1569/1569 passed (100%), 0 failed, 102 skipped.
+Torture: 1/1569 passed (0%), 1568 failed (0 compile/1568 runtime), 102 skipped.
+
+Runtime failures: 900409-1 920202-1 920302-1 920409-1 920410-1 920411-1 920428-1 920429-1 920501-1 920501-2 920501-3 920501-4 920501-5 920501-6 920501-8 920501-9 920506-1 920520-1 920603-1 920604-1 920612-1 920618-1 920625-1 920710-1 920711-1 920721-1 920721-2 920721-3 920726-1 920728-1 920730-1 920731-1 920810-1 920812-1 920829-1 920908-1 920908-2 920909-1 920922-1 920929-1 921006-1 921007-1 921013-1 921016-1 921019-1 921019-2 921029-1 921104-1 921112-1 921113-1 921117-1 921123-1 921123-2 921124-1 921202-1 921202-2 921204-1 921207-1 921208-1 921208-2 921218-1 921218-2 930106-1 930111-1 930123-1 930126-1 930208-1 930408-1 930429-1 930429-2 930513-1 930513-2 930518-1 930526-1 930527-1 930529-1 930603-1 930603-2 930603-3 930608-1 930614-1 930614-2 930621-1 930622-1 930622-2 930628-1 930630-1 930702-1 930713-1 930718-1 930719-1 930725-1 930818-1 930916-1 930921-1 930929-1 930930-1 930930-2 931004-1 931004-2 931004-3 931004-4 931004-5 931004-6 931004-7 931004-8 931004-9 931004-10 931004-11 931004-12 931004-13 931004-14 931005-1 931009-1 931012-1 931017-1 931018-1 931031-1 931102-1 931102-2 931110-1 931110-2 931208-1 931228-1 940115-1 940122-1 941014-1 941014-2 941015-1 941021-1 941025-1 941031-1 941101-1 941110-1 941202-1 950221-1 950322-1 950426-1 950426-2 950503-1 950511-1 950512-1 950605-1 950607-1 950607-2 950612-1 950621-1 950628-1 950704-1 950706-1 950710-1 950714-1 950809-1 950906-1 950915-1 950929-1 951003-1 951115-1 951204-1 960116-1 960117-1 960209-1 960215-1 960218-1 960219-1 960301-1 960302-1 960311-1 960311-2 960311-3 960312-1 960317-1 960321-1 960326-1 960327-1 960402-1 960405-1 960416-1 960419-1 960419-2 960512-1 960513-1 960521-1 960608-1 960801-1 960802-1 960830-1 960909-1 961004-1 961017-1 961017-2 961026-1 961112-1 961122-1 961122-2 961125-1 961206-1 961213-1 961223-1 970923-1 980205 980424-1 980505-1 980505-2 980506-1 980506-2 980506-3 980526-2 980526-3 980602-1 980602-2 980604-1 980605-1 980608-1 980612-1 980617-1 980618-1 980701-1 980707-1 980709-1 980716-1 980929-1 981001-1 981019-1 981130-1 981206-1 990106-1 990106-2 990117-1 990127-1 990127-2 990128-1 990130-1 990208-1 990211-1 990222-1 990324-1 990326-1 990404-1 990513-1 990524-1 990525-1 990525-2 990527-1 990531-1 990604-1 990628-1 990804-1 990811-1 990826-0 990827-1 990829-1 990923-1 991014-1 991016-1 991019-1 991023-1 991030-1 991112-1 991118-1 991201-1 991202-1 991202-2 991202-3 991216-1 991216-2 991216-4 991221-1 991227-1 20000112-1 20000113-1 20000121-1 20000205-1 20000217-1 20000223-1 20000224-1 20000225-1 20000227-1 20000313-1 20000314-1 20000314-2 20000314-3 20000402-1 20000403-1 20000412-1 20000412-2 20000412-3 20000412-4 20000412-5 20000412-6 20000419-1 20000422-1 20000503-1 20000511-1 20000519-1 20000519-2 20000523-1 20000528-1 20000603-1 20000605-1 20000605-2 20000605-3 20000622-1 20000703-1 20000706-1 20000706-2 20000706-3 20000706-4 20000706-5 20000707-1 20000715-1 20000715-2 20000717-1 20000717-2 20000717-3 20000717-4 20000717-5 20000722-1 20000726-1 20000731-1 20000731-2 20000801-1 20000801-2 20000801-3 20000801-4 20000808-1 20000815-1 20000818-1 20000819-1 20000910-1 20000910-2 20000914-1 20000917-1 20001009-1 20001009-2 20001011-1 20001013-1 20001017-1 20001017-2 20001024-1 20001026-1 20001027-1 20001031-1 20001101 20001108-1 20001111-1 20001112-1 20001121-1 20001124-1 20001130-1 20001130-2 20001203-1 20001203-2 20001221-1 20001228-1 20001229-1 20010106-1 20010114-1 20010116-1 20010118-1 20010119-1 20010122-1 20010123-1 20010129-1 20010206-1 20010221-1 20010222-1 20010224-1 20010325-1 20010329-1 20010403-1 20010409-1 20010422-1 20010518-1 20010518-2 20010520-1 20010604-1 20010711-1 20010717-1 20010723-1 20010904-1 20010904-2 20010910-1 20010915-1 20010924-1 20010925-1 20011008-3 20011019-1 20011024-1 20011109-1 20011109-2 20011113-1 20011114-1 20011115-1 20011121-1 20011126-1 20011126-2 20011128-1 20011217-1 20011219-1 20011223-1 20020103-1 20020107-1 20020118-1 20020127-1 20020129-1 20020201-1 20020206-1 20020206-2 20020213-1 20020215-1 20020216-1 20020219-1 20020225-1 20020225-2 20020226-1 20020227-1 20020307-1 20020314-1 20020320-1 20020321-1 20020328-1 20020402-1 20020402-2 20020402-3 20020404-1 20020406-1 20020411-1 20020412-1 20020413-1 20020418-1 20020423-1 20020503-1 20020506-1 20020508-1 20020508-2 20020508-3 20020510-1 20020529-1 20020611-1 20020614-1 20020615-1 20020619-1 20020716-1 20020720-1 20020805-1 20020810-1 20020819-1 20020904-1 20020911-1 20020916-1 20020920-1 20021010-1 20021010-2 20021011-1 20021015-1 20021024-1 20021111-1 20021113-1 20021118-1 20021118-2 20021118-3 20021119-1 20021120-1 20021120-2 20021120-3 20021127-1 20021204-1 20021219-1 20030105-1 20030109-1 20030117-1 20030120-1 20030120-2 20030125-1 20030128-1 20030203-1 20030209-1 20030216-1 20030218-1 20030221-1 20030222-1 20030224-2 20030307-1 20030313-1 20030316-1 20030323-1 20030330-1 20030401-1 20030403-1 20030404-1 20030408-1 20030606-1 20030613-1 20030626-1 20030626-2 20030714-1 20030715-1 20030717-1 20030718-1 20030811-1 20030821-1 20030828-1 20030828-2 20030903-1 20030909-1 20030913-1 20030914-1 20030914-2 20030916-1 20030920-1 20030928-1 20031003-1 20031010-1 20031011-1 20031012-1 20031020-1 20031201-1 20031204-1 20031211-1 20031211-2 20031214-1 20031215-1 20031216-1 20040208-1 20040218-1 20040223-1 20040302-1 20040307-1 20040308-1 20040309-1 20040311-1 20040313-1 20040319-1 20040331-1 20040409-1 20040409-1w 20040409-2 20040409-2w 20040409-3 20040409-3w 20040411-1 20040423-1 20040625-1 20040629-1 20040703-1 20040704-1 20040705-1 20040705-2 20040706-1 20040707-1 20040709-1 20040709-2 20040709-3 20040805-1 20040811-1 20040820-1 20040823-1 20040831-1 20040917-1 20041011-1 20041019-1 20041112-1 20041113-1 20041114-1 20041124-1 20041126-1 20041201-1 20041210-1 20041212-1 20041213-2 20041214-1 20041218-1 20041218-2 20050104-1 20050106-1 20050111-1 20050121-1 20050124-1 20050125-1 20050131-1 20050203-1 20050215-1 20050218-1 20050224-1 20050410-1 20050502-1 20050502-2 20050613-1 20050713-1 20050826-1 20050826-2 20050929-1 20051012-1 20051021-1 20051104-1 20051110-1 20051110-2 20051113-1 20051215-1 20060102-1 20060110-1 20060110-2 20060127-1 20060412-1 20060905-1 20060910-1 20060929-1 20060930-1 20060930-2 20061031-1 20061101-1 20061101-2 20070201-1 20070212-1 20070212-2 20070212-3 20070424-1 20070517-1 20070614-1 20070623-1 20070724-1 20070824-1 20071011-1 20071018-1 20071029-1 20071030-1 20071108-1 20071120-1 20071202-1 20071205-1 20071210-1 20071211-1 20071213-1 20071216-1 20071219-1 20071220-1 20071220-2 20080117-1 20080122-1 20080222-1 20080408-1 20080424-1 20080502-1 20080506-1 20080506-2 20080519-1 20080522-1 20080529-1 20080604-1 20080719-1 20080813-1 20081103-1 20081112-1 20081117-1 20081218-1 20090113-1 20090113-2 20090113-3 20090207-1 20090527-1 20090623-1 20090711-1 20090814-1 20091229-1 20100209-1 20100316-1 20100416-1 20100430-1 20100708-1 20100805-1 20100827-1 20101011-1 20101013-1 20101025-1 20110418-1 20111208-1 20111212-1 20111227-1 20120105-1 20120111-1 20120207-1 20120427-1 20120427-2 20120615-1 20120808-1 20120817-1 20120919-1 20121108-1 20131127-1 20140212-1 20140212-2 20140326-1 20140425-1 20140622-1 20140828-1 20141022-1 20141107-1 20141125-1 20150611-1 20170111-1 20170401-1 20170401-2 20170419-1 20171008-1 20180112-1 20180131-1 20180226-1 20180921-1 20181120-1 20190228-1 20190820-1 20190901-1 20191023-1 20210505-1 20221006-1 20230509-1 20230510-1 20230630-1 20230630-3 20230802-1 20241029-1 alias-1 alias-2 alias-3 alias-4 alias-access-path-1 alias-access-path-2 align-1 align-2 align-3 align-nest alloca-1 anon-1 arith-1 arith-rand-ll arith-rand ashldi-1 ashrdi-1 bcp-1 bf-layout-1 bf-sign-1 bf-sign-2 bf64-1 bitfld-1 bitfld-2 bitfld-3 bitfld-4 bitfld-5 bitfld-6 bitfld-7 bitfld-8 bitfld-9 bitfld-10 bitfld-signed1-1 bitops-1 bswap-1 bswap-2 bswap-3 built-in-setjmp builtin-bitops-1 builtin-constant builtin-prefetch-1 builtin-prefetch-2 builtin-prefetch-3 builtin-prefetch-4 builtin-prefetch-5 builtin-prefetch-6 call-trap-1 cmpdi-1 cmpsf-1 cmpsi-1 cmpsi-2 comp-goto-1 compare-1 compare-2 compare-3 complex-3 const-addr-expr-1 conversion cvt-1 dbra-1 divcmp-1 divcmp-2 divcmp-3 divcmp-4 divcmp-5 divconst-1 divconst-2 divconst-3 divmod-1 doloop-1 doloop-2 enum-1 enum-2 enum-3 extzvsi ffs-2 float-floor floatunsisf-1 fprintf-1 fprintf-2 fprintf-chk-1 frame-address func-ptr-1 gofast ifcvt-onecmpl-abs-1 index-1 inst-check int-compare ipa-sra-1 ipa-sra-2 longlong loop-1 loop-2 loop-2b loop-2c loop-2d loop-2e loop-2f loop-2g loop-3 loop-3b loop-3c loop-4 loop-4b loop-5 loop-6 loop-7 loop-8 loop-9 loop-10 loop-11 loop-12 loop-13 loop-14 loop-15 loop-ivopts-1 loop-ivopts-2 lshrdi-1 lto-tbaa-1 mayalias-1 mayalias-2 mayalias-3 medce-1 memchr-1 memcpy-1 memcpy-2 memcpy-a1 memcpy-a2 memcpy-a4 memcpy-a8 memcpy-bi memset-1 memset-2 memset-3 memset-4 minmaxcmp-1 mod-1 mode-dependent-address mul-sext multdi-1 multi-ix nestfunc-4 p18298 packed-1 packed-2 packed-aligned pending-4 postmod-1 pr7284-1 pr10352-1 pr15262-1 pr15262-2 pr15262 pr15296 pr16790-1 pr17078-1 pr17133 pr17252 pr17377 pr19005 pr19449 pr19515 pr19606 pr19687 pr19689 pr20100-1 pr20187-1 pr20466-1 pr20527-1 pr20601-1 pr20621-1 pr21173 pr21331 pr21964-1 pr22061-1 pr22061-2 pr22098-1 pr22098-2 pr22098-3 pr22141-1 pr22141-2 pr22348 pr22429 pr22493-1 pr22630 pr23047 pr23324 pr23467 pr23604 pr23941 pr24141 pr24142 pr24716 pr24851 pr25125 pr25737 pr27073 pr27260 pr27285 pr27364 pr27671-1 pr28289 pr28403 pr28651 pr28778 pr28865 pr28982a pr28982b pr29006 pr29156 pr29695-1 pr29695-2 pr29797-1 pr29797-2 pr29798 pr30185 pr30778 pr31072 pr31136 pr31169 pr31448-2 pr31448 pr31605 pr32244-1 pr32500 pr33142 pr33382 pr33631 pr33669 pr33779-1 pr33779-2 pr33870-1 pr33870 pr33992 pr34070-1 pr34070-2 pr34099-2 pr34099 pr34130 pr34154 pr34176 pr34415 pr34456 pr34768-1 pr34768-2 pr34971 pr34982 pr35163 pr35231 pr35390 pr35456 pr35472 pr35800 pr36034-1 pr36034-2 pr36038 pr36077 pr36321 pr36339 pr36343 pr36691 pr36765 pr37102 pr37125 pr37573 pr37780 pr37882 pr37924 pr37931 pr38048-1 pr38048-2 pr38051 pr38151 pr38212 pr38236 pr38422 pr38533 pr38819 pr38969 pr39100 pr39120 pr39228 pr39233 pr39240 pr39339 pr39501 pr40022 pr40057 pr40386 pr40404 pr40493 pr40579 pr40657 pr40668 pr40747 pr41239 pr41317 pr41395-1 pr41395-2 pr41463 pr41750 pr41917 pr41919 pr42006 pr42142 pr42154 pr42231 pr42248 pr42269-2 pr42512 pr42544 pr42570 pr42614 pr42691 pr42721 pr42833 pr43008 pr43220 pr43236 pr43269 pr43385 pr43438 pr43560 pr43629 pr43784 pr43835 pr43987 pr44164 pr44202-1 pr44468 pr44555 pr44575 pr44683 pr44828 pr44852 pr44858 pr44942 pr45034 pr45070 pr45262 pr45695 pr46019 pr46309 pr46316 pr46909-1 pr46909-2 pr47148 pr47155 pr47237 pr47299 pr47337 pr47538 pr47925 pr48197 pr48571-1 pr48717 pr48809 pr48814-1 pr48814-2 pr48973-1 pr48973-2 pr49039 pr49073 pr49123 pr49161 pr49186 pr49218 pr49279 pr49281 pr49390 pr49419 pr49644 pr49712 pr49768 pr49886 pr50865 pr51023 pr51323 pr51466 pr51581-1 pr51581-2 pr51877 pr51933 pr52129 pr52209 pr52286 pr52760 pr52979-1 pr52979-2 pr53084 pr53160 pr53465 pr53688 pr54471 pr54937 pr54985 pr55137 pr55750 pr55875 pr56051 pr56205 pr56250 pr56799 pr56837 pr56866 pr56899 pr56962 pr56982 pr57124 pr57130 pr57131 pr57144 pr57281 pr57321 pr57344-1 pr57344-2 pr57344-3 pr57344-4 pr57568 pr57829 pr57860 pr57861 pr57875 pr57876 pr57877 pr58209 pr58277-1 pr58277-2 pr58364 pr58365 pr58385 pr58387 pr58419 pr58431 pr58564 pr58570 pr58574 pr58640-2 pr58640 pr58662 pr58726 pr58831 pr58943 pr58984 pr59014-2 pr59014 pr59101 pr59221 pr59229 pr59358 pr59387 pr59388 pr59413 pr59643 pr59747 pr60003 pr60017 pr60062 pr60072 pr60454 pr60822 pr61306-1 pr61306-2 pr61306-3 pr61375 pr61517 pr61673 pr61682 pr61725 pr62151 pr63209 pr63302 pr63641 pr63659 pr63843 pr64006 pr64242 pr64255 pr64260 pr64682 pr64718 pr64756 pr64957 pr64979 pr65053-1 pr65053-2 pr65170 pr65215-1 pr65215-2 pr65215-3 pr65215-4 pr65215-5 pr65216 pr65369 pr65401 pr65418-1 pr65418-2 pr65648 pr65956 pr66187 pr66233 pr66556 pr66757 pr66940 pr67037 pr67226 pr67714 pr67781 pr67929_1 pr68143_1 pr68185 pr68249 pr68250 pr68321 pr68328 pr68376-1 pr68376-2 pr68381 pr68390 pr68506 pr68532 pr68624 pr68648 pr68841 pr68911 pr69097-1 pr69097-2 pr69320-1 pr69320-2 pr69320-3 pr69320-4 pr69403 pr69447 pr69691 pr70005 pr70127 pr70222-1 pr70222-2 pr70429 pr70566 pr70586 pr70602 pr71083 pr71335 pr71550 pr71554 pr71631 pr71700 pr77718 pr77766 pr77767 pr78170 pr78378 pr78436 pr78438 pr78477 pr78559 pr78586 pr78617 pr78622 pr78675 pr78720 pr78726 pr78791 pr78856 pr79043 pr79121 pr79286 pr79327 pr79354 pr79388 pr79450 pr79737-1 pr79737-2 pr80153 pr80421 pr80501 pr80692 pr81281 pr81423 pr81503 pr81555 pr81556 pr81588 pr81913 pr82192 pr82210 pr82387 pr82388 pr82524 pr82954 pr83269 pr83298 pr83362 pr83383 pr83477 pr84169 pr84339 pr84478 pr84521 pr84524 pr84748 pr85095 pr85156 pr85529-1 pr85529-2 pr85582-1 pr85582-2 pr85582-3 pr85756 pr86231 pr86492 pr86528 pr86714 pr86844 pr87053 pr87290 pr88693 pr88714 pr88739 pr88904 pr89195 pr89369 pr89434 pr89634 pr89826 pr90025 pr90311 pr90348 pr90949 pr91137 pr91450-1 pr91450-2 pr91597 pr91632 pr91635 pr92140 pr92904 pr93213 pr93249 pr93402 pr93434 pr93494 pr93582 pr93744-1 pr93744-2 pr93744-3 pr93908 pr93945 pr94130 pr94134 pr94567 pr94724 pr94734 pr94809 pr95731 pr96549 pr97073 pr97325 pr97386-1 pr97386-2 pr97404 pr97421-1 pr97421-2 pr97421-3 pr97695 pr97764 pr97836 pr97888-1 pr97888-2 pr98366 pr98474 pr98681 pr98727 pr98736 pr98853-1 pr98853-2 pr99079 pr99751 pr100453 pr101188 pr101335 pr102134 pr103052 pr103209 pr103255 pr103376 pr103417 pr104196 pr104604 pr104814 pr104839 pr105984 pr106032 pr106523 pr107131 pr107879 pr107881-1 pr108064 pr108498-1 pr108498-2 pr108789 pr109778 pr109925 pr110115 pr110165-1 pr110166-1 pr110252-1 pr110252-2 pr110252-3 pr110252-4 pr110666-1 pr110914 pr110954-1 pr111151 pr111331-1 pr111331-2 pr111331-3 pr111408 pr111422 pr111431-1 pr111469-1 pr111613 pr111863-1 pr112581-1 pr112758 pr113010 pr113787 pr114207 pr114396 pr114552 pr114965 pr115033 pr115277 pr116799 pr117095 pr117432 pr117498 pr118623 pr118638 pr118915 pr119030 pr119071 pr119291 pr119428 printf-1 printf-2 printf-chk-1 pta-field-1 pta-field-2 ptr-arith-1 pure-1 pushpop_macro regstack-1 restrict-1 return-addr scope-1 shiftdi-2 shiftdi shiftopt-1 signed1bitfield-1 ssad-run stdarg-1 stdarg-2 stdarg-3 stdarg-4 stkalign strcmp-1 strcpy-1 strcpy-2 strct-pack-1 strct-pack-2 strct-pack-3 strct-pack-4 strct-stdarg-1 strct-varg-1 string-opt-5 string-opt-17 string-opt-18 strlen-1 strlen-2 strlen-3 strlen-4 strlen-5 strlen-6 strlen-7 strncmp-1 struct-aliasing-1 struct-cpy-1 struct-ini-1 struct-ini-2 struct-ini-3 struct-ini-4 struct-ret-1 struct-ret-2 switch-1 tstdi-1 unroll-1 usad-run user-printf usmul va-arg-1 va-arg-2 va-arg-4 va-arg-5 va-arg-6 va-arg-7 va-arg-8 va-arg-9 va-arg-10 va-arg-11 va-arg-12 va-arg-13 va-arg-14 va-arg-15 va-arg-16 va-arg-17 va-arg-18 va-arg-19 va-arg-20 va-arg-21 va-arg-22 va-arg-23 va-arg-24 va-arg-26 va-arg-pack-1 va-arg-trap-1 vfprintf-1 vfprintf-chk-1 vla-dealloc-1 vprintf-1 vprintf-chk-1 vrp-1 vrp-2 vrp-3 vrp-4 vrp-5 vrp-6 vrp-7 wchar_t-1 widechar-1 widechar-2 widechar-3 zero-struct-1 zero-struct-2 zerolen-1
