@@ -9249,6 +9249,12 @@ static VReg gen(Node *node) {
         free_reg(apple_r);
         VReg ret = alloc_reg();
         asm_mov_vreg_x12(cg_sec, ret); // mov x{ret}, x12
+        if (spilled_regs & (1 << ret)) {
+            // ret was spilled by alloc_reg (old value saved).
+            // We just loaded x12 into it — the old value is dead.
+            // Clear the spill flag so free_reg doesn't restore garbage.
+            spilled_regs &= ~(1 << ret);
+        }
         return ret;
 #else
 #ifndef _WIN32
