@@ -44,6 +44,7 @@ enum {
     ID___INLINE__,
     ID_REGISTER,
     ID_AUTO,
+    ID_CONSTEXPR,
     ID___THREAD,
     ID__THREAD_LOCAL,
     ID_CONST,

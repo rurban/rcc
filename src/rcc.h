@@ -288,6 +288,7 @@ struct LVar {
     bool is_inline;
     bool is_weak;
     bool has_init;
+    bool is_constexpr; // C23 constexpr object
     int64_t init_val;
     char *init_data;
     int init_size;

@@ -15,6 +15,7 @@ struct VarAttr {
     bool is_tls;
     bool has_type;
     bool is_packed;
+    bool is_constexpr;
     unsigned char bitfield_mode;
 };
 
@@ -1245,6 +1246,12 @@ static bool eval_const_expr(Node *node, long long *val) {
         if (!eval_const_expr(node->cond, &lhs))
             return false;
         return eval_const_expr(lhs ? node->then : node->els, val);
+    case ND_LVAR:
+        if (node->var && node->var->is_constexpr && node->var->has_init) {
+            *val = node->var->init_val;
+            return true;
+        }
+        return false;
     default:
         return false;
     }
@@ -2163,6 +2170,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
         if (equalc(tok, "static")) {
             attr->is_static = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "constexpr")) {
+            attr->is_constexpr = true;
             tok = tok->next;
             continue;
         }
@@ -3678,6 +3690,30 @@ static Node *declaration(Token **rest, Token *tok) {
             locals = lvar;
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
+        } else if (attr.is_constexpr) {
+            LVar *var = new_var(name, ty, true);
+            var->is_constexpr = true;
+            if (pending_asm_name)
+                var->asm_name = pending_asm_name;
+            // constexpr implies const
+            var->ty = copy_type(ty);
+            var->ty->qual |= QUAL_CONST;
+            if (!equalc(tok, "="))
+                error_tok(tok, "constexpr variable must be initialized");
+            Token *start = tok;
+            tok = tok->next;
+            Node *init_expr = expr(&tok, tok);
+            long long val = 0;
+            if (!eval_const_expr(init_expr, &val))
+                error_tok(start, "constexpr variable must have a constant initializer");
+            var->has_init = true;
+            var->init_val = (int64_t)val;
+            // Emit runtime initialization from the folded constant value
+            Node *lhs = new_var_node(var, start);
+            Node *rhs = new_num(val, start);
+            Node *assign = new_binary(ND_ASSIGN, lhs, rhs, start);
+            check_type(assign);
+            cur = cur->next = new_unary(ND_EXPR_STMT, assign, start);
         } else {
             if (equalc(tok, "=")) {
                 ty = infer_array_type(ty, tok->next);
