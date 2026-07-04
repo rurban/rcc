@@ -2892,6 +2892,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
     }
 
+    // Mark saved arg registers as free after the call.
+    // They held argument values that are dead post-call.
+    // This prevents the allocator from using callee-saved x19-x24
+    // when many calls happen in sequence (pr92904).
+    int dead_mask = 0;
+    for (int i = 0; i < nargs; i++) {
+        if (arg_regs[i] >= 0 && arg_regs[i] < 6)
+            dead_mask |= (1 << arg_regs[i]);
+    }
+    used_regs &= ~(arm64_saved_mask & dead_mask);
+
     // Restore sp
     if (sv_count > 0 || stack_args > 0) {
         int total = (sv_count + stack_args) * 8;
