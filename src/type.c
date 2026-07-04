@@ -5,7 +5,11 @@
 // clang-format off
 Type *ty_void    = &(Type){.kind=TY_VOID,    .size=1,  .align=1};
 Type *ty_bool    = &(Type){.kind=TY_BOOL,    .size=1,  .align=1,  .is_unsigned=true};
+#if defined(__aarch64__) && !defined(__APPLE__)
+Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1,  .is_unsigned=true};
+#else
 Type *ty_char    = &(Type){.kind=TY_CHAR,    .size=1,  .align=1};
+#endif
 Type *ty_uchar   = &(Type){.kind=TY_CHAR,    .size=1,  .align=1,  .is_unsigned=true};
 Type *ty_short   = &(Type){.kind=TY_SHORT,   .size=2,  .align=2};
 Type *ty_ushort  = &(Type){.kind=TY_SHORT,   .size=2,  .align=2,  .is_unsigned=true};
@@ -48,15 +52,14 @@ bool is_complex(Type *ty) {
 }
 
 Type *complex_type(Type *base) {
-    if (!base)
-        error("complex_type: base is NULL");
-    Type *ty = arena_alloc(sizeof(Type));
+    Type *ty = calloc(1, sizeof(Type));
     ty->kind = TY_COMPLEX;
     ty->base = base;
     ty->size = base->size * 2;
     ty->align = base->align;
     return ty;
 }
+
 
 bool is_number(Type *ty) {
     return is_integer(ty) || is_flonum(ty) || is_complex(ty);

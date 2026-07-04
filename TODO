@@ -8,6 +8,8 @@
   we dont need that, only for the very end of a 4MB chunk. we can keep min-size 8.
 - emit asm bytes/.o files directly, no need for GAS, we only need the linker then.
   the linker can be mold or gold. this saves a ton of space.
+  gcc -fuse-ld=mold ...
+  for -S just call `objdump -d` on the assembled .o file.
 - add -O2 passes, like -finline and -funroll, but no need for SSA analysis.
 - for the CTFE check, set more pure attributes to known library function calls,
   which are pure in the given arguments. observe the purity of calls in CTFE

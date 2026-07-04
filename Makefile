@@ -41,7 +41,7 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 PREFIX ?= /usr/local
@@ -57,9 +57,21 @@ DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
 VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 MACHINE ?= $(shell $(CC) -dumpmachine 2>/dev/null || echo "unknown")
 
+ifneq ($(findstring apple,$(MACHINE)),)
+SRCS += src/macho_write.c src/arm64_enc.c
+else ifneq ($(findstring mingw,$(MACHINE)),)
+SRCS += src/coff_write.c src/x86_enc.c
+TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+else
+SRCS += src/elf_write.c src/x86_enc.c
+TARGET_DEPS += $(MINGW_O)
+TARGET_EXT += $(MINGW_O)
+endif
+
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
 RCC_INCDIR ?= $(CURDIR)/include
+
 # On native Windows builds, default to the standard install location.
 ifeq ($(OS),Windows_NT)
 TARGET = rcc.exe
@@ -75,9 +87,7 @@ BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
-OBJS = $(SRCS:.c=$(OBJ_EXT))
-else
-ifeq ($(CC),x86_64-w64-mingw32-gcc)
+else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
@@ -92,11 +102,11 @@ OBJS = $(SRCS:.c=$(OBJ_EXT))
 # mapped through Z:\), and it works equally on native Windows.
 RCC_GCC = gcc.exe
 endif
-ifeq ($(CC),aarch64-linux-gnu-gcc)
+ifneq ($(findstring aarch64,$(MACHINE)),)
 TARGET = rcc-arm64
 RUN_TESTS = run_tests_arm64
+SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
-OBJS = $(SRCS:.c=$(OBJ_EXT))
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
@@ -105,7 +115,8 @@ endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
-endif
+OBJS = $(SRCS:.c=$(OBJ_EXT))
+
 # Native Linux builds: optimize for the host CPU
 ifeq ($(shell uname -s),Linux)
 ifeq ($(CC),gcc)
@@ -115,13 +126,27 @@ ifneq ($(IS_CLANG),0)
 CFLAGS += -march=native
 endif
 endif
+DEF_INCDIR = -DRCC_INCDIR='"$(RCC_INCDIR)"'
+VERSION ?= $(shell git describe --long --tags --always 2>/dev/null || echo "v1.2-dev")
 
 ifneq ($(findstring apple,$(MACHINE)),)
+# The dyld-interpose runtime shim (on_exit/exit handling) needs a real Apple
+# toolchain (-arch/-dynamiclib/-install_name) to build, so only require it
+# when actually running on a Darwin host. A Linux host cross-building with
+# MACHINE=*apple* (used for compile-only Mach-O codegen testing, since we
+# can't execute Mach-O binaries on Linux) must skip it.
+ifeq ($(shell uname -s),Darwin)
 DARWIN_O = lib/rcc_darwin.dylib
-TARGET_DEPS += $(DARWIN_O)
+LDFLAGS += -Wl,-rpath,@executable_path/lib
+OBJS += $(DARWIN_O)
+endif
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
+else ifneq ($(findstring mingw,$(MACHINE)),)
+TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
+OBJS += $(MINGW_O)
 else
-TARGET_DEPS += $(MINGW_O)
-TARGET_EXT += $(MINGW_O)
+OBJS += $(MINGW_O)
+TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
 
@@ -130,7 +155,7 @@ all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB)
 $(TARGET): $(TARGET_DEPS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
 $(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
-	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O) -lpthread
+	$(CC) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ src/lib$(OBJ_EXT) $(TARGET_EXT)
 
 src/keywords.h: src/keywords.gperf src/keyword_ids.h
 	$(GPERF) -m 10 --output-file=$@.tmp src/keywords.gperf
@@ -220,7 +245,7 @@ src/gcc_predefined.h: FORCE
 	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
 $(DARWIN_O): lib/rcc_darwin.c
-	$(CC) -arch arm64 -dynamiclib -install_name @rpath/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
+	$(CC) -arch arm64 -dynamiclib -install_name $(PWD)/lib/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
 $(MINGW_O): lib/rcc_mingw.c
 	$(CC) $(filter-out -flto=auto -flto=thin,$(CFLAGS)) -c lib/rcc_mingw.c -o $@
 src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
@@ -266,18 +291,17 @@ prof: rcc_prof
 	@head -40 gprof.txt
 
 ifeq ($(OS),Windows_NT)
-TEST_RUNNER = ./run_tests.exe --parallel
-BENCH_RUNNER = powershell -ExecutionPolicy Bypass -File bench/run_bench.ps1 ./$(TARGET)
+TEST_RUNNER = ./run_tests.exe ./rcc.exe
 else
-TEST_RUNNER = ./run_tests --parallel
+TEST_RUNNER = ./run_tests ./rcc
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
-	$(TEST_RUNNER)
+	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
-	$(TEST_RUNNER) --all
+	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
-	$(TEST_RUNNER) --torture
+	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all
@@ -362,7 +386,6 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-FORCE:
-
 .PHONY: clean leanclean test check test-extra check-extra check-full check-torture \
 	test-full test-torture lint bench install dist bench prof FORCE
+FORCE:

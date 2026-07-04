@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build rcc-darwin and run the TCC test suite for arm64-darwin.
 # Tests compile+link only (can't execute Mach-O on Linux).
+# Pre-requisites: tools/install-osxcross.sh
 # Usage: ./darwin-test.sh [test-name]
 set -e
 
@@ -8,7 +9,7 @@ trap 'make -s clean; make -s' EXIT
 
 echo "==> Building rcc-darwin (host binary, Darwin-targeted codegen)..."
 make -s clean
-make -s CC=gcc CFLAGS="-std=c11 -Wall -Wextra -O2 -g -fPIC -D__APPLE__ -DARCH_ARM64" \
+make -s MACHINE=arm64-apple-darwin23 CC=gcc CFLAGS="-std=c11 -Wall -Wextra -O2 -g -fPIC -D__APPLE__ -DARCH_ARM64" \
     TARGET=rcc-darwin OBJ_EXT=.darwin.o
 
 if [ -n "${1:-}" ]; then

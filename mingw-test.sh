@@ -1,5 +1,6 @@
 #!/bin/sh
 # Cross-build Windows rcc and run the tests against it.
+# Pre-requisites: tools/install-mingw-cross.sh
 # Usage: ./mingw-test.sh [test-name]
 set -e
 trap 'rm src/sysinc_paths.h src/gcc_predefined.h' EXIT

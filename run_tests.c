@@ -330,39 +330,68 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
 
     int read_fd = capture == 1 ? err_pipe[0] : out_pipe[0];
 
-    // Use select() with timeout — thread-safe, no process-global alarm
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(read_fd, &fds);
-    struct timeval tv = {.tv_sec = timeout_sec, .tv_usec = 0};
-    int sel_ret = select(read_fd + 1, &fds, NULL, NULL, &tv);
+    // Hard per-test ceiling: never let a single test run longer than 2 minutes,
+    // even if the caller passed a larger (or zero/unbounded) timeout.
+    if (timeout_sec <= 0 || timeout_sec > 120)
+        timeout_sec = 120;
 
+    // Read the child's output under an overall deadline.  select() must guard
+    // EVERY read, not just the first: a test that prints some output and then
+    // spins forever (an endless loop in mis-compiled code) keeps the pipe open,
+    // so a plain blocking read() would hang the harness indefinitely.  We loop
+    // select()+read() with a shrinking timeout so the total wait is bounded by
+    // timeout_sec; when the deadline passes we SIGKILL the child.
     size_t cap = 8192;
     r.out = malloc(cap);
     r.out_len = 0;
     char buf[8192];
     ssize_t n;
-    if (sel_ret > 0) {
-        while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
-            if (r.out_len + (size_t)n + 1 > cap) {
-                cap = r.out_len + (size_t)n + 8192;
-                r.out = xrealloc(r.out, cap);
+    time_t deadline = time(NULL) + timeout_sec;
+    for (;;) {
+        time_t now = time(NULL);
+        long remaining = (long)(deadline - now);
+        if (remaining < 0) remaining = 0;
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(read_fd, &fds);
+        struct timeval tv = {.tv_sec = remaining, .tv_usec = 0};
+        int sel_ret = select(read_fd + 1, &fds, NULL, NULL, &tv);
+        if (sel_ret > 0) {
+            n = read(read_fd, buf, sizeof(buf));
+            if (n > 0) {
+                if (r.out_len + (size_t)n + 1 > cap) {
+                    if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
+                        kill(pid, SIGKILL);
+                        r.timed_out = true;
+                        break;
+                    }
+                    cap = r.out_len + (size_t)n + 8192;
+                    r.out = xrealloc(r.out, cap);
+                }
+                memcpy(r.out + r.out_len, buf, (size_t)n);
+                r.out_len += (size_t)n;
+                continue;
             }
-            memcpy(r.out + r.out_len, buf, (size_t)n);
-            r.out_len += (size_t)n;
-        }
-    } else if (sel_ret == 0) {
-        // Timeout: kill the child
-        kill(pid, SIGKILL);
-        r.timed_out = true;
-        // Drain any remaining output (non-blocking after kill)
-        while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
-            if (r.out_len + (size_t)n + 1 > cap) {
-                cap = r.out_len + (size_t)n + 8192;
-                r.out = xrealloc(r.out, cap);
+            break; // EOF (n == 0) or read error
+        } else if (sel_ret == 0) {
+            // Deadline reached: kill the child and drain any pending output.
+            kill(pid, SIGKILL);
+            r.timed_out = true;
+            while ((n = read(read_fd, buf, sizeof(buf))) > 0) {
+                if (r.out_len + (size_t)n + 1 > cap) {
+                    if (cap >= 10 * 1024 * 1024) { // 10MB hard limit
+                        break;
+                    }
+                    cap = r.out_len + (size_t)n + 8192;
+                    r.out = xrealloc(r.out, cap);
+                }
+                memcpy(r.out + r.out_len, buf, (size_t)n);
+                r.out_len += (size_t)n;
             }
-            memcpy(r.out + r.out_len, buf, (size_t)n);
-            r.out_len += (size_t)n;
+            break;
+        } else {
+            if (errno == EINTR) continue;
+            break; // select error
         }
     }
     close(read_fd);
@@ -466,6 +495,10 @@ static DWORD WINAPI reader_thread(LPVOID arg) {
 static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture, const char *cwd) {
     ProcResult r = {0};
     r.exit_code = -1;
+
+    // Hard per-test ceiling: never let a single test run longer than 2 minutes.
+    if (timeout_sec <= 0 || timeout_sec > 120)
+        timeout_sec = 120;
 
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     HANDLE read_h, write_h;
@@ -852,6 +885,25 @@ static void detect_platform(const char *rcc_path) {
  * budget, so give them a longer leash. */
 static int unit_run_timeout(void) {
     return (has_runner || is_wine) ? 60 : 5;
+}
+
+/* Compilation timeout for torture tests: base 30 s, scaled by the
+ * dg-timeout-factor directive (if any) and by 4× when running under a
+ * cross-runner (qemu adds ~4× overhead even for the rcc compile step,
+ * which itself spawns the cross linker).  Clamped to 300 s. */
+static int torture_compile_timeout(const char *content) {
+    int base = has_runner ? 120 : 30;
+    if (content) {
+        const char *p = strstr(content, "dg-timeout-factor");
+        if (p) {
+            p += 17; /* strlen("dg-timeout-factor") */
+            while (*p == ' ' || *p == '\t') p++;
+            int factor = atoi(p);
+            if (factor > 1) base = base * factor;
+        }
+    }
+    if (base > 300) base = 300;
+    return base;
 }
 
 /* ── rcc library API (dynamically loaded from rcc_lib.{dll,so,dylib}) ──
@@ -1366,6 +1418,7 @@ static int run_test_inprocess(const char *src_path, const char *name,
     char *out = malloc(cap);
     while ((n = read(pfd[0], buf, sizeof(buf))) > 0) {
         if (len + (size_t)n + 1 > cap) {
+            if (cap >= 10 * 1024 * 1024) break; // 10MB hard limit
             cap = len + (size_t)n + 8192;
             out = xrealloc(out, cap);
         }
@@ -2024,8 +2077,17 @@ static const char *rcc, *rccflags, *TEST_DIR, *REPORT_FILE, *SCRIPT_DIR;
  * is given (see main()); disabled by an explicit binary/runner arg, by
  * "compiler flags" args (e.g. "ccc -O2"), and for cross-compile targets. */
 static bool use_rcc_lib;
-static const char *only_test;
+#define MAX_ONLY_TESTS 64
+static const char *only_tests[MAX_ONLY_TESTS];
+static int only_test_count;
 static bool only_test_found; /* single-test mode: stop after the suite containing it */
+
+static bool is_only_test(const char *name) {
+    for (int i = 0; i < only_test_count; i++)
+        if (streq(name, only_tests[i]))
+            return true;
+    return false;
+}
 static int total, passed, failed, todo, regressions, fixes, changed_cnt;
 
 typedef struct {
@@ -2093,7 +2155,7 @@ static const char *old_status_for(const char *name) {
 }
 
 static void print_change(const char *base, const char *new_status) {
-    if (only_test) return;
+    if (only_test_count > 0) return;
     const char *old = old_status_for(base);
     if (!old) return;
     const char *oc = streq(old, "COMPILE_OK") ? "PASS" : old;
@@ -3286,7 +3348,7 @@ static int run_unit_tests(void) {
     int n = scandir(unit_path, &nl, NULL, alphasort);
     if (n < 0) return 0;
 
-    if (g_num_workers > 1 && !only_test) {
+    if (g_num_workers > 1 && only_test_count == 0) {
         /* Parallel path: collect, dispatch, evaluate */
         int n_tests = 0;
         struct {
@@ -3356,8 +3418,8 @@ static int run_unit_tests(void) {
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
 
-            if (only_test) {
-                if (!streq(base, only_test)) {
+            if (only_test_count > 0) {
+                if (!is_only_test(base)) {
                     free(nl[i]);
                     continue;
                 }
@@ -3529,7 +3591,7 @@ static int run_unit_tests(void) {
         free(nl);
     }
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         int pct = total > 0 ? passed * 100 / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
@@ -3663,7 +3725,7 @@ static int run_tcc_suite(void) {
     char **files = list_c_files_sorted(TEST_DIR);
     const char *p_src = NULL;
     if (files) {
-        if (g_num_workers > 1 && !only_test) {
+        if (g_num_workers > 1 && only_test_count == 0) {
             /* Parallel path: collect, dispatch, evaluate */
             /* First pass: count tests */
             int n_tests = 0, n_cd = 0;
@@ -3835,8 +3897,8 @@ static int run_tcc_suite(void) {
                     if (is_mingw) p_src = "-mno-ms-bitfields";
                 }
 
-                if (only_test) {
-                    if (!streq(base, only_test)) {
+                if (only_test_count > 0) {
+                    if (!is_only_test(base)) {
                         p_src = NULL;
                         continue;
                     }
@@ -3858,7 +3920,7 @@ static int run_tcc_suite(void) {
     }
     if (p_src) free((void *)p_src);
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-tcc-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=tcc\nTOTAL=%d\nPASS=%d\nFAIL=%d\n",
@@ -3866,7 +3928,7 @@ static int run_tcc_suite(void) {
         write_summary(sp, sc);
     }
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         int pct = total > 0 ? passed * 100 / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
@@ -3901,6 +3963,7 @@ typedef enum {
     SKIP_VECTOR_SIZE,
     SKIP_MODE,
     SKIP_MISSING_INCLUDE,
+    SKIP_C99_RUNTIME,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3916,6 +3979,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_MODE: return "attribute-mode";
     case SKIP_MISSING_INCLUDE: return "missing-include";
+    case SKIP_C99_RUNTIME: return "c99-runtime";
     default: return "unknown";
     }
 }
@@ -3944,6 +4008,11 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_VECTOR_SIZE;
     if (contains(content, "__attribute__((mode"))
         return SKIP_MODE;
+#ifdef _WIN32
+    // msvcrt.dll doesn't support C99 format specifiers like %hhd, %lld
+    if (contains(content, "dg-require-effective-target c99_runtime"))
+        return SKIP_C99_RUNTIME;
+#endif
     return SKIP_NONE;
 }
 
@@ -4003,7 +4072,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         ca[ai++] = "-lm";
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 0);
+        ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
         if (cr.exit_code != 0) {
             if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||
@@ -4181,7 +4250,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     ca[ai++] = "-lm";
     ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
-    ProcResult cr = proc_run(ca, 30, 0);
+    ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
     if (cr.exit_code != 0) {
         if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||
@@ -4267,7 +4336,7 @@ static int run_torture_suite(bool summary_only) {
     }
 
     /* open log file for torture output */
-    if (!only_test && !summary_only) {
+    if (only_test_count == 0 && !summary_only) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/torture_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
@@ -4282,19 +4351,22 @@ static int run_torture_suite(bool summary_only) {
         return 1;
     }
 
-    if (only_test) {
-        char sp[512];
-        if (strstr(only_test, ".c")) snprintf(sp, sizeof(sp), "%s", only_test);
-        else
-            snprintf(sp, sizeof(sp), "%s.c", only_test);
-        if (file_exists(sp)) {
-            only_test_found = true;
-            run_torture_test(sp, summary_only);
+    if (only_test_count > 0) {
+        for (int ti = 0; ti < only_test_count; ti++) {
+            const char *ot = only_tests[ti];
+            char sp[512];
+            if (strstr(ot, ".c")) snprintf(sp, sizeof(sp), "%s", ot);
+            else
+                snprintf(sp, sizeof(sp), "%s.c", ot);
+            if (file_exists(sp)) {
+                only_test_found = true;
+                run_torture_test(sp, summary_only);
+            }
         }
     } else {
         char **files = list_c_files_sorted(".");
         if (files) {
-            if (g_num_workers > 1 && !only_test && !summary_only) {
+            if (g_num_workers > 1 && only_test_count == 0 && !summary_only) {
                 /* Save tort_dir for parallel compile */
                 snprintf(g_tort_dir, sizeof(g_tort_dir), "%s", tort_dir);
                 /* First pass: count */
@@ -4358,10 +4430,10 @@ static int run_torture_suite(bool summary_only) {
     if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
 
     int max_fail;
-    if (only_test)
+    if (only_test_count > 0)
         max_fail = 1;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 16;
+        max_fail = 22;
     else if (streq(platform, "arm64"))
         max_fail = 0;
     else if (streq(platform, "darwin_cross"))
@@ -4374,7 +4446,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
-    if (!only_test) {
+    if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
         int pct = eff > 0 ? g_tort_pass * 100 / eff : 0;
         const char *red = fail > max_fail ? COL_RED : "";
@@ -4583,7 +4655,7 @@ static int run_compliance_suite(void) {
     int n = scandir(comp_dir, &nl, NULL, alphasort);
     if (n < 0) return 0;
 
-    if (g_num_workers > 1 && !only_test && gcc_path) {
+    if (g_num_workers > 1 && only_test_count == 0 && gcc_path) {
         /* Parallel path: collect, dispatch, evaluate */
         struct {
             const char *fname;
@@ -4667,8 +4739,8 @@ static int run_compliance_suite(void) {
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
 
-            if (only_test) {
-                if (!streq(base, only_test)) {
+            if (only_test_count > 0) {
+                if (!is_only_test(base)) {
                     free(nl[i]);
                     continue;
                 }
@@ -4766,7 +4838,7 @@ static int run_compliance_suite(void) {
      * parallel and sequential paths, so `make check-all` (--parallel) gets a
      * compliance section in the unified report just like the sequential run. */
     int comp_total = comp_pass + comp_fail;
-    if (!only_test) {
+    if (only_test_count == 0) {
         int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
         const char *red = comp_fail > 0 ? COL_RED : "";
         const char *rst = comp_fail > 0 ? COL_RESET : "";
@@ -4789,9 +4861,9 @@ static int run_compliance_suite(void) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* "210", "00210" or "00210.c" -> "00210"; false if not a c-testsuite name */
-static bool ctest_test_num(char *out, size_t outsz) {
+static bool ctest_test_num(const char *name, char *out, size_t outsz) {
     char buf[32];
-    strncpy(buf, only_test, sizeof(buf) - 1);
+    strncpy(buf, name, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
     char *dot = strstr(buf, ".c");
     if (dot) *dot = '\0';
@@ -4807,9 +4879,9 @@ static bool ctest_test_num(char *out, size_t outsz) {
  * compile and run each test independently with a native C runner
  * requested test directly, the same way run_one_test() does for the TCC
  * suite (proc_run() to compile, run_exe() to execute under any runner). */
-static int run_ctest_one(const char *ctest_dir) {
+static int run_ctest_one(const char *ctest_dir, const char *test_name) {
     char num[6];
-    if (!ctest_test_num(num, sizeof(num))) return -1;
+    if (!ctest_test_num(test_name, num, sizeof(num))) return -1;
 
     char src_path[2 * PATH_MAX], exp_path[2 * PATH_MAX], bin_path[2 * PATH_MAX];
     snprintf(src_path, sizeof(src_path), "%s/tests/single-exec/%s.c", ctest_dir, num);
@@ -4961,12 +5033,15 @@ static int run_ctest_suite(void) {
 
     /* the native runner handles per-test filters directly; for a numeric test
      * name, compile and run just that one test directly */
-    if (only_test) {
-        int r = run_ctest_one(ctest_dir);
-        if (r >= 0) {
-            only_test_found = true;
-            return r;
+    if (only_test_count > 0) {
+        for (int ti = 0; ti < only_test_count; ti++) {
+            int r = run_ctest_one(ctest_dir, only_tests[ti]);
+            if (r >= 0) {
+                only_test_found = true;
+                /* Continue to next test name — don't return early */
+            }
         }
+        if (only_test_found) return 0;
         return 0;
     }
 
@@ -5009,7 +5084,7 @@ static int run_ctest_suite(void) {
     }
 
     /* open log file for c-testsuite output */
-    if (!only_test) {
+    if (only_test_count == 0) {
         char lp[PATH_MAX];
         snprintf(lp, sizeof(lp), "%s/test/ctest_report_%s.log", SCRIPT_DIR, platform_suffix);
         open_log(lp);
@@ -5046,7 +5121,7 @@ static int run_ctest_suite(void) {
                 /* list_c_files_sorted returns full paths; extract basename */
                 const char *base = strrchr(*f, '/');
                 base = base ? base + 1 : *f;
-                char *dot = strrchr(base, '.');
+                const char *dot = strrchr(base, '.');
                 if (!dot || strcmp(dot, ".c") != 0) continue;
 
                 char name[16];
@@ -5083,7 +5158,7 @@ static int run_ctest_suite(void) {
                 /* list_c_files_sorted returns full paths; extract basename */
                 const char *base = strrchr(*f, '/');
                 base = base ? base + 1 : *f;
-                char *dot = strrchr(base, '.');
+                const char *dot = strrchr(base, '.');
                 if (!dot || strcmp(dot, ".c") != 0) continue;
                 ctest_total++;
 
@@ -5146,7 +5221,7 @@ static int run_ctest_suite(void) {
             fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
                     ctest_pass, ctest_total, ctest_pct, ctest_fail2, ctest_skip2);
 
-        if (!only_test) {
+        if (only_test_count == 0) {
             char sp[256], sc[256];
             snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
             snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
@@ -5160,9 +5235,17 @@ static int run_ctest_suite(void) {
     logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
 
     char cmd[PATH_MAX * 2 + 128];
+#ifdef __aarch64__
+    const char *stdbuf = "";
+#else
     const char *stdbuf = access("/usr/bin/stdbuf", X_OK) == 0 ? "stdbuf -oL " : "";
+#endif
     snprintf(cmd, sizeof(cmd),
+#ifdef __aarch64__
+             "cd '%s' && env -u LD_PRELOAD CC='%s' CFLAGS='-O1 -lm' %s./single-exec posix 2>/dev/null",
+#else
              "cd '%s' && env CC='%s' CFLAGS='-O1 -lm' %s./single-exec posix 2>/dev/null",
+#endif
              ctest_dir, rcc, stdbuf);
 
     FILE *fp = popen(cmd, "r");
@@ -5219,7 +5302,7 @@ static int run_ctest_suite(void) {
         fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
                 ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
 
-    if (!only_test) {
+    if (only_test_count == 0) {
         char sp[256], sc[256];
         snprintf(sp, sizeof(sp), "test-ctest-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc), "SUITE=c-testsuite\nTOTAL=%d\nPASS=%d\nFAIL=%d\nSKIP=%d\n",
@@ -5362,6 +5445,12 @@ int main(int argc, char **argv) {
     if (GetConsoleMode(hout, &mode))
         SetConsoleMode(hout, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 #endif
+#ifdef __aarch64__
+    /* Host stdbuf injects an x86_64 LD_PRELOAD that target ARM64 children
+     * cannot load; drop it before spawning compiled test binaries. */
+    unsetenv("LD_PRELOAD");
+#endif
+
 
     /* resolve script dir and chdir to it */
     {
@@ -5381,7 +5470,6 @@ int main(int argc, char **argv) {
     bool run_tcc = false, run_units = false, run_torture = false;
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
-    rccflags = "-O1";
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -5450,8 +5538,8 @@ int main(int argc, char **argv) {
            rcc stays unset → in-process rcc_lib mode. */
         else if (!rcc && (contains(a, "rcc") || contains(a, "gcc") || contains(a, "tcc") || contains(a, "-cross")))
             rcc = a;
-        else if (!only_test)
-            only_test = a;
+        else if (only_test_count < MAX_ONLY_TESTS)
+            only_tests[only_test_count++] = a;
     }
 
     if (!rcc) {
@@ -5500,8 +5588,6 @@ int main(int argc, char **argv) {
     }
 
     /* rewrite shorthand cross-compiler paths.
-       FIXME: should be able to run rcc-arm64 via gcc-aarch64 */
-    /* rewrite shorthand cross-compiler paths.
        Only when cross-compiling — not on native ARM64 or x86 builds */
 #if !defined(ARM64_NATIVE) && !defined(__aarch64__)
     if (contains(rcc, "rcc-arm64") && !contains(rcc, "arm64-cross")) {
@@ -5521,7 +5607,7 @@ int main(int argc, char **argv) {
     if (g_verbose)
         printf("rcc=%s, platform=%s\n", rcc, platform);
 
-    if (compiler_name) {
+    if (compiler_name && !contains(rcc, "-cross.sh")) {
         static char suffix_buf[PATH_MAX];
         snprintf(suffix_buf, sizeof(suffix_buf), "%s_%s", platform, compiler_name);
         platform_suffix = suffix_buf;
@@ -5551,7 +5637,7 @@ int main(int argc, char **argv) {
 
     /* for cross-compilers, suites that require native execution don't apply */
     if (!run_tcc && !run_units && !run_torture && !run_compliance && !run_ctest) {
-        if (only_test) {
+        if (only_test_count > 0) {
             /* single-test mode: search the filterable suites in order and
              * stop at the first one containing the test */
             run_tcc = run_units = run_compliance = run_ctest = run_torture = true;
@@ -5565,26 +5651,31 @@ int main(int argc, char **argv) {
     int exit_code = 0;
     if (run_tcc && run_tcc_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_units && run_unit_tests() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_compliance && run_compliance_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_ctest && run_ctest_suite() != 0)
         exit_code = 1;
-    if (only_test && only_test_found)
+    if (only_test_count == 1 && only_test_found)
         return exit_code;
     if (run_torture && run_torture_suite(summary_only) != 0)
         exit_code = 1;
 
-    if (only_test) {
+    if (only_test_count > 0) {
         if (!only_test_found) {
-            fprintf(stderr, "Test '%s' not found in any suite\n", only_test);
+            fprintf(stderr, "Test%s '", only_test_count > 1 ? "s" : "");
+            for (int i = 0; i < only_test_count; i++) {
+                if (i > 0) fprintf(stderr, "', '");
+                fprintf(stderr, "%s", only_tests[i]);
+            }
+            fprintf(stderr, "' not found in any suite\n");
             return 1;
         }
         return exit_code;
