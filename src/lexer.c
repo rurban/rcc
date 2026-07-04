@@ -530,11 +530,12 @@ Token *tokenize(char *filename, char *p) {
                         bp++;
                     }
                     cur->fval = (double)iv;
-                } else {
+                } else if (q[0] == '0' && isdigit(q[1])) {
                     int64_t iv = 0;
-                    for (char *rp = q; rp < p; rp++)
-                        if (isdigit(*rp)) iv = iv * 10 + (*rp - '0');
+                    for (char *rp = q + 1; rp < p; rp++)
+                        if (*rp >= '0' && *rp <= '7') iv = iv * 8 + (*rp - '0');
                     cur->fval = (double)iv;
+                } else {
                 }
             } else {
                 cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
@@ -550,6 +551,12 @@ Token *tokenize(char *filename, char *p) {
                     int64_t val = 0;
                     for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
                         if (*rp != '\'') val = val * 16 + (isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
+                    cur->val = val;
+                } else if (q[0] == '0' && isdigit(q[1])) {
+                    // Octal: leading 0 followed by digit (not x/b)
+                    int64_t val = 0;
+                    for (char *rp = q + 1; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (*rp - '0');
                     cur->val = val;
                 } else {
                     int64_t val = 0;

@@ -1795,6 +1795,18 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         exit(1);
                     }
                 }
+            } else if (pp_startswith(s, "line") && active) {
+                s += 4;
+                while (s < end && isspace((unsigned char)*s))
+                    s++;
+                // Expand macros in the line number argument
+                char *line_arg = pp_strndup(s, end - s);
+                char *expanded = strip_bluepaint(expand_text(line_arg, filename, 1, 0));
+                char *ep = skip_spaces(expanded);
+                if (isdigit((unsigned char)*ep)) {
+                    line_no = (int)strtol(ep, NULL, 10) - 1;
+                }
+                sb_putc(&out, '\n');
             } else if (pp_startswith(s, "error") && active) {
                 s += 5;
                 while (s < end && isspace((unsigned char)*s))

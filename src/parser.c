@@ -918,7 +918,10 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             int depth = 1;
             while (depth > 0 && tok->kind != TK_EOF) {
                 if (equalc(tok, "[") && equalc(tok->next, "[")) depth++;
-                else if (equalc(tok, "]") && equalc(tok->next, "]")) { depth--; tok = tok->next; }
+                else if (equalc(tok, "]") && equalc(tok->next, "]")) {
+                    depth--;
+                    tok = tok->next;
+                }
                 tok = tok->next;
             }
             continue;
@@ -3883,7 +3886,10 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             int depth = 1;
             while (depth > 0 && t->kind != TK_EOF) {
                 if (equalc(t, "[") && equalc(t->next, "[")) depth++;
-                else if (equalc(t, "]") && equalc(t->next, "]")) { depth--; t = t->next; }
+                else if (equalc(t, "]") && equalc(t->next, "]")) {
+                    depth--;
+                    t = t->next;
+                }
                 t = t->next;
             }
             tok = t;
