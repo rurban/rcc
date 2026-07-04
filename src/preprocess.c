@@ -43,6 +43,7 @@ static char *kw_has_include;
 static char *kw_has_include_next;
 static char *kw_has_c_attribute;
 static char *kw_va_args;
+static char *kw_va_opt;
 
 static uint32_t macro_hash(const char *name) {
     uint32_t h = 2166136261u;
@@ -891,6 +892,46 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
                 int va_idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
                 if (va_idx < argc) {
                     sb_puts(&sb, args[va_idx]);
+                }
+                continue;
+            }
+            // C23 __VA_OPT__(content): expand content only if variadic args non-empty
+            if (m->is_variadic && name == kw_va_opt) {
+                int va_idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
+                // Skip whitespace before (
+                while (isspace((unsigned char)*p))
+                    p++;
+                if (*p != '(') {
+                    sb_puts(&sb, "__VA_OPT__");
+                    continue;
+                }
+                char *content_start = ++p; // skip (
+                int depth = 1;
+                while (depth > 0 && *p) {
+                    if (*p == '(') depth++;
+                    else if (*p == ')')
+                        depth--;
+                    if (depth > 0) p++;
+                }
+                char *content_end = p; // points to closing )
+                if (*p == ')') p++; // skip )
+                // Only expand content if variadic args exist
+                if (va_idx < argc && args[va_idx][0] != '\0') {
+                    char *content = pp_strndup(content_start, content_end - content_start);
+                    // Substitute __VA_ARGS__ in the content before expansion
+                    StrBuf csb;
+                    sb_init(&csb, strlen(content) + strlen(args[va_idx]) + 16);
+                    char *cp = content;
+                    while (*cp) {
+                        if (pp_startswith(cp, "__VA_ARGS__") && !pp_is_ident2(cp[11])) {
+                            sb_puts(&csb, args[va_idx]);
+                            cp += 11;
+                        } else {
+                            sb_putc(&csb, *cp++);
+                        }
+                    }
+                    char *expanded = expand_text(csb.buf, NULL, 0, 0);
+                    sb_puts(&sb, expanded);
                 }
                 continue;
             }
@@ -2294,8 +2335,8 @@ char *preprocess(char *filename, char *p) {
         kw_pretty_function = str_intern("__PRETTY_FUNCTION__", 19);
         kw_has_include = str_intern("__has_include", 13);
         kw_has_c_attribute = str_intern("__has_c_attribute", 18);
-        kw_has_include_next = str_intern("__has_include_next", 18);
         kw_va_args = str_intern("__VA_ARGS__", 11);
+        kw_va_opt = str_intern("__VA_OPT__", 10);
         saved_macros = macros;
         macros_inited = true;
     }
