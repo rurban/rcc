@@ -3130,13 +3130,8 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
 static bool is_todo_test(const char *base) {
     static const char *todo_tests[] = {
         "test_bit",
-        "test_bool",
-        "test_c23_attributes",
-        "test_ckdint",
         "test_decimal",
         "test_float",
-        "test_nullptr",
-        "test_static_assert",
         NULL};
     for (const char **p = todo_tests; *p; p++)
         if (streq(base, *p)) return true;
