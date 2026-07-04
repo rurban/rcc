@@ -40,6 +40,11 @@ int main(void)
 #if __has_include("<nonexistent_header_xyz.h>")
 #error "FAIL: __has_include should be false for missing header"
 #endif
+    // C23 u8 string literal (type is array of unsigned char)
+    {
+        const unsigned char *s = u8"hello";
+        if (s[0] != 'h' || s[1] != 'e' || s[4] != 'o') return 11;
+    }
 
     printf("PASS\n");
     return 0;

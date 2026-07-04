@@ -2858,7 +2858,7 @@ static Type *infer_array_type(Type *ty, Token *tok) {
     if (!ty || ty->kind != TY_ARRAY || ty->size != 0)
         return ty;
     if (tok->kind == TK_STR) {
-        if (tok->string_literal_prefix == 0)
+        if (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')
             return array_of(ty->base, tok->len + 1);
         // For wide strings, count UTF-8 characters (each becomes one wchar)
         return array_of(ty->base, utf8_len(tok->str) + 1);
@@ -4623,6 +4623,9 @@ static Node *primary(Token **rest, Token *tok) {
             }
             node->ty = pointer_to(char16_t_type);
         } break;
+        case '8': // u8 string => char8_t (unsigned char)
+            node->ty = pointer_to(ty_uchar);
+            break;
         case 'U': // char32_t string
         {
             Type *char32_t_type = typedef_find_name("char32_t");
@@ -6374,7 +6377,7 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 }
 
 static void global_initializer(Token **rest, Token *tok, LVar *var) {
-    if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR && tok->string_literal_prefix == 0) {
+    if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR && (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         var->init_data = tok->str;
         var->init_size = tok->len + 1; // include embedded NULs and the terminator
         *rest = tok->next;

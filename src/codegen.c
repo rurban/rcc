@@ -6271,7 +6271,7 @@ static VReg gen(Node *node) {
                 int str_len = 0;
                 for (StrLit *s = all_strs; s; s = s->next) {
                     if (s->id != node->rhs->str_id) continue;
-                    if (s->prefix != 0) {
+                    if (s->prefix != 0 && s->prefix != '8') {
                         // Wide string: count Unicode chars and multiply by elem_size
                         int count = 0;
                         char *p = s->str;
@@ -11366,7 +11366,7 @@ struct ObjFile *codegen(Program *prog) {
         cg_set_section(SEC_RODATA);
         for (StrLit *s = prog->strs; s; s = s->next) {
             cg_def_label_sec(format(".LC%d", s->id), SEC_RODATA); // .zero %d
-            if (s->prefix != 0) {
+            if (s->prefix != 0 && s->prefix != '8') {
                 // Wide string: decode UTF-8 and emit wide characters
                 char *p = s->str;
                 while (*p) {

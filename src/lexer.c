@@ -597,7 +597,9 @@ Token *tokenize(char *filename, char *p) {
         }
         if (is_ident1(*p)) {
             // Don't tokenize L/u/U as identifiers if followed by string/char literal
-            if ((*p == 'L' || *p == 'u' || *p == 'U') && (p[1] == '"' || p[1] == '\'')) {
+            if ((*p == 'L' || *p == 'U') && (p[1] == '"' || p[1] == '\'')) {
+                // Fall through to string/char literal handling
+            } else if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' || p[2] == '\'')))) {
                 // Fall through to string/char literal handling
             } else {
                 char *start = p;
@@ -626,7 +628,10 @@ Token *tokenize(char *filename, char *p) {
 
         // String literal
         int prefix = 0;
-        if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '"') {
+        if (p[0] == 'u' && p[1] == '8' && p[2] == '"') {
+            prefix = '8'; // u8 prefix => char8_t
+            p += 2;
+        } else if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '"') {
             prefix = *p;
             p++;
         }
@@ -683,7 +688,9 @@ Token *tokenize(char *filename, char *p) {
                     if (*q == '\n') cur_lineno++;
                     q++;
                 }
-                if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '"')
+                if (q[0] == 'u' && q[1] == '8' && q[2] == '"')
+                    q += 2;
+                else if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '"')
                     q++;
                 if (*q != '"')
                     break;
@@ -700,7 +707,10 @@ Token *tokenize(char *filename, char *p) {
 
         // Character literal
         int char_prefix = 0;
-        if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '\'') {
+        if (p[0] == 'u' && p[1] == '8' && p[2] == '\'') {
+            char_prefix = '8';
+            p += 2;
+        } else if ((*p == 'L' || *p == 'u' || *p == 'U') && p[1] == '\'') {
             char_prefix = *p;
             p++;
         }
