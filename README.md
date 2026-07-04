@@ -46,23 +46,20 @@ rcc -O1 -time:
     typecheck   bench.c:      6 us
     opt(CTFE)   bench.c:     27 us
     codegen     bench.c:   1108 us
-    peephole    bench.c:    369 us
     asm+link    bench_o1: 41045 us
 
 ## Key Features
 
 - **Register-machine codegen** — 8-register allocator on x86-64 (r10, r11, rbx, r12–r15, rsi), 12-register on ARM64 (x10–x15, x19–x24) with dynamic allocation, no stack machine overhead. The register allocator is a simple first-fit bitmask with no spilling to stack except for the predefined spill slots. If all registers are in use, it spills the additional registers on the stack. Currently with a spill warning on -W.
 - **Two-pass function emission** — Body generated to buffer first; prologue only pushes callee-saved registers actually used. Recursive functions like `fib` get zero callee-saved pushes.
-- **Peephole optimizer** — Integrated single-pass assembly optimizer with:
-  - Copy propagation (`mov r10, rax; mov [mem], r10` → `mov [mem], rax`)
-  - Store-load forwarding (`mov [rbp-N], rcx; mov r10d, [rbp-N]` → `mov r10d, ecx`)
-  - Immediate folding (`mov r11d, 1; cmp r10d, r11d` → `cmp r10d, 1`)
-  - Identity elimination (`imul r10d, 1` → deleted, `add r10, 0` → deleted)
+- **Peephole optimizer** — Integrated inline peephole optimizer with:
+  - Copy propagation (`mov r10, rax; mov r12, r10` → `mov r12, rax`)
+  - Immediate folding (`mov r10, 1; add r11, r10` → `add r11, 1`)
+  - Identity elimination (`mov r10, 0; add r11, r10` → deleted)
   - Strength reduction (multiply by power-of-2 → shift) in codegen already.
   - 3-instruction chain folding (`load; op; mov dst` → `load dst; op dst`)
   - Dead jump elimination (`jmp .L; .L:` → `.L:`)
-  - Liveness-aware dead code removal
-- **Direct function calls** — `call funcname` instead of `lea reg, [rip+func]; call reg`.
+  - Operates on emitted bytecode via `asm_record`/`asm_peep_try` with no separate pass
 - **Shadow space** — Maximal 32-byte shadow space in stack frame; no `sub rsp`/`add rsp` per call for ≤4 args.
 - **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time with -O1.
 - **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
@@ -75,12 +72,11 @@ rcc -O1 -time:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`.
 
-Not yet: C23 (stdbit, stdckdint, bool, [[attribs]], nullptr, `static_assert`),
 trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang
 compile-time warnings, fmv, full \_Decimal/Float/Binary support (aliased to float).
-
+Not yet: C23 (stdbit, stdckdint, bool, [[attribs]], nullptr),
 Unsupported (skipped in torture tests):
 
 - **Nested functions** (GCC extension) — function definitions inside other functions; would require trampolines on stack-executable pages.
