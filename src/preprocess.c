@@ -41,6 +41,7 @@ static char *kw_func;
 static char *kw_pretty_function;
 static char *kw_has_include;
 static char *kw_has_include_next;
+static char *kw_has_c_attribute;
 static char *kw_va_args;
 
 static uint32_t macro_hash(const char *name) {
@@ -1201,6 +1202,37 @@ static long eval_primary(char **rest, char *p, char *filename) {
         return resolve_include(filename, spec, is_angle) != NULL;
     }
 
+    if (pp_startswith(p, "__has_c_attribute")) {
+        p += 18;
+        p = skip_spaces(p);
+        if (*p == '(') p++;
+        p = skip_spaces(p);
+        // Parse attribute name (may include :: for namespaces)
+        char buf[64];
+        int len = 0;
+        while (*p && *p != ')' && *p != ' ' && *p != '\n' && *p != '\t' && len < 63)
+            buf[len++] = *p++;
+        buf[len] = '\0';
+        p = skip_spaces(p);
+        if (*p == ')') p++;
+        *rest = p;
+        // C23 standard attributes with their introduction versions
+        static const struct { const char *name; long ver; } attrs[] = {
+            {"deprecated",   201904L},
+            {"fallthrough",  201904L},
+            {"maybe_unused", 201904L},
+            {"nodiscard",    202003L},
+            {"noreturn",     202202L},
+            {"_Noreturn",    202202L},
+            {"unsequenced",  202207L},
+            {"reproducible", 202207L},
+        };
+        for (size_t i = 0; i < sizeof(attrs)/sizeof(attrs[0]); i++)
+            if (strcmp(buf, attrs[i].name) == 0)
+                return attrs[i].ver;
+        return 0;
+    }
+
     if (*p == '(') {
         long val = eval_pp_expr(&p, p + 1, filename);
         p = skip_spaces(p);
@@ -1884,6 +1916,7 @@ char *preprocess(char *filename, char *p) {
 #define define_pre(name, value) define_macro(name, false, NULL, 0, value)
         // Add builtin macros first - BEFORE calling preprocess_file
         define_pre("__has_include", "1");
+        define_pre("__has_c_attribute", "1");
         define_pre("__has_include_next", "1");
 
 #include "gcc_predefined.h"
@@ -2128,6 +2161,7 @@ char *preprocess(char *filename, char *p) {
         kw_func = str_intern("__func__", 8);
         kw_pretty_function = str_intern("__PRETTY_FUNCTION__", 19);
         kw_has_include = str_intern("__has_include", 13);
+        kw_has_c_attribute = str_intern("__has_c_attribute", 18);
         kw_has_include_next = str_intern("__has_include_next", 18);
         kw_va_args = str_intern("__VA_ARGS__", 11);
         saved_macros = macros;

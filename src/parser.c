@@ -6950,6 +6950,10 @@ Program *parse(Token *tok) {
                                 ret->lhs = new_num(0, tok);
                                 last->next = ret;
                             }
+                        } else {
+                            // Empty body: insert return 0
+                            body->body = new_node(ND_RETURN, tok);
+                            body->body->lhs = new_num(0, tok);
                         }
                     }
                     Function *fn = arena_alloc(sizeof(Function));
