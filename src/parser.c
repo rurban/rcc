@@ -34,6 +34,14 @@ struct EnumConst {
     int64_t val;
 };
 
+typedef struct EnumTag EnumTag;
+struct EnumTag {
+    EnumTag *next;
+    char *name;
+    Type *ty;
+};
+static EnumTag *enum_tags;
+
 #define kw_is(tok, flag) ((tok)->kw != ID_NONE && (kw_flags[(tok)->kw] & (flag)))
 
 static LVar *locals;
@@ -1637,11 +1645,22 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
 
 static Type *enum_specifier(Token **rest, Token *tok) {
     tok = skip(tok, "enum");
-    if (tok->kind == TK_IDENT)
+    char *tag_name = NULL;
+    if (tok->kind == TK_IDENT) {
+        tag_name = tok->name;
         tok = tok->next;
+    }
 
     if (!equalc(tok, "{")) {
         *rest = tok;
+        if (tag_name) {
+            for (EnumTag *et = enum_tags; et; et = et->next)
+                if (et->name == tag_name) {
+                    Type *ret = arena_alloc(sizeof(Type));
+                    *ret = *et->ty;
+                    return ret;
+                }
+        }
         Type *ety = arena_alloc(sizeof(Type));
         *ety = *ty_int;
         ety->is_enum = true;
@@ -1649,7 +1668,9 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     }
 
     tok = tok->next;
-    int val = 0;
+    int64_t val = 0;
+    int64_t min_val = 0, max_val = 0;
+    bool first = true;
     while (!equalc(tok, "}")) {
         if (tok->kind != TK_IDENT)
             error_tok(tok, "expected enum constant");
@@ -1669,6 +1690,13 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         }
 
         ec->val = val++;
+        if (first) {
+            min_val = max_val = ec->val;
+            first = false;
+        } else {
+            if (ec->val < min_val) min_val = ec->val;
+            if (ec->val > max_val) max_val = ec->val;
+        }
         ec->next = enum_consts;
         enum_consts = ec;
         enum_htab_add(ec);
@@ -1678,10 +1706,33 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     }
 
     *rest = tok->next;
-    Type *ety = arena_alloc(sizeof(Type));
-    *ety = *ty_int;
-    ety->is_enum = true;
-    return ety;
+    // C23: choose narrowest integer type that fits all enum values
+    // C23: choose narrowest integer type >= int that fits all enum values
+    Type *ety;
+    if (min_val >= 0) {
+        uint64_t umax = (uint64_t)max_val;
+        if (umax <= 0xFFFFFFFFULL)
+            ety = ty_uint;
+        else
+            ety = ty_ullong;
+    } else {
+        if (min_val >= -2147483648LL && max_val <= 2147483647LL)
+            ety = ty_int;
+        else
+            ety = ty_llong;
+    }
+    Type *ret = arena_alloc(sizeof(Type));
+    *ret = *ety;
+    ret->is_enum = true;
+    // Push tag so subsequent references find the correct type
+    if (tag_name) {
+        EnumTag *et = arena_alloc(sizeof(EnumTag));
+        et->name = tag_name;
+        et->ty = ret;
+        et->next = enum_tags;
+        enum_tags = et;
+    }
+    return ret;
 }
 
 // Build a Node expr computing align_to(x, align) at runtime:

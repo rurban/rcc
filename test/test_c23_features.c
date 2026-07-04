@@ -45,6 +45,20 @@ int main(void)
         const unsigned char *s = u8"hello";
         if (s[0] != 'h' || s[1] != 'e' || s[4] != 'o') return 11;
     }
+    // C23 enum: always >= int sized, wider for large values
+    {
+        enum Small { A = 0, B = 255 };
+        if (sizeof(enum Small) != 4) return 12; // >= int
+
+        enum Big { C = 0xFFFFFFFFFLL };
+        if (sizeof(enum Big) != 8) return 13; // needs ullong
+
+        enum Negative { D = -1, E = 1 };
+        if (sizeof(enum Negative) != 4) return 14; // >= int
+
+        // enum constants have correct values
+        if ((long long)C != 0xFFFFFFFFFLL) return 15;
+    }
 
     printf("PASS\n");
     return 0;
