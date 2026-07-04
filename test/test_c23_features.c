@@ -1,4 +1,4 @@
-// C23 digit separators, #warning, #error
+// C23 digit separators, 0b binary, #warning, #error, __has_include
 // https://en.cppreference.com/c/language/integer_constant
 
 #include <stdio.h>
@@ -30,6 +30,16 @@ int main(void)
     // Combined with existing features:
     constexpr int million = 1'000'000;
     static_assert(million == 1000000);
+    // C23 __has_include
+#if !__has_include("<stdio.h>")
+#error "FAIL: __has_include(\"<stdio.h>\")"
+#endif
+#if !__has_include(<stddef.h>)
+#error "FAIL: __has_include(<stddef.h>)"
+#endif
+#if __has_include("<nonexistent_header_xyz.h>")
+#error "FAIL: __has_include should be false for missing header"
+#endif
 
     printf("PASS\n");
     return 0;

@@ -1169,6 +1169,12 @@ static long eval_primary(char **rest, char *p, char *filename) {
             spec = pp_strndup(start, p - start);
             if (*p == '"')
                 p++;
+            // Detect angle-bracket include inside quotes: "<stdio.h>"
+            if (*spec == '<' && spec[strlen(spec) - 1] == '>') {
+                is_angle = true;
+                spec[strlen(spec) - 1] = '\0';
+                spec++;
+            }
         } else if (*p == '<') {
             is_angle = true;
             char *start = ++p;
