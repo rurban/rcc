@@ -1316,17 +1316,31 @@ static long eval_add(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_rel(char **rest, char *p, char *filename) {
+static long eval_shift(char **rest, char *p, char *filename) {
     long val = eval_add(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
-        if (pp_startswith(p, "<=")) val = val <= eval_add(&p, p + 2, filename);
+        if (pp_startswith(p, "<<")) val = val << eval_add(&p, p + 2, filename);
+        else if (pp_startswith(p, ">>"))
+            val = val >> eval_add(&p, p + 2, filename);
+        else
+            break;
+    }
+    *rest = p;
+    return val;
+}
+
+static long eval_rel(char **rest, char *p, char *filename) {
+    long val = eval_shift(&p, p, filename);
+    for (;;) {
+        p = skip_spaces(p);
+        if (pp_startswith(p, "<=")) val = val <= eval_shift(&p, p + 2, filename);
         else if (pp_startswith(p, ">="))
-            val = val >= eval_add(&p, p + 2, filename);
+            val = val >= eval_shift(&p, p + 2, filename);
         else if (*p == '<')
-            val = val < eval_add(&p, p + 1, filename);
+            val = val < eval_shift(&p, p + 1, filename);
         else if (*p == '>')
-            val = val > eval_add(&p, p + 1, filename);
+            val = val > eval_shift(&p, p + 1, filename);
         else
             break;
     }
@@ -1348,11 +1362,47 @@ static long eval_eq(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_land(char **rest, char *p, char *filename) {
+static long eval_bitand(char **rest, char *p, char *filename) {
     long val = eval_eq(&p, p, filename);
+    for (;;) {
+        p = skip_spaces(p);
+        if (*p == '&' && p[1] != '&') val &= eval_eq(&p, p + 1, filename);
+        else
+            break;
+    }
+    *rest = p;
+    return val;
+}
+
+static long eval_bitxor(char **rest, char *p, char *filename) {
+    long val = eval_bitand(&p, p, filename);
+    for (;;) {
+        p = skip_spaces(p);
+        if (*p == '^') val ^= eval_bitand(&p, p + 1, filename);
+        else
+            break;
+    }
+    *rest = p;
+    return val;
+}
+
+static long eval_bitor(char **rest, char *p, char *filename) {
+    long val = eval_bitxor(&p, p, filename);
+    for (;;) {
+        p = skip_spaces(p);
+        if (*p == '|' && p[1] != '|') val |= eval_bitxor(&p, p + 1, filename);
+        else
+            break;
+    }
+    *rest = p;
+    return val;
+}
+
+static long eval_land(char **rest, char *p, char *filename) {
+    long val = eval_bitor(&p, p, filename);
     while (pp_startswith(skip_spaces(p), "&&")) {
         p = skip_spaces(p);
-        long rhs = eval_eq(&p, p + 2, filename);
+        long rhs = eval_bitor(&p, p + 2, filename);
         val = val && rhs;
     }
     *rest = p;
