@@ -134,6 +134,7 @@ enum {
     ID_ASM,
     ID_STATIC_ASSERT,
     ID__STATIC_ASSERT,
+    ID_NULLPTR,
     ID__,
     ID_NULL,
     ID___RETBUF,

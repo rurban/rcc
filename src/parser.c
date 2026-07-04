@@ -912,6 +912,17 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             tok = skip(tok, ")");
             continue;
         }
+        // C23 [[attribute]] syntax — skip
+        if (equalc(tok, "[") && equalc(tok->next, "[")) {
+            tok = tok->next->next;
+            int depth = 1;
+            while (depth > 0 && tok->kind != TK_EOF) {
+                if (equalc(tok, "[") && equalc(tok->next, "[")) depth++;
+                else if (equalc(tok, "]") && equalc(tok->next, "]")) { depth--; tok = tok->next; }
+                tok = tok->next;
+            }
+            continue;
+        }
         if (tok->kw == ID__ALIGNAS) {
             tok = tok->next;
             tok = skip(tok, "(");
@@ -3866,6 +3877,18 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 cur = cur->next;
             continue;
         }
+        // C23 [[attribute]] at statement level
+        if (equalc(tok, "[") && equalc(tok->next, "[")) {
+            Token *t = tok->next->next;
+            int depth = 1;
+            while (depth > 0 && t->kind != TK_EOF) {
+                if (equalc(t, "[") && equalc(t->next, "[")) depth++;
+                else if (equalc(t, "]") && equalc(t->next, "]")) { depth--; t = t->next; }
+                t = t->next;
+            }
+            tok = t;
+            continue;
+        }
         if (is_typename(tok)) {
             // A typedef name followed by ':' is a label, not a declaration.
             if (find_typedef(tok) && equalc(tok->next, ":")) {
@@ -4518,6 +4541,10 @@ static Node *primary(Token **rest, Token *tok) {
                 tok = tok->next;
             } else if (equalc(tok, "NULL")) {
                 node = new_num(0, tok);
+                tok = tok->next;
+            } else if (equalc(tok, "nullptr")) {
+                node = new_num(0, tok);
+                node->ty = pointer_to(ty_void);
                 tok = tok->next;
             } else {
                 LVar *var = find_var(tok);
