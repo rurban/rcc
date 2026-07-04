@@ -1130,6 +1130,7 @@ static char *skip_spaces(char *p) {
 
 static long eval_pp_expr(char **rest, char *p, char *filename);
 
+static unsigned pp_eval_line_no;
 static long eval_primary(char **rest, char *p, char *filename) {
     p = skip_spaces(p);
 
@@ -1263,6 +1264,11 @@ static long eval_primary(char **rest, char *p, char *filename) {
         return val;
     }
 
+    // Builtin __LINE__ in #if expressions
+    if (pp_startswith(p, "__LINE__") && !pp_is_ident2(p[8])) {
+        *rest = p + 8;
+        return pp_eval_line_no;
+    }
     if (pp_is_ident1(*p)) {
         char *start = p;
         while (pp_is_ident2(*p))
@@ -1430,11 +1436,11 @@ static long eval_pp_expr(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_condition(char *expr, char *filename) {
+static long eval_condition(char *expr, char *filename, unsigned line_no) {
+    pp_eval_line_no = line_no;
     char *rest = expr;
     return eval_pp_expr(&rest, expr, filename);
 }
-
 static int count_unmatched_parens(char *start, char *end) {
     int open = 0;
     int close = 0;
@@ -1827,7 +1833,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 while (s < end && isspace((unsigned char)*s))
                     s++;
                 char *expr = pp_strndup(s, end - s);
-                long val = eval_condition(expr, filename);
+                long val = eval_condition(expr, filename, line_no);
                 CondIncl *ci = arena_alloc(sizeof(CondIncl));
                 ci->parent_active = active;
                 // Only take this branch if parent is active AND condition is true
@@ -1847,7 +1853,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     // If no branch taken yet, evaluate the condition
                     if (!conds->branch_taken) {
                         conds->active = conds->parent_active &&
-                            eval_condition(trim_copy(s, end - s), filename);
+                            eval_condition(trim_copy(s, end - s), filename, line_no);
                         if (conds->active)
                             conds->branch_taken = true;
                     } else {
