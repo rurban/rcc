@@ -1844,6 +1844,48 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 conds = ci;
                 active = ci->active;
                 sb_putc(&out, '\n');
+            } else if (pp_startswith(s, "elifdef")) {
+                s += 7;
+                while (s < end && isspace((unsigned char)*s))
+                    s++;
+                char *name_start = s;
+                while (s < end && pp_is_ident2(*s))
+                    s++;
+                char *name = pp_strndup(name_start, s - name_start);
+                if (conds) {
+                    if (!conds->branch_taken) {
+                        conds->active = conds->parent_active && find_macro(name);
+                        if (conds->active)
+                            conds->branch_taken = true;
+                    } else {
+                        conds->active = false;
+                    }
+                    active = conds->active;
+                } else {
+                    active = false;
+                }
+                sb_putc(&out, '\n');
+            } else if (pp_startswith(s, "elifndef")) {
+                s += 8;
+                while (s < end && isspace((unsigned char)*s))
+                    s++;
+                char *name_start = s;
+                while (s < end && pp_is_ident2(*s))
+                    s++;
+                char *name = pp_strndup(name_start, s - name_start);
+                if (conds) {
+                    if (!conds->branch_taken) {
+                        conds->active = conds->parent_active && !find_macro(name);
+                        if (conds->active)
+                            conds->branch_taken = true;
+                    } else {
+                        conds->active = false;
+                    }
+                    active = conds->active;
+                } else {
+                    active = false;
+                }
+                sb_putc(&out, '\n');
             } else if (pp_startswith(s, "elif")) {
                 // #elif - check if we already took a branch
                 s += 4;
