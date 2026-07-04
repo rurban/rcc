@@ -3575,30 +3575,6 @@ static void emit_tls_addr(VReg r, LVar *var) {
     objfile_add_reloc(cg_obj, SEC_TEXT, lo_off, sidx, R_AARCH64_TLSLE_ADD_TPREL_LO12, 0);
 #endif
 }
-static int emit_stack_addr(int offset) {
-#ifdef ARCH_ARM64
-    int ta = alloc_reg();
-    if (offset <= 4095)
-        asm_sub_reg_fp_imm(cg_sec, ta, offset); // sub ta, x29, #offset
-    else {
-        int v = offset;
-        asm_mov_imm(cg_sec, ta, 8, v & 0xffff); // mov $v & 0xffff, rta
-        v >>= 16;
-        int s = 16;
-        while (v) {
-            asm_movk(cg_sec, ta, 1, (uint16_t)(v & 0xffff), s); // movk x{ta}, #v, lsl #s
-            v >>= 16;
-            s += 16;
-        }
-        asm_sub_reg3(cg_sec, ta, ARM64_X29, REG(ta), 8); // sub ta, x29, ta
-    }
-    return ta;
-#else
-    int ta = alloc_reg();
-    asm_lea_rbp_reg(cg_sec, ta, 8, offset); // lea [rbp-8], rta
-    return ta;
-#endif
-}
 #endif
 
 static int op_size(Type *ty) {

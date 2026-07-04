@@ -2188,10 +2188,6 @@ static void asm_str_fp_sp_off(SecBuf *s, int fp_r, uint32_t uimm) {
     int opc = (uimm % 8 == 0) ? 3 : 2; // 3=64-bit (d), 2=32-bit (s) stride
     arm64_str_fp(s, opc, fp_r, 31, uimm); // str d{fp_r}, [sp, #uimm]
 }
-// asr rd, x{src}, #63 — arithmetic shift right by 63 (sign-extend)
-static void asm_asr_rd_reg_63(SecBuf *s, Arm64Reg rd, VReg src) {
-    arm64_asr_imm(s, 1, rd, REG(src), 63); // asr rd, x{src}, #63
-}
 // ldr w/x{dst}, [x{src}] — load GP from reg (sf=0→32bit, 1→64bit)
 static void asm_ldr_phy_reg(SecBuf *s, Arm64Reg dst_phy, VReg src, int sf) {
     int sz = sf ? 3 : 2; // sf=1→64-bit(sz=3), sf=0→32-bit(sz=2)
@@ -3015,96 +3011,6 @@ __attribute__((unused)) static void asm_ubfx_x17_exp(SecBuf *s, VReg r) {
     arm64_ubfx(s, 1, ARM64_X17, REG(r), 52, 11); // ubfx x17, x{r}, #52, #11
 }
 
-// mov x16, #15360  — constant for quad float exponent bias
-static void asm_mov_x16_15360(SecBuf *s) {
-    arm64_movz(s, 1, ARM64_X16, 15360, 0); // mov x16, #15360
-}
-
-// add x17, x17, x16  — add exponent + bias
-static void asm_add_x17_x17_x16(SecBuf *s) {
-    arm64_add_reg(s, 1, ARM64_X17, ARM64_X17, ARM64_X16, ARM64_LSL, 0); // add x17, x17, x16
-}
-
-// lsl x16, x{r}, #12  — shift mantissa
-static void asm_lsl_x16_r_12(SecBuf *s, VReg r) {
-    arm64_lsl_imm(s, 1, ARM64_X16, REG(r), 12); // lsl x16, x{r}, #12
-}
-
-// lsr x16, x16, #12  — shift back mantissa
-static void asm_lsr_x16_x16_12(SecBuf *s) {
-    arm64_lsr_imm(s, 1, ARM64_X16, ARM64_X16, 12); // lsr x16, x16, #12
-}
-
-// and x1, x16, #0xF  — low nibble
-static void asm_and_x1_x16_0xf(SecBuf *s) {
-    arm64_and_imm(s, 1, ARM64_X1, ARM64_X16, 0xF); // and x1, x16, #0xF
-}
-
-// lsl x1, x1, #60  — position low nibble at top
-static void asm_lsl_x1_60(SecBuf *s) {
-    arm64_lsl_imm(s, 1, ARM64_X1, ARM64_X1, 60); // lsl x1, x1, #60
-}
-
-// lsr x2, x16, #4  — mantissa high part
-static void asm_lsr_x2_x16_4(SecBuf *s) {
-    arm64_lsr_imm(s, 1, ARM64_X2, ARM64_X16, 4); // lsr x2, x16, #4
-}
-
-// lsl x17, x17, #48  — position exponent
-static void asm_lsl_x17_48(SecBuf *s) {
-    arm64_lsl_imm(s, 1, ARM64_X17, ARM64_X17, 48); // lsl x17, x17, #48
-}
-
-// orr x2, x2, x17  — combine mantissa + exponent
-static void asm_orr_x2_x2_x17(SecBuf *s) {
-    arm64_orr_reg(s, 1, ARM64_X2, ARM64_X2, ARM64_X17, ARM64_LSL, 0); // orr x2, x2, x17
-}
-
-// and x17, x17, #1  — isolate sign bit
-static void asm_and_x17_1(SecBuf *s) {
-    arm64_and_imm(s, 1, ARM64_X17, ARM64_X17, 1); // and x17, x17, #1
-}
-
-// lsl x17, x17, #63  — position sign bit
-static void asm_lsl_x17_63(SecBuf *s) {
-    arm64_lsl_imm(s, 1, ARM64_X17, ARM64_X17, 63); // lsl x17, x17, #63
-}
-
-// orr x2, x2, x17  — add sign to result (reuse orr_x2_x2_x17)
-
-// mov x1, #0  — zero x1
-static void asm_mov_x1_0(SecBuf *s) {
-    arm64_movz(s, 1, ARM64_X1, 0, 0); // mov x1, #0
-}
-
-// mov x2, #0  — zero x2
-static void asm_mov_x2_0(SecBuf *s) {
-    arm64_movz(s, 1, ARM64_X2, 0, 0); // mov x2, #0
-}
-
-// ins vN.d[0], x1  — insert x1 into NEON vector element 0
-static void asm_ins_vd0_x1(SecBuf *s, int vn) {
-    // INS vd.d[0], x1: 0x4E081C00 | (imm5=10000=d[0]) | (vn<<5)|(vd)
-    // Encoding: INS (general) = 0_1_001110_00001000_000111_rn_rd for d[0]
-    // imm5 for d[idx]: imm5 = (idx<<1)|1 = 0b10000+0 = 0x10 for idx=0... let me use raw encoding
-    // 0100_1110_0000_1000_0001_11_xxxxxx_ddddd  (Rt=1, vd=vn)
-    // ins vd.d[idx] from xn: 0x4E081C00 | (imm5=0b10000<<idx??)
-    // Correct: Q=1, op=1, imm5=10000 (d[0]), imm4=0111, n=x1, d=vn
-    // 0x4E081C20 = ins v0.d[0], x1; adjust: set Rd=vn, Rn=1
-    secbuf_emit32le(s, 0x4E081C00u | (1u << 5) | (uint32_t)vn); // ins v{vn}.d[0], x1
-}
-
-// ins vN.d[1], x2  — insert x2 into NEON vector element 1
-static void asm_ins_vd1_x2(SecBuf *s, int vn) {
-    // INS vd.d[1] from x2: imm5=0b10001 (d[1]), Rn=2, Rd=vn
-    // 0x4E180C00 | (2<<5) | vn -- let me calculate properly
-    // imm5 for d[idx]: bit0=1, bit4..1=idx => d[1]: imm5=0b10001=0x11=17
-    // opcode: 0x4E_imm5_xxx_1_1100_Rn_Rd: 0x4E000000 | (imm5<<16) | (7<<12) | (1<<10) | (rn<<5) | rd
-    // Actually: ins = 0x4E000000|(Q=1)<<30|(op=0)<<29|(imm5<<16)|(imm4<<12)|(1<<10)|(Rn<<5)|Rd
-    // imm5=0b10001, imm4=0b0111
-    secbuf_emit32le(s, 0x4E181C00u | (2u << 5) | (uint32_t)vn); // mov v{vn}.d[1], x2
-}
-
 // mov x8, x{r}  — move hidden ret pointer to x8 for ARM64 ABI
 static void asm_mov_x8_reg(SecBuf *s, VReg r) {
     arm64_orr_reg(s, 1, ARM64_X8, ARM64_XZR, REG(r), ARM64_LSL, 0); // mov x8, x{r}
@@ -3310,9 +3216,6 @@ __attribute__((unused)) static void asm_ldrb_w16_x9_phy(SecBuf *s, Arm64Reg base
 // ============================================================================
 // ARM64: strb/wzr and ldrb/scaled patterns
 // ============================================================================
-static void asm_str_xzr_w11_x9(SecBuf *s) {
-    arm64_str_reg(s, 0, ARM64_XZR, 11, 9, false, 0); // strb wzr, [x11, x9]
-}
 static void asm_str_xzr_sp_x16(SecBuf *s) {
     arm64_str_reg(s, 3, ARM64_XZR, ARM64_SP, 16, false, 0); // str xzr, [sp, x16]
 }
@@ -3358,9 +3261,6 @@ static void asm_sub_x11_fp_x16(SecBuf *s) {
 }
 static void asm_sub_sp_sp_x16_v2(SecBuf *s) {
     arm64_sub_extreg(s, 1, CG_ARM_SP, CG_ARM_SP, ARM64_X16, ARM64_UXTX, 0); // sub sp, sp, x16
-}
-static void asm_sub_x11_fp_imm(SecBuf *s, int32_t offset) {
-    arm64_sub_imm(s, 1, ARM64_X11, ARM64_X29, offset, 0); // sub x11, x29, #offset
 }
 
 // ============================================================================
