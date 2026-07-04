@@ -44,6 +44,8 @@ __volatile__, ID___VOLATILE__, KW_QUAL, NULL
 restrict, ID_RESTRICT, KW_QUAL, NULL
 __restrict, ID___RESTRICT, KW_QUAL, NULL
 __restrict__, ID___RESTRICT__, KW_QUAL, NULL
+static_assert, ID_STATIC_ASSERT, KW_SPECIAL, NULL
+_Static_assert, ID__STATIC_ASSERT, KW_SPECIAL, NULL
 _Atomic, ID__ATOMIC, KW_QUAL, NULL
 int, ID_INT, KW_TYPE, NULL
 char, ID_CHAR, KW_TYPE, NULL

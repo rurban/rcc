@@ -3571,6 +3571,34 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
 }
 
 static Node *declaration(Token **rest, Token *tok) {
+    // C23 static_assert / C11 _Static_assert
+    if (equalc(tok, "static_assert") || equalc(tok, "_Static_assert")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *cond = conditional(&tok, tok);
+        long long val = 0;
+        if (!eval_const_expr(cond, &val))
+            error_tok(cond->tok, "static_assert condition must be a constant expression");
+        char *msg = "static_assert failed";
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (tok->kind == TK_STR) {
+                msg = tok->str;
+                tok = tok->next;
+            } else {
+                // Evaluate as expression and skip
+                Node *msg_expr = conditional(&tok, tok);
+                (void)msg_expr;
+            }
+        }
+        tok = skip(tok, ")");
+        tok = skip(tok, ";");
+        if (!val)
+            error_tok(start, "%s", msg);
+        *rest = tok;
+        return new_node(ND_NULL, tok);
+    }
+
     VarAttr attr = {};
     pending_cleanup_func = NULL;
     pending_constructor = false;
@@ -3829,6 +3857,13 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 if (equalc(tok, ",")) tok = tok->next;
             }
             tok = skip(tok, ";");
+            continue;
+        }
+        // C23 static_assert / C11 _Static_assert at block scope
+        if (equalc(tok, "static_assert") || equalc(tok, "_Static_assert")) {
+            cur->next = declaration(&tok, tok);
+            while (cur->next)
+                cur = cur->next;
             continue;
         }
         if (is_typename(tok)) {
