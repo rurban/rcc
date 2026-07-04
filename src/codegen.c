@@ -13,7 +13,6 @@ static ObjFile *cg_obj;
 SecBuf *cg_sec;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
-uint64_t time_peep_us = 0;
 
 static void cg_set_section(int sec) {
     if (!cg_obj) return;
@@ -358,11 +357,6 @@ static void cg_emit(const char *fmt, ...) {
 #define printf(...) cg_emit(__VA_ARGS__)
 #endif /* !ARCH_ARM64 */
 
-static uint64_t cg_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
-}
 static Function *current_fn_def;
 static TLItem *all_items;
 static StrLit *all_strs;
@@ -12193,16 +12187,11 @@ struct ObjFile *codegen(Program *prog) {
 
 
         // Re-run gen() to emit binary body
-        {
-            uint64_t _t0 = opt_time ? cg_now_us() : 0;
-            for (Node *n = fn->body; n; n = n->next) {
-                asm_peep_node_start(cg_sec); // .L.return.%s:
-                VReg r = gen(n);
-                asm_peep_node_end(cg_sec); // .L.return.%s:
-                if (r != -1) free_reg(r);
-            }
-            if (opt_time)
-                time_peep_us += cg_now_us() - _t0;
+        for (Node *n = fn->body; n; n = n->next) {
+            asm_peep_node_start(cg_sec); // .L.return.%s:
+            VReg r = gen(n);
+            asm_peep_node_end(cg_sec); // .L.return.%s:
+            if (r != -1) free_reg(r);
         }
 
         // === ARM64 epilogue ===
@@ -12649,16 +12638,11 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Re-run gen() to emit binary body
-        {
-            uint64_t _t0 = opt_time ? cg_now_us() : 0;
-            for (Node *n = fn->body; n; n = n->next) {
-                asm_peep_node_start(cg_sec); // mov %s, -%d(%rbp)
-                VReg r = gen(n);
-                asm_peep_node_end(cg_sec); // .L.return.%s:
-                if (r != -1) free_reg(r);
-            }
-            if (opt_time)
-                time_peep_us += cg_now_us() - _t0;
+        for (Node *n = fn->body; n; n = n->next) {
+            asm_peep_node_start(cg_sec); // mov %s, -%d(%rbp)
+            VReg r = gen(n);
+            asm_peep_node_end(cg_sec); // .L.return.%s:
+            if (r != -1) free_reg(r);
         }
 
         // Emit epilogue

@@ -253,10 +253,6 @@ extern bool opt_pic;
 extern bool opt_time;
 extern int pack_align;
 extern bool sse42_available;
-extern uint64_t time_peep_us;
-extern uint64_t peep_ncalls;
-// Calibrated on x86_64 vs sqlite3.c: wall-clock delta (~200ms) / call count (~530K) ≈ 375 ns/call
-#define PEEP_NS_PER_CALL 375ULL
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);

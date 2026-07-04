@@ -410,16 +410,11 @@ int main(int argc, char **argv) {
         }
 
         if (!opt_dryrun) {
-            time_peep_us = 0;
             t0 = opt_time ? now_us() : 0;
             struct ObjFile *obj = codegen(prog);
             if (opt_time) {
-                uint64_t cg_total = now_us() - t0;
                 fprintf(stderr, "  codegen     %s: %6llu us\n", cur_path,
-                        (unsigned long long)(cg_total - time_peep_us));
-                if (!opt_O0)
-                    fprintf(stderr, "  peephole    %s: %6llu us\n", cur_path,
-                            (unsigned long long)time_peep_us);
+                        (unsigned long long)(now_us() - t0));
             }
             // Write binary .o file
             char *tmp_obj_path = asm_path;
