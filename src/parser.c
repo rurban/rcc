@@ -16,6 +16,7 @@ struct VarAttr {
     bool has_type;
     bool is_packed;
     bool is_constexpr;
+    bool is_auto_type;
     unsigned char bitfield_mode;
 };
 
@@ -2192,6 +2193,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "__auto_type")) {
+            attr->is_auto_type = true;
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__")) {
             attr->is_inline = true;
             tok = tok->next;
@@ -2434,7 +2440,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = ty_double;
         } else {
             ty = ty_int;
-            warn_tok(tok, "type defaults to int");
+            if (!attr->is_auto_type)
+                warn_tok(tok, "type defaults to int");
         }
     }
 
@@ -3756,6 +3763,23 @@ static Node *declaration(Token **rest, Token *tok) {
             Node *assign = new_binary(ND_ASSIGN, lhs, rhs, start);
             check_type(assign);
             cur = cur->next = new_unary(ND_EXPR_STMT, assign, start);
+        } else if (attr.is_auto_type) {
+            if (!equalc(tok, "="))
+                error_tok(tok, "__auto_type requires an initializer");
+            Token *start = tok;
+            tok = tok->next;
+            Node *init_expr = expr(&tok, tok);
+            check_type(init_expr);
+            if (!init_expr->ty)
+                error_tok(start, "__auto_type cannot infer type from initializer");
+            Type *inferred = init_expr->ty;
+            LVar *var = new_var(name, inferred, true);
+            if (pending_asm_name)
+                var->asm_name = pending_asm_name;
+            Node *lhs = new_var_node(var, start);
+            Node *assign = new_binary(ND_ASSIGN, lhs, init_expr, start);
+            check_type(assign);
+            cur = cur->next = new_unary(ND_EXPR_STMT, assign, start);
         } else {
             if (equalc(tok, "=")) {
                 ty = infer_array_type(ty, tok->next);
@@ -3893,6 +3917,13 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 t = t->next;
             }
             tok = t;
+            continue;
+        }
+        // C23 __auto_type declaration
+        if (equalc(tok, "__auto_type")) {
+            cur->next = declaration(&tok, tok);
+            while (cur->next)
+                cur = cur->next;
             continue;
         }
         if (is_typename(tok)) {
