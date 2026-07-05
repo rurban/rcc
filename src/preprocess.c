@@ -1323,8 +1323,33 @@ static long eval_primary(char **rest, char *p, char *filename) {
         char *name = pp_strndup(start, p - start);
         Macro *m = find_macro(name);
         *rest = p;
-        if (!m || m->is_function)
+        if (!m)
             return 0;
+        if (m->is_function) {
+            char *q = start;
+            while (pp_is_ident2(*q)) q++;
+            while (isspace((unsigned char)*q)) q++;
+            if (*q != '(') {
+                *rest = p;
+                return 0;
+            }
+            char *args[32];
+            char *end = NULL;
+            int argc = parse_macro_args(q + 1, args, 32, &end);
+            if (!m->is_variadic && argc > m->param_len) {
+                *rest = end;
+                return 0;
+            }
+            while (argc < m->param_len) {
+                args[argc] = pp_strndup("", 0);
+                argc++;
+            }
+            char *subst = substitute_macro(m, args, args, argc, 0);
+            char *expanded = expand_text(subst, filename, 1, 0);
+            *rest = end;
+            char *body_rest = expanded;
+            return eval_pp_expr(&body_rest, expanded, filename);
+        }
         // The body may be a full expression (e.g. "(A * 100 + B)"), not just
         // a literal, so it must go through the expression evaluator rather
         // than strtol(), which stops at the first non-digit (e.g. '(').
