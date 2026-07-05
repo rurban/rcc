@@ -32,7 +32,7 @@ int main() {
     bar();
     g(i);
 
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
     if (ptr1 == ptr2)
         abort();
 #endif

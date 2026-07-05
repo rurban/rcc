@@ -78,7 +78,7 @@ int func1 (int a) { return a - a; } /* const */
 
 int i = 2;
 
-#ifndef __OPTIMIZE__
+#if __OPTIMIZE__ < 2
 /* Avoid link failures when not optimizing. */
 void link_error0() {}
 void link_error1() {}

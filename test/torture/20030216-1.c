@@ -6,7 +6,7 @@
 void link_error(void);
 const double one = 1.0;
 int main(void) {
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
     if ((int)one != 1)
         link_error();
 #endif

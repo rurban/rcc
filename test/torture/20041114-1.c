@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-#ifndef __OPTIMIZE__
+#if __OPTIMIZE__ < 2
 void link_failure(void) {
     abort();
 }

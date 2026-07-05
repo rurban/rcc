@@ -15,7 +15,7 @@ q1(float a) {
     return floor(a);
 }
 int main(void) {
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
     if (t(0) != 0)
         abort();
     if (q(0) != 0)

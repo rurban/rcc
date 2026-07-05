@@ -11,7 +11,7 @@ int
 __attribute__((noinline))
 __vfprintf_chk (FILE *f, int flag, const char *fmt, va_list ap)
 {
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
   if (should_optimize)
     abort ();
 #endif

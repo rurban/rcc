@@ -84,7 +84,7 @@ int main() {
         if (!(*good_t0[i])())
             abort();
 
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
     for (i = 0; i < N(opt_t0); ++i)
         if (!(*opt_t0[i])())
             abort();

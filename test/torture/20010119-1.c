@@ -1,6 +1,6 @@
 void exit(int);
 
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
 extern void undef(void);
 
 void bar(unsigned x) {}

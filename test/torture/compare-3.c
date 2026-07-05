@@ -57,7 +57,7 @@ int main() {
     return 0;
 }
 
-#ifndef __OPTIMIZE__
+#if __OPTIMIZE__ < 2
 void link_error0() {}
 void link_error1() {}
 #endif /* ! __OPTIMIZE__ */

@@ -2,7 +2,7 @@ extern void exit(int);
 
 static inline int
 foo(void) {
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
     extern int undefined_reference;
     return undefined_reference;
 #else

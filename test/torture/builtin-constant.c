@@ -5,7 +5,7 @@ void exit(int);
 
 #define btest(x) __builtin_constant_p(x) ? "1" : "0"
 
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
 void foo(char *i) {
     if (*i == '0')
         abort();

@@ -13,7 +13,7 @@ __printf_chk (int flag, const char *fmt, ...)
 {
   va_list ap;
   int ret;
-#ifdef __OPTIMIZE__
+#if __OPTIMIZE__ >= 2
   if (should_optimize)
     abort ();
 #endif
