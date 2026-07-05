@@ -81,6 +81,14 @@ static char *read_file(char *path) {
 #define MACHINE "unknown"
 #endif
 
+
+// Replace the extension of filename. Strips .c/.i/.s and appends new_ext.
+static char *replace_ext(char *filename, char *new_ext) {
+    char *dot = strrchr(filename, '.');
+    if (dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".i") == 0 || strcmp(dot, ".s") == 0))
+        return format("%.*s%s", (int)(dot - filename), filename, new_ext);
+    return format("%s%s", filename, new_ext);
+}
 void help(void) {
     printf("rcc %s %s - Copyright 2026 Hosokawa-t and Reini Urban\n", VERSION, MACHINE);
     printf("Licensed under the GNU Lesser General Public License v2.1 or later\n");
@@ -348,9 +356,9 @@ int main(int argc, char **argv) {
 
         char *asm_path;
         if (opt_S) {
-            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+            asm_path = opt_o ? out_path : replace_ext(path_basename(cur_path), ".s");
         } else if (opt_c) {
-            asm_path = opt_o ? out_path : format("%s.o", path_basename(cur_path));
+            asm_path = opt_o ? out_path : replace_ext(path_basename(cur_path), ".o");
         } else {
             asm_path = format("rcc_tmp_%d_%d_%s.o", _getpid(), fi, path_basename(cur_path));
         }
@@ -497,17 +505,21 @@ int main(int argc, char **argv) {
         out_paths = reverse(out_paths);
 
         if (opt_c) {
-            // -c: codegen already produced binary .o files; rename to out_path
-            int status = 0;
-            for (OutPath *p = out_paths; p; p = p->next) {
-                if (strcmp(p->path, out_path) != 0) {
-                    if (rename(p->path, out_path) != 0) {
-                        fprintf(stderr, "rcc: error: rename %s -> %s failed\n", p->path, out_path);
-                        status = 1;
+            // -c: codegen already produced binary .o files.
+            // If -o was given, rename the output to the specified name.
+            if (opt_o) {
+                int status = 0;
+                for (OutPath *p = out_paths; p; p = p->next) {
+                    if (strcmp(p->path, out_path) != 0) {
+                        if (rename(p->path, out_path) != 0) {
+                            fprintf(stderr, "rcc: error: rename %s -> %s failed\n", p->path, out_path);
+                            status = 1;
+                        }
                     }
                 }
+                return status;
             }
-            return status;
+            return 0;
         }
         // Linking: codegen already produced .o files; add them to linker command
         char cmd[4096] = "";
