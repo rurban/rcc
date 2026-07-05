@@ -21,6 +21,9 @@ struct VarAttr {
     char *diag_error;
     DiagEntry *diag_entries;
     unsigned char bitfield_mode;
+    bool is_noreturn;
+    bool is_deprecated;
+    char *deprecated_msg;
 };
 
 struct TagScope {
@@ -934,18 +937,54 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             tok = skip(tok, ")");
             continue;
         }
-        // C23 [[attribute]] syntax — skip
+        // C23 [[attribute]] syntax — parse into VarAttr
         if (equalc(tok, "[") && equalc(tok->next, "[")) {
-            tok = tok->next->next;
-            int depth = 1;
-            while (depth > 0 && tok->kind != TK_EOF) {
-                if (equalc(tok, "[") && equalc(tok->next, "[")) depth++;
-                else if (equalc(tok, "]") && equalc(tok->next, "]")) {
-                    depth--;
+            tok = tok->next->next; // skip [[
+            while (tok && tok->kind != TK_EOF &&
+                   !(equalc(tok, "]") && tok->next && equalc(tok->next, "]"))) {
+                if (equalc(tok, ",")) {
                     tok = tok->next;
+                    continue;
+                }
+                // namespace:: (two separate : tokens)
+                if (tok->next && equalc(tok->next, ":") &&
+                    tok->next->next && equalc(tok->next->next, ":")) {
+                    tok = tok->next->next->next; // skip ident ::
+                    continue;
+                }
+                if (tok->kind != TK_IDENT)
+                    error_tok(tok, "expected attribute identifier");
+                if (attr) {
+                    if (equalc(tok, "noreturn"))
+                        attr->is_noreturn = true;
+                    else if (equalc(tok, "deprecated")) {
+                        attr->is_deprecated = true;
+                        Token *next = tok->next;
+                        if (equalc(next, "(") && next->next && next->next->kind == TK_STR) {
+                            size_t len = next->next->len;
+                            attr->deprecated_msg = arena_alloc(len + 3);
+                            attr->deprecated_msg[0] = '"';
+                            memcpy(attr->deprecated_msg + 1, next->next->str, len);
+                            attr->deprecated_msg[len + 1] = '"';
+                            attr->deprecated_msg[len + 2] = '\0';
+                            tok = next->next;
+                            tok = skip(tok->next, ")");
+                        }
+                    }
                 }
                 tok = tok->next;
+                if (equalc(tok, "(")) {
+                    int pdepth = 1;
+                    tok = tok->next;
+                    while (pdepth > 0 && tok && tok->kind != TK_EOF) {
+                        if (equalc(tok, "(")) pdepth++;
+                        else if (equalc(tok, ")"))
+                            pdepth--;
+                        tok = tok->next;
+                    }
+                }
             }
+            if (tok) tok = tok->next->next; // skip ]]
             continue;
         }
         if (tok->kw == ID__ALIGNAS) {
@@ -2330,6 +2369,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
         if (equalc(tok, "inline") || equalc(tok, "__inline") || equalc(tok, "__inline__")) {
             attr->is_inline = true;
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "_Noreturn")) {
+            attr->is_noreturn = true;
             tok = tok->next;
             continue;
         }
