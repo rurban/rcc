@@ -1060,6 +1060,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     char *call_target = node->funcname;
     if (!call_target && node->lhs && node->lhs->var && node->lhs->var->is_function)
         call_target = node->lhs->var->name;
+    // Check for __attribute__((warning/error/diagnose_if)) on function
+    if (!cg_dry_run && node->lhs && node->lhs->var) {
+        if (node->lhs->var->diag_error)
+            error_tok(node->tok, "call to '%s': %s", node->lhs->var->name, node->lhs->var->diag_error);
+        if (node->lhs->var->diag_warning)
+            warn_tok(node->tok, "call to '%s': %s", node->lhs->var->name, node->lhs->var->diag_warning);
+    }
     if (call_target && is_asm_reserved(call_target))
         call_target = format(".L_rcc_%s", call_target);
     init_builtin_names();

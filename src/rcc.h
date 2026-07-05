@@ -295,6 +295,8 @@ struct LVar {
     Reloc *relocs;
     char *cleanup_func; // __attribute__((__cleanup__(func)))
     bool is_tls; // __thread / _Thread_local
+    char *diag_warning; // __attribute__((warning("msg")))
+    char *diag_error; // __attribute__((error("msg")))
 };
 
 void check_type(Node *node);

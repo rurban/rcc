@@ -17,6 +17,8 @@ struct VarAttr {
     bool is_packed;
     bool is_constexpr;
     bool is_auto_type;
+    char *diag_warning;
+    char *diag_error;
     unsigned char bitfield_mode;
 };
 
@@ -1109,6 +1111,64 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     }
                     tok = tok->next;
                     tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "warning") || equalc(tok, "__warning__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    char *msg = NULL;
+                    if (tok->kind == TK_STR)
+                        msg = tok->str;
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (attr && msg)
+                        attr->diag_warning = str_intern(msg, strlen(msg));
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "error") || equalc(tok, "__error__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    char *msg = NULL;
+                    if (tok->kind == TK_STR)
+                        msg = tok->str;
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (attr && msg)
+                        attr->diag_error = str_intern(msg, strlen(msg));
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "diagnose_if")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    Node *cond = conditional(&tok, tok);
+                    long long val = 0;
+                    bool is_true = eval_const_expr(cond, &val) && val;
+                    tok = skip(tok, ",");
+                    char *msg = NULL;
+                    if (tok->kind == TK_STR)
+                        msg = tok->str;
+                    tok = tok->next;
+                    tok = skip(tok, ",");
+                    bool is_error = false;
+                    if (tok->kind == TK_STR && tok->str && strcmp(tok->str, "error") == 0)
+                        is_error = true;
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (attr && msg && is_true) {
+                        if (is_error)
+                            attr->diag_error = str_intern(msg, strlen(msg));
+                        else
+                            attr->diag_warning = str_intern(msg, strlen(msg));
+                    }
                     if (equalc(tok, ","))
                         tok = tok->next;
                     continue;
@@ -6992,6 +7052,8 @@ Program *parse(Token *tok) {
                         fn_lvar->is_inline = attr.is_inline;
                         fn_lvar->is_weak = attr.is_weak;
                         fn_lvar->is_static = attr.is_static;
+                        fn_lvar->diag_warning = attr.diag_warning;
+                        fn_lvar->diag_error = attr.diag_error;
                         if (pending_asm_name)
                             fn_lvar->asm_name = pending_asm_name;
                         if (pending_alias_target) {
