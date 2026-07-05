@@ -2094,6 +2094,10 @@ char *preprocess(char *filename, char *p) {
 
 #include "gcc_predefined.h"
 
+        // Define __OPTIMIZE__ when optimization is enabled (GCC compat)
+        if (opt_O1)
+            define_pre("__OPTIMIZE__", "2");
+
 #ifdef __APPLE__
         if (!find_macro("__APPLE__"))
             define_macro("__APPLE__", false, NULL, 0, "1");
