@@ -30,6 +30,7 @@ reproducible   [[reproducible]] 202207L (C23)
 #error "__has_c_attribute(noreturn)"
 #endif
 
+#if __STDC_VERSION__ >= 202311L
 // C23 [[noreturn]] attribute — function does not return
 [[noreturn]] void exit_now(void);
 
@@ -60,13 +61,16 @@ int f(void) { return 42; }
 int g(void) { return 99; }
 int important(void) { return 1; }
 int critical(void) { return 2; }
+#endif
 
 int main(void)
 {
+#if __STDC_VERSION__ >= 202311L
     // [[nodiscard]] functions: using return value is fine (no warning)
     if (important() != 1) return 1;
     if (critical() != 2) return 2;
     if (f() != 42) return 3;
     if (g() != 99) return 4;
+#endif
     return 0;
 }

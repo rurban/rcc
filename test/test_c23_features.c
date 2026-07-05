@@ -60,6 +60,17 @@ int main(void)
         if ((long long)C != 0xFFFFFFFFFLL) return 15;
     }
 
+#if __STDC_VERSION__ >= 202311L
+    // C23 char8_t (typedef for unsigned char)
+    {
+        char8_t c = 0xFF;
+        if (sizeof(c) != 1) return 16;
+        if ((unsigned char)c != 0xFF) return 17;
+        char8_t *p = &c;
+        if (*p != 0xFF) return 18;
+    }
+#endif
+
     printf("PASS\n");
     return 0;
 }
