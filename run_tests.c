@@ -4055,10 +4055,27 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
 
     /* compile */
     {
-        char *ca[16];
+        char *ca[32];
         int ai = 0;
         ca[ai++] = (char *)rcc;
         ca[ai++] = (char *)rccflags;
+        // Parse dg-options from test file
+        if (content) {
+            char *dg = strstr(content, "dg-options");
+            if (dg) {
+                char *q1 = strchr(dg, '"');
+                if (q1) {
+                    char *q2 = strchr(q1 + 1, '"');
+                    if (q2) {
+                        int ol = (int)(q2 - q1 - 1);
+                        char *opts = strndup(q1 + 1, (size_t)ol);
+                        char *sv = NULL;
+                        for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
+                            ca[ai++] = tok;
+                    }
+                }
+            }
+        }
         ca[ai++] = "-I";
         ca[ai++] = g_tort_dir;
         ca[ai++] = "-o";
@@ -4233,10 +4250,27 @@ static void run_torture_test(const char *src, bool summary_only) {
     snprintf(exe_path, sizeof(exe_path), "%s/torture_rcc_%s", get_tmpdir(), name);
     if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
         strcat(exe_path, ".exe");
-    char *ca[16];
+    char *ca[32];
     int ai = 0;
     ca[ai++] = (char *)rcc;
     ca[ai++] = (char *)rccflags;
+    // Parse dg-options from test file
+    if (content) {
+        char *dg = strstr(content, "dg-options");
+        if (dg) {
+            char *q1 = strchr(dg, '"');
+            if (q1) {
+                char *q2 = strchr(q1 + 1, '"');
+                if (q2) {
+                    int ol = (int)(q2 - q1 - 1);
+                    char *opts = strndup(q1 + 1, (size_t)ol);
+                    char *sv = NULL;
+                    for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
+                        ca[ai++] = tok;
+                }
+            }
+        }
+    }
     ca[ai++] = "-I";
     ca[ai++] = ".";
     ca[ai++] = "-o";
