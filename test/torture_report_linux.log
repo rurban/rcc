@@ -248,7 +248,7 @@
   990127-2                            PASS
   990128-1                            PASS
   990130-1                            PASS
-  990208-1                            PASS
+  990208-1                            FAIL (runtime)
   990211-1                            PASS
   990222-1                            PASS
   990324-1                            PASS
@@ -378,7 +378,7 @@
   20010114-1                          PASS
   20010116-1                          PASS
   20010118-1                          PASS
-  20010119-1                          PASS
+  20010119-1                          FAIL (compile)
   20010122-1                          PASS
   20010123-1                          PASS
   20010129-1                          PASS
@@ -414,7 +414,7 @@
   20011109-2                          PASS
   20011113-1                          PASS
   20011114-1                          PASS
-  20011115-1                          PASS
+  20011115-1                          FAIL (compile)
   20011121-1                          PASS
   20011126-1                          PASS
   20011126-2                          PASS
@@ -466,7 +466,7 @@
   20020615-1                          PASS
   20020619-1                          PASS
   20020716-1                          PASS
-  20020720-1                          PASS
+  20020720-1                          FAIL (compile)
   20020805-1                          PASS
   20020810-1                          PASS
   20020819-1                          PASS
@@ -496,11 +496,11 @@
   20030117-1                          PASS
   20030120-1                          PASS
   20030120-2                          PASS
-  20030125-1                          PASS
+  20030125-1                          FAIL (runtime)
   20030128-1                          PASS
   20030203-1                          PASS
   20030209-1                          PASS
-  20030216-1                          PASS
+  20030216-1                          FAIL (compile)
   20030218-1                          PASS
   20030221-1                          PASS
   20030222-1                          PASS
@@ -589,7 +589,7 @@
   20041019-1                          PASS
   20041112-1                          PASS
   20041113-1                          PASS
-  20041114-1                          PASS
+  20041114-1                          FAIL (compile)
   20041124-1                          PASS
   20041126-1                          PASS
   20041201-1                          PASS
@@ -778,7 +778,7 @@
   arith-rand                          PASS
   ashldi-1                            PASS
   ashrdi-1                            PASS
-  bcp-1                               PASS
+  bcp-1                               FAIL (runtime)
   bf-layout-1                         PASS
   bf-pack-1                           SKIP (nested-func)
   bf-sign-1                           PASS
@@ -801,7 +801,7 @@
   bswap-3                             PASS
   built-in-setjmp                     PASS
   builtin-bitops-1                    PASS
-  builtin-constant                    PASS
+  builtin-constant                    FAIL (runtime)
   builtin-prefetch-1                  PASS
   builtin-prefetch-2                  PASS
   builtin-prefetch-3                  PASS
@@ -819,7 +819,7 @@
   comp-goto-2                         SKIP (trampolines)
   compare-1                           PASS
   compare-2                           PASS
-  compare-3                           PASS
+  compare-3                           FAIL (compile)
   complex-1                           SKIP (nested-func)
   complex-2                           SKIP (nested-func)
   complex-3                           PASS
@@ -854,7 +854,7 @@
   floatunsisf-1                       PASS
   fprintf-1                           PASS
   fprintf-2                           PASS
-  fprintf-chk-1                       PASS
+  fprintf-chk-1                       FAIL (runtime)
   frame-address                       PASS
   func-ptr-1                          PASS
   gofast                              PASS
@@ -1563,11 +1563,11 @@
   pr119428                            PASS
   printf-1                            PASS
   printf-2                            PASS
-  printf-chk-1                        PASS
+  printf-chk-1                        FAIL (runtime)
   pta-field-1                         PASS
   pta-field-2                         PASS
   ptr-arith-1                         PASS
-  pure-1                              PASS
+  pure-1                              FAIL (compile)
   pushpop_macro                       PASS
   regstack-1                          PASS
   restrict-1                          PASS
@@ -1578,7 +1578,7 @@
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
-  shiftopt-1                          PASS
+  shiftopt-1                          FAIL (compile)
   signed1bitfield-1                   PASS
   simd-1                              SKIP (vector_size)
   simd-2                              SKIP (vector_size)
@@ -1652,10 +1652,10 @@
   va-arg-pack-1                       PASS
   va-arg-trap-1                       PASS
   vfprintf-1                          PASS
-  vfprintf-chk-1                      PASS
+  vfprintf-chk-1                      FAIL (runtime)
   vla-dealloc-1                       PASS
   vprintf-1                           PASS
-  vprintf-chk-1                       PASS
+  vprintf-chk-1                       FAIL (runtime)
   vrp-1                               PASS
   vrp-2                               PASS
   vrp-3                               PASS
@@ -1672,4 +1672,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1569/1569 passed (100%), 0 failed, 102 skipped.
+Torture: 1553/1569 passed (98%), 16 failed (8 compile/8 runtime), 102 skipped.
+
+Compile failures: 20010119-1 20011115-1 20020720-1 20030216-1 20041114-1 compare-3 pure-1 shiftopt-1
+
+Runtime failures: 990208-1 20030125-1 bcp-1 builtin-constant fprintf-chk-1 printf-chk-1 vfprintf-chk-1 vprintf-chk-1

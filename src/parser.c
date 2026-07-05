@@ -5000,9 +5000,8 @@ static Node *unary(Token **rest, Token *tok) {
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
         tok = skip(tok, ",");
-        Node *type_node = assign(&tok, tok);
+        (void)assign(&tok, tok); // type argument (unused)
         *rest = skip(tok, ")");
-        (void)type_node;
         size_t sz = (size_t)-1;
         if (ptr) {
             Node *obj = ptr;
@@ -5019,6 +5018,56 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = new_num((int64_t)sz, start);
         node->ty = ty_ulong;
         return node;
+    }
+    // __builtin_dynamic_object_size(ptr, type) — runtime size via malloc header
+    // For known stack/global arrays: compile-time size.
+    // For pointers: emit code to read glibc malloc chunk header at runtime.
+    if (equalc(tok, "__builtin_dynamic_object_size")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *ptr = assign(&tok, tok);
+        tok = skip(tok, ",");
+        (void)assign(&tok, tok); // type argument (unused)
+        *rest = skip(tok, ")");
+        if (ptr) {
+            Node *obj = ptr;
+            if (obj->kind == ND_ADDR && obj->lhs)
+                obj = obj->lhs;
+            if (obj->kind == ND_LVAR && obj->var && obj->var->ty && obj->var->ty->size > 0) {
+                Type *t = obj->var->ty;
+                if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION) {
+                    Node *node = new_num((int64_t)t->size, start);
+                    node->ty = ty_ulong;
+                    return node;
+                }
+            }
+        }
+        // Heap pointer: emit runtime code to read malloc chunk header.
+        // glibc stores chunk size just before the user pointer:
+        //   chunk_size = *(size_t*)((char*)ptr - sizeof(size_t))
+        //   usable_size = (chunk_size & ~(2*sizeof(size_t)-1)) - 2*sizeof(size_t)
+        int ssz = (int)sizeof(size_t);
+        // ptr_expr: (size_t)(char*)ptr
+        Node *char_ptr = new_unary(ND_CAST, ptr, start);
+        char_ptr->ty = pointer_to(ty_char);
+        // p_minus_1: (size_t*)((char*)ptr - sizeof(size_t))
+        Node *sub = new_binary(ND_SUB, char_ptr, new_num(ssz, start), start);
+        check_type(sub);
+        Node *size_ptr = new_unary(ND_CAST, sub, start);
+        size_ptr->ty = pointer_to(ty_ulong);
+        // chunk_size: *(size_t*)(...)
+        Node *chunk_size = new_unary(ND_DEREF, size_ptr, start);
+        chunk_size->ty = ty_ulong;
+        // chunk_size & ~(2*sizeof(size_t)-1)
+        uint64_t mask = ~(uint64_t)(2 * ssz - 1);
+        Node *masked = new_binary(ND_BITAND, chunk_size, new_num((int64_t)mask, start), start);
+        masked->ty = ty_ulong;
+        check_type(masked);
+        // result: (chunk_size & mask) - 2*sizeof(size_t)
+        Node *result = new_binary(ND_SUB, masked, new_num(2 * ssz, start), start);
+        result->ty = ty_ulong;
+        check_type(result);
+        return result;
     }
     // __builtin_conjf/conj/conjl(z) — complex conjugate: negate the imaginary part
     if (equalc(tok, "__builtin_conjf") || equalc(tok, "__builtin_conj") ||
