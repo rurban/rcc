@@ -374,6 +374,16 @@ static Type *copy_type(Type *ty) {
     return ret;
 }
 
+// C23 typeof_unqual: recursively strip all qualifiers from a type.
+static Type *type_unqual(Type *ty) {
+    if (!ty) return NULL;
+    Type *ret = copy_type(ty);
+    ret->qual = 0;
+    if (ret->base) ret->base = type_unqual(ret->base);
+    if (ret->return_ty) ret->return_ty = type_unqual(ret->return_ty);
+    return ret;
+}
+
 static Type *apply_type_align(Type *ty, int align) {
     if (align <= 0 || align <= ty->align)
         return ty;
@@ -2497,6 +2507,22 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                     ty->qual = 0;
                 }
             }
+            tok = skip(tok, ")");
+            continue;
+        }
+
+        // C23 typeof_unqual - same as typeof but strips all qualifiers recursively
+        if (equalc(tok, "typeof_unqual")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            if (is_typename(tok))
+                ty = type_name(&tok, tok);
+            else {
+                Node *node = expr(&tok, tok);
+                check_type(node);
+                ty = node->ty;
+            }
+            ty = type_unqual(ty);
             tok = skip(tok, ")");
             continue;
         }
