@@ -869,9 +869,14 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
                     p++;
                 char *name = str_intern(start, p - start);
                 int idx = find_param_index(m, name);
+                // Handle __VA_ARGS__ in variadic macros (implicit parameter)
+                if (idx < 0 && m->is_variadic && name == kw_va_args)
+                    idx = m->is_gnu_variadic && m->param_len > 0 ? m->param_len - 1 : m->param_len;
                 if (idx >= 0 && idx < argc) {
-                    // # stringification uses unexpanded (raw) argument
-                    sb_puts(&sb, quote_string(raw_args ? raw_args[idx] : args[idx]));
+                    // For __VA_ARGS__, use merged args since variadic slots
+                    // are combined; named params use raw (unexpanded) args
+                    char *arg = (name == kw_va_args) ? args[idx] : (raw_args ? raw_args[idx] : args[idx]);
+                    sb_puts(&sb, quote_string(arg));
                     continue;
                 }
                 sb_putc(&sb, '#');
