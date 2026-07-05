@@ -143,19 +143,22 @@ void warn_tok(Token *tok, char *fmt, ...) {
         return;
     }
     // Compute line number
-    char *line = tok->ptr;
-    while (current_input < line && line[-1] != '\n')
-        line--;
-    int reported_line = line_num;
-    if (current_line_offset == 0 || tok->ptr < current_input + current_line_offset) {
-        reported_line = 1;
-        for (char *p = current_input; p < line; p++)
-            if (*p == '\n')
-                reported_line++;
-    } else {
-        for (char *p = current_input + current_line_offset; p < line; p++)
-            if (*p == '\n')
-                reported_line++;
+    int reported_line = tok->lineno;
+    if (reported_line <= 0) {
+        char *line = tok->ptr;
+        while (current_input < line && line[-1] != '\n')
+            line--;
+        reported_line = line_num;
+        if (current_line_offset == 0 || tok->ptr < current_input + current_line_offset) {
+            reported_line = 1;
+            for (char *p = current_input; p < line; p++)
+                if (*p == '\n')
+                    reported_line++;
+        } else {
+            for (char *p = current_input + current_line_offset; p < line; p++)
+                if (*p == '\n')
+                    reported_line++;
+        }
     }
     // Use basename of file
     const char *base = current_filename;
@@ -182,10 +185,9 @@ static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     tok->kw = ID_NONE;
     tok->ptr = start;
     tok->len = end - start;
-    if (opt_g) {
+    tok->lineno = lineno;
+    if (opt_g)
         tok->filename = current_debug_filename;
-        tok->lineno = lineno;
-    }
     return tok;
 }
 

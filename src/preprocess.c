@@ -2342,7 +2342,10 @@ char *preprocess(char *filename, char *p) {
     }
 
     SplicedInput spliced = splice_lines_with_counts(p);
-    char *result = preprocess_file(canonical_path(filename), spliced.text, spliced.line_counts, 0);
+    char *resolved_name = (filename && strcmp(filename, "-") == 0)
+        ? "<stdin>"
+        : canonical_path(filename);
+    char *result = preprocess_file(resolved_name, spliced.text, spliced.line_counts, 0);
     if (opt_dM)
         return dump_macros();
     return result;
