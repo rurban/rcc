@@ -271,6 +271,14 @@ struct Reloc {
     int addend;
 };
 
+typedef struct DiagEntry DiagEntry;
+struct DiagEntry {
+    DiagEntry *next;
+    char *msg;
+    bool is_error;
+};
+
+
 typedef struct LVar LVar;
 struct LVar {
     LVar *next;
@@ -297,6 +305,7 @@ struct LVar {
     bool is_tls; // __thread / _Thread_local
     char *diag_warning; // __attribute__((warning("msg")))
     char *diag_error; // __attribute__((error("msg")))
+    DiagEntry *diag_entries; // __attribute__((diagnose_if(...)))
 };
 
 void check_type(Node *node);
@@ -532,6 +541,7 @@ Type *vla_of(Type *base, Node *expr, int64_t arr_len);
 
 // Optimizer (CTFE)
 void optimize(Program *prog);
+bool eval_const_expr(Node *node, long long *val);
 
 // Unicode identifiers
 uint32_t decode_utf8(char **new_pos, char *p);

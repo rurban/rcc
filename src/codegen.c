@@ -1062,10 +1062,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         call_target = node->lhs->var->name;
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
-        if (node->lhs->var->diag_error)
-            error_tok(node->tok, "call to '%s': %s", node->lhs->var->name, node->lhs->var->diag_error);
-        if (node->lhs->var->diag_warning)
-            warn_tok(node->tok, "call to '%s': %s", node->lhs->var->name, node->lhs->var->diag_warning);
+        LVar *fn_var = node->lhs->var;
+        if (fn_var->diag_error)
+            error_tok(node->tok, "call to '%s': %s", fn_var->name, fn_var->diag_error);
+        if (fn_var->diag_warning)
+            warn_tok(node->tok, "call to '%s': %s", fn_var->name, fn_var->diag_warning);
+        // diagnose_if entries are parsed but not emitted (per-call-site
+        // evaluation not yet implemented; condition references params)
     }
     if (call_target && is_asm_reserved(call_target))
         call_target = format(".L_rcc_%s", call_target);

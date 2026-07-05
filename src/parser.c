@@ -19,6 +19,7 @@ struct VarAttr {
     bool is_auto_type;
     char *diag_warning;
     char *diag_error;
+    DiagEntry *diag_entries;
     unsigned char bitfield_mode;
 };
 
@@ -902,7 +903,7 @@ static bool is_typename(Token *tok) {
 
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Node *expr(Token **rest, Token *tok);
-static bool eval_const_expr(Node *node, long long *val);
+bool eval_const_expr(Node *node, long long *val);
 static bool eval_const_addr_expr(Node *node, long long *val);
 static void global_initializer(Token **rest, Token *tok, LVar *var);
 
@@ -1149,9 +1150,16 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 if (equalc(tok, "diagnose_if")) {
                     tok = tok->next;
                     tok = skip(tok, "(");
-                    Node *cond = conditional(&tok, tok);
-                    long long val = 0;
-                    bool is_true = eval_const_expr(cond, &val) && val;
+                    // Skip the condition expression — not evaluated at declaration time.
+                    // clang evaluates at call sites; for now we store the attribute
+                    // message and emit it unconditionally at every call site.
+                    int depth = 0;
+                    while (tok->kind != TK_EOF && !(depth == 0 && equalc(tok, ","))) {
+                        if (equalc(tok, "(")) depth++;
+                        else if (equalc(tok, ")"))
+                            depth--;
+                        tok = tok->next;
+                    }
                     tok = skip(tok, ",");
                     char *msg = NULL;
                     if (tok->kind == TK_STR)
@@ -1163,11 +1171,12 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         is_error = true;
                     tok = tok->next;
                     tok = skip(tok, ")");
-                    if (attr && msg && is_true) {
-                        if (is_error)
-                            attr->diag_error = str_intern(msg, strlen(msg));
-                        else
-                            attr->diag_warning = str_intern(msg, strlen(msg));
+                    if (attr && msg) {
+                        DiagEntry *de = arena_alloc(sizeof(DiagEntry));
+                        de->msg = str_intern(msg, strlen(msg));
+                        de->is_error = is_error;
+                        de->next = attr->diag_entries;
+                        attr->diag_entries = de;
                     }
                     if (equalc(tok, ","))
                         tok = tok->next;
@@ -1237,7 +1246,7 @@ static bool eval_const_addr_expr(Node *node, long long *val) {
     }
 }
 
-static bool eval_const_expr(Node *node, long long *val) {
+bool eval_const_expr(Node *node, long long *val) {
     long long lhs;
     long long rhs;
 
@@ -6891,7 +6900,7 @@ Program *parse(Token *tok) {
             int top_decl_align = 0;
             char *name = NULL;
             Type *ty = declarator(&tok, tok, copy_type(base), &name);
-            tok = read_type_attrs(tok, &top_decl_align, NULL);
+            tok = read_type_attrs(tok, &top_decl_align, &attr);
 
             if (!name) {
                 tok = skip(tok, ";");
@@ -7078,8 +7087,9 @@ Program *parse(Token *tok) {
                         fn_lvar->is_inline = attr.is_inline;
                         fn_lvar->is_weak = attr.is_weak;
                         fn_lvar->is_static = attr.is_static;
-                        fn_lvar->diag_warning = attr.diag_warning;
-                        fn_lvar->diag_error = attr.diag_error;
+                        if (attr.diag_warning) fn_lvar->diag_warning = attr.diag_warning;
+                        if (attr.diag_entries) fn_lvar->diag_entries = attr.diag_entries;
+                        if (attr.diag_error) fn_lvar->diag_error = attr.diag_error;
                         if (pending_asm_name)
                             fn_lvar->asm_name = pending_asm_name;
                         if (pending_alias_target) {
