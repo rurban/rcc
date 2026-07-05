@@ -4985,6 +4985,32 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return rt_expr;
     }
+    // __builtin_object_size(ptr, type) — returns compile-time object size or (size_t)-1
+    if (equalc(tok, "__builtin_object_size")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *ptr = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *type_node = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        (void)type_node;
+        size_t sz = (size_t)-1;
+        if (ptr) {
+            Node *obj = ptr;
+            if (obj->kind == ND_ADDR && obj->lhs)
+                obj = obj->lhs;
+            if (obj->kind == ND_LVAR && obj->var && obj->var->ty && obj->var->ty->size > 0) {
+                Type *t = obj->var->ty;
+                if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION)
+                    sz = (size_t)t->size;
+            } else if (obj->kind == ND_DEREF && obj->lhs && obj->lhs->ty &&
+                       obj->lhs->ty->base && obj->lhs->ty->base->size > 0)
+                sz = (size_t)obj->lhs->ty->base->size;
+        }
+        Node *node = new_num((int64_t)sz, start);
+        node->ty = ty_ulong;
+        return node;
+    }
     // __builtin_conjf/conj/conjl(z) — complex conjugate: negate the imaginary part
     if (equalc(tok, "__builtin_conjf") || equalc(tok, "__builtin_conj") ||
         equalc(tok, "__builtin_conjl")) {
