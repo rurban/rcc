@@ -5565,7 +5565,7 @@ int main(int argc, char **argv) {
         /* first non-flag arg that names a compiler (rcc, gcc, tcc, *-cross):
            treat as the rcc binary.  Otherwise it's a test-name filter and
            rcc stays unset → in-process rcc_lib mode. */
-        else if (!rcc && (contains(a, "rcc") || contains(a, "gcc") || contains(a, "tcc") || contains(a, "-cross")))
+        else if (!rcc && (contains(a, "rcc") || contains(a, "gcc") || contains(a, "tcc") || contains(a, "-cross") || contains(a, "ccc") || contains(a, "kefir") || contains(a, "slimcc") || contains(a, "clang")))
             rcc = a;
         else if (only_test_count < MAX_ONLY_TESTS)
             only_tests[only_test_count++] = a;

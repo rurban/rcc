@@ -1,7 +1,8 @@
 # RCC — Regoshi C Compiler
 
 A fast, self-contained C compiler targeting x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux, arm64 and fixed the rest by Reini Urban.
-**RCC almost as fast as TCC** while keeping compilation speed competitive.
+The goal is to be fast, almost as fast as tcc, but with full gcc compatibility
+and some inexpensive optimizations.
 
 ## Benchmark Results
 
@@ -46,7 +47,7 @@ rcc -O1 -time:
     typecheck   bench.c:      6 us
     opt(CTFE)   bench.c:     27 us
     codegen     bench.c:   1108 us
-    asm+link    bench_o1: 41045 us
+    link        bench_o1: 41045 us
 
 ## Key Features
 
@@ -73,11 +74,10 @@ rcc -O1 -time:
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`.
 
-trampolines, -finstrument, vector_size, remaining gcc builtins, custom clang
-compile-time warnings, fmv, full \_Decimal/Float/Binary support (aliased to float).
-Not yet: C23 `auto`, `typeof`, `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types,
+trampolines, -finstrument, vector_size, fmv, full \_Decimal/Float/Binary support (aliased to float).
+Not yet: C23 `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types,
 Unsupported (skipped in torture tests):
 
 - **Nested functions** (GCC extension) — function definitions inside other functions; would require trampolines on stack-executable pages.
@@ -178,17 +178,24 @@ compiler and tests, it is much faster now.
 The original windows repo is now at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes now:
+This fork passes all tests for all architectures (x86_64 on linux and windows,
+aarch64 on macos) on all our testsuites.
 
-- [152/152 tcc tests](test_report_linux.md) on linux (x86-64)
-- [152/154 tcc tests](test_report_mingw_cross.md) on mingw-cross (x86-64)
-- [156/156 tcc tests](test_report_arm64_cross.md) on arm64-cross (ELF)
-- [156/156 tcc tests](test_report_darwin_cross.md) on darwin-cross (Mach-O, compile+link only)
-- [155/155 tcc tests](test_report_arm64.md) on arm64-darwin native
-- [112/115 tcc tests](test_report_mingw.md) on windows native via powershell testing. (ps1 test artefacts)
-- The c-testsuite pass 220/220 tests on all platforms.
-- The ncc/compliance tests pass 15/15 tests on all platforms.
-- The gcc-torture tests pass all on linux, darwin, mingw. Some arm64 and mingw cross quirks still.
+## Test Results
+
+Linux x86-64 GCC torture suite (test/torture/):
+
+| Compiler | Passed | Failed | Skipped | Notes                  |
+| -------- | ------ | ------ | ------- | ---------------------- |
+| rcc      | 1569   | 0      | 102     | 100% pass rate         |
+| gcc      | 1565   | 4      | 102     | widemul + 20031003-1   |
+| ccc      | 1538   | 31     | 102     | 98%, 14c/17r failures  |
+| clang    | 1431   | 138    | 102     | 91%, 122c/16r failures |
+| tcc      | 1461   | 108    | 102     | 93%, 91c/17r failures  |
+| kefir    | 1095   | 474    | 102     | 69%, 465c/9r failures  |
+| slimcc   | 986    | 583    | 102     | 62%, 575c/8r failures  |
+
+All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 ## Old Known Limitations
 

@@ -32,6 +32,21 @@ tmp*.c
 /tcc_tests
 /run_tests
 /run_tests_arm64
+test_report_linux_ccc.md
+test_report_linux_tcc.md
+test_report_linux_gcc.md
+test_report_linux_clang.md
+test_report_linux_kefir.md
+test_report_linux_slimcc.md
+rcc-*-src/
+rcc-*.tar.*
+c-testsuite.tap.txt
+.rcc-arm64.stamp
+qemu_*.core
+gmon.out
+test-*.summary
+
+# agents
 .claude/
 amazon_bug_bounty/
 test/*.out
@@ -48,13 +63,6 @@ test/*.out
 pngout.png
 rcc-preview2.png
 /chat_export*.md
-rcc-*-src/
-rcc-*.tar.*
-c-testsuite.tap.txt
-.rcc-arm64.stamp
-qemu_*.core
-gmon.out
-test-*.summary
 
 # Bench artifacts
 bench/sqlite3.c
