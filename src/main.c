@@ -332,6 +332,10 @@ int main(int argc, char **argv) {
             }
             add_include_path(path);
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            if (opt_Werror) {
+                fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
+                return 1;
+            }
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
             if (n_inputs < 64)
