@@ -2231,7 +2231,8 @@ char *preprocess(char *filename, char *p) {
         define_pre("__GNUC__", "4");
         define_pre("__GNUC_MINOR__", "0");
         define_pre("__STDC__", "1");
-        define_pre("__STDC_VERSION__", "201112L");
+        define_pre("__STDC_VERSION__", "202311L");
+        define_pre("char8_t", "unsigned char");
         define_pre("__extension__", "");
         // __builtin_va_list is injected as a typedef at parse time
         // Don't define __asm__ or __volatile__ as macros — the parser

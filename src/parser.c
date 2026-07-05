@@ -6842,6 +6842,7 @@ Program *parse(Token *tok) {
     int saved_line_num = line_num;
     Token *head = tokenize("rcc_builtins",
 #if defined(ARCH_ARM64) && defined(__APPLE__)
+                           "typedef unsigned char char8_t;"
                            // Apple ARM64: va_list is char* (simple pointer ABI)
                            "typedef char *__builtin_va_list;"
                            // Declare libc builtins with correct return types
@@ -6862,6 +6863,7 @@ Program *parse(Token *tok) {
                            "void free(void *);"
 #elif defined(ARCH_ARM64)
                            // AArch64 AAPCS64 va_list: 32 bytes
+                           "typedef unsigned char char8_t;"
                            "typedef struct {"
                            "  void *__stack;"
                            "  void *__gr_top;"
@@ -6871,8 +6873,10 @@ Program *parse(Token *tok) {
                            "} __builtin_va_list[1];"
 #elif defined(_WIN32)
                            // Windows x64: va_list is just a char pointer (msvcrt ABI)
+                           "typedef unsigned char char8_t;"
                            "typedef char *__builtin_va_list;"
 #else
+                           "typedef unsigned char char8_t;"
                            // x86-64 System V ABI va_list: 24 bytes
                            "typedef struct {"
                            "  unsigned int gp_offset;"
