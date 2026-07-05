@@ -952,6 +952,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     tok = tok->next->next->next; // skip ident ::
                     continue;
                 }
+                bool consumed = false;
                 if (tok->kind != TK_IDENT)
                     error_tok(tok, "expected attribute identifier");
                 if (attr) {
@@ -969,10 +970,11 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                             attr->deprecated_msg[len + 2] = '\0';
                             tok = next->next;
                             tok = skip(tok->next, ")");
+                            consumed = true;
                         }
                     }
                 }
-                tok = tok->next;
+                if (!consumed) tok = tok->next;
                 if (equalc(tok, "(")) {
                     int pdepth = 1;
                     tok = tok->next;
