@@ -484,7 +484,7 @@ int coff_write(ObjFile *obj, const char *path) {
             xdata_buf[p++] = 0x01; // Version 1, Flags 0
             xdata_buf[p++] = e->prolog_size; // SizeOfProlog
             xdata_buf[p++] = (uint8_t)slots; // CountOfCodes (slots, excl. padding)
-            xdata_buf[p++] = 0x00; // FrameRegister=0, FrameOffset=0
+            xdata_buf[p++] = (uint8_t)e->frame_register; // FrameRegister, FrameOffset=0
             // Unwind codes in reverse prolog order; extra slots follow their code.
             for (int k = e->code_count - 1; k >= 0; k--) {
                 UnwindCode *c = &e->codes[k];

@@ -137,6 +137,7 @@ typedef struct UnwindEntry {
     uint32_t func_start; // .text offset of function start
     uint32_t func_end; // .text offset one past the last byte
     uint8_t prolog_size; // bytes in prolog (through .seh_endprologue)
+    uint8_t frame_register; // 0 = none, else nonvolatile register used as FP (for UNWIND_INFO)
     UnwindCode codes[16]; // captured in prolog order, reversed at emit time
     int code_count; // number of UnwindCode entries (not counting extra slots)
 } UnwindEntry;

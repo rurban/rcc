@@ -1079,16 +1079,12 @@ static void asm_not(SecBuf *s, VReg vr, int size) {
 #endif
 }
 
+#ifndef ARCH_ARM64
 static void asm_dec(SecBuf *s, VReg vr, int size) {
-#ifdef ARCH_ARM64
-    Arm64Reg r = REG(vr);
-    int sf = (size == 8) ? 1 : 0;
-    arm64_sub_imm(s, sf, r, r, 1, 0);
-#else
     X86Reg r = REG(vr);
     x86_dec_r(s, size, r);
-#endif
 }
+#endif
 
 // ============================================================================
 // Logical

@@ -181,6 +181,14 @@ static void uw_pushreg(int reg) { // .seh_pushreg
     c->op = UWOP_PUSH_NONVOL;
     c->info = (uint8_t)reg;
 }
+static void uw_set_fpreg(int reg) { // .seh_setframe
+    if (!cg_uw) return;
+    cg_uw->frame_register = (uint8_t)reg;
+    UnwindCode *c = &cg_uw->codes[cg_uw->code_count++];
+    c->code_offset = (uint8_t)((uint32_t)cg_sec->len - cg_uw_start);
+    c->op = UWOP_SET_FPREG;
+    c->info = (uint8_t)reg;
+}
 static void uw_stackalloc(int size) { // .seh_stackalloc
     if (!cg_uw) return;
     UnwindCode *c = &cg_uw->codes[cg_uw->code_count++];
@@ -12322,6 +12330,9 @@ struct ObjFile *codegen(Program *prog) {
         uw_pushreg(X86_RBP); // .seh_pushreg %rbp
 #endif
         asm_mov_rsp_rbp(cg_sec); // movq %rsp, %rbp
+#ifdef _WIN32
+        uw_set_fpreg(X86_RBP); // .seh_setframe %rbp, 0
+#endif
 
         // Only push callee-saved registers that were actually used
         for (int j = 0; j < callee_count; j++) {
