@@ -2214,152 +2214,6 @@ char *preprocess(char *filename, char *p) {
         if (!find_macro("__MACH__"))
             define_macro("__MACH__", false, NULL, 0, "1");
 #endif
-
-#if 0
-        // OLD: GCC builtin type macros (required for <stdatomic.h> and other system headers)
-        define_pre("__SIZE_TYPE__", "long unsigned int");
-        define_pre("__PTRDIFF_TYPE__", "long int");
-        define_macro("__WCHAR_TYPE__", false, NULL, 0,
-#ifdef _WIN32
-                     "unsigned short"
-#else
-                     "unsigned int"
-#endif
-                     );
-        define_pre("__WINT_TYPE__", "unsigned int");
-        // GCC atomic memory order builtins (required for <stdatomic.h>)
-        define_pre("__ATOMIC_RELAXED", "0");
-        define_pre("__ATOMIC_CONSUME", "1");
-        define_pre("__ATOMIC_ACQUIRE", "2");
-        define_pre("__ATOMIC_RELEASE", "3");
-        define_pre("__ATOMIC_ACQ_REL", "4");
-        define_pre("__ATOMIC_SEQ_CST", "5");
-        // Integer type width macros
-        define_pre("__INT8_TYPE__", "signed char");
-        define_pre("__INT16_TYPE__", "short int");
-        define_pre("__INT32_TYPE__", "int");
-        define_pre("__INT64_TYPE__", "long int");
-        define_pre("__UINT8_TYPE__", "unsigned char");
-        define_pre("__UINT16_TYPE__", "short unsigned int");
-        define_pre("__UINT32_TYPE__", "unsigned int");
-        define_pre("__UINT64_TYPE__", "long unsigned int");
-        define_pre("__CHAR8_TYPE__", "unsigned char");
-        define_pre("__CHAR16_TYPE__", "short unsigned int");
-        define_pre("__CHAR32_TYPE__", "unsigned int");
-        define_pre("__INTMAX_TYPE__", "long int");
-        define_pre("__UINTMAX_TYPE__", "long unsigned int");
-        define_pre("__INTPTR_TYPE__", "long int");
-        define_pre("__UINTPTR_TYPE__", "long unsigned int");
-        define_pre("__INT_LEAST8_TYPE__", "signed char");
-        define_pre("__INT_LEAST16_TYPE__", "short int");
-        define_pre("__INT_LEAST32_TYPE__", "int");
-        define_pre("__INT_LEAST64_TYPE__", "long int");
-        define_pre("__UINT_LEAST8_TYPE__", "unsigned char");
-        define_pre("__UINT_LEAST16_TYPE__", "short unsigned int");
-        define_pre("__UINT_LEAST32_TYPE__", "unsigned int");
-        define_pre("__UINT_LEAST64_TYPE__", "long unsigned int");
-        define_pre("__INT_FAST8_TYPE__", "signed char");
-        define_pre("__INT_FAST16_TYPE__", "long int");
-        define_pre("__INT_FAST32_TYPE__", "long int");
-        define_pre("__INT_FAST64_TYPE__", "long int");
-        define_pre("__UINT_FAST8_TYPE__", "unsigned char");
-        define_pre("__UINT_FAST16_TYPE__", "long unsigned int");
-        define_pre("__UINT_FAST32_TYPE__", "long unsigned int");
-        define_pre("__UINT_FAST64_TYPE__", "long unsigned int");
-        define_pre("__SIG_ATOMIC_TYPE__", "int");
-#ifdef _WIN32
-        if (!find_macro("_WIN32"))
-            define_macro("_WIN32", false, NULL, 0, "1");
-        if (!find_macro("__LLP64__"))
-            define_macro("__LLP64__", false, NULL, 0, "1");
-        // Enable mingw-w64 ANSI stdio wrappers for full C99 printf support (%hhd etc.)
-        if (!find_macro("__USE_MINGW_ANSI_STDIO"))
-            define_macro("__USE_MINGW_ANSI_STDIO", false, NULL, 0, "1");
-#endif
-#ifdef __linux__
-        if (!find_macro("__linux__"))
-            define_macro("__linux__", false, NULL, 0, "1");
-#endif
-#ifdef __APPLE__
-        if (!find_macro("__APPLE__"))
-            define_macro("__APPLE__", false, NULL, 0, "1");
-        if (!find_macro("__leading_underscore"))
-            define_macro("__leading_underscore", false, NULL, 0, "1");
-        if (!find_macro("__MACH__"))
-            define_macro("__MACH__", false, NULL, 0, "1");
-#endif
-#ifdef __FreeBSD__
-        if (!find_macro("__FreeBSD__"))
-            define_macro("__FreeBSD__", false, NULL, 0, "1");
-#endif
-#ifdef __NetBSD__
-        if (!find_macro("__NetBSD__"))
-            define_macro("__NetBSD__", false, NULL, 0, "1");
-#endif
-#ifdef __OpenBSD__
-        if (!find_macro("__OpenBSD__"))
-            define_macro("__OpenBSD__", false, NULL, 0, "1");
-#endif
-#ifdef __DragonFly__
-        if (!find_macro("__DragonFly__"))
-            define_macro("__DragonFly__", false, NULL, 0, "1");
-#endif
-#if !defined(_WIN32)
-        define_pre("__unix", "1");
-        define_pre("__unix__", "1");
-        define_pre("__LP64__", "1");
-#endif
-        define_macro("__builtin_expect", true, builtin_expect_params, 2, "((void)(y),(x))");
-        define_pre("__builtin_abort", "abort");
-        define_pre("__builtin_malloc", "malloc");
-        define_pre("__builtin_calloc", "calloc");
-        define_pre("__builtin_realloc", "realloc");
-        define_pre("__builtin_free", "free");
-        define_pre("__builtin_memcpy", "memcpy");
-        define_pre("__builtin_memcmp", "memcmp");
-        define_pre("__builtin_memmove", "memmove");
-        define_pre("__builtin_memset", "memset");
-        define_pre("__builtin_strlen", "strlen");
-        define_pre("__builtin_strcpy", "strcpy");
-        define_pre("__builtin_strncpy", "strncpy");
-        define_pre("__builtin_strcmp", "strcmp");
-        define_pre("__builtin_strchr", "strchr");
-        define_pre("__builtin_strrchr", "strrchr");
-        define_pre("__builtin_strdup", "strdup");
-        define_pre("__builtin_alloca", "alloca");
-        define_pre("__builtin_exit", "exit");
-        define_pre("__builtin_printf", "printf");
-        define_pre("__builtin_puts", "puts");
-        define_pre("__builtin_sprintf", "sprintf");
-        // __builtin_conjf/conj/conjl are handled inline in parser
-        // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
-        define_pre("__builtin_trap", "abort");
-        define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
-        // __builtin_va_* are handled as parser builtins, not macros
-        define_pre("__GNUC__", "4");
-        define_pre("__GNUC_MINOR__", "0");
-        define_pre("__STDC__", "1");
-        define_pre("__STDC_VERSION__", "202311L");
-        define_pre("char8_t", "unsigned char");
-        define_pre("__extension__", "");
-        // __builtin_va_list is injected as a typedef at parse time
-        // Don't define __asm__ or __volatile__ as macros — the parser
-        // handles __asm__, __asm, and asm directly.  Expanding them here
-        // would strip the leading underscores and break the token-based
-        // is_asm_keyword() detection in the parser.
-        define_pre("__BYTE_ORDER__", "1234");
-        define_pre("__CHAR_BIT__", "8");
-        define_pre("__INT_MAX__", "2147483647");
-        define_pre("__LONG_MAX__", "2147483647L");
-        define_pre("__LONG_LONG_MAX__", "9223372036854775807LL");
-        define_pre("__SIZEOF_INT__", "4");
-        define_pre("__SIZEOF_LONG__", "4");
-        define_pre("__SIZEOF_LONG_LONG__", "8");
-        define_pre("__SIZEOF_POINTER__", "8");
-        define_pre("__SIZEOF_FLOAT__", "4");
-        define_pre("__SIZEOF_DOUBLE__", "8");
-#endif // if 0
-
 #ifdef _WIN32
         if (!find_macro("__LLP64__"))
             define_pre("__LLP64__", "1");
@@ -2399,11 +2253,90 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_printf", "printf");
         define_pre("__builtin_puts", "puts");
         define_pre("__builtin_sprintf", "sprintf");
+
+        // _FORTIFY_SOURCE: __builtin___*_chk using __builtin_object_size
+        // String/memory functions with bounds checking
+        {
+            char *p4[] = {"__dest", "__src", "__len", "__bos", NULL};
+            define_macro("__builtin___memcpy_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
+            define_macro("__builtin___memmove_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memmove(__dest,__src,__len))");
+            define_macro("__builtin___memset_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memset(__dest,__src,__len))");
+            define_macro("__builtin___memcmp_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_memcmp(__dest,__src,__len))");
+            char *p3s[] = {"__dest", "__src", "__bos", NULL};
+            define_macro("__builtin___strcpy_chk", true, p3s, 3,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcpy(__dest,__src))");
+            define_macro("__builtin___strncpy_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_strncpy(__dest,__src,__len))");
+            define_macro("__builtin___strcat_chk", true, p3s, 3,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__dest)+__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcat(__dest,__src))");
+            define_macro("__builtin___strncat_chk", true, p4, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__dest)+(__len)+1)?(abort(),(__dest)):__builtin_strncat(__dest,__src,__len))");
+            char *p2[] = {"__s", "__bos", NULL};
+            define_macro("__builtin___strlen_chk", true, p2, 2,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__s)+1)?(abort(),0):__builtin_strlen(__s))");
+            char *p2f[] = {"__fmt", "__bos", NULL};
+            define_macro("__builtin___printf_chk", true, p2f, 2, "__builtin_printf");
+            define_macro("__builtin___fprintf_chk", true, p2f, 2, "__builtin_fprintf");
+            define_macro("__builtin___vfprintf_chk", true, p2f, 2, "__builtin_vfprintf");
+            char *p3f[] = {"__dest", "__fmt", "__bos", NULL};
+            define_macro("__builtin___sprintf_chk", true, p3f, 3,
+                         "((__bos)!=(size_t)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
+            define_macro("__builtin___vsprintf_chk", true, p3f, 3,
+                         "((__bos)!=(size_t)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
+            char *p4f[] = {"__dest", "__len", "__fmt", "__bos", NULL};
+            define_macro("__builtin___snprintf_chk", true, p4f, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
+            define_macro("__builtin___vsnprintf_chk", true, p4f, 4,
+                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
+
+            // POSIX I/O _chk wrappers: pass through without compile-time check
+            define_pre("__builtin___read_chk", "read");
+            define_pre("__builtin___pread_chk", "pread");
+            define_pre("__builtin___readlink_chk", "readlink");
+            define_pre("__builtin___readlinkat_chk", "readlinkat");
+            define_pre("__builtin___getcwd_chk", "getcwd");
+            define_pre("__builtin___getwd_chk", "getwd");
+            define_pre("__builtin___confstr_chk", "confstr");
+            define_pre("__builtin___getgroups_chk", "getgroups");
+            define_pre("__builtin___ttyname_r_chk", "ttyname_r");
+            define_pre("__builtin___getlogin_r_chk", "getlogin_r");
+            define_pre("__builtin___gethostname_chk", "gethostname");
+            define_pre("__builtin___getdomainname_chk", "getdomainname");
+            define_pre("__read_chk_warn", "read");
+            define_pre("__pread_chk_warn", "pread");
+            define_pre("__readlink_chk_warn", "readlink");
+            define_pre("__readlinkat_chk_warn", "readlinkat");
+            define_pre("__getcwd_chk_warn", "getcwd");
+            define_pre("__getwd_warn", "getcwd");
+            define_pre("__confstr_chk_warn", "confstr");
+            define_pre("__getgroups_chk_warn", "getgroups");
+            define_pre("__ttyname_r_chk_warn", "ttyname_r");
+            define_pre("__getlogin_r_chk_warn", "getlogin_r");
+            define_pre("__gethostname_chk_warn", "gethostname");
+            define_pre("__getdomainname_chk_warn", "getdomainname");
+            define_pre("__builtin___read_chk_warn", "read");
+            define_pre("__builtin___pread_chk_warn", "pread");
+            define_pre("__builtin___readlink_chk_warn", "readlink");
+            define_pre("__builtin___readlinkat_chk_warn", "readlinkat");
+            define_pre("__builtin___getcwd_chk_warn", "getcwd");
+            define_pre("__builtin___getwd_warn", "getcwd");
+            define_pre("__builtin___confstr_chk_warn", "confstr");
+            define_pre("__builtin___getgroups_chk_warn", "getgroups");
+            define_pre("__builtin___ttyname_r_chk_warn", "ttyname_r");
+            define_pre("__builtin___getlogin_r_chk_warn", "getlogin_r");
+            define_pre("__builtin___gethostname_chk_warn", "gethostname");
+            define_pre("__builtin___getdomainname_chk_warn", "getdomainname");
+        }
+
         // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
         define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
-        // __builtin_va_* are handled as parser builtins, not macros
+
         // Math classification builtins — handled inline in codegen
         // __builtin_isinf* are handled inline in codegen (not macros)
         // so they work on all targets including MSVCRT where isinf() is missing.
@@ -2421,6 +2354,7 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_vsprintf", "vsprintf");
         define_pre("__builtin_vsnprintf", "vsnprintf");
         define_pre("__extension__", "");
+        // __builtin_va_* are handled as parser builtins, not macros
         // __builtin_va_list is injected as a typedef at parse time
         // Don't define __asm__ or __volatile__ as macros — the parser
         // handles __asm__, __asm, and asm directly.  Expanding them here

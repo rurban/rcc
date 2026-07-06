@@ -2,6 +2,7 @@
 // https://en.cppreference.com/c/language/integer_constant
 
 #include <stdio.h>
+#include <uchar.h>
 
 #warning "this is a test warning (expected)"
 
@@ -72,10 +73,20 @@ int main(void)
         char8_t *p = &c;
         if (*p != 0xFF) return 18;
     }
+
+    // C23 typeof and typeof_unqual
+    {
+        int x = 42;
+        typeof(x) y = x;
+        if (y != 42) return 21;
+        const int ci = 99;
+        typeof_unqual(ci) z = ci;
+        z = 100; // must be assignable (stripped const)
+        if (z != 100) return 22;
+    }
     printf("PASS\n");
 #else
     printf("TODO (-std=c23 missing)\n");
 #endif
-
     return 0;
 }
