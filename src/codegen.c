@@ -292,6 +292,25 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
     X86Reg rd = REG(dst);
     X86Reg rb = REG(base);
     EMIT_GUARD;
+    if (opt_pic) {
+        // Initial-exec TLS model for shared objects:
+        //   mov var@GOTTPOFF(%rip), dst ; add base, dst
+        // (base holds %fs:0). Local-exec TPOFF32 relocs are rejected by
+        // the linker when building a .so.
+        size_t off = s->len;
+        X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+        x86_mov_rm(s, 8, rd, m); // mov var@GOTTPOFF(%rip), dst
+        if (!cg_dry_run) {
+            int sidx = objfile_find_sym(cg_obj, label);
+            if (sidx < 0) {
+                bool il = label[0] == '.';
+                sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_TLS);
+            }
+            objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_GOTTPOFF, -4);
+        }
+        x86_add_rr(s, 8, rd, rb); // add base, dst
+        return s->len - off;
+    }
     size_t off = s->len;
     uint8_t rex = 0x48;
     if (rd & 8) rex |= 0x04;

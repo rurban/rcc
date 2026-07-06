@@ -2,6 +2,7 @@
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include "asm.h"
+#include <stdarg.h>
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -38,8 +39,32 @@ struct OutPath {
     char *path;
 };
 static OutPath *out_paths;
-static OutPath *obj_paths;
 
+// Growable string buffer for the linker command line: libtool link lines
+// (objects interleaved with -Wl flags) routinely exceed any fixed size.
+static void xappendf(char **buf, size_t *len, size_t *cap, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return;
+    if (*len + n + 1 > *cap) {
+        size_t ncap = *cap ? *cap : 256;
+        while (*len + n + 1 > ncap)
+            ncap *= 2;
+        *buf = realloc(*buf, ncap);
+        if (!*buf) {
+            fprintf(stderr, "rcc: fatal error: out of memory\n");
+            exit(1);
+        }
+        *cap = ncap;
+    }
+    va_start(ap, fmt);
+    vsnprintf(*buf + *len, *cap - *len, fmt, ap);
+    va_end(ap);
+    *len += n;
+}
 
 OutPath *reverse(OutPath *head) {
     OutPath *prev = NULL;
@@ -181,14 +206,15 @@ int main(int argc, char **argv) {
     bool opt_E = false;
     bool opt_o = false;
     bool opt_stdout = false; // -o - : write final output to stdout
-    char libs[512] =
+    // Ordered linker arguments: -l/-L/-Wl flags AND object/archive inputs,
+    // in argv order. Interleaving matters (-Wl,--whole-archive lib.a
+    // -Wl,--no-whole-archive), so they share one buffer.
+    char *libs = NULL;
+    size_t libs_len = 0, libs_cap = 0;
+    bool have_link_inputs = false;
 #ifdef _WIN32
-        " -lm"
-#else
-        ""
+    xappendf(&libs, &libs_len, &libs_cap, " -lm");
 #endif
-        ;
-    int libs_len = strlen(libs);
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--help")) {
@@ -268,46 +294,32 @@ int main(int argc, char **argv) {
                 opt_stdout = true;
         } else if (!strcmp(argv[i], "-pthread")) {
             add_define("_REENTRANT");
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "--as-needed") ||
                    !strcmp(argv[i], "--no-as-needed")) {
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " -Wl,%s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,%s", argv[i]);
         } else if (!strcmp(argv[i], "-z")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -z\n");
                 return 1;
             }
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " -Wl,-z,%s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,-z,%s", argv[i]);
         } else if (!strcmp(argv[i], "-rpath")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -rpath\n");
                 return 1;
             }
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len,
-                             " -Wl,-rpath,%s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,-rpath,%s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
                    !strcmp(argv[i], "-shared") || !strcmp(argv[i], "-static") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len, " %s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -soname\n");
                 return 1;
             }
-            int n = snprintf(libs + libs_len, sizeof(libs) - libs_len,
-                             " -Wl,-soname,%s", argv[i]);
-            if (n > 0 && libs_len + n < (int)sizeof(libs))
-                libs_len += n;
+            xappendf(&libs, &libs_len, &libs_cap, " -Wl,-soname,%s", argv[i]);
         } else if (!strncmp(argv[i], "-D", 2)) {
             char *def = argv[i] + 2;
             if (*def == '\0') {
@@ -366,7 +378,9 @@ int main(int argc, char **argv) {
             }
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
-            // Object files and libraries go directly to the linker
+            // Object files and libraries go directly to the linker, in
+            // argv order (interleaved with -Wl flags). They are caller
+            // files: never delete them like our own temp objects.
             const char *ext = strrchr(argv[i], '.');
             if (ext && (!strcmp(ext, ".o") || !strcmp(ext, ".lo") || !strcmp(ext, ".a") || !strcmp(ext, ".so")
 #ifdef _WIN32
@@ -375,18 +389,16 @@ int main(int argc, char **argv) {
                         || !strcmp(ext, ".dylib")
 #endif
                             )) {
-                OutPath *p = arena_alloc(sizeof(OutPath));
-                p->path = argv[i];
-                p->next = out_paths;
-                out_paths = p;
+                xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+                have_link_inputs = true;
             } else if (n_inputs < 64) {
                 input_files[n_inputs++] = argv[i];
             }
         }
     }
 
-    // Allow link-only mode: object files from command line go to out_paths
-    if (n_inputs == 0 && !out_paths) {
+    // Allow link-only mode: object files from command line go to the linker
+    if (n_inputs == 0 && !have_link_inputs) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
     }
@@ -569,7 +581,8 @@ int main(int argc, char **argv) {
             return 0;
         }
         // Linking: codegen already produced .o files; add them to linker command
-        char cmd[4096] = "";
+        char *cmd = NULL;
+        size_t cmd_len = 0, cmd_cap = 0;
         int status = 0;
         // For -o -, link to a temp file then stream it to stdout afterwards.
         char stdout_tmp[256] = "";
@@ -580,33 +593,23 @@ int main(int argc, char **argv) {
         }
         // Build the linker command line: backend compiler + output flag first
 #ifdef __APPLE__
-        snprintf(cmd, sizeof(cmd), GCC " -o %s -arch arm64"
-                                       " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-                                       " -Wl,-undefined,dynamic_lookup",
+        xappendf(&cmd, &cmd_len, &cmd_cap,
+                 GCC " -o %s -arch arm64"
+                     " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+                     " -Wl,-undefined,dynamic_lookup",
                  backend_out);
 #else
         if (opt_pie)
-            snprintf(cmd, sizeof(cmd), GCC " -pie -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o %s", backend_out);
         else if (opt_pic)
-            snprintf(cmd, sizeof(cmd), GCC " -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o %s", backend_out);
         else
-            snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o %s", backend_out);
 #endif
 
-        // Add intermediate object files from multi-file compilations
-        if (obj_paths) {
-            obj_paths = reverse(obj_paths);
-            for (OutPath *p = obj_paths; p; p = p->next) {
-                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
-            }
-        }
-
         // Codegen already produced .o files; add them directly to linker command
-        for (OutPath *p = out_paths; p; p = p->next) {
-            strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-            strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
-        }
+        for (OutPath *p = out_paths; p; p = p->next)
+            xappendf(&cmd, &cmd_len, &cmd_cap, " %s", p->path);
 
 #if defined(_WIN32) || defined(__MINGW32__)
         {
@@ -614,11 +617,11 @@ int main(int argc, char **argv) {
 #ifdef RCC_INCDIR
             const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
             if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_lib);
+                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_lib);
             else
 #endif
                 if (stat("lib/rcc_mingw.obj", &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_mingw.obj");
+                xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_mingw.obj");
         }
 #endif
 #ifdef __APPLE__
@@ -628,16 +631,16 @@ int main(int argc, char **argv) {
 #ifdef RCC_INCDIR
             const char *rcc_darwin = RCC_INCDIR "/../lib/rcc_darwin.dylib";
             if (stat(rcc_darwin, &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " %s", rcc_darwin);
+                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_darwin);
             else
 #endif
                 if (stat("lib/rcc_darwin.dylib", &libst) == 0)
-                snprintf(cmd + strlen(cmd), sizeof(cmd) - strlen(cmd), " lib/rcc_darwin.dylib");
+                xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_darwin.dylib");
         }
 #endif
 
         if (libs_len)
-            strncat(cmd, libs, sizeof(cmd) - strlen(cmd) - 1);
+            xappendf(&cmd, &cmd_len, &cmd_cap, "%s", libs);
 
         if (opt_dryrun) {
             puts(cmd);

@@ -104,6 +104,7 @@ struct ObjReloc {
 #define R_X86_64_PLT32      4
 #define R_X86_64_32        10
 #define R_X86_64_32S       11
+#define R_X86_64_GOTTPOFF  22
 #define R_X86_64_TPOFF32   23
 #define R_X86_64_GOTPCREL   9
 #define R_X86_64_PC64      24
