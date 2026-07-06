@@ -1,5 +1,5 @@
 /* ANSI-C code produced by gperf version 3.2 */
-/* Command-line: gperf -m 10 --output-file=src/keywords.h src/keywords.gperf  */
+/* Command-line: gperf -m 10 --output-file=src/keywords.h.tmp src/keywords.gperf  */
 /* Computed positions: -k'1,3,8,11-12,17,19,$' */
 
 #if !((' ' == 32) && ('!' == 33) && ('"' == 34) && ('#' == 35) \
@@ -51,7 +51,7 @@ inline
 #endif
 #endif
 static unsigned int
-hash (register const char *str, register size_t len)
+hash (const char *str, size_t len)
 {
   static const unsigned short asso_values[] =
     {
@@ -69,7 +69,7 @@ hash (register const char *str, register size_t len)
       131,  35, 104, 203,  50,   6,  16, 121, 170, 149,
        21,  43, 130,   0, 487, 487, 487, 487, 487
     };
-  register unsigned int hval = len;
+  unsigned int hval = len & UINT_MAX;
 
   switch (hval)
     {
@@ -808,16 +808,16 @@ static const struct keyword_entry keyword_table[] =
 #endif
 
 const struct keyword_entry *
-keyword_lookup (register const char *str, register size_t len)
+keyword_lookup (const char *str, size_t len)
 {
   if (len <= MAX_WORD_LENGTH && len >= MIN_WORD_LENGTH)
     {
-      register unsigned int key = hash (str, len);
+      unsigned int key = hash (str, len);
 
       if (key <= MAX_HASH_VALUE)
         if (len == lengthtable[key])
           {
-            register const char *s = keyword_table[key].name;
+            const char *s = keyword_table[key].name;
 
             if (s && *str == *s && !memcmp (str + 1, s + 1, len - 1))
               return &keyword_table[key];
