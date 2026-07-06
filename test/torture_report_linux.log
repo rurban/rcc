@@ -638,7 +638,7 @@
   20060110-2                          PASS
   20060127-1                          PASS
   20060412-1                          PASS
-  20060420-1                          SKIP (vector_size)
+  20060420-1                          PASS
   20060905-1                          PASS
   20060910-1                          PASS
   20060929-1                          PASS
@@ -1366,7 +1366,7 @@
   pr22493-1                           PASS
   pr22630                             PASS
   pr23047                             PASS
-  pr23135                             SKIP (vector_size)
+  pr23135                             SKIP (attribute-mode)
   pr23324                             PASS
   pr23467                             PASS
   pr23604                             PASS
@@ -1576,8 +1576,8 @@
   pr53084                             PASS
   pr53160                             PASS
   pr53465                             PASS
-  pr53645-2                           SKIP (vector_size)
-  pr53645                             SKIP (vector_size)
+  pr53645-2                           FAIL (compile)
+  pr53645                             FAIL (compile)
   pr53688                             PASS
   pr54471                             PASS
   pr54937                             PASS
@@ -1647,7 +1647,7 @@
   pr60072                             PASS
   pr60454                             PASS
   pr60822                             PASS
-  pr60960                             SKIP (vector_size)
+  pr60960                             FAIL (compile)
   pr61306-1                           PASS
   pr61306-2                           PASS
   pr61306-3                           PASS
@@ -1684,7 +1684,7 @@
   pr65401                             PASS
   pr65418-1                           PASS
   pr65418-2                           PASS
-  pr65427                             SKIP (vector_size)
+  pr65427                             FAIL (runtime)
   pr65648                             PASS
   pr65956                             PASS
   pr66187                             PASS
@@ -1731,14 +1731,14 @@
   pr70566                             PASS
   pr70586                             PASS
   pr70602                             PASS
-  pr70903                             SKIP (vector_size)
+  pr70903                             PASS
   pr71083                             PASS
   pr71335                             PASS
   pr71494                             SKIP (nested-func)
   pr71550                             PASS
   pr71554                             PASS
-  pr71626-1                           SKIP (vector_size)
-  pr71626-2                           SKIP (vector_size)
+  pr71626-1                           PASS
+  pr71626-2                           PASS
   pr71631                             PASS
   pr71700                             PASS
   pr77718                             PASS
@@ -1797,8 +1797,8 @@
   pr84748                             PASS
   pr85095                             PASS
   pr85156                             PASS
-  pr85169                             SKIP (vector_size)
-  pr85331                             SKIP (vector_size)
+  pr85169                             PASS
+  pr85331                             FAIL (compile)
   pr85529-1                           PASS
   pr85529-2                           PASS
   pr85582-1                           PASS
@@ -1835,7 +1835,7 @@
   pr91632                             PASS
   pr91635                             PASS
   pr92140                             PASS
-  pr92618                             SKIP (vector_size)
+  pr92618                             PASS
   pr92904                             PASS
   pr93213                             PASS
   pr93249                             PASS
@@ -1850,11 +1850,11 @@
   pr93945                             PASS
   pr94130                             PASS
   pr94134                             PASS
-  pr94412                             SKIP (vector_size)
-  pr94524-1                           SKIP (vector_size)
-  pr94524-2                           SKIP (vector_size)
+  pr94412                             FAIL (compile)
+  pr94524-1                           FAIL (compile)
+  pr94524-2                           FAIL (compile)
   pr94567                             PASS
-  pr94591                             SKIP (vector_size)
+  pr94591                             FAIL (compile)
   pr94724                             PASS
   pr94734                             PASS
   pr94809                             PASS
@@ -1896,7 +1896,7 @@
   pr104604                            PASS
   pr104814                            PASS
   pr104839                            PASS
-  pr105613                            SKIP (vector_size)
+  pr105613                            FAIL (compile)
   pr105984                            PASS
   pr106032                            PASS
   pr106523                            PASS
@@ -1904,7 +1904,7 @@
   pr107879                            PASS
   pr107881-1                          PASS
   pr108064                            PASS
-  pr108292                            SKIP (vector_size)
+  pr108292                            FAIL (compile)
   pr108498-1                          PASS
   pr108498-2                          PASS
   pr108789                            PASS
@@ -1919,9 +1919,9 @@
   pr110252-3                          PASS
   pr110252-4                          PASS
   pr110666-1                          PASS
-  pr110817-1                          SKIP (vector_size)
-  pr110817-2                          SKIP (vector_size)
-  pr110817-3                          SKIP (vector_size)
+  pr110817-1                          FAIL (compile)
+  pr110817-2                          FAIL (compile)
+  pr110817-3                          FAIL (compile)
   pr110914                            PASS
   pr110954-1                          PASS
   pr111151                            PASS
@@ -1966,19 +1966,19 @@
   regstack-1                          PASS
   restrict-1                          PASS
   return-addr                         PASS
-  scal-to-vec1                        SKIP (vector_size)
-  scal-to-vec2                        SKIP (vector_size)
-  scal-to-vec3                        SKIP (vector_size)
+  scal-to-vec1                        FAIL (compile)
+  scal-to-vec2                        FAIL (compile)
+  scal-to-vec3                        FAIL (compile)
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
   shiftopt-1                          PASS
   signed1bitfield-1                   PASS
-  simd-1                              SKIP (vector_size)
-  simd-2                              SKIP (vector_size)
-  simd-4                              SKIP (vector_size)
-  simd-5                              SKIP (vector_size)
-  simd-6                              SKIP (vector_size)
+  simd-1                              SKIP (attribute-mode)
+  simd-2                              FAIL (compile)
+  simd-4                              PASS
+  simd-5                              FAIL (compile)
+  simd-6                              FAIL (compile)
   ssad-run                            PASS
   stdarg-1                            PASS
   stdarg-2                            PASS
@@ -2066,4 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1809/1809 passed (100%), 0 failed, 256 skipped.
+Torture: 1816/1836 passed (98%), 20 failed (19 compile/1 runtime), 229 skipped.
+
+Compile failures: pr53645-2 pr53645 pr60960 pr85331 pr94412 pr94524-1 pr94524-2 pr94591 pr105613 pr108292 pr110817-1 pr110817-2 pr110817-3 scal-to-vec1 scal-to-vec2 scal-to-vec3 simd-2 simd-5 simd-6
+
+Runtime failures: pr65427

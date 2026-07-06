@@ -115,12 +115,13 @@ __rcc_inline __m128 _mm_rcp_ps(__m128 __a) {
         __r[__i] = 1.0f / __a[__i];
     return __r;
 }
-// TODO: _mm_sqrt_ps/_mm_sqrt_ss/_mm_rsqrt_ps need a native sqrtps builtin.
-// A libm-based implementation is intentionally omitted: rcc does not
-// dead-code-eliminate unused static inlines, so referencing sqrtf here would
-// force every xmmintrin.h user to link -lm even when not using sqrt. The
-// sqrtps/rsqrtps x86 encoders already exist (x86_sqrtps/x86_rsqrtps); wiring a
-// __builtin_ia32_sqrtps that emits them is the proper fix.
+// --- Square root / reciprocals (native sqrtps/rsqrtps builtin, no -lm) --------
+__m128 __builtin_ia32_sqrtps(__m128);
+__m128 __builtin_ia32_sqrtss(__m128);
+__m128 __builtin_ia32_rsqrtps(__m128);
+__rcc_inline __m128 _mm_sqrt_ps(__m128 __a) { return __builtin_ia32_sqrtps(__a); }
+__rcc_inline __m128 _mm_sqrt_ss(__m128 __a) { return __builtin_ia32_sqrtss(__a); }
+__rcc_inline __m128 _mm_rsqrt_ps(__m128 __a) { return __builtin_ia32_rsqrtps(__a); }
 
 // --- Shuffle / unpack ------------------------------------------------------
 #define _MM_SHUFFLE(fp3, fp2, fp1, fp0) \

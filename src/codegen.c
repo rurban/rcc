@@ -558,6 +558,7 @@ char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
 char *bi_s_alloca;
 char *bi_chk_printf, *bi_chk_vprintf;
 char *bi_chk_fprintf, *bi_chk_vfprintf;
+char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
 char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
 char *bi_strlen, *bi_strcmp, *bi_strchr;
 char *bi_unreachable;
@@ -640,6 +641,9 @@ void init_builtin_names(void) {
     bi_chk_vprintf = _BI("__vprintf_chk");
     bi_chk_fprintf = _BI("__fprintf_chk");
     bi_chk_vfprintf = _BI("__vfprintf_chk");
+    bi_sqrtps = _BI("__builtin_ia32_sqrtps");
+    bi_sqrtss = _BI("__builtin_ia32_sqrtss");
+    bi_rsqrtps = _BI("__builtin_ia32_rsqrtps");
     kw_retbuf = _BI("__retbuf");
     // Not a keyword-table builtin, so it is interned via str_intern like an
     // ordinary identifier; match node->funcname's interning here.
@@ -672,6 +676,7 @@ static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
 static VReg gen_vector(Node *node);
+static VReg gen_vector_unary_builtin(Node *node);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -1003,7 +1008,6 @@ bool va_arg_need_copy(Type *ty) {
     }
     return false;
 }
-
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
@@ -1109,6 +1113,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         node->lhs->var->asm_name) {
         call_target = node->lhs->var->asm_name;
         is_asm_call = true;
+    }
+
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE dispatch.
+    if (call_target &&
+        (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
+         !strcmp(call_target, "__builtin_ia32_sqrtss") ||
+         !strcmp(call_target, "__builtin_ia32_rsqrtps"))) {
+#ifdef ARCH_ARM64
+        error("vector_size codegen not yet implemented on arm64");
+        return R_NONE;
+#else
+        return gen_vector_unary_builtin(node);
+#endif
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -6148,6 +6165,30 @@ static VReg gen_vector(Node *node) {
 #endif
 }
 
+// Single-arg vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps
+static VReg gen_vector_unary_builtin(Node *node) {
+#ifdef ARCH_ARM64
+    error("vector_size codegen not yet implemented on arm64");
+    return R_NONE;
+#else
+    VReg a = gen_addr(node->args);
+    x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
+    free_reg(a);
+    VReg dst = alloc_int128_addr();
+    const char *name = node->funcname ? node->funcname : (node->lhs && node->lhs->var ? node->lhs->var->name : NULL);
+    if (name) {
+        if (!strcmp(name, "__builtin_ia32_sqrtps"))
+            x86_sqrtps(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_sqrtss"))
+            x86_sqrtss(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_rsqrtps"))
+            x86_rsqrtps(cg_sec, X86_XMM0, X86_XMM0);
+    }
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+#endif
+}
+
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -6181,6 +6222,18 @@ static VReg gen(Node *node) {
         default:
             break;
         }
+    }
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE dispatch.
+    if (node->kind == ND_FUNCALL && node->funcname &&
+        (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
+         !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
+         !strcmp(node->funcname, "__builtin_ia32_rsqrtps"))) {
+#ifdef ARCH_ARM64
+        error("vector_size codegen not yet implemented on arm64");
+        return R_NONE;
+#else
+        return gen_vector_unary_builtin(node);
+#endif
     }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&

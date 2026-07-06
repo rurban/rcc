@@ -23,21 +23,7 @@ Generated: July 10 2026 13:55
 - **Total**: 59
 - **Passed**: 58
 - **Failed**: 0
-- **Pass Rate**: 98%
-
-## c-testsuite
-
-- **Total**: 220
-- **Passed**: 220
-- **Failed**: 0
-- **Pass Rate**: 100%
-
-## NCC Compliance Tests (vs GCC)
-
-- **Total**: 14
-- **Passed**: 14
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Pass Rate**: 86%
 
 ## GCC Torture Tests
 

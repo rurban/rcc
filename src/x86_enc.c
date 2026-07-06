@@ -762,6 +762,11 @@ static void sse_rr_66(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     maybe_rex(s, 0, (int)d, 0, (int)sr);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
+static void sse_rr_f3(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0xf3);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, op, modrxmm(3, d, sr));
+}
 
 // movups xmm, m128 (load, unaligned): 0F 10 /r
 void x86_movups_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
@@ -790,6 +795,7 @@ void x86_orps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x56, d, sr);
 // Packed-single unary (dst = op(src))
 void x86_sqrtps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x51, d, sr); }
 void x86_rsqrtps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x52, d, sr); }
+void x86_sqrtss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_f3(s, 0x51, d, sr); }
 void x86_rcpps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x53, d, sr); }
 // Packed-single shuffles / unpacks
 void x86_unpcklps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x14, d, sr); }

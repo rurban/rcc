@@ -8,6 +8,10 @@ static int fail;
     do { if (!(cond)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #cond); fail++; } } while (0)
 
 static int eqf(float a, float b) { return a == b; }
+static int eqf_tol(float a, float b, float tol) {
+    float d = a - b;
+    return d < tol && d > -tol;
+}
 
 static int veq(__m128 v, float e0, float e1, float e2, float e3) {
     float o[4];
@@ -72,6 +76,24 @@ int main(void) {
     CHECK(veq(_mm_movelh_ps(a, b), 1, 2, 10, 20));
     CHECK(veq(_mm_movehl_ps(a, b), 30, 40, 3, 4));
 
+    /* sqrt / rsqrt (native builtin, no -lm) */
+    {
+        __m128 x = _mm_set_ps(16.0f, 9.0f, 4.0f, 1.0f);
+        __m128 s = _mm_sqrt_ps(x);
+        CHECK(veq(s, 1.0f, 2.0f, 3.0f, 4.0f));
+        /* rsqrtps is approximate: check within 0.1% */
+        __m128 r = _mm_rsqrt_ps(x);
+        CHECK(eqf_tol(r[0], 1.0f, 0.001f));
+        CHECK(eqf_tol(r[1], 0.5f, 0.001f));
+        CHECK(eqf_tol(r[2], 1.0f/3.0f, 0.001f));
+        CHECK(eqf_tol(r[3], 0.25f, 0.001f));
+        /* sqrt_ss: lane 0 only, lanes 1-3 unchanged */
+        __m128 ss = _mm_sqrt_ss(x);
+        CHECK(eqf(ss[0], 1.0f));
+        CHECK(eqf(ss[1], 4.0f));
+        CHECK(eqf(ss[2], 9.0f));
+        CHECK(eqf(ss[3], 16.0f));
+    }
     /* extraction */
     CHECK(_mm_cvtss_f32(a) == 1.0f);
 

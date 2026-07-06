@@ -122,6 +122,7 @@ extern char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
 extern char *bi_s_alloca;
 extern char *bi_chk_printf, *bi_chk_vprintf;
 extern char *bi_chk_fprintf, *bi_chk_vfprintf;
+extern char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
 
 //
 // Parser
