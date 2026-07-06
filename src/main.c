@@ -133,6 +133,7 @@ bool opt_O0 = false;
 bool opt_O1 = false;
 bool opt_W = false;
 bool opt_Werror = false;
+bool opt_Werror_unknown = false;
 bool opt_Wno_homoglyph = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
@@ -226,6 +227,12 @@ int main(int argc, char **argv) {
             opt_Werror = true;
         } else if (!strcmp(argv[i], "-Wno-homoglyph")) {
             opt_Wno_homoglyph = true;
+        } else if (!strcmp(argv[i], "-Werror=unknown-warning-option")) {
+            opt_Werror_unknown = true;
+        } else if (!strcmp(argv[i], "-Wunknown-warning-option")) {
+            ; // we already warn
+        } else if (!strcmp(argv[i], "-Wno-unknown-warning-option")) {
+            opt_Werror_unknown = false;
         } else if (!strcmp(argv[i], "-###")) {
             opt_dryrun = true;
         } else if (!strcmp(argv[i], "-dM")) {
@@ -353,7 +360,7 @@ int main(int argc, char **argv) {
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
-            if (opt_Werror) {
+            if (opt_Werror || opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
                 return 1;
             }

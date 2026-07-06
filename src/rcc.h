@@ -244,6 +244,7 @@ extern bool opt_O0;
 extern bool opt_O1;
 extern bool opt_W;
 extern bool opt_Werror;
+extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;
 extern bool opt_ms_bitfields;
 extern bool opt_dM;
