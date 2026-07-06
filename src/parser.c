@@ -1341,7 +1341,7 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_LOGOR:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs || rhs), true);
     case ND_NEG:
-        return eval_const_expr(node->lhs, &lhs) && ((*val = -lhs), true);
+        return eval_const_expr(node->lhs, &lhs) && ((*val = node->lhs->ty && node->lhs->ty->is_unsigned ? (long long)(-(unsigned long long)lhs) : -lhs), true);
     case ND_NOT:
         return eval_const_expr(node->lhs, &lhs) && ((*val = !lhs), true);
     case ND_BITNOT:
@@ -5947,7 +5947,9 @@ static Node *unary(Token **rest, Token *tok) {
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
             Type *ty = parse_cast_type(&tok, tok->next);
             *rest = tok;
-            return new_num(ty->align, start);
+            Node *n = new_num(ty->align, start);
+            n->ty = ty_ulong; // _Alignof returns size_t (unsigned)
+            return n;
         }
         Node *node = unary(&tok, tok->next);
         check_type(node);
@@ -5956,7 +5958,9 @@ static Node *unary(Token **rest, Token *tok) {
         // For function pointers, use the function type's alignment
         if (node->ty->kind == TY_PTR && node->ty->base && node->ty->base->kind == TY_FUNC)
             al = node->ty->base->align;
-        return new_num(al, start);
+        Node *n2 = new_num(al, start);
+        n2->ty = ty_ulong; // _Alignof returns size_t (unsigned)
+        return n2;
     }
     if (is_cast(tok)) {
         Token *start = tok;
@@ -7013,6 +7017,30 @@ Program *parse(Token *tok) {
             continue;
         }
 
+
+        if (equalc(tok, "_Static_assert")) {
+            Token *st = tok;
+            tok = skip(tok->next, "(");
+            Node *cond = conditional(&tok, tok);
+            long long v = 0;
+            if (!eval_const_expr(cond, &v))
+                error_tok(cond->tok, "static_assert condition must be constant");
+            char *msg = "static_assert failed";
+            if (equalc(tok, ",")) {
+                tok = tok->next;
+                if (tok->kind == TK_STR) {
+                    msg = tok->str;
+                    tok = tok->next;
+                } else {
+                    Node *e = conditional(&tok, tok);
+                    (void)e;
+                }
+            }
+            tok = skip(tok, ")");
+            tok = skip(tok, ";");
+            if (!v) error_tok(st, "%s", msg);
+            continue;
+        }
         VarAttr attr = {};
         Type *base = declspec(&tok, tok, &attr);
 
