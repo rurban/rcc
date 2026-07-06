@@ -352,12 +352,27 @@ int main(int argc, char **argv) {
             }
             fprintf(stderr, "rcc: warning: ignored unknown option %s\n", argv[i]);
         } else {
-            if (n_inputs < 64)
+            // Object files and libraries go directly to the linker
+            const char *ext = strrchr(argv[i], '.');
+            if (ext && (!strcmp(ext, ".o") || !strcmp(ext, ".lo") || !strcmp(ext, ".a") || !strcmp(ext, ".so")
+#ifdef _WIN32
+                        || !strcmp(ext, ".obj") || !strcmp(ext, ".dll") || !strcmp(ext, ".lib")
+#elif defined(__APPLE__)
+                        || !strcmp(ext, ".dylib")
+#endif
+                            )) {
+                OutPath *p = arena_alloc(sizeof(OutPath));
+                p->path = argv[i];
+                p->next = out_paths;
+                out_paths = p;
+            } else if (n_inputs < 64) {
                 input_files[n_inputs++] = argv[i];
+            }
         }
     }
 
-    if (n_inputs == 0) {
+    // Allow link-only mode: object files from command line go to out_paths
+    if (n_inputs == 0 && !out_paths) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
     }
@@ -549,14 +564,7 @@ int main(int argc, char **argv) {
             snprintf(stdout_tmp, sizeof(stdout_tmp), "rcc_tmp_%d_stdout.out", _getpid());
             backend_out = stdout_tmp;
         }
-        if (obj_paths) {
-            obj_paths = reverse(obj_paths);
-            for (OutPath *p = obj_paths; p; p = p->next) {
-                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
-            }
-        }
-
+        // Build the linker command line: backend compiler + output flag first
 #ifdef __APPLE__
         snprintf(cmd, sizeof(cmd), GCC " -o %s -arch arm64"
                                        " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
@@ -570,6 +578,15 @@ int main(int argc, char **argv) {
         else
             snprintf(cmd, sizeof(cmd), GCC " -no-pie -o %s", backend_out);
 #endif
+
+        // Add intermediate object files from multi-file compilations
+        if (obj_paths) {
+            obj_paths = reverse(obj_paths);
+            for (OutPath *p = obj_paths; p; p = p->next) {
+                strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
+                strncat(cmd, p->path, sizeof(cmd) - strlen(cmd) - 1);
+            }
+        }
 
         // Codegen already produced .o files; add them directly to linker command
         for (OutPath *p = out_paths; p; p = p->next) {
