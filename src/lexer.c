@@ -648,16 +648,47 @@ Token *tokenize(char *filename, char *p) {
                 while (*p && *p != '"' && *p != '\n') {
                     if (*p == '\\') {
                         p++;
+                        uint32_t val = 0;
+                        bool have_cp = false;
                         if (*p == 'u' || *p == 'U') {
                             int n_digits = (*p == 'u') ? 4 : 8;
                             p++;
-                            uint32_t val = 0;
                             for (int i = 0; i < n_digits; i++) {
                                 int digit = from_hex(*p);
                                 if (digit < 0) error_at(p, "invalid unicode escape");
                                 val = val * 16 + digit;
                                 p++;
                             }
+                            have_cp = true;
+                        } else if (prefix && prefix != '8' &&
+                                   (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                            // In L/u/U strings a numeric escape denotes a wide
+                            // character value, not a byte. The buffer holds
+                            // UTF-8 that the wide-string converter decodes, so
+                            // encode the value; a raw byte >= 0x80 would be an
+                            // invalid UTF-8 sequence there.
+                            if (*p == 'x') {
+                                p++;
+                                int digit = from_hex(*p);
+                                if (digit < 0)
+                                    error_at(p, "invalid hex escape");
+                                while ((digit = from_hex(*p)) >= 0) {
+                                    val = val * 16 + digit;
+                                    p++;
+                                }
+                            } else {
+                                int n = 0;
+                                while (n < 3 && '0' <= *p && *p <= '7') {
+                                    val = val * 8 + (*p - '0');
+                                    p++;
+                                    n++;
+                                }
+                            }
+                            have_cp = true;
+                        } else {
+                            buf[len++] = read_escaped_char(&p, p);
+                        }
+                        if (have_cp) {
                             // Encode as UTF-8
                             if (val < 0x80) {
                                 buf[len++] = (char)val;
@@ -674,8 +705,6 @@ Token *tokenize(char *filename, char *p) {
                                 buf[len++] = 0x80 | ((val >> 6) & 0x3F);
                                 buf[len++] = 0x80 | (val & 0x3F);
                             }
-                        } else {
-                            buf[len++] = read_escaped_char(&p, p);
                         }
                     } else {
                         buf[len++] = *p++;

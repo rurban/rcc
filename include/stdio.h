@@ -3,14 +3,14 @@
 
 #include <stddef.h>
 
-typedef struct _rcc_FILE FILE;
-
 #ifdef _WIN32
+typedef struct _rcc_FILE FILE;
 FILE *__acrt_iob_func(unsigned idx);
 #define stdin (__acrt_iob_func(0))
 #define stdout (__acrt_iob_func(1))
 #define stderr (__acrt_iob_func(2))
 #elif defined(__APPLE__)
+typedef struct _rcc_FILE FILE;
 extern FILE *__stdinp;
 extern FILE *__stdoutp;
 extern FILE *__stderrp;
@@ -18,6 +18,17 @@ extern FILE *__stderrp;
 #define stdout __stdoutp
 #define stderr __stderrp
 #else
+#include <features.h>
+#ifdef __GLIBC__
+// FILE objects come from the installed glibc at runtime, and code
+// guarded by __GLIBC__ (e.g. safeclib) pokes members like _fileno
+// directly, so pull the layout from glibc's own header instead of
+// hand-copying it, to track whatever glibc version is installed.
+#include <bits/types/struct_FILE.h>
+typedef struct _IO_FILE FILE;
+#else
+typedef struct _rcc_FILE FILE;
+#endif
 extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
