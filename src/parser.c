@@ -1624,7 +1624,7 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     return ty;
 }
 
-static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
+static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
     int64_t dims[16];
     Node *vla_exprs[16] = {0};
     int ndims = 0;
@@ -1644,6 +1644,12 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty) {
                 Node *node = expr(&tok, tok);
                 long long val = 0;
                 if (eval_const_expr(node, &val)) {
+                    if (val < 0) {
+                        if (decl_name)
+                            error_tok(node->tok, "size of array '%s' is negative", decl_name);
+                        else
+                            error_tok(node->tok, "size of array is negative");
+                    }
                     len = val;
                 } else {
                     len = -1;
@@ -1722,7 +1728,7 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
             after_paren = after_paren->next;
         }
         tok = after_paren;
-        Type *suffixed = type_suffix(&tok, tok, ty);
+        Type *suffixed = type_suffix(&tok, tok, ty, NULL);
         *rest = tok;
         return declarator(&tok, start, suffixed, name);
     }
@@ -1751,15 +1757,16 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     if (tok->kind != TK_IDENT) {
         if (name)
             *name = NULL;
-        ty = type_suffix(rest, tok, ty);
+        ty = type_suffix(rest, tok, ty, NULL);
         return apply_type_align(ty, decl_align);
     }
 
+    char *decl_name = tok->name;
     if (name)
-        *name = tok->name;
+        *name = decl_name;
     tok = tok->next;
     tok = read_type_attrs(tok, &decl_align, NULL);
-    ty = type_suffix(rest, tok, ty);
+    ty = type_suffix(rest, tok, ty, decl_name);
     return apply_type_align(ty, decl_align);
 }
 

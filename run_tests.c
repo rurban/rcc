@@ -3127,6 +3127,11 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
 
 /* New C23 feature tests.
  * Report their failures as TODO rather than FAIL. */
+/* test_err and test_err_*: tests that expect a compile failure */
+static bool is_err_test(const char *base) {
+    return strncmp(base, "test_err", 8) == 0;
+}
+
 static bool is_todo_test(const char *base) {
     static const char *todo_tests[] = {
         "test_bit",
@@ -3147,8 +3152,8 @@ static void unit_compile_exec(const char *src_path, const char *base,
     if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
         strcat(r->tmp_exe, ".exe");
 
-    /* test_err: expect compile failure */
-    if (streq(base, "test_err")) {
+    /* test_err*: expect compile failure */
+    if (is_err_test(base)) {
         char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, 30, 1);
@@ -3212,8 +3217,8 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
     r->compile_cmdline = NULL;
     free(r->run_cmdline);
     r->run_cmdline = NULL;
-    /* test_err: expect compile failure */
-    if (streq(base, "test_err")) {
+    /* test_err*: expect compile failure */
+    if (is_err_test(base)) {
         if (r->exit_code == 0) {
             if (is_todo_test(base)) {
                 print_result(base, COL_YELLOW, "TODO (should fail)");
@@ -3437,8 +3442,8 @@ static int run_unit_tests(void) {
             char *run_cmdline = NULL;
             char *run_out = NULL;
 
-            /* test_err: expect compile failure */
-            if (streq(base, "test_err")) {
+            /* test_err*: expect compile failure */
+            if (is_err_test(base)) {
                 char tmp[2 * PATH_MAX];
                 snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
                 if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
