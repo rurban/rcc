@@ -241,6 +241,9 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
 // Append a fresh zeroed Win64 unwind entry and return a pointer to it.
 UnwindEntry *objfile_add_unwind(ObjFile *obj);
 
+
+// Create parent directories for a file path (like mkdir -p dirname)
+void mkdir_p(const char *filepath);
 // Object file writers
 int elf_write(ObjFile *obj, const char *path);
 int macho_write(ObjFile *obj, const char *path);

@@ -7,7 +7,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <assert.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // SecBuf
@@ -502,4 +507,51 @@ void objfile_flush_debug_line(ObjFile *obj, uint64_t text_end) {
     secbuf_emit64le(dar, 0);
     secbuf_emit64le(dar, 0); // terminator
     secbuf_patch32le(dar, dar_start, (uint32_t)(dar->len - dar_start - 4));
+}
+
+// Create parent directories for filepath (like mkdir -p dirname).
+void mkdir_p(const char *filepath) {
+    char tmp[4096];
+    size_t len = strlen(filepath);
+    if (len >= sizeof(tmp)) return;
+    memcpy(tmp, filepath, len + 1);
+    // Find the last path separator to determine the directory part.
+    // If no separator is found, there is no parent directory to create.
+    bool has_dir = false;
+    for (size_t i = len; i > 0; i--) {
+        char c = tmp[i - 1];
+        if (c == '/'
+#ifdef _WIN32
+            || c == '\\'
+#endif
+        ) {
+            tmp[i - 1] = '\0';
+            len = i - 1;
+            has_dir = true;
+            break;
+        }
+    }
+    if (!has_dir) return;
+    // Now create each parent directory in the path
+    for (size_t i = 1; i < len; i++) {
+        char c = tmp[i];
+        if (c == '/'
+#ifdef _WIN32
+            || c == '\\'
+#endif
+        ) {
+            tmp[i] = '\0';
+#ifdef _WIN32
+            _mkdir(tmp);
+#else
+            mkdir(tmp, 0755);
+#endif
+            tmp[i] = c;
+        }
+    }
+#ifdef _WIN32
+    _mkdir(tmp);
+#else
+    mkdir(tmp, 0755);
+#endif
 }

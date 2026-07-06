@@ -365,6 +365,7 @@ int macho_write(ObjFile *obj, const char *path) {
     // -----------------------------------------------------------------------
     // Write file
     // -----------------------------------------------------------------------
+    mkdir_p(path);
     FILE *f = fopen(path, "wb");
     if (!f) {
         free(sym_map);
