@@ -11,6 +11,7 @@ struct VarAttr {
     bool is_extern;
     bool is_static;
     bool is_inline;
+    bool is_gnu_inline;
     bool is_weak;
     bool is_tls;
     bool has_type;
@@ -1090,6 +1091,15 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "gnu_inline") || equalc(tok, "__gnu_inline__")) {
+                    if (attr)
+                        attr->is_gnu_inline = true;
+                    tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "ms_struct")) {
                     if (attr)
                         attr->bitfield_mode = BF_MODE_MS;
@@ -1315,13 +1325,13 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_MUL:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs * rhs), true);
     case ND_DIV:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = lhs / rhs), true);
+        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = rhs == -1 ? -lhs : lhs / rhs), true);
     case ND_MOD:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = lhs % rhs), true);
+        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = rhs == -1 ? 0 : lhs % rhs), true);
     case ND_SHL:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs << rhs), true);
     case ND_SHR:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs >> rhs), true);
+        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = node->lhs->ty && node->lhs->ty->is_unsigned ? (long long)((unsigned long long)lhs >> rhs) : lhs >> rhs), true);
     case ND_BITAND:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs & rhs), true);
     case ND_BITXOR:
@@ -7363,6 +7373,7 @@ Program *parse(Token *tok) {
                     fn->is_constructor = pending_constructor;
                     fn->is_destructor = pending_destructor;
                     fn->is_inline = attr.is_inline;
+                    fn->is_gnu_inline = attr.is_gnu_inline;
                     // is_static is sticky: if any decl was static the fn is static
                     fn->is_static = attr.is_static || (fn_sym2 && fn_sym2->is_static);
                     // is_extern: explicit extern on this def, OR any non-inline extern

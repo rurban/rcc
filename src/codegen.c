@@ -1068,6 +1068,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     char *call_target = node->funcname;
     if (!call_target && node->lhs && node->lhs->var && node->lhs->var->is_function)
         call_target = node->lhs->var->name;
+    // __asm__("sym") on a declaration (glibc __REDIRECT): call the renamed symbol
+    if (node->lhs && node->lhs->var && node->lhs->var->is_function &&
+        node->lhs->var->asm_name)
+        call_target = node->lhs->var->asm_name;
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
         LVar *fn_var = node->lhs->var;
@@ -11485,6 +11489,12 @@ struct ObjFile *codegen(Program *prog) {
             continue;
         }
         Function *fn = item->fn;
+        // GNU89 extern inline (gnu_inline attribute): the body is an inline
+        // definition only; the external definition lives elsewhere (glibc
+        // _FORTIFY_SOURCE wrappers). Emit nothing; calls bind to the extern
+        // symbol.
+        if (fn->is_inline && fn->is_extern && fn->is_gnu_inline)
+            continue;
         current_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;

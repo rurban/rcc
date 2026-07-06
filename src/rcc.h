@@ -487,6 +487,7 @@ struct Function {
     bool is_constructor;
     bool is_destructor;
     bool is_inline;
+    bool is_gnu_inline; // GNU89 semantics: extern inline is never emitted
     bool is_static;
     bool is_extern;
     bool is_weak;
