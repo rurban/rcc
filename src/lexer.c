@@ -753,7 +753,31 @@ Token *tokenize(char *filename, char *p) {
             while (*p && *p != '\'' && *p != '\n') {
                 if (*p == '\\') {
                     p++;
-                    cval = (uint8_t)read_escaped_char(&p, p);
+                    if (char_prefix && char_prefix != '8' &&
+                        (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                        // Wide char literal: numeric escape is a full wide
+                        // character value; (uint8_t) would truncate L'\x2219'
+                        cval = 0;
+                        if (*p == 'x') {
+                            p++;
+                            int digit = from_hex(*p);
+                            if (digit < 0)
+                                error_at(p, "invalid hex escape");
+                            while ((digit = from_hex(*p)) >= 0) {
+                                cval = cval * 16 + digit;
+                                p++;
+                            }
+                        } else {
+                            int n = 0;
+                            while (n < 3 && '0' <= *p && *p <= '7') {
+                                cval = cval * 8 + (*p - '0');
+                                p++;
+                                n++;
+                            }
+                        }
+                    } else {
+                        cval = (uint8_t)read_escaped_char(&p, p);
+                    }
                 } else if (char_prefix && (unsigned char)*p >= 0x80) {
                     // Wide char: decode full UTF-8 codepoint
                     cval = decode_utf8(&p, p);
@@ -764,7 +788,10 @@ Token *tokenize(char *filename, char *p) {
             if (*p != '\'') error_at(start, "unclosed character literal");
             p++;
             cur = cur->next = new_token(TK_NUM, start, p, cur_lineno);
-            cur->val = cval;
+            // Plain char literals have type int with the value of a
+            // (signed) char: '\xe2' is -30, not 226. Prefixed literals
+            // (L/u/U/u8) hold non-negative wide/unsigned values.
+            cur->val = char_prefix ? (int64_t)cval : (int64_t)(int8_t)cval;
             continue;
         }
 

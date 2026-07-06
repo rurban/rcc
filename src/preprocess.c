@@ -1337,6 +1337,72 @@ static long eval_primary(char **rest, char *p, char *filename) {
         *rest = p + 8;
         return pp_eval_line_no;
     }
+
+    // Character literal: 'x', '\xe2', L'\400', u'\x2219', ...
+    // Must match the lexer: full escape value for L/u/U, signed char
+    // value for plain literals.
+    {
+        char *q = p;
+        int prefix = 0;
+        if (q[0] == 'u' && q[1] == '8' && q[2] == '\'') {
+            prefix = '8';
+            q += 2;
+        } else if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '\'') {
+            prefix = *q;
+            q++;
+        }
+        if (*q == '\'') {
+            q++;
+            long val = 0;
+            while (*q && *q != '\'' && *q != '\n') {
+                if (*q == '\\') {
+                    q++;
+                    if (*q == 'x') {
+                        q++;
+                        val = 0;
+                        while (isxdigit((unsigned char)*q)) {
+                            int d = isdigit((unsigned char)*q)
+                                ? *q - '0'
+                                : (tolower((unsigned char)*q) - 'a' + 10);
+                            val = val * 16 + d;
+                            q++;
+                        }
+                    } else if ('0' <= *q && *q <= '7') {
+                        int n = 0;
+                        val = 0;
+                        while (n < 3 && '0' <= *q && *q <= '7') {
+                            val = val * 8 + (*q - '0');
+                            q++;
+                            n++;
+                        }
+                    } else {
+                        switch (*q) {
+                        case 'n': val = '\n'; break;
+                        case 't': val = '\t'; break;
+                        case 'r': val = '\r'; break;
+                        case 'a': val = '\a'; break;
+                        case 'b': val = '\b'; break;
+                        case 'f': val = '\f'; break;
+                        case 'v': val = '\v'; break;
+                        case 'e': val = 27; break;
+                        default: val = (unsigned char)*q; break;
+                        }
+                        q++;
+                    }
+                } else {
+                    val = (unsigned char)*q++;
+                }
+            }
+            if (*q == '\'') {
+                q++;
+                *rest = q;
+                if (!prefix)
+                    val = (long)(signed char)val;
+                return val;
+            }
+        }
+    }
+
     if (pp_is_ident1(*p)) {
         char *start = p;
         while (pp_is_ident2(*p))

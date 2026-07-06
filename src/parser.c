@@ -5123,12 +5123,19 @@ static Node *unary(Token **rest, Token *tok) {
         size_t sz = (mode >= 2) ? 0 : (size_t)-1;
         if (ptr) {
             Node *obj = ptr;
+            while (obj->kind == ND_CAST && obj->lhs)
+                obj = obj->lhs;
             if (obj->kind == ND_ADDR && obj->lhs)
+                obj = obj->lhs;
+            while (obj->kind == ND_CAST && obj->lhs)
                 obj = obj->lhs;
             if (obj->kind == ND_LVAR && obj->var && obj->var->ty && obj->var->ty->size > 0) {
                 Type *t = obj->var->ty;
                 if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION)
                     sz = (size_t)t->size;
+            } else if (obj->kind == ND_STR && obj->ty &&
+                       obj->ty->kind == TY_ARRAY && obj->ty->size > 0) {
+                sz = (size_t)obj->ty->size;
             } else if (obj->kind == ND_DEREF && obj->lhs) {
                 // &arr[i]: remaining size of a known array object. Pointer
                 // arithmetic is already scaled, so the non-array operand of
@@ -5169,7 +5176,11 @@ static Node *unary(Token **rest, Token *tok) {
         *rest = skip(tok, ")");
         if (ptr) {
             Node *obj = ptr;
+            while (obj->kind == ND_CAST && obj->lhs)
+                obj = obj->lhs;
             if (obj->kind == ND_ADDR && obj->lhs)
+                obj = obj->lhs;
+            while (obj->kind == ND_CAST && obj->lhs)
                 obj = obj->lhs;
             if (obj->kind == ND_LVAR && obj->var && obj->var->ty && obj->var->ty->size > 0) {
                 Type *t = obj->var->ty;
