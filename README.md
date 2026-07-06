@@ -149,6 +149,7 @@ compiler and tests, it is much faster now.
     -fPIC|-fpic        generate position-independent code
     -time              print timing for each compilation substep
     -v                 be more verbose
+    -xc                treat input as C
     -###               dry-run (print commands, don't execute)
     -dM                dump all macro definitions (use with -E)
     -fdump-ast         dump AST to stderr for debugging

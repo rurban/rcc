@@ -331,6 +331,13 @@ int main(int argc, char **argv) {
                 path = argv[i];
             }
             add_include_path(path);
+        } else if (!strcmp(argv[i], "-xc") || (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "c"))) {
+            if (!strcmp(argv[i], "-x")) i++; // skip "c"
+        } else if (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "none")) {
+            i++; // reset language
+        } else if (!strcmp(argv[i], "-x") && i + 1 < argc) {
+            fprintf(stderr, "rcc: error: unsupported -x %s, only C is supported\n", argv[i + 1]);
+            return 1;
         } else if (!strncmp(argv[i], "-std=", 5)) {
             const char *std = argv[i] + 5;
             if (!strcmp(std, "c11") || !strcmp(std, "c23") ||
