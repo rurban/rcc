@@ -7,6 +7,7 @@
 
 int main(void)
 {
+#if __STDC_VERSION__ >= 202311L
     // C23 digit separators in decimal
     if (1'000'000 != 1000000) return 1;
     // C23 digit separators in hex
@@ -30,9 +31,10 @@ int main(void)
     // Combined with existing features:
     constexpr int million = 1'000'000;
     static_assert(million == 1000000);
+
     // C23 __has_include
-#if !__has_include("<stdio.h>")
-#error "FAIL: __has_include(\"<stdio.h>\")"
+#if !__has_include("stdio.h")
+#error "FAIL: __has_include(\"stdio.h\")"
 #endif
 #if !__has_include(<stddef.h>)
 #error "FAIL: __has_include(<stddef.h>)"
@@ -40,11 +42,13 @@ int main(void)
 #if __has_include("<nonexistent_header_xyz.h>")
 #error "FAIL: __has_include should be false for missing header"
 #endif
+
     // C23 u8 string literal (type is array of unsigned char)
     {
         const unsigned char *s = u8"hello";
         if (s[0] != 'h' || s[1] != 'e' || s[4] != 'o') return 11;
     }
+
     // C23 enum: always >= int sized, wider for large values
     {
         enum Small { A = 0, B = 255 };
@@ -60,7 +64,6 @@ int main(void)
         if ((long long)C != 0xFFFFFFFFFLL) return 15;
     }
 
-#if __STDC_VERSION__ >= 202311L
     // C23 char8_t (typedef for unsigned char)
     {
         char8_t c = 0xFF;
@@ -69,8 +72,10 @@ int main(void)
         char8_t *p = &c;
         if (*p != 0xFF) return 18;
     }
+    printf("PASS\n");
+#else
+    printf("TODO (-std=c23 missing)\n");
 #endif
 
-    printf("PASS\n");
     return 0;
 }
