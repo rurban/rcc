@@ -671,6 +671,7 @@ static VReg alloc_int128_addr(void);
 static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
+static VReg gen_vector(Node *node);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -4539,6 +4540,30 @@ static bool try_const_int(Node *n, int64_t *val) {
 
 // Generate code to compute the absolute address of an lvalue.
 static VReg gen_addr(Node *node) {
+    // A vector arithmetic/compare/unary result is materialized into a 16-byte
+    // slot; its "address" is that slot (used when a vector value is returned by
+    // value or otherwise needs an address).
+    if (node->ty && node->ty->is_vector) {
+        switch (node->kind) {
+        case ND_ADD:
+        case ND_SUB:
+        case ND_MUL:
+        case ND_DIV:
+        case ND_MOD:
+        case ND_BITAND:
+        case ND_BITOR:
+        case ND_BITXOR:
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+        case ND_NEG:
+        case ND_BITNOT:
+            return gen_vector(node);
+        default:
+            break;
+        }
+    }
     switch (node->kind) {
     case ND_LVAR: {
         //fprintf(stderr, "DEBUG ND_LVAR: %s is_local=%d is_function=%d is_weak=%d\n",
@@ -5980,6 +6005,149 @@ static VReg gen_int128(Node *node) {
     }
 }
 
+// Element-wise vector (__attribute__((vector_size))) arithmetic/compare/unary.
+// Convention (mirrors int128): the value lives in a 16-byte stack slot and this
+// returns a GP register holding the slot address. Operands are also vectors and
+// gen() returns their addresses, so we movups them into xmm and emit packed ops.
+static VReg gen_vector(Node *node) {
+    Type *ty = node->ty;
+    Type *elem = ty ? ty->base : NULL;
+    int esz = elem ? (int)elem->size : 4;
+    bool flt = elem && is_flonum(elem);
+
+    // Unary: -v (negate) and ~v (bitwise not)
+    if (node->kind == ND_NEG || node->kind == ND_BITNOT) {
+        VReg a = gen_addr(node->lhs);
+#ifdef ARCH_ARM64
+        (void)a;
+        (void)esz;
+        (void)flt;
+        error("vector_size codegen not yet implemented on arm64");
+        return R_NONE;
+#else
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
+        free_reg(a);
+        VReg dst = alloc_int128_addr();
+        if (node->kind == ND_BITNOT) {
+            x86_pcmpeqd(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = all ones
+            x86_pxor(cg_sec, X86_XMM0, X86_XMM1); // ~a
+        } else if (flt) {
+            x86_xorps(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0.0
+            if (esz == 8) x86_subpd(cg_sec, X86_XMM1, X86_XMM0);
+            else
+                x86_subps(cg_sec, X86_XMM1, X86_XMM0); // 0 - a
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        } else {
+            x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0
+            if (esz == 8) x86_psubq(cg_sec, X86_XMM1, X86_XMM0);
+            else if (esz == 4)
+                x86_psubd(cg_sec, X86_XMM1, X86_XMM0);
+            else if (esz == 2)
+                x86_psubw(cg_sec, X86_XMM1, X86_XMM0);
+            else
+                x86_psubb(cg_sec, X86_XMM1, X86_XMM0);
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        }
+        x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+        return dst;
+#endif
+    }
+
+    bool lvec = node->lhs && node->lhs->ty && node->lhs->ty->is_vector;
+    bool rvec = node->rhs && node->rhs->ty && node->rhs->ty->is_vector;
+    if (!lvec || !rvec)
+        error("vector_size: scalar/vector broadcast not yet supported; "
+              "make both operands vectors (e.g. _mm_set1_ps)");
+
+#ifdef ARCH_ARM64
+    (void)esz;
+    (void)flt;
+    error("vector_size codegen not yet implemented on arm64");
+    return R_NONE;
+#else
+    // Load lhs into xmm2 (a nested gen_vector uses only xmm0/xmm1, so xmm2
+    // survives the rhs evaluation); then load rhs into xmm1. Each operand's
+    // address register is freed right after use so neither must stay live
+    // across the other's evaluation (the register allocator may spill it).
+    VReg a = gen_addr(node->lhs);
+    x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
+    free_reg(a);
+    VReg b = gen_addr(node->rhs);
+    x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
+    free_reg(b);
+    x86_movaps(cg_sec, X86_XMM0, X86_XMM2); // xmm0 = lhs
+    VReg dst = alloc_int128_addr();
+    switch (node->kind) {
+    case ND_ADD:
+        if (flt) esz == 8 ? x86_addpd(cg_sec, X86_XMM0, X86_XMM1) : x86_addps(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 8)
+            x86_paddq(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 4)
+            x86_paddd(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 2)
+            x86_paddw(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_paddb(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_SUB:
+        if (flt) esz == 8 ? x86_subpd(cg_sec, X86_XMM0, X86_XMM1) : x86_subps(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 8)
+            x86_psubq(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 4)
+            x86_psubd(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 2)
+            x86_psubw(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_psubb(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_MUL:
+        if (!flt) error("vector_size: integer vector multiply not supported");
+        esz == 8 ? x86_mulpd(cg_sec, X86_XMM0, X86_XMM1) : x86_mulps(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_DIV:
+        if (!flt) error("vector_size: integer vector divide not supported");
+        esz == 8 ? x86_divpd(cg_sec, X86_XMM0, X86_XMM1) : x86_divps(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITAND:
+        if (flt) esz == 8 ? x86_andpd(cg_sec, X86_XMM0, X86_XMM1) : x86_andps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_pand(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITOR:
+        if (flt) esz == 8 ? x86_orpd(cg_sec, X86_XMM0, X86_XMM1) : x86_orps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_por(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITXOR:
+        if (flt) x86_xorps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_pxor(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_LT:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 1); // xmm0 = lhs < rhs
+        break;
+    case ND_LE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 2); // xmm0 = lhs <= rhs
+        break;
+    case ND_EQ:
+        if (flt) x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 0);
+        else
+            x86_pcmpeqd(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_NE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 4); // xmm0 = lhs != rhs
+        break;
+    default:
+        error("vector_size: unsupported vector op %d", node->kind);
+    }
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+#endif
+}
+
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -5990,6 +6158,30 @@ static VReg gen(Node *node) {
     // Dispatch int128 nodes to gen_int128()
     if (node->ty && node->ty->kind == TY_INT128)
         return gen_int128(node);
+    // Element-wise vector ops (__attribute__((vector_size))) → packed SSE/NEON.
+    // Only arithmetic/compare/unary route here; lvalue/assign/call/init on a
+    // vector already work via the TY_STRUCT aggregate paths below.
+    if (node->ty && node->ty->is_vector) {
+        switch (node->kind) {
+        case ND_ADD:
+        case ND_SUB:
+        case ND_MUL:
+        case ND_DIV:
+        case ND_MOD:
+        case ND_BITAND:
+        case ND_BITOR:
+        case ND_BITXOR:
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+        case ND_NEG:
+        case ND_BITNOT:
+            return gen_vector(node);
+        default:
+            break;
+        }
+    }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&
         node->lhs->ty->kind == TY_INT128 && node->ty && node->ty->kind != TY_INT128) {

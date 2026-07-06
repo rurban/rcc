@@ -74,7 +74,7 @@ rcc -O1 -time:
 - **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
 - **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 - **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register, x0–x7 argument/return registers, x8 indirect result register, x9–x15 caller-saved, x19–x28 callee-saved. Variadic args passed on the stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long double pairs on ELF use even-odd register pairs.
-- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins. Mandatory SSE4.2 not yet.
+- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins, and `_FORTIFY_SOURCE` check functions. Mandatory SSE4.2 not yet.
 - **Bounds checking builtins** — `__builtin_object_size` returns compile-time size for arrays/structs, `(size_t)-1` for pointers. `__builtin_dynamic_object_size` additionally reads the glibc malloc chunk header at runtime for heap pointers, returning the actual allocated size (may be larger than requested due to rounding). Unlike GCC -O2 which tracks malloc size through the optimizer, rcc reads the chunk metadata.
 - **Insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
 
@@ -82,8 +82,9 @@ rcc -O1 -time:
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`.
 
-trampolines, -finstrument, vector_size, fmv, full \_Decimal/Float/Binary support (aliased to float).
-Not yet: C23 `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types.
+TODO: trampolines, -finstrument, vector_size (needed for xmmintrin.h), fmv,
+full \_Decimal/Float/Binary support (still aliased to float),
+C23 `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types.
 
 Unsupported (skipped in torture tests):
 

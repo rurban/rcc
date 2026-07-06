@@ -403,6 +403,41 @@ static void add_type_internal(Node *node) {
         break;
     }
 
+    // GCC __attribute__((vector_size)) element-wise operators. When an operand
+    // is a vector, the result is the vector type and no scalar promotions or
+    // casts are inserted — packed codegen (gen_vector) handles the lanes. A
+    // vector combined with a scalar broadcasts the scalar to all lanes.
+    {
+        Type *lvt = node->lhs ? node->lhs->ty : NULL;
+        Type *rvt = node->rhs ? node->rhs->ty : NULL;
+        bool lv = lvt && lvt->is_vector;
+        bool rv = rvt && rvt->is_vector;
+        if (lv || rv) {
+            switch (node->kind) {
+            case ND_ADD:
+            case ND_SUB:
+            case ND_MUL:
+            case ND_DIV:
+            case ND_MOD:
+            case ND_BITAND:
+            case ND_BITOR:
+            case ND_BITXOR:
+            case ND_EQ: // vector comparisons yield a same-shape mask vector
+            case ND_NE:
+            case ND_LT:
+            case ND_LE:
+                node->ty = lv ? lvt : rvt;
+                return;
+            case ND_NEG:
+            case ND_BITNOT:
+                node->ty = lvt;
+                return;
+            default:
+                break;
+            }
+        }
+    }
+
     switch (node->kind) {
     case ND_ADD:
     case ND_SUB: {

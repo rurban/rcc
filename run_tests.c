@@ -3981,7 +3981,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_FINSTRUMENT: return "finstrument";
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
-    case SKIP_VECTOR_SIZE: return "vector_size";
+    //case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_MODE: return "attribute-mode";
     case SKIP_MISSING_INCLUDE: return "missing-include";
     case SKIP_C99_RUNTIME: return "c99-runtime";
@@ -4026,8 +4026,8 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_NESTED;
     if (streq(name, "pr70460") || streq(name, "pr41935"))
         return SKIP_NOT_IMPL;
-    if (contains(content, "vector_size") || streq(name, "pr71626-2"))
-        return SKIP_VECTOR_SIZE;
+    //if (contains(content, "vector_size") || streq(name, "pr71626-2"))
+    //    return SKIP_VECTOR_SIZE;
     if (contains(content, "__attribute__((mode"))
         return SKIP_MODE;
 #ifdef _WIN32
