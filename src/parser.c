@@ -1973,6 +1973,31 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         pending_destructor = false;
         pending_asm_name = NULL;
         pending_alias_target = NULL;
+        // C11 _Static_assert inside struct/union body
+        if (equalc(tok, "_Static_assert")) {
+            Token *st = tok;
+            tok = skip(tok->next, "(");
+            Node *cond = conditional(&tok, tok);
+            check_type(cond);
+            long long v = 0;
+            if (!eval_const_expr(cond, &v))
+                error_tok(cond->tok, "static_assert condition must be constant");
+            char *msg = "static_assert failed";
+            if (equalc(tok, ",")) {
+                tok = tok->next;
+                if (tok->kind == TK_STR) {
+                    msg = tok->str;
+                    tok = tok->next;
+                } else {
+                    Node *e = conditional(&tok, tok);
+                    (void)e;
+                }
+            }
+            tok = skip(tok, ")");
+            tok = skip(tok, ";");
+            if (!v) error_tok(st, "%s", msg);
+            continue;
+        }
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)
             error_tok(tok, "invalid storage class in member declaration");

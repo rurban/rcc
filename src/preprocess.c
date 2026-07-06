@@ -1048,6 +1048,19 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             continue;
         }
 
+        // String/char prefix: L", u", U", u8" — don't expand as macro
+        if ((*p == 'L' || *p == 'U') && (p[1] == '"' || p[1] == '\'')) {
+            sb_putc(&sb, *p++);
+            sb_putc(&sb, *p++);
+            continue;
+        }
+        if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' || p[2] == '\'')))) {
+            int n = (p[1] == '8') ? 3 : 2;
+            for (int i = 0; i < n; i++)
+                sb_putc(&sb, *p++);
+            continue;
+        }
+
         char *start = p;
         while (pp_is_ident2(*p))
             p++;
