@@ -732,15 +732,11 @@ static const char *asm_sym_name(const char *name) {
     return name;
 }
 
-static bool call_target_is_asm_label;
-
-static void emit_direct_call(char *name) {
+static void emit_direct_call(char *name, bool is_asm_label) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
-    bool is_asm = call_target_is_asm_label;
-    call_target_is_asm_label = false; // one-shot: reset after use
-    const char *label = is_asm ? asm_sym_name(name) : func_label(name);
+    const char *label = is_asm_label ? asm_sym_name(name) : func_label(name);
     size_t off = asm_call_label(cg_sec); // bl %s
     int sidx = objfile_find_sym(cg_obj, label);
 #ifdef ARCH_ARM64
@@ -798,7 +794,7 @@ static void emit_cleanup_var(LVar *var) {
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset); // lea -offset(%rbp), %rdi
 #endif
-        emit_direct_call(var->cleanup_func);
+        emit_direct_call(var->cleanup_func, false);
         return;
     }
     // Array whose element type carries __cleanup__: call per element, LIFO
@@ -827,7 +823,7 @@ static void emit_cleanup_var(LVar *var) {
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset - i * elem_size); // lea [rbp-off], rdi
 #endif
-        emit_direct_call(func);
+        emit_direct_call(func, false);
     }
 }
 
@@ -1089,13 +1085,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         argv[idx++] = arg;
 
     char *call_target = node->funcname;
+    bool is_asm_call = false;
     if (!call_target && node->lhs && node->lhs->var && node->lhs->var->is_function)
         call_target = node->lhs->var->name;
-    // __asm__("sym") on a declaration (glibc __REDIRECT): call the renamed symbol
+    // __asm__("sym") on a declaration (glibc __REDIRECT): call the renamed symbol.
+    // asm_name already has the Mach-O prefix; skip sym_name() at call site.
     if (node->lhs && node->lhs->var && node->lhs->var->is_function &&
         node->lhs->var->asm_name) {
         call_target = node->lhs->var->asm_name;
-        call_target_is_asm_label = true;
+        is_asm_call = true;
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -2900,9 +2898,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
-            emit_direct_call("__rcc_alloca");
+            emit_direct_call("__rcc_alloca", false);
         } else {
-            emit_direct_call(call_target);
+            emit_direct_call(call_target, is_asm_call);
         }
     } else {
         int callee = gen(node->lhs);
@@ -3330,9 +3328,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
-            emit_direct_call("__rcc_alloca");
+            emit_direct_call("__rcc_alloca", false);
         } else {
-            emit_direct_call(call_target);
+            emit_direct_call(call_target, is_asm_call);
         }
     } else {
         asm_call_reg(cg_sec, callee_reg); // call rcallee_reg
@@ -5414,7 +5412,7 @@ static VReg gen_int128(Node *node) {
         arm64_ldr_uoff(cg_sec, 3, ARM64_X3, REG(rhs), 1); // ldr x3, [rhs, #8]
         arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // sub sp, sp, #32
         arm64_str_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // str dst, [sp, #16]
-        emit_direct_call(fn); // bl fn
+        emit_direct_call(fn, false); // bl fn
         arm64_ldr_uoff(cg_sec, 3, ARM64_X9, ARM64_SP, 2); // ldr x9, [sp, #16]
         arm64_str_uoff(cg_sec, 3, ARM64_X0, ARM64_X9, 0); // str x0, [x9]
         arm64_str_uoff(cg_sec, 3, ARM64_X1, ARM64_X9, 1); // str x1, [x9, #8]
@@ -5426,7 +5424,7 @@ static VReg gen_int128(Node *node) {
         x86_mov_rr(cg_sec, 8, X86_RCX, REG(lhs)); // movq lhs, %rcx
         x86_mov_rr(cg_sec, 8, X86_RDX, REG(rhs)); // movq rhs, %rdx
         x86_sub_ri(cg_sec, 8, X86_RSP, 32); // subq $32, %rsp
-        emit_direct_call(fn);
+        emit_direct_call(fn, false);
         x86_add_ri(cg_sec, 8, X86_RSP, 32); // addq $32, %rsp
         x86_movdqu_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0); // movdqu %xmm0, (dst)
 #else
@@ -5434,7 +5432,7 @@ static VReg gen_int128(Node *node) {
         x86_mov_rm(cg_sec, 8, X86_RSI, x86_mem(REG(lhs), 8)); // movq 8(lhs), %rsi
         x86_mov_rm(cg_sec, 8, X86_RDX, x86_mem(REG(rhs), 0)); // movq (rhs), %rdx
         x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(rhs), 8)); // movq 8(rhs), %rcx
-        emit_direct_call(fn);
+        emit_direct_call(fn, false);
         asm_mov_rax_mem(cg_sec, dst);
         asm_mov_rdx_mem8(cg_sec, dst);
 #endif
@@ -5513,7 +5511,7 @@ static VReg gen_int128(Node *node) {
             free_reg(lhs);
             arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 32, 0); // sub sp, sp, #32
             arm64_str_uoff(cg_sec, 3, REG(dst), ARM64_SP, 2); // str dst, [sp, #16]
-            emit_direct_call(fn); // bl fn
+            emit_direct_call(fn, false); // bl fn
             arm64_ldr_uoff(cg_sec, 3, ARM64_X9, ARM64_SP, 2); // ldr x9, [sp, #16]
             arm64_str_uoff(cg_sec, 3, ARM64_X0, ARM64_X9, 0); // str x0, [x9]
             arm64_str_uoff(cg_sec, 3, ARM64_X1, ARM64_X9, 1); // str x1, [x9, #8]
@@ -10016,7 +10014,7 @@ static VReg gen(Node *node) {
                 // Complex float division via libgcc: d0/d1 = lhs, d2/d3 = rhs.
                 int result_spill = spill_offset(result);
                 asm_stur_fp(cg_sec, result, result_spill); // str x{result}, [x29, #-spill_offset]
-                emit_direct_call(base_sz == 4 ? "__divsc3" : "__divdc3"); // bl __divsc3/__divdc3
+                emit_direct_call(base_sz == 4 ? "__divsc3" : "__divdc3", false); // bl __divsc3/__divdc3
                 asm_ldur_fp(cg_sec, result, result_spill); // ldr x{result}, [x29, #-spill_offset]
                 asm_str_fp(cg_sec, 0, result, base_sz);
                 arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
@@ -12385,7 +12383,7 @@ struct ObjFile *codegen(Program *prog) {
         // ___chkstk_ms to touch each page in turn.
         if (sub_amount >= 4096) {
             x86_mov_ri(cg_sec, 4, X86_RAX, sub_amount); // movl $sub_amount, %eax
-            emit_direct_call("___chkstk_ms"); // call ___chkstk_ms
+            emit_direct_call("___chkstk_ms", false); // call ___chkstk_ms
             x86_sub_rr(cg_sec, 8, X86_RSP, X86_RAX); // subq %rax, %rsp
         } else
 #endif
