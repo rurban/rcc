@@ -88,5 +88,6 @@ float tanhf(float);
 #define NAN (0.0/0.0)
 #define HUGE_VAL (1.0/0.0)
 #define HUGE_VALF ((float)(1.0/0.0))
+#define HUGE_VALL ((long double)(1.0/0.0))
 
 #endif

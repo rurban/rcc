@@ -1048,15 +1048,18 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             continue;
         }
 
-        // String/char prefix: L", u", U", u8" — don't expand as macro
+        // String/char prefix: L", u", U", u8" — don't expand as macro.
+        // Emit only the prefix and let the quote branch above copy the
+        // whole literal; emitting the opening quote here would make the
+        // literal's closing quote look like a new opening one, swallowing
+        // the rest of the line.
         if ((*p == 'L' || *p == 'U') && (p[1] == '"' || p[1] == '\'')) {
-            sb_putc(&sb, *p++);
             sb_putc(&sb, *p++);
             continue;
         }
         if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' || p[2] == '\'')))) {
-            int n = (p[1] == '8') ? 3 : 2;
-            for (int i = 0; i < n; i++)
+            sb_putc(&sb, *p++);
+            if (*p == '8')
                 sb_putc(&sb, *p++);
             continue;
         }
