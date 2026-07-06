@@ -1333,9 +1333,9 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_NE:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs != rhs), true);
     case ND_LT:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs < rhs), true);
+        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = (node->lhs->ty && node->lhs->ty->is_unsigned) || (node->rhs->ty && node->rhs->ty->is_unsigned) ? (unsigned long long)lhs < (unsigned long long)rhs : lhs < rhs), true);
     case ND_LE:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs <= rhs), true);
+        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = (node->lhs->ty && node->lhs->ty->is_unsigned) || (node->rhs->ty && node->rhs->ty->is_unsigned) ? (unsigned long long)lhs <= (unsigned long long)rhs : lhs <= rhs), true);
     case ND_LOGAND:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs && rhs), true);
     case ND_LOGOR:
@@ -3789,6 +3789,7 @@ static Node *declaration(Token **rest, Token *tok) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *cond = conditional(&tok, tok);
+        check_type(cond);
         long long val = 0;
         if (!eval_const_expr(cond, &val))
             error_tok(cond->tok, "static_assert condition must be a constant expression");
@@ -7022,6 +7023,7 @@ Program *parse(Token *tok) {
             Token *st = tok;
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);
+            check_type(cond);
             long long v = 0;
             if (!eval_const_expr(cond, &v))
                 error_tok(cond->tok, "static_assert condition must be constant");
