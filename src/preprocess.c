@@ -1873,14 +1873,10 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     if (path) {
                         char *inc = read_pp_file(path);
                         if (inc) {
-                            int incl_lines = 0;
-                            for (char *ip = inc; *ip; ip++)
-                                if (*ip == '\n') incl_lines++;
                             unsigned src_resume = line_no + 1; // source line after #include
-                            sb_puts(&out, format("# %u \"%s\"\n", line_no + 1, spec));
+                            sb_puts(&out, format("# 1 \"%s\"\n", spec));
                             SplicedInput spliced_inc = splice_lines_with_counts(inc);
                             sb_puts(&out, preprocess_file(full_path(path), spliced_inc.text, spliced_inc.line_counts, depth + 1));
-                            line_no += incl_lines;
                             sb_puts(&out, format("# %u \"%s\"\n", src_resume, fpath));
                         } else {
                             fprintf(stderr, "%s:%d: error: cannot read include file '%s'\n", fpath, line_no, path);
