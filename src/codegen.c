@@ -732,11 +732,15 @@ static const char *asm_sym_name(const char *name) {
     return name;
 }
 
+static bool call_target_is_asm_label;
+
 static void emit_direct_call(char *name) {
     if (cg_dry_run) return;
     if (is_asm_reserved(name))
         name = format(".L_rcc_%s", name);
-    const char *label = func_label(name);
+    bool is_asm = call_target_is_asm_label;
+    call_target_is_asm_label = false; // one-shot: reset after use
+    const char *label = is_asm ? asm_sym_name(name) : func_label(name);
     size_t off = asm_call_label(cg_sec); // bl %s
     int sidx = objfile_find_sym(cg_obj, label);
 #ifdef ARCH_ARM64
@@ -1089,8 +1093,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         call_target = node->lhs->var->name;
     // __asm__("sym") on a declaration (glibc __REDIRECT): call the renamed symbol
     if (node->lhs && node->lhs->var && node->lhs->var->is_function &&
-        node->lhs->var->asm_name)
+        node->lhs->var->asm_name) {
         call_target = node->lhs->var->asm_name;
+        call_target_is_asm_label = true;
+    }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
         LVar *fn_var = node->lhs->var;

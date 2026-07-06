@@ -161,12 +161,19 @@ static const char *var_sym_label(LVar *var) {
 // Assembly label for a function: respects __asm__ names (used as-is) and
 // applies sym_name() to regular C identifiers.
 static const char *func_label(char *name) {
-    for (TLItem *item = all_items; item; item = item->next)
+    for (TLItem *item = all_items; item; item = item->next) {
         if (item->kind == TL_FUNC && !strcmp(item->fn->name, name)) {
             if (item->fn->asm_name)
                 return item->fn->asm_name;
             return sym_name(item->fn->name);
         }
+    }
+    // If name matches a known function's asm_name, use it as-is
+    // (e.g., __asm__-renamed declarations from system headers)
+    for (TLItem *item = all_items; item; item = item->next)
+        if (item->kind == TL_FUNC && item->fn->asm_name &&
+            !strcmp(item->fn->asm_name, name))
+            return item->fn->asm_name;
     return sym_name(name);
 }
 

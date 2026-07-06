@@ -5,9 +5,9 @@ Generated: July 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 116
-- **Failed**: 4
-- **Pass Rate**: 96%
+- **Passed**: 117
+- **Failed**: 3
+- **Pass Rate**: 97%
 
 ## Detailed Results
 
@@ -125,7 +125,7 @@ Generated: July 2026
 | 111_conversion              | PASS      | Output matches |
 | 117_builtins                | PASS      | Output matches |
 | 118_switch                  | PASS      | Output matches |
-| 119_random_stuff            | EXEC_FAIL | non-zero exit  |
+| 119_random_stuff            | PASS      | Output matches |
 | 121_struct_return           | PASS      | Output matches |
 | 122_vla_reuse               | PASS      | Output matches |
 | 123_vla_bug                 | PASS      | Output matches |
