@@ -5109,15 +5109,18 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return rt_expr;
     }
-    // __builtin_object_size(ptr, type) — returns compile-time object size or (size_t)-1
+    // __builtin_object_size(ptr, type) — returns compile-time object size,
+    // or (size_t)-1 (modes 0/1) / 0 (modes 2/3) when unknown
     if (equalc(tok, "__builtin_object_size")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
         tok = skip(tok, ",");
-        (void)assign(&tok, tok); // type argument (unused)
+        Node *mode_node = assign(&tok, tok);
         *rest = skip(tok, ")");
-        size_t sz = (size_t)-1;
+        long long mode = 0;
+        eval_const_expr(mode_node, &mode);
+        size_t sz = (mode >= 2) ? 0 : (size_t)-1;
         if (ptr) {
             Node *obj = ptr;
             if (obj->kind == ND_ADDR && obj->lhs)
@@ -5126,9 +5129,29 @@ static Node *unary(Token **rest, Token *tok) {
                 Type *t = obj->var->ty;
                 if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION)
                     sz = (size_t)t->size;
-            } else if (obj->kind == ND_DEREF && obj->lhs && obj->lhs->ty &&
-                       obj->lhs->ty->base && obj->lhs->ty->base->size > 0)
-                sz = (size_t)obj->lhs->ty->base->size;
+            } else if (obj->kind == ND_DEREF && obj->lhs) {
+                // &arr[i]: remaining size of a known array object. Pointer
+                // arithmetic is already scaled, so the non-array operand of
+                // ND_ADD is the constant byte offset. Anything else stays
+                // unknown: guessing (e.g. the element size) makes fortify
+                // checks fail with false overflows.
+                Node *padd = obj->lhs;
+                Node *base = padd, *off_expr = NULL;
+                if (padd->kind == ND_ADD) {
+                    base = padd->lhs;
+                    off_expr = padd->rhs;
+                    if (base->kind != ND_LVAR) {
+                        base = padd->rhs;
+                        off_expr = padd->lhs;
+                    }
+                }
+                long long off = 0;
+                if (base->kind == ND_LVAR && base->var && base->var->ty &&
+                    base->var->ty->kind == TY_ARRAY && base->var->ty->size > 0 &&
+                    (!off_expr || eval_const_expr(off_expr, &off)) &&
+                    off >= 0 && off <= base->var->ty->size)
+                    sz = (size_t)(base->var->ty->size - off);
+            }
         }
         Node *node = new_num((int64_t)sz, start);
         node->ty = ty_ulong;
