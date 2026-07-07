@@ -371,8 +371,16 @@ int main(int argc, char **argv) {
                 ;
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
+            // GCC-compatible warning-flag handling:
+            //   -Wno-*  = silently ignored (no corresponding warning to disable)
+            //   -Werror=* = silently ignored (error variant for warnings we don't have)
+            //   others  = warn, but only error with -Werror=unknown-warning-option
+            // Build systems probe supported warnings via -Werror=unknown-warning-option.
+        } else if (!strncmp(argv[i], "-Wno-", 5) ||
+                   !strncmp(argv[i], "-Werror=", 8)) {
+            ; // silently ignored
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
-            if (opt_Werror || opt_Werror_unknown) {
+            if (opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
                 return 1;
             }
