@@ -159,6 +159,7 @@ typedef enum {
     TY_STRUCT,
     TY_UNION,
     TY_FUNC,
+    TY_NULLPTR_T, // C23 nullptr_t
 } TypeKind;
 
 typedef struct Node Node;
@@ -239,6 +240,7 @@ extern Type *ty_uint128;
 extern Type *ty_float;
 extern Type *ty_double;
 extern Type *ty_ldouble;
+extern Type *ty_nullptr_t;
 
 extern bool opt_O0;
 extern bool opt_O1;

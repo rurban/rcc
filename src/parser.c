@@ -2416,6 +2416,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     unsigned char quals = 0;
     memset(attr, 0, sizeof(*attr));
 
+    bool has_auto_seen = false;
     for (;;) {
         Token *attr_tok = read_type_attrs(tok, &attr_align, attr);
         if (attr_tok != tok) {
@@ -2458,7 +2459,12 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "register") || equalc(tok, "auto")) {
+        if (equalc(tok, "register")) {
+            tok = tok->next;
+            continue;
+        }
+        if (equalc(tok, "auto")) {
+            has_auto_seen = true;
             tok = tok->next;
             continue;
         }
@@ -2693,6 +2699,15 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         break;
     }
 
+
+    // C23: if 'auto' was seen without an explicit type specifier, treat as type inference.
+    if (attr && has_auto_seen && !attr->is_auto_type) {
+        bool explicit_type = is_int || is_char || is_short || long_count > 0 ||
+            is_float || is_double || is_bool || is_void || is_signed || is_unsigned ||
+            is_int128 || is_complex;
+        if (!explicit_type && !ty)
+            attr->is_auto_type = true;
+    }
     if (!ty) {
         if (is_void) {
             ty = ty_void;
@@ -2729,6 +2744,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 warn_tok(tok, "type defaults to int");
         }
     }
+
 
     if (is_complex && ty) {
         if (ty->size > 8 && !is_flonum(ty))
@@ -4034,29 +4050,55 @@ static Node *declaration(Token **rest, Token *tok) {
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
         } else if (attr.is_constexpr) {
-            LVar *var = new_var(name, ty, true);
-            var->is_constexpr = true;
-            if (pending_asm_name)
-                var->asm_name = pending_asm_name;
-            // constexpr implies const
-            var->ty = copy_type(ty);
-            var->ty->qual |= QUAL_CONST;
-            if (!equalc(tok, "="))
-                error_tok(tok, "constexpr variable must be initialized");
-            Token *start = tok;
-            tok = tok->next;
-            Node *init_expr = expr(&tok, tok);
-            long long val = 0;
-            if (!eval_const_expr(init_expr, &val))
-                error_tok(start, "constexpr variable must have a constant initializer");
-            var->has_init = true;
-            var->init_val = (int64_t)val;
-            // Emit runtime initialization from the folded constant value
-            Node *lhs = new_var_node(var, start);
-            Node *rhs = new_num(val, start);
-            Node *assign = new_binary(ND_ASSIGN, lhs, rhs, start);
-            check_type(assign);
-            cur = cur->next = new_unary(ND_EXPR_STMT, assign, start);
+            if (attr.is_auto_type) {
+                // constexpr auto: infer type from initializer, then apply constexpr constraints
+                if (!equalc(tok, "="))
+                    error_tok(tok, "constexpr auto requires an initializer");
+                Token *start = tok;
+                tok = tok->next;
+                Node *init_expr = expr(&tok, tok);
+                check_type(init_expr);
+                if (!init_expr->ty)
+                    error_tok(start, "cannot infer type from constexpr auto initializer");
+                Type *inferred = init_expr->ty;
+                LVar *var = new_var(name, inferred, true);
+                var->is_constexpr = true;
+                var->ty = copy_type(inferred);
+                var->ty->qual |= QUAL_CONST;
+                if (pending_asm_name)
+                    var->asm_name = pending_asm_name;
+                long long val = 0;
+                if (eval_const_expr(init_expr, &val)) {
+                    var->has_init = true;
+                    var->init_val = (int64_t)val;
+                }
+                Node *lhs = new_var_node(var, start);
+                cur = cur->next = new_unary(ND_EXPR_STMT, new_binary(ND_ASSIGN, lhs, init_expr, start), start);
+            } else {
+                LVar *var = new_var(name, ty, true);
+                var->is_constexpr = true;
+                if (pending_asm_name)
+                    var->asm_name = pending_asm_name;
+                // constexpr implies const
+                var->ty = copy_type(ty);
+                var->ty->qual |= QUAL_CONST;
+                if (!equalc(tok, "="))
+                    error_tok(tok, "constexpr variable must be initialized");
+                Token *start = tok;
+                tok = tok->next;
+                Node *init_expr = expr(&tok, tok);
+                long long val = 0;
+                if (!eval_const_expr(init_expr, &val))
+                    error_tok(start, "constexpr variable must have a constant initializer");
+                var->has_init = true;
+                var->init_val = (int64_t)val;
+                // Emit runtime initialization from the folded constant value
+                Node *lhs = new_var_node(var, start);
+                Node *rhs = new_num(val, start);
+                Node *assign = new_binary(ND_ASSIGN, lhs, rhs, start);
+                check_type(assign);
+                cur = cur->next = new_unary(ND_EXPR_STMT, assign, start);
+            }
         } else if (attr.is_auto_type) {
             if (!equalc(tok, "="))
                 error_tok(tok, "__auto_type requires an initializer");
@@ -4903,7 +4945,7 @@ static Node *primary(Token **rest, Token *tok) {
                 tok = tok->next;
             } else if (equalc(tok, "nullptr")) {
                 node = new_num(0, tok);
-                node->ty = pointer_to(ty_void);
+                node->ty = ty_nullptr_t;
                 tok = tok->next;
             } else if (equalc(tok, "true")) {
                 // C23 keyword: bool-typed constant 1
