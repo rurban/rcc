@@ -3965,6 +3965,7 @@ typedef enum {
     SKIP_MISSING_INCLUDE,
     SKIP_C99_RUNTIME,
     SKIP_C11_INCOMPAT,
+    SKIP_ERROR,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3982,6 +3983,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_MISSING_INCLUDE: return "missing-include";
     case SKIP_C99_RUNTIME: return "c99-runtime";
     case SKIP_C11_INCOMPAT: return "c11-incompat";
+    case SKIP_ERROR: return "error";
     default: return "unknown";
     }
 }
@@ -4000,6 +4002,10 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
     if (contains(content, "dg-options") && contains(content, "-finstrument-functions"))
         return SKIP_FINSTRUMENT;
+    // TODO we really should catch all compilation errors, and emit them all at once at the end
+    // Then we could compare thrown errors
+    if (contains(content, "dg-error"))
+        return SKIP_ERROR;
     if (contains(content, "dg-require-effective-target nested") ||
         streq(name, "20061220-1") || streq(name, "nest-align-1") || streq(name, "920415-1") ||
         streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447") || streq(name, "pr71494"))
@@ -4016,9 +4022,10 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_C99_RUNTIME;
 #endif
     /* rcc is C23 preferred; these C11 tests check __STDC_VERSION__ or features
-     * that differ between C11 and C23 (unreachable, nullptr-as-identifier) */
+     * that differ between C11 and C23 (unreachable, nullptr-as-identifier,
+     * empty initializers `{}` which are an error in C11 but valid in C23) */
     if (streq(name, "c11-version-1") || streq(name, "c11-version-2") ||
-        streq(name, "c11-unreachable-1"))
+        streq(name, "c11-unreachable-1") || streq(name, "c11-empty-init-1"))
         return SKIP_C11_INCOMPAT;
 
     return SKIP_NONE;
@@ -4537,17 +4544,17 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 6; // 173 + 6
+        max_fail = 6; // 106 + 6
     else if (streq(platform, "arm64"))
-        max_fail = 0; // 173 + 1
+        max_fail = 0; // 106
     else if (streq(platform, "darwin_cross"))
-        max_fail = 1; // 173 + 1
+        max_fail = 1; // 106 + 1
     else if (streq(platform, "mingw_cross"))
-        max_fail = 0; // 173
+        max_fail = 0; // 106
     else if (streq(platform, "mingw"))
-        max_fail = 0; // 173 + 2
+        max_fail = 0; // 106
     else if (streq(platform, "linux"))
-        max_fail = 173;
+        max_fail = 106;
     else
         max_fail = 0; // 173
 

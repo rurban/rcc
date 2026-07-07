@@ -581,9 +581,21 @@ static void add_type_internal(Node *node) {
         if (!node->var->ty) node->var->ty = ty_int;
         node->ty = node->var->ty;
         return;
-    case ND_ADDR:
-        node->ty = pointer_to(node->lhs->ty);
+    case ND_ADDR: {
+        Node *operand = node->lhs;
+        // A function designator is already represented as pointer-to-function
+        // (rcc stores functions as pointer_to(TY_FUNC)). Per C, &func has the
+        // same type as the decayed function designator — pointer-to-function,
+        // not pointer-to-pointer-to-function. Without this, &func fails to
+        // match a `T (*)(...)` type in _Generic and mis-selects the default.
+        if (operand->kind == ND_LVAR && operand->var && operand->var->is_function &&
+            operand->ty && operand->ty->kind == TY_PTR && operand->ty->base &&
+            operand->ty->base->kind == TY_FUNC)
+            node->ty = operand->ty;
+        else
+            node->ty = pointer_to(operand->ty);
         return;
+    }
     case ND_DEREF:
         if (node->lhs->ty->kind != TY_PTR && node->lhs->ty->kind != TY_ARRAY && node->lhs->ty->kind != TY_VLA) {
             error_tok(node->tok, "invalid pointer dereference\n\033[1;36mnote\033[0m: cannot apply '*' to a non-pointer type");

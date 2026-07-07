@@ -2,14 +2,14 @@
 
 **Platform**: Linux x86_64
 
-Generated: July 07 2026 10:23
+Generated: July 07 2026 11:03
 
 ## Overall Summary
 
 - **Total**: 2474
-- **Passed**: 2190
-- **Failed**: 172
-- **Overall Pass Rate**: 88%
+- **Passed**: 2117
+- **Failed**: 106
+- **Overall Pass Rate**: 85%
 
 ## TCC Compatibility Tests
 
@@ -42,9 +42,9 @@ Generated: July 07 2026 10:23
 ## GCC Torture Tests
 
 - **Total**: 2065
-- **Passed**: 1781
-- **Failed**: 172
-- **Skipped**: 112
-- **Fail Compile**: 170
-- **Fail Runtime**: 2
-- **Pass Rate (excl. skip)**: 91%
+- **Passed**: 1708
+- **Failed**: 106
+- **Skipped**: 251
+- **Fail Compile**: 105
+- **Fail Runtime**: 1
+- **Pass Rate (excl. skip)**: 94%
