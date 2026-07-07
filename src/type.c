@@ -518,6 +518,11 @@ static void add_type_internal(Node *node) {
                 // Pick the void* side; if both void*, pick then-side
                 Type *vptr = (ebase->kind != TY_VOID) ? tty : ety;
                 unsigned char combined = tbase->qual | ebase->qual;
+                // C23: also carry element qualifiers from pointer-to-array types
+                if (tbase->kind == TY_ARRAY || tbase->kind == TY_VLA)
+                    combined |= tbase->base->qual;
+                if (ebase->kind == TY_ARRAY || ebase->kind == TY_VLA)
+                    combined |= ebase->base->qual;
                 if (vptr->base->qual != combined) {
                     Type *vbase = arena_alloc(sizeof(Type));
                     *vbase = *vptr->base;

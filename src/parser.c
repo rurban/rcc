@@ -990,7 +990,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             if (tok) tok = tok->next->next; // skip ]]
             continue;
         }
-        if (tok->kw == ID__ALIGNAS) {
+        if (tok->kw == ID__ALIGNAS || tok->kw == ID_ALIGNAS) {
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok)) {
@@ -1318,6 +1318,9 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_NUM:
         *val = node->val;
         return true;
+    case ND_FNUM:
+        *val = (long long)node->fval;
+        return true;
     case ND_ADD:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs + rhs), true);
     case ND_SUB:
@@ -1403,6 +1406,23 @@ bool eval_const_expr(Node *node, long long *val) {
         if (node->var && node->var->is_constexpr && node->var->has_init) {
             *val = node->var->init_val;
             return true;
+        }
+        return false;
+    case ND_MEMBER:
+        // constexpr struct member access: read from init_data at member offset
+        if (node->lhs && node->lhs->kind == ND_LVAR) {
+            LVar *var = node->lhs->var;
+            if (var && var->is_constexpr && var->has_init && var->init_data) {
+                Member *mem = node->member;
+                if (mem && is_integer(node->ty)) {
+                    int64_t v = 0;
+                    memcpy(&v, var->init_data + mem->offset, node->ty->size <= 8 ? node->ty->size : 8);
+                    if (!node->ty->is_unsigned && (v >> (node->ty->size * 8 - 1)))
+                        v |= ~((1ULL << (node->ty->size * 8)) - 1);
+                    *val = v;
+                    return true;
+                }
+            }
         }
         return false;
     default:
@@ -1782,6 +1802,8 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
 
 static Type *enum_specifier(Token **rest, Token *tok) {
     tok = skip(tok, "enum");
+    // C23: attributes allowed between enum keyword and tag name
+    tok = read_type_attrs(tok, NULL, NULL);
     char *tag_name = NULL;
     if (tok->kind == TK_IDENT) {
         tag_name = tok->name;
@@ -1823,6 +1845,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         EnumConst *ec = arena_alloc(sizeof(EnumConst));
         ec->name = tok->name;
         tok = tok->next;
+        // C23: attributes allowed after enum constant name
+        tok = read_type_attrs(tok, NULL, NULL);
 
         if (equalc(tok, "=")) {
             tok = tok->next;
@@ -2435,7 +2459,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "__thread") || equalc(tok, "_Thread_local")) {
+        if (equalc(tok, "__thread") || equalc(tok, "_Thread_local") || equalc(tok, "thread_local")) {
             attr->is_tls = true;
             tok = tok->next;
             continue;
@@ -2590,7 +2614,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             continue;
         }
 
-        if (equalc(tok, "typeof") || equalc(tok, "__typeof") || equalc(tok, "__typeof__")) {
+        if (equalc(tok, "typeof")) {
+            // typeof is only a keyword in C23+ or GNU mode; in C11 it's an identifier
+            if (!opt_std_version || strcmp(opt_std_version, "202311L") < 0)
+                break;
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok)) {
@@ -2599,18 +2626,29 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 Node *node = expr(&tok, tok);
                 check_type(node);
                 ty = node->ty;
-                // Lvalue conversion: strip top-level qualifiers from expression type
-                if (ty && ty->qual) {
-                    ty = copy_type(ty);
-                    ty->qual = 0;
-                }
+            }
+            tok = skip(tok, ")");
+            continue;
+        }
+        if (equalc(tok, "__typeof") || equalc(tok, "__typeof__")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            if (is_typename(tok)) {
+                ty = type_name(&tok, tok);
+            } else {
+                Node *node = expr(&tok, tok);
+                check_type(node);
+                ty = node->ty;
             }
             tok = skip(tok, ")");
             continue;
         }
 
         // C23 typeof_unqual - same as typeof but strips all qualifiers recursively
-        if (equalc(tok, "typeof_unqual")) {
+        if (equalc(tok, "typeof_unqual") || equalc(tok, "__typeof_unqual") || equalc(tok, "__typeof_unqual__")) {
+            // typeof_unqual is C23-only; __typeof_unqual/__typeof_unqual__ are GNU extensions
+            if (equalc(tok, "typeof_unqual") && (!opt_std_version || strcmp(opt_std_version, "202311L") < 0))
+                break;
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok))
@@ -3496,10 +3534,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         return global_init_one(tok, var, ty->base, offset);
     }
 
-    // Superfluous braces around scalar: { expr }
+    // Superfluous braces around scalar `{ expr }`, or C23 empty init `{}`.
     if (equalc(tok, "{")) {
         tok = skip(tok, "{");
-        tok = global_init_one(tok, var, ty, offset);
+        if (!equalc(tok, "}")) // `{}` leaves the (already zeroed) storage as 0
+            tok = global_init_one(tok, var, ty, offset);
         tok = skip(tok, "}");
         return tok;
     }
@@ -3819,10 +3858,17 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
         return local_init_one(tok, elem_lhs, ty->base, cur);
     }
 
-    // Superfluous braces around scalar
+    // Superfluous braces around scalar, or C23 empty initializer `{}`.
     if (equalc(tok, "{")) {
         tok = skip(tok, "{");
-        tok = local_init_one(tok, lhs, ty, cur);
+        if (equalc(tok, "}")) {
+            // C23 `= {}` on a scalar: zero-initialize.
+            Node *assign_node = new_binary(ND_ASSIGN, lhs, new_num(0, tok), tok);
+            check_type(assign_node);
+            *cur = (*cur)->next = new_unary(ND_EXPR_STMT, assign_node, tok);
+        } else {
+            tok = local_init_one(tok, lhs, ty, cur);
+        }
         tok = skip(tok, "}");
         return tok;
     }
@@ -4735,18 +4781,26 @@ static Node *primary(Token **rest, Token *tok) {
     if (equalc(tok, "_Generic")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
-        Node *ctrl = assign(&tok, tok);
-        check_type(ctrl);
-        Type *ctrl_ty = ctrl->ty;
-        // Apply lvalue/array/function decay
-        if (ctrl_ty->kind == TY_ARRAY)
-            ctrl_ty = pointer_to(ctrl_ty->base);
-        else if (ctrl_ty->kind == TY_FUNC)
-            ctrl_ty = pointer_to(ctrl_ty);
-        // Lvalue conversion strips top-level qualifiers
-        if (ctrl_ty->qual) {
-            ctrl_ty = copy_type(ctrl_ty);
-            ctrl_ty->qual = 0;
+        Type *ctrl_ty;
+        if (is_typename(tok)) {
+            // C2Y / GCC extension: the controlling operand may be a type name.
+            // No lvalue conversion is applied, so qualifiers are preserved
+            // (e.g. _Generic(const int, int:1, const int:2) selects const int).
+            ctrl_ty = type_name(&tok, tok);
+        } else {
+            Node *ctrl = assign(&tok, tok);
+            check_type(ctrl);
+            ctrl_ty = ctrl->ty;
+            // Apply lvalue/array/function decay
+            if (ctrl_ty->kind == TY_ARRAY)
+                ctrl_ty = pointer_to(ctrl_ty->base);
+            else if (ctrl_ty->kind == TY_FUNC)
+                ctrl_ty = pointer_to(ctrl_ty);
+            // Lvalue conversion strips top-level qualifiers
+            if (ctrl_ty->qual) {
+                ctrl_ty = copy_type(ctrl_ty);
+                ctrl_ty->qual = 0;
+            }
         }
 
         tok = skip(tok, ",");
@@ -4761,7 +4815,10 @@ static Node *primary(Token **rest, Token *tok) {
                 Type *ty = type_name(&tok, tok);
                 tok = skip(tok, ":");
                 Node *expr = assign(&tok, tok);
-                if (type_equal(ctrl_ty, ty))
+                // Association types must match the controlling type exactly,
+                // including top-level qualifiers (which matters when the
+                // controlling operand is a qualified type name).
+                if (type_equal(ctrl_ty, ty) && ctrl_ty->qual == ty->qual)
                     selected = expr;
             }
             if (equalc(tok, ","))
@@ -6059,6 +6116,22 @@ static Node *unary(Token **rest, Token *tok) {
         return new_unary(ND_DEREF, unary(rest, tok->next), tok);
     if (equalc(tok, "sizeof")) {
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
+            // Check whether this is `sizeof (type) {`, i.e. a compound literal.
+            // Walk past the cast type to see if `{` follows the closing `)`.
+            Token *t = tok->next; // '('
+            int depth = 0;
+            for (;;) {
+                if (equalc(t, "(")) depth++;
+                else if (equalc(t, ")")) {
+                    if (--depth == 0) {
+                        t = t->next;
+                        break;
+                    }
+                }
+                t = t->next;
+            }
+            if (equalc(t, "{"))
+                goto sizeof_expr;
             Type *ty = parse_cast_type(&tok, tok->next);
             *rest = tok;
             if (ty->kind == TY_VLA) {
@@ -6076,6 +6149,7 @@ static Node *unary(Token **rest, Token *tok) {
             }
             return new_num(ty->size, tok);
         }
+    sizeof_expr:
         Node *node = unary(&tok, tok->next);
         check_type(node);
         *rest = tok;
@@ -6103,7 +6177,7 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(node);
         return node;
     }
-    if (equalc(tok, "__alignof__") || equalc(tok, "__alignof") || equalc(tok, "_Alignof")) {
+    if (equalc(tok, "__alignof__") || equalc(tok, "__alignof") || equalc(tok, "_Alignof") || equalc(tok, "alignof")) {
         Token *start = tok;
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
             Type *ty = parse_cast_type(&tok, tok->next);
@@ -6470,7 +6544,8 @@ static Node *unary(Token **rest, Token *tok) {
                 check_type(result);
             } else {
                 // Scalar compound literal
-                Node *val = assign(&tok, tok);
+                // C23 empty initializer `(T){}`: the value is zero.
+                Node *val = equalc(tok, "}") ? new_num(0, start) : assign(&tok, tok);
                 check_type(val);
                 if (equalc(tok, ",")) tok = tok->next;
                 tok = skip(tok, "}");
@@ -6840,9 +6915,19 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 }
 
 static void global_initializer(Token **rest, Token *tok, LVar *var) {
+    // C23 empty initializer `{}` — zero-initialize an object of any type.
+    if (equalc(tok, "{") && equalc(tok->next, "}")) {
+        var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+        var->init_size = var->ty->size;
+        var->has_init = true;
+        *rest = tok->next->next; // skip `{` `}`
+        return;
+    }
+
     if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR && (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         var->init_data = tok->str;
         var->init_size = tok->len + 1; // include embedded NULs and the terminator
+        var->has_init = true;
         *rest = tok->next;
         return;
     }
@@ -6865,6 +6950,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             var->ty = array_of(var->ty->base, count);
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
         var->init_size = var->ty->size;
+        var->has_init = true;
         global_init_one(tok, var, var->ty, 0);
         *rest = tok->next;
         return;
@@ -6876,6 +6962,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         if (read_global_label_initializer(&tok, tok, &label, &addend)) {
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
+            var->has_init = true;
             append_reloc(var, 0, label, addend);
             *rest = tok;
             return;
@@ -6900,6 +6987,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
                 tok = tok->next;
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
+            var->has_init = true;
             append_reloc(var, 0, name, 0);
             *rest = tok;
             return;
@@ -6910,6 +6998,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         if (extract_reloc(node, &label, &addend)) {
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
+            var->has_init = true;
             if (label)
                 append_reloc(var, 0, label, addend);
             else
@@ -6929,6 +7018,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         }
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
         var->init_size = var->ty->size;
+        var->has_init = true;
         *rest = global_init_one(tok, var, var->ty, 0);
         return;
     }
@@ -6936,6 +7026,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && equalc(tok, "{")) {
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
         var->init_size = var->ty->size;
+        var->has_init = true;
         tok = global_init_one(tok, var, var->ty, 0);
         *rest = tok;
         return;
@@ -6945,8 +7036,24 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && find_compound_literal_start(tok)) {
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
         var->init_size = var->ty->size;
+        var->has_init = true;
         tok = global_init_one(tok, var, var->ty, 0);
         *rest = tok;
+        return;
+    }
+
+    // Scalar with braces: superfluous `{ expr }` or C23 empty init `{}`.
+    if (equalc(tok, "{")) {
+        tok = skip(tok, "{");
+        if (equalc(tok, "}")) {
+            // C23 `= {}`: zero-initialize.
+            var->has_init = true;
+            var->init_val = 0;
+            *rest = skip(tok, "}");
+            return;
+        }
+        global_initializer(&tok, tok, var);
+        *rest = skip(tok, "}");
         return;
     }
 
@@ -6960,6 +7067,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             double fv = 0;
             if (eval_double_const_expr(node, &fv)) {
                 int sz = var->ty->size ? var->ty->size : 8;
+                var->has_init = true;
                 var->init_data = arena_alloc(sz);
                 var->init_size = sz;
                 if (sz == 4) {
@@ -6978,6 +7086,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             if (eval_complex_const_expr(node, &rv, &iv)) {
                 int base_sz = var->ty->base ? var->ty->base->size : 8;
                 int sz = var->ty->size ? var->ty->size : base_sz * 2;
+                var->has_init = true;
                 var->init_data = arena_alloc(sz);
                 var->init_size = sz;
                 if (base_sz == 4) {
@@ -7562,6 +7671,14 @@ Program *parse(Token *tok) {
                     if (equalc(tok, "=")) {
                         tok = tok->next;
                         global_initializer(&tok, tok, var);
+                    }
+                    if (attr.is_constexpr) {
+                        var->is_constexpr = true;
+                        // constexpr implies const
+                        var->ty = copy_type(ty);
+                        var->ty->qual |= QUAL_CONST;
+                        if (!var->has_init)
+                            error("constexpr variable must be initialized");
                     }
                 }
 
