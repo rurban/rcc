@@ -990,7 +990,8 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             if (tok) tok = tok->next->next; // skip ]]
             continue;
         }
-        if (tok->kw == ID__ALIGNAS || tok->kw == ID_ALIGNAS) {
+        if (tok->kw == ID__ALIGNAS ||
+            (tok->kw == ID_ALIGNAS && opt_std_version && strcmp(opt_std_version, "202311L") >= 0)) {
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok)) {
