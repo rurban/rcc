@@ -18,6 +18,26 @@ typedef unsigned long long uintmax_t;
 
 typedef long long ptrdiff_t;
 
+/* Minimum-width integer types (C99 7.18.1.2) */
+typedef int8_t int_least8_t;
+typedef uint8_t uint_least8_t;
+typedef int16_t int_least16_t;
+typedef uint16_t uint_least16_t;
+typedef int32_t int_least32_t;
+typedef uint32_t uint_least32_t;
+typedef int64_t int_least64_t;
+typedef uint64_t uint_least64_t;
+
+/* Fastest minimum-width integer types (C99 7.18.1.3) */
+typedef int8_t int_fast8_t;
+typedef uint8_t uint_fast8_t;
+typedef int16_t int_fast16_t;
+typedef uint16_t uint_fast16_t;
+typedef int32_t int_fast32_t;
+typedef uint32_t uint_fast32_t;
+typedef int64_t int_fast64_t;
+typedef uint64_t uint_fast64_t;
+
 #define INT8_MIN (-128)
 #define INT8_MAX 127
 #define UINT8_MAX 255

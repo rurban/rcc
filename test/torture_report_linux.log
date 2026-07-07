@@ -879,14 +879,14 @@
   c11-labels-1                        FAIL (compile)
   c11-labels-2                        FAIL (compile)
   c11-labels-3                        FAIL (compile)
-  c11-limits-1                        PASS (compile only)
+  c11-limits-1                        FAIL (compile)
   c11-noreturn-1                      PASS (compile only)
   c11-noreturn-2                      PASS
   c11-noreturn-3                      PASS (compile only)
   c11-noreturn-4                      PASS (compile only)
   c11-noreturn-5                      FAIL (compile)
   c11-null-pointer-constant-1         PASS (compile only)
-  c11-nullptr-1                       FAIL (compile)
+  c11-nullptr-1                       PASS (compile only)
   c11-nullptr-2                       PASS (compile only)
   c11-nullptr-3                       PASS (compile only)
   c11-old-style-definition-1          PASS (compile only)
@@ -913,9 +913,9 @@
   c11-stdarg-4                        PASS (compile only)
   c11-stdatomic-1                     FAIL (compile)
   c11-stdatomic-2                     PASS (compile only)
-  c11-stdatomic-3                     PASS (compile only)
-  c11-stddef-1                        PASS (compile only)
-  c11-stdint-1                        PASS (compile only)
+  c11-stdatomic-3                     FAIL (compile)
+  c11-stddef-1                        FAIL (compile)
+  c11-stdint-1                        FAIL (compile)
   c11-thread-local-1                  PASS (compile only)
   c11-thread-local-2                  FAIL (compile)
   c11-true_min-1                      FAIL (compile)
@@ -928,11 +928,11 @@
   c11-unproto-1                       PASS (compile only)
   c11-unproto-2                       PASS (compile only)
   c11-unproto-3                       PASS (compile only)
-  c11-unreachable-1                   PASS (compile only)
+  c11-unreachable-1                   SKIP (c11-incompat)
   c11-utf8char-1                      FAIL (compile)
   c11-utf8str-type                    FAIL (compile)
-  c11-version-1                       FAIL (compile)
-  c11-version-2                       FAIL (compile)
+  c11-version-1                       SKIP (c11-incompat)
+  c11-version-2                       SKIP (c11-incompat)
   c23-align-1                         FAIL (compile)
   c23-align-6                         FAIL (compile)
   c23-align-10                        FAIL (compile)
@@ -1087,7 +1087,7 @@
   c23-labels-1                        FAIL (compile)
   c23-labels-2                        FAIL (compile)
   c23-labels-3                        FAIL (compile)
-  c23-limits-1                        FAIL (compile)
+  c23-limits-1                        PASS (compile only)
   c23-mismatching-fn-ptr-a52dec       PASS (compile only)
   c23-mismatching-fn-ptr-alsatools    PASS (compile only)
   c23-mismatching-fn-ptr              PASS (compile only)
@@ -1141,10 +1141,10 @@
   c23-stdarg-9                        PASS
   c23-stdarg-10                       FAIL (compile)
   c23-stdarg-11                       FAIL (compile)
-  c23-stdatomic-1                     FAIL (compile)
-  c23-stddef-1                        FAIL (compile)
-  c23-stddef-2                        FAIL (compile)
-  c23-stdint-1                        FAIL (compile)
+  c23-stdatomic-1                     PASS (compile only)
+  c23-stddef-1                        PASS (compile only)
+  c23-stddef-2                        PASS (compile only)
+  c23-stdint-1                        PASS (compile only)
   c23-switch-1                        PASS (compile only)
   c23-tag-1                           PASS (compile only)
   c23-tag-2                           PASS (compile only)
@@ -1201,8 +1201,8 @@
   c23-utf8char-3                      PASS (compile only)
   c23-utf8str-type                    PASS (compile only)
   c23-utf8str                         FAIL (compile)
-  c23-version-1                       FAIL (compile)
-  c23-version-2                       FAIL (compile)
+  c23-version-1                       PASS (compile only)
+  c23-version-2                       PASS (compile only)
   call-trap-1                         PASS
   cbrt                                SKIP (attribute-mode)
   cmpdi-1                             PASS
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1778/1956 passed (90%), 178 failed (176 compile/2 runtime), 109 skipped.
+Torture: 1781/1953 passed (91%), 172 failed (170 compile/2 runtime), 112 skipped.
 
-Compile failures: c11-align-3 c11-align-5 c11-align-7 c11-anon-struct-2 c11-atomic-1 c11-atomic-3 c11-complex-1 c11-complit-1 c11-complit-2 c11-complit-3 c11-empty-init-1 c11-empty-init-2 c11-empty-init-3 c11-enum-4 c11-enum-5 c11-enum-6 c11-float-1 c11-floatn-3 c11-floatn-7 c11-generic-2 c11-generic-3 c11-labels-1 c11-labels-2 c11-labels-3 c11-noreturn-5 c11-nullptr-1 c11-static-assert-1 c11-static-assert-2 c11-static-assert-3 c11-static-assert-4 c11-static-assert-5 c11-static-assert-6 c11-stdatomic-1 c11-thread-local-2 c11-true_min-1 c11-typeof-1 c11-typeof-2 c11-typeof-3 c11-uni-string-1 c11-utf8char-1 c11-utf8str-type c11-version-1 c11-version-2 c23-align-1 c23-align-6 c23-align-10 c23-attr-deprecated-1 c23-attr-deprecated-2 c23-attr-deprecated-3 c23-attr-fallthrough-2 c23-attr-maybe_unused-1 c23-attr-maybe_unused-2 c23-attr-nodiscard-1 c23-attr-nodiscard-2 c23-attr-noreturn-2 c23-attr-reproducible-2 c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-3 c23-attr-syntax-5 c23-attr-unsequenced-2 c23-attr-unsequenced-5 c23-auto-1 c23-auto-2 c23-auto-3 c23-binary-constants-3 c23-bool-1 c23-bool-2 c23-bool-limits-1 c23-complit-2 c23-complit-3 c23-complit-4 c23-complit-5 c23-complit-6 c23-complit-7 c23-complit-8 c23-constexpr-1 c23-constexpr-2a c23-constexpr-3 c23-constexpr-8 c23-constexpr-9 c23-constexpr-10 c23-digit-separators-1 c23-empty-init-1 c23-empty-init-2 c23-empty-init-3 c23-empty-init-5 c23-enum-1 c23-enum-6 c23-enum-7 c23-enum-8 c23-enum-9 c23-enum-10 c23-float-1 c23-float-2 c23-float-3 c23-float-4 c23-float-5 c23-float-6 c23-float-7a c23-float-7b c23-float-7c c23-float-10 c23-float-13 c23-floatn-3 c23-floatn-7 c23-generic-1 c23-generic-2 c23-generic-3 c23-generic-4 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-1 c23-if-decls-2 c23-imaginary-constants-1 c23-imaginary-constants-2 c23-imaginary-constants-3 c23-imaginary-constants-4 c23-imaginary-constants-5 c23-imaginary-constants-6 c23-imaginary-constants-7 c23-imaginary-constants-8 c23-imaginary-constants-9 c23-imaginary-constants-10 c23-labels-1 c23-labels-2 c23-labels-3 c23-limits-1 c23-named-loops-1 c23-named-loops-5 c23-null-pointer-constant-1 c23-nullptr-1 c23-nullptr-6 c23-octal-constants-1 c23-octal-constants-2 c23-qual-1 c23-qual-2 c23-qual-3 c23-qual-7 c23-static-assert-2 c23-static-assert-3 c23-static-assert-4 c23-stdarg-4 c23-stdarg-5 c23-stdarg-6 c23-stdarg-7 c23-stdarg-8 c23-stdarg-10 c23-stdarg-11 c23-stdatomic-1 c23-stddef-1 c23-stddef-2 c23-stdint-1 c23-tag-6 c23-tag-9 c23-tag-alias-3 c23-tag-composite-1 c23-tag-composite-2 c23-tag-composite-6 c23-tag-composite-10 c23-tag-composite-11 c23-tag-enum-4 c23-tag-enum-5 c23-tag-enum-6 c23-tag-enum-7 c23-thread-local-1 c23-thread-local-2 c23-typeof-1 c23-typeof-2 c23-unreachable-1 c23-utf8char-1 c23-utf8char-2 c23-utf8str c23-version-1 c23-version-2
+Compile failures: c11-align-3 c11-align-5 c11-align-7 c11-anon-struct-2 c11-atomic-1 c11-atomic-3 c11-complex-1 c11-complit-1 c11-complit-2 c11-complit-3 c11-empty-init-1 c11-empty-init-2 c11-empty-init-3 c11-enum-4 c11-enum-5 c11-enum-6 c11-float-1 c11-floatn-3 c11-floatn-7 c11-generic-2 c11-generic-3 c11-labels-1 c11-labels-2 c11-labels-3 c11-limits-1 c11-noreturn-5 c11-static-assert-1 c11-static-assert-2 c11-static-assert-3 c11-static-assert-4 c11-static-assert-5 c11-static-assert-6 c11-stdatomic-1 c11-stdatomic-3 c11-stddef-1 c11-stdint-1 c11-thread-local-2 c11-true_min-1 c11-typeof-1 c11-typeof-2 c11-typeof-3 c11-uni-string-1 c11-utf8char-1 c11-utf8str-type c23-align-1 c23-align-6 c23-align-10 c23-attr-deprecated-1 c23-attr-deprecated-2 c23-attr-deprecated-3 c23-attr-fallthrough-2 c23-attr-maybe_unused-1 c23-attr-maybe_unused-2 c23-attr-nodiscard-1 c23-attr-nodiscard-2 c23-attr-noreturn-2 c23-attr-reproducible-2 c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-3 c23-attr-syntax-5 c23-attr-unsequenced-2 c23-attr-unsequenced-5 c23-auto-1 c23-auto-2 c23-auto-3 c23-binary-constants-3 c23-bool-1 c23-bool-2 c23-bool-limits-1 c23-complit-2 c23-complit-3 c23-complit-4 c23-complit-5 c23-complit-6 c23-complit-7 c23-complit-8 c23-constexpr-1 c23-constexpr-2a c23-constexpr-3 c23-constexpr-8 c23-constexpr-9 c23-constexpr-10 c23-digit-separators-1 c23-empty-init-1 c23-empty-init-2 c23-empty-init-3 c23-empty-init-5 c23-enum-1 c23-enum-6 c23-enum-7 c23-enum-8 c23-enum-9 c23-enum-10 c23-float-1 c23-float-2 c23-float-3 c23-float-4 c23-float-5 c23-float-6 c23-float-7a c23-float-7b c23-float-7c c23-float-10 c23-float-13 c23-floatn-3 c23-floatn-7 c23-generic-1 c23-generic-2 c23-generic-3 c23-generic-4 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-1 c23-if-decls-2 c23-imaginary-constants-1 c23-imaginary-constants-2 c23-imaginary-constants-3 c23-imaginary-constants-4 c23-imaginary-constants-5 c23-imaginary-constants-6 c23-imaginary-constants-7 c23-imaginary-constants-8 c23-imaginary-constants-9 c23-imaginary-constants-10 c23-labels-1 c23-labels-2 c23-labels-3 c23-named-loops-1 c23-named-loops-5 c23-null-pointer-constant-1 c23-nullptr-1 c23-nullptr-6 c23-octal-constants-1 c23-octal-constants-2 c23-qual-1 c23-qual-2 c23-qual-3 c23-qual-7 c23-static-assert-2 c23-static-assert-3 c23-static-assert-4 c23-stdarg-4 c23-stdarg-5 c23-stdarg-6 c23-stdarg-7 c23-stdarg-8 c23-stdarg-10 c23-stdarg-11 c23-tag-6 c23-tag-9 c23-tag-alias-3 c23-tag-composite-1 c23-tag-composite-2 c23-tag-composite-6 c23-tag-composite-10 c23-tag-composite-11 c23-tag-enum-4 c23-tag-enum-5 c23-tag-enum-6 c23-tag-enum-7 c23-thread-local-1 c23-thread-local-2 c23-typeof-1 c23-typeof-2 c23-unreachable-1 c23-utf8char-1 c23-utf8char-2 c23-utf8str
 
 Runtime failures: c11-float-7 c11-generic-1
