@@ -1,8 +1,8 @@
 # RCC — Regoshi C Compiler
 
-A fast, self-contained C compiler targeting x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux, arm64 and fixed the rest by Reini Urban.
+A fast, self-contained C23 C compiler targeting x86-64 on Windows and Unix, and AArch64 (ARM64) on elf and darwin. Written from scratch in C11 by Hosokawa-t, a 16 year old student. And then ported to linux, arm64 and fixed the rest by Reini Urban.
 The goal is to be fast, almost as fast as tcc, but with full gcc compatibility
-and some inexpensive optimizations.
+and some inexpensive optimizations. We do support all standards, just not the backwards incompatible ones. I.e. C11 `int nullptr` is wrong.
 
 ## Benchmark Results
 

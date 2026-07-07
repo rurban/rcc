@@ -51,4 +51,7 @@ typedef long long ptrdiff_t;
 #define UINT64_C(v) v ## ULL
 #define INTMAX_C(v) v ## LL
 #define UINTMAX_C(v) v ## ULL
+#if __STDC_VERSION__ >= 202311L
+#define __STDC_VERSION_STDINT_H__ 202311L
+#endif
 #endif

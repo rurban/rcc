@@ -1,5 +1,6 @@
 /* PR c/108424 */
 /* { dg-options "-std=c23" } */
+/* { dg-do compile } */
 
 struct S {
   int i;

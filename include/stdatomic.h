@@ -92,5 +92,39 @@ typedef _Atomic(intptr_t) atomic_intptr_t;
 typedef _Atomic(uintptr_t) atomic_uintptr_t;
 typedef _Atomic(intmax_t) atomic_intmax_t;
 typedef _Atomic(uintmax_t) atomic_uintmax_t;
+typedef _Atomic(char16_t) atomic_char16_t;
+typedef _Atomic(char32_t) atomic_char32_t;
+typedef _Atomic(wchar_t) atomic_wchar_t;
+typedef _Atomic(int_least8_t) atomic_int_least8_t;
+typedef _Atomic(uint_least8_t) atomic_uint_least8_t;
+typedef _Atomic(int_least16_t) atomic_int_least16_t;
+typedef _Atomic(uint_least16_t) atomic_uint_least16_t;
+typedef _Atomic(int_least32_t) atomic_int_least32_t;
+typedef _Atomic(uint_least32_t) atomic_uint_least32_t;
+typedef _Atomic(int_least64_t) atomic_int_least64_t;
+typedef _Atomic(uint_least64_t) atomic_uint_least64_t;
+typedef _Atomic(int_fast8_t) atomic_int_fast8_t;
+typedef _Atomic(uint_fast8_t) atomic_uint_fast8_t;
+typedef _Atomic(int_fast16_t) atomic_int_fast16_t;
+typedef _Atomic(uint_fast16_t) atomic_uint_fast16_t;
+typedef _Atomic(int_fast32_t) atomic_int_fast32_t;
+typedef _Atomic(uint_fast32_t) atomic_uint_fast32_t;
+typedef _Atomic(int_fast64_t) atomic_int_fast64_t;
+typedef _Atomic(uint_fast64_t) atomic_uint_fast64_t;
 
+#define ATOMIC_BOOL_LOCK_FREE __GCC_ATOMIC_BOOL_LOCK_FREE
+#define ATOMIC_CHAR_LOCK_FREE __GCC_ATOMIC_CHAR_LOCK_FREE
+#define ATOMIC_CHAR16_T_LOCK_FREE __GCC_ATOMIC_CHAR16_T_LOCK_FREE
+#define ATOMIC_CHAR32_T_LOCK_FREE __GCC_ATOMIC_CHAR32_T_LOCK_FREE
+#define ATOMIC_WCHAR_T_LOCK_FREE __GCC_ATOMIC_WCHAR_T_LOCK_FREE
+#define ATOMIC_SHORT_LOCK_FREE __GCC_ATOMIC_SHORT_LOCK_FREE
+#define ATOMIC_INT_LOCK_FREE __GCC_ATOMIC_INT_LOCK_FREE
+#define ATOMIC_LONG_LOCK_FREE __GCC_ATOMIC_LONG_LOCK_FREE
+#define ATOMIC_LLONG_LOCK_FREE __GCC_ATOMIC_LLONG_LOCK_FREE
+#define ATOMIC_POINTER_LOCK_FREE __GCC_ATOMIC_POINTER_LOCK_FREE
+
+#define kill_dependency(y) (y)
+
+#if __STDC_VERSION__ >= 202311L
+#define __STDC_VERSION_STDATOMIC_H__ 202311L
 #endif

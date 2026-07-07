@@ -360,16 +360,13 @@ int main(int argc, char **argv) {
             return 1;
         } else if (!strncmp(argv[i], "-std=", 5)) {
             const char *std = argv[i] + 5;
-            if (!strcmp(std, "c11") || !strcmp(std, "c23") ||
-                !strcmp(std, "c99") || !strcmp(std, "c17") ||
-                !strcmp(std, "gnu11") || !strcmp(std, "gnu23") ||
-                !strcmp(std, "gnu99") || !strcmp(std, "gnu17") ||
-                !strcmp(std, "gnu90") || !strcmp(std, "gnu89") ||
-                !strcmp(std, "c90") || !strcmp(std, "c89") ||
-                !strcmp(std, "iso9899:2011") || !strcmp(std, "iso9899:2017") ||
-                !strcmp(std, "iso9899:2023") || !strcmp(std, "iso9899:1999") ||
+            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023") ||
+                !strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017") ||
+                !strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011") ||
+                !strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999") ||
+                !strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") || !strcmp(std, "gnu89") ||
                 !strcmp(std, "iso9899:1990"))
-                ;
+                ; /* accepted, but rcc always targets C23 */
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
             // GCC-compatible warning-flag handling:
@@ -380,6 +377,8 @@ int main(int argc, char **argv) {
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
                    !strncmp(argv[i], "-Werror=", 8)) {
             ; // silently ignored
+        } else if (!strcmp(argv[i], "-pedantic-errors")) {
+            opt_Werror = true;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             if (opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);

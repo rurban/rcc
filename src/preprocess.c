@@ -2202,6 +2202,9 @@ char *preprocess(char *filename, char *p) {
 
 #include "gcc_predefined.h"
 
+        // Always define __STDC_VERSION__ for C23 (rcc only targets C23)
+        define_pre("__STDC_VERSION__", "202311L");
+
         // Define __OPTIMIZE__ when optimization is enabled (GCC compat)
         if (opt_O1)
             define_pre("__OPTIMIZE__", "1");
@@ -2335,7 +2338,7 @@ char *preprocess(char *filename, char *p) {
         // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
-        define_macro("__builtin_unreachable", true, NULL, 0, "while(1){}");
+        define_macro("__builtin_unreachable", true, NULL, 0, "((void)0)");
 
         // Math classification builtins — handled inline in codegen
         // __builtin_isinf* are handled inline in codegen (not macros)
