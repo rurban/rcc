@@ -6600,6 +6600,12 @@ static Node *unary(Token **rest, Token *tok) {
         Node *lhs = unary(rest, tok);
         check_type(lhs);
         Node *node = new_unary(ND_CAST, lhs, start);
+        // Casts produce rvalues; top-level qualifiers are discarded (C99 6.5.4p5).
+        // e.g. (float const)expr has type float, not float const.
+        if (ty->qual) {
+            ty = copy_type(ty);
+            ty->qual = 0;
+        }
         node->ty = ty;
         return node;
     }
