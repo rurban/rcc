@@ -3410,11 +3410,31 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                 char *name = tok->next->name;
                 tok = tok->next->next;
                 Member *m = find_member_by_name(ty, name);
-                if (m && equalc(tok, ".")) {
+                if (m && (equalc(tok, ".") || equalc(tok, "["))) {
                     // Nested designator .f.d[.e]* = value: follow chain
                     int chain_base = offset + m->offset;
                     Type *cur_ty = m->ty;
-                    while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                    while ((equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) ||
+                           equalc(tok, "[")) {
+                        if (equalc(tok, "[")) {
+                            // Array index designator: [N]
+                            tok = tok->next;
+                            long long idx = 0;
+                            if (!equalc(tok, "]")) {
+                                Node *idx_node = conditional(&tok, tok);
+                                check_type(idx_node);
+                                if (!eval_const_expr(idx_node, &idx))
+                                    error_tok(tok, "expected constant expression for array index");
+                            }
+                            tok = skip(tok, "]");
+                            if (cur_ty->kind != TY_ARRAY)
+                                error_tok(tok, "array index designator for non-array type");
+                            int elem_size = cur_ty->base->size;
+                            chain_base += (int)(idx * elem_size);
+                            cur_ty = cur_ty->base;
+                            continue;
+                        }
+                        // .member designator
                         char *sname = tok->next->name;
                         tok = tok->next->next;
                         Member *sm = find_member_by_name(cur_ty, sname);
@@ -3422,7 +3442,7 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                             tok = skip_initializer(tok);
                             break;
                         }
-                        if (!equalc(tok, ".")) {
+                        if (!equalc(tok, ".") && !equalc(tok, "[")) {
                             tok = skip(tok, "=");
                             tok = global_init_member(tok, var, sm, chain_base);
                             break;
@@ -4488,7 +4508,7 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
 static Node *stmt(Token **rest, Token *tok) {
     // C23 [[attribute]] prefixing a statement or label (e.g. as an if/while
     // body, where the enclosing block loop's attribute handler does not run).
-    if (equalc(tok, "[") && equalc(tok->next, "[")) {
+    if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
         tok = skip_attributes(tok);
         return stmt(rest, tok);
     }
