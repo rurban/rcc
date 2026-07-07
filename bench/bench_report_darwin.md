@@ -4,62 +4,51 @@ _Generated: July 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |          125 |          870 |        995 |
-| RCC -O1   |          176 |          858 |       1034 |
-| TCC       |          101 |          775 |        876 |
-| GCC -O0   |          183 |          705 |        888 |
-| GCC -O2   |          262 |          372 |        634 |
-| Clang -O0 |           94 |          575 |        669 |
-| Clang -O2 |          167 |          314 |        481 |
+| RCC       |          184 |          656 |        840 |
+| RCC -O1   |           76 |          680 |        756 |
+| TCC       |           77 |          577 |        654 |
+| GCC -O0   |          104 |          482 |        586 |
+| GCC -O2   |          312 |          369 |        681 |
+| Clang -O0 |          122 |          622 |        744 |
+| Clang -O2 |          258 |          400 |        658 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:   2600 us
-  lex         bench.c:     97 us
-  parse       bench.c:     87 us
-  typecheck   bench.c:     34 us
-  codegen     bench.c:    147 us
-  link        bench_rcc:  59902 us
+  preprocess  bench.c:    916 us
+  lex         bench.c:    167 us
+  parse       bench.c:    468 us
+  typecheck   bench.c:     10 us
+  codegen     bench.c:    413 us
+  link        bench_rcc:  96297 us
 
 RCC -O1:
-  preprocess  bench.c:   2298 us
-  lex         bench.c:     92 us
-  parse       bench.c:     88 us
+  preprocess  bench.c:    542 us
+  lex         bench.c:     88 us
+  parse       bench.c:    416 us
   typecheck   bench.c:      5 us
-  opt(CTFE)   bench.c:     14 us
-  codegen     bench.c:    169 us
-  link        bench_rcc_o1:  63351 us
+  opt(CTFE)   bench.c:     15 us
+  codegen     bench.c:    166 us
+  link        bench_rcc_o1:  74016 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c: 1279285 us
-  lex         sqlite3.c:  97066 us
-  parse       sqlite3.c: 102497 us
-  typecheck   sqlite3.c:  22343 us
-  codegen     sqlite3.c: 3785278 us
+[1;31merror:[0m too many macro arguments
 
 RCC -O1:
-  preprocess  sqlite3.c: 1032505 us
-  lex         sqlite3.c: 121181 us
-  parse       sqlite3.c:  94450 us
-  typecheck   sqlite3.c:  26785 us
-  opt(CTFE)   sqlite3.c:  38578 us
-  codegen     sqlite3.c: 4188519 us
+[1;31merror:[0m too many macro arguments
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |      5835 ms |
-| RCC -O1   |      6129 ms |
-| TCC       |       139 ms |
-| GCC -O0   |      1415 ms |
-| GCC -O2   |     12163 ms |
-| Clang -O0 |      1452 ms |
-| Clang -O2 |     14757 ms |
+| TCC       |       255 ms |
+| GCC -O0   |      2237 ms |
+| GCC -O2   |     16992 ms |
+| Clang -O0 |      1804 ms |
+| Clang -O2 |     15141 ms |

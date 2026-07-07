@@ -1812,8 +1812,10 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     }
 
     // C23: optional fixed underlying type — enum [tag] : type
+    // Only consume ':' if what follows is a real type specifier, not a
+    // _Generic association expression like `enum H: 1` where '1' is not a type.
     Type *fixed_underlying = NULL;
-    if (equalc(tok, ":")) {
+    if (equalc(tok, ":") && is_typename(tok->next)) {
         tok = tok->next;
         VarAttr underlying_attr = {0};
         fixed_underlying = declspec(&tok, tok, &underlying_attr);
