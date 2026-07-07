@@ -2590,7 +2590,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             is_double = true;
             long_count = 1;
 #else
-            warn_tok(tok, "_Float128 is not supported on this platform, using long double");
             is_double = true;
             long_count = 1;
 #endif

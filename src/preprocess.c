@@ -1327,7 +1327,38 @@ static long eval_primary(char **rest, char *p, char *filename) {
     }
 
     if (isdigit((unsigned char)*p)) {
-        long val = strtol(p, &p, 0);
+        // Handle C23 0b/0B binary and 0o/0O octal prefixes
+        if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
+            long val = 0;
+            p += 2;
+            while (*p == '0' || *p == '1' || *p == '\'') {
+                if (*p != '\'') val = val * 2 + (*p - '0');
+                p++;
+            }
+            *rest = p;
+            return val;
+        }
+        if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
+            long val = 0;
+            p += 2;
+            while ((*p >= '0' && *p <= '7') || *p == '\'') {
+                if (*p != '\'') val = val * 8 + (*p - '0');
+                p++;
+            }
+            *rest = p;
+            return val;
+        }
+        // Strip C23 digit separators before strtol
+        char tmp[128];
+        int ti = 0;
+        char *np = p;
+        while (*np && ti < 127) {
+            if (*np != '\'') tmp[ti++] = *np;
+            np++;
+        }
+        tmp[ti] = '\0';
+        long val = strtol(tmp, &np, 0);
+        p += np - tmp;
         *rest = p;
         return val;
     }

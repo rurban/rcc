@@ -977,10 +977,10 @@
   c23-attr-unsequenced-4              SKIP (error)
   c23-attr-unsequenced-5-aux          PASS (compile only)
   c23-attr-unsequenced-5              FAIL (compile)
-  c23-auto-1                          FAIL (compile)
+  c23-auto-1                          PASS (compile only)
   c23-auto-2                          FAIL (compile)
   c23-auto-3                          SKIP (error)
-  c23-auto-4                          FAIL (compile)
+  c23-auto-4                          PASS (compile only)
   c23-binary-constants-1              SKIP (missing include)
   c23-binary-constants-2              PASS (compile only)
   c23-binary-constants-3              SKIP (error)
@@ -1053,7 +1053,7 @@
   c23-float-no-dfp-3                  PASS (compile only)
   c23-float-no-dfp-4                  PASS (compile only)
   c23-floatn-1                        PASS (compile only)
-  c23-floatn-2                        FAIL (compile)
+  c23-floatn-2                        PASS (compile only)
   c23-floatn-3                        FAIL (compile)
   c23-floatn-4                        PASS (compile only)
   c23-floatn-5                        PASS (compile only)
@@ -1095,14 +1095,14 @@
   c23-named-loops-5                   FAIL (compile)
   c23-no-dfp-1                        SKIP (error)
   c23-null-pointer-constant-1         FAIL (compile)
-  c23-nullptr-1                       FAIL (compile)
+  c23-nullptr-1                       PASS
   c23-nullptr-2                       PASS (compile only)
   c23-nullptr-3                       SKIP (error)
   c23-nullptr-4                       PASS (compile only)
   c23-nullptr-5                       PASS
   c23-nullptr-6                       SKIP (error)
   c23-nullptr-7                       PASS (compile only)
-  c23-octal-constants-1               FAIL (compile)
+  c23-octal-constants-1               PASS (compile only)
   c23-octal-constants-2               SKIP (error)
   c23-old-style-definition-1          PASS (compile only)
   c23-old-style-definition-2          SKIP (error)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1757/1810 passed (97%), 53 failed (45 compile/8 runtime), 255 skipped.
+Torture: 1762/1810 passed (97%), 48 failed (40 compile/8 runtime), 255 skipped.
 
-Compile failures: c11-atomic-1 c11-complex-1 c11-floatn-7 c11-null-pointer-constant-1 c11-qual-1 c11-uni-string-1 c11-utf8char-1 c11-utf8str-type c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-4 c23-attr-unsequenced-5 c23-auto-1 c23-auto-2 c23-auto-4 c23-complit-2 c23-constexpr-1 c23-constexpr-2a c23-digit-separators-1 c23-empty-init-5 c23-enum-1 c23-enum-6 c23-floatn-2 c23-floatn-3 c23-floatn-7 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-2 c23-imaginary-constants-1 c23-imaginary-constants-3 c23-imaginary-constants-5 c23-imaginary-constants-7 c23-imaginary-constants-9 c23-named-loops-5 c23-null-pointer-constant-1 c23-nullptr-1 c23-octal-constants-1 c23-qual-7 c23-tag-composite-2 c23-tag-composite-10 c23-tag-enum-7 c23-unreachable-1 c23-utf8char-1 c23-utf8char-2
+Compile failures: c11-atomic-1 c11-complex-1 c11-floatn-7 c11-null-pointer-constant-1 c11-qual-1 c11-uni-string-1 c11-utf8char-1 c11-utf8str-type c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-4 c23-attr-unsequenced-5 c23-auto-2 c23-complit-2 c23-constexpr-1 c23-constexpr-2a c23-digit-separators-1 c23-empty-init-5 c23-enum-1 c23-enum-6 c23-floatn-3 c23-floatn-7 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-2 c23-imaginary-constants-1 c23-imaginary-constants-3 c23-imaginary-constants-5 c23-imaginary-constants-7 c23-imaginary-constants-9 c23-named-loops-5 c23-null-pointer-constant-1 c23-qual-7 c23-tag-composite-2 c23-tag-composite-10 c23-tag-enum-7 c23-unreachable-1 c23-utf8char-1 c23-utf8char-2
 
 Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-complit-4 c23-empty-init-1 c23-stdarg-6 c23-stdarg-8 c23-typeof-1
