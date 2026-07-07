@@ -1788,6 +1788,14 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         tok = tok->next;
     }
 
+    // C23: optional fixed underlying type — enum [tag] : type
+    Type *fixed_underlying = NULL;
+    if (equalc(tok, ":")) {
+        tok = tok->next;
+        VarAttr underlying_attr = {0};
+        fixed_underlying = declspec(&tok, tok, &underlying_attr);
+    }
+
     if (!equalc(tok, "{")) {
         *rest = tok;
         if (tag_name) {
@@ -1799,7 +1807,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
                 }
         }
         Type *ety = arena_alloc(sizeof(Type));
-        *ety = *ty_int;
+        *ety = fixed_underlying ? *fixed_underlying : *ty_int;
         ety->is_enum = true;
         return ety;
     }
@@ -1843,10 +1851,12 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     }
 
     *rest = tok->next;
-    // C23: choose narrowest integer type that fits all enum values
-    // C23: choose narrowest integer type >= int that fits all enum values
+    // C23: with a fixed underlying type, the enum uses exactly that type;
+    // otherwise choose the narrowest integer type >= int that fits all values.
     Type *ety;
-    if (min_val >= 0) {
+    if (fixed_underlying) {
+        ety = fixed_underlying;
+    } else if (min_val >= 0) {
         uint64_t umax = (uint64_t)max_val;
         if (umax <= 0xFFFFFFFFULL)
             ety = ty_uint;

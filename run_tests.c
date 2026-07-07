@@ -4544,19 +4544,19 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 6; // 106 + 6
+        max_fail = 6; // 103 + 6
     else if (streq(platform, "arm64"))
-        max_fail = 0; // 106
+        max_fail = 0; // 103
     else if (streq(platform, "darwin_cross"))
-        max_fail = 1; // 106 + 1
+        max_fail = 1; // 103 + 1
     else if (streq(platform, "mingw_cross"))
-        max_fail = 0; // 106
+        max_fail = 0; // 103
     else if (streq(platform, "mingw"))
-        max_fail = 0; // 106
+        max_fail = 0; // 103
     else if (streq(platform, "linux"))
-        max_fail = 106;
+        max_fail = 103;
     else
-        max_fail = 0; // 173
+        max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
