@@ -225,6 +225,7 @@ static int split_operands(char *line, char **ops, int max_ops) {
     return n;
 }
 
+#ifdef ARCH_ARM64
 // ---------------------------------------------------------------------------
 // ARM64 register parsing
 // ---------------------------------------------------------------------------
@@ -260,7 +261,7 @@ static int parse_arm64_reg(const char *s, bool *is32) {
     return atoi(s + 1);
 }
 
-// Parse #imm or imm (no #)
+// Parse #imm or imm (no #) (arm64 only)
 static int64_t parse_imm(const char *s) {
     if (!s) return 0;
     s = skip_ws((char *)s);
@@ -351,7 +352,9 @@ static const char *parse_arm64_sym_reloc(const char *s, uint32_t *rel_type) {
     }
     return s;
 }
+#endif
 
+#ifndef ARCH_ARM64
 // ---------------------------------------------------------------------------
 // x86-64 register parsing (AT&T names)
 // ---------------------------------------------------------------------------
@@ -452,6 +455,7 @@ static bool parse_x86_mem(const char *s, X86Mem *m) {
     }
     return false;
 }
+#endif // !ARM64
 
 // ---------------------------------------------------------------------------
 // Directive handling
@@ -641,6 +645,8 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
     // Other directives (weak_reference, weak_definition, etc.) ignored
 }
 
+
+#ifdef ARCH_ARM64
 // ---------------------------------------------------------------------------
 // ARM64 instruction encoding dispatch
 // ---------------------------------------------------------------------------
@@ -1534,7 +1540,9 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 #undef IMM
 #undef SF
 }
+#endif // ARM64
 
+#ifndef ARCH_ARM64
 // ---------------------------------------------------------------------------
 // x86-64 instruction encoding dispatch
 // ---------------------------------------------------------------------------
@@ -2168,6 +2176,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 #undef is_sym
     return true;
 }
+#endif // X86
 
 // ---------------------------------------------------------------------------
 // Main assembler loop
@@ -2273,10 +2282,12 @@ int assemble_file(const char *asm_path, const char *obj_path) {
 
         if (!*mnem) continue;
 
-        if (is_arm64)
-            encode_arm64(&as, mnem, ops_str);
-        else
-            encode_x86(&as, mnem, ops_str);
+        // not dynamic, only statically
+#ifdef ARCH_ARM64
+        encode_arm64(&as, mnem, ops_str);
+#else
+        encode_x86(&as, mnem, ops_str);
+#endif
     }
 
     fclose(f);
@@ -2391,11 +2402,11 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             continue;
         }
 
-        if (is_arm64)
-            encode_arm64(&as, mnem, ops_str);
-        else
-            encode_x86(&as, mnem, ops_str);
-
+#ifdef ARCH_ARM64
+        encode_arm64(&as, mnem, ops_str);
+#else
+        encode_x86(&as, mnem, ops_str);
+#endif
         line = nl ? nl + 1 : line + strlen(line);
     }
 

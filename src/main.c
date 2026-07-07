@@ -11,6 +11,7 @@
 #endif
 #include <sys/stat.h>
 #include <time.h>
+#include <assert.h>
 
 static uint64_t now_us(void) {
     struct timespec ts;
@@ -519,6 +520,7 @@ int main(int argc, char **argv) {
                     // Cross-compiler: strip trailing "-gcc", append "-objdump"
                     char *triple = malloc(gcc_len - 3);
                     if (triple) {
+                        assert(gcc_len > 4);
                         memcpy(triple, GCC, gcc_len - 4);
                         triple[gcc_len - 4] = '\0';
                         size_t len = strlen(triple) + 9;

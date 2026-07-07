@@ -15,6 +15,7 @@ RCC_LIB_LDFLAGS = -shared -fPIC
 RCC_GCC = $(CC)
 
 ifeq ($(ASAN),1)
+CFLAGS = -std=c11 -Wall -Wextra -g -Isrc
 CFLAGS += -fsanitize=address -fno-omit-frame-pointer
 LDFLAGS += -fsanitize=address
 endif
