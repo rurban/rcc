@@ -20,8 +20,27 @@
 #define LLONG_MAX 9223372036854775807LL
 #define ULLONG_MAX 18446744073709551615ULL
 
-#if __STDC_VERSION__ >= 202311L
+#define MB_LEN_MAX 16
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
 #define __STDC_VERSION_LIMITS_H__ 202311L
+
+/* C23 width macros */
+#define CHAR_WIDTH 8
+#define SCHAR_WIDTH 8
+#define UCHAR_WIDTH 8
+#define SHRT_WIDTH 16
+#define USHRT_WIDTH 16
+#define INT_WIDTH 32
+#define UINT_WIDTH 32
+#define LONG_WIDTH 64
+#define ULONG_WIDTH 64
+#define LLONG_WIDTH 64
+#define ULLONG_WIDTH 64
+
+/* C23 bool limits */
+#define BOOL_MAX 1
+#define BOOL_WIDTH 1
 #endif
 
 #endif

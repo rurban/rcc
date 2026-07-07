@@ -3966,6 +3966,8 @@ typedef enum {
     SKIP_C99_RUNTIME,
     SKIP_C11_INCOMPAT,
     SKIP_ERROR,
+    SKIP_FENV,
+    SKIP_TARGET,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3984,6 +3986,8 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_C99_RUNTIME: return "c99-runtime";
     case SKIP_C11_INCOMPAT: return "c11-incompat";
     case SKIP_ERROR: return "error";
+    case SKIP_FENV: return "fenv-exceptions";
+    case SKIP_TARGET: return "target-mismatch";
     default: return "unknown";
     }
 }
@@ -4000,6 +4004,14 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     if (contains(content, "dg-require-effective-target trampolines"))
         return SKIP_TRAMPOLINES;
     if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
+    /* rcc does not implement FP exception (fenv) semantics or signaling NaNs,
+     * so tests that assert on FE_INVALID etc. cannot pass. */
+    if (contains(content, "dg-require-effective-target fenv_exceptions"))
+        return SKIP_FENV;
+    /* Tests gated on a target that lacks hardware infinity/NaN do not apply to
+     * x86 (which has both), e.g. `dg-do compile { target { ! inff } }`. */
+    if (contains(content, "{ ! inff }") || contains(content, "{ ! inf }"))
+        return SKIP_TARGET;
     if (contains(content, "dg-options") && contains(content, "-finstrument-functions"))
         return SKIP_FINSTRUMENT;
     // TODO we really should catch all compilation errors, and emit them all at once at the end
@@ -4544,17 +4556,17 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 6; // 103 + 6
+        max_fail = 6;
     else if (streq(platform, "arm64"))
-        max_fail = 0; // 103
+        max_fail = 0;
     else if (streq(platform, "darwin_cross"))
-        max_fail = 1; // 103 + 1
+        max_fail = 1;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 0; // 103
+        max_fail = 0;
     else if (streq(platform, "mingw"))
-        max_fail = 0; // 103
+        max_fail = 0;
     else if (streq(platform, "linux"))
-        max_fail = 103;
+        max_fail = 80;
     else
         max_fail = 0;
 

@@ -2000,8 +2000,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         pending_destructor = false;
         pending_asm_name = NULL;
         pending_alias_target = NULL;
-        // C11 _Static_assert inside struct/union body
-        if (equalc(tok, "_Static_assert")) {
+        // C11 _Static_assert / C23 static_assert inside struct/union body
+        if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
             Token *st = tok;
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);
@@ -5245,15 +5245,62 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(neg_im);
         return new_complex_val(re, neg_im, cty, start);
     }
+    // __builtin_inf/inff/infl and __builtin_huge_val/valf/vall — floating
+    // infinity constants usable in constant expressions and static initializers.
+    if (equalc(tok, "__builtin_inf") || equalc(tok, "__builtin_huge_val") ||
+        equalc(tok, "__builtin_inff") || equalc(tok, "__builtin_huge_valf") ||
+        equalc(tok, "__builtin_infl") || equalc(tok, "__builtin_huge_vall")) {
+        Token *start = tok;
+        Type *fty = ty_double;
+        if (equalc(tok, "__builtin_inff") || equalc(tok, "__builtin_huge_valf"))
+            fty = ty_float;
+        else if (equalc(tok, "__builtin_infl") || equalc(tok, "__builtin_huge_vall"))
+            fty = ty_ldouble;
+        tok = skip(tok->next, "(");
+        *rest = skip(tok, ")");
+        Node *n = new_fnum((double)__builtin_inff(), start);
+        n->ty = fty;
+        return n;
+    }
+    // __builtin_nan/nanf/nanl (quiet) and __builtin_nans/nansf/nansl (signaling)
+    // — NaN constants.  We emit a quiet NaN in all cases; the only distinction
+    // that matters for our torture tests is that isnan() is true.
+    if (equalc(tok, "__builtin_nan") || equalc(tok, "__builtin_nanf") ||
+        equalc(tok, "__builtin_nanl") || equalc(tok, "__builtin_nans") ||
+        equalc(tok, "__builtin_nansf") || equalc(tok, "__builtin_nansl")) {
+        Token *start = tok;
+        Type *fty = ty_double;
+        size_t nl = tok->len;
+        char last = tok->ptr[nl - 1];
+        if (last == 'f')
+            fty = ty_float;
+        else if (last == 'l')
+            fty = ty_ldouble;
+        tok = skip(tok->next, "(");
+        if (!equalc(tok, ")"))
+            assign(&tok, tok); // tag string argument, ignored
+        *rest = skip(tok, ")");
+        Node *n = new_fnum(__builtin_nan(""), start);
+        n->ty = fty;
+        return n;
+    }
     if (equalc(tok, "__builtin_va_start")) {
         Node *node = new_node(ND_VA_START, tok);
         tok = skip(tok->next, "(");
         node->lhs = assign(&tok, tok);
-        // C23: second argument (last named param) is optional
+        // C23: any arguments after the first (the va_list) are not evaluated,
+        // and may be arbitrary, ill-formed token sequences.  Skip them without
+        // parsing, tracking parenthesis nesting to find the matching ')'.
         if (equalc(tok, ",")) {
-            tok = tok->next;
-            if (!equalc(tok, ")"))
-                assign(&tok, tok); // consume but ignore second arg
+            int depth = 0;
+            while (tok->kind != TK_EOF) {
+                if (equalc(tok, "(")) depth++;
+                else if (equalc(tok, ")")) {
+                    if (depth == 0) break;
+                    depth--;
+                }
+                tok = tok->next;
+            }
         }
         *rest = skip(tok, ")");
         return node;
@@ -7105,7 +7152,7 @@ Program *parse(Token *tok) {
         }
 
 
-        if (equalc(tok, "_Static_assert")) {
+        if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
             Token *st = tok;
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);

@@ -157,6 +157,7 @@ void help(void) {
 
 bool opt_O0 = false;
 bool opt_O1 = false;
+const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 bool opt_W = false;
 bool opt_Werror = false;
 bool opt_Werror_unknown = false;
@@ -360,13 +361,20 @@ int main(int argc, char **argv) {
             return 1;
         } else if (!strncmp(argv[i], "-std=", 5)) {
             const char *std = argv[i] + 5;
-            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023") ||
-                !strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017") ||
-                !strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011") ||
-                !strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999") ||
-                !strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") || !strcmp(std, "gnu89") ||
-                !strcmp(std, "iso9899:1990"))
-                ; /* accepted, but rcc always targets C23 */
+            /* rcc always compiles the C23 language, but reflects the requested
+             * standard in the __STDC_VERSION__ predefined macro so that library
+             * headers expose the right version-gated content. */
+            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023"))
+                opt_std_version = "202311L";
+            else if (!strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017"))
+                opt_std_version = "201710L";
+            else if (!strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011"))
+                opt_std_version = "201112L";
+            else if (!strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999"))
+                opt_std_version = "199901L";
+            else if (!strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") ||
+                     !strcmp(std, "gnu89") || !strcmp(std, "iso9899:1990"))
+                opt_std_version = NULL; /* C90 has no __STDC_VERSION__ */
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
             // GCC-compatible warning-flag handling:

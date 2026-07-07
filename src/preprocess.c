@@ -2202,8 +2202,9 @@ char *preprocess(char *filename, char *p) {
 
 #include "gcc_predefined.h"
 
-        // Always define __STDC_VERSION__ for C23 (rcc only targets C23)
-        define_pre("__STDC_VERSION__", "202311L");
+        // __STDC_VERSION__ reflects the -std= selection (defaults to C23).
+        if (opt_std_version)
+            define_pre("__STDC_VERSION__", (char *)opt_std_version);
 
         // Define __OPTIMIZE__ when optimization is enabled (GCC compat)
         if (opt_O1)
