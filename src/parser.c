@@ -939,10 +939,10 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             continue;
         }
         // C23 [[attribute]] syntax — parse into VarAttr
-        if (equalc(tok, "[") && equalc(tok->next, "[")) {
+        if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
             tok = tok->next->next; // skip [[
             while (tok && tok->kind != TK_EOF &&
-                   !(equalc(tok, "]") && tok->next && equalc(tok->next, "]"))) {
+                   !(equalc(tok, "]") && tok->next && equalc(tok->next, "]") && tok->ptr + tok->len == tok->next->ptr)) {
                 if (equalc(tok, ",")) {
                     tok = tok->next;
                     continue;
@@ -2740,7 +2740,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             ty = ty_double;
         } else {
             ty = ty_int;
-            if (!attr->is_auto_type)
+            if (!attr->is_auto_type && !equalc(tok, "["))
                 warn_tok(tok, "type defaults to int");
         }
     }
@@ -4241,11 +4241,11 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             continue;
         }
         // C23 [[attribute]] at statement level
-        if (equalc(tok, "[") && equalc(tok->next, "[")) {
+        if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
             Token *t = tok->next->next;
             int depth = 1;
             while (depth > 0 && t->kind != TK_EOF) {
-                if (equalc(t, "[") && equalc(t->next, "[")) depth++;
+                if (equalc(t, "[") && equalc(t->next, "[") && t->ptr + t->len == t->next->ptr) depth++;
                 else if (equalc(t, "]") && equalc(t->next, "]")) {
                     depth--;
                     t = t->next;
