@@ -4396,6 +4396,12 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
 }
 
 static Node *stmt(Token **rest, Token *tok) {
+    // C23 [[attribute]] prefixing a statement or label (e.g. as an if/while
+    // body, where the enclosing block loop's attribute handler does not run).
+    if (equalc(tok, "[") && equalc(tok->next, "[")) {
+        tok = skip_attributes(tok);
+        return stmt(rest, tok);
+    }
     if (equalc(tok, "return")) {
         Node *node = new_node(ND_RETURN, tok);
         node->cleanup_begin = locals;
@@ -4623,6 +4629,17 @@ static Node *stmt(Token **rest, Token *tok) {
         resolve_pending_gotos(node->label_name, locals);
         tok = tok->next->next;
         tok = skip_attributes(tok);
+        // C23: a label may immediately precede a declaration, or appear at the
+        // end of a compound statement (before '}').  In those cases the label
+        // has an empty (null) statement body and the enclosing block parses the
+        // declaration, if any, as the next block item.
+        if (equalc(tok, "}") || equalc(tok, "__auto_type") ||
+            equalc(tok, "_Static_assert") || equalc(tok, "static_assert") ||
+            is_typename(tok)) {
+            node->lhs = new_node(ND_NULL, tok);
+            *rest = tok;
+            return node;
+        }
         node->lhs = stmt(&tok, tok);
         *rest = tok;
         return node;
@@ -4827,6 +4844,16 @@ static Node *primary(Token **rest, Token *tok) {
             } else if (equalc(tok, "nullptr")) {
                 node = new_num(0, tok);
                 node->ty = pointer_to(ty_void);
+                tok = tok->next;
+            } else if (equalc(tok, "true")) {
+                // C23 keyword: bool-typed constant 1
+                node = new_num(1, tok);
+                node->ty = ty_bool;
+                tok = tok->next;
+            } else if (equalc(tok, "false")) {
+                // C23 keyword: bool-typed constant 0
+                node = new_num(0, tok);
+                node->ty = ty_bool;
                 tok = tok->next;
             } else {
                 LVar *var = find_var(tok);

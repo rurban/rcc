@@ -1408,6 +1408,17 @@ static long eval_primary(char **rest, char *p, char *filename) {
         while (pp_is_ident2(*p))
             p++;
         char *name = pp_strndup(start, p - start);
+        // C23: the keywords true and false evaluate to 1 and 0 in #if.
+        if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
+            if (strcmp(name, "true") == 0) {
+                *rest = p;
+                return 1;
+            }
+            if (strcmp(name, "false") == 0) {
+                *rest = p;
+                return 0;
+            }
+        }
         Macro *m = find_macro(name);
         *rest = p;
         if (!m)
@@ -2205,6 +2216,17 @@ char *preprocess(char *filename, char *p) {
         // __STDC_VERSION__ reflects the -std= selection (defaults to C23).
         if (opt_std_version)
             define_pre("__STDC_VERSION__", (char *)opt_std_version);
+
+        // C23 makes bool/true/false first-class; programs may use them without
+        // including <stdbool.h>.  Model `bool` as _Bool via a predefined macro
+        // (true/false are handled directly by the parser so they carry _Bool
+        // type).  __bool_true_false_are_defined is likewise always available.
+        if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
+            if (!find_macro("bool"))
+                define_pre("bool", "_Bool");
+            if (!find_macro("__bool_true_false_are_defined"))
+                define_pre("__bool_true_false_are_defined", "1");
+        }
 
         // Define __OPTIMIZE__ when optimization is enabled (GCC compat)
         if (opt_O1)
