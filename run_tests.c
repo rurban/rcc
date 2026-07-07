@@ -4016,6 +4016,30 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     return SKIP_NONE;
 }
 
+/* ── dg-do directive parsing ─────────────────────────────────────── */
+
+typedef enum {
+    DGDO_DEFAULT = 0, /* no dg-do directive → compile+link+run */
+    DGDO_COMPILE, /* dg-do compile → compile only (-c) */
+    DGDO_PREPROCESS, /* dg-do preprocess → preprocess only (-E) */
+    DGDO_RUN, /* dg-do run → compile+link+run (explicit) */
+} DgDoAction;
+
+/* Parse "dg-do <action>" from test content. Returns DGDO_DEFAULT if
+ * no dg-do directive found (behaves as compile+link+run). */
+static DgDoAction dgdo_parse(const char *content) {
+    if (!content) return DGDO_DEFAULT;
+    const char *dg = strstr(content, "dg-do");
+    if (!dg) return DGDO_DEFAULT;
+    /* skip "dg-do" and whitespace */
+    dg += 5;
+    while (*dg == ' ' || *dg == '\t') dg++;
+    if (strncmp(dg, "compile", 7) == 0) return DGDO_COMPILE;
+    if (strncmp(dg, "preprocess", 10) == 0) return DGDO_PREPROCESS;
+    if (strncmp(dg, "run", 3) == 0) return DGDO_RUN;
+    return DGDO_DEFAULT;
+}
+
 static int g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip, g_tort_total;
 static char *g_tort_compile_errors, *g_tort_runtime_errors;
 
@@ -4060,6 +4084,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
 
     /* compile */
     {
+        DgDoAction dgdo = dgdo_parse(content);
         char *ca[32];
         int ai = 0;
         ca[ai++] = (char *)rcc;
@@ -4083,10 +4108,18 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         }
         ca[ai++] = "-I";
         ca[ai++] = g_tort_dir;
-        ca[ai++] = "-o";
-        ca[ai++] = r->tmp_exe;
+        if (dgdo == DGDO_PREPROCESS) {
+            ca[ai++] = "-E";
+        } else if (dgdo == DGDO_COMPILE) {
+            ca[ai++] = "-c";
+        } else {
+            ca[ai++] = "-o";
+            ca[ai++] = r->tmp_exe;
+        }
         ca[ai++] = (char *)src_path;
-        ca[ai++] = "-lm";
+        if (dgdo == DGDO_DEFAULT || dgdo == DGDO_RUN) {
+            ca[ai++] = "-lm";
+        }
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
@@ -4109,6 +4142,16 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         proc_free(&cr);
     }
     r->did_compile = true;
+
+    /* compile-only or preprocess-only: no execution needed */
+    {
+        DgDoAction dgdo = dgdo_parse(content);
+        if (dgdo == DGDO_COMPILE || dgdo == DGDO_PREPROCESS) {
+            r->did_exec = false;
+            free(content);
+            return;
+        }
+    }
 
     if (streq(platform, "darwin_cross")) {
         r->did_exec = false;
@@ -4251,6 +4294,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     (void)use_rcc_lib;
 #endif
 
+    DgDoAction dgdo = dgdo_parse(content);
     char exe_path[512];
     snprintf(exe_path, sizeof(exe_path), "%s/torture_rcc_%s", get_tmpdir(), name);
     if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
@@ -4278,10 +4322,18 @@ static void run_torture_test(const char *src, bool summary_only) {
     }
     ca[ai++] = "-I";
     ca[ai++] = ".";
-    ca[ai++] = "-o";
-    ca[ai++] = exe_path;
+    if (dgdo == DGDO_PREPROCESS) {
+        ca[ai++] = "-E";
+    } else if (dgdo == DGDO_COMPILE) {
+        ca[ai++] = "-c";
+    } else {
+        ca[ai++] = "-o";
+        ca[ai++] = exe_path;
+    }
     ca[ai++] = (char *)src;
-    ca[ai++] = "-lm";
+    if (dgdo == DGDO_DEFAULT || dgdo == DGDO_RUN) {
+        ca[ai++] = "-lm";
+    }
     ca[ai] = NULL;
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
@@ -4306,6 +4358,16 @@ static void run_torture_test(const char *src, bool summary_only) {
         return;
     }
     proc_free(&cr);
+
+    /* compile-only or preprocess-only: no execution needed */
+    if (dgdo == DGDO_COMPILE || dgdo == DGDO_PREPROCESS) {
+        g_tort_pass++;
+        if (!summary_only) print_result(name, COL_GREEN, "PASS");
+        vlog_test_details(name, compile_cmdline, NULL, NULL, NULL);
+        free(compile_cmdline);
+        free(content);
+        return;
+    }
 
     if (streq(platform, "darwin_cross")) {
         g_tort_pass++;
