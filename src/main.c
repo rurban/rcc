@@ -158,6 +158,7 @@ void help(void) {
 bool opt_O0 = false;
 bool opt_O1 = false;
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
+const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
 bool opt_Werror = false;
 bool opt_Werror_unknown = false;
@@ -382,6 +383,8 @@ int main(int argc, char **argv) {
             //   -Werror=* = silently ignored (error variant for warnings we don't have)
             //   others  = warn, but only error with -Werror=unknown-warning-option
             // Build systems probe supported warnings via -Werror=unknown-warning-option.
+        } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
+            opt_exec_charset = argv[i] + 15;
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
                    !strncmp(argv[i], "-Werror=", 8)) {
             ; // silently ignored

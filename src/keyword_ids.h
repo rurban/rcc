@@ -72,6 +72,7 @@ enum {
     ID__DECIMAL32,
     ID__DECIMAL64,
     ID__DECIMAL128,
+    ID__FLOAT16,
     ID__FLOAT32,
     ID__FLOAT32X,
     ID__FLOAT64,

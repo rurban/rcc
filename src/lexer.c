@@ -3,6 +3,54 @@
 #include "rcc.h"
 #include <stdarg.h>
 #include <ctype.h>
+#if !defined(_WIN32)
+#include <iconv.h>
+#endif
+
+// -fexec-charset support: translate one source character (Unicode codepoint)
+// to the execution character set. Only unprefixed character constants and
+// narrow string literal characters go through this; u8/u/U/L literals and
+// numeric escapes are unaffected. Returns the input unchanged when no
+// -fexec-charset is given or the conversion is unavailable.
+static uint32_t to_exec_charset(uint32_t c) {
+#if !defined(_WIN32)
+    if (!opt_exec_charset)
+        return c;
+    static iconv_t cd = (iconv_t)-1;
+    static const char *cd_charset;
+    if (cd_charset != opt_exec_charset) {
+        if (cd != (iconv_t)-1)
+            iconv_close(cd);
+        cd = iconv_open(opt_exec_charset, "UTF-8");
+        cd_charset = opt_exec_charset;
+    }
+    if (cd == (iconv_t)-1)
+        return c;
+    char in[4];
+    size_t inlen;
+    if (c < 0x80) {
+        in[0] = (char)c;
+        inlen = 1;
+    } else if (c < 0x800) {
+        in[0] = (char)(0xC0 | (c >> 6));
+        in[1] = (char)(0x80 | (c & 0x3F));
+        inlen = 2;
+    } else {
+        in[0] = (char)(0xE0 | (c >> 12));
+        in[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        in[2] = (char)(0x80 | (c & 0x3F));
+        inlen = 3;
+    }
+    char out[8];
+    char *inp = in, *outp = out;
+    size_t outlen = sizeof(out);
+    if (iconv(cd, &inp, &inlen, &outp, &outlen) == (size_t)-1)
+        return c;
+    if (outp - out == 1)
+        return (uint8_t)out[0];
+#endif
+    return c;
+}
 
 // Input string
 char *current_input;
@@ -410,100 +458,112 @@ Token *tokenize(char *filename, char *p) {
         if (isdigit(*p) || (*p == '.' && isdigit(p[1]))) {
             char *q = p;
             bool is_float = false;
+            // C23 digit separators: a ' continues the number only when
+            // followed by a digit of the current base; otherwise it starts
+            // a character constant (e.g. acat(0'.')). Before C23 (-std=c11
+            // etc.) ' never continues a number: `1'2` is `1` then a
+            // character constant, matching GCC's pre-C23 lexing.
+            bool dsep = opt_std_version && strcmp(opt_std_version, "202311L") >= 0;
 
             if (*p == '0' && (p[1] == 'x' || p[1] == 'X')) {
                 p += 2;
-                while (isxdigit(*p) || *p == '\'') p++;
+                while (isxdigit(*p) || (dsep && *p == '\'' && isxdigit(p[1]))) p++;
                 if (*p == '.') {
                     is_float = true;
                     p++;
-                    while (isxdigit(*p) || *p == '\'') p++;
+                    while (isxdigit(*p) || (dsep && *p == '\'' && isxdigit(p[1]))) p++;
                 }
                 if (*p == 'p' || *p == 'P') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p) || *p == '\'') p++;
+                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 }
             } else if (*p == '0' && (p[1] == 'o' || p[1] == 'O')) {
                 p += 2;
-                while ((*p >= '0' && *p <= '7') || *p == '\'') p++;
+                while ((*p >= '0' && *p <= '7') ||
+                       (dsep && *p == '\'' && p[1] >= '0' && p[1] <= '7')) p++;
             } else if (*p == '0' && (p[1] == 'b' || p[1] == 'B')) {
                 p += 2;
-                while (*p == '0' || *p == '1' || *p == '\'') p++;
+                while (*p == '0' || *p == '1' ||
+                       (dsep && *p == '\'' && (p[1] == '0' || p[1] == '1'))) p++;
             } else {
-                while (isdigit(*p) || *p == '\'') p++;
+                while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 if (*p == '.' && p[1] != '.') {
                     is_float = true;
                     p++;
-                    while (isdigit(*p) || *p == '\'') p++;
+                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 }
                 if (*p == 'e' || *p == 'E') {
                     is_float = true;
                     p++;
                     if (*p == '+' || *p == '-') p++;
-                    while (isdigit(*p) || *p == '\'') p++;
+                    while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 }
             }
 
-            // Check for float/imaginary suffix: f/F, l/L, i/I in any order
+            // Check for float/imaginary suffix: f/F (incl. _FloatN forms),
+            // l/L, i/I/j/J in any order
             int fkind = 0; // 0=double, 1=float, 2=long double
             bool is_imag = false;
             if (is_float) {
-                // _FloatN suffixes (C23): F32, F64, F128, F32x, F64x (also lowercase)
-                // Must be checked before the plain f/F suffix consumer.
-                if ((*p == 'f' || *p == 'F') && isdigit(p[1])) {
-                    p++; // skip F/f
-                    if (p[0] == '3' && p[1] == '2') {
-                        p += 2;
-                        fkind = (*p == 'x' || *p == 'X') ? (p++, 0) : 1; // F32->float, F32x->double
-                    } else if (p[0] == '6' && p[1] == '4') {
-                        p += 2;
-                        fkind = (*p == 'x' || *p == 'X') ? (p++, 2) : 0; // F64->double, F64x->long double
-                    } else if (p[0] == '1' && p[1] == '2' && p[2] == '8') {
-                        fkind = 2;
-                        p += 3; // F128->long double (correct on ARM64; stub on x86)
-                    } else if (p[0] == '1' && p[1] == '6') {
+                bool have_kind = false;
+                for (;;) {
+                    if (!have_kind && (*p == 'f' || *p == 'F') && isdigit(p[1])) {
+                        // _FloatN suffixes (C23): F16, F32, F64, F128, F32x, F64x
+                        p++; // skip F/f
+                        if (p[0] == '3' && p[1] == '2') {
+                            p += 2;
+                            fkind = (*p == 'x' || *p == 'X') ? (p++, 0) : 1; // F32->float, F32x->double
+                        } else if (p[0] == '6' && p[1] == '4') {
+                            p += 2;
+                            fkind = (*p == 'x' || *p == 'X') ? (p++, 2) : 0; // F64->double, F64x->long double
+                        } else if (p[0] == '1' && p[1] == '2' && p[2] == '8') {
+                            fkind = 2;
+                            p += 3; // F128->long double (correct on ARM64; stub on x86)
+                        } else if (p[0] == '1' && p[1] == '6') {
+                            fkind = 1;
+                            p += 2; // F16->float (nearest supported type)
+                        }
+                        have_kind = true;
+                    } else if (!have_kind && (*p == 'f' || *p == 'F')) {
                         fkind = 1;
-                        p += 2; // F16->float (nearest supported type)
-                    }
-                    if (*p == 'i' || *p == 'I') {
+                        have_kind = true;
+                        p++;
+                    } else if (!have_kind && (*p == 'l' || *p == 'L')) {
+                        fkind = 2;
+                        have_kind = true;
+                        p++;
+                    } else if (!is_imag &&
+                               (*p == 'i' || *p == 'I' || *p == 'j' || *p == 'J')) {
                         is_imag = true;
                         p++;
-                    }
-                } else {
-                    for (int pass = 0; pass < 2; pass++) {
-                        if (*p == 'f' || *p == 'F') {
-                            fkind = 1;
-                            p++;
-                        } else if (*p == 'l' || *p == 'L') {
-                            if (is_float) {
-                                fkind = 2;
-                                p++;
-                            } else
-                                break;
-                        } else if (*p == 'i' || *p == 'I') {
-                            is_imag = true;
-                            p++;
-                        }
-                    }
-                    // Also handle DD/DF/DL decimal suffixes
-                    if (fkind == 0 && !is_imag &&
-                        (*p == 'd' || *p == 'D') &&
-                        (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
-                        if (p[1] == 'd' || p[1] == 'D') fkind = 0;
-                        else if (p[1] == 'f' || p[1] == 'F')
-                            fkind = 1;
-                        else
-                            fkind = 2;
-                        p += 2;
-                    }
-                } // end else (not _FloatN suffix)
+                    } else
+                        break;
+                }
+                // Also handle DD/DF/DL decimal suffixes
+                if (!have_kind && !is_imag &&
+                    (*p == 'd' || *p == 'D') &&
+                    (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
+                    if (p[1] == 'd' || p[1] == 'D') fkind = 0;
+                    else if (p[1] == 'f' || p[1] == 'F')
+                        fkind = 1;
+                    else
+                        fkind = 2;
+                    p += 2;
+                }
             } else {
-                // Integer suffix (including imaginary i/I extension)
-                while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L')
-                    p++;
-                if (*p == 'i' || *p == 'I') {
+                // Integer suffix: u/U, l/L, C23 wb/WB (_BitInt), and the
+                // imaginary i/I/j/J extension
+                for (;;) {
+                    if (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L')
+                        p++;
+                    else if ((*p == 'w' || *p == 'W') && (p[1] == 'b' || p[1] == 'B'))
+                        p += 2;
+                    else
+                        break;
+                }
+                if (*p == 'i' || *p == 'I' || *p == 'j' || *p == 'J') {
                     is_imag = true;
                     p++;
                 }
@@ -540,7 +600,7 @@ Token *tokenize(char *filename, char *p) {
                     for (char *rp = q + 2; rp < p; rp++)
                         if (*rp >= '0' && *rp <= '7') iv = iv * 8 + (*rp - '0');
                     cur->fval = (double)iv;
-                } else if (q[0] == '0' && isdigit(q[1])) {
+                } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
                     int64_t iv = 0;
                     for (char *rp = q + 1; rp < p; rp++)
                         if (*rp >= '0' && *rp <= '7') iv = iv * 8 + (*rp - '0');
@@ -566,8 +626,9 @@ Token *tokenize(char *filename, char *p) {
                     for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
                         if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (*rp - '0');
                     cur->val = val;
-                } else if (q[0] == '0' && isdigit(q[1])) {
-                    // Octal: leading 0 followed by digit (not x/b)
+                } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
+                    // Octal: leading 0 followed by digit (not x/b),
+                    // possibly with a digit separator right after the 0
                     int64_t val = 0;
                     for (char *rp = q + 1; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
                         if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (*rp - '0');
@@ -719,7 +780,10 @@ Token *tokenize(char *filename, char *p) {
                             }
                         }
                     } else {
-                        buf[len++] = *p++;
+                        char sc = *p++;
+                        if (!prefix && opt_exec_charset && (unsigned char)sc < 0x80)
+                            sc = (char)to_exec_charset((uint8_t)sc);
+                        buf[len++] = sc;
                     }
                 }
                 if (*p != '"') error_at(start, "unclosed string literal");
@@ -765,8 +829,19 @@ Token *tokenize(char *filename, char *p) {
             while (*p && *p != '\'' && *p != '\n') {
                 if (*p == '\\') {
                     p++;
-                    if (char_prefix && char_prefix != '8' &&
-                        (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                    if (char_prefix && (*p == 'u' || *p == 'U')) {
+                        // Universal character name: full codepoint value
+                        int n_digits = (*p == 'u') ? 4 : 8;
+                        p++;
+                        cval = 0;
+                        for (int i = 0; i < n_digits; i++) {
+                            int digit = from_hex(*p);
+                            if (digit < 0) error_at(p, "invalid unicode escape");
+                            cval = cval * 16 + digit;
+                            p++;
+                        }
+                    } else if (char_prefix && char_prefix != '8' &&
+                               (*p == 'x' || ('0' <= *p && *p <= '7'))) {
                         // Wide char literal: numeric escape is a full wide
                         // character value; (uint8_t) would truncate L'\x2219'
                         cval = 0;
@@ -795,6 +870,8 @@ Token *tokenize(char *filename, char *p) {
                     cval = decode_utf8(&p, p);
                 } else {
                     cval = (uint8_t)*p++;
+                    if (!char_prefix)
+                        cval = to_exec_charset(cval);
                 }
             }
             if (*p != '\'') error_at(start, "unclosed character literal");
@@ -804,6 +881,9 @@ Token *tokenize(char *filename, char *p) {
             // (signed) char: '\xe2' is -30, not 226. Prefixed literals
             // (L/u/U/u8) hold non-negative wide/unsigned values.
             cur->val = char_prefix ? (int64_t)cval : (int64_t)(int8_t)cval;
+            // Record the prefix so the parser can type the constant
+            // (u8 -> unsigned char, u -> char16_t, U -> char32_t).
+            cur->string_literal_prefix = char_prefix;
             continue;
         }
 

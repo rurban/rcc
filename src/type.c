@@ -202,6 +202,18 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
 
 static void add_type_internal(Node *node);
 
+// C: a null pointer constant is any integer constant expression with value 0
+// (casts to integer types are allowed inside an ICE, so (char)0, (bool)0 and
+// (enum e)0 all qualify), optionally cast to unqualified void*.
+static bool is_null_pointer_constant(Node *n) {
+    while (n && n->kind == ND_CAST && n->ty &&
+           (is_integer(n->ty) ||
+            (n->ty->kind == TY_PTR && n->ty->base &&
+             n->ty->base->kind == TY_VOID && n->ty->base->qual == 0)))
+        n = n->lhs;
+    return n && n->kind == ND_NUM && n->ty && is_integer(n->ty) && n->val == 0;
+}
+
 // Some __builtin_* functions are recognized by name in codegen and emit
 // values of a specific width/signedness regardless of the (absent) prototype,
 // which would otherwise default to plain `int`. Report their true return
@@ -396,8 +408,17 @@ static void add_type_internal(Node *node) {
         if (node->lhs->ty && node->rhs->ty) {
             bool lf = is_flonum(node->lhs->ty);
             bool rf = is_flonum(node->rhs->ty);
-            if ((lf && !rf) || (!lf && rf) ||
-                (lf && rf && node->lhs->ty->size != node->rhs->ty->size)) {
+            if (node->lhs->ty->kind == TY_BOOL && node->rhs->ty->kind != TY_BOOL) {
+                // Storing into a _Bool must normalize to 0/1 (C11 6.3.1.2),
+                // not truncate the low byte — 10 assigns as true, not 10.
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
+            } else if ((lf && !rf) || (!lf && rf) ||
+                       (lf && rf && node->lhs->ty->size != node->rhs->ty->size)) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;
@@ -485,22 +506,11 @@ static void add_type_internal(Node *node) {
             node->ty = ty_void;
             return;
         }
-        // Null pointer constant: integer 0, or cast of integer 0 to unqualified void*
-        bool then_null = tty && is_integer(tty) && node->then->kind == ND_NUM && node->then->val == 0;
-        bool els_null = ety && is_integer(ety) && node->els->kind == ND_NUM && node->els->val == 0;
-        // Extend: (void*)0 cast is also a null pointer constant
-        if (!then_null && node->then->kind == ND_CAST && tty && tty->kind == TY_PTR &&
-            tty->base && tty->base->kind == TY_VOID && tty->base->qual == 0) {
-            Node *inner = node->then->lhs;
-            then_null = inner && inner->ty && is_integer(inner->ty) &&
-                inner->kind == ND_NUM && inner->val == 0;
-        }
-        if (!els_null && node->els->kind == ND_CAST && ety && ety->kind == TY_PTR &&
-            ety->base && ety->base->kind == TY_VOID && ety->base->qual == 0) {
-            Node *inner = node->els->lhs;
-            els_null = inner && inner->ty && is_integer(inner->ty) &&
-                inner->kind == ND_NUM && inner->val == 0;
-        }
+        // Null pointer constant: any integer constant expression with value 0
+        // (including casts to integer types like (char)0, (bool)0, (enum e)0),
+        // optionally cast to unqualified void*.
+        bool then_null = is_null_pointer_constant(node->then);
+        bool els_null = is_null_pointer_constant(node->els);
         if (then_null && ety && (ety->kind == TY_PTR || ety->kind == TY_ARRAY || ety->kind == TY_VLA)) {
             node->ty = (ety->kind == TY_ARRAY || ety->kind == TY_VLA) ? pointer_to(ety->base) : ety;
             return;
@@ -519,11 +529,16 @@ static void add_type_internal(Node *node) {
                 // Pick the void* side; if both void*, pick then-side
                 Type *vptr = (ebase->kind != TY_VOID) ? tty : ety;
                 unsigned char combined = tbase->qual | ebase->qual;
-                // C23: also carry element qualifiers from pointer-to-array types
-                if (tbase->kind == TY_ARRAY || tbase->kind == TY_VLA)
+                // C23 (PR98397): carry element qualifiers from pointer-to-array
+                // types; before C23 those qualifiers are lost here
+                bool c23 = opt_std_version && strcmp(opt_std_version, "202311L") >= 0;
+                if (c23 && (tbase->kind == TY_ARRAY || tbase->kind == TY_VLA))
                     combined |= tbase->base->qual;
-                if (ebase->kind == TY_ARRAY || ebase->kind == TY_VLA)
+                if (c23 && (ebase->kind == TY_ARRAY || ebase->kind == TY_VLA))
                     combined |= ebase->base->qual;
+                // _Atomic is not a type qualifier for this merge: the
+                // composite of `_Atomic void *` and `void *` is `void *`
+                combined &= (unsigned char)~QUAL_ATOMIC;
                 if (vptr->base->qual != combined) {
                     Type *vbase = arena_alloc(sizeof(Type));
                     *vbase = *vptr->base;

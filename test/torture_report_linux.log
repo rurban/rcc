@@ -836,7 +836,7 @@
   c11-builtins-1                      PASS (compile only)
   c11-compare-incomplete-1            PASS (compile only)
   c11-compare-incomplete-2            PASS (compile only)
-  c11-complex-1                       FAIL (compile)
+  c11-complex-1                       PASS
   c11-complit-1                       SKIP (error)
   c11-complit-2                       PASS (compile only)
   c11-complit-3                       PASS (compile only)
@@ -866,7 +866,7 @@
   c11-floatn-4                        SKIP (error)
   c11-floatn-5                        PASS (compile only)
   c11-floatn-6                        PASS (compile only)
-  c11-floatn-7                        FAIL (compile)
+  c11-floatn-7                        PASS (compile only)
   c11-floatn-8                        PASS (compile only)
   c11-fordecl-1                       SKIP (error)
   c11-fordecl-2                       SKIP (error)
@@ -885,7 +885,7 @@
   c11-noreturn-3                      SKIP (error)
   c11-noreturn-4                      PASS (compile only)
   c11-noreturn-5                      SKIP (error)
-  c11-null-pointer-constant-1         FAIL (compile)
+  c11-null-pointer-constant-1         PASS (compile only)
   c11-nullptr-1                       PASS (compile only)
   c11-nullptr-2                       PASS (compile only)
   c11-nullptr-3                       PASS (compile only)
@@ -896,7 +896,7 @@
   c11-parm-omit-3                     PASS (compile only)
   c11-parm-omit-4                     PASS (compile only)
   c11-pointer-float-1                 SKIP (error)
-  c11-qual-1                          FAIL (compile)
+  c11-qual-1                          PASS (compile only)
   c11-static-assert-1                 PASS (compile only)
   c11-static-assert-2                 SKIP (error)
   c11-static-assert-3                 SKIP (error)
@@ -923,14 +923,14 @@
   c11-typeof-1                        PASS (compile only)
   c11-typeof-2                        FAIL (runtime)
   c11-typeof-3                        SKIP (error)
-  c11-uni-string-1                    FAIL (compile)
+  c11-uni-string-1                    PASS
   c11-uni-string-2                    SKIP (error)
   c11-unproto-1                       SKIP (error)
   c11-unproto-2                       SKIP (error)
   c11-unproto-3                       PASS (compile only)
   c11-unreachable-1                   SKIP (c11-incompat)
-  c11-utf8char-1                      FAIL (compile)
-  c11-utf8str-type                    FAIL (compile)
+  c11-utf8char-1                      PASS (compile only)
+  c11-utf8str-type                    PASS (compile only)
   c11-version-1                       SKIP (c11-incompat)
   c11-version-2                       SKIP (c11-incompat)
   c23-align-1                         PASS (compile only)
@@ -1005,7 +1005,7 @@
   c23-complit-8                       SKIP (error)
   c23-concat-1                        SKIP (error)
   c23-constexpr-1                     FAIL (compile)
-  c23-constexpr-2a                    FAIL (compile)
+  c23-constexpr-2a                    PASS
   c23-constexpr-2b                    PASS (compile only)
   c23-constexpr-3                     SKIP (error)
   c23-constexpr-4                     PASS (compile only)
@@ -1015,7 +1015,7 @@
   c23-constexpr-8                     PASS (compile only)
   c23-constexpr-9                     SKIP (error)
   c23-constexpr-10                    SKIP (error)
-  c23-digit-separators-1              FAIL (compile)
+  c23-digit-separators-1              PASS
   c23-digit-separators-2              SKIP (error)
   c23-digit-separators-3              SKIP (error)
   c23-empty-init-1                    FAIL (runtime)
@@ -1023,12 +1023,12 @@
   c23-empty-init-3                    PASS (compile only)
   c23-empty-init-4                    SKIP (error)
   c23-empty-init-5                    FAIL (compile)
-  c23-enum-1                          FAIL (compile)
+  c23-enum-1                          PASS (compile only)
   c23-enum-2                          SKIP (error)
   c23-enum-3                          SKIP (error)
   c23-enum-4                          SKIP (error)
   c23-enum-5                          PASS (compile only)
-  c23-enum-6                          FAIL (compile)
+  c23-enum-6                          PASS
   c23-enum-7                          SKIP (error)
   c23-enum-8                          PASS (compile only)
   c23-enum-9                          SKIP (error)
@@ -1054,11 +1054,11 @@
   c23-float-no-dfp-4                  PASS (compile only)
   c23-floatn-1                        PASS (compile only)
   c23-floatn-2                        PASS (compile only)
-  c23-floatn-3                        FAIL (compile)
+  c23-floatn-3                        PASS (compile only)
   c23-floatn-4                        PASS (compile only)
   c23-floatn-5                        PASS (compile only)
   c23-floatn-6                        PASS (compile only)
-  c23-floatn-7                        FAIL (compile)
+  c23-floatn-7                        PASS (compile only)
   c23-floatn-8                        PASS (compile only)
   c23-fordecl-1                       SKIP (missing include)
   c23-fordecl-2                       SKIP (missing include)
@@ -1074,15 +1074,15 @@
   c23-has-c-attribute-4               SKIP (error)
   c23-if-decls-1                      SKIP (error)
   c23-if-decls-2                      FAIL (compile)
-  c23-imaginary-constants-1           FAIL (compile)
+  c23-imaginary-constants-1           PASS
   c23-imaginary-constants-2           SKIP (error)
-  c23-imaginary-constants-3           FAIL (compile)
+  c23-imaginary-constants-3           PASS
   c23-imaginary-constants-4           SKIP (error)
-  c23-imaginary-constants-5           FAIL (compile)
+  c23-imaginary-constants-5           PASS
   c23-imaginary-constants-6           SKIP (error)
-  c23-imaginary-constants-7           FAIL (compile)
+  c23-imaginary-constants-7           PASS
   c23-imaginary-constants-8           SKIP (error)
-  c23-imaginary-constants-9           FAIL (compile)
+  c23-imaginary-constants-9           PASS
   c23-imaginary-constants-10          SKIP (error)
   c23-labels-1                        PASS
   c23-labels-2                        PASS (compile only)
@@ -1094,7 +1094,7 @@
   c23-named-loops-1                   SKIP (error)
   c23-named-loops-5                   FAIL (compile)
   c23-no-dfp-1                        SKIP (error)
-  c23-null-pointer-constant-1         FAIL (compile)
+  c23-null-pointer-constant-1         PASS (compile only)
   c23-nullptr-1                       PASS
   c23-nullptr-2                       PASS (compile only)
   c23-nullptr-3                       SKIP (error)
@@ -1125,7 +1125,7 @@
   c23-qual-4                          SKIP (error)
   c23-qual-5                          SKIP (error)
   c23-qual-6                          SKIP (error)
-  c23-qual-7                          FAIL (compile)
+  c23-qual-7                          PASS (compile only)
   c23-static-assert-1                 PASS (compile only)
   c23-static-assert-2                 SKIP (error)
   c23-static-assert-3                 PASS (compile only)
@@ -1180,7 +1180,7 @@
   c23-tag-enum-4                      SKIP (error)
   c23-tag-enum-5                      SKIP (error)
   c23-tag-enum-6                      SKIP (error)
-  c23-tag-enum-7                      FAIL (compile)
+  c23-tag-enum-7                      PASS (compile only)
   c23-tag-incomplete-1                PASS (compile only)
   c23-tag-incomplete-2                PASS (compile only)
   c23-tag-incomplete-alias-1          PASS
@@ -1196,8 +1196,8 @@
   c23-unproto-3                       PASS (compile only)
   c23-unproto-4                       SKIP (error)
   c23-unreachable-1                   FAIL (compile)
-  c23-utf8char-1                      FAIL (compile)
-  c23-utf8char-2                      FAIL (compile)
+  c23-utf8char-1                      PASS (compile only)
+  c23-utf8char-2                      PASS (compile only)
   c23-utf8char-3                      SKIP (error)
   c23-utf8str-type                    PASS (compile only)
   c23-utf8str                         SKIP (error)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1762/1810 passed (97%), 48 failed (40 compile/8 runtime), 255 skipped.
+Torture: 1785/1810 passed (98%), 25 failed (17 compile/8 runtime), 255 skipped.
 
-Compile failures: c11-atomic-1 c11-complex-1 c11-floatn-7 c11-null-pointer-constant-1 c11-qual-1 c11-uni-string-1 c11-utf8char-1 c11-utf8str-type c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-4 c23-attr-unsequenced-5 c23-auto-2 c23-complit-2 c23-constexpr-1 c23-constexpr-2a c23-digit-separators-1 c23-empty-init-5 c23-enum-1 c23-enum-6 c23-floatn-3 c23-floatn-7 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-2 c23-imaginary-constants-1 c23-imaginary-constants-3 c23-imaginary-constants-5 c23-imaginary-constants-7 c23-imaginary-constants-9 c23-named-loops-5 c23-null-pointer-constant-1 c23-qual-7 c23-tag-composite-2 c23-tag-composite-10 c23-tag-enum-7 c23-unreachable-1 c23-utf8char-1 c23-utf8char-2
+Compile failures: c11-atomic-1 c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-4 c23-attr-unsequenced-5 c23-auto-2 c23-complit-2 c23-constexpr-1 c23-empty-init-5 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2 c23-tag-composite-10 c23-unreachable-1
 
 Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-complit-4 c23-empty-init-1 c23-stdarg-6 c23-stdarg-8 c23-typeof-1

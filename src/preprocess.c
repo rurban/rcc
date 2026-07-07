@@ -176,6 +176,35 @@ static bool pp_is_ident2(char c) {
     return pp_is_ident1(c) || ('0' <= c && c <= '9');
 }
 
+// C23 digit separators: decide whether the ' at p is a separator inside a
+// pp-number (e.g. 1'000, 0x0'e) rather than a character-constant quote.
+// A separator must be followed by an alnum and the token it sits in, scanned
+// backwards (across earlier separators), must start with a digit (or .digit).
+// `start` bounds the backward scan.
+static bool pp_is_digit_sep(const char *start, const char *p) {
+    // Digit separators are a C23 feature; before C23 a ' inside a number
+    // always opens a character constant (e.g. C11 `m(1'2)` treats '2)+(3'
+    // as one character-constant token, protecting its embedded parens).
+    if (!(opt_std_version && strcmp(opt_std_version, "202311L") >= 0))
+        return false;
+    if (!isalnum((unsigned char)p[1]))
+        return false;
+    const char *q = p;
+    while (q > start) {
+        char c = q[-1];
+        if (pp_is_ident2(c) || c == '.')
+            q--;
+        else if (c == '\'' && q - 1 > start && isalnum((unsigned char)q[-2]))
+            q -= 2;
+        else
+            break;
+    }
+    if (q >= p)
+        return false;
+    return isdigit((unsigned char)*q) ||
+        (*q == '.' && isdigit((unsigned char)q[1]));
+}
+
 static char *pp_strndup(char *p, int len) {
     char *s = arena_alloc(len + 1);
     memcpy(s, p, len);
@@ -703,6 +732,21 @@ static char *strip_bluepaint(char *s) {
 
 static char *expand_text(char *text, char *filename, unsigned line_no, int depth);
 
+// Top-level line expansion: iterate to a fixpoint so an invocation whose
+// closing paren only appears after an inner expansion completes (e.g. a
+// macro pasted/expanded to `f (` with the args in following text) still gets
+// expanded. Blue paint persists across iterations and is stripped once here.
+static char *expand_line(char *text, char *filename, unsigned line_no) {
+    char *cur = text;
+    for (int i = 0; i < 8; i++) {
+        char *next = expand_text(cur, filename, line_no, 0);
+        if (strcmp(next, cur) == 0)
+            break;
+        cur = next;
+    }
+    return strip_bluepaint(cur);
+}
+
 static int find_param_index(Macro *m, char *name) {
     for (int i = 0; i < m->param_len; i++)
         if (m->params[i] == name)
@@ -815,7 +859,7 @@ static char *substitute_macro(Macro *m, char **args, char **raw_args, int argc, 
     }
 
     for (char *p = m->body; *p;) {
-        if (*p == '"' || *p == '\'') {
+        if ((*p == '"' || *p == '\'') && !(*p == '\'' && pp_is_digit_sep(m->body, p))) {
             char quote = *p;
             sb_putc(&sb, *p++);
             while (*p && *p != quote) {
@@ -962,7 +1006,7 @@ static int parse_macro_args(char *p, char **args, int max_args, char **end_out) 
     char *arg_start = p;
 
     while (*p) {
-        if (*p == '"' || *p == '\'') {
+        if ((*p == '"' || *p == '\'') && !(*p == '\'' && pp_is_digit_sep(arg_start, p))) {
             char quote = *p++;
             while (*p && *p != quote) {
                 if (*p == '\\' && p[1])
@@ -1006,8 +1050,11 @@ static int parse_macro_args(char *p, char **args, int max_args, char **end_out) 
         p++;
     }
 
-    error("unterminated macro invocation");
-    return 0;
+    // Unterminated: the closing paren may live in enclosing text this
+    // rescan can't see (e.g. a pasted macro ending in `(`). Signal the
+    // caller to leave the name unexpanded; the top-level fixpoint pass
+    // retries with the full line in view.
+    return -1;
 }
 
 static char *expand_text(char *text, char *filename, unsigned line_no, int depth) {
@@ -1027,7 +1074,7 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             continue;
         }
 
-        if (*p == '"' || *p == '\'') {
+        if ((*p == '"' || *p == '\'') && !(*p == '\'' && pp_is_digit_sep(text, p))) {
             char quote = *p;
             sb_putc(&sb, *p++);
             while (*p && *p != quote) {
@@ -1057,7 +1104,11 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             sb_putc(&sb, *p++);
             continue;
         }
-        if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' || p[2] == '\'')))) {
+        if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' ||
+                                                                          // u8'' char constants are C23-only;
+                                                                          // before C23, u8 is an ordinary
+                                                                          // identifier subject to expansion
+                                                                          (p[2] == '\'' && opt_std_version && strcmp(opt_std_version, "202311L") >= 0))))) {
             sb_putc(&sb, *p++);
             if (*p == '8')
                 sb_putc(&sb, *p++);
@@ -1137,6 +1188,12 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
             char *args[32];
             char *end = NULL;
             int argc = parse_macro_args(q + 1, args, 32, &end);
+            if (argc < 0) {
+                // Closing paren not in view — leave the name for the
+                // top-level fixpoint rescan.
+                sb_puts(&sb, name);
+                continue;
+            }
             // Validate argument count: for non-variadic macros, argc must match param_len.
             // Lenient: empty arguments are acceptable (e.g., STR() where STR(x) expects 1 arg)
             if (!m->is_variadic && argc > m->param_len) {
@@ -1191,6 +1248,12 @@ static char *skip_spaces(char *p) {
 }
 
 static long eval_pp_expr(char **rest, char *p, char *filename);
+
+// Set when the current #if expression contains an unsigned-typed operand
+// (u/U integer suffix, or a u8''/u''/U'' character constant). Relational
+// operators then compare as unsigned, matching the usual arithmetic
+// conversions to uintmax_t (e.g. `#if u8'\0' - 1 < 0` must be false).
+static bool pp_expr_unsigned;
 
 static unsigned pp_eval_line_no;
 static long eval_primary(char **rest, char *p, char *filename) {
@@ -1359,6 +1422,12 @@ static long eval_primary(char **rest, char *p, char *filename) {
         tmp[ti] = '\0';
         long val = strtol(tmp, &np, 0);
         p += np - tmp;
+        // Consume integer suffixes; u/U makes the expression unsigned
+        while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L') {
+            if (*p == 'u' || *p == 'U')
+                pp_expr_unsigned = true;
+            p++;
+        }
         *rest = p;
         return val;
     }
@@ -1429,6 +1498,9 @@ static long eval_primary(char **rest, char *p, char *filename) {
                 *rest = q;
                 if (!prefix)
                     val = (long)(signed char)val;
+                else if (prefix != 'L')
+                    // u8/u/U character constants have unsigned type
+                    pp_expr_unsigned = true;
                 return val;
             }
         }
@@ -1465,6 +1537,10 @@ static long eval_primary(char **rest, char *p, char *filename) {
             char *args[32];
             char *end = NULL;
             int argc = parse_macro_args(q + 1, args, 32, &end);
+            if (argc < 0) {
+                *rest = p;
+                return 0;
+            }
             if (!m->is_variadic && argc > m->param_len) {
                 *rest = end;
                 return 0;
@@ -1541,13 +1617,18 @@ static long eval_rel(char **rest, char *p, char *filename) {
     long val = eval_shift(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
-        if (pp_startswith(p, "<=")) val = val <= eval_shift(&p, p + 2, filename);
+        long rhs;
+        if (pp_startswith(p, "<=")) rhs = eval_shift(&p, p + 2, filename),
+                                    val = pp_expr_unsigned ? (unsigned long)val <= (unsigned long)rhs : val <= rhs;
         else if (pp_startswith(p, ">="))
-            val = val >= eval_shift(&p, p + 2, filename);
+            rhs = eval_shift(&p, p + 2, filename),
+            val = pp_expr_unsigned ? (unsigned long)val >= (unsigned long)rhs : val >= rhs;
         else if (*p == '<')
-            val = val < eval_shift(&p, p + 1, filename);
+            rhs = eval_shift(&p, p + 1, filename),
+            val = pp_expr_unsigned ? (unsigned long)val < (unsigned long)rhs : val < rhs;
         else if (*p == '>')
-            val = val > eval_shift(&p, p + 1, filename);
+            rhs = eval_shift(&p, p + 1, filename),
+            val = pp_expr_unsigned ? (unsigned long)val > (unsigned long)rhs : val > rhs;
         else
             break;
     }
@@ -1639,6 +1720,7 @@ static long eval_pp_expr(char **rest, char *p, char *filename) {
 
 static long eval_condition(char *expr, char *filename, unsigned line_no) {
     pp_eval_line_no = line_no;
+    pp_expr_unsigned = false;
     char *rest = expr;
     return eval_pp_expr(&rest, expr, filename);
 }
@@ -1732,7 +1814,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
 
         if (s < end && *s == '#') {
             if (acc.len > 0) {
-                char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
+                char *expanded = expand_line(acc.buf, filename, acc_line_no);
                 sb_puts(&out, expanded);
                 for (int i = 0; i < acc_phys_count; i++)
                     sb_putc(&out, '\n');
@@ -2007,7 +2089,15 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 char *expanded = strip_bluepaint(expand_text(line_arg, filename, 1, 0));
                 char *ep = skip_spaces(expanded);
                 if (isdigit((unsigned char)*ep)) {
-                    line_no = (int)strtol(ep, NULL, 10) - 1;
+                    // C23: digit separators are valid here (#line 0'123)
+                    bool dsep = opt_std_version && strcmp(opt_std_version, "202311L") >= 0;
+                    long v = 0;
+                    for (char *dp = ep; isdigit((unsigned char)*dp) ||
+                         (dsep && *dp == '\'' && isdigit((unsigned char)dp[1]));
+                         dp++)
+                        if (*dp != '\'')
+                            v = v * 10 + (*dp - '0');
+                    line_no = (int)v - 1;
                 }
                 sb_putc(&out, '\n');
             } else if (pp_startswith(s, "error") && active) {
@@ -2177,7 +2267,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                 acc_phys_count += line_counts ? line_counts[line_idx] : 1;
                 acc_parens += count_parens_preserve_quote(line, end, &acc_quote);
                 if (acc_parens <= 0) {
-                    char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
+                    char *expanded = expand_line(acc.buf, filename, acc_line_no);
                     sb_puts(&out, expanded);
                     for (int i = 0; i < acc_phys_count; i++)
                         sb_putc(&out, '\n');
@@ -2187,7 +2277,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     acc_parens = 0;
                 }
             } else {
-                char *expanded = strip_bluepaint(expand_text(pp_strndup(line, end - line), filename, line_no, 0));
+                char *expanded = expand_line(pp_strndup(line, end - line), filename, line_no);
                 sb_puts(&out, expanded);
                 {
                     int n = line_counts ? line_counts[line_idx] : 1;
@@ -2198,7 +2288,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
         } else {
             if (acc.len > 0) {
                 /* flush accumulator before inactive section */
-                char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
+                char *expanded = expand_line(acc.buf, filename, acc_line_no);
                 sb_puts(&out, expanded);
                 for (int i = 0; i < acc_phys_count; i++)
                     sb_putc(&out, '\n');
@@ -2222,7 +2312,7 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
     }
 
     if (acc.len > 0) {
-        char *expanded = strip_bluepaint(expand_text(acc.buf, filename, acc_line_no, 0));
+        char *expanded = expand_line(acc.buf, filename, acc_line_no);
         sb_puts(&out, expanded);
         for (int i = 0; i < acc_phys_count; i++)
             sb_putc(&out, '\n');

@@ -6965,6 +6965,35 @@ static VReg gen(Node *node) {
     case ND_PRE_DEC: {
         bool is_pre = (node->kind == ND_PRE_INC || node->kind == ND_PRE_DEC);
         bool is_inc = (node->kind == ND_POST_INC || node->kind == ND_PRE_INC);
+        // C11 6.5.3.1: for _Bool, ++/-- follow from the general "increment
+        // is x=x+1" rule composed with the _Bool store normalization
+        // (0/1, any nonzero -> 1): b++ always stores 1; b-- stores the
+        // opposite of the current value (1-1=0, 0-1=-1 normalizes to 1).
+        if (node->lhs->ty && node->lhs->ty->kind == TY_BOOL) {
+            VReg addr = gen_addr(node->lhs);
+            VReg old = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_ldrb_uoff(cg_sec, old, addr, 0);
+#else
+            asm_movzx_mem_reg(cg_sec, old, addr, 4, 1); // movzbl (addr), old
+#endif
+            VReg newv = alloc_reg();
+            asm_mov_imm(cg_sec, newv, 4, 1);
+            if (!is_inc)
+                asm_sub_reg_reg(cg_sec, newv, old, 4); // newv = 1 - old
+#ifdef ARCH_ARM64
+            asm_strb_uoff(cg_sec, newv, addr, 0);
+#else
+            x86_mov_mr(cg_sec, 1, x86_mem(REG(addr), 0), REG(newv));
+#endif
+            free_reg(addr);
+            if (is_pre) {
+                free_reg(old);
+                return newv;
+            }
+            free_reg(newv);
+            return old;
+        }
         VReg r = gen_addr(node->lhs);
         VReg r2 = alloc_reg();
         int sz = node->lhs->ty->size;
@@ -7370,6 +7399,37 @@ static VReg gen(Node *node) {
         VReg r = gen(node->lhs);
         Type *from = node->lhs->ty;
         Type *to = node->ty;
+        if (to->kind == TY_BOOL && !is_complex(from)) {
+            // C11 6.3.1.2: converting any scalar value to _Bool yields 0 if
+            // the value compares equal to 0, 1 otherwise. This must produce
+            // an actual 0/1 normalization, not a truncating bit-copy.
+            if (is_flonum(from)) {
+#ifdef ARCH_ARM64
+                asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+                asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
+                asm_fcmp(cg_sec, 1); // fcmp d0, d1
+                asm_cset(cg_sec, r, ARM64_NE); // cset r, ne (NaN is unordered/"ne")
+#else
+                asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+                x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+                asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+                asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al (ordered, unequal)
+                asm_setcc(cg_sec, X86_RCX, X86_P); // setp %cl (unordered: NaN)
+                x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+            } else {
+#ifdef ARCH_ARM64
+                asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
+                asm_cset(cg_sec, r, ARM64_NE);
+#else
+                asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
+                asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+            }
+            return r;
+        }
         if (is_flonum(from) && is_integer(to)) {
 #ifdef ARCH_ARM64
             asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
@@ -7512,6 +7572,7 @@ static VReg gen(Node *node) {
             asm_lea_rbp_reg(cg_sec, result, 8, result_off);
 #endif
             emit_scalar_to_complex(r, from, to->base, result);
+            free_reg(r); // the scalar source register is dead; the value lives at (result)
             return result;
         } else if (is_complex(from) && (is_flonum(to) || is_integer(to))) {
             // complex → float/int: load real part from address

@@ -39,6 +39,7 @@ struct EnumConst {
     EnumConst *hash_next;
     char *name;
     int64_t val;
+    Type *ty; // C23 enumerator type (NULL = int)
 };
 
 typedef struct EnumTag EnumTag;
@@ -46,6 +47,8 @@ struct EnumTag {
     EnumTag *next;
     char *name;
     Type *ty;
+    int depth; // block depth of the declaration (same-scope redef detection)
+    bool members_int; // completed enumerators have type int (all fit in int)
 };
 static EnumTag *enum_tags;
 
@@ -1823,7 +1826,9 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 
     if (!equalc(tok, "{")) {
         *rest = tok;
-        if (tag_name) {
+        // `enum tag : type;` is a (re)declaration: it may shadow an outer
+        // tag with a different underlying type, so don't look up — register.
+        if (tag_name && !fixed_underlying) {
             for (EnumTag *et = enum_tags; et; et = et->next)
                 if (et->name == tag_name) {
                     Type *ret = arena_alloc(sizeof(Type));
@@ -1833,7 +1838,19 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         }
         Type *ety = arena_alloc(sizeof(Type));
         *ety = fixed_underlying ? *fixed_underlying : *ty_int;
+        ety->qual = 0; // qualifiers on the underlying type don't apply
         ety->is_enum = true;
+        // C23 `enum tag : type;` declares the tag with a fixed underlying
+        // type — register it so sizeof(enum tag) sees the right size.
+        if (tag_name && fixed_underlying) {
+            EnumTag *et = arena_alloc(sizeof(EnumTag));
+            et->name = tag_name;
+            et->ty = ety;
+            et->depth = current_block_depth;
+            et->members_int = false; // fixed underlying: members get enum type
+            et->next = enum_tags;
+            enum_tags = et;
+        }
         return ety;
     }
 
@@ -1841,6 +1858,25 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     int64_t val = 0;
     int64_t min_val = 0, max_val = 0;
     bool first = true;
+    EnumConst *before_consts = enum_consts; // consts list head before this enum
+    Type *prev_ty = NULL; // during-definition type of the previous enumerator
+    bool any_outside_int = false;
+    // C23 tag compatibility: a redefinition of an already-completed enum
+    // reuses the existing enum type, and its enumerators carry that type
+    // (when not representable as int) already during the redefinition.
+    Type *existing_ty = NULL;
+    bool existing_members_int = false;
+    if (tag_name)
+        for (EnumTag *et = enum_tags; et; et = et->next)
+            if (et->name == tag_name && et->ty->is_enum) {
+                // Only a same-scope redefinition reuses the completed type;
+                // an inner-scope definition shadows the outer tag.
+                if (et->depth == current_block_depth) {
+                    existing_ty = et->ty;
+                    existing_members_int = et->members_int;
+                }
+                break;
+            }
     while (!equalc(tok, "}")) {
         if (tok->kind != TK_IDENT)
             error_tok(tok, "expected enum constant");
@@ -1851,6 +1887,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         // C23: attributes allowed after enum constant name
         tok = read_type_attrs(tok, NULL, NULL);
 
+        bool explicit_val = false;
+        Type *expr_ty = NULL;
         if (equalc(tok, "=")) {
             tok = tok->next;
             Node *node = conditional(&tok, tok);
@@ -1859,9 +1897,39 @@ static Type *enum_specifier(Token **rest, Token *tok) {
             if (!eval_const_expr(node, &v))
                 error_tok(tok, "expected constant expression for enum value");
             val = v;
+            explicit_val = true;
+            expr_ty = node->ty;
         }
 
         ec->val = val++;
+        // C23 6.7.2.2: during definition an enumerator has type int when its
+        // value is representable as int; otherwise the type of its defining
+        // expression, or (for an implicit prev+1 value) the previous
+        // enumerator's type widened on overflow, preserving signedness.
+        bool fits_int = ec->val >= INT32_MIN && ec->val <= INT32_MAX &&
+            !(explicit_val && expr_ty && expr_ty->is_unsigned && expr_ty->size > 4 && (uint64_t)ec->val > INT32_MAX);
+        if (explicit_val) {
+            if (fits_int)
+                ec->ty = ty_int;
+            else
+                ec->ty = (expr_ty && is_integer(expr_ty)) ? expr_ty : ty_llong;
+        } else if (fits_int && (!prev_ty || !prev_ty->is_unsigned || (uint64_t)ec->val <= INT32_MAX)) {
+            ec->ty = (prev_ty && prev_ty != ty_int) ? prev_ty : ty_int;
+        } else if (prev_ty && prev_ty->is_unsigned) {
+            // unsigned progression: uint -> unsigned long -> unsigned long long
+            if (prev_ty->size <= 4 && (uint64_t)ec->val <= 0xFFFFFFFFULL)
+                ec->ty = prev_ty;
+            else
+                ec->ty = prev_ty->size <= 4 ? ty_ulong : ty_ullong;
+        } else {
+            // signed progression: int -> long -> long long
+            ec->ty = (prev_ty && prev_ty->size > 4) ? ty_llong : ty_long;
+        }
+        if (existing_ty)
+            ec->ty = existing_members_int ? ty_int : existing_ty;
+        if (ec->ty != ty_int)
+            any_outside_int = true;
+        prev_ty = ec->ty;
         if (first) {
             min_val = max_val = ec->val;
             first = false;
@@ -1895,14 +1963,28 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         else
             ety = ty_llong;
     }
-    Type *ret = arena_alloc(sizeof(Type));
-    *ret = *ety;
-    ret->is_enum = true;
+    Type *ret;
+    if (existing_ty) {
+        ret = existing_ty; // redefinition: keep the completed type's identity
+    } else {
+        ret = arena_alloc(sizeof(Type));
+        *ret = *ety;
+        ret->qual = 0; // qualifiers on a fixed underlying type don't apply
+        ret->is_enum = true;
+    }
+    // C23 6.7.2.2: upon completion the enumerators get the enumerated type,
+    // unless all values are representable as int (then they keep type int).
+    // With a fixed underlying type they always get the enum type.
+    if (fixed_underlying || any_outside_int)
+        for (EnumConst *ec = enum_consts; ec && ec != before_consts; ec = ec->next)
+            ec->ty = ret;
     // Push tag so subsequent references find the correct type
     if (tag_name) {
         EnumTag *et = arena_alloc(sizeof(EnumTag));
         et->name = tag_name;
         et->ty = ret;
+        et->depth = current_block_depth;
+        et->members_int = !(fixed_underlying || any_outside_int);
         et->next = enum_tags;
         enum_tags = et;
     }
@@ -2562,6 +2644,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "_Float16")) {
+            is_float = true; // nearest supported type (matches the F16 suffix)
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "_Float32")) {
             is_float = true;
             tok = tok->next;
@@ -2871,6 +2958,11 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         tok = tok->next;
 
     if (tok->kind == TK_IDENT) {
+        // Not a symbol reference: enum constants and the true/false/NULL/
+        // nullptr keywords fold to integer constants via the expression path.
+        if (find_enum_const(tok) || equalc(tok, "true") || equalc(tok, "false") ||
+            equalc(tok, "NULL") || equalc(tok, "nullptr"))
+            return false;
         // Use asm_name for static local variables (mangled labels)
         LVar *lv = find_global_name(tok->name);
         if (!lv)
@@ -3321,8 +3413,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         return tok->next;
     }
 
-    // Wide string literal L"..." for wchar_t[] (unsigned int[] on Linux, unsigned short[] on Windows)
-    if (ty->kind == TY_ARRAY && tok->kind == TK_STR && tok->string_literal_prefix == 'L' &&
+    // Wide string literal L"..."/u"..."/U"..." for wchar_t[]/char16_t[]/
+    // char32_t[]; the writer adapts to the element size (2 or 4 bytes)
+    if (ty->kind == TY_ARRAY && tok->kind == TK_STR &&
+        (tok->string_literal_prefix == 'L' || tok->string_literal_prefix == 'u' ||
+         tok->string_literal_prefix == 'U') &&
         (ty->base->size == 4 || ty->base->size == 2)) {
         int wchar_size = ty->base->size;
         // Decode UTF-8 to wchar_t codepoints
@@ -3637,8 +3732,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     memcpy(var->init_data + offset, &rf, 4);
                     memcpy(var->init_data + offset + 4, &imf, 4);
                 } else {
+                    // base_sz 8 (double) or 16 (long double, stored as a
+                    // double payload at the start of its 16-byte slot): the
+                    // imaginary part always sits at offset base_sz.
                     memcpy(var->init_data + offset, &rv, 8);
-                    memcpy(var->init_data + offset + 8, &iv, 8);
+                    memcpy(var->init_data + offset + base_sz, &iv, 8);
                 }
             } else {
                 write_scalar_bytes(var, offset, base_sz, (int64_t)rv);
@@ -4068,6 +4166,36 @@ static Node *declaration(Token **rest, Token *tok) {
             locals = lvar;
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
+        } else if (attr.is_constexpr && !attr.is_auto_type &&
+                   (ty->kind == TY_STRUCT || ty->kind == TY_UNION || ty->kind == TY_ARRAY)) {
+            // Aggregate constexpr locals (struct/union/array): no compile-time
+            // scalar folding here (member/element const-eval isn't needed
+            // unless the object is later used in a static_assert, which the
+            // scalar-only fast path above still handles for non-aggregates).
+            // Reuse the general local-init machinery (local_init_one) that
+            // already handles brace lists, nested aggregates, and copy-init
+            // from another variable.
+            if (equalc(tok, "="))
+                ty = infer_array_type(ty, tok->next);
+            LVar *var = new_var(name, ty, true);
+            var->is_constexpr = true;
+            if (pending_asm_name)
+                var->asm_name = pending_asm_name;
+            var->ty = copy_type(ty);
+            var->ty->qual |= QUAL_CONST;
+            if (current_block_depth == 1)
+                current_fn_scope_locals = locals;
+            if (!equalc(tok, "="))
+                error_tok(tok, "constexpr variable must be initialized");
+            Token *start = tok;
+            tok = tok->next;
+            Node *lhs = new_var_node(var, start);
+            if (var->ty->size > 0) {
+                Node *zinit = new_node(ND_ZERO_INIT, start);
+                zinit->lhs = new_var_node(var, start);
+                cur = cur->next = new_unary(ND_EXPR_STMT, zinit, start);
+            }
+            tok = local_init_one(tok, lhs, var->ty, &cur);
         } else if (attr.is_constexpr) {
             if (attr.is_auto_type) {
                 // constexpr auto: infer type from initializer, then apply constexpr constraints
@@ -4958,6 +5086,8 @@ static Node *primary(Token **rest, Token *tok) {
             EnumConst *ec = find_enum_const(tok);
             if (ec) {
                 node = new_num(ec->val, tok);
+                if (ec->ty)
+                    node->ty = ec->ty; // C23 enumerator type (enum/uint/llong...)
                 tok = tok->next;
             } else if (equalc(tok, "NULL")) {
                 node = new_num(0, tok);
@@ -4992,6 +5122,15 @@ static Node *primary(Token **rest, Token *tok) {
         tok = tok->next->next;
     } else if (tok->kind == TK_NUM) {
         node = new_num(tok->val, tok);
+        // Prefixed character constants carry their own type:
+        // u8'' -> unsigned char (char8_t), u'' -> char16_t, U'' -> char32_t.
+        // Plain and L'' constants keep type int.
+        switch (tok->string_literal_prefix) {
+        case '8': node->ty = ty_uchar; break;
+        case 'u': node->ty = ty_ushort; break;
+        case 'U': node->ty = ty_uint; break;
+        default: break;
+        }
         tok = tok->next;
     } else if (tok->kind == TK_FNUM) {
         if (tok->val & 4) {
@@ -5047,8 +5186,11 @@ static Node *primary(Token **rest, Token *tok) {
             }
             node->ty = pointer_to(char16_t_type);
         } break;
-        case '8': // u8 string => char8_t (unsigned char)
-            node->ty = pointer_to(ty_uchar);
+        case '8': // u8 string => char8_t (unsigned char) in C23, char before
+            if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0)
+                node->ty = pointer_to(ty_uchar);
+            else
+                node->ty = array_of(ty_char, tok->len + 1);
             break;
         case 'U': // char32_t string
         {
@@ -5375,6 +5517,21 @@ static Node *unary(Token **rest, Token *tok) {
         result->ty = ty_ulong;
         check_type(result);
         return result;
+    }
+    // __builtin_complex(re, im) — construct a complex value from two
+    // same-type real-floating arguments (GCC builtin, usable in constant
+    // expressions and static initializers).
+    if (equalc(tok, "__builtin_complex")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *re = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *im = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        check_type(re);
+        check_type(im);
+        Type *base = re->ty && is_flonum(re->ty) ? re->ty : ty_double;
+        return new_complex_val(re, im, complex_type(base), start);
     }
     // __builtin_conjf/conj/conjl(z) — complex conjugate: negate the imaginary part
     if (equalc(tok, "__builtin_conjf") || equalc(tok, "__builtin_conj") ||
@@ -6994,6 +7151,20 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         return;
     }
 
+    // A scalar (non-array/struct/union) wrapped in braces: `int *p = { 0 };`
+    // is a superfluous-but-legal single-element brace initializer. Peel the
+    // braces and recurse so the type-specific dispatch below sees the bare
+    // expression, not the leading `{`.
+    if (equalc(tok, "{") && var->ty->kind != TY_ARRAY && var->ty->kind != TY_STRUCT &&
+        var->ty->kind != TY_UNION) {
+        tok = tok->next;
+        global_initializer(&tok, tok, var);
+        if (equalc(tok, ","))
+            tok = tok->next;
+        *rest = skip(tok, "}");
+        return;
+    }
+
     if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && tok->kind == TK_STR && (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         var->init_data = tok->str;
         var->init_size = tok->len + 1; // include embedded NULs and the terminator
@@ -7002,8 +7173,10 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         return;
     }
 
-    // Wide string literal L"..." for wchar_t array
-    if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR && tok->string_literal_prefix == 'L' &&
+    // Wide string literal L"..."/u"..."/U"..." for wchar_t/char16_t/char32_t array
+    if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR &&
+        (tok->string_literal_prefix == 'L' || tok->string_literal_prefix == 'u' ||
+         tok->string_literal_prefix == 'U') &&
         (var->ty->base->size == 4 || var->ty->base->size == 2)) {
         // Count UTF-8 codepoints to size the array
         char *p = tok->str;
@@ -7112,6 +7285,23 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         return;
     }
 
+    // Struct/union initialized by copy from another already-initialized
+    // global/constexpr variable of the same type (`constexpr struct s v = other;`):
+    // copy its init_data bytes so member accesses on `var` remain constant-foldable.
+    if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && tok->kind == TK_IDENT &&
+        (equalc(tok->next, ";") || equalc(tok->next, ","))) {
+        LVar *src = find_global_name(tok->name);
+        if (src && src->has_init && src->init_data && src->ty == var->ty) {
+            int sz = var->ty->size ? var->ty->size : 1;
+            var->init_data = arena_alloc(sz);
+            memcpy(var->init_data, src->init_data, sz);
+            var->init_size = var->ty->size;
+            var->has_init = true;
+            *rest = tok->next;
+            return;
+        }
+    }
+
     // Scalar with braces: superfluous `{ expr }` or C23 empty init `{}`.
     if (equalc(tok, "{")) {
         tok = skip(tok, "{");
@@ -7164,8 +7354,10 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
                     memcpy(var->init_data, &rf, 4);
                     memcpy(var->init_data + 4, &imf, 4);
                 } else {
+                    // Imag part sits at base_sz (8 for double, 16 for long
+                    // double whose slot holds a double payload).
                     memcpy(var->init_data, &rv, 8);
-                    memcpy(var->init_data + 8, &iv, 8);
+                    memcpy(var->init_data + base_sz, &iv, 8);
                 }
                 *rest = tok;
                 return;
@@ -7720,6 +7912,16 @@ Program *parse(Token *tok) {
                 } else {
                     if (equalc(tok, "="))
                         ty = infer_array_type(ty, tok->next);
+                    // C23 `constexpr auto x = other;`: infer x's type from a
+                    // simple identifier initializer naming another global,
+                    // since declspec() left `ty` as the ty_int placeholder.
+                    if (attr.is_auto_type && equalc(tok, "=") && tok->next &&
+                        tok->next->kind == TK_IDENT &&
+                        (equalc(tok->next->next, ";") || equalc(tok->next->next, ","))) {
+                        LVar *src = find_global_name(tok->next->name);
+                        if (src)
+                            ty = src->ty;
+                    }
                     LVar *var = find_global_name(name);
                     if (var) {
                         if (var->ty->kind == TY_ARRAY && ty->kind == TY_ARRAY && var->ty->size > 0)
