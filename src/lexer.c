@@ -3,7 +3,7 @@
 #include "rcc.h"
 #include <stdarg.h>
 #include <ctype.h>
-#if !defined(_WIN32)
+#ifdef HAVE_ICONV
 #include <iconv.h>
 #endif
 
@@ -13,7 +13,7 @@
 // numeric escapes are unaffected. Returns the input unchanged when no
 // -fexec-charset is given or the conversion is unavailable.
 static uint32_t to_exec_charset(uint32_t c) {
-#if !defined(_WIN32)
+#ifdef HAVE_ICONV
     if (!opt_exec_charset)
         return c;
     static iconv_t cd = (iconv_t)-1;
@@ -48,8 +48,10 @@ static uint32_t to_exec_charset(uint32_t c) {
         return c;
     if (outp - out == 1)
         return (uint8_t)out[0];
-#endif
     return c;
+#else
+    return c;
+#endif
 }
 
 // Input string

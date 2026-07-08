@@ -3968,6 +3968,7 @@ typedef enum {
     SKIP_ERROR,
     SKIP_FENV,
     SKIP_TARGET,
+    SKIP_NO_ICONV,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3987,6 +3988,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_C11_INCOMPAT: return "c11-incompat";
     case SKIP_ERROR: return "error";
     case SKIP_FENV: return "fenv-exceptions";
+    case SKIP_NO_ICONV: return "no-iconv";
     case SKIP_TARGET: return "target-mismatch";
     default: return "unknown";
     }
@@ -4039,6 +4041,11 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     if (streq(name, "c11-version-1") || streq(name, "c11-version-2") ||
         streq(name, "c11-unreachable-1") || streq(name, "c11-empty-init-1"))
         return SKIP_C11_INCOMPAT;
+
+#ifndef HAVE_ICONV
+    if (contains(content, "-fexec-charset"))
+        return SKIP_NO_ICONV;
+#endif
 
     return SKIP_NONE;
 }

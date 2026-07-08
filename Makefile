@@ -149,8 +149,10 @@ else
 OBJS += $(MINGW_O)
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 endif
-ifneq ($(findstring mingw,$(MACHINE)),)
-else
+# iconv is optional; -fexec-charset depends on it
+HAVE_ICONV := $(shell printf '\#include <iconv.h>\nint main(){}\n' > /tmp/_ic.c; $(CC) /tmp/_ic.c -o /dev/null -liconv 2>/dev/null && echo 1; echo 0; rm -f /tmp/_ic.c)
+ifeq ($(HAVE_ICONV),1)
+CFLAGS += -DHAVE_ICONV
 LDFLAGS += -liconv
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
