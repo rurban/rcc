@@ -1418,22 +1418,42 @@ bool eval_const_expr(Node *node, long long *val) {
         }
         return false;
     case ND_MEMBER:
-        // constexpr struct member access: read from init_data at member offset
-        if (node->lhs && node->lhs->kind == ND_LVAR) {
-            LVar *var = node->lhs->var;
-            if (var && var->is_constexpr && var->has_init && var->init_data) {
-                Member *mem = node->member;
-                if (mem && is_integer(node->ty)) {
+        // constexpr struct member access: evaluate base, add member offset
+        {
+            long long base_val = 0;
+            if (!eval_const_expr(node->lhs, &base_val))
+                return false;
+            // base_val now holds the value at the base offset;
+            // but we need the raw byte offset in init_data.
+            // Try the direct path: find the root LVar and accumulate offsets.
+            Node *cur = node;
+            int total_off = 0;
+            LVar *root_var = NULL;
+            while (cur && cur->kind == ND_MEMBER) {
+                if (cur->member)
+                    total_off += cur->member->offset;
+                cur = cur->lhs;
+            }
+            if (cur && cur->kind == ND_LVAR) {
+                root_var = cur->var;
+            }
+            if (root_var && root_var->is_constexpr && root_var->has_init) {
+                if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
-                    memcpy(&v, var->init_data + mem->offset, node->ty->size <= 8 ? node->ty->size : 8);
+                    memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
                     if (!node->ty->is_unsigned && (v >> (node->ty->size * 8 - 1)))
                         v |= ~((1ULL << (node->ty->size * 8)) - 1);
                     *val = v;
                     return true;
                 }
+                if (root_var->has_init && !root_var->init_data) {
+                    // Scalar constexpr: just return init_val (members share the scalar)
+                    *val = root_var->init_val;
+                    return true;
+                }
             }
+            return false;
         }
-        return false;
     default:
         return false;
     }
