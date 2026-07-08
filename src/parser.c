@@ -25,6 +25,8 @@ struct VarAttr {
     bool is_noreturn;
     bool is_deprecated;
     char *deprecated_msg;
+    bool is_reproducible;
+    bool is_unsequenced;
 };
 
 struct TagScope {
@@ -976,7 +978,10 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                             tok = skip(tok->next, ")");
                             consumed = true;
                         }
-                    }
+                    } else if (equalc(tok, "reproducible"))
+                        attr->is_reproducible = true;
+                    else if (equalc(tok, "unsequenced"))
+                        attr->is_unsequenced = true;
                 }
                 if (!consumed) tok = tok->next;
                 if (equalc(tok, "(")) {
@@ -4122,6 +4127,8 @@ static Node *declaration(Token **rest, Token *tok) {
                 fn_sym->is_extern = true;
                 fn_sym->is_function = true;
                 fn_sym->is_weak = attr.is_weak;
+                fn_sym->is_reproducible = attr.is_reproducible;
+                fn_sym->is_unsequenced = attr.is_unsequenced;
             } else {
                 // Preserve alignment from prior declaration
                 if (fn_sym->ty && fn_sym->ty->base && fn_sym->ty->base->align > fty->align)
@@ -5090,6 +5097,34 @@ static Node *primary(Token **rest, Token *tok) {
             tok = skip(tok, ")");
         }
     } else if (tok->kind == TK_IDENT) {
+        // __builtin_has_attribute(expr, attr_name) — compile-time attribute check
+        if (equalc(tok, "__builtin_has_attribute")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            Node *arg = assign(&tok, tok);
+            check_type(arg);
+            tok = skip(tok, ",");
+            char *attr_name = NULL;
+            if (tok->kind == TK_IDENT)
+                attr_name = tok->name;
+            tok = tok->next;
+            tok = skip(tok, ")");
+            int result = 0;
+            Type *ty = arg->ty;
+            while (ty && (ty->kind == TY_PTR || ty->kind == TY_ARRAY))
+                ty = ty->base;
+            if (ty && ty->kind == TY_FUNC && attr_name) {
+                if (arg->kind == ND_LVAR && arg->var && arg->var->is_function) {
+                    if (strcmp(attr_name, "reproducible") == 0 && arg->var->is_reproducible)
+                        result = 1;
+                    else if (strcmp(attr_name, "unsequenced") == 0 && arg->var->is_unsequenced)
+                        result = 1;
+                }
+            }
+            node = new_num(result, tok);
+            *rest = tok;
+            return node;
+        }
         // __FUNCTION__, __func__, __PRETTY_FUNCTION__ → current function name string
         if (equalc(tok, "__FUNCTION__") || equalc(tok, "__func__") || equalc(tok, "__PRETTY_FUNCTION__")) {
             const char *fn = parser_current_fn ? parser_current_fn : "";
@@ -7874,6 +7909,8 @@ Program *parse(Token *tok) {
                         fn_lvar->is_function = true;
                         fn_lvar->is_inline = attr.is_inline;
                         fn_lvar->is_weak = attr.is_weak;
+                        fn_lvar->is_reproducible = attr.is_reproducible;
+                        fn_lvar->is_unsequenced = attr.is_unsequenced;
                         fn_lvar->is_static = attr.is_static;
                         if (attr.diag_warning) fn_lvar->diag_warning = attr.diag_warning;
                         if (attr.diag_entries) fn_lvar->diag_entries = attr.diag_entries;
