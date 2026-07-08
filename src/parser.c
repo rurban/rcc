@@ -1715,6 +1715,8 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
             }
         }
         tok = skip(tok, "]");
+        // Consume C23 [[]] attributes between array dimensions
+        tok = read_type_attrs(tok, NULL, NULL);
         if (ndims >= 16)
             error_tok(tok, "too many array dimensions");
         dims[ndims] = len;

@@ -2576,6 +2576,7 @@ char *preprocess(char *filename, char *p) {
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
         // __builtin_unreachable() is handled as a builtin funcall in codegen
+        define_macro("__builtin_clear_padding", true, (char *[]){"ptr"}, 1, "((void)(ptr))");
         // (emits nothing; enables dead-code elision after it at -O1).
 
         // Math classification builtins — handled inline in codegen
