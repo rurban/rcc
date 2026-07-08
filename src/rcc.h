@@ -111,6 +111,7 @@ extern char *bi_add_overflow, *bi_sub_overflow;
 extern char *bi_mul_overflow, *bi_mul_overflow_p;
 extern char *bi_memset, *bi_memcpy, *bi_memcmp;
 extern char *bi_strlen, *bi_strcmp, *bi_strchr;
+extern char *bi_unreachable;
 extern char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
 extern char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
 extern char *bi_s_strlen, *bi_s_strcmp, *bi_s_strchr;
@@ -245,6 +246,7 @@ extern Type *ty_nullptr_t;
 
 extern bool opt_O0;
 extern bool opt_O1;
+extern bool opt_v;
 /* Value for the __STDC_VERSION__ predefined macro, selected by -std=.
  * NULL means do not define it (C90/C89, which has no __STDC_VERSION__). */
 extern const char *opt_std_version;

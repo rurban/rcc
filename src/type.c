@@ -228,6 +228,7 @@ static Type *builtin_return_type(const char *name) {
     if (name == bi_copysign) return ty_double;
     if (name == bi_copysignf) return ty_float;
     if (name == bi_copysignl) return ty_ldouble;
+    if (name == bi_unreachable) return ty_void;
     return NULL;
 }
 

@@ -1669,6 +1669,7 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
         while (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
                equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
                equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
+               equalc(tok, "_Atomic") || equalc(tok, "__Atomic") ||
                equalc(tok, "static"))
             tok = tok->next;
         if (!equalc(tok, "]")) {
@@ -3897,7 +3898,24 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                 Member *first_dm = NULL;
                 Member *last_dm = NULL;
                 bool chain_ok = true;
-                while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                while ((equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) ||
+                       equalc(tok, "[")) {
+                    if (equalc(tok, "[")) {
+                        // Array-index step in a designator chain: .arr[idx]...
+                        Token *lb = tok;
+                        Node *idx = expr(&tok, tok->next);
+                        tok = skip(tok, "]");
+                        if (chain_ty->kind != TY_ARRAY && chain_ty->kind != TY_PTR) {
+                            chain_ok = false;
+                            break;
+                        }
+                        Node *sub = new_unary(ND_DEREF,
+                                              new_binary(ND_ADD, chain_lhs, idx, lb), lb);
+                        check_type(sub);
+                        chain_lhs = sub;
+                        chain_ty = sub->ty;
+                        continue;
+                    }
                     char *dname = tok->next->name;
                     tok = tok->next->next;
                     Member *dm = find_member_by_name(chain_ty, dname);
@@ -4277,6 +4295,11 @@ static Node *declaration(Token **rest, Token *tok) {
             // VLA: compute size and allocate stack space
             if (ty->kind == TY_VLA) {
                 Node *vla_node = new_node(ND_ALLOCA, tok);
+                // C23: `T vla[n] = {}` empty-initializes (zero-fills) the VLA.
+                // VLAs admit no other initializer, so any `=` here is the empty
+                // one; allocate-and-zero in a single ALLOCA_ZINIT.
+                if (equalc(tok, "="))
+                    vla_node->kind = ND_ALLOCA_ZINIT;
                 vla_node->lhs = vla_alloc_size(ty, tok);
                 vla_node->var = var;
                 cur = cur->next = new_unary(ND_EXPR_STMT, vla_node, tok);
@@ -4312,7 +4335,13 @@ static Node *declaration(Token **rest, Token *tok) {
                     zinit->lhs = new_var_node(var, start);
                     cur = cur->next = new_unary(ND_EXPR_STMT, zinit, start);
                 }
-                tok = local_init_one(tok, lhs, var->ty, &cur);
+                if (var->ty->kind == TY_VLA) {
+                    // The ALLOCA_ZINIT above already zeroed the VLA; just
+                    // consume the (necessarily empty) `{}` initializer.
+                    tok = skip_initializer(tok);
+                } else {
+                    tok = local_init_one(tok, lhs, var->ty, &cur);
+                }
             }
         }
 
@@ -7566,6 +7595,19 @@ Program *parse(Token *tok) {
             continue;
         }
 
+        // C23 attribute-declaration at file scope: `[[...]];` is a standalone
+        // no-op (not attributes on a following declaration). Only consume when
+        // the attribute list is immediately followed by ';'; otherwise leave it
+        // for the declaration parser (declspec handles leading attributes).
+        if (equalc(tok, "[") && equalc(tok->next, "[") &&
+            tok->ptr + tok->len == tok->next->ptr) {
+            Token *after_attr = skip_attributes(tok);
+            if (equalc(after_attr, ";")) {
+                tok = after_attr->next;
+                continue;
+            }
+        }
+
 
         if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
             Token *st = tok;
@@ -7948,9 +7990,15 @@ Program *parse(Token *tok) {
                     } else {
                         var = new_var(name, ty, false);
                     }
-                    var->is_extern = attr.is_extern;
-                    var->is_static = attr.is_static;
-                    var->is_tls = attr.is_tls;
+                    // A redeclaration of an already-defined (initialized) global
+                    // must not drop its definition or change its linkage: e.g.
+                    // `int i = 1; extern int i;` keeps i defined, and
+                    // `static auto u = 10U; extern unsigned u;` keeps u static.
+                    if (!var->has_init) {
+                        var->is_extern = attr.is_extern;
+                        var->is_static = attr.is_static;
+                        var->is_tls = attr.is_tls;
+                    }
                     if (pending_asm_name)
                         var->asm_name = pending_asm_name;
                     if (pending_alias_target)

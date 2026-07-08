@@ -560,6 +560,7 @@ char *bi_chk_printf, *bi_chk_vprintf;
 char *bi_chk_fprintf, *bi_chk_vfprintf;
 char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
 char *bi_strlen, *bi_strcmp, *bi_strchr;
+char *bi_unreachable;
 static char *kw_retbuf;
 
 void init_builtin_names(void) {
@@ -640,6 +641,19 @@ void init_builtin_names(void) {
     bi_chk_fprintf = _BI("__fprintf_chk");
     bi_chk_vfprintf = _BI("__vfprintf_chk");
     kw_retbuf = _BI("__retbuf");
+    // Not a keyword-table builtin, so it is interned via str_intern like an
+    // ordinary identifier; match node->funcname's interning here.
+    bi_unreachable = str_intern("__builtin_unreachable", 21);
+}
+
+// True if a block statement is a bare `__builtin_unreachable()` call. Code that
+// follows it (up to the next label) is dead and elided at -O1 (see ND_BLOCK).
+static bool stmt_is_unreachable(Node *n) {
+    if (!n)
+        return false;
+    Node *e = (n->kind == ND_EXPR_STMT) ? n->lhs : n;
+    return e && e->kind == ND_FUNCALL && e->funcname &&
+        e->funcname == bi_unreachable;
 }
 
 static char *reg(VReg r, int size);
@@ -1108,6 +1122,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (call_target && is_asm_reserved(call_target))
         call_target = format(".L_rcc_%s", call_target);
     init_builtin_names();
+    // __builtin_unreachable(): reaching it is undefined behaviour, so emit no
+    // code (GCC does the same). Statements following it in a block are dead and
+    // are elided at -O1 (see the ND_BLOCK loop).
+    if (call_target && call_target == bi_unreachable)
+        return -1;
     if (0 && opt_O1 && call_target && nargs >= 2) {
         if ((strcmp(call_target, "__printf_chk") == 0 && nargs >= 2) ||
             (strcmp(call_target, "__vprintf_chk") == 0 && nargs == 3)) {
@@ -8212,12 +8231,32 @@ static VReg gen(Node *node) {
 #endif
         return -1;
     }
-    case ND_BLOCK:
+    case ND_BLOCK: {
+        // At -O1, statements after __builtin_unreachable() in a block are dead;
+        // skip emitting them until the next label (a jump target makes code
+        // reachable again — basic-block boundary).
+        bool dead = false;
         for (Node *n = node->body; n; n = n->next) {
+            if (dead) {
+                if (n->kind == ND_LABEL || n->kind == ND_CASE ||
+                    n->kind == ND_LABEL_VAL) {
+                    dead = false;
+                } else {
+                    if (opt_v && opt_W && !cg_dry_run && n->tok)
+                        fprintf(stderr, "%s:%d: warning: unreachable statement elided\n",
+                                n->tok->filename ? n->tok->filename
+                                                 : (current_filename ? current_filename : "<unknown>"),
+                                n->tok->lineno);
+                    continue;
+                }
+            }
             VReg r = gen(n);
             if (r != -1) free_reg(r);
+            if (opt_O1 && stmt_is_unreachable(n))
+                dead = true;
         }
         return -1;
+    }
     case ND_STMT_EXPR: {
         VReg result = -1;
         for (Node *n = node->body; n; n = n->next) {

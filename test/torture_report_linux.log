@@ -821,7 +821,7 @@
   c11-anon-struct-1                   PASS (compile only)
   c11-anon-struct-2                   SKIP (error)
   c11-anon-struct-3                   SKIP (error)
-  c11-atomic-1                        FAIL (compile)
+  c11-atomic-1                        PASS (compile only)
   c11-atomic-2                        PASS (compile only)
   c11-atomic-3                        SKIP (error)
   c11-atomic-4                        PASS (compile only)
@@ -966,7 +966,7 @@
   c23-attr-syntax-1                   FAIL (compile)
   c23-attr-syntax-2                   FAIL (compile)
   c23-attr-syntax-3                   SKIP (error)
-  c23-attr-syntax-4                   FAIL (compile)
+  c23-attr-syntax-4                   PASS (compile only)
   c23-attr-syntax-5                   SKIP (error)
   c23-attr-syntax-6                   SKIP (error)
   c23-attr-syntax-7                   SKIP (error)
@@ -978,7 +978,7 @@
   c23-attr-unsequenced-5-aux          PASS (compile only)
   c23-attr-unsequenced-5              FAIL (compile)
   c23-auto-1                          PASS (compile only)
-  c23-auto-2                          FAIL (compile)
+  c23-auto-2                          FAIL (runtime)
   c23-auto-3                          SKIP (error)
   c23-auto-4                          PASS (compile only)
   c23-binary-constants-1              SKIP (missing include)
@@ -1018,11 +1018,11 @@
   c23-digit-separators-1              PASS
   c23-digit-separators-2              SKIP (error)
   c23-digit-separators-3              SKIP (error)
-  c23-empty-init-1                    FAIL (runtime)
+  c23-empty-init-1                    PASS
   c23-empty-init-2                    SKIP (error)
   c23-empty-init-3                    PASS (compile only)
   c23-empty-init-4                    SKIP (error)
-  c23-empty-init-5                    FAIL (compile)
+  c23-empty-init-5                    PASS
   c23-enum-1                          PASS (compile only)
   c23-enum-2                          SKIP (error)
   c23-enum-3                          SKIP (error)
@@ -1069,8 +1069,8 @@
   c23-generic-3                       PASS (compile only)
   c23-generic-4                       PASS (compile only)
   c23-has-c-attribute-1               PASS (compile only)
-  c23-has-c-attribute-2               FAIL (compile)
-  c23-has-c-attribute-3               FAIL (compile)
+  c23-has-c-attribute-2               PASS (compile only)
+  c23-has-c-attribute-3               PASS (compile only)
   c23-has-c-attribute-4               SKIP (error)
   c23-if-decls-1                      SKIP (error)
   c23-if-decls-2                      FAIL (compile)
@@ -1195,7 +1195,7 @@
   c23-unproto-2                       SKIP (error)
   c23-unproto-3                       PASS (compile only)
   c23-unproto-4                       SKIP (error)
-  c23-unreachable-1                   FAIL (compile)
+  c23-unreachable-1                   PASS
   c23-utf8char-1                      PASS (compile only)
   c23-utf8char-2                      PASS (compile only)
   c23-utf8char-3                      SKIP (error)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1785/1810 passed (98%), 25 failed (17 compile/8 runtime), 255 skipped.
+Torture: 1792/1810 passed (99%), 18 failed (10 compile/8 runtime), 255 skipped.
 
-Compile failures: c11-atomic-1 c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-syntax-4 c23-attr-unsequenced-5 c23-auto-2 c23-complit-2 c23-constexpr-1 c23-empty-init-5 c23-has-c-attribute-2 c23-has-c-attribute-3 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2 c23-tag-composite-10 c23-unreachable-1
+Compile failures: c23-attr-reproducible-5 c23-attr-syntax-1 c23-attr-syntax-2 c23-attr-unsequenced-5 c23-complit-2 c23-constexpr-1 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2 c23-tag-composite-10
 
-Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-complit-4 c23-empty-init-1 c23-stdarg-6 c23-stdarg-8 c23-typeof-1
+Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-auto-2 c23-complit-4 c23-stdarg-6 c23-stdarg-8 c23-typeof-1

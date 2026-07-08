@@ -1255,6 +1255,16 @@ static long eval_pp_expr(char **rest, char *p, char *filename);
 // conversions to uintmax_t (e.g. `#if u8'\0' - 1 < 0` must be false).
 static bool pp_expr_unsigned;
 
+// Strip one leading and trailing "__" from an attribute token so the __x__
+// spelling is treated the same as x (C23 allows both for standard attributes).
+static void normalize_attr_name(char *s) {
+    size_t n = strlen(s);
+    if (n >= 4 && s[0] == '_' && s[1] == '_' && s[n - 1] == '_' && s[n - 2] == '_') {
+        memmove(s, s + 2, n - 4);
+        s[n - 4] = '\0';
+    }
+}
+
 static unsigned pp_eval_line_no;
 static long eval_primary(char **rest, char *p, char *filename) {
     p = skip_spaces(p);
@@ -1338,33 +1348,93 @@ static long eval_primary(char **rest, char *p, char *filename) {
         p += 18;
         p = skip_spaces(p);
         if (*p == '(') p++;
-        p = skip_spaces(p);
-        // Parse attribute name (may include :: for namespaces)
-        char buf[64];
-        int len = 0;
-        while (*p && *p != ')' && *p != ' ' && *p != '\n' && *p != '\t' && len < 63)
-            buf[len++] = *p++;
-        buf[len] = '\0';
-        p = skip_spaces(p);
+        // Read the whole argument up to ')', then macro-expand it: C23 expands
+        // the attribute name (e.g. #define foo deprecated).
+        char *arg_start = p;
+        while (*p && *p != ')')
+            p++;
+        char *raw = trim_copy(arg_start, (int)(p - arg_start));
         if (*p == ')') p++;
         *rest = p;
-        // C23 standard attributes with their introduction versions
-        static const struct {
-            const char *name;
-            long ver;
-        } attrs[] = {
-            {"deprecated", 201904L},
-            {"fallthrough", 201904L},
-            {"maybe_unused", 201904L},
-            {"nodiscard", 202003L},
-            {"noreturn", 202202L},
-            {"_Noreturn", 202202L},
-            {"unsequenced", 202207L},
-            {"reproducible", 202207L},
+        char *name = skip_spaces(strip_bluepaint(expand_text(raw, filename, pp_eval_line_no, 0)));
+        // Split an optional "namespace :: attribute".
+        char ns[64] = "", at[64] = "";
+        char *colon = strstr(name, "::");
+        if (colon) {
+            int nl = (int)(colon - name);
+            while (nl > 0 && isspace((unsigned char)name[nl - 1])) nl--;
+            if (nl > 63) nl = 63;
+            memcpy(ns, name, nl);
+            ns[nl] = '\0';
+            char *ap = skip_spaces(colon + 2);
+            int al = 0;
+            while (ap[al] && !isspace((unsigned char)ap[al]) && al < 63) al++;
+            memcpy(at, ap, al);
+            at[al] = '\0';
+        } else {
+            int al = 0;
+            while (name[al] && !isspace((unsigned char)name[al]) && al < 63) al++;
+            memcpy(at, name, al);
+            at[al] = '\0';
+        }
+        normalize_attr_name(ns);
+        normalize_attr_name(at);
+        if (ns[0]) {
+            // Namespaced: GNU attributes report 1 when supported.
+            if (strcmp(ns, "gnu") == 0) {
+                static const char *gnu_attrs[] = {
+                    "packed",
+                    "aligned",
+                    "always_inline",
+                    "noinline",
+                    "noreturn",
+                    "unused",
+                    "used",
+                    "deprecated",
+                    "const",
+                    "pure",
+                    "malloc",
+                    "cold",
+                    "hot",
+                    "constructor",
+                    "destructor",
+                    "weak",
+                    "alias",
+                    "cleanup",
+                    "nonnull",
+                    "returns_nonnull",
+                    "warn_unused_result",
+                    "sentinel",
+                    "format",
+                    "transparent_union",
+                    "vector_size",
+                    "may_alias",
+                    "visibility",
+                    "section",
+                    "fallthrough",
+                    NULL,
+                };
+                for (int i = 0; gnu_attrs[i]; i++)
+                    if (strcmp(at, gnu_attrs[i]) == 0)
+                        return 1;
+            }
+            return 0;
+        }
+        // Non-namespaced standard C23 attributes (all standardized in C23).
+        static const char *std_attrs[] = {
+            "deprecated",
+            "fallthrough",
+            "maybe_unused",
+            "nodiscard",
+            "noreturn",
+            "_Noreturn",
+            "unsequenced",
+            "reproducible",
+            NULL,
         };
-        for (size_t i = 0; i < sizeof(attrs) / sizeof(attrs[0]); i++)
-            if (strcmp(buf, attrs[i].name) == 0)
-                return attrs[i].ver;
+        for (int i = 0; std_attrs[i]; i++)
+            if (strcmp(at, std_attrs[i]) == 0)
+                return 202311L;
         return 0;
     }
 
@@ -2505,7 +2575,8 @@ char *preprocess(char *filename, char *p) {
         // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
         define_pre("__builtin_trap", "abort");
-        define_macro("__builtin_unreachable", true, NULL, 0, "((void)0)");
+        // __builtin_unreachable() is handled as a builtin funcall in codegen
+        // (emits nothing; enables dead-code elision after it at -O1).
 
         // Math classification builtins — handled inline in codegen
         // __builtin_isinf* are handled inline in codegen (not macros)
