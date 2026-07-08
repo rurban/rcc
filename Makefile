@@ -139,6 +139,7 @@ ifneq ($(findstring apple,$(MACHINE)),)
 ifeq ($(shell uname -s),Darwin)
 DARWIN_O = lib/rcc_darwin.dylib
 LDFLAGS += -Wl,-rpath,@executable_path/lib
+LDFLAGS += -liconv
 OBJS += $(DARWIN_O)
 endif
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)

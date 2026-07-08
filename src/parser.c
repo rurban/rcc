@@ -6399,7 +6399,7 @@ static Node *unary(Token **rest, Token *tok) {
             }
             return new_num(ty->size, tok);
         }
-    sizeof_expr:
+    sizeof_expr:;
         Node *node = unary(&tok, tok->next);
         check_type(node);
         *rest = tok;
