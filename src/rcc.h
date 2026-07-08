@@ -203,6 +203,8 @@ struct Type {
     Type *param_next; // next in parameter type list
     bool is_variadic; // for function
     bool is_oldstyle; // old-style (K&R) function definition / non-prototype ABI
+    bool is_reproducible; // C23 [[reproducible]] function type attribute
+    bool is_unsequenced; // C23 [[unsequenced]] function type attribute
     int pack_align; // #pragma pack(n) alignment, 0 = default
     unsigned char bitfield_mode;
     char *cleanup_func; // __attribute__((__cleanup__(func))) on the type

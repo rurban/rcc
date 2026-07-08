@@ -610,6 +610,32 @@ static void add_type_internal(Node *node) {
                     node->ty = chosen_ptr;
                 }
             }
+            // C23: propagate [[reproducible]]/[[unsequenced]] to composite pointer type
+            if (node->ty && node->ty->kind == TY_PTR && node->ty->base && node->ty->base->kind == TY_FUNC) {
+                Type *fcopy = NULL;
+                if (tty && tty->kind == TY_PTR && tty->base && tty->base->kind == TY_FUNC &&
+                    (tty->base->is_reproducible || tty->base->is_unsequenced)) {
+                    fcopy = arena_alloc(sizeof(Type));
+                    *fcopy = *node->ty->base;
+                    fcopy->is_reproducible |= tty->base->is_reproducible;
+                    fcopy->is_unsequenced |= tty->base->is_unsequenced;
+                }
+                if (ety && ety->kind == TY_PTR && ety->base && ety->base->kind == TY_FUNC &&
+                    (ety->base->is_reproducible || ety->base->is_unsequenced)) {
+                    if (!fcopy) {
+                        fcopy = arena_alloc(sizeof(Type));
+                        *fcopy = *node->ty->base;
+                    }
+                    fcopy->is_reproducible |= ety->base->is_reproducible;
+                    fcopy->is_unsequenced |= ety->base->is_unsequenced;
+                }
+                if (fcopy) {
+                    Type *rptr = arena_alloc(sizeof(Type));
+                    *rptr = *node->ty;
+                    rptr->base = fcopy;
+                    node->ty = rptr;
+                }
+            }
             return;
         }
         // Both arithmetic: usual arithmetic conversions

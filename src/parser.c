@@ -5110,47 +5110,29 @@ static Node *primary(Token **rest, Token *tok) {
             tok = tok->next;
             tok = skip(tok, ")");
             int result = 0;
-            // Walk through dereferences and conditionals to find function LVar
-            Node *cur = arg;
-            while (cur && cur->kind == ND_DEREF)
-                cur = cur->lhs;
-            // Handle conditional: x ? f1 : f3
-            if (cur && cur->kind == ND_COND && attr_name) {
-                Node *then_n = cur->then;
-                Node *els_n = cur->els;
-                int then_has = 0, els_has = 0;
-                while (then_n && then_n->kind == ND_DEREF) then_n = then_n->lhs;
-                while (els_n && els_n->kind == ND_DEREF) els_n = els_n->lhs;
-                if (then_n && then_n->kind == ND_LVAR && then_n->var && then_n->var->is_function) {
-                    if (strcmp(attr_name, "reproducible") == 0 && then_n->var->is_reproducible) then_has = 1;
-                    else if (strcmp(attr_name, "unsequenced") == 0 && then_n->var->is_unsequenced) then_has = 1;
-                }
-                if (els_n && els_n->kind == ND_LVAR && els_n->var && els_n->var->is_function) {
-                    if (strcmp(attr_name, "reproducible") == 0 && els_n->var->is_reproducible) els_has = 1;
-                    else if (strcmp(attr_name, "unsequenced") == 0 && els_n->var->is_unsequenced) els_has = 1;
-                }
-                if (then_has == els_has) {
-                    result = then_has;
-                } else {
-                    node = new_node(ND_COND, cur->tok);
-                    node->cond = cur->cond;
-                    node->then = new_num(then_has, cur->tok);
-                    node->els = new_num(els_has, cur->tok);
-                    node->ty = ty_int;
-                    *rest = tok;
-                    return node;
-                }
+            // Walk through dereferences to get the function type
+            Node *fn_node = arg;
+            while (fn_node && fn_node->kind == ND_DEREF)
+                fn_node = fn_node->lhs;
+            // Get the function type from the expression's type
+            Type *fn_ty = arg->ty;
+            while (fn_ty && fn_ty->kind == TY_PTR)
+                fn_ty = fn_ty->base;
+            // For conditional expressions, the composite type already has
+            // merged C23 attributes — check the type directly
+            if (fn_ty && fn_ty->kind == TY_FUNC && attr_name) {
+                if (strcmp(attr_name, "reproducible") == 0 && fn_ty->is_reproducible)
+                    result = 1;
+                else if (strcmp(attr_name, "unsequenced") == 0 && fn_ty->is_unsequenced)
+                    result = 1;
             }
-            Type *ty = arg->ty;
-            while (ty && (ty->kind == TY_PTR || ty->kind == TY_ARRAY))
-                ty = ty->base;
-            if (ty && ty->kind == TY_FUNC && attr_name) {
-                if (arg->kind == ND_LVAR && arg->var && arg->var->is_function) {
-                    if (strcmp(attr_name, "reproducible") == 0 && arg->var->is_reproducible)
-                        result = 1;
-                    else if (strcmp(attr_name, "unsequenced") == 0 && arg->var->is_unsequenced)
-                        result = 1;
-                }
+            // Also check LVar for direct function references (not via type)
+            if (!result && fn_node && fn_node->kind == ND_LVAR && fn_node->var) {
+                LVar *v = fn_node->var;
+                if (strcmp(attr_name, "reproducible") == 0 && v->is_function && v->is_reproducible)
+                    result = 1;
+                else if (strcmp(attr_name, "unsequenced") == 0 && v->is_function && v->is_unsequenced)
+                    result = 1;
             }
             node = new_num(result, tok);
             *rest = tok;
@@ -7755,6 +7737,23 @@ Program *parse(Token *tok) {
             char *name = NULL;
             Type *ty = declarator(&tok, tok, copy_type(base), &name);
             tok = read_type_attrs(tok, &top_decl_align, &attr);
+            // Transfer C23 function type attributes from VarAttr to the Type
+            if (attr.is_reproducible || attr.is_unsequenced) {
+                Type *fty = ty;
+                if (fty->kind == TY_PTR && fty->base && fty->base->kind == TY_FUNC)
+                    fty = fty->base;
+                if (fty->kind == TY_FUNC) {
+                    fty = copy_type(fty);
+                    fty->is_reproducible = attr.is_reproducible;
+                    fty->is_unsequenced = attr.is_unsequenced;
+                    if (ty->kind == TY_PTR) {
+                        ty = copy_type(ty);
+                        ty->base = fty;
+                    } else {
+                        ty = fty;
+                    }
+                }
+            }
 
             if (!name) {
                 tok = skip(tok, ";");
