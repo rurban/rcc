@@ -4566,9 +4566,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 25;
     else if (streq(platform, "linux"))
-        max_fail = 27;
+        max_fail = 25;
     else
-        max_fail = 27; // missing c23 features
+        max_fail = 25; // missing c23 features
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {

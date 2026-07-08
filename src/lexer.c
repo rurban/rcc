@@ -57,10 +57,31 @@ char *current_input;
 char *current_filename;
 int current_line_offset = 0;
 int line_num = 1;
-// Tracks the filename from #line directives for debug info (tok->filename).
-// Kept separate from current_filename so error messages always use the
-// original in_path (relative/short) while tok->filename gets the resolved path.
-static char *current_debug_filename;
+// Tracks the filename from #line directives for error/warning messages.
+// Updated unconditionally (not gated on opt_g) so warnings in included
+char *current_debug_filename;
+
+// Pick the filename to display in a diagnostic. `file` is the #line-tracked
+// filename captured on the token (tok->filename), or NULL. When it names the
+// same file as the original source (matching basename) prefer the original
+// (shorter, relative) path the user passed on the command line; otherwise use
+// the tracked filename so warnings in included headers name the right file.
+static const char *display_filename(const char *file) {
+    if (!file)
+        return current_debug_filename ? current_debug_filename : current_filename;
+    const char *dbg_base = file;
+    for (const char *p = file; *p; p++)
+        if (*p == '/' || *p == '\\')
+            dbg_base = p + 1;
+    const char *orig_base = current_filename ? current_filename : "";
+    for (const char *p = orig_base; *p; p++)
+        if (*p == '/' || *p == '\\')
+            orig_base = p + 1;
+    if (current_filename && strcmp(dbg_base, orig_base) == 0)
+        return current_filename;
+    return file;
+}
+
 
 // Reports an error and exit.
 // cppcheck-suppress va_end_missing
@@ -94,8 +115,13 @@ static int compute_line_no(char *loc) {
 }
 
 // Gorgeous error reporting with pointing carets.
+// `file` / `lineno` come from the offending token (tok->filename / tok->lineno),
+// captured when the token was created so they stay correct after tokenizing has
+// advanced the global #line state. Pass file=NULL / lineno=0 to fall back to the
+// current lexer position.
 // TODO not-returning attribute
-static void verror_at(char *loc, int len, char *fmt, va_list ap) {
+static void verror_at(char *loc, int len, const char *file, int lineno,
+                      char *fmt, va_list ap) {
     if (!loc) {
         fprintf(stderr, "\033[1;31merror:\033[0m ");
         vfprintf(stderr, fmt, ap);
@@ -111,10 +137,10 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
     while (*end != '\n' && *end != '\0')
         end++;
 
-    int reported_line = compute_line_no(loc);
+    int reported_line = lineno > 0 ? lineno : compute_line_no(loc);
 
     // Print filename and line info
-    fprintf(stderr, "\033[1;37m%s:%d: \033[0m", current_filename, reported_line);
+    fprintf(stderr, "\033[1;37m%s:%d: \033[0m", display_filename(file), reported_line);
     fprintf(stderr, "\033[1;31merror:\033[0m ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
@@ -140,7 +166,7 @@ static void verror_at(char *loc, int len, char *fmt, va_list ap) {
 void error_at(char *loc, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    verror_at(loc, 1, fmt, ap);
+    verror_at(loc, 1, NULL, 0, fmt, ap);
     exit(1);
 }
 
@@ -150,9 +176,10 @@ void error_at(char *loc, char *fmt, ...) {
 __attribute__((noreturn)) void error_tok_simple(Token *tok, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    int lineno = tok && tok->ptr ? compute_line_no(tok->ptr) : 1;
+    int lineno = tok && tok->lineno > 0 ? tok->lineno
+                                        : (tok && tok->ptr ? compute_line_no(tok->ptr) : 1);
     fprintf(stderr, "%s:%d: error: ",
-            current_filename ? current_filename : "<unknown>", lineno);
+            display_filename(tok ? tok->filename : NULL), lineno);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
@@ -165,14 +192,15 @@ void error_tok(Token *tok, char *fmt, ...) {
     if (!tok) {
         va_list ap;
         va_start(ap, fmt);
-        verror_at(NULL, 0, fmt, ap);
+        verror_at(NULL, 0, NULL, 0, fmt, ap);
         exit(1);
     }
     va_list ap;
     va_start(ap, fmt);
-    verror_at(tok->ptr, tok->len, fmt, ap);
+    verror_at(tok->ptr, tok->len, tok->filename, tok->lineno, fmt, ap);
     exit(1);
 }
+
 
 void warn_tok(Token *tok, char *fmt, ...) {
     if (!tok) {
@@ -208,9 +236,10 @@ void warn_tok(Token *tok, char *fmt, ...) {
                     reported_line++;
         }
     }
+    const char *err_file = display_filename(tok->filename);
     // Use basename of file
-    const char *base = current_filename;
-    for (const char *p = current_filename; *p; p++)
+    const char *base = err_file;
+    for (const char *p = err_file; *p; p++)
         if (*p == '/' || *p == '\\')
             base = p + 1;
     va_list ap;
@@ -234,8 +263,10 @@ static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     tok->ptr = start;
     tok->len = end - start;
     tok->lineno = lineno;
-    if (opt_g)
-        tok->filename = current_debug_filename;
+    // Capture the #line-tracked filename on every token (not just with -g)
+    // so warn_tok/error_tok report the right file even after tokenizing has
+    // advanced current_debug_filename past this token's position.
+    tok->filename = current_debug_filename;
     return tok;
 }
 
@@ -344,8 +375,7 @@ Token *tokenize(char *filename, char *p) {
      * for files with no #line directive of their own. */
     current_line_offset = 0;
     line_num = 1;
-    if (opt_g)
-        current_debug_filename = filename;
+    current_debug_filename = filename;
     Token head = {};
     Token *cur = &head;
     int cur_lineno = 1;
@@ -377,9 +407,7 @@ Token *tokenize(char *filename, char *p) {
                     q++;
                     while (*q && *q != '"') q++;
                     if (*q == '"') {
-                        if (opt_g)
-                            current_debug_filename = str_intern(fn_start, q - fn_start);
-                        current_input = p;
+                        current_debug_filename = str_intern(fn_start, q - fn_start);
                         current_line_offset = q + 1 - current_input;
                         line_num = n - 1;
                         cur_lineno = n;

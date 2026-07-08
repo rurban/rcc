@@ -71,6 +71,7 @@ extern char *current_input;
 extern char *current_filename;
 extern int current_line_offset;
 extern int line_num;
+extern char *current_debug_filename;
 
 // Allocator / Utils
 void *arena_alloc(size_t size);

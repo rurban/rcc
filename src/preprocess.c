@@ -2092,14 +2092,37 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                     // C23: digit separators are valid here (#line 0'123)
                     bool dsep = opt_std_version && strcmp(opt_std_version, "202311L") >= 0;
                     long v = 0;
-                    for (char *dp = ep; isdigit((unsigned char)*dp) ||
+                    char *dp = ep;
+                    for (; isdigit((unsigned char)*dp) ||
                          (dsep && *dp == '\'' && isdigit((unsigned char)dp[1]));
                          dp++)
                         if (*dp != '\'')
                             v = v * 10 + (*dp - '0');
                     line_no = (int)v - 1;
+                    // Parse the optional "filename" and pass the whole
+                    // directive through to the tokenizer as `# <line> "file"`
+                    // so warnings/errors after a user #line report the right
+                    // file and line. Without this the tokenizer keeps counting
+                    // physical lines from the last include boundary and drifts.
+                    char *fp = skip_spaces(dp);
+                    if (*fp == '"') {
+                        char *fn_start = fp + 1;
+                        char *fn_end = fn_start;
+                        while (*fn_end && *fn_end != '"')
+                            fn_end++;
+                        char *fn = pp_strndup(fn_start, fn_end - fn_start);
+                        sb_puts(&out, format("# %ld \"%s\"\n", v, fn));
+                        // Retarget the logical file so __FILE__ and later
+                        // diagnostics use the #line name (C semantics). fpath,
+                        // computed once up top, keeps the physical path for
+                        // include / #pragma-once tracking.
+                        filename = fn;
+                    } else {
+                        sb_puts(&out, format("# %ld \"%s\"\n", v, filename));
+                    }
+                } else {
+                    sb_putc(&out, '\n');
                 }
-                sb_putc(&out, '\n');
             } else if (pp_startswith(s, "error") && active) {
                 s += 5;
                 while (s < end && isspace((unsigned char)*s))

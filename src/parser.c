@@ -7446,6 +7446,7 @@ Program *parse(Token *tok) {
 
     char *saved_input = current_input;
     char *saved_filename = current_filename;
+    char *saved_debug_filename = current_debug_filename;
     int saved_line_offset = current_line_offset;
     int saved_line_num = line_num;
     Token *head = tokenize("rcc_builtins",
@@ -7495,6 +7496,7 @@ Program *parse(Token *tok) {
 #endif
     );
     current_input = saved_input;
+    current_debug_filename = saved_debug_filename;
     current_filename = saved_filename;
     current_line_offset = saved_line_offset;
     line_num = saved_line_num;
@@ -7546,6 +7548,21 @@ Program *parse(Token *tok) {
 
         if (equalc(tok, ";")) {
             tok = tok->next;
+            continue;
+        }
+
+        // _Pragma("string") — C99 pragma operator at file scope. Treat as a
+        // no-op; a following ';' is an (empty) declaration, not a type-less one,
+        // so consume it here instead of falling through to declaration parsing
+        // (which would wrongly warn "type defaults to int").
+        if (tok->kw == ID__PRAGMA || equalc(tok, "_Pragma")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            if (tok->kind == TK_STR)
+                tok = tok->next;
+            tok = skip(tok, ")");
+            while (equalc(tok, ";"))
+                tok = tok->next;
             continue;
         }
 

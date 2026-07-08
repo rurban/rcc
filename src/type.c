@@ -231,6 +231,43 @@ static Type *builtin_return_type(const char *name) {
     return NULL;
 }
 
+// Return type assumed for a function called WITHOUT a visible prototype.
+// C's implicit declaration rule says such a call returns int, but the standard
+// libc memory/string allocators return pointers. Assuming int for them produces
+// spurious "pointer/integer mismatch" / truncated-pointer diagnostics when a
+// header (or header shim) only declares them AFTER their first use — which
+// happens e.g. when glibc's fortified <strings.h> defines bcopy() in terms of
+// memmove() before <string.h>'s prototype is in scope. Only consulted on the
+// implicit path; an explicit declaration always takes precedence.
+static Type *implicit_return_type(const char *name) {
+    if (!name) return ty_int;
+    if (name == bi_s_alloca) return pointer_to(ty_void);
+    static const char *ptr_funcs[] = {
+        "memcpy",
+        "memmove",
+        "memset",
+        "memchr",
+        "strcpy",
+        "strncpy",
+        "strcat",
+        "strncat",
+        "strchr",
+        "strrchr",
+        "strstr",
+        "strpbrk",
+        "strdup",
+        "strndup",
+        "malloc",
+        "calloc",
+        "realloc",
+        NULL,
+    };
+    for (int i = 0; ptr_funcs[i]; i++)
+        if (strcmp(name, ptr_funcs[i]) == 0)
+            return pointer_to(ty_void);
+    return ty_int;
+}
+
 static void insert_arith_cast(Node **operand, Type *to) {
     Node *cast = arena_alloc(sizeof(Node));
     cast->kind = ND_CAST;
@@ -643,8 +680,7 @@ static void add_type_internal(Node *node) {
                 LVar *gvar = find_global_name(node->funcname);
                 node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                     ? gvar->ty->return_ty
-                    : (node->funcname == bi_s_alloca) ? pointer_to(ty_void)
-                                                      : ty_int;
+                    : implicit_return_type(node->funcname);
             } else {
                 node->ty = ty_int;
             }
@@ -652,8 +688,7 @@ static void add_type_internal(Node *node) {
             LVar *gvar = find_global_name(node->funcname);
             node->ty = (gvar && gvar->ty && gvar->ty->kind == TY_FUNC && gvar->ty->return_ty)
                 ? gvar->ty->return_ty
-                : (node->funcname == bi_s_alloca) ? pointer_to(ty_void)
-                                                  : ty_int;
+                : implicit_return_type(node->funcname);
         } else {
             node->ty = ty_int;
         }
