@@ -4356,6 +4356,25 @@ static void run_torture_test(const char *src, bool summary_only) {
     }
     ca[ai++] = "-I";
     ca[ai++] = ".";
+    // Parse dg-additional-sources for multi-file tests
+    char *additional_srcs[8] = {0};
+    int nas = 0;
+    if (content) {
+        char *ads = strstr(content, "dg-additional-sources");
+        if (ads) {
+            char *q1 = strchr(ads, '"');
+            if (q1) {
+                char *q2 = strchr(q1 + 1, '"');
+                if (q2) {
+                    int alen = (int)(q2 - q1 - 1);
+                    char *srcs = strndup(q1 + 1, (size_t)alen);
+                    char *sv = NULL;
+                    for (char *st = strtok_r(srcs, " ", &sv); st && nas < 8; st = strtok_r(NULL, " ", &sv))
+                        additional_srcs[nas++] = st;
+                }
+            }
+        }
+    }
     if (dgdo == DGDO_PREPROCESS) {
         ca[ai++] = "-E";
     } else if (dgdo == DGDO_COMPILE) {
@@ -4365,6 +4384,8 @@ static void run_torture_test(const char *src, bool summary_only) {
         ca[ai++] = exe_path;
     }
     ca[ai++] = (char *)src;
+    for (int si = 0; si < nas; si++)
+        ca[ai++] = additional_srcs[si];
     if (dgdo == DGDO_DEFAULT || dgdo == DGDO_RUN) {
         ca[ai++] = "-lm";
     }

@@ -5110,6 +5110,37 @@ static Node *primary(Token **rest, Token *tok) {
             tok = tok->next;
             tok = skip(tok, ")");
             int result = 0;
+            // Walk through dereferences and conditionals to find function LVar
+            Node *cur = arg;
+            while (cur && cur->kind == ND_DEREF)
+                cur = cur->lhs;
+            // Handle conditional: x ? f1 : f3
+            if (cur && cur->kind == ND_COND && attr_name) {
+                Node *then_n = cur->then;
+                Node *els_n = cur->els;
+                int then_has = 0, els_has = 0;
+                while (then_n && then_n->kind == ND_DEREF) then_n = then_n->lhs;
+                while (els_n && els_n->kind == ND_DEREF) els_n = els_n->lhs;
+                if (then_n && then_n->kind == ND_LVAR && then_n->var && then_n->var->is_function) {
+                    if (strcmp(attr_name, "reproducible") == 0 && then_n->var->is_reproducible) then_has = 1;
+                    else if (strcmp(attr_name, "unsequenced") == 0 && then_n->var->is_unsequenced) then_has = 1;
+                }
+                if (els_n && els_n->kind == ND_LVAR && els_n->var && els_n->var->is_function) {
+                    if (strcmp(attr_name, "reproducible") == 0 && els_n->var->is_reproducible) els_has = 1;
+                    else if (strcmp(attr_name, "unsequenced") == 0 && els_n->var->is_unsequenced) els_has = 1;
+                }
+                if (then_has == els_has) {
+                    result = then_has;
+                } else {
+                    node = new_node(ND_COND, cur->tok);
+                    node->cond = cur->cond;
+                    node->then = new_num(then_has, cur->tok);
+                    node->els = new_num(els_has, cur->tok);
+                    node->ty = ty_int;
+                    *rest = tok;
+                    return node;
+                }
+            }
             Type *ty = arg->ty;
             while (ty && (ty->kind == TY_PTR || ty->kind == TY_ARRAY))
                 ty = ty->base;
