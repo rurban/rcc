@@ -4556,7 +4556,7 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 23 + 6;
+        max_fail = 21 + 6;
     else if (streq(platform, "arm64"))
         max_fail = 23;
     else if (streq(platform, "darwin_cross"))
