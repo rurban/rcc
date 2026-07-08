@@ -45,21 +45,24 @@ c-testsuite.tap.txt
 qemu_*.core
 gmon.out
 test-*.summary
-
-# agents
-.claude/
-amazon_bug_bounty/
 test/*.out
 /compile_commands.json
 /tools/__pycache__
+
+# agents
+.claude/
+.kimi-code/
+.omp/
+.opencode
+.mcp.json
+opencode.json
+amazon_bug_bounty/
 /.cache
 /AGENTS.md
 /CLAUDE.md
 /kimi-export*.md
 /session-ses*.md
 /omp-*.html
-.mcp.json
-/.opencode
 pngout.png
 rcc-preview2.png
 /chat_export*.md

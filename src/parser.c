@@ -1662,7 +1662,7 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
     int64_t dims[16];
     Node *vla_exprs[16] = {0};
     int ndims = 0;
-    while (equalc(tok, "[")) {
+    while (equalc(tok, "[") && !(equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr)) {
         tok = tok->next;
         int64_t len = 0;
         Node *vla_expr = NULL;
@@ -1673,7 +1673,24 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
                equalc(tok, "static"))
             tok = tok->next;
         if (!equalc(tok, "]")) {
-            if (equalc(tok, "*")) {
+            if (equalc(tok, "[")) {
+                // nested array declarator [ [ ] ] — skip to matching outer ]
+                int bdepth = 1;
+                tok = tok->next;
+                while (bdepth > 0 && tok) {
+                    if (equalc(tok, "[")) bdepth++;
+                    else if (equalc(tok, "]")) bdepth--;
+                    if (bdepth > 0) tok = tok->next;
+                }
+                len = 0;
+                // tok now at inner ]; skip to outer ] and consume it
+                if (tok) tok = tok->next;
+                if (equalc(tok, "]")) tok = tok->next;
+                dims[ndims] = len;
+                vla_exprs[ndims] = vla_expr;
+                ndims++;
+                continue;
+            } else if (equalc(tok, "*")) {
                 tok = tok->next;
             } else {
                 Node *node = expr(&tok, tok);
@@ -7250,6 +7267,32 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             while (equalc(t, ")")) t = t->next;
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
+            LVar *anon_var = new_var(name, compound_ty, false);
+            global_initializer(rest, compound_start, anon_var);
+            tok = *rest;
+            if (equalc(tok, "}"))
+                tok = tok->next;
+            while (equalc(tok, ")"))
+                tok = tok->next;
+            var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+            var->init_size = var->ty->size;
+            var->has_init = true;
+            append_reloc(var, 0, name, 0);
+            *rest = tok;
+            return;
+        }
+        // Pointer initialized with compound literal (array-to-pointer decay):
+        // int *p = (int [3]) { 1, 2, 3 };
+        if (find_compound_literal_start(tok)) {
+            Token *compound_start = find_compound_literal_start(tok);
+            Token *t = tok;
+            while (equalc(t, "(")) t = t->next;
+            // Skip storage class specifiers (static, constexpr, etc.)
+            while (kw_is(t, KW_STORAGE)) t = t->next;
+            Type *compound_ty = type_name(&t, t);
+            while (equalc(t, ")")) t = t->next;
+            static int anon_count2;
+            char *name = format(".Lanon.%d", anon_count2++);
             LVar *anon_var = new_var(name, compound_ty, false);
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
