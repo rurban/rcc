@@ -269,6 +269,84 @@ static Type *implicit_return_type(const char *name) {
     return ty_int;
 }
 
+// Create composite type from two compatible types (for conditional expressions).
+// Recursively merges pointer, array, function, and struct/union types.
+static Type *composite_type(Type *t1, Type *t2) {
+    if (!t1 || !t2 || t1 == t2)
+        return t1;
+    if (t1->kind != t2->kind)
+        return t1;
+    switch (t1->kind) {
+    case TY_PTR:
+        return pointer_to(composite_type(t1->base, t2->base));
+    case TY_ARRAY:
+        // Prefer the complete-sized array over incomplete
+        if (t1->size == 0 && t2->size > 0) return t2;
+        if (t2->size == 0 && t1->size > 0) return t1;
+        return t1;
+    case TY_FUNC: {
+        Type *comp = arena_alloc(sizeof(Type));
+        *comp = *t1;
+        comp->return_ty = composite_type(t1->return_ty, t2->return_ty);
+        // Prefer unspecified params (is_oldstyle) over specified
+        if (t1->is_oldstyle && !t2->is_oldstyle) {
+            comp->param_types = t1->param_types;
+            comp->is_oldstyle = true;
+        } else if (!t1->is_oldstyle && t2->is_oldstyle) {
+            comp->param_types = t2->param_types;
+            comp->is_oldstyle = true;
+        }
+        return comp;
+    }
+    case TY_STRUCT:
+    case TY_UNION: {
+        if (!t1->members || !t2->members) return t1;
+        Member *m1 = t1->members, *m2 = t2->members;
+        Member head = {}, *cur = &head;
+        while (m1 && m2) {
+            Member *cm = arena_alloc(sizeof(Member));
+            *cm = *m1;
+            if (m1->name && m2->name && strcmp(m1->name, m2->name) == 0)
+                cm->ty = composite_type(m1->ty, m2->ty);
+            cur->next = cm;
+            cur = cm;
+            m1 = m1->next;
+            m2 = m2->next;
+        }
+        Type *result = arena_alloc(sizeof(Type));
+        *result = *t1;
+        result->members = head.next;
+        // Recompute size/align for the composite struct
+        if (result->kind == TY_STRUCT) {
+            int64_t off = 0;
+            int max_align = 1;
+            for (Member *m = result->members; m; m = m->next) {
+                if (m->bit_width > 0 || !m->ty) continue;
+                int al = m->ty->align;
+                if (al > max_align) max_align = al;
+                off = (off + al - 1) / al * al;
+                m->offset = (int)off;
+                off += m->ty->size;
+            }
+            result->size = (off + max_align - 1) / max_align * max_align;
+            result->align = max_align;
+        } else {
+            int64_t max_sz = 0;
+            int max_al = 1;
+            for (Member *m = result->members; m; m = m->next) {
+                if (m->ty && m->ty->size > max_sz) max_sz = m->ty->size;
+                if (m->ty && m->ty->align > max_al) max_al = m->ty->align;
+            }
+            result->size = max_sz;
+            result->align = max_al;
+        }
+        return result;
+    }
+    default:
+        return t1;
+    }
+}
+
 static void insert_arith_cast(Node **operand, Type *to) {
     Node *cast = arena_alloc(sizeof(Node));
     cast->kind = ND_CAST;
@@ -597,6 +675,28 @@ static void add_type_internal(Node *node) {
                 if (tbase->kind == TY_ARRAY && tbase->size == 0 &&
                     ebase->kind == TY_ARRAY && ebase->size > 0)
                     chosen_ptr = other_ptr;
+                // For struct/union types with different scope definitions but same tag,
+                // create a composite type with merged member types
+                if ((tbase->kind == TY_STRUCT || tbase->kind == TY_UNION) && tbase != ebase) {
+                    Type *comp_base = composite_type(tbase, ebase);
+                    unsigned char combined_qual = tbase->qual | ebase->qual;
+                    combined_qual &= (unsigned char)~QUAL_ATOMIC;
+                    if (comp_base->qual != combined_qual) {
+                        Type *rb = arena_alloc(sizeof(Type));
+                        *rb = *comp_base;
+                        rb->qual = combined_qual;
+                        Type *rp = arena_alloc(sizeof(Type));
+                        *rp = *chosen_ptr;
+                        rp->base = rb;
+                        node->ty = rp;
+                    } else {
+                        Type *rp = arena_alloc(sizeof(Type));
+                        *rp = *chosen_ptr;
+                        rp->base = comp_base;
+                        node->ty = rp;
+                    }
+                    return;
+                }
                 unsigned char combined = chosen_ptr->base->qual | (chosen_ptr == other_ptr ? tbase->qual : ebase->qual);
                 if (chosen_ptr->base->qual != combined) {
                     Type *rbase = arena_alloc(sizeof(Type));

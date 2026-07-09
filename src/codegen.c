@@ -8460,6 +8460,10 @@ static VReg gen(Node *node) {
         return r;
     }
     case ND_IF: {
+        if (node->init) {
+            VReg r = gen(node->init);
+            if (r != -1) free_reg(r);
+        }
         // Fold constant integer conditions to avoid dead code emission,
         // but keep blocks that contain labels (may be targets of goto).
         if (node->cond->kind == ND_NUM) {
@@ -8620,6 +8624,10 @@ static VReg gen(Node *node) {
         return -1;
     }
     case ND_SWITCH: {
+        if (node->init) {
+            VReg r = gen(node->init);
+            if (r != -1) free_reg(r);
+        }
         int c = ++rcc_label_count;
         VReg cond = gen(node->cond);
         int sz = op_size(node->cond->ty);

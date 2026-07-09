@@ -1448,6 +1448,36 @@ bool eval_const_expr(Node *node, long long *val) {
                     return true;
                 }
             }
+            // Fallback: compound literal anon vars have is_local=true but is_constexpr=true
+            // and init_data populated by global_initializer. Read member value from init_data.
+            if (is_integer(node->ty) && total_off >= 0) {
+                if (!root_var && cur && cur->kind == ND_COMMA) {
+                    // Find root LVar in the comma chain
+                    Node *st[64];
+                    int sp = 0;
+                    st[sp++] = cur;
+                    while (sp > 0 && !root_var) {
+                        Node *n = st[--sp];
+                        if (n->kind == ND_LVAR && n->var && n->var->is_local)
+                            root_var = n->var;
+                        if (n->kind == ND_COMMA) {
+                            if (n->lhs && sp < 64) st[sp++] = n->lhs;
+                            if (n->rhs && sp < 64) st[sp++] = n->rhs;
+                        }
+                    }
+                }
+                if (root_var && root_var->is_constexpr && root_var->init_data) {
+                    int64_t v = 0;
+                    int read_sz = node->ty->size <= 8 ? node->ty->size : 8;
+                    if (total_off + read_sz <= root_var->init_size) {
+                        memcpy(&v, root_var->init_data + total_off, read_sz);
+                        if (!node->ty->is_unsigned && (v >> (read_sz * 8 - 1)))
+                            v |= ~((1ULL << (read_sz * 8)) - 1);
+                        *val = v;
+                        return true;
+                    }
+                }
+            }
             return false;
         }
     default:
@@ -3781,8 +3811,18 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     }
 
     // If initializing struct/union from a constexpr var, copy its init_data
+    // Search both globals and local constexpr variables.
     if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
         LVar *src = find_global_name(tok->name);
+        if (!src || !src->is_constexpr || !src->init_data) {
+            // Try local constexpr variables
+            for (LVar *lv = locals; lv; lv = lv->next) {
+                if (lv->name == tok->name && lv->is_constexpr && lv->init_data) {
+                    src = lv;
+                    break;
+                }
+            }
+        }
         if (src && src->is_constexpr && src->init_data) {
             ensure_init_size(var, offset, ty->size);
             memcpy(var->init_data + offset, src->init_data, ty->size);
@@ -4387,6 +4427,7 @@ static Node *declaration(Token **rest, Token *tok) {
                 error_tok(tok, "constexpr variable must be initialized");
             Token *start = tok;
             tok = tok->next;
+            Token *saved_after_eq = tok;
             Node *lhs = new_var_node(var, start);
             if (var->ty->size > 0) {
                 Node *zinit = new_node(ND_ZERO_INIT, start);
@@ -4394,6 +4435,39 @@ static Node *declaration(Token **rest, Token *tok) {
                 cur = cur->next = new_unary(ND_EXPR_STMT, zinit, start);
             }
             tok = local_init_one(tok, lhs, var->ty, &cur);
+            // Also populate init_data for compile-time member access.
+            // Re-parse the initializer with global_initializer which fills init_data.
+            Token *post_init = tok;
+            tok = saved_after_eq;
+            // global_initializer can't find local variables. If the initializer
+            // is a bare identifier or { identifier }, look up locals too.
+            LVar *src_var = NULL;
+            {
+                Token *chk = tok;
+                if (equalc(chk, "{")) chk = chk->next;
+                if (chk && chk->kind == TK_IDENT) {
+                    for (LVar *lv = locals; lv; lv = lv->next) {
+                        if (lv->name == chk->name) {
+                            src_var = lv;
+                            break;
+                        }
+                    }
+                    if (src_var && src_var->is_constexpr && src_var->init_data) {
+                        var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                        var->init_size = var->ty->size;
+                        memcpy(var->init_data, src_var->init_data,
+                               src_var->ty->size < var->ty->size ? src_var->ty->size : var->ty->size);
+                        var->has_init = true;
+                    } else {
+                        src_var = NULL;
+                    }
+                }
+            }
+            if (!src_var) {
+                // General case: use global_initializer for brace-enclosed init with literals
+                global_initializer(&tok, tok, var);
+            }
+            tok = post_init;
         } else if (attr.is_constexpr) {
             if (attr.is_auto_type) {
                 // constexpr auto: infer type from initializer, then apply constexpr constraints
@@ -4429,7 +4503,30 @@ static Node *declaration(Token **rest, Token *tok) {
                 var->ty->qual |= QUAL_CONST;
                 if (pending_asm_name)
                     var->asm_name = pending_asm_name;
+                // For aggregate types (struct/union/array) initialized from another
+                // constexpr variable, copy init_data for compile-time member access
+                if ((inferred->kind == TY_STRUCT || inferred->kind == TY_UNION || inferred->kind == TY_ARRAY) &&
+                    init_expr->kind == ND_LVAR && init_expr->var && init_expr->var->is_constexpr &&
+                    init_expr->var->init_data) {
+                    var->init_data = arena_alloc(inferred->size ? inferred->size : 1);
+                    var->init_size = inferred->size;
+                    memcpy(var->init_data, init_expr->var->init_data, inferred->size);
+                    var->has_init = true;
+                }
                 long long val = 0;
+                // For compound literal expressions, extract scalar value from the AST
+                // compound literal of scalar type creates ND_COMMA(ND_ASSIGN(ND_LVAR, NUM), ND_LVAR)
+                // eval_const_expr fails on the ND_LVAR RHS, so extract directly from the assignment
+                // Walk through nested compound literal wrappers ND_COMMA(ND_ASSIGN(_, value), ND_LVAR)
+                Node *value_node = init_expr;
+                while (value_node->kind == ND_COMMA && value_node->lhs->kind == ND_ASSIGN &&
+                       value_node->rhs->kind == ND_LVAR) {
+                    value_node = value_node->lhs->rhs;
+                }
+                if (eval_const_expr(value_node, &val)) {
+                    var->has_init = true;
+                    var->init_val = (int64_t)val;
+                }
                 if (eval_const_expr(init_expr, &val)) {
                     var->has_init = true;
                     var->init_val = (int64_t)val;
@@ -4448,7 +4545,15 @@ static Node *declaration(Token **rest, Token *tok) {
                     error_tok(tok, "constexpr variable must be initialized");
                 Token *start = tok;
                 tok = tok->next;
-                Node *init_expr = expr(&tok, tok);
+                Node *init_expr;
+                // Handle brace-enclosed scalar initializer: { value }
+                if (equalc(tok, "{")) {
+                    tok = tok->next;
+                    init_expr = expr(&tok, tok);
+                    tok = skip(tok, "}");
+                } else {
+                    init_expr = expr(&tok, tok);
+                }
                 long long val = 0;
                 if (!eval_const_expr(init_expr, &val))
                     error_tok(start, "constexpr variable must have a constant initializer");
@@ -4897,6 +5002,62 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "if")) {
         Node *node = new_node(ND_IF, tok);
         tok = skip(tok->next, "(");
+
+        if (is_typename(tok)) {
+            LVar *saved_locals = locals;
+            Typedef *saved_typedefs = typedefs;
+            TypedefLog *saved_typedef_log = typedef_scope_checkpoint();
+            EnumConst *saved_enum = enum_consts;
+            EnumLog *saved_enum_log = enum_scope_checkpoint();
+
+            bool has_semi = false;
+            for (Token *s = tok; s && !equalc(s, ")"); s = s->next) {
+                if (equalc(s, ";")) {
+                    has_semi = true;
+                    break;
+                }
+            }
+
+            if (has_semi) {
+                node->init = declaration(&tok, tok);
+                if (!equalc(tok, ")"))
+                    node->cond = expr(&tok, tok);
+            } else {
+                VarAttr attr = {};
+                Type *base = declspec(&tok, tok, &attr);
+                char *name = NULL;
+                int decl_align = 0;
+                Type *ty = declarator(&tok, tok, copy_type(base), &name);
+                tok = read_type_attrs(tok, &decl_align, NULL);
+                if (!name)
+                    error_tok(tok, "expected variable name");
+                LVar *var = new_var(name, ty, true);
+                Node head = {};
+                Node *cur = &head;
+                if (equalc(tok, "=")) {
+                    tok = tok->next;
+                    Node *lhs = new_var_node(var, tok);
+                    tok = local_init_one(tok, lhs, var->ty, &cur);
+                }
+                node->init = head.next;
+                node->cond = new_var_node(var, tok);
+            }
+
+            tok = skip(tok, ")");
+            node->cleanup_end = saved_locals;
+            node->then = stmt(&tok, tok);
+            if (equalc(tok, "else"))
+                node->els = stmt(&tok, tok->next);
+            enum_scope_restore(saved_enum_log);
+            typedef_scope_restore(saved_typedef_log);
+            enum_consts = saved_enum;
+            node = append_cleanup_range(node, locals, saved_locals, tok);
+            locals = saved_locals;
+            typedefs = saved_typedefs;
+            *rest = tok;
+            return node;
+        }
+
         EnumConst *saved_enum = enum_consts;
         EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
@@ -4997,6 +5158,63 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "switch")) {
         Node *node = new_node(ND_SWITCH, tok);
         tok = skip(tok->next, "(");
+
+        if (is_typename(tok)) {
+            LVar *saved_locals = locals;
+            Typedef *saved_typedefs = typedefs;
+            TypedefLog *saved_typedef_log = typedef_scope_checkpoint();
+            EnumConst *saved_enum = enum_consts;
+            EnumLog *saved_enum_log = enum_scope_checkpoint();
+
+            bool has_semi = false;
+            for (Token *s = tok; s && !equalc(s, ")"); s = s->next) {
+                if (equalc(s, ";")) {
+                    has_semi = true;
+                    break;
+                }
+            }
+
+            if (has_semi) {
+                node->init = declaration(&tok, tok);
+                if (!equalc(tok, ")"))
+                    node->cond = expr(&tok, tok);
+            } else {
+                VarAttr attr = {};
+                Type *base = declspec(&tok, tok, &attr);
+                char *name = NULL;
+                int decl_align = 0;
+                Type *ty = declarator(&tok, tok, copy_type(base), &name);
+                tok = read_type_attrs(tok, &decl_align, NULL);
+                if (!name)
+                    error_tok(tok, "expected variable name");
+                LVar *var = new_var(name, ty, true);
+                Node head = {};
+                Node *cur = &head;
+                if (equalc(tok, "=")) {
+                    tok = tok->next;
+                    Node *lhs = new_var_node(var, tok);
+                    tok = local_init_one(tok, lhs, var->ty, &cur);
+                }
+                node->init = head.next;
+                node->cond = new_var_node(var, tok);
+            }
+
+            tok = skip(tok, ")");
+            node->cleanup_end = saved_locals;
+            Node *saved = current_switch;
+            current_switch = node;
+            node->then = stmt(&tok, tok);
+            current_switch = saved;
+            enum_scope_restore(saved_enum_log);
+            typedef_scope_restore(saved_typedef_log);
+            enum_consts = saved_enum;
+            node = append_cleanup_range(node, locals, saved_locals, tok);
+            locals = saved_locals;
+            typedefs = saved_typedefs;
+            *rest = tok;
+            return node;
+        }
+
         EnumConst *saved_enum = enum_consts;
         EnumLog *saved_enum_log = enum_scope_checkpoint();
         node->cond = expr(&tok, tok);
@@ -5056,7 +5274,12 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "break")) {
         Node *node = new_node(ND_BREAK, tok);
         node->cleanup_begin = locals;
-        *rest = skip(tok->next, ";");
+        if (tok->next->kind == TK_IDENT) {
+            tok = tok->next->next;
+            *rest = skip(tok, ";");
+        } else {
+            *rest = skip(tok->next, ";");
+        }
         if (current_switch) {
             node->cleanup_end = current_switch->cleanup_end;
             return node;
@@ -5071,7 +5294,12 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "continue")) {
         Node *node = new_node(ND_CONTINUE, tok);
         node->cleanup_begin = locals;
-        *rest = skip(tok->next, ";");
+        if (tok->next->kind == TK_IDENT) {
+            tok = tok->next->next;
+            *rest = skip(tok, ";");
+        } else {
+            *rest = skip(tok->next, ";");
+        }
         if (!current_loop)
             error_tok(tok, "stray continue");
         node->cleanup_end = current_loop->continue_cleanup_end;
@@ -6714,6 +6942,8 @@ static Node *unary(Token **rest, Token *tok) {
 
         // Compound literal: (type){init_list}
         if (equalc(tok, "{")) {
+            Token *init_brace_tok = tok;
+            (void)init_brace_tok;
             tok = tok->next;
 
             // For incomplete arrays, count elements first
@@ -7022,6 +7252,26 @@ static Node *unary(Token **rest, Token *tok) {
                             break;
                         }
                         tok = skip(tok, "}");
+                    } else if (equalc(tok, "{")) {
+                        // Extra braces around a scalar initializer (e.g. { { } } for int*)
+                        tok = skip(tok, "{");
+                        Node *var_node = new_var_node(var, start);
+                        Node *member_access = new_node(ND_MEMBER, start);
+                        member_access->lhs = var_node;
+                        member_access->member = mem;
+                        member_access->ty = mem->ty;
+                        Node *val;
+                        if (equalc(tok, "}")) {
+                            val = new_num(0, start);
+                        } else {
+                            val = assign(&tok, tok);
+                            check_type(val);
+                        }
+                        Node *asgn = new_binary(ND_ASSIGN, member_access, val, start);
+                        asgn->ty = mem->ty;
+                        result = new_binary(ND_COMMA, result, asgn, start);
+                        result->ty = ty;
+                        tok = skip(tok, "}");
                     } else {
                         Node *var_node = new_var_node(var, start);
                         Node *member_access = new_node(ND_MEMBER, start);
@@ -7063,6 +7313,12 @@ static Node *unary(Token **rest, Token *tok) {
                 Node *asgn = new_binary(ND_ASSIGN, new_var_node(var, start), val, start);
                 asgn->ty = ty;
                 result = new_binary(ND_COMMA, asgn, new_var_node(var, start), start);
+                // Mark anonymous var as constexpr for eval_const_expr
+                if (val->kind == ND_NUM) {
+                    var->is_constexpr = true;
+                    var->has_init = true;
+                    var->init_val = val->val;
+                }
                 check_type(result);
             }
 
@@ -7104,6 +7360,16 @@ static Node *unary(Token **rest, Token *tok) {
                 }
                 break;
             }
+            // Populate init_data for compile-time member access (e.g. in static_assert)
+            // by re-parsing the initializer with global_initializer
+            if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+                Token *saved_here = tok;
+                tok = init_brace_tok;
+                global_initializer(&tok, tok, var);
+                if (var->has_init)
+                    var->is_constexpr = true;
+                tok = saved_here;
+            }
             *rest = tok;
             return result;
         }
@@ -7117,16 +7383,19 @@ static Node *unary(Token **rest, Token *tok) {
             ty = copy_type(ty);
             ty->qual = 0;
         }
-        // Freeze pointer-to-VLA dimensions (e.g. `(int (*)[++i]) 0`) so the
-        // side effect runs once when the cast is evaluated (C11 6.7.6.2p5).
         if (parser_current_fn && ty->kind == TY_PTR) {
             Node *vla_pre = NULL;
             ty = vla_freeze_dims(ty, &vla_pre, start);
             if (vla_pre) {
-                node->ty = ty;
-                node = new_binary(ND_COMMA, vla_pre, node, start);
-                check_type(node);
-                return node;
+                Node *fcopy = arena_alloc(sizeof(Node));
+                *fcopy = *vla_pre;
+                // The node variable is declared above as ND_CAST
+                Node *tmp = new_node(ND_COMMA, start);
+                tmp->lhs = fcopy;
+                tmp->rhs = new_unary(ND_CAST, lhs, start);
+                tmp->rhs->ty = ty;
+                check_type(tmp);
+                return tmp;
             }
         }
         node->ty = ty;
