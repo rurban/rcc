@@ -2070,6 +2070,100 @@ static Node *vla_capture(Node *expr, Token *tok) {
     return new_var_node(cap, tok);
 }
 
+// C11 6.7.6.2p5: the size expressions of a variably-modified type
+// (a pointer chain ending in a VLA, e.g. `int (*)[++i]` from a
+// declarator, typeof, or cast) are evaluated exactly once where the
+// type appears. Freeze each dimension into a hidden local: the
+// evaluation assigns are chained onto *pre (as ND_COMMA), and the
+// returned type references the frozen values, so a later sizeof(*p)
+// reads them without re-running side effects.
+static Type *vla_freeze_dims(Type *ty, Node **pre, Token *tok) {
+    if (!ty || (ty->kind != TY_PTR && ty->kind != TY_VLA))
+        return ty;
+    Type *nb = vla_freeze_dims(ty->base, pre, tok);
+    Node *cap_ref = NULL;
+    if (ty->kind == TY_VLA && ty->vla_len_expr) {
+        LVar *cap = new_var("", ty_long, true);
+        Node *assign = new_binary(ND_ASSIGN, new_var_node(cap, tok), ty->vla_len_expr, tok);
+        check_type(assign);
+        if (*pre) {
+            *pre = new_binary(ND_COMMA, *pre, assign, tok);
+            check_type(*pre);
+        } else {
+            *pre = assign;
+        }
+        cap_ref = new_var_node(cap, tok);
+        check_type(cap_ref);
+    }
+    if (nb != ty->base || cap_ref) {
+        ty = copy_type(ty);
+        ty->base = nb;
+        if (cap_ref)
+            ty->vla_len_expr = cap_ref;
+    }
+    return ty;
+}
+
+// Is ty variably modified (a VLA, or pointer/array chain reaching one)?
+static bool is_vm_type(Type *ty) {
+    for (; ty; ty = ty->base) {
+        if (ty->kind == TY_VLA)
+            return true;
+        if (ty->kind != TY_PTR && ty->kind != TY_ARRAY)
+            break;
+    }
+    return false;
+}
+
+// C11 6.7.2.4: typeof with a variably-modified expression operand
+// evaluates the operand. Queue the evaluation onto
+// pending_vla_struct_capture; declaration() flushes it as a statement
+// ahead of the declarator it belongs to.
+static void queue_vm_typeof_eval(Node *node, Token *tok) {
+    if (!parser_current_fn || !is_vm_type(node->ty))
+        return;
+    Node *ev = new_unary(ND_EXPR_STMT, node, tok);
+    if (pending_vla_struct_capture) {
+        Node *p = pending_vla_struct_capture;
+        while (p->next)
+            p = p->next;
+        p->next = ev;
+    } else {
+        pending_vla_struct_capture = ev;
+    }
+}
+
+// ++/-- on a pointer to a VLA must advance by the runtime element size.
+// Codegen's INC/DEC nodes use a compile-time delta, so desugar to
+// assignment form and let ND_ADD's runtime VLA scaling handle it.
+// Returns NULL when lhs is not a pointer-to-VLA (caller keeps INC/DEC).
+static Node *vla_ptr_incdec(Node *lhs, bool is_inc, bool is_post, Token *tok) {
+    check_type(lhs);
+    if (!lhs->ty || lhs->ty->kind != TY_PTR || !lhs->ty->base || lhs->ty->base->kind != TY_VLA)
+        return NULL;
+    Node *rd = arena_alloc(sizeof(Node));
+    *rd = *lhs;
+    Node *add = new_binary(is_inc ? ND_ADD : ND_SUB, rd, new_num(1, tok), tok);
+    check_type(add);
+    Node *upd = new_binary(ND_ASSIGN, lhs, add, tok);
+    check_type(upd);
+    if (!is_post)
+        return upd;
+    // p++: (tmp = p, p = p + 1, tmp)
+    LVar *tmp = new_var("", lhs->ty, true);
+    Node *rd2 = arena_alloc(sizeof(Node));
+    *rd2 = *lhs;
+    Node *save = new_binary(ND_ASSIGN, new_var_node(tmp, tok), rd2, tok);
+    check_type(save);
+    Node *ret = new_var_node(tmp, tok);
+    check_type(ret);
+    Node *inner = new_binary(ND_COMMA, upd, ret, tok);
+    check_type(inner);
+    Node *seq = new_binary(ND_COMMA, save, inner, tok);
+    check_type(seq);
+    return seq;
+}
+
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     int struct_attr_align = 0;
@@ -2763,6 +2857,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 Node *node = expr(&tok, tok);
                 check_type(node);
                 ty = node->ty;
+                queue_vm_typeof_eval(node, tok);
             }
             tok = skip(tok, ")");
             continue;
@@ -2776,6 +2871,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 Node *node = expr(&tok, tok);
                 check_type(node);
                 ty = node->ty;
+                queue_vm_typeof_eval(node, tok);
             }
             tok = skip(tok, ")");
             continue;
@@ -2794,6 +2890,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 Node *node = expr(&tok, tok);
                 check_type(node);
                 ty = node->ty;
+                queue_vm_typeof_eval(node, tok);
             }
             ty = type_unqual(ty);
             tok = skip(tok, ")");
@@ -4385,7 +4482,22 @@ static Node *declaration(Token **rest, Token *tok) {
             if (equalc(tok, "=")) {
                 ty = infer_array_type(ty, tok->next);
             }
+            // Freeze pointer-to-VLA dimensions (e.g. `typeof (int (*)[++i]) p`)
+            // so the side effect runs once at the declaration (C11 6.7.6.2p5).
+            Node *vla_pre = NULL;
+            if (parser_current_fn && ty->kind == TY_PTR)
+                ty = vla_freeze_dims(ty, &vla_pre, tok);
             LVar *var = new_var(name, ty, true);
+            // Flush queued typeof(VM expr) evaluations and struct-size
+            // captures ahead of this declarator's own dim freezes.
+            if (pending_vla_struct_capture) {
+                cur = cur->next = pending_vla_struct_capture;
+                while (cur->next)
+                    cur = cur->next;
+                pending_vla_struct_capture = NULL;
+            }
+            if (vla_pre)
+                cur = cur->next = new_unary(ND_EXPR_STMT, vla_pre, tok);
             if (pending_asm_name)
                 var->asm_name = pending_asm_name;
             var->cleanup_func = cleanup ? cleanup : ty->cleanup_func;
@@ -5463,13 +5575,15 @@ static Node *primary(Token **rest, Token *tok) {
             continue;
         }
         if (equalc(tok, "++")) {
-            node = new_unary(ND_POST_INC, node, tok);
+            Node *vla = vla_ptr_incdec(node, true, true, tok);
+            node = vla ? vla : new_unary(ND_POST_INC, node, tok);
             tok = tok->next;
             check_type(node);
             continue;
         }
         if (equalc(tok, "--")) {
-            node = new_unary(ND_POST_DEC, node, tok);
+            Node *vla = vla_ptr_incdec(node, false, true, tok);
+            node = vla ? vla : new_unary(ND_POST_DEC, node, tok);
             tok = tok->next;
             check_type(node);
             continue;
@@ -6482,6 +6596,9 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         Node *lhs = unary(&tok, tok->next);
         *rest = tok;
+        Node *vla = vla_ptr_incdec(lhs, true, false, start);
+        if (vla)
+            return vla;
         // Must compute the operand's lvalue address only once: `++*p++` would
         // otherwise re-run the side-effecting `p++` if desugared to
         // `lhs = lhs + 1`.
@@ -6491,6 +6608,9 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         Node *lhs = unary(&tok, tok->next);
         *rest = tok;
+        Node *vla = vla_ptr_incdec(lhs, false, false, start);
+        if (vla)
+            return vla;
         return new_unary(ND_PRE_DEC, lhs, start);
     }
     if (equalc(tok, "+"))
@@ -6996,6 +7116,18 @@ static Node *unary(Token **rest, Token *tok) {
         if (ty->qual) {
             ty = copy_type(ty);
             ty->qual = 0;
+        }
+        // Freeze pointer-to-VLA dimensions (e.g. `(int (*)[++i]) 0`) so the
+        // side effect runs once when the cast is evaluated (C11 6.7.6.2p5).
+        if (parser_current_fn && ty->kind == TY_PTR) {
+            Node *vla_pre = NULL;
+            ty = vla_freeze_dims(ty, &vla_pre, start);
+            if (vla_pre) {
+                node->ty = ty;
+                node = new_binary(ND_COMMA, vla_pre, node, start);
+                check_type(node);
+                return node;
+            }
         }
         node->ty = ty;
         return node;

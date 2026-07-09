@@ -921,7 +921,7 @@
   c11-true_min-1                      FAIL (runtime)
   c11-typedef-1                       SKIP (error)
   c11-typeof-1                        PASS (compile only)
-  c11-typeof-2                        FAIL (runtime)
+  c11-typeof-2                        PASS
   c11-typeof-3                        SKIP (error)
   c11-uni-string-1                    PASS
   c11-uni-string-2                    SKIP (error)
@@ -978,7 +978,7 @@
   c23-attr-unsequenced-5-aux          PASS (compile only)
   c23-attr-unsequenced-5              PASS
   c23-auto-1                          PASS (compile only)
-  c23-auto-2                          FAIL (runtime)
+  c23-auto-2                          PASS
   c23-auto-3                          SKIP (error)
   c23-auto-4                          PASS (compile only)
   c23-binary-constants-1              SKIP (missing include)
@@ -1186,7 +1186,7 @@
   c23-tag-incomplete-alias-1          PASS
   c23-thread-local-1                  SKIP (error)
   c23-thread-local-2                  SKIP (error)
-  c23-typeof-1                        FAIL (runtime)
+  c23-typeof-1                        PASS
   c23-typeof-2                        SKIP (error)
   c23-typeof-3                        PASS (compile only)
   c23-typeof-4                        PASS (compile only)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1796/1809 passed (99%), 13 failed (4 compile/9 runtime), 256 skipped.
+Torture: 1799/1809 passed (99%), 10 failed (4 compile/6 runtime), 256 skipped.
 
 Compile failures: c23-constexpr-1 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2
 
-Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-auto-2 c23-complit-2 c23-complit-4 c23-stdarg-6 c23-stdarg-8 c23-typeof-1
+Runtime failures: c11-float-7 c11-true_min-1 c23-complit-2 c23-complit-4 c23-stdarg-6 c23-stdarg-8
