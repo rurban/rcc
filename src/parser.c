@@ -1552,7 +1552,8 @@ static bool eval_double_const_expr(Node *node, double *val) {
         if (cur && cur->kind == ND_LVAR && cur->var)
             root_var = cur->var;
         if (!root_var && cur && cur->kind == ND_COMMA) {
-            Node *st[64]; int sp = 0;
+            Node *st[64];
+            int sp = 0;
             st[sp++] = cur;
             while (sp > 0 && !root_var) {
                 Node *n = st[--sp];
@@ -7404,15 +7405,66 @@ static Node *unary(Token **rest, Token *tok) {
                 }
                 break;
             }
-            // Populate init_data for compile-time member access (e.g. in static_assert)
-            // by re-parsing the initializer with global_initializer
+            // Populate init_data for compile-time member access (e.g. in static_assert).
+            // Only re-parse with global_initializer if the initializer is all-constant
+            // Populate init_data for compile-time member access (e.g. in static_assert).
+            // Only call global_initializer when we can guarantee no errors from runtime values.
+            // For now, only handle the case where the init tokens are all numeric constants,
+            // nullptr, or constexpr variable references — detected by simple token scan.
             if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
-                Token *saved_here = tok;
-                tok = init_brace_tok;
-                global_initializer(&tok, tok, var);
-                if (var->has_init)
-                    var->is_constexpr = true;
-                tok = saved_here;
+                bool all_const = true;
+                int brace_depth = 0;
+                for (Token *t = init_brace_tok; t; t = t->next) {
+                    if (equalc(t, "{")) {
+                        brace_depth++;
+                        continue;
+                    }
+                    if (equalc(t, "}")) {
+                        brace_depth--;
+                        if (brace_depth <= 0) break;
+                        continue;
+                    }
+                    if (equalc(t, ".")) {
+                        if (t->next) t = t->next;
+                        continue;
+                    } // designated init .member
+                    if (equalc(t, ",") || equalc(t, "=") || equalc(t, ";")) continue;
+                    if (equalc(t, "(")) { // skip to matching ) — handles compound literal types
+                        int pd = 1;
+                        while (pd > 0 && t->next) {
+                            t = t->next;
+                            if (equalc(t, "(")) pd++;
+                            else if (equalc(t, ")"))
+                                pd--;
+                        }
+                        continue;
+                    }
+                    if (t->kind == TK_NUM || t->kind == TK_FNUM || t->kind == TK_STR) continue;
+                    if (equalc(t, "nullptr") || equalc(t, "true") || equalc(t, "false") || equalc(t, "NULL")) continue;
+                    if (t->kind == TK_IDENT) {
+                        // Check global and local constexpr variables
+                        LVar *gv = find_global_name(t->name);
+                        if (gv && gv->is_constexpr && gv->init_data) continue;
+                        bool found = false;
+                        for (LVar *lv = locals; lv; lv = lv->next) {
+                            if (lv->name == t->name && lv->is_constexpr && lv->init_data) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (found) continue;
+                    }
+                    all_const = false;
+                    break;
+                }
+                if (all_const) {
+                    Token *saved_here = tok;
+                    tok = init_brace_tok;
+                    global_initializer(&tok, tok, var);
+                    if (var->has_init)
+                        var->is_constexpr = true;
+                    tok = saved_here;
+                }
             }
             *rest = tok;
             return result;
