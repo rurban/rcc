@@ -1531,6 +1531,50 @@ static bool eval_double_const_expr(Node *node, double *val) {
         return eval_double_const_expr(node->lhs, &lhs) && eval_double_const_expr(node->rhs, &rhs) && ((*val = lhs < rhs), true);
     case ND_LE:
         return eval_double_const_expr(node->lhs, &lhs) && eval_double_const_expr(node->rhs, &rhs) && ((*val = lhs <= rhs), true);
+    case ND_LVAR:
+        if (node->var && node->var->is_constexpr && node->var->has_init) {
+            if (node->var->init_data && node->ty && is_flonum(node->ty)) {
+                double fv = 0;
+                memcpy(&fv, node->var->init_data, node->ty->size <= 8 ? node->ty->size : 8);
+                *val = fv;
+                return true;
+            }
+        }
+        return false;
+    case ND_MEMBER: {
+        int total_off = 0;
+        Node *cur = node;
+        while (cur && cur->kind == ND_MEMBER) {
+            if (cur->member) total_off += cur->member->offset;
+            cur = cur->lhs;
+        }
+        LVar *root_var = NULL;
+        if (cur && cur->kind == ND_LVAR && cur->var)
+            root_var = cur->var;
+        if (!root_var && cur && cur->kind == ND_COMMA) {
+            Node *st[64]; int sp = 0;
+            st[sp++] = cur;
+            while (sp > 0 && !root_var) {
+                Node *n = st[--sp];
+                if (n->kind == ND_LVAR && n->var && n->var->is_local)
+                    root_var = n->var;
+                if (n->kind == ND_COMMA) {
+                    if (n->lhs && sp < 64) st[sp++] = n->lhs;
+                    if (n->rhs && sp < 64) st[sp++] = n->rhs;
+                }
+            }
+        }
+        if (root_var && root_var->is_constexpr && root_var->init_data) {
+            double fv = 0;
+            int read_sz = node->ty->size <= 8 ? node->ty->size : 8;
+            if (total_off + read_sz <= root_var->init_size) {
+                memcpy(&fv, root_var->init_data + total_off, read_sz);
+                *val = fv;
+                return true;
+            }
+        }
+        return false;
+    }
     default:
         return false;
     }
