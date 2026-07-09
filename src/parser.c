@@ -4304,7 +4304,24 @@ static Node *declaration(Token **rest, Token *tok) {
                     error_tok(tok, "constexpr auto requires an initializer");
                 Token *start = tok;
                 tok = tok->next;
-                Node *init_expr = expr(&tok, tok);
+                Node *init_expr = NULL;
+                // Handle compound literal (type){init}: extract inner value
+                if (find_compound_literal_start(start->next)) {
+                    tok = start->next;
+                    int pd = 0;
+                    while (pd > 0 || !equalc(tok, ")")) {
+                        if (equalc(tok, "(")) pd++;
+                        else if (equalc(tok, ")"))
+                            pd--;
+                        if (pd > 0) tok = tok->next;
+                    }
+                    if (tok) tok = tok->next;
+                    tok = skip(tok, "{");
+                    init_expr = conditional(&tok, tok);
+                    tok = skip(tok, "}");
+                } else {
+                    init_expr = expr(&tok, tok);
+                }
                 check_type(init_expr);
                 if (!init_expr->ty)
                     error_tok(start, "cannot infer type from constexpr auto initializer");
@@ -7470,7 +7487,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && tok->kind == TK_IDENT &&
         (equalc(tok->next, ";") || equalc(tok->next, ","))) {
         LVar *src = find_global_name(tok->name);
-        if (src && src->has_init && src->init_data && src->ty == var->ty || (src->ty->kind == var->ty->kind && src->ty->size == var->ty->size)) {
+        if (src && src->has_init && src->init_data && (src->ty == var->ty || (src->ty->kind == var->ty->kind && src->ty->size == var->ty->size))) {
             int sz = var->ty->size ? var->ty->size : 1;
             var->init_data = arena_alloc(sz);
             memcpy(var->init_data, src->init_data, sz);
