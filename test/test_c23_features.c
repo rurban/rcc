@@ -2,7 +2,6 @@
 // https://en.cppreference.com/c/language/integer_constant
 
 #include <stdio.h>
-#include <uchar.h>
 
 #warning "this is a test warning (expected)"
 

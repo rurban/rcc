@@ -1704,7 +1704,8 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
                 tok = tok->next;
                 while (bdepth > 0 && tok) {
                     if (equalc(tok, "[")) bdepth++;
-                    else if (equalc(tok, "]")) bdepth--;
+                    else if (equalc(tok, "]"))
+                        bdepth--;
                     if (bdepth > 0) tok = tok->next;
                 }
                 len = 0;
