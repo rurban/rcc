@@ -4610,19 +4610,19 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 13 + 6;
+        max_fail = 6;
     else if (streq(platform, "arm64"))
-        max_fail = 13;
+        max_fail = 5; // 5 float/complex failures
     else if (streq(platform, "darwin_cross"))
-        max_fail = 13 + 1;
+        max_fail = 5 + 1;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 9;
+        max_fail = 3; // 20000402-1, c23-complit-4, c23-tag-composite-10
     else if (streq(platform, "mingw"))
-        max_fail = 9;
+        max_fail = 3;
     else if (streq(platform, "linux"))
-        max_fail = 8;
+        max_fail = 0;
     else
-        max_fail = 8; // missing c23 features
+        max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
