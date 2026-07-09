@@ -957,7 +957,7 @@
   c23-attr-noreturn-1                 PASS (compile only)
   c23-attr-noreturn-2                 SKIP (error)
   c23-attr-noreturn-3                 SKIP (error)
-  c23-attr-reproducible-1             PASS (compile only)
+  c23-attr-reproducible-1             FAIL (compile)
   c23-attr-reproducible-2             SKIP (error)
   c23-attr-reproducible-3             SKIP (error)
   c23-attr-reproducible-4             SKIP (error)
@@ -971,7 +971,7 @@
   c23-attr-syntax-6                   SKIP (error)
   c23-attr-syntax-7                   SKIP (error)
   c23-attr-syntax-8                   PASS (compile only)
-  c23-attr-unsequenced-1              PASS (compile only)
+  c23-attr-unsequenced-1              FAIL (compile)
   c23-attr-unsequenced-2              SKIP (error)
   c23-attr-unsequenced-3              SKIP (error)
   c23-attr-unsequenced-4              SKIP (error)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1794/1809 passed (99%), 15 failed (6 compile/9 runtime), 256 skipped.
+Torture: 1792/1809 passed (99%), 17 failed (8 compile/9 runtime), 256 skipped.
 
-Compile failures: c23-attr-reproducible-5 c23-attr-unsequenced-5 c23-constexpr-1 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2
+Compile failures: c23-attr-reproducible-1 c23-attr-reproducible-5 c23-attr-unsequenced-1 c23-attr-unsequenced-5 c23-constexpr-1 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2
 
 Runtime failures: c11-float-7 c11-true_min-1 c11-typeof-2 c23-auto-2 c23-complit-2 c23-complit-4 c23-stdarg-6 c23-stdarg-8 c23-typeof-1
