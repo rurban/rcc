@@ -3686,6 +3686,16 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         return tok;
     }
 
+    // If initializing struct/union from a constexpr var, copy its init_data
+    if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
+        LVar *src = find_global_name(tok->name);
+        if (src && src->is_constexpr && src->init_data) {
+            ensure_init_size(var, offset, ty->size);
+            memcpy(var->init_data + offset, src->init_data, ty->size);
+            var->has_init = true;
+            return tok->next;
+        }
+    }
     // Struct/union without braces: flatten into members.
     // For unions, only the first member is initialized.
     if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
@@ -7463,6 +7473,16 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     {
         Node *node = assign(&tok, tok);
         check_type(node);
+        // If the initializer is a constexpr struct/union, copy its init_data
+        if (node->kind == ND_LVAR && node->var && node->var->is_constexpr && node->var->init_data) {
+            int sz = var->ty->size > 0 ? var->ty->size : node->var->ty->size;
+            var->init_data = arena_alloc(sz);
+            var->init_size = sz;
+            var->has_init = true;
+            memcpy(var->init_data, node->var->init_data, sz);
+            *rest = tok;
+            return;
+        }
 
         // Try float constant evaluation for float types
         if (is_flonum(var->ty) || (node->ty && is_flonum(node->ty))) {
