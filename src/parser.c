@@ -4317,11 +4317,6 @@ static Node *declaration(Token **rest, Token *tok) {
                     var->asm_name = pending_asm_name;
                 long long val = 0;
                 if (eval_const_expr(init_expr, &val)) {
-                // Compound literal: extract value from inner expression
-                if (!var->has_init && init_expr->kind == ND_NUM) {
-                    var->has_init = true;
-                    var->init_val = init_expr->val;
-                }
                     var->has_init = true;
                     var->init_val = (int64_t)val;
                 }
