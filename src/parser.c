@@ -1437,7 +1437,7 @@ bool eval_const_expr(Node *node, long long *val) {
             if (cur && cur->kind == ND_LVAR) {
                 root_var = cur->var;
             }
-            if (root_var && root_var->is_constexpr && root_var->has_init) {
+            if (root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
@@ -3688,6 +3688,26 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     }
 
     // If initializing struct/union from a constexpr var, copy its init_data
+    if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
+        LVar *src = find_global_name(tok->name);
+        if (src && src->is_constexpr && src->init_data) {
+            ensure_init_size(var, offset, ty->size);
+            memcpy(var->init_data + offset, src->init_data, ty->size);
+            var->has_init = true;
+            return tok->next;
+        }
+    }
+    // If initializing struct/union from a single constexpr var expression, copy its init_data
+    if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
+        LVar *src = find_global_name(tok->name);
+        if (src && src->is_constexpr && src->init_data) {
+            ensure_init_size(var, offset, ty->size);
+            memcpy(var->init_data + offset, src->init_data, ty->size);
+            var->has_init = true;
+            return tok->next;
+        }
+    }
+    // If initializing struct/union from a single constexpr var expression, copy its init_data
     if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
         LVar *src = find_global_name(tok->name);
         if (src && src->is_constexpr && src->init_data) {
@@ -7474,7 +7494,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     {
         Node *node = assign(&tok, tok);
         check_type(node);
-        // If the initializer is a constexpr struct/union, copy its init_data
+        // If the initializer is a constexpr struct/union with init_data, copy bytes
         if (node->kind == ND_LVAR && node->var && node->var->is_constexpr && node->var->init_data) {
             int sz = var->ty->size > 0 ? var->ty->size : node->var->ty->size;
             var->init_data = arena_alloc(sz);
