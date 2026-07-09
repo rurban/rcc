@@ -1135,9 +1135,9 @@
   c23-stdarg-3                        SKIP (error)
   c23-stdarg-4                        PASS
   c23-stdarg-5                        PASS (compile only)
-  c23-stdarg-6                        FAIL (runtime)
+  c23-stdarg-6                        PASS
   c23-stdarg-7                        PASS
-  c23-stdarg-8                        FAIL (runtime)
+  c23-stdarg-8                        PASS
   c23-stdarg-9                        PASS
   c23-stdarg-10                       PASS (compile only)
   c23-stdarg-11                       SKIP (error)
@@ -2066,8 +2066,8 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1799/1809 passed (99%), 10 failed (4 compile/6 runtime), 256 skipped.
+Torture: 1801/1809 passed (99%), 8 failed (4 compile/4 runtime), 256 skipped.
 
 Compile failures: c23-constexpr-1 c23-if-decls-2 c23-named-loops-5 c23-tag-composite-2
 
-Runtime failures: c11-float-7 c11-true_min-1 c23-complit-2 c23-complit-4 c23-stdarg-6 c23-stdarg-8
+Runtime failures: c11-float-7 c11-true_min-1 c23-complit-2 c23-complit-4

@@ -2766,24 +2766,27 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     VReg temp_ret_reg = R_NONE;
     int temp_ret_slot = 0;
+    bool need_temp_ret = false;
     if (has_hidden_retbuf) {
         if (hidden_ret_reg == -1) {
-            temp_ret_reg = alloc_reg();
+            // Defer allocating the result register until after the call:
+            // alloc_reg() here can spill-borrow a register that still stages
+            // an argument value, which the staging moves below would then
+            // read as garbage. Compute the address directly into x8 instead.
+            need_temp_ret = true;
             int alloc = (node->ty->size + 15) & ~15;
             fn_struct_ret_off += alloc;
             if (fn_struct_ret_off > fn_struct_ret_total)
                 fn_struct_ret_total = fn_struct_ret_off;
             temp_ret_slot = current_fn_stack_size + fn_struct_ret_off;
             if (temp_ret_slot <= 4095)
-                asm_add_reg_fp_imm(cg_sec, temp_ret_reg, -temp_ret_slot); // add temp_ret_reg, x29, #-temp_ret_slot
+                arm64_sub_imm(cg_sec, 1, ARM64_X8, ARM64_X29, temp_ret_slot, 0); // sub x8, x29, #temp_ret_slot
             else {
-                int v = temp_ret_slot;
-                emit_mov_imm64(ARM64_X16, (uint64_t)v); // mov x16, #v
-                asm_sub_reg_fp_phy(cg_sec, temp_ret_reg, ARM64_X16, 8); // sub temp_ret_reg, x29, x16
+                emit_mov_imm64(ARM64_X16, (uint64_t)temp_ret_slot); // mov x16, #temp_ret_slot
+                arm64_sub_reg(cg_sec, 1, ARM64_X8, ARM64_X29, ARM64_X16, 0, 0); // sub x8, x29, x16
             }
-            hidden_ret_reg = temp_ret_reg;
-        }
-        asm_mov_x8_reg(cg_sec, hidden_ret_reg); // mov x8, x{hidden_ret_reg}
+        } else
+            asm_mov_x8_reg(cg_sec, hidden_ret_reg); // mov x8, x{hidden_ret_reg}
     }
 
     // Pre-pass: long double args.
@@ -2972,6 +2975,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
     if (has_hidden_retbuf) {
+        if (need_temp_ret) {
+            // Allocate the result register now that the staged arg registers
+            // are free again, and derive the frame-relative buffer address.
+            temp_ret_reg = alloc_reg();
+            hidden_ret_reg = temp_ret_reg;
+        }
         if (temp_ret_reg != R_NONE) {
             if (temp_ret_slot <= 4095)
                 asm_add_reg_fp_imm(cg_sec, temp_ret_reg, -temp_ret_slot); // add temp_ret_reg, x29, #-temp_ret_slot
@@ -3108,7 +3117,16 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++)
         if (arg_stack_idx[i] < 0)
             nreg_args_count++;
-    bool use_staging = (nreg_args_count > NUM_REGS);
+    // Registers already live here (hidden retbuf address, indirect-call
+    // target, outer expression temps) shrink the budget, and the stack-arg
+    // pass below needs a scratch register of its own. Without headroom the
+    // per-register spill slots collide (two borrows of the same register
+    // share one slot) and a staged value is silently lost.
+    int live_now = 0;
+    for (int i = 0; i < NUM_REGS; i++)
+        live_now += (used_regs >> i) & 1;
+    int stack_scratch = (nreg_args_count < nargs) ? 1 : 0;
+    bool use_staging = (live_now + nreg_args_count + stack_scratch > NUM_REGS);
 
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
@@ -3227,18 +3245,23 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     int temp_ret_reg = -1;
     int temp_ret_slot = 0;
+    bool need_temp_ret = false;
     if (has_hidden_retbuf) {
         if (hidden_ret_reg == -1) {
-            temp_ret_reg = alloc_reg();
+            // Defer allocating the result register until after the call:
+            // alloc_reg() here can spill-borrow a register that still stages
+            // an argument value (e.g. the 8th FP arg in rsi), which the
+            // staging moves below would then read as garbage. Compute the
+            // buffer address directly into the ABI register instead.
+            need_temp_ret = true;
             int alloc = (node->ty->size + 15) & ~15;
             fn_struct_ret_off += alloc;
             if (fn_struct_ret_off > fn_struct_ret_total)
                 fn_struct_ret_total = fn_struct_ret_off;
             temp_ret_slot = current_fn_stack_size + fn_struct_ret_off;
-            asm_lea_rbp_reg(cg_sec, temp_ret_reg, 8, temp_ret_slot); // lea [rbp-8], rtemp_ret_reg
-            hidden_ret_reg = temp_ret_reg;
-        }
-        x86_mov_rr(cg_sec, 8, cg_x86_argreg[0], REG(hidden_ret_reg)); // mov hidden_ret_reg, argreg64[0]
+            asm_lea_rbp(cg_sec, cg_x86_argreg[0], 8, temp_ret_slot); // lea -temp_ret_slot(%rbp), argreg64[0]
+        } else
+            x86_mov_rr(cg_sec, 8, cg_x86_argreg[0], REG(hidden_ret_reg)); // mov hidden_ret_reg, argreg64[0]
 #ifdef _WIN32
         // Store hidden retbuf register to shadow space so variadic callees can find it
         if (!call_target || strcmp(call_target, "alloca") != 0)
@@ -3369,9 +3392,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
     if (has_hidden_retbuf) {
-        if (temp_ret_reg != R_NONE) {
-            // temp_ret_reg (r10/r11) may have been clobbered by the callee; reload
-            // the frame-relative address — it is always valid.
+        if (need_temp_ret) {
+            // Allocate the result register now that the staged arg registers
+            // are free again, and derive the frame-relative buffer address.
+            temp_ret_reg = alloc_reg();
+            hidden_ret_reg = temp_ret_reg;
             asm_lea_rbp_reg(cg_sec, temp_ret_reg, 8, temp_ret_slot); // lea [rbp-8], rtemp_ret_reg
         }
         if ((saved_scratch & 1) && (!has_hidden_retbuf || hidden_ret_reg != 0)) {
