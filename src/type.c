@@ -321,7 +321,15 @@ static Type *composite_type(Type *t1, Type *t2) {
             int64_t off = 0;
             int max_align = 1;
             for (Member *m = result->members; m; m = m->next) {
-                if (m->bit_width > 0 || !m->ty) continue;
+                if (m->bit_width > 0) {
+                    // Bitfield: account for at least the storage unit size
+                    int sz = m->ty ? m->ty->size : 4;
+                    off += sz;
+                    int al = m->ty ? m->ty->align : 4;
+                    if (al > max_align) max_align = al;
+                    continue;
+                }
+                if (!m->ty) continue;
                 int al = m->ty->align;
                 if (al > max_align) max_align = al;
                 off = (off + al - 1) / al * al;
@@ -329,6 +337,7 @@ static Type *composite_type(Type *t1, Type *t2) {
                 off += m->ty->size;
             }
             result->size = (off + max_align - 1) / max_align * max_align;
+            if (result->size == 0) result->size = t1->size > t2->size ? t1->size : t2->size;
             result->align = max_align;
         } else {
             int64_t max_sz = 0;

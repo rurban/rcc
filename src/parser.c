@@ -5609,6 +5609,27 @@ static Node *primary(Token **rest, Token *tok) {
             *rest = tok->next;
             return node;
         }
+        // __builtin_clear_padding(ptr) — zero all padding bytes via memset
+        if (equalc(tok, "__builtin_clear_padding")) {
+            tok = skip(tok->next, "(");
+            Node *ptr = assign(&tok, tok);
+            check_type(ptr);
+            *rest = skip(tok, ")");
+            if (ptr && ptr->ty && ptr->ty->kind == TY_PTR && ptr->ty->base && ptr->ty->base->size > 0) {
+                Node *sz = new_num(ptr->ty->base->size, tok);
+                sz->ty = ty_ulong;
+                Node *zero = new_num(0, tok);
+                zero->ty = ty_int;
+                Node *fn = new_node(ND_FUNCALL, tok);
+                fn->funcname = str_intern("memset", 6);
+                fn->args = ptr;
+                ptr->next = zero;
+                zero->next = sz;
+                fn->ty = pointer_to(ty_void);
+                return fn;
+            }
+            return new_node(ND_NULL, tok);
+        }
         if (equalc(tok->next, "(")) {
             Token *fn_tok = tok;
             node = new_node(ND_FUNCALL, tok);
@@ -6020,6 +6041,29 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = new_num((int64_t)sz, start);
         node->ty = ty_ulong;
         return node;
+    }
+    // __builtin_clear_padding(ptr) — zero all padding bytes in the pointed-to object.
+    // Implemented as memset(ptr, 0, sizeof(*ptr)) for simplicity.
+    if (equalc(tok, "__builtin_clear_padding")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *ptr = assign(&tok, tok);
+        check_type(ptr);
+        *rest = skip(tok, ")");
+        if (ptr && ptr->ty && ptr->ty->kind == TY_PTR && ptr->ty->base && ptr->ty->base->size > 0) {
+            Node *size = new_num(ptr->ty->base->size, start);
+            size->ty = ty_ulong;
+            Node *zero = new_num(0, start);
+            zero->ty = ty_int;
+            Node *fn = new_node(ND_FUNCALL, start);
+            fn->funcname = str_intern("memset", 6);
+            fn->args = ptr;
+            ptr->next = zero;
+            zero->next = size;
+            fn->ty = pointer_to(ty_void);
+            return fn;
+        }
+        return new_node(ND_NULL, start);
     }
     // __builtin_dynamic_object_size(ptr, type) — runtime size via malloc header
     // For known stack/global arrays: compile-time size.
