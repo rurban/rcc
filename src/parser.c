@@ -8215,6 +8215,8 @@ Program *parse(Token *tok) {
                     }
                     if (attr.is_constexpr) {
                         var->is_constexpr = true;
+                        // C23 6.2.2: constexpr at file scope gives internal linkage
+                        var->is_static = true;
                         // constexpr implies const
                         var->ty = copy_type(ty);
                         var->ty->qual |= QUAL_CONST;

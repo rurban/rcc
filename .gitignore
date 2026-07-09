@@ -38,6 +38,12 @@ test_report_linux_gcc.md
 test_report_linux_clang.md
 test_report_linux_kefir.md
 test_report_linux_slimcc.md
+test/tcc_test_linux_ccc.md
+test/tcc_test_linux_tcc.md
+test/tcc_test_linux_gcc.md
+test/tcc_test_linux_clang.md
+test/tcc_test_linux_kefir.md
+test/tcc_test_linux_slimcc.md
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt

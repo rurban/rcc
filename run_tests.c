@@ -4119,7 +4119,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
     /* compile */
     {
         DgDoAction dgdo = dgdo_parse(content);
-        char *ca[32];
+        char *ca[48];
         int ai = 0;
         ca[ai++] = (char *)rcc;
         ca[ai++] = (char *)rccflags;
@@ -4140,6 +4140,30 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
                 }
             }
         }
+        // Parse dg-additional-sources for multi-file tests (mirrors
+        // run_torture_test); names are relative to the torture dir.
+        char *additional_srcs[8] = {0};
+        int nas = 0;
+        if (content) {
+            char *ads = strstr(content, "dg-additional-sources");
+            if (ads) {
+                char *q1 = strchr(ads, '"');
+                if (q1) {
+                    char *q2 = strchr(q1 + 1, '"');
+                    if (q2) {
+                        int alen = (int)(q2 - q1 - 1);
+                        char *srcs = strndup(q1 + 1, (size_t)alen);
+                        char *sv = NULL;
+                        for (char *st = strtok_r(srcs, " ", &sv); st && nas < 8; st = strtok_r(NULL, " ", &sv)) {
+                            size_t plen = strlen(g_tort_dir) + 1 + strlen(st) + 1;
+                            char *p = malloc(plen);
+                            snprintf(p, plen, "%s/%s", g_tort_dir, st);
+                            additional_srcs[nas++] = p;
+                        }
+                    }
+                }
+            }
+        }
         ca[ai++] = "-I";
         ca[ai++] = g_tort_dir;
         if (dgdo == DGDO_PREPROCESS) {
@@ -4151,6 +4175,8 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
             ca[ai++] = r->tmp_exe;
         }
         ca[ai++] = (char *)src_path;
+        for (int si = 0; si < nas && ai < 45; si++)
+            ca[ai++] = additional_srcs[si];
         if (dgdo == DGDO_DEFAULT || dgdo == DGDO_RUN) {
             ca[ai++] = "-lm";
         }
@@ -4594,9 +4620,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 14;
     else if (streq(platform, "linux"))
-        max_fail = 15;
+        max_fail = 13;
     else
-        max_fail = 15; // missing c23 features
+        max_fail = 13; // missing c23 features
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {

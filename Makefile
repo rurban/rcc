@@ -44,6 +44,8 @@ endif
 
 SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
+# Shared headers every object must be rebuilt for (see %$(OBJ_EXT) rule).
+HDRS = $(wildcard src/*.h)
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -255,13 +257,13 @@ $(DARWIN_O): lib/rcc_darwin.c
 	$(CC) -arch arm64 -dynamiclib -install_name $(PWD)/lib/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
 $(MINGW_O): lib/rcc_mingw.c
 	$(CC) $(filter-out -flto=auto -flto=thin,$(CFLAGS)) -c lib/rcc_mingw.c -o $@
-src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h
+src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
-src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h
+src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)
 src/unicode$(OBJ_EXT): src/unicode.c src/unicode.h
 	$(CC) $(CFLAGS) -c src/unicode.c -o $@
-src/lib$(OBJ_EXT): src/lib.c src/rcc.h src/rcc_lib.h
+src/lib$(OBJ_EXT): src/lib.c src/rcc_lib.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/lib.c -o $@
 
 run_tests: run_tests.c
@@ -278,7 +280,10 @@ run_tests_arm64: run_tests.c
 	aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -O2 -Isrc \
 	  --sysroot="$$sysroot" -o $@ run_tests.c
 
-%$(OBJ_EXT): %.c
+# Every object depends on the shared headers: a stale object compiled
+# against an older rcc.h gets a different struct layout than its peers
+# (ODR skew), which shows up as arbitrary memory corruption at runtime.
+%$(OBJ_EXT): %.c $(HDRS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 compile_commands.json: $(SRCS)
