@@ -1420,11 +1420,7 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_MEMBER:
         // constexpr struct member access: evaluate base, add member offset
         {
-            long long base_val = 0;
-            if (!eval_const_expr(node->lhs, &base_val))
-                return false;
             // base_val now holds the value at the base offset;
-            // but we need the raw byte offset in init_data.
             // Try the direct path: find the root LVar and accumulate offsets.
             Node *cur = node;
             int total_off = 0;
@@ -3717,6 +3713,16 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             return tok->next;
         }
     }
+    // If initializing struct/union from a single constexpr var expression, copy its init_data
+    if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && tok->kind == TK_IDENT) {
+        LVar *src = find_global_name(tok->name);
+        if (src && src->is_constexpr && src->init_data) {
+            ensure_init_size(var, offset, ty->size);
+            memcpy(var->init_data + offset, src->init_data, ty->size);
+            var->has_init = true;
+            return tok->next;
+        }
+    }
     // Struct/union without braces: flatten into members.
     // For unions, only the first member is initialized.
     if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
@@ -4311,6 +4317,11 @@ static Node *declaration(Token **rest, Token *tok) {
                     var->asm_name = pending_asm_name;
                 long long val = 0;
                 if (eval_const_expr(init_expr, &val)) {
+                // Compound literal: extract value from inner expression
+                if (!var->has_init && init_expr->kind == ND_NUM) {
+                    var->has_init = true;
+                    var->init_val = init_expr->val;
+                }
                     var->has_init = true;
                     var->init_val = (int64_t)val;
                 }
@@ -7464,7 +7475,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
     if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && tok->kind == TK_IDENT &&
         (equalc(tok->next, ";") || equalc(tok->next, ","))) {
         LVar *src = find_global_name(tok->name);
-        if (src && src->has_init && src->init_data && src->ty == var->ty) {
+        if (src && src->has_init && src->init_data && src->ty == var->ty || (src->ty->kind == var->ty->kind && src->ty->size == var->ty->size)) {
             int sz = var->ty->size ? var->ty->size : 1;
             var->init_data = arena_alloc(sz);
             memcpy(var->init_data, src->init_data, sz);
@@ -7475,6 +7486,14 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         }
     }
 
+    // Compound literal for scalar type: delegate to inner initializer
+    if (find_compound_literal_start(tok)) {
+        global_initializer(rest, find_compound_literal_start(tok), var);
+        tok = *rest;
+        while (equalc(tok, ")")) tok = tok->next;
+        *rest = tok;
+        return;
+    }
     // Scalar with braces: superfluous `{ expr }` or C23 empty init `{}`.
     if (equalc(tok, "{")) {
         tok = skip(tok, "{");
