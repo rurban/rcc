@@ -6142,18 +6142,26 @@ static VReg gen(Node *node) {
 #else
                 asm_lea_rbp_reg(cg_sec, r, 8, node->var->offset); // lea [rbp-8], rr
 #endif
-            else
+            else {
 #ifdef ARCH_ARM64
-                if (var_needs_got(node->var))
-                emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
-            else
-                emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
+                if (node->var->is_tls)
+                    emit_tls_addr(r, node->var);
+                else if (var_needs_got(node->var))
+                    emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
+                else
+                    emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
-                if (var_needs_got(node->var))
-                asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
-            else
-                asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
+                if (node->var->is_tls) {
+                    VReg base = alloc_reg();
+                    asm_mov_fs0_reg(cg_sec, base);
+                    asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
+                    free_reg(base);
+                } else if (var_needs_got(node->var))
+                    asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var));
+                else
+                    asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
 #endif
+            }
         } else if (!node->var->is_local && node->var->is_function) {
             //fprintf(stderr, "DEBUG ND_LVAR func: %s is_weak=%d\n", node->var->name, node->var->is_weak);
             if (node->var->is_weak)
