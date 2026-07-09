@@ -7038,11 +7038,32 @@ static Node *unary(Token **rest, Token *tok) {
                 ty = array_of(ty->base, count);
             }
 
+            // C23: detect storage class specifiers in compound literal types
+            // (static, register, thread_local, _Thread_local).
+            bool is_storage = false;
+            for (Token *t = start->next; t && !equalc(t, ")"); t = t->next)
+                if (equalc(t, "static") || equalc(t, "register") ||
+                    equalc(t, "_Thread_local") || equalc(t, "thread_local"))
+                    is_storage = true;
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
-            LVar *var = new_var(name, ty, true);
-
+            LVar *var;
+            if (is_storage) {
+                var = new_var(name, ty, false);
+                var->is_static = true;
+            } else {
+                var = new_var(name, ty, true);
+            }
+            // Storage-class compound literal: initialize at compile time
+            if (is_storage) {
+                Token *saved = tok;
+                tok = init_brace_tok;
+                global_initializer(&tok, tok, var);
+                // tok now points past the closing }
+            }
             Node *result = new_var_node(var, start);
+            if (is_storage)
+                goto apply_postfix;
             // Zero-initialize aggregate compound literal like regular locals (C99 6.7.8p10)
             if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION ||
                  var->ty->kind == TY_ARRAY) &&
@@ -7368,6 +7389,7 @@ static Node *unary(Token **rest, Token *tok) {
             }
 
             // Apply postfix operators: compound literals are lvalues that can be subscripted
+        apply_postfix:
             while (true) {
                 if (equalc(tok, "[")) {
                     Token *ps = tok;
