@@ -86,23 +86,12 @@ jobs:
           /tmp/smoke2
           rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
 
-
-      - name: Cache pre-commit
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: ~/.cache/prek
-          key: pre-commit-${{ matrix.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-          restore-keys: |
-            pre-commit-${{ matrix.os }}-
-
       - name: Run tests
         id: tests
         continue-on-error: true
         run: |
           ./rcc --version
-          ./rcc -print-search-dirs
-          make check-all
+          make check && make test-torture
 
       - name: Check for source changes
         id: changed
@@ -178,3 +167,25 @@ jobs:
               rcc-*.tar.gz
               rcc-*.tar.xz
               rcc-*.zip
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc build-essential libc6-dev cppcheck
+          pip install prek
+
+      - name: Build
+        run: make
+
+      - name: Run lint
+        run: make lint
