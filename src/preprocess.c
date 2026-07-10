@@ -1247,7 +1247,7 @@ static char *skip_spaces(char *p) {
     return p;
 }
 
-static long eval_pp_expr(char **rest, char *p, char *filename);
+static int64_t eval_pp_expr(char **rest, char *p, char *filename);
 
 // Set when the current #if expression contains an unsigned-typed operand
 // (u/U integer suffix, or a u8''/u''/U'' character constant). Relational
@@ -1266,7 +1266,7 @@ static void normalize_attr_name(char *s) {
 }
 
 static unsigned pp_eval_line_no;
-static long eval_primary(char **rest, char *p, char *filename) {
+static int64_t eval_primary(char **rest, char *p, char *filename) {
     p = skip_spaces(p);
 
     if (pp_startswith(p, "defined")) {
@@ -1439,7 +1439,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
     }
 
     if (*p == '(') {
-        long val = eval_pp_expr(&p, p + 1, filename);
+        int64_t val = eval_pp_expr(&p, p + 1, filename);
         p = skip_spaces(p);
         if (*p == ')')
             p++;
@@ -1448,13 +1448,13 @@ static long eval_primary(char **rest, char *p, char *filename) {
     }
 
     if (*p == '!') {
-        long val = !eval_primary(&p, p + 1, filename);
+        int64_t val = !eval_primary(&p, p + 1, filename);
         *rest = p;
         return val;
     }
 
     if (*p == '-') {
-        long val = -eval_primary(&p, p + 1, filename);
+        int64_t val = -eval_primary(&p, p + 1, filename);
         *rest = p;
         return val;
     }
@@ -1462,7 +1462,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
     if (isdigit((unsigned char)*p)) {
         // Handle C23 0b/0B binary and 0o/0O octal prefixes
         if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
-            long val = 0;
+            int64_t val = 0;
             p += 2;
             while (*p == '0' || *p == '1' || *p == '\'') {
                 if (*p != '\'') val = val * 2 + (*p - '0');
@@ -1472,7 +1472,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
             return val;
         }
         if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
-            long val = 0;
+            int64_t val = 0;
             p += 2;
             while ((*p >= '0' && *p <= '7') || *p == '\'') {
                 if (*p != '\'') val = val * 8 + (*p - '0');
@@ -1490,7 +1490,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
             np++;
         }
         tmp[ti] = '\0';
-        long val = strtol(tmp, &np, 0);
+        int64_t val = strtoll(tmp, &np, 0);
         p += np - tmp;
         // Consume integer suffixes; u/U makes the expression unsigned
         while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L') {
@@ -1523,7 +1523,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
         }
         if (*q == '\'') {
             q++;
-            long val = 0;
+            int64_t val = 0;
             while (*q && *q != '\'' && *q != '\n') {
                 if (*q == '\\') {
                     q++;
@@ -1567,7 +1567,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
                 q++;
                 *rest = q;
                 if (!prefix)
-                    val = (long)(signed char)val;
+                    val = (int64_t)(signed char)val;
                 else if (prefix != 'L')
                     // u8/u/U character constants have unsigned type
                     pp_expr_unsigned = true;
@@ -1637,16 +1637,16 @@ static long eval_primary(char **rest, char *p, char *filename) {
     return 0;
 }
 
-static long eval_mul(char **rest, char *p, char *filename) {
-    long val = eval_primary(&p, p, filename);
+static int64_t eval_mul(char **rest, char *p, char *filename) {
+    int64_t val = eval_primary(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '*') val *= eval_primary(&p, p + 1, filename);
         else if (*p == '/') {
-            long rhs = eval_primary(&p, p + 1, filename);
+            int64_t rhs = eval_primary(&p, p + 1, filename);
             val = rhs ? val / rhs : 0;
         } else if (*p == '%') {
-            long rhs = eval_primary(&p, p + 1, filename);
+            int64_t rhs = eval_primary(&p, p + 1, filename);
             val = rhs ? val % rhs : 0;
         } else
             break;
@@ -1655,8 +1655,8 @@ static long eval_mul(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_add(char **rest, char *p, char *filename) {
-    long val = eval_mul(&p, p, filename);
+static int64_t eval_add(char **rest, char *p, char *filename) {
+    int64_t val = eval_mul(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '+') val += eval_mul(&p, p + 1, filename);
@@ -1669,8 +1669,8 @@ static long eval_add(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_shift(char **rest, char *p, char *filename) {
-    long val = eval_add(&p, p, filename);
+static int64_t eval_shift(char **rest, char *p, char *filename) {
+    int64_t val = eval_add(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (pp_startswith(p, "<<")) val = val << eval_add(&p, p + 2, filename);
@@ -1683,22 +1683,22 @@ static long eval_shift(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_rel(char **rest, char *p, char *filename) {
-    long val = eval_shift(&p, p, filename);
+static int64_t eval_rel(char **rest, char *p, char *filename) {
+    int64_t val = eval_shift(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
-        long rhs;
+        int64_t rhs;
         if (pp_startswith(p, "<=")) rhs = eval_shift(&p, p + 2, filename),
-                                    val = pp_expr_unsigned ? (unsigned long)val <= (unsigned long)rhs : val <= rhs;
+                                    val = pp_expr_unsigned ? (uint64_t)val <= (uint64_t)rhs : val <= rhs;
         else if (pp_startswith(p, ">="))
             rhs = eval_shift(&p, p + 2, filename),
-            val = pp_expr_unsigned ? (unsigned long)val >= (unsigned long)rhs : val >= rhs;
+            val = pp_expr_unsigned ? (uint64_t)val >= (uint64_t)rhs : val >= rhs;
         else if (*p == '<')
             rhs = eval_shift(&p, p + 1, filename),
-            val = pp_expr_unsigned ? (unsigned long)val < (unsigned long)rhs : val < rhs;
+            val = pp_expr_unsigned ? (uint64_t)val < (uint64_t)rhs : val < rhs;
         else if (*p == '>')
             rhs = eval_shift(&p, p + 1, filename),
-            val = pp_expr_unsigned ? (unsigned long)val > (unsigned long)rhs : val > rhs;
+            val = pp_expr_unsigned ? (uint64_t)val > (uint64_t)rhs : val > rhs;
         else
             break;
     }
@@ -1706,8 +1706,8 @@ static long eval_rel(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_eq(char **rest, char *p, char *filename) {
-    long val = eval_rel(&p, p, filename);
+static int64_t eval_eq(char **rest, char *p, char *filename) {
+    int64_t val = eval_rel(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (pp_startswith(p, "==")) val = val == eval_rel(&p, p + 2, filename);
@@ -1720,8 +1720,8 @@ static long eval_eq(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitand(char **rest, char *p, char *filename) {
-    long val = eval_eq(&p, p, filename);
+static int64_t eval_bitand(char **rest, char *p, char *filename) {
+    int64_t val = eval_eq(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '&' && p[1] != '&') val &= eval_eq(&p, p + 1, filename);
@@ -1732,8 +1732,8 @@ static long eval_bitand(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitxor(char **rest, char *p, char *filename) {
-    long val = eval_bitand(&p, p, filename);
+static int64_t eval_bitxor(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitand(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '^') val ^= eval_bitand(&p, p + 1, filename);
@@ -1744,8 +1744,8 @@ static long eval_bitxor(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitor(char **rest, char *p, char *filename) {
-    long val = eval_bitxor(&p, p, filename);
+static int64_t eval_bitor(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitxor(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '|' && p[1] != '|') val |= eval_bitxor(&p, p + 1, filename);
@@ -1756,39 +1756,39 @@ static long eval_bitor(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_land(char **rest, char *p, char *filename) {
-    long val = eval_bitor(&p, p, filename);
+static int64_t eval_land(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitor(&p, p, filename);
     while (pp_startswith(skip_spaces(p), "&&")) {
         p = skip_spaces(p);
-        long rhs = eval_bitor(&p, p + 2, filename);
+        int64_t rhs = eval_bitor(&p, p + 2, filename);
         val = val && rhs;
     }
     *rest = p;
     return val;
 }
 
-static long eval_pp_expr(char **rest, char *p, char *filename) {
-    long val = eval_land(&p, p, filename);
+static int64_t eval_pp_expr(char **rest, char *p, char *filename) {
+    int64_t val = eval_land(&p, p, filename);
     while (pp_startswith(skip_spaces(p), "||")) {
         p = skip_spaces(p);
-        long rhs = eval_land(&p, p + 2, filename);
+        int64_t rhs = eval_land(&p, p + 2, filename);
         val = val || rhs;
     }
     p = skip_spaces(p);
     if (*p == '?') {
         p++;
-        long true_val = eval_pp_expr(&p, p, filename);
+        int64_t true_val = eval_pp_expr(&p, p, filename);
         p = skip_spaces(p);
         if (*p == ':')
             p++;
-        long false_val = eval_pp_expr(&p, p, filename);
+        int64_t false_val = eval_pp_expr(&p, p, filename);
         val = val ? true_val : false_val;
     }
     *rest = p;
     return val;
 }
 
-static long eval_condition(char *expr, char *filename, unsigned line_no) {
+static int64_t eval_condition(char *expr, char *filename, unsigned line_no) {
     pp_eval_line_no = line_no;
     pp_expr_unsigned = false;
     char *rest = expr;
