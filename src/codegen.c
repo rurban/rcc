@@ -11995,7 +11995,8 @@ struct ObjFile *codegen(Program *prog) {
                     // Float on stack (arg position >= 4 in Win64)
                     int stack_off = 48 + stack_param_index * 8;
                     if (var->ty->size == 4) {
-                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -12039,7 +12040,8 @@ struct ObjFile *codegen(Program *prog) {
                 int stack_off = 48 + stack_param_index * 8;
                 if (is_flonum(var->ty)) {
                     if (var->ty->size == 4) {
-                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -13045,7 +13047,8 @@ struct ObjFile *codegen(Program *prog) {
 #endif
                     if (is_flonum(var->ty)) {
                         if (var->ty->size <= 4) {
-                            x86_movss_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movss stack_off2(%rbp), xmm0
+                            x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0 (load double)
+                            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                             x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss xmm0, -var->offset(%rbp)
                         } else {
                             x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0
