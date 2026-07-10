@@ -6152,10 +6152,14 @@ static VReg gen(Node *node) {
                     emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
                 if (node->var->is_tls) {
+#ifdef _WIN32
+                    emit_emutls_addr(r, var_label(node->var));
+#else
                     VReg base = alloc_reg();
                     asm_mov_fs0_reg(cg_sec, base);
                     asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
                     free_reg(base);
+#endif
                 } else if (var_needs_got(node->var))
                     asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var));
                 else
