@@ -1276,6 +1276,14 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 if (equalc(tok, "vector_size") || equalc(tok, "__vector_size__")) {
                     tok = tok->next;
                     tok = skip(tok, "(");
+                    // Clear any in-flight pending size while evaluating the
+                    // argument: a nested sizeof(type) re-enters declarator,
+                    // which would otherwise consume the pending value and
+                    // vectorize the sizeof operand (e.g. attribute text parsed
+                    // twice makes vector_size(4*sizeof(float)) yield 64).
+                    int saved_pending = pending_vector_size;
+                    pending_vector_size = 0;
+                    (void)saved_pending;
                     Node *node = expr(&tok, tok);
                     long long val = 0;
                     if (!eval_const_expr(node, &val))
@@ -3117,6 +3125,24 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     if (quals) {
         ty = copy_type(ty);
         ty->qual |= quals;
+    }
+    // Apply a type-level vector_size attribute to the base type here, not in
+    // declarator(), so every declarator of a multi-declarator declaration
+    // inherits it: `vector(4,float) f1, f2;` must make f2 a vector too.
+    // Trailing per-declarator attributes still apply in declarator().
+    if (pending_vector_size) {
+        // mode(SI) etc. adjusts the ELEMENT type and must be folded in before
+        // the vector is built, or declarator()'s pending_mode handling would
+        // shrink the whole vector to the element size.
+        if (pending_mode) {
+            ty = copy_type(ty);
+            int sizes[] = {0, 1, 2, 4, 8};
+            ty->size = sizes[pending_mode];
+            ty->align = ty->size;
+            pending_mode = 0;
+        }
+        ty = make_vector_type(ty, pending_vector_size);
+        pending_vector_size = 0;
     }
     *rest = tok;
     return ty;
@@ -5983,6 +6009,137 @@ static Node *type_size_node(Type *ty, Token *tok) {
     return new_num(ty->size, tok);
 }
 
+// ---- Vector (__attribute__((vector_size))) element-wise lowering ----------
+// gen_vector() in codegen only covers 16-byte two-vector ops that map to a
+// packed SSE instruction. Everything else — integer mul/div/mod, shifts,
+// scalar<->vector broadcast, integer compares, non-16-byte vectors — is
+// lowered here at parse time into per-lane scalar ops:
+//   a OP b  =>  (tA = a, tB = b, tR.__v0 = tA.__v0 OP tB.__v0, ..., tR)
+// so the existing scalar codegen does the work on every target.
+
+// Lane accessor: v.__v<i>
+static Node *vec_lane(LVar *var, Type *vt, int i, Token *tok) {
+    Member *mem = vt->members;
+    for (int j = 0; j < i && mem; j++)
+        mem = mem->next;
+    Node *m = new_unary(ND_MEMBER, new_var_node(var, tok), tok);
+    m->member = mem;
+    m->ty = mem->ty;
+    return m;
+}
+
+// Bind an operand to a fresh temp so it is evaluated exactly once.
+// Appends the binding assignment to *chain and returns the temp.
+static LVar *vec_bind(Node **chain, Node *operand, Type *ty, Token *tok) {
+    LVar *v = new_var("", ty, true);
+    Node *as = new_binary(ND_ASSIGN, new_var_node(v, tok), operand, tok);
+    *chain = *chain ? new_binary(ND_COMMA, *chain, as, tok) : as;
+    return v;
+}
+
+// Runtime lane access v[idx]: *((elem *)&v + idx)
+static Node *vec_gather(LVar *var, Type *vt, Node *idx, Token *tok) {
+    Node *addr = new_unary(ND_ADDR, new_var_node(var, tok), tok);
+    addr->ty = pointer_to(vt->base);
+    return new_unary(ND_DEREF, new_binary(ND_ADD, addr, idx, tok), tok);
+}
+
+static Node *vector_lower(Node *node) {
+    NodeKind k = node->kind;
+    bool un = (k == ND_NEG || k == ND_BITNOT);
+    switch (k) {
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_NEG:
+    case ND_BITNOT:
+        break;
+    default:
+        return node;
+    }
+    check_type(node->lhs);
+    if (!un && node->rhs)
+        check_type(node->rhs);
+    Type *lt = node->lhs ? node->lhs->ty : NULL;
+    Type *rt = (!un && node->rhs) ? node->rhs->ty : NULL;
+    bool lv = lt && lt->is_vector;
+    bool rv = rt && rt->is_vector;
+    if (!lv && !rv)
+        return node;
+    Type *vt = lv ? lt : rt;
+    Type *elem = vt->base;
+    int n = (int)(vt->size / elem->size);
+    bool cmp = (k == ND_EQ || k == ND_NE || k == ND_LT || k == ND_LE);
+    bool bitop = (k == ND_BITAND || k == ND_BITOR || k == ND_BITXOR || k == ND_BITNOT);
+    // Float-vector compares and bitwise ops stay on the packed SSE path
+    // (cmpps/andps/...): they operate on the raw lane BITS (all-ones masks,
+    // sign-bit tricks in xmmintrin.h), which per-lane scalar float ops cannot
+    // express.
+    if ((cmp || bitop) && is_flonum(elem)) {
+        node->ty = vt;
+        return node;
+    }
+    Token *tok = node->tok;
+    Node *chain = NULL;
+    // Bind operands; a scalar operand is converted to the element type once
+    // (GCC broadcast semantics). Shift counts keep integer type instead.
+    LVar *ta, *tb = NULL;
+    if (lv) {
+        ta = vec_bind(&chain, node->lhs, lt, tok);
+    } else {
+        Node *cast = new_unary(ND_CAST, node->lhs, tok);
+        cast->ty = elem;
+        ta = vec_bind(&chain, cast, elem, tok);
+    }
+    if (!un) {
+        if (rv) {
+            tb = vec_bind(&chain, node->rhs, rt, tok);
+        } else {
+            Type *bt = (k == ND_SHL || k == ND_SHR) ? ty_int : elem;
+            Node *cast = new_unary(ND_CAST, node->rhs, tok);
+            cast->ty = bt;
+            tb = vec_bind(&chain, cast, bt, tok);
+        }
+    }
+    LVar *tr = new_var("", vt, true);
+    for (int i = 0; i < n; i++) {
+        Node *a = lv ? vec_lane(ta, lt, i, tok) : new_var_node(ta, tok);
+        Node *val;
+        if (un) {
+            val = new_unary(k, a, tok);
+        } else {
+            Node *b = rv ? vec_lane(tb, rt, i, tok) : new_var_node(tb, tok);
+            val = new_binary(k, a, b, tok);
+        }
+        if (cmp) {
+            // GCC vector compare: lane = (a OP b) ? -1 : 0 in the lane width
+            val = new_unary(ND_NEG, val, tok);
+            // Type the child before presetting the cast type: add_type
+            // early-returns on typed nodes without descending into children.
+            check_type(val);
+            Node *cast = new_unary(ND_CAST, val, tok);
+            cast->ty = elem;
+            val = cast;
+        }
+        Node *st = new_binary(ND_ASSIGN, vec_lane(tr, vt, i, tok), val, tok);
+        chain = new_binary(ND_COMMA, chain, st, tok);
+    }
+    chain = new_binary(ND_COMMA, chain, new_var_node(tr, tok), tok);
+    check_type(chain);
+    return chain;
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -6881,6 +7038,67 @@ static Node *unary(Token **rest, Token *tok) {
         bool is_const = arg->kind == ND_NUM || arg->kind == ND_FNUM || arg->kind == ND_STR || eval_const_expr(arg, &cv);
         return new_num(is_const ? 1 : 0, start);
     }
+    // GCC __builtin_shuffle(vec, mask) / __builtin_shuffle(vec0, vec1, mask):
+    // per-lane gather r.__v<i> = data[mask.__v<i> & (N-1)]; mask indices are
+    // taken modulo N (modulo 2N for the two-vector form, upper half selects
+    // from vec1).
+    if (equalc(tok, "__builtin_shuffle")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *a1 = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *a2 = assign(&tok, tok);
+        Node *a3 = NULL;
+        if (equalc(tok, ","))
+            a3 = assign(&tok, tok->next);
+        *rest = skip(tok, ")");
+        check_type(a1);
+        check_type(a2);
+        if (a3)
+            check_type(a3);
+        Node *mask = a3 ? a3 : a2;
+        if (!a1->ty || !a1->ty->is_vector || !mask->ty || !mask->ty->is_vector)
+            error_tok(start, "__builtin_shuffle requires vector arguments");
+        Type *vt = a1->ty;
+        Type *mt = mask->ty;
+        int n = (int)(vt->size / vt->base->size);
+        Node *chain = NULL;
+        LVar *ta = vec_bind(&chain, a1, vt, start);
+        LVar *tb = a3 ? vec_bind(&chain, a2, a2->ty, start) : NULL;
+        LVar *tm = vec_bind(&chain, mask, mt, start);
+        LVar *tr = new_var("", vt, true);
+        for (int i = 0; i < n; i++) {
+            Node *val;
+            if (!tb) {
+                Node *idx = new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                                       new_num(n - 1, start), start);
+                val = vec_gather(ta, vt, idx, start);
+            } else {
+                // j = mask & (2N-1);  j < N ? vec0[j] : vec1[j - N]
+                // (j - N == j & (N-1) for j in [N, 2N) with power-of-two N)
+                Node *j = new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                                     new_num(2 * n - 1, start), start);
+                Node *cnode = new_node(ND_COND, start);
+                cnode->cond = new_binary(ND_LT, j, new_num(n, start), start);
+                cnode->then = vec_gather(
+                    ta, vt,
+                    new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                               new_num(2 * n - 1, start), start),
+                    start);
+                cnode->els = vec_gather(
+                    tb, a2->ty,
+                    new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                               new_num(n - 1, start), start),
+                    start);
+                val = cnode;
+            }
+            Node *st = new_binary(ND_ASSIGN, vec_lane(tr, vt, i, start), val, start);
+            chain = new_binary(ND_COMMA, chain, st, start);
+        }
+        chain = new_binary(ND_COMMA, chain, new_var_node(tr, start), start);
+        check_type(chain);
+        return chain;
+    }
     if (equalc(tok, "__builtin_choose_expr")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
@@ -6997,11 +7215,11 @@ static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "+"))
         return unary(rest, tok->next);
     if (equalc(tok, "-"))
-        return new_unary(ND_NEG, unary(rest, tok->next), tok);
+        return vector_lower(new_unary(ND_NEG, unary(rest, tok->next), tok));
     if (equalc(tok, "!"))
         return new_unary(ND_NOT, unary(rest, tok->next), tok);
     if (equalc(tok, "~"))
-        return new_unary(ND_BITNOT, unary(rest, tok->next), tok);
+        return vector_lower(new_unary(ND_BITNOT, unary(rest, tok->next), tok));
     if (equalc(tok, "&"))
         return new_unary(ND_ADDR, unary(rest, tok->next), tok);
     if (equalc(tok, "*"))
@@ -7459,19 +7677,10 @@ static Node *unary(Token **rest, Token *tok) {
                         Node *val = assign(&tok, tok);
                         check_type(val);
                         Node *asgn = new_binary(ND_ASSIGN, member_access, val, start);
-                        // FIXME: compound-literal scalar member init does not
-                        // convert the initializer to the member type. Setting
-                        // asgn->ty directly bypasses check_type(asgn), which is
-                        // what inserts the implicit conversion cast (e.g.
-                        // int->float) in the ND_ASSIGN typing rule. As a result
-                        // `(struct S){1,2}` with float members stores raw int
-                        // bits instead of 1.0f/2.0f. The plain `= {1,2}` path
-                        // (global_init_one / regular initializer) is correct.
-                        // See test/torture/compound-literal-float-init.c.
-                        // Fix: replace the manual asgn->ty assignment below with
-                        //   check_type(asgn);
-                        // once verified not to regress other initializer tests.
-                        asgn->ty = mem->ty;
+                        // Type via check_type so the ND_ASSIGN typing rule
+                        // inserts the implicit conversion cast (e.g. int->float
+                        // for `(struct S){1,2}` with float members, C11 6.7.9p11).
+                        check_type(asgn);
                         result = new_binary(ND_COMMA, result, asgn, start);
                         result->ty = ty;
                     }
@@ -7651,15 +7860,15 @@ static Node *mul(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "*")) {
-            node = new_binary(ND_MUL, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_MUL, node, unary(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "/")) {
-            node = new_binary(ND_DIV, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_DIV, node, unary(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "%")) {
-            node = new_binary(ND_MOD, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_MOD, node, unary(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7672,11 +7881,11 @@ static Node *add(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "+")) {
-            node = new_binary(ND_ADD, node, mul(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_ADD, node, mul(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "-")) {
-            node = new_binary(ND_SUB, node, mul(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SUB, node, mul(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7689,11 +7898,11 @@ static Node *shift(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "<<")) {
-            node = new_binary(ND_SHL, node, add(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SHL, node, add(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, ">>")) {
-            node = new_binary(ND_SHR, node, add(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SHR, node, add(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7706,19 +7915,19 @@ static Node *relational(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "<")) {
-            node = new_binary(ND_LT, node, shift(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_LT, node, shift(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "<=")) {
-            node = new_binary(ND_LE, node, shift(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_LE, node, shift(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, ">")) {
-            node = new_binary(ND_LT, shift(&tok, tok->next), node, start);
+            node = vector_lower(new_binary(ND_LT, shift(&tok, tok->next), node, start));
             continue;
         }
         if (equalc(tok, ">=")) {
-            node = new_binary(ND_LE, shift(&tok, tok->next), node, start);
+            node = vector_lower(new_binary(ND_LE, shift(&tok, tok->next), node, start));
             continue;
         }
         *rest = tok;
@@ -7731,11 +7940,11 @@ static Node *equality(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "==")) {
-            node = new_binary(ND_EQ, node, relational(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_EQ, node, relational(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "!=")) {
-            node = new_binary(ND_NE, node, relational(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_NE, node, relational(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7747,7 +7956,7 @@ static Node *bitand(Token **rest, Token *tok) {
     Node *node = equality(&tok, tok);
     while (equalc(tok, "&")) {
         Token *start = tok;
-        node = new_binary(ND_BITAND, node, equality(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITAND, node, equality(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7757,7 +7966,7 @@ static Node *bitxor(Token **rest, Token *tok) {
     Node *node = bitand(&tok, tok);
     while (equalc(tok, "^")) {
         Token *start = tok;
-        node = new_binary(ND_BITXOR, node, bitand(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITXOR, node, bitand(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7767,7 +7976,7 @@ static Node *bitor(Token **rest, Token *tok) {
     Node *node = bitxor(&tok, tok);
     while (equalc(tok, "|")) {
         Token *start = tok;
-        node = new_binary(ND_BITOR, node, bitxor(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITOR, node, bitxor(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7847,6 +8056,7 @@ static Node *to_assign(Node *binary) {
     Node *op = commutative
         ? new_binary(binary->kind, binary->rhs, deref_r, tok)
         : new_binary(binary->kind, deref_r, binary->rhs, tok);
+    op = vector_lower(op);
     Node *expr2 = new_binary(ND_ASSIGN, deref_w, op, tok);
     return new_binary(ND_COMMA, expr1, expr2, tok);
 }

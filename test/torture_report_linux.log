@@ -1576,8 +1576,8 @@
   pr53084                             PASS
   pr53160                             PASS
   pr53465                             PASS
-  pr53645-2                           FAIL (compile)
-  pr53645                             FAIL (compile)
+  pr53645-2                           PASS
+  pr53645                             PASS
   pr53688                             PASS
   pr54471                             PASS
   pr54937                             PASS
@@ -1647,7 +1647,7 @@
   pr60072                             PASS
   pr60454                             PASS
   pr60822                             PASS
-  pr60960                             FAIL (compile)
+  pr60960                             PASS
   pr61306-1                           PASS
   pr61306-2                           PASS
   pr61306-3                           PASS
@@ -1684,7 +1684,7 @@
   pr65401                             PASS
   pr65418-1                           PASS
   pr65418-2                           PASS
-  pr65427                             FAIL (runtime)
+  pr65427                             PASS
   pr65648                             PASS
   pr65956                             PASS
   pr66187                             PASS
@@ -1798,7 +1798,7 @@
   pr85095                             PASS
   pr85156                             PASS
   pr85169                             PASS
-  pr85331                             FAIL (compile)
+  pr85331                             PASS
   pr85529-1                           PASS
   pr85529-2                           PASS
   pr85582-1                           PASS
@@ -1850,11 +1850,11 @@
   pr93945                             PASS
   pr94130                             PASS
   pr94134                             PASS
-  pr94412                             FAIL (compile)
-  pr94524-1                           FAIL (compile)
-  pr94524-2                           FAIL (compile)
+  pr94412                             PASS
+  pr94524-1                           PASS
+  pr94524-2                           PASS
   pr94567                             PASS
-  pr94591                             FAIL (compile)
+  pr94591                             PASS
   pr94724                             PASS
   pr94734                             PASS
   pr94809                             PASS
@@ -1896,7 +1896,7 @@
   pr104604                            PASS
   pr104814                            PASS
   pr104839                            PASS
-  pr105613                            FAIL (compile)
+  pr105613                            PASS
   pr105984                            PASS
   pr106032                            PASS
   pr106523                            PASS
@@ -1904,7 +1904,7 @@
   pr107879                            PASS
   pr107881-1                          PASS
   pr108064                            PASS
-  pr108292                            FAIL (compile)
+  pr108292                            PASS
   pr108498-1                          PASS
   pr108498-2                          PASS
   pr108789                            PASS
@@ -1919,9 +1919,9 @@
   pr110252-3                          PASS
   pr110252-4                          PASS
   pr110666-1                          PASS
-  pr110817-1                          FAIL (compile)
-  pr110817-2                          FAIL (compile)
-  pr110817-3                          FAIL (compile)
+  pr110817-1                          PASS
+  pr110817-2                          PASS
+  pr110817-3                          PASS
   pr110914                            PASS
   pr110954-1                          PASS
   pr111151                            PASS
@@ -1966,19 +1966,19 @@
   regstack-1                          PASS
   restrict-1                          PASS
   return-addr                         PASS
-  scal-to-vec1                        FAIL (compile)
-  scal-to-vec2                        FAIL (compile)
-  scal-to-vec3                        FAIL (compile)
+  scal-to-vec1                        PASS
+  scal-to-vec2                        PASS
+  scal-to-vec3                        PASS
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
   shiftopt-1                          PASS
   signed1bitfield-1                   PASS
   simd-1                              SKIP (attribute-mode)
-  simd-2                              FAIL (compile)
+  simd-2                              PASS
   simd-4                              PASS
-  simd-5                              FAIL (compile)
-  simd-6                              FAIL (compile)
+  simd-5                              PASS
+  simd-6                              PASS
   ssad-run                            PASS
   stdarg-1                            PASS
   stdarg-2                            PASS
@@ -2066,8 +2066,4 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1816/1836 passed (98%), 20 failed (19 compile/1 runtime), 229 skipped.
-
-Compile failures: pr53645-2 pr53645 pr60960 pr85331 pr94412 pr94524-1 pr94524-2 pr94591 pr105613 pr108292 pr110817-1 pr110817-2 pr110817-3 scal-to-vec1 scal-to-vec2 scal-to-vec3 simd-2 simd-5 simd-6
-
-Runtime failures: pr65427
+Torture: 1836/1836 passed (100%), 0 failed, 229 skipped.

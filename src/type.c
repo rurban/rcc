@@ -422,6 +422,8 @@ static void add_type_internal(Node *node) {
             case ND_BITAND:
             case ND_BITOR:
             case ND_BITXOR:
+            case ND_SHL: // lane-wise shifts (count vector or broadcast scalar)
+            case ND_SHR:
             case ND_EQ: // vector comparisons yield a same-shape mask vector
             case ND_NE:
             case ND_LT:
