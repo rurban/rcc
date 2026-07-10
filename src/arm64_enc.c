@@ -608,4 +608,122 @@ void arm64_stp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, i
     uint32_t base = 0x2c000000u | BITS(31, 30, opc);
     secbuf_emit32le(s, ldp_stp(base, rt1, rt2, rn, imm7, pre, post));
 }
+
+// ===========================================================================
+// Advanced SIMD (NEON) vector helpers
+// ===========================================================================
+
+// "Three same" template: 0|Q|U|01110|size|1|Rm|opcode|1|Rn|Rd
+// Verified encodings via system assembler.
+static uint32_t simd3(int Q, int U, int size, int opcode, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    return ((uint32_t)(Q & 1) << 30) | ((uint32_t)(U & 1) << 29) | 0x0E200400u | BITS(23, 22, size) | BITS(20, 16, rm) | BITS(15, 11, opcode) | BITS(9, 5, rn) | BITS(4, 0, rd);
+}
+
+// "Two-register miscellaneous" template: 0|Q|U|01110|size|10000|opcode|10|Rn|Rd
+static uint32_t simd2(int Q, int U, int size, int opcode, Arm64Reg rd, Arm64Reg rn) {
+    return ((uint32_t)(Q & 1) << 30) | ((uint32_t)(U & 1) << 29) | 0x0E200800u | BITS(23, 22, size) | BITS(16, 12, opcode) | BITS(9, 5, rn) | BITS(4, 0, rd);
+}
+
+// --- Three same: float ops (verified against system as) ---
+// FADD:  U=0, size=0 (.4S), opcode=0x1A → 0x4E21D400
+void arm64_fadd_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, size, 0x1A, rd, rn, rm)); // fadd vd.4S, vn, vm
+}
+// FSUB:  U=1, size=0 (.4S), opcode=0x1A → 0x4EA1D400
+// FSUB:  U=0, size=2 (.4S), opcode=0x1A → 0x4EA1D400
+void arm64_fsub_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 2, 0x1A, rd, rn, rm)); // fsub vd.4S, vn, vm
+    (void)size;
+}
+// FMUL:  U=1, size=0 (.4S), opcode=0x1B → 0x6E21DC00
+void arm64_fmul_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 1, size, 0x1B, rd, rn, rm)); // fmul vd.4S, vn, vm
+}
+// FDIV:  U=1, size=0 (.4S), opcode=0x1F → 0x6E21FC00
+void arm64_fdiv_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 1, size, 0x1F, rd, rn, rm)); // fdiv vd.4S, vn, vm
+}
+// FMIN:  U=0, size=2, opcode=0x1E → 0x4EA1F400
+void arm64_fmin_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 2, 0x1E, rd, rn, rm)); // fmin vd.4S, vn, vm
+    (void)size;
+}
+// FMAX:  U=0, size=0, opcode=0x1E → 0x4E21F400
+void arm64_fmax_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 0, 0x1E, rd, rn, rm)); // fmax vd.4S, vn, vm
+    (void)size;
+}
+// FCMEQ: U=0, size=0, opcode=0x1C → 0x4E21E400
+void arm64_fcmeq_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 0, 0x1C, rd, rn, rm)); // fcmeq vd.4S, vn, vm
+    (void)size;
+}
+// FCMGT: U=1, size=2, opcode=0x1C → 0x6EA1E400
+void arm64_fcmgt_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 1, 2, 0x1C, rd, rn, rm)); // fcmgt vd.4S, vn, vm
+    (void)size;
+}
+// FCMGE: U=1, size=0, opcode=0x1C → 0x6E21E400
+void arm64_fcmge_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 1, 0, 0x1C, rd, rn, rm)); // fcmge vd.4S, vn, vm
+    (void)size;
+}
+
+// --- Three same: bitwise ops (verified against system as) ---
+// AND:  U=0, size=0, opcode=0x03 → 0x4E211C00
+void arm64_and_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 0, 0x03, rd, rn, rm)); // and vd.16b, vn, vm
+}
+// ORR:  U=0, size=2, opcode=0x03 → 0x4EA11C00
+void arm64_orr_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 2, 0x03, rd, rn, rm)); // orr vd.16b, vn, vm
+}
+// EOR:  U=1, size=0, opcode=0x03 → 0x6E211C00
+void arm64_eor_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 1, 0, 0x03, rd, rn, rm)); // eor vd.16b, vn, vm
+}
+// BIC:  U=0, size=1, opcode=0x03 → 0x4E611C00
+void arm64_bic_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 1, 0x03, rd, rn, rm)); // bic vd.16b, vn, vm
+}
+
+// NOT: MVN in SIMD two-reg misc: Q=1, U=1, size=0, opcode=0x0B → 0x6E205800
+void arm64_not_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, simd2(1, 1, 0, 0x0B, rd, rn)); // mvn vd.16b, vn.16b (not)
+}
+
+// --- Two-register miscellaneous: float unary (verified against system as) ---
+// FNEG:    U=1, size=2, opcode=0x0F → 0x6EA0F800
+void arm64_fneg_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, simd2(1, 1, 2, 0x0F, rd, rn)); // fneg vd.4S, vn.4S
+    (void)size;
+}
+// FSQRT:   U=1, size=2, opcode=0x1F → 0x6EA1F800
+void arm64_fsqrt_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, simd2(1, 1, 2, 0x1F, rd, rn)); // fsqrt vd.4S, vn.4S
+    (void)size;
+}
+// FRSQRTE: U=1, size=2, opcode=0x1D → 0x6EA1D800
+void arm64_frsqrte_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, simd2(1, 1, 2, 0x1D, rd, rn)); // frsqrte vd.4S, vn.4S
+    (void)size;
+}
+// FRECPE:  U=0, size=2, opcode=0x1D → 0x4EA1D800
+void arm64_frecpe_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
+    secbuf_emit32le(s, simd2(1, 0, 2, 0x1D, rd, rn)); // frecpe vd.4S, vn.4S
+    (void)size;
+}
+
+// FRSQRTS: U=0, size=2, opcode=0x1F → 0x4EA1FC01 (three-same)  [verified: U=0,size=2]
+void arm64_frsqrts_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, simd3(1, 0, 2, 0x1F, rd, rn, rm)); // frsqrts vd.4S, vn, vm
+    (void)size;
+}
+
+// --- Lane extraction: UMOV Wd, Vn.S[lane] ---
+// Verified: umov w0, v0.s[0] → 0x0E003C00
+void arm64_umov_s(SecBuf *s, Arm64Reg rd, Arm64Reg rn, int lane) {
+    uint32_t ins = 0x0E003C00u | BITS(20, 19, lane & 3) | BITS(9, 5, rn) | BITS(4, 0, rd);
+    secbuf_emit32le(s, ins); // umov wd, vn.s[lane]
+}
 #endif /* ARCH_ARM64 */

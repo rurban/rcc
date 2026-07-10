@@ -6082,11 +6082,12 @@ static Node *vector_lower(Node *node) {
     int n = (int)(vt->size / elem->size);
     bool cmp = (k == ND_EQ || k == ND_NE || k == ND_LT || k == ND_LE);
     bool bitop = (k == ND_BITAND || k == ND_BITOR || k == ND_BITXOR || k == ND_BITNOT);
-    // Float-vector compares and bitwise ops stay on the packed SSE path
-    // (cmpps/andps/...): they operate on the raw lane BITS (all-ones masks,
-    // sign-bit tricks in xmmintrin.h), which per-lane scalar float ops cannot
-    // express.
-    if ((cmp || bitop) && is_flonum(elem)) {
+    bool arith = (k == ND_ADD || k == ND_SUB || k == ND_MUL || k == ND_DIV);
+    // Float-vector arithmetic, compares and bitwise ops stay on the packed
+    // SSE/NEON path (addps/mulps/cmpps/andps/...). They operate on the raw
+    // lane values/bits, which per-lane scalar floating-point ops cannot express
+    // correctly (compare masks are all-ones/zero, not scalar 1/0).
+    if ((cmp || bitop || arith) && is_flonum(elem)) {
         node->ty = vt;
         return node;
     }

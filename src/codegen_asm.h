@@ -3875,6 +3875,105 @@ __attribute__((unused)) static void asm_ldp_64(SecBuf *s, VReg t1, VReg t2, VReg
 __attribute__((unused)) static void asm_stp_64(SecBuf *s, VReg t1, VReg t2, VReg base) {
     arm64_stp(s, 1, REG(t1), REG(t2), REG(base), 0, false, false); // stp x{t1}, x{t2}, [x{base}]
 }
+
+// ============================================================================
+// NEON 128-bit vector wrappers (for __attribute__((vector_size(16))))
+// ============================================================================
+// Q register convention: physical NEON register numbers 0..31.
+// We use Q0 (lhs), Q1 (rhs), Q2 (result/scratch) to mirror the x86 XMM pattern.
+#ifdef ARCH_ARM64
+#define ASM_Q0 0
+#define ASM_Q1 1
+#define ASM_Q2 2
+#define ASM_Q3 3
+
+// Load 128-bit vector from [base_r] → Qd
+static void asm_ldr_q(SecBuf *s, Arm64Reg qd, VReg base_r) {
+    arm64_ldr_fp(s, 4, qd, REG(base_r), 0); // ldr q{qd}, [x{base_r}]
+}
+// Store 128-bit vector Qs → [base_r]
+static void asm_str_q(SecBuf *s, Arm64Reg qs, VReg base_r) {
+    arm64_str_fp(s, 4, qs, REG(base_r), 0); // str q{qs}, [x{base_r}]
+}
+
+// Move vector Qd ← Qs (via ORR same-register)
+static void asm_fmov_q(SecBuf *s, Arm64Reg qd, Arm64Reg qs) {
+    arm64_orr_simd(s, qd, qs, qs); // orr v{qd}.16b, v{qs}.16b, v{qs}.16b → mov
+}
+
+// Packed float arithmetic: Qd = Qn OP Qm  (4S = 4 x float32, sz=0)
+static void asm_fadd_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fadd_simd(s, 0, qd, qn, qm); // fadd v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_fsub_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fsub_simd(s, 0, qd, qn, qm); // fsub v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_fmul_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fmul_simd(s, 0, qd, qn, qm); // fmul v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_fdiv_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fdiv_simd(s, 0, qd, qn, qm); // fdiv v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+
+// Packed float min/max
+static void asm_fmin_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fmin_simd(s, 0, qd, qn, qm); // fmin v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_fmax_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fmax_simd(s, 0, qd, qn, qm); // fmax v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+
+// Packed float compare → per-lane all-ones/zero mask
+static void asm_fcmeq_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmeq_simd(s, 0, qd, qn, qm); // fcmeq v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_fcmgt_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmgt_simd(s, 0, qd, qn, qm); // fcmgt v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+// FCMGE: Qd = Qn >= Qm  →  fcmge vd.4s, vn.4s, vm.4s
+static void asm_fcmge_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmge_simd(s, 0, qd, qn, qm); // fcmge v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+
+// Bitwise on full 128-bit (16B): AND/ORR/EOR/BIC/NOT
+static void asm_and_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_and_simd(s, qd, qn, qm); // and v{qd}.16b, v{qn}.16b, v{qm}.16b
+}
+static void asm_orr_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_orr_simd(s, qd, qn, qm); // orr v{qd}.16b, v{qn}.16b, v{qm}.16b
+}
+static void asm_eor_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_eor_simd(s, qd, qn, qm); // eor v{qd}.16b, v{qn}.16b, v{qm}.16b
+}
+static void asm_bic_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_bic_simd(s, qd, qn, qm); // bic v{qd}.16b, v{qn}.16b, v{qm}.16b
+}
+static void asm_not_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_not_simd(s, qd, qn); // not v{qd}.16b, v{qn}.16b
+}
+
+// Unary float ops
+static void asm_fneg_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_fneg_simd(s, 0, qd, qn); // fneg v{qd}.4s, v{qn}.4s
+}
+static void asm_fsqrt_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_fsqrt_simd(s, 0, qd, qn); // fsqrt v{qd}.4s, v{qn}.4s
+}
+static void asm_frsqrte_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_frsqrte_simd(s, 0, qd, qn); // frsqrte v{qd}.4s, v{qn}.4s
+}
+static void asm_frsqrts_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_frsqrts_simd(s, 0, qd, qn, qm); // frsqrts v{qd}.4s, v{qn}.4s, v{qm}.4s
+}
+static void asm_frecpe_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_frecpe_simd(s, 0, qd, qn); // frecpe v{qd}.4s, v{qn}.4s
+}
+
+// Lane extraction: UMOV Wd, Vn.S[lane]
+static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm64Reg vn, int lane) {
+    arm64_umov_s(s, wd, vn, lane); // umov w{wd}, v{vn}.s[lane]
+}
+#endif // ARCH_ARM64
 #endif
 
 #endif // CODEGEN_ASM_H

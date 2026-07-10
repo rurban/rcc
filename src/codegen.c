@@ -1115,17 +1115,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         is_asm_call = true;
     }
 
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE dispatch.
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
     if (call_target &&
         (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
          !strcmp(call_target, "__builtin_ia32_sqrtss") ||
          !strcmp(call_target, "__builtin_ia32_rsqrtps"))) {
-#ifdef ARCH_ARM64
-        error("vector_size codegen not yet implemented on arm64");
-        return R_NONE;
-#else
         return gen_vector_unary_builtin(node);
-#endif
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -6029,18 +6024,36 @@ static VReg gen_int128(Node *node) {
 static VReg gen_vector(Node *node) {
     Type *ty = node->ty;
     Type *elem = ty ? ty->base : NULL;
-    int esz = elem ? (int)elem->size : 4;
+    int esz __attribute__((unused)) = elem ? (int)elem->size : 4;
     bool flt = elem && is_flonum(elem);
 
     // Unary: -v (negate) and ~v (bitwise not)
     if (node->kind == ND_NEG || node->kind == ND_BITNOT) {
         VReg a = gen_addr(node->lhs);
 #ifdef ARCH_ARM64
-        (void)a;
-        (void)esz;
-        (void)flt;
-        error("vector_size codegen not yet implemented on arm64");
-        return R_NONE;
+        asm_ldr_q(cg_sec, ASM_Q0, a); // ldr q0, [x{a}]
+        free_reg(a);
+        VReg dst = alloc_int128_addr();
+        if (node->kind == ND_BITNOT) {
+            asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0); // not v0.16b, v0.16b
+        } else if (flt) {
+            asm_fneg_v4s(cg_sec, ASM_Q0, ASM_Q0); // fneg v0.4s, v0.4s
+        } else {
+            // integer negation via 0 - v (use movi + sub)
+            asm_eor_v16b(cg_sec, ASM_Q1, ASM_Q1, ASM_Q1); // eor v1, v1, v1 → zero
+            // sub v0, v1, v0 (element-size dependent): use sub from zero
+            // For simplicity, use NOT+ADD: not v0; addv?? No, need element-wise sub.
+            // Easiest: NEG = NOT + ADD immediate 1 per element.
+            // For now: if esz==4 use not+sshr? Actually neg = 0 - v.
+            // We don't have a per-element integer sub from zero easily.
+            // Use: mvni to get all-ones, then sub.
+            // Simpler: use sshl with -1? No. Let's just use FMOV zero + SUB.
+            // Actually, just error for integer vector negate on ARM64 for now:
+            error("vector_size: integer vector negate not yet implemented on arm64");
+            return R_NONE;
+        }
+        asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+        return dst;
 #else
         x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
         free_reg(a);
@@ -6077,10 +6090,69 @@ static VReg gen_vector(Node *node) {
               "make both operands vectors (e.g. _mm_set1_ps)");
 
 #ifdef ARCH_ARM64
-    (void)esz;
-    (void)flt;
-    error("vector_size codegen not yet implemented on arm64");
-    return R_NONE;
+    // Load lhs into Q2 (nested gen_vector uses Q0/Q1, so Q2 survives rhs eval)
+    VReg a = gen_addr(node->lhs);
+    asm_ldr_q(cg_sec, ASM_Q2, a); // ldr q2, [x{a}]
+    free_reg(a);
+    VReg b = gen_addr(node->rhs);
+    asm_ldr_q(cg_sec, ASM_Q1, b); // ldr q1, [x{b}]
+    free_reg(b);
+    asm_fmov_q(cg_sec, ASM_Q0, ASM_Q2); // mov v0.16b, v2.16b  (lhs→Q0)
+    VReg dst = alloc_int128_addr();
+    switch (node->kind) {
+    case ND_ADD:
+        if (flt) asm_fadd_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fadd v0.4s, v0.4s, v1.4s
+        else
+            error("vector_size: integer vector add not yet implemented on arm64");
+        break;
+    case ND_SUB:
+        if (flt) asm_fsub_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fsub v0.4s, v0.4s, v1.4s
+        else
+            error("vector_size: integer vector sub not yet implemented on arm64");
+        break;
+    case ND_MUL:
+        if (!flt) error("vector_size: integer vector multiply not supported");
+        asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fmul v0.4s, v0.4s, v1.4s
+        break;
+    case ND_DIV:
+        if (!flt) error("vector_size: integer vector divide not supported");
+        asm_fdiv_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fdiv v0.4s, v0.4s, v1.4s
+        break;
+    case ND_BITAND:
+        asm_and_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // and v0.16b, v0.16b, v1.16b
+        break;
+    case ND_BITOR:
+        asm_orr_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // orr v0.16b, v0.16b, v1.16b
+        break;
+    case ND_BITXOR:
+        asm_eor_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // eor v0.16b, v0.16b, v1.16b
+        break;
+    case ND_LT:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        // NEON: fcmgt v0.4s, v1.4s, v0.4s  →  v0 = v1 > v0  (i.e. v0 = v0 < v1)
+        asm_fcmgt_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0); // fcmgt v0.4s, v1.4s, v0.4s
+        break;
+    case ND_LE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        // NEON: fcmge → v0 = v1 >= v0  →  v0 = v0 <= v1
+        asm_fcmge_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0); // fcmge v0.4s, v1.4s, v0.4s
+        break;
+    case ND_EQ:
+        if (flt) asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fcmeq v0.4s, v0.4s, v1.4s
+        else
+            asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // same encoding works for integer bit comparison
+        break;
+    case ND_NE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        // NEON: fcmeq + not → v0 = !(v0 == v1)
+        asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fcmeq v0.4s, v0.4s, v1.4s
+        asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0); // not v0.16b, v0.16b
+        break;
+    default:
+        error("vector_size: unsupported vector op %d", node->kind);
+    }
+    asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+    return dst;
 #else
     // Load lhs into xmm2 (a nested gen_vector uses only xmm0/xmm1, so xmm2
     // survives the rhs evaluation); then load rhs into xmm1. Each operand's
@@ -6167,11 +6239,35 @@ static VReg gen_vector(Node *node) {
 
 // Single-arg vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps
 static VReg gen_vector_unary_builtin(Node *node) {
-#ifdef ARCH_ARM64
-    error("vector_size codegen not yet implemented on arm64");
-    return R_NONE;
-#else
     VReg a = gen_addr(node->args);
+#ifdef ARCH_ARM64
+    asm_ldr_q(cg_sec, ASM_Q0, a); // ldr q0, [x{a}]
+    free_reg(a);
+    VReg dst = alloc_int128_addr();
+    const char *name = node->funcname ? node->funcname : (node->lhs && node->lhs->var ? node->lhs->var->name : NULL);
+    if (name) {
+        if (!strcmp(name, "__builtin_ia32_sqrtps"))
+            asm_fsqrt_v4s(cg_sec, ASM_Q0, ASM_Q0); // fsqrt v0.4s, v0.4s
+        else if (!strcmp(name, "__builtin_ia32_sqrtss")) {
+            // Scalar fsqrt zeros upper 96 bits of V0 on ARM64.
+            // Preserve lanes 1-3 via scratch register V2.
+            secbuf_emit32le(cg_sec, 0x1E204002u); // fmov s2, s0  (copy lane 0 to s2, leaves V0 intact)
+            secbuf_emit32le(cg_sec, 0x1E21C042u); // fsqrt s2, s2  (scalar sqrt, zeros V2 upper bits)
+            secbuf_emit32le(cg_sec, 0x6E040440u); // mov.s v0[0], v2[0]  (insert sqrt result into lane 0)
+        } else if (!strcmp(name, "__builtin_ia32_rsqrtps")) {
+            // FRSQRTE alone gives ~8-bit precision; one Newton step gets ~16 bits
+            // (matching Intel RSQRTPS precision).  Formula:
+            //   e1 = e * (3.0 - a * e^2) / 2.0
+            asm_fmov_q(cg_sec, ASM_Q3, ASM_Q0); // mov v3.16b, v0.16b  (save input a)
+            asm_frsqrte_v4s(cg_sec, ASM_Q0, ASM_Q0); // v0 = frsqrte(a) estimate
+            asm_fmul_v4s(cg_sec, ASM_Q1, ASM_Q0, ASM_Q0); // v1 = e^2
+            asm_frsqrts_v4s(cg_sec, ASM_Q1, ASM_Q3, ASM_Q1); // v1 = (3 - a*e^2)/2
+            asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // v0 = e * v1  (refined)
+        }
+    }
+    asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+    return dst;
+#else
     x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
     free_reg(a);
     VReg dst = alloc_int128_addr();
@@ -6223,17 +6319,12 @@ static VReg gen(Node *node) {
             break;
         }
     }
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE dispatch.
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
     if (node->kind == ND_FUNCALL && node->funcname &&
         (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
          !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
          !strcmp(node->funcname, "__builtin_ia32_rsqrtps"))) {
-#ifdef ARCH_ARM64
-        error("vector_size codegen not yet implemented on arm64");
-        return R_NONE;
-#else
         return gen_vector_unary_builtin(node);
-#endif
     }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&

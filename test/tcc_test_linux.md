@@ -42,7 +42,7 @@ Generated: July 2026
 | 09_do_while                 | PASS         | Output matches        |
 | 10_pointer                  | PASS         | Output matches        |
 | 11_precedence               | PASS         | Output matches        |
-| 12_hashdefine               | PASS         | Output matches        |
+| 12_hashdefine               | COMPILE_FAIL | rcc returned non-zero |
 | 13_integer_literals         | PASS         | Output matches        |
 | 14_if                       | PASS         | Output matches        |
 | 15_recursion                | PASS         | Output matches        |
@@ -59,7 +59,7 @@ Generated: July 2026
 | 26_character_constants      | PASS         | Output matches        |
 | 27_sizeof                   | PASS         | Output matches        |
 | 28_strings                  | PASS         | Output matches        |
-| 29_array_address            | COMPILE_FAIL | rcc returned non-zero |
+| 29_array_address            | PASS         | Output matches        |
 | 30_hanoi                    | PASS         | Output matches        |
 | 31_args                     | PASS         | Output matches        |
 | 32_led                      | PASS         | Output matches        |
@@ -72,7 +72,7 @@ Generated: July 2026
 | 39_typedef                  | PASS         | Output matches        |
 | 40_stdio                    | PASS         | Output matches        |
 | 41_hashif                   | PASS         | Output matches        |
-| 42_function_pointer         | PASS         | Output matches        |
+| 42_function_pointer         | COMPILE_FAIL | rcc returned non-zero |
 | 43_void_param               | PASS         | Output matches        |
 | 44_scoped_declarations      | PASS         | Output matches        |
 | 45_empty_for                | PASS         | Output matches        |
@@ -81,7 +81,7 @@ Generated: July 2026
 | 49_bracket_evaluation       | PASS         | Output matches        |
 | 50_logical_second_arg       | PASS         | Output matches        |
 | 51_static                   | PASS         | Output matches        |
-| 52_unnamed_enum             | PASS         | Output matches        |
+| 52_unnamed_enum             | COMPILE_FAIL | rcc returned non-zero |
 | 54_goto                     | PASS         | Output matches        |
 | 55_lshift_type              | PASS         | Output matches        |
 | 61_integers                 | PASS         | Output matches        |
@@ -98,7 +98,7 @@ Generated: July 2026
 | 80_flexarray                | PASS         | Output matches        |
 | 81_types                    | PASS         | Output matches        |
 | 82_attribs_position         | PASS         | Output matches        |
-| 83_utf8_in_identifiers      | COMPILE_FAIL | rcc returned non-zero |
+| 83_utf8_in_identifiers      | PASS         | Output matches        |
 | 84_hex-float                | PASS         | Output matches        |
 | 85_asm-outside-function     | PASS         | Output matches        |
 | 86_memory-model             | PASS         | Output matches        |
@@ -122,7 +122,7 @@ Generated: July 2026
 | 106_versym                  | PASS         | Output matches        |
 | 107_stack_safe              | PASS         | Output matches        |
 | 108_constructor             | PASS         | Output matches        |
-| 109_float_struct_calling    | COMPILE_FAIL | rcc returned non-zero |
+| 109_float_struct_calling    | PASS         | Output matches        |
 | 110_average                 | PASS         | Output matches        |
 | 111_conversion              | PASS         | Output matches        |
 | 117_builtins                | PASS         | Output matches        |
@@ -139,12 +139,12 @@ Generated: July 2026
 | 132_bound_test              | PASS         | Output matches        |
 | 133_old_func                | PASS         | Output matches        |
 | 134_double_to_signed        | PASS         | Output matches        |
-| 135_func_arg_struct_compare | PASS         | Output matches        |
+| 135_func_arg_struct_compare | COMPILE_FAIL | rcc returned non-zero |
 | 136_atomic_gcc_style        | PASS         | Output matches        |
 | 137_funcall_struct_args     | PASS         | Output matches        |
 | 142_int_conversion          | PASS         | Output matches        |
 | 143_void_expr               | PASS         | Output matches        |
-| 144_tls                     | COMPILE_FAIL | rcc returned non-zero |
+| 144_tls                     | PASS         | Output matches        |
 | 46_grep                     | PASS         | Output matches        |
 | 125_atomic_misc             | PASS         | Output matches        |
 | 129_scopes                  | PASS         | Output matches        |
