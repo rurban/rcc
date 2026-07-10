@@ -2840,7 +2840,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             // Convert double->float only if callee param is known float,
             // not for variadic args (which stay promoted to double)
             bool keep_double = (is_variadic && i >= named_count) ||
-                (fn_type && (fn_type->is_oldstyle || !fn_type->param_types));
+                is_oldstyle || (fn_type && !fn_type->param_types);
             bool callee_expects_float = false;
             if (!keep_double) {
                 callee_expects_float = argv[i]->ty->size == 4;
@@ -8363,18 +8363,22 @@ static VReg gen(Node *node) {
     case ND_LOGOR: {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
-        VReg r = alloc_reg();
         VReg lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size); // cmp $0, rlhs
-        asm_mov_imm(cg_sec, r, 4, 1); // mov r, #1
-        size_t o = asm_jcc_label(cg_sec, ARM64_NE);
+        arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result in x16)
+        size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.end.%d
         asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
         free_reg(lhs);
+        // False path: evaluate rhs; x16 may be clobbered here, re-set after
         VReg rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size); // cmp $0, rrhs
-        asm_cset(cg_sec, r, ARM64_NE); // cset rr
+        arm64_cset(cg_sec, 0, ARM64_X16, ARM64_NE); // cset w16, ne (false-path result in x16)
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
+        // Result is in x16 on both paths; move to a fresh VReg
+        VReg r = alloc_reg();
+        arm64_orr_reg(cg_sec, 0, REG(r), ARM64_XZR, ARM64_X16, ARM64_LSL, 0); // mov w{r}, w16
+        return r;
 #else
         VReg lhs = gen(node->lhs);
         asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size); // cmp $0, rlhs
@@ -8388,10 +8392,10 @@ static VReg gen(Node *node) {
         asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
-        VReg r = alloc_reg();
-        asm_movzx_rbp_reg(cg_sec, r, 4, 1, spill_logand); // movzbl -spill_logand(%rbp), rr
+        VReg r2 = alloc_reg();
+        asm_movzx_rbp_reg(cg_sec, r2, 4, 1, spill_logand); // movzbl -spill_logand(%rbp), r2
+        return r2;
 #endif
-        return r;
     }
     /*
     case ND_LOGOR: {
@@ -10505,150 +10509,56 @@ static VReg gen(Node *node) {
         // below, which would otherwise evaluate node->lhs (the whole
         // complex value) into a register that is never used or freed.
         int r = gen_addr(node);
-        if (is_flonum(node->ty)) {
+        if (r < 0) {
+            // Complex sub-expression is not an lvalue (e.g., __real__(a*b)).
+            // Evaluate it; gen() for complex arithmetic returns the result address.
+            r = gen(node->lhs);
+            // For ND_IMAG, add the base type size offset to get the imag part
+            if (node->kind == ND_IMAG && r >= 0) {
+                int offset = node->lhs->ty->base->size;
 #ifdef ARCH_ARM64
-            if (node->ty->size == 4) {
-                asm_ldr_fp(cg_sec, ARM64_S0, r, 4); // ldr s0, [x{r}]
-                asm_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
-            } else {
-                asm_ldr_fp(cg_sec, ARM64_D0, r, 8); // ldr d0, [x{r}]
+                if (offset <= 4095)
+                    asm_add_imm(cg_sec, r, 8, offset); // add r, r, #offset
+                else {
+                    VReg ti = alloc_reg();
+                    emit_mov_imm64(REG(ti), (uint64_t)offset); // mov ti, #offset
+                    asm_add_reg_reg(cg_sec, r, ti, 8); // add r, r, ti
+                    free_reg(ti);
+                }
+#else
+                asm_add_imm(cg_sec, r, 8, offset); // add $offset, r
+#endif
             }
-            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
+        }
+        if (r >= 0) {
+            if (is_flonum(node->ty)) {
+#ifdef ARCH_ARM64
+                if (node->ty->size == 4) {
+                    asm_ldr_fp(cg_sec, ARM64_S0, r, 4); // ldr s0, [x{r}]
+                    asm_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                } else {
+                    asm_ldr_fp(cg_sec, ARM64_D0, r, 8); // ldr d0, [x{r}]
+                }
+                asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
 #else
-            if (node->ty->size == 4) {
-                x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
-                x86_cvtss2sd(cg_sec, X86_XMM0, X86_XMM0); // cvtss2sd %xmm0, %xmm0
+                if (node->ty->size == 4) {
+                    x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    x86_cvtss2sd(cg_sec, X86_XMM0, X86_XMM0); // cvtss2sd %xmm0, %xmm0
+                } else {
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                }
+                asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+#endif
             } else {
-                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                emit_load(node->ty, r, r, 0);
             }
-            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-#endif
-        } else {
-            emit_load(node->ty, r, r, 0);
+            return r;
         }
-        return r;
-    }
-
-    VReg r_lhs = gen(node->lhs);
-
-
-    // Float binary operations (must come before integer ops)
-    if (is_flonum(node->ty) && (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV)) {
-        VReg r_rhs = gen(node->rhs);
-#ifdef ARCH_ARM64
-        bool rhs_in_x16 = false;
-        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
-            // alloc_reg() reused r_lhs for rhs and spilled the original lhs.
-            // Preserve rhs in x16, then reload lhs before feeding d0/d1.
-            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
-            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
-            spilled_regs &= ~(1 << r_lhs);
-            rhs_in_x16 = true;
-        }
-        asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
-        if (rhs_in_x16)
-            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
-        else
-            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
-        if (node->kind == ND_ADD) asm_fadd(cg_sec, 1); // fadd d0, d0, d1
-        else if (node->kind == ND_SUB)
-            asm_fsub(cg_sec, 1); // fsub d0, d0, d1
-        else if (node->kind == ND_MUL)
-            asm_fmul(cg_sec, 1); // fmul d0, d0, d1
-        else if (node->kind == ND_DIV)
-            asm_fdiv(cg_sec, 1); // fdiv d0, d0, d1
-        if (node->ty->kind == TY_FLOAT) {
-            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=double->single)
-            asm_fcvt(cg_sec, 1, 0, 0, 0); // asm_fcvt(1, 0, 0, 0)
-        }
-        asm_fmov_f2i(cg_sec, r_lhs, 0, 1); // asm_fmov_f2i(r_lhs, 0, 1)
-        if (!rhs_in_x16 && r_rhs != r_lhs)
-            free_reg(r_rhs);
-#else
-        asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
-        asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
-        free_reg(r_rhs);
-        __attribute__((unused)) char *inst = "";
-        if (node->kind == ND_ADD) inst = "addsd";
-        else if (node->kind == ND_SUB)
-            inst = "subsd";
-        else if (node->kind == ND_MUL)
-            inst = "mulsd";
-        else if (node->kind == ND_DIV)
-            inst = "divsd";
-        if (node->kind == ND_ADD) asm_addsd(cg_sec); // %s %%xmm1, %%xmm0
-        else if (node->kind == ND_SUB)
-            asm_subsd(cg_sec); // cvtsd2ss %%xmm0, %%xmm0
-        else if (node->kind == ND_MUL)
-            asm_mulsd(cg_sec); // cvtss2sd %%xmm0, %%xmm0
-        else if (node->kind == ND_DIV)
-            asm_divsd(cg_sec); // movq %%xmm0, %s
-        if (node->ty->kind == TY_FLOAT) {
-            asm_cvtsd2ss(cg_sec); // %s %%xmm1, %%xmm0
-            asm_cvtss2sd(cg_sec); // cvtsd2ss %%xmm0, %%xmm0
-        }
-        asm_movq_xmm_r(cg_sec, r_lhs, X86_XMM0); // cvtss2sd %%xmm0, %%xmm0
-#endif
-        return r_lhs;
-    }
-
-    // Float comparisons
-    if ((node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) &&
-        node->lhs->ty && node->rhs->ty && (is_flonum(node->lhs->ty) || is_flonum(node->rhs->ty))) {
-        VReg r_rhs = gen(node->rhs);
-#ifdef ARCH_ARM64
-        bool rhs_in_x16 = false;
-        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
-            // Preserve rhs in x16, then reload the spilled lhs for comparison.
-            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
-            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
-            spilled_regs &= ~(1 << r_lhs);
-            rhs_in_x16 = true;
-        }
-        asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
-        if (rhs_in_x16)
-            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
-        else
-            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
-        asm_fcmp(cg_sec, 1); // fcmp d0, d1
-        if (node->kind == ND_EQ) asm_cset(cg_sec, r_lhs, ARM64_EQ); // cset rr_lhs
-        else if (node->kind == ND_NE)
-            asm_cset(cg_sec, r_lhs, ARM64_NE); // fcmp d0, d1
-        else if (node->kind == ND_LT)
-            asm_cset(cg_sec, r_lhs, ARM64_MI); // cset rr_lhs
-        else if (node->kind == ND_LE)
-            asm_cset(cg_sec, r_lhs, ARM64_LS); // cset rr_lhs
-#else
-        asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq %s, %%xmm0
-        asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq %s, %%xmm1
-        asm_ucomisd(cg_sec); // ucomisd %%xmm1, %%xmm0
-        if (node->kind == ND_EQ) {
-            asm_setcc(cg_sec, X86_RAX, X86_E); // sete %%al
-            asm_setcc(cg_sec, X86_RCX, X86_NP); // setnp %%cl
-            x86_and_rr(cg_sec, 1, X86_RAX, X86_RCX); // andb %%cl, %%al
-        } else if (node->kind == ND_NE) {
-            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %%al
-            asm_setcc(cg_sec, X86_RCX, X86_P); // setp %%cl
-            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %%cl, %%al
-        } else if (node->kind == ND_LT) {
-            asm_setcc(cg_sec, X86_RAX, X86_B); // setb %%al
-        } else if (node->kind == ND_LE) {
-            asm_setcc(cg_sec, X86_RAX, X86_BE); // setbe %%al
-        }
-        asm_movzx_phys(cg_sec, r_lhs, X86_RAX, 4, 1); // movzbl %%al, %s
-#endif
-        if (r_rhs != r_lhs)
-            free_reg(r_rhs);
-        return r_lhs;
     }
 
     // Complex comparisons: compare both real and imag parts
     if ((node->kind == ND_EQ || node->kind == ND_NE) &&
         node->lhs->ty && is_complex(node->lhs->ty)) {
-        // r_lhs (from the unconditional gen(node->lhs) above) is unused here
-        // since we re-derive the address via gen_addr(); free it to avoid a
-        // register leak.
-        free_reg(r_lhs);
         int addr_lhs = gen_addr(node->lhs);
         int addr_rhs = gen_addr(node->rhs);
         int need_free_lhs = 0, need_free_rhs = 0;
@@ -10798,6 +10708,120 @@ static VReg gen(Node *node) {
 #endif
         return result;
     }
+
+    VReg r_lhs = gen(node->lhs);
+
+
+    // Float binary operations (must come before integer ops)
+    if (is_flonum(node->ty) && (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV)) {
+        VReg r_rhs = gen(node->rhs);
+#ifdef ARCH_ARM64
+        bool rhs_in_x16 = false;
+        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+            // alloc_reg() reused r_lhs for rhs and spilled the original lhs.
+            // Preserve rhs in x16, then reload lhs before feeding d0/d1.
+            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
+            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
+            spilled_regs &= ~(1 << r_lhs);
+            rhs_in_x16 = true;
+        }
+        asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
+        if (rhs_in_x16)
+            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
+        else
+            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
+        if (node->kind == ND_ADD) asm_fadd(cg_sec, 1); // fadd d0, d0, d1
+        else if (node->kind == ND_SUB)
+            asm_fsub(cg_sec, 1); // fsub d0, d0, d1
+        else if (node->kind == ND_MUL)
+            asm_fmul(cg_sec, 1); // fmul d0, d0, d1
+        else if (node->kind == ND_DIV)
+            asm_fdiv(cg_sec, 1); // fdiv d0, d0, d1
+        if (node->ty->kind == TY_FLOAT) {
+            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=double->single)
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // asm_fcvt(1, 0, 0, 0)
+        }
+        asm_fmov_f2i(cg_sec, r_lhs, 0, 1); // asm_fmov_f2i(r_lhs, 0, 1)
+        if (!rhs_in_x16 && r_rhs != r_lhs)
+            free_reg(r_rhs);
+#else
+        asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // fcvt s0, d0
+        asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // fcvt d0, s0
+        free_reg(r_rhs);
+        __attribute__((unused)) char *inst = "";
+        if (node->kind == ND_ADD) inst = "addsd";
+        else if (node->kind == ND_SUB)
+            inst = "subsd";
+        else if (node->kind == ND_MUL)
+            inst = "mulsd";
+        else if (node->kind == ND_DIV)
+            inst = "divsd";
+        if (node->kind == ND_ADD) asm_addsd(cg_sec); // %s %%xmm1, %%xmm0
+        else if (node->kind == ND_SUB)
+            asm_subsd(cg_sec); // cvtsd2ss %%xmm0, %%xmm0
+        else if (node->kind == ND_MUL)
+            asm_mulsd(cg_sec); // cvtss2sd %%xmm0, %%xmm0
+        else if (node->kind == ND_DIV)
+            asm_divsd(cg_sec); // movq %%xmm0, %s
+        if (node->ty->kind == TY_FLOAT) {
+            asm_cvtsd2ss(cg_sec); // %s %%xmm1, %%xmm0
+            asm_cvtss2sd(cg_sec); // cvtsd2ss %%xmm0, %%xmm0
+        }
+        asm_movq_xmm_r(cg_sec, r_lhs, X86_XMM0); // cvtss2sd %%xmm0, %%xmm0
+#endif
+        return r_lhs;
+    }
+
+    // Float comparisons
+    if ((node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) &&
+        node->lhs->ty && node->rhs->ty && (is_flonum(node->lhs->ty) || is_flonum(node->rhs->ty))) {
+        VReg r_rhs = gen(node->rhs);
+#ifdef ARCH_ARM64
+        bool rhs_in_x16 = false;
+        if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+            // Preserve rhs in x16, then reload the spilled lhs for comparison.
+            asm_mov_phy_reg(cg_sec, ARM64_X16, r_rhs, 1); // mov x16, x{r_rhs}
+            asm_ldur_fp(cg_sec, r_lhs, spill_offset(r_lhs)); // ldr x{r_lhs}, [x29, #-spill_offset]
+            spilled_regs &= ~(1 << r_lhs);
+            rhs_in_x16 = true;
+        }
+        asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
+        if (rhs_in_x16)
+            arm64_fmov_i2f(cg_sec, 1, ARM64_D1, ARM64_X16); // fmov d1, x16
+        else
+            asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
+        asm_fcmp(cg_sec, 1); // fcmp d0, d1
+        if (node->kind == ND_EQ) asm_cset(cg_sec, r_lhs, ARM64_EQ); // cset rr_lhs
+        else if (node->kind == ND_NE)
+            asm_cset(cg_sec, r_lhs, ARM64_NE); // fcmp d0, d1
+        else if (node->kind == ND_LT)
+            asm_cset(cg_sec, r_lhs, ARM64_MI); // cset rr_lhs
+        else if (node->kind == ND_LE)
+            asm_cset(cg_sec, r_lhs, ARM64_LS); // cset rr_lhs
+#else
+        asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq %s, %%xmm0
+        asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq %s, %%xmm1
+        asm_ucomisd(cg_sec); // ucomisd %%xmm1, %%xmm0
+        if (node->kind == ND_EQ) {
+            asm_setcc(cg_sec, X86_RAX, X86_E); // sete %%al
+            asm_setcc(cg_sec, X86_RCX, X86_NP); // setnp %%cl
+            x86_and_rr(cg_sec, 1, X86_RAX, X86_RCX); // andb %%cl, %%al
+        } else if (node->kind == ND_NE) {
+            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %%al
+            asm_setcc(cg_sec, X86_RCX, X86_P); // setp %%cl
+            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %%cl, %%al
+        } else if (node->kind == ND_LT) {
+            asm_setcc(cg_sec, X86_RAX, X86_B); // setb %%al
+        } else if (node->kind == ND_LE) {
+            asm_setcc(cg_sec, X86_RAX, X86_BE); // setbe %%al
+        }
+        asm_movzx_phys(cg_sec, r_lhs, X86_RAX, 4, 1); // movzbl %%al, %s
+#endif
+        if (r_rhs != r_lhs)
+            free_reg(r_rhs);
+        return r_lhs;
+    }
+
 
     // Fused Division/Modulo Optimization
     if (node->kind == ND_DIV || node->kind == ND_MOD) {

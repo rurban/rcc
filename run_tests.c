@@ -4610,15 +4610,15 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 6;
+        max_fail = 0;
     else if (streq(platform, "arm64"))
-        max_fail = 5; // 5 float/complex failures
+        max_fail = 0;
     else if (streq(platform, "darwin_cross"))
-        max_fail = 5 + 1;
+        max_fail = 1;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 3; // 20000402-1, c23-complit-4, c23-tag-composite-10
+        max_fail = 3; // pr33870 (flaky), 20000402-1, c23-tag-composite-10
     else if (streq(platform, "mingw"))
-        max_fail = 3;
+        max_fail = 2; // 20000402-1 c23-tag-composite-10
     else if (streq(platform, "linux"))
         max_fail = 0;
     else
