@@ -337,6 +337,9 @@ static Type *composite_type(Type *t1, Type *t2) {
                 off += m->ty->size;
             }
             result->size = (off + max_align - 1) / max_align * max_align;
+            // Unnamed bitfields (padding) are absent from the member list but
+            if (result->size < t1->size) result->size = t1->size;
+            if (result->size < t2->size) result->size = t2->size;
             if (result->size == 0) result->size = t1->size > t2->size ? t1->size : t2->size;
             result->align = max_align;
         } else {
