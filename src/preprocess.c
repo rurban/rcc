@@ -2523,7 +2523,8 @@ char *preprocess(char *filename, char *p) {
         // _FORTIFY_SOURCE: __builtin___*_chk using __builtin_object_size
         // String/memory functions with bounds checking
         {
-            char *p4[] = {"__dest", "__src", "__len", "__bos", NULL}; char *p4m[] = {"__dest", "__src", "__len", "__bos", NULL};
+            char *p4[] = {"__dest", "__src", "__len", "__bos", NULL};
+            char *p4m[] = {"__dest", "__src", "__len", "__bos", NULL};
             define_macro("__builtin___memcpy_chk", true, p4m, 4,
                          "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
             define_macro("__builtin___memmove_chk", true, p4m, 4,
@@ -2600,6 +2601,7 @@ char *preprocess(char *filename, char *p) {
 
         // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
+        define_pre("signbit", "__builtin_signbit");
         define_pre("__builtin_trap", "abort");
         // __builtin_unreachable() is handled as a builtin funcall in codegen
         define_macro("__builtin_clear_padding", true, (char *[]){"ptr"}, 1, "__builtin_memset(ptr, 0, sizeof(*(ptr)))");

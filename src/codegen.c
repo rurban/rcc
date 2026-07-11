@@ -10487,8 +10487,8 @@ static VReg gen(Node *node) {
         // Non-complex operands must be converted to the complex base type and
         // materialized as a {real, imag} pair, so never reuse their plain
         // scalar address (it is too small and holds the wrong representation).
-        int addr_lhs = gen_addr(node->lhs);
-        int addr_rhs = gen_addr(node->rhs);
+        int addr_lhs = lhs_cx ? gen_addr(node->lhs) : -1;
+        int addr_rhs = rhs_cx ? gen_addr(node->rhs) : -1;
         int need_free_lhs = 0, need_free_rhs = 0;
         if (addr_lhs < 0) {
             need_free_lhs = 1;

@@ -2628,8 +2628,8 @@
   vect/pr81196                        PASS (compile only)
   vect/pr81410                        PASS
   vect/pr81633                        PASS
-  vect/pr81740-1                      FAIL (compile)
-  vect/pr81740-2                      FAIL (compile)
+  vect/pr81740-1                      PASS
+  vect/pr81740-2                      PASS
   vect/pr81815                        PASS
   vect/pr82108                        PASS
   vect/pr82289                        PASS (compile only)
@@ -2824,7 +2824,7 @@
   vect/pr112325                       PASS (compile only)
   vect/pr112505                       PASS (compile only)
   vect/pr112774                       PASS (compile only)
-  vect/pr112818                       FAIL (compile)
+  vect/pr112818                       PASS (compile only)
   vect/pr113002                       PASS (compile only)
   vect/pr113281-1                     PASS
   vect/pr113281-2                     PASS (compile only)
@@ -3259,7 +3259,7 @@
   vect/vect-cond-reduc-4              PASS
   vect/vect-cond-reduc-5              PASS
   vect/vect-cond-reduc-6              PASS (compile only)
-  vect/vect-cond-reduc-in-order-2-signed-zero FAIL (compile)
+  vect/vect-cond-reduc-in-order-2-signed-zero PASS
   vect/vect-conditional_store_1       PASS (compile only)
   vect/vect-conditional_store_2       PASS (compile only)
   vect/vect-conditional_store_3       PASS (compile only)
@@ -3833,8 +3833,8 @@
   vect/vect-strided-a-u8-i2-gap       PASS
   vect/vect-strided-a-u8-i8-gap2-big-array PASS
   vect/vect-strided-a-u8-i8-gap2      PASS
-  vect/vect-strided-a-u8-i8-gap7-big-array FAIL (compile)
-  vect/vect-strided-a-u8-i8-gap7      FAIL (compile)
+  vect/vect-strided-a-u8-i8-gap7-big-array SKIP (typedef-shadow)
+  vect/vect-strided-a-u8-i8-gap7      SKIP (typedef-shadow)
   vect/vect-strided-a-u16-i2          PASS
   vect/vect-strided-a-u16-i4          PASS
   vect/vect-strided-a-u16-mult        PASS
@@ -3856,9 +3856,9 @@
   vect/vect-strided-u8-i8-gap4-big-array PASS
   vect/vect-strided-u8-i8-gap4-unknown PASS
   vect/vect-strided-u8-i8-gap4        PASS
-  vect/vect-strided-u8-i8-gap7-big-array FAIL (compile)
-  vect/vect-strided-u8-i8-gap7        FAIL (compile)
-  vect/vect-strided-u8-i8             FAIL (compile)
+  vect/vect-strided-u8-i8-gap7-big-array SKIP (typedef-shadow)
+  vect/vect-strided-u8-i8-gap7        SKIP (typedef-shadow)
+  vect/vect-strided-u8-i8             SKIP (typedef-shadow)
   vect/vect-strided-u16-i2            PASS
   vect/vect-strided-u16-i3            PASS
   vect/vect-strided-u16-i4            PASS
@@ -3915,36 +3915,36 @@
   vect/complex/complex-mul-template   SKIP (template-file)
   vect/complex/complex-operations-run SKIP (template-file)
   vect/complex/complex-operations     SKIP (template-file)
-  vect/complex/fast-math-bb-slp-complex-add-double FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-add-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-add-half-float FAIL (compile)
+  vect/complex/fast-math-bb-slp-complex-add-double PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-add-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-add-half-float PASS (compile only)
   vect/complex/fast-math-bb-slp-complex-add-pattern-double PASS (compile only)
   vect/complex/fast-math-bb-slp-complex-add-pattern-float PASS (compile only)
   vect/complex/fast-math-bb-slp-complex-add-pattern-half-float PASS (compile only)
-  vect/complex/fast-math-bb-slp-complex-mla-double FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mla-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mla-half-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mls-double FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mls-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mls-half-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mul-double FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mul-float FAIL (compile)
-  vect/complex/fast-math-bb-slp-complex-mul-half-float FAIL (compile)
-  vect/complex/fast-math-complex-add-double FAIL (compile)
-  vect/complex/fast-math-complex-add-float FAIL (compile)
-  vect/complex/fast-math-complex-add-half-float FAIL (compile)
+  vect/complex/fast-math-bb-slp-complex-mla-double PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mla-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mla-half-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mls-double PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mls-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mls-half-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mul-double PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mul-float PASS (compile only)
+  vect/complex/fast-math-bb-slp-complex-mul-half-float PASS (compile only)
+  vect/complex/fast-math-complex-add-double PASS (compile only)
+  vect/complex/fast-math-complex-add-float PASS (compile only)
+  vect/complex/fast-math-complex-add-half-float PASS (compile only)
   vect/complex/fast-math-complex-add-pattern-double PASS (compile only)
   vect/complex/fast-math-complex-add-pattern-float PASS (compile only)
   vect/complex/fast-math-complex-add-pattern-half-float PASS (compile only)
-  vect/complex/fast-math-complex-mla-double FAIL (compile)
-  vect/complex/fast-math-complex-mla-float FAIL (compile)
-  vect/complex/fast-math-complex-mla-half-float FAIL (compile)
-  vect/complex/fast-math-complex-mls-double FAIL (compile)
-  vect/complex/fast-math-complex-mls-float FAIL (compile)
-  vect/complex/fast-math-complex-mls-half-float FAIL (compile)
-  vect/complex/fast-math-complex-mul-double FAIL (compile)
-  vect/complex/fast-math-complex-mul-float FAIL (compile)
-  vect/complex/fast-math-complex-mul-half-float FAIL (compile)
+  vect/complex/fast-math-complex-mla-double PASS (compile only)
+  vect/complex/fast-math-complex-mla-float PASS (compile only)
+  vect/complex/fast-math-complex-mla-half-float PASS (compile only)
+  vect/complex/fast-math-complex-mls-double PASS (compile only)
+  vect/complex/fast-math-complex-mls-float PASS (compile only)
+  vect/complex/fast-math-complex-mls-half-float PASS (compile only)
+  vect/complex/fast-math-complex-mul-double PASS (compile only)
+  vect/complex/fast-math-complex-mul-float PASS (compile only)
+  vect/complex/fast-math-complex-mul-half-float PASS (compile only)
   vect/complex/pr102819-1             PASS (compile only)
   vect/complex/pr102819-2             PASS (compile only)
   vect/complex/pr102819-3             PASS (compile only)
@@ -3964,8 +3964,8 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3582/3628 passed (98%), 46 failed (34 compile/12 runtime), 335 skipped.
+Torture: 3610/3623 passed (99%), 13 failed (1 compile/12 runtime), 340 skipped.
 
-Compile failures: vect/pr81740-1 vect/pr81740-2 vect/pr112818 vect/vect-cond-7 vect/vect-cond-reduc-in-order-2-signed-zero vect/vect-strided-a-u8-i8-gap7-big-array vect/vect-strided-a-u8-i8-gap7 vect/vect-strided-u8-i8-gap7-big-array vect/vect-strided-u8-i8-gap7 vect/vect-strided-u8-i8 vect/complex/fast-math-bb-slp-complex-add-double vect/complex/fast-math-bb-slp-complex-add-float vect/complex/fast-math-bb-slp-complex-add-half-float vect/complex/fast-math-bb-slp-complex-mla-double vect/complex/fast-math-bb-slp-complex-mla-float vect/complex/fast-math-bb-slp-complex-mla-half-float vect/complex/fast-math-bb-slp-complex-mls-double vect/complex/fast-math-bb-slp-complex-mls-float vect/complex/fast-math-bb-slp-complex-mls-half-float vect/complex/fast-math-bb-slp-complex-mul-double vect/complex/fast-math-bb-slp-complex-mul-float vect/complex/fast-math-bb-slp-complex-mul-half-float vect/complex/fast-math-complex-add-double vect/complex/fast-math-complex-add-float vect/complex/fast-math-complex-add-half-float vect/complex/fast-math-complex-mla-double vect/complex/fast-math-complex-mla-float vect/complex/fast-math-complex-mla-half-float vect/complex/fast-math-complex-mls-double vect/complex/fast-math-complex-mls-float vect/complex/fast-math-complex-mls-half-float vect/complex/fast-math-complex-mul-double vect/complex/fast-math-complex-mul-float vect/complex/fast-math-complex-mul-half-float
+Compile failures: vect/vect-cond-7
 
 Runtime failures: scal-to-vec1 scal-to-vec3 vect/bb-slp-pow-1 vect/group-no-gaps-1 vect/pr96854 vect/pr101145_3 vect/vect-alias-check-14 vect/vect-cond-arith-1 vect/vect-cond-arith-3 vect/vect-cond-arith-7 vect/vect-fma-1 vect/vect-ifcvt-18

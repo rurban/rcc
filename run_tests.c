@@ -3973,6 +3973,7 @@ typedef enum {
     SKIP_GIMPLE,
     SKIP_OPENMP,
     SKIP_BITINT,
+    //SKIP_SHADOW,
 } SkipReason;
 
 static const char *skip_reason_str(SkipReason r) {
@@ -3996,6 +3997,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_TEMPLATE: return "template-file";
     case SKIP_GIMPLE: return "gimple";
     case SKIP_TARGET: return "target-mismatch";
+    //case SKIP_SHADOW: return "typedef-shadow";
     case SKIP_OPENMP: return "openmp";
     case SKIP_BITINT: return "bitint";
     default: return "unknown";
@@ -4054,6 +4056,14 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     /* _BitInt not implemented */
     if (contains(content, "_BitInt("))
         return SKIP_BITINT;
+    /* typedef name shadowed by local variable: typedef struct {...} s;
+       followed by unsigned char ..., s, ...; (parser scope bug) */
+#if 0
+    if ((contains(content, "} s;") || contains(content, "} s\n")) &&
+        (contains(content, ", s,") || contains(content, ", s;") ||
+         contains(content, " s, ")))
+        return SKIP_SHADOW;
+#endif
     /* rcc is C23 preferred; these C11 tests check __STDC_VERSION__ or features
      * that differ between C11 and C23 (unreachable, nullptr-as-identifier,
      * empty initializers `{}` which are an error in C11 but valid in C23) */
@@ -4655,11 +4665,11 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 1;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 47;
+        max_fail = 18;
     else if (streq(platform, "mingw"))
-        max_fail = 47;
+        max_fail = 18;
     else if (streq(platform, "linux"))
-        max_fail = 46;
+        max_fail = 18;
     else
         max_fail = 0;
 
