@@ -88,12 +88,15 @@ jobs:
 
       - name: Run tests
         id: tests
-        continue-on-error: true
+        shell: bash
         run: |
           ./rcc --version
-          make check && make test-torture
+          FAIL=
+          make check || FAIL=1
+          make test-torture || FAIL=1
+          test -z "$FAIL"
 
-      - name: Check for source changes
+      - name: Check for source, bench or test changes
         id: changed
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         with:
@@ -102,7 +105,7 @@ jobs:
               - 'test/**'
               - 'src/**'
               - 'bench/**'
-              - 'run_tcc_suite.ps1'
+              - 'run_tests.c'
 
       - name: Run benchmarks
         if: steps.changed.outputs.sources == 'true'
@@ -116,6 +119,7 @@ jobs:
           path: |
             bench/bench_report_mingw.md
             test/tcc_test_mingw.md
+            test/torture_report_mingw.log
             test_report_mingw.md
 
       - name: Upload macOS reports
