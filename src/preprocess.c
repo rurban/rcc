@@ -2496,6 +2496,30 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_puts", "puts");
         define_pre("__builtin_sprintf", "sprintf");
 
+        /* __builtin_assume_aligned(ptr, align) — hint, return ptr unchanged */
+        define_macro("__builtin_assume_aligned", true, (char *[]){"__p", "__a"}, 2, "(__p)");
+        /* math builtins: lower to library calls (type-generic, so use fabs/fabsf etc.) */
+        define_pre("__builtin_fabs", "fabs");
+        define_pre("__builtin_fabsf", "fabsf");
+        define_pre("__builtin_fabsl", "fabsl");
+        define_pre("__builtin_creal", "creal");
+        define_pre("__builtin_crealf", "crealf");
+        define_pre("__builtin_creall", "creall");
+        define_pre("__builtin_cimag", "cimag");
+        define_pre("__builtin_cimagf", "cimagf");
+        define_pre("__builtin_cimagl", "cimagl");
+        define_pre("__builtin_fmax", "fmax");
+        define_pre("__builtin_fmaxf", "fmaxf");
+        define_pre("__builtin_fmaxl", "fmaxl");
+        define_pre("__builtin_fmin", "fmin");
+        define_pre("__builtin_fminf", "fminf");
+        define_pre("__builtin_fminl", "fminl");
+        define_pre("__builtin_fma", "fma");
+        define_pre("__builtin_fmaf", "fmaf");
+        define_pre("__builtin_fmal", "fmal");
+        define_pre("__builtin_powf", "powf");
+        define_pre("__builtin_pow", "pow");
+
         // _FORTIFY_SOURCE: __builtin___*_chk using __builtin_object_size
         // String/memory functions with bounds checking
         {
