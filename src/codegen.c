@@ -4642,6 +4642,10 @@ static VReg gen_addr(Node *node) {
     case ND_REAL:
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
+        if (r < 0) {
+            /* rvalue: eval compound expression, extract real/imag from slot */
+            r = gen_to_int128(node->lhs);
+        }
         int offset = (node->kind == ND_IMAG) ? node->lhs->ty->base->size : 0;
         if (offset > 0) {
 #ifdef ARCH_ARM64
@@ -4830,6 +4834,8 @@ static VReg gen_addr(Node *node) {
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
+        return -1; // expression result, not an lvalue
+    case ND_BITNOT:
     case ND_NEG:
         return -1; // expression result, not an lvalue
     default:
