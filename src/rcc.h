@@ -106,6 +106,7 @@ extern char *bi_setjmp, *bi_longjmp;
 extern char *bi_signbit, *bi_signbitf, *bi_signbitl;
 extern char *bi_isinf, *bi_isinff, *bi_isinfl;
 extern char *bi_copysign, *bi_copysignf, *bi_copysignl;
+extern char *bi_fma, *bi_fmaf, *bi_fmal;
 extern char *bi_abs, *bi_labs, *bi_llabs;
 extern char *bi_add_overflow, *bi_sub_overflow;
 extern char *bi_mul_overflow, *bi_mul_overflow_p;

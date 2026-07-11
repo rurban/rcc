@@ -2514,9 +2514,6 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_fmin", "fmin");
         define_pre("__builtin_fminf", "fminf");
         define_pre("__builtin_fminl", "fminl");
-        define_pre("__builtin_fma", "fma");
-        define_pre("__builtin_fmaf", "fmaf");
-        define_pre("__builtin_fmal", "fmal");
         define_pre("__builtin_powf", "powf");
         define_pre("__builtin_pow", "pow");
 

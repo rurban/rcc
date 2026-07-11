@@ -544,6 +544,7 @@ char *bi_setjmp, *bi_longjmp;
 char *bi_signbit, *bi_signbitf, *bi_signbitl;
 char *bi_isinf, *bi_isinff, *bi_isinfl;
 char *bi_copysign, *bi_copysignf, *bi_copysignl;
+char *bi_fma, *bi_fmaf, *bi_fmal;
 char *bi_abs, *bi_labs, *bi_llabs;
 char *bi_add_overflow, *bi_sub_overflow;
 char *bi_mul_overflow, *bi_mul_overflow_p;
@@ -603,6 +604,9 @@ void init_builtin_names(void) {
     bi_copysign = _BI("__builtin_copysign");
     bi_copysignf = _BI("__builtin_copysignf");
     bi_copysignl = _BI("__builtin_copysignl");
+    bi_fma = str_intern("__builtin_fma", 13);
+    bi_fmaf = str_intern("__builtin_fmaf", 14);
+    bi_fmal = str_intern("__builtin_fmal", 14);
     bi_abs = _BI("__builtin_abs");
     bi_labs = _BI("__builtin_labs");
     bi_llabs = _BI("__builtin_llabs");
@@ -1250,7 +1254,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         bool is_ffs = false, is_ffsl = false, is_ffsll = false;
         bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
         bool is_setjmp = false, is_longjmp = false;
-        bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_abs_builtin = false;
+        bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_fma_builtin = false, is_abs_builtin = false;
         bool is_add_overflow = false, is_sub_overflow = false;
         bool is_mul_overflow = false, is_mul_overflow_p = false;
         if (maybe_builtin) {
@@ -1289,6 +1293,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             is_copysign_builtin = call_target == bi_copysign ||
                 call_target == bi_copysignf ||
                 call_target == bi_copysignl;
+            is_fma_builtin = call_target == bi_fma ||
+                call_target == bi_fmaf ||
+                call_target == bi_fmal;
             is_abs_builtin = call_target == bi_abs ||
                 call_target == bi_labs ||
                 call_target == bi_llabs ||
@@ -1640,6 +1647,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 return r;
 #endif
             }
+        }
+
+        if (is_fma_builtin) {
+            if (call_target == bi_fma) call_target = "fma";
+            else if (call_target == bi_fmaf)
+                call_target = "fmaf";
+            else
+                call_target = "fmal";
+            maybe_builtin = false;
         }
 
         if (is_frame_addr) {
