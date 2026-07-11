@@ -1792,7 +1792,9 @@ static int64_t eval_condition(char *expr, char *filename, unsigned line_no) {
     pp_eval_line_no = line_no;
     pp_expr_unsigned = false;
     char *rest = expr;
-    return eval_pp_expr(&rest, expr, filename);
+    int64_t ret;
+    ret = eval_pp_expr(&rest, expr, filename);
+    return ret;
 }
 static int count_unmatched_parens(char *start, char *end) {
     int open = 0;

@@ -1966,9 +1966,9 @@
   regstack-1                          PASS
   restrict-1                          PASS
   return-addr                         PASS
-  scal-to-vec1                        PASS
+  scal-to-vec1                        FAIL (compile)
   scal-to-vec2                        PASS
-  scal-to-vec3                        PASS
+  scal-to-vec3                        FAIL (compile)
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
@@ -2066,4 +2066,6 @@
   zerolen-1                           PASS
   zerolen-2                           SKIP (attribute-mode)
 
-Torture: 1836/1836 passed (100%), 0 failed, 229 skipped.
+Torture: 1834/1836 passed (99%), 2 failed (2 compile/0 runtime), 229 skipped.
+
+Compile failures: scal-to-vec1 scal-to-vec3

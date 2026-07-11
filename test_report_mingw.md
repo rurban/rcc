@@ -2,21 +2,21 @@
 
 **Platform**: Windows x86_64 (native)
 
-Generated: July 10 2026 19:00
+Generated: July 11 2026 06:22
 
 ## Overall Summary
 
-- **Total**: 413
-- **Passed**: 409
-- **Failed**: 3
-- **Overall Pass Rate**: 99%
+- **Total**: 2478
+- **Passed**: 2241
+- **Failed**: 2
+- **Overall Pass Rate**: 90%
 
 ## TCC Compatibility Tests
 
 - **Total**: 118
-- **Passed**: 116
-- **Failed**: 2
-- **Pass Rate**: 98%
+- **Passed**: 118
+- **Failed**: 0
+- **Pass Rate**: 100%
 
 ## RCC Unit Tests
 
@@ -28,9 +28,9 @@ Generated: July 10 2026 19:00
 ## c-testsuite
 
 - **Total**: 220
-- **Passed**: 219
-- **Failed**: 1
-- **Pass Rate**: 99%
+- **Passed**: 220
+- **Failed**: 0
+- **Pass Rate**: 100%
 
 ## NCC Compliance Tests (vs GCC)
 
@@ -38,3 +38,12 @@ Generated: July 10 2026 19:00
 - **Passed**: 14
 - **Failed**: 0
 - **Pass Rate**: 100%
+
+## GCC Torture Tests
+
+- **Total**: 2065
+- **Passed**: 1829
+- **Failed**: 2
+- **Skipped**: 234
+- **Fail Compile**: 2
+- **Pass Rate (excl. skip)**: 99%
