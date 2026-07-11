@@ -3238,7 +3238,7 @@
   vect/vect-cond-4                    PASS
   vect/vect-cond-5                    PASS
   vect/vect-cond-6                    PASS
-  vect/vect-cond-7                    FAIL (compile)
+  vect/vect-cond-7                    PASS
   vect/vect-cond-8                    PASS
   vect/vect-cond-9                    PASS
   vect/vect-cond-10                   PASS
@@ -3833,8 +3833,8 @@
   vect/vect-strided-a-u8-i2-gap       PASS
   vect/vect-strided-a-u8-i8-gap2-big-array PASS
   vect/vect-strided-a-u8-i8-gap2      PASS
-  vect/vect-strided-a-u8-i8-gap7-big-array SKIP (typedef-shadow)
-  vect/vect-strided-a-u8-i8-gap7      SKIP (typedef-shadow)
+  vect/vect-strided-a-u8-i8-gap7-big-array PASS
+  vect/vect-strided-a-u8-i8-gap7      PASS
   vect/vect-strided-a-u16-i2          PASS
   vect/vect-strided-a-u16-i4          PASS
   vect/vect-strided-a-u16-mult        PASS
@@ -3856,9 +3856,9 @@
   vect/vect-strided-u8-i8-gap4-big-array PASS
   vect/vect-strided-u8-i8-gap4-unknown PASS
   vect/vect-strided-u8-i8-gap4        PASS
-  vect/vect-strided-u8-i8-gap7-big-array SKIP (typedef-shadow)
-  vect/vect-strided-u8-i8-gap7        SKIP (typedef-shadow)
-  vect/vect-strided-u8-i8             SKIP (typedef-shadow)
+  vect/vect-strided-u8-i8-gap7-big-array PASS
+  vect/vect-strided-u8-i8-gap7        PASS
+  vect/vect-strided-u8-i8             PASS
   vect/vect-strided-u16-i2            PASS
   vect/vect-strided-u16-i3            PASS
   vect/vect-strided-u16-i4            PASS
@@ -3964,8 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3610/3623 passed (99%), 13 failed (1 compile/12 runtime), 340 skipped.
-
-Compile failures: vect/vect-cond-7
+Torture: 3616/3628 passed (99%), 12 failed (0 compile/12 runtime), 335 skipped.
 
 Runtime failures: scal-to-vec1 scal-to-vec3 vect/bb-slp-pow-1 vect/group-no-gaps-1 vect/pr96854 vect/pr101145_3 vect/vect-alias-check-14 vect/vect-cond-arith-1 vect/vect-cond-arith-3 vect/vect-cond-arith-7 vect/vect-fma-1 vect/vect-ifcvt-18

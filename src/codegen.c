@@ -12619,9 +12619,9 @@ struct ObjFile *codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn->name))); // .weak_definition %s
+            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
         } else if (fn_exported)
-            cg_global_label(asm_sym_name(sym_name(fn->name))); // .globl %s
+            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
         else
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
 
@@ -12966,9 +12966,9 @@ struct ObjFile *codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn->name))); // .weak_definition %s
+            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
         } else if (fn_exported) {
-            cg_global_label(asm_sym_name(sym_name(fn->name))); // .globl %s
+            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
         } else {
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
         }

@@ -4508,6 +4508,10 @@ static Node *declaration(Token **rest, Token *tok) {
             continue;
         }
 
+        // -W: warn when a local declaration shadows a typedef name
+        if (opt_W && !attr.is_typedef && name && typedef_find_name(name))
+            warn_tok(tok, "declaration of '%s' shadows a global declaration", name);
+
         if (attr.is_typedef) {
             add_typedef(name, ty);
         } else if (attr.is_static) {
@@ -4914,6 +4918,13 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         if (is_typename(tok)) {
             // A typedef name followed by ':' is a label, not a declaration.
             if (find_typedef(tok) && equalc(tok->next, ":")) {
+                cur = cur->next = stmt(&tok, tok);
+                continue;
+            }
+            // A typedef name shadowed by a local variable is an expression,
+            // not a declaration (e.g. `unsigned char s; … s = expr;` when
+            // a typedef `s` is also in scope).
+            if (find_typedef(tok) && find_var(tok)) {
                 cur = cur->next = stmt(&tok, tok);
                 continue;
             }

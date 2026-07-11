@@ -3968,6 +3968,7 @@ typedef enum {
     SKIP_ERROR,
     SKIP_FENV,
     SKIP_TARGET,
+    SKIP_AVX,
     SKIP_NO_ICONV,
     SKIP_TEMPLATE,
     SKIP_GIMPLE,
@@ -3993,6 +3994,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_C11_INCOMPAT: return "c11-incompat";
     case SKIP_ERROR: return "error";
     case SKIP_FENV: return "fenv-exceptions";
+    case SKIP_AVX: return "avx";
     case SKIP_NO_ICONV: return "no-iconv";
     case SKIP_TEMPLATE: return "template-file";
     case SKIP_GIMPLE: return "gimple";
@@ -4020,6 +4022,9 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
      * so tests that assert on FE_INVALID etc. cannot pass. */
     if (contains(content, "dg-require-effective-target fenv_exceptions"))
         return SKIP_FENV;
+    /* Tests requiring AVX (avx_runtime target) — rcc doesn't emit AVX instructions. */
+    if (contains(content, "avx_runtime"))
+        return SKIP_AVX;
     /* Tests gated on a target that lacks hardware infinity/NaN do not apply to
      * x86 (which has both), e.g. `dg-do compile { target { ! inff } }`. */
     if (contains(content, "{ ! inff }") || contains(content, "{ ! inf }"))
@@ -4669,7 +4674,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 18;
     else if (streq(platform, "linux"))
-        max_fail = 18;
+        max_fail = 12;
     else
         max_fail = 0;
 
