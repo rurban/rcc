@@ -4642,10 +4642,6 @@ static VReg gen_addr(Node *node) {
     case ND_REAL:
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
-        if (r < 0) {
-            /* rvalue: eval compound expression, extract real/imag from slot */
-            r = gen_to_int128(node->lhs);
-        }
         int offset = (node->kind == ND_IMAG) ? node->lhs->ty->base->size : 0;
         if (offset > 0) {
 #ifdef ARCH_ARM64
@@ -4834,8 +4830,6 @@ static VReg gen_addr(Node *node) {
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
-        return -1; // expression result, not an lvalue
-    case ND_BITNOT:
     case ND_NEG:
         return -1; // expression result, not an lvalue
     default:
@@ -6023,6 +6017,7 @@ static VReg gen_int128(Node *node) {
     }
 }
 
+#ifdef ARCH_ARM64
 // Element-wise vector (__attribute__((vector_size))) arithmetic/compare/unary.
 // Convention (mirrors int128): the value lives in a 16-byte stack slot and this
 // returns a GP register holding the slot address. Operands are also vectors and
@@ -6037,12 +6032,13 @@ static VReg gen_scalar_addr(Node *node) {
     VReg slot = alloc_int128_addr();
 #ifdef ARCH_ARM64
     arm64_str_imm(cg_sec, 1, REG(val), REG(slot), 0, false);
-#else
+#else // unused
     x86_mov_mr(cg_sec, 8, x86_mem(REG(slot), 0), REG(val));
 #endif
     free_reg(val);
     return slot;
 }
+#endif
 
 static VReg gen_vector(Node *node) {
     Type *ty = node->ty;
