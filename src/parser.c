@@ -3768,8 +3768,24 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     eidx = (int)ev;
                 }
                 tok = skip(tok, "]");
+                /* Nested designator: [N][M]=val for multi-dimensional arrays */
+                if (equalc(tok, "[")) {
+                    tok = tok->next;
+                    Node *n2 = assign(&tok, tok);
+                    long long sv2 = 0;
+                    eval_const_expr(n2, &sv2);
+                    int sidx2 = (int)sv2;
+                    tok = skip(tok, "]");
+                    tok = skip(tok, "=");
+                    /* Apply value to a[sidx][sidx2] */
+                    if (len == 0 || sidx < len)
+                        tok = global_init_one(tok, var, ty->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
+                    else
+                        tok = skip_initializer(tok);
+                    idx = sidx + 1;
+                    continue;
+                }
                 tok = skip(tok, "=");
-                idx = sidx;
             }
             Token *val_start = tok;
             for (int i = sidx; i <= eidx; i++) {
@@ -4185,8 +4201,22 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     eidx = (int)ev;
                 }
                 tok = skip(tok, "]");
+                /* Nested designator: [N][M]=val for multi-dimensional arrays */
+                if (equalc(tok, "[")) {
+                    Node *inner = new_array_elem_lvalue_node(lhs, sidx, tok);
+                    tok = tok->next;
+                    Node *n2 = assign(&tok, tok);
+                    long long sv2 = 0;
+                    eval_const_expr(n2, &sv2);
+                    int sidx2 = (int)sv2;
+                    tok = skip(tok, "]");
+                    tok = skip(tok, "=");
+                    Node *elem_lhs = new_array_elem_lvalue_node(inner, sidx2, tok);
+                    tok = local_init_one(tok, elem_lhs, ty->base->base, cur);
+                    idx = sidx + 1;
+                    continue;
+                }
                 tok = skip(tok, "=");
-                idx = sidx;
             }
             Token *val_start = tok;
             if (sidx != eidx && !equalc(tok, "{")) {
