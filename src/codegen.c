@@ -6085,9 +6085,45 @@ static VReg gen_vector(Node *node) {
 
     bool lvec = node->lhs && node->lhs->ty && node->lhs->ty->is_vector;
     bool rvec = node->rhs && node->rhs->ty && node->rhs->ty->is_vector;
-    if (!lvec || !rvec)
-        error("vector_size: scalar/vector broadcast not yet supported; "
-              "make both operands vectors (e.g. _mm_set1_ps)");
+#define EMIT_BROADCAST(reg, node) do { \
+    Type *_nt = (node)->ty; \
+    Type *_et = elem; \
+    int _esz = _et ? (int)_et->size : 4; \
+    if (_nt && is_flonum(_nt)) { \
+        VReg _r = gen(node); \
+        x86_movq_r_xmm(cg_sec, reg, REG(_r)); \
+        free_reg(_r); \
+        int _nsz = _nt->size <= 4 ? 4 : 8; \
+        if (_nsz == 8 && _esz <= 4) { \
+            x86_cvtsd2ss(cg_sec, reg, reg); \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        } else if (_nsz <= 4 && _esz <= 4) { \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        } else { \
+            x86_movlhps(cg_sec, reg, reg); \
+        } \
+    } else if (_et && is_flonum(_et)) { \
+        VReg _r = gen(node); \
+        if (_esz == 8) \
+            x86_cvtsi2sd(cg_sec, 4, reg, REG(_r)); \
+        else \
+            x86_cvtsi2ss(cg_sec, 4, reg, REG(_r)); \
+        free_reg(_r); \
+        if (_esz <= 4) \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        else \
+            x86_movlhps(cg_sec, reg, reg); \
+    } else { \
+        VReg _r = gen(node); \
+        x86_movq_r_xmm(cg_sec, reg, REG(_r)); \
+        free_reg(_r); \
+        if (_esz <= 4) \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        else \
+            x86_movlhps(cg_sec, reg, reg); \
+    } \
+} while(0)
+
 
 #ifdef ARCH_ARM64
     // Load lhs into Q2 (nested gen_vector uses Q0/Q1, so Q2 survives rhs eval)
@@ -6154,16 +6190,29 @@ static VReg gen_vector(Node *node) {
     asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
     return dst;
 #else
-    // Load lhs into xmm2 (a nested gen_vector uses only xmm0/xmm1, so xmm2
-    // survives the rhs evaluation); then load rhs into xmm1. Each operand's
-    // address register is freed right after use so neither must stay live
-    // across the other's evaluation (the register allocator may spill it).
-    VReg a = gen_addr(node->lhs);
-    x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
-    free_reg(a);
-    VReg b = gen_addr(node->rhs);
-    x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
-    free_reg(b);
+    /* x86: load lhs into xmm2, rhs into xmm1, with scalar broadcast support */
+    if (lvec && rvec) {
+        VReg a = gen_addr(node->lhs);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
+        free_reg(a);
+        VReg b = gen_addr(node->rhs);
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
+        free_reg(b);
+    } else if (lvec) {
+        VReg a = gen_addr(node->lhs);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
+        free_reg(a);
+        EMIT_BROADCAST(X86_XMM1, node->rhs);
+    } else {
+        EMIT_BROADCAST(X86_XMM2, node->lhs);
+        if (rvec) {
+            VReg b = gen_addr(node->rhs);
+            x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
+            free_reg(b);
+        } else {
+            EMIT_BROADCAST(X86_XMM1, node->rhs);
+        }
+    }
     x86_movaps(cg_sec, X86_XMM0, X86_XMM2); // xmm0 = lhs
     VReg dst = alloc_int128_addr();
     switch (node->kind) {
