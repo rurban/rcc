@@ -4642,6 +4642,10 @@ static VReg gen_addr(Node *node) {
     case ND_REAL:
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
+        if (r < 0) {
+            /* rvalue: eval compound expression, extract real/imag from slot */
+            r = gen_to_int128(node->lhs);
+        }
         int offset = (node->kind == ND_IMAG) ? node->lhs->ty->base->size : 0;
         if (offset > 0) {
 #ifdef ARCH_ARM64
@@ -4830,6 +4834,8 @@ static VReg gen_addr(Node *node) {
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
+        return -1; // expression result, not an lvalue
+    case ND_BITNOT:
     case ND_NEG:
         return -1; // expression result, not an lvalue
     default:
@@ -10481,8 +10487,8 @@ static VReg gen(Node *node) {
         // Non-complex operands must be converted to the complex base type and
         // materialized as a {real, imag} pair, so never reuse their plain
         // scalar address (it is too small and holds the wrong representation).
-        int addr_lhs = lhs_cx ? gen_addr(node->lhs) : -1;
-        int addr_rhs = rhs_cx ? gen_addr(node->rhs) : -1;
+        int addr_lhs = gen_addr(node->lhs);
+        int addr_rhs = gen_addr(node->rhs);
         int need_free_lhs = 0, need_free_rhs = 0;
         if (addr_lhs < 0) {
             need_free_lhs = 1;
