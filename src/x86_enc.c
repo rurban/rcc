@@ -814,6 +814,14 @@ void x86_shufps(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit3(s, 0x0f, 0xc6, modrxmm(3, d, sr));
     emit1(s, imm);
 }
+// shufpd xmm, xmm, imm8: 66 0F C6 /r ib
+void x86_shufpd(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0xc6, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+
 // movmskps r32, xmm: 0F 50 /r (reg=GP dst, rm=xmm src)
 void x86_movmskps(SecBuf *s, X86Reg d, X86XmmReg sr) {
     maybe_rex(s, 0, (int)d, 0, (int)sr);

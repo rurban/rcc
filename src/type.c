@@ -430,9 +430,16 @@ static void add_type_internal(Node *node) {
             case ND_EQ: // vector comparisons yield a same-shape mask vector
             case ND_NE:
             case ND_LT:
-            case ND_LE:
-                node->ty = lv ? lvt : rvt;
+            case ND_LE: {
+                Type *vt = lv ? lvt : rvt;
+                Type *elem = vt->base;
+                node->ty = vt;
+                if (!lv && node->lhs->ty != elem)
+                    insert_arith_cast(&node->lhs, elem);
+                if (!rv && node->rhs->ty != elem)
+                    insert_arith_cast(&node->rhs, elem);
                 return;
+            }
             case ND_NEG:
             case ND_BITNOT:
                 node->ty = lvt;

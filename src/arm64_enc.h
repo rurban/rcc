@@ -312,6 +312,8 @@ void arm64_frecpe_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn);
 // ---------------------------------------------------------------------------
 // UMOV Wd, Vn.S[lane] — extract 32-bit element to general-purpose register
 void arm64_umov_s(SecBuf *s, Arm64Reg rd, Arm64Reg rn, int lane);
+// DUP (general): duplicate GP register to all SIMD lanes (sz=2->.4S, sz=3->.2D)
+void arm64_dup_gen(SecBuf *s, int sz, Arm64Reg rd, Arm64Reg rn);
 // FRSQRTS Vd, Vn, Vm — Newton-Raphson step for reciprocal sqrt refinement
 void arm64_frsqrts_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 

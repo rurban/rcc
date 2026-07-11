@@ -3952,6 +3952,11 @@ static void asm_not_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
     arm64_not_simd(s, qd, qn); // not v{qd}.16b, v{qn}.16b
 }
 
+// DUP (general): broadcast GP register value to all SIMD lanes
+static void asm_dup_gen(SecBuf *s, Arm64Reg qd, VReg rn, int esz) {
+    arm64_dup_gen(s, (esz == 8) ? 3 : 2, qd, REG(rn));
+}
+
 // Unary float ops
 static void asm_fneg_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
     arm64_fneg_simd(s, 0, qd, qn); // fneg v{qd}.4s, v{qn}.4s

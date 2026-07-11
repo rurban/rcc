@@ -6089,6 +6089,16 @@ static Node *vector_lower(Node *node) {
     // correctly (compare masks are all-ones/zero, not scalar 1/0).
     if ((cmp || bitop || arith) && is_flonum(elem)) {
         node->ty = vt;
+        if (!un && !lv) {
+            Node *cast = new_unary(ND_CAST, node->lhs, node->tok);
+            cast->ty = elem;
+            node->lhs = cast;
+        }
+        if (!un && !rv) {
+            Node *cast = new_unary(ND_CAST, node->rhs, node->tok);
+            cast->ty = elem;
+            node->rhs = cast;
+        }
         return node;
     }
     Token *tok = node->tok;

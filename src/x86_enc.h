@@ -265,6 +265,7 @@ void x86_movhlps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movlhps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_cmpps(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 void x86_shufps(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
+void x86_shufpd(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 void x86_movmskps(SecBuf *s, X86Reg dst, X86XmmReg src);
 void x86_addpd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_subpd(SecBuf *s, X86XmmReg dst, X86XmmReg src);

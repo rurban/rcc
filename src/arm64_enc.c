@@ -726,4 +726,10 @@ void arm64_umov_s(SecBuf *s, Arm64Reg rd, Arm64Reg rn, int lane) {
     uint32_t ins = 0x0E003C00u | BITS(20, 19, lane & 3) | BITS(9, 5, rn) | BITS(4, 0, rd);
     secbuf_emit32le(s, ins); // umov wd, vn.s[lane]
 }
+// DUP (general): duplicate general-purpose register to all lanes of SIMD reg.
+// sz=2: 32-bit (.4S -> imm5=4), sz=3: 64-bit (.2D -> imm5=8).
+void arm64_dup_gen(SecBuf *s, int sz, Arm64Reg rd, Arm64Reg rn) {
+    uint32_t enc_imm5 = (sz == 3) ? 8u : 4u;
+    secbuf_emit32le(s, 0x4E000C00u | (enc_imm5 << 16) | BITS(9, 5, rn) | BITS(4, 0, rd));
+}
 #endif /* ARCH_ARM64 */

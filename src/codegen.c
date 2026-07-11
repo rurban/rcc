@@ -4790,7 +4790,7 @@ static VReg gen_addr(Node *node) {
             }
             return -1;
         }
-        error_tok(node->tok, "lvalue required as left operand of assignment");
+        // Scalar cast: not an lvalue, caller can fall back to gen()
         return -1;
     case ND_COMMA: {
         // Compound literal: evaluate LHS side effects, return address of RHS
@@ -6021,6 +6021,23 @@ static VReg gen_int128(Node *node) {
 // Convention (mirrors int128): the value lives in a 16-byte stack slot and this
 // returns a GP register holding the slot address. Operands are also vectors and
 // gen() returns their addresses, so we movups them into xmm and emit packed ops.
+// Get the address of a scalar operand for vector broadcast.  For lvalues this
+// is just gen_addr(); for non-lvalues (constants, expressions) we evaluate
+// with gen() and spill to a 16-byte-aligned scratch slot.
+static VReg gen_scalar_addr(Node *node) {
+    VReg a = gen_addr(node);
+    if (a >= 0) return a;
+    VReg val = gen(node);
+    VReg slot = alloc_int128_addr();
+#ifdef ARCH_ARM64
+    arm64_str_imm(cg_sec, 1, REG(val), REG(slot), 0, false);
+#else
+    x86_mov_mr(cg_sec, 8, x86_mem(REG(slot), 0), REG(val));
+#endif
+    free_reg(val);
+    return slot;
+}
+
 static VReg gen_vector(Node *node) {
     Type *ty = node->ty;
     Type *elem = ty ? ty->base : NULL;
@@ -6124,15 +6141,37 @@ static VReg gen_vector(Node *node) {
     } \
 } while(0)
 
-
 #ifdef ARCH_ARM64
-    // Load lhs into Q2 (nested gen_vector uses Q0/Q1, so Q2 survives rhs eval)
-    VReg a = gen_addr(node->lhs);
-    asm_ldr_q(cg_sec, ASM_Q2, a); // ldr q2, [x{a}]
-    free_reg(a);
-    VReg b = gen_addr(node->rhs);
-    asm_ldr_q(cg_sec, ASM_Q1, b); // ldr q1, [x{b}]
-    free_reg(b);
+    if (lvec) {
+        VReg a = gen_addr(node->lhs);
+        asm_ldr_q(cg_sec, ASM_Q2, a);
+        free_reg(a);
+    } else {
+        VReg a = gen_scalar_addr(node->lhs);
+        VReg t = alloc_reg();
+        if (esz == 8)
+            arm64_ldr_imm(cg_sec, 1, REG(t), REG(a), 0, false);
+        else
+            arm64_ldr_uoff(cg_sec, 2, REG(t), REG(a), 1);
+        free_reg(a);
+        asm_dup_gen(cg_sec, ASM_Q2, t, esz);
+        free_reg(t);
+    }
+    if (rvec) {
+        VReg b = gen_addr(node->rhs);
+        asm_ldr_q(cg_sec, ASM_Q1, b);
+        free_reg(b);
+    } else {
+        VReg b = gen_scalar_addr(node->rhs);
+        VReg t = alloc_reg();
+        if (esz == 8)
+            arm64_ldr_imm(cg_sec, 1, REG(t), REG(b), 0, false);
+        else
+            arm64_ldr_uoff(cg_sec, 2, REG(t), REG(b), 1);
+        free_reg(b);
+        asm_dup_gen(cg_sec, ASM_Q1, t, esz);
+        free_reg(t);
+    }
     asm_fmov_q(cg_sec, ASM_Q0, ASM_Q2); // mov v0.16b, v2.16b  (lhs→Q0)
     VReg dst = alloc_int128_addr();
     switch (node->kind) {
@@ -6691,7 +6730,7 @@ static VReg gen(Node *node) {
         return r;
     }
     case ND_ASSIGN: {
-        if (node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) {
+        if ((node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) && !(node->lhs->ty->is_vector && node->lhs->ty->size == 16)) {
             int c = ++rcc_label_count;
             bool lhs_vla_struct = (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION) && node->lhs->ty->vla_len_expr;
             VReg dst = lhs_vla_struct ? gen(node->lhs) : gen_addr(node->lhs);
@@ -7009,6 +7048,20 @@ static VReg gen(Node *node) {
             free_reg(r1);
             return r2;
 #endif
+        }
+        // 16-byte vector: copy using ldr q/str q (or movups on x86).
+        if (node->lhs->ty->is_vector && node->lhs->ty->size == 16) {
+            VReg rhs_a = gen_addr(node->rhs);
+            VReg lhs_a = gen_addr(node->lhs);
+#ifdef ARCH_ARM64
+            asm_ldr_q(cg_sec, ASM_Q0, rhs_a); // ldr q0, [x{rhs_a}]
+            asm_str_q(cg_sec, ASM_Q0, lhs_a); // str q0, [x{lhs_a}]
+#else
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(rhs_a), 0));
+            x86_movups_mr(cg_sec, x86_mem(REG(lhs_a), 0), X86_XMM0);
+#endif
+            free_reg(rhs_a);
+            return lhs_a;
         }
         if (node->lhs->kind == ND_LVAR && node->lhs->var->is_local && node->lhs->var->ty->kind != TY_ARRAY) {
             VReg r2 = gen(node->rhs);
