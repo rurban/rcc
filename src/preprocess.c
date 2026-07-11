@@ -2523,10 +2523,10 @@ char *preprocess(char *filename, char *p) {
         // _FORTIFY_SOURCE: __builtin___*_chk using __builtin_object_size
         // String/memory functions with bounds checking
         {
-            char *p4[] = {"__dest", "__src", "__len", "__bos", NULL};
-            define_macro("__builtin___memcpy_chk", true, p4, 4,
+            char *p4[] = {"__dest", "__src", "__len", "__bos", NULL}; char *p4m[] = {"__dest", "__src", "__len", "__bos", NULL};
+            define_macro("__builtin___memcpy_chk", true, p4m, 4,
                          "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
-            define_macro("__builtin___memmove_chk", true, p4, 4,
+            define_macro("__builtin___memmove_chk", true, p4m, 4,
                          "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memmove(__dest,__src,__len))");
             define_macro("__builtin___memset_chk", true, p4, 4,
                          "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memset(__dest,__src,__len))");
