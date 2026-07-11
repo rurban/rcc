@@ -6118,11 +6118,8 @@ static VReg gen_vector(Node *node) {
         VReg _r = gen(node); \
         x86_movq_r_xmm(cg_sec, reg, REG(_r)); \
         free_reg(_r); \
-        int _nsz = _nt->size <= 4 ? 4 : 8; \
-        if (_nsz == 8 && _esz <= 4) { \
+        if (_esz <= 4) { \
             x86_cvtsd2ss(cg_sec, reg, reg); \
-            x86_shufps(cg_sec, reg, reg, 0); \
-        } else if (_nsz <= 4 && _esz <= 4) { \
             x86_shufps(cg_sec, reg, reg, 0); \
         } else { \
             x86_movlhps(cg_sec, reg, reg); \

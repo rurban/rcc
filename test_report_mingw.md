@@ -2,13 +2,13 @@
 
 **Platform**: Windows x86_64 (native)
 
-Generated: July 11 2026 19:03
+Generated: July 11 2026 19:32
 
 ## Overall Summary
 
 - **Total**: 4376
-- **Passed**: 4011
-- **Failed**: 14
+- **Passed**: 3996
+- **Failed**: 11
 - **Overall Pass Rate**: 91%
 
 ## TCC Compatibility Tests
@@ -42,9 +42,9 @@ Generated: July 11 2026 19:03
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 3599
-- **Failed**: 14
-- **Skipped**: 350
+- **Passed**: 3584
+- **Failed**: 11
+- **Skipped**: 368
 - **Fail Compile**: 3
-- **Fail Runtime**: 11
+- **Fail Runtime**: 8
 - **Pass Rate (excl. skip)**: 99%

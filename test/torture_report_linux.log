@@ -1966,9 +1966,9 @@
   regstack-1                          PASS
   restrict-1                          PASS
   return-addr                         PASS
-  scal-to-vec1                        FAIL (runtime)
+  scal-to-vec1                        PASS
   scal-to-vec2                        PASS
-  scal-to-vec3                        FAIL (runtime)
+  scal-to-vec3                        PASS
   scope-1                             PASS
   shiftdi-2                           PASS
   shiftdi                             PASS
@@ -2528,7 +2528,7 @@
   vect/pr61194                        PASS
   vect/pr61634                        PASS (compile only)
   vect/pr61680                        PASS
-  vect/pr62021                        SKIP (openmp)
+  vect/pr62021                        SKIP (avx)
   vect/pr62073                        PASS (compile only)
   vect/pr62075                        PASS (compile only)
   vect/pr62171                        PASS (compile only)
@@ -2539,9 +2539,9 @@
   vect/pr63379                        PASS
   vect/pr63530                        PASS
   vect/pr63605                        PASS
-  vect/pr64252                        PASS
+  vect/pr64252                        SKIP (avx)
   vect/pr64404                        PASS
-  vect/pr64421                        SKIP (openmp)
+  vect/pr64421                        SKIP (avx)
   vect/pr64493                        PASS
   vect/pr64495                        PASS
   vect/pr64829                        PASS (compile only)
@@ -2567,12 +2567,12 @@
   vect/pr65947-13                     PASS
   vect/pr65947-14                     PASS
   vect/pr65951                        PASS
-  vect/pr66142                        SKIP (openmp)
+  vect/pr66142                        SKIP (avx)
   vect/pr66251                        PASS
   vect/pr66253                        PASS
   vect/pr66278                        PASS (compile only)
   vect/pr66623                        PASS
-  vect/pr66636                        PASS
+  vect/pr66636                        SKIP (avx)
   vect/pr66677                        PASS (compile only)
   vect/pr66951                        PASS (compile only)
   vect/pr67790                        PASS
@@ -2594,7 +2594,7 @@
   vect/pr70138-2                      PASS
   vect/pr70354-1                      PASS
   vect/pr70354-2                      PASS
-  vect/pr71259                        PASS
+  vect/pr71259                        SKIP (avx)
   vect/pr71264                        PASS (compile only)
   vect/pr71407                        PASS (compile only)
   vect/pr71416-1                      PASS
@@ -2688,7 +2688,7 @@
   vect/pr92324-3                      PASS
   vect/pr92324-4                      PASS
   vect/pr92347                        SKIP (openmp)
-  vect/pr92420                        PASS
+  vect/pr92420                        SKIP (avx)
   vect/pr92429                        PASS (compile only)
   vect/pr92554                        PASS (compile only)
   vect/pr92555                        PASS (compile only)
@@ -3247,7 +3247,7 @@
   vect/vect-cond-13                   PASS
   vect/vect-cond-arith-1              FAIL (runtime)
   vect/vect-cond-arith-2              SKIP (gimple)
-  vect/vect-cond-arith-3              FAIL (runtime)
+  vect/vect-cond-arith-3              PASS
   vect/vect-cond-arith-4              PASS
   vect/vect-cond-arith-5              PASS
   vect/vect-cond-arith-6              PASS
@@ -3451,7 +3451,7 @@
   vect/vect-float-truncate-1          PASS
   vect/vect-floatint-conversion-1     PASS
   vect/vect-floatint-conversion-2     PASS
-  vect/vect-fma-1                     FAIL (runtime)
+  vect/vect-fma-1                     PASS
   vect/vect-fma-2                     PASS (compile only)
   vect/vect-fma-3                     PASS (compile only)
   vect/vect-fmax-1                    PASS
@@ -3480,7 +3480,7 @@
   vect/vect-ifcvt-11                  PASS
   vect/vect-ifcvt-16                  PASS
   vect/vect-ifcvt-17                  PASS
-  vect/vect-ifcvt-18                  FAIL (runtime)
+  vect/vect-ifcvt-18                  SKIP (avx)
   vect/vect-ifcvt-19                  SKIP (gimple)
   vect/vect-ifcvt-20                  SKIP (openmp)
   vect/vect-intfloat-conversion-1     PASS
@@ -3514,8 +3514,8 @@
   vect/vect-live-slp-2                PASS
   vect/vect-live-slp-3                PASS
   vect/vect-load-lanes-peeling-1      PASS (compile only)
-  vect/vect-mask-load-1               PASS
-  vect/vect-mask-loadstore-1          PASS
+  vect/vect-mask-load-1               SKIP (avx)
+  vect/vect-mask-loadstore-1          SKIP (avx)
   vect/vect-mask-store-move-1         PASS (compile only)
   vect/vect-mixed-size-cond-1         PASS (compile only)
   vect/vect-mod-var                   PASS
@@ -3770,63 +3770,63 @@
   vect/vect-shift-5                   PASS (compile only)
   vect/vect-shift-6                   PASS
   vect/vect-shift-7                   PASS
-  vect/vect-simd-1                    SKIP (openmp)
+  vect/vect-simd-1                    SKIP (avx)
   vect/vect-simd-2                    SKIP (openmp)
   vect/vect-simd-3                    SKIP (openmp)
   vect/vect-simd-4                    SKIP (openmp)
   vect/vect-simd-5                    SKIP (openmp)
   vect/vect-simd-6                    SKIP (openmp)
   vect/vect-simd-7                    SKIP (openmp)
-  vect/vect-simd-8                    SKIP (openmp)
-  vect/vect-simd-9                    SKIP (openmp)
-  vect/vect-simd-10                   SKIP (openmp)
-  vect/vect-simd-11                   SKIP (openmp)
-  vect/vect-simd-12                   SKIP (openmp)
-  vect/vect-simd-13                   SKIP (openmp)
-  vect/vect-simd-14                   SKIP (openmp)
-  vect/vect-simd-15                   SKIP (openmp)
-  vect/vect-simd-16                   SKIP (openmp)
-  vect/vect-simd-17                   SKIP (openmp)
-  vect/vect-simd-18                   SKIP (openmp)
-  vect/vect-simd-19                   SKIP (openmp)
-  vect/vect-simd-20                   SKIP (openmp)
-  vect/vect-simd-clone-1              SKIP (openmp)
-  vect/vect-simd-clone-2              SKIP (openmp)
-  vect/vect-simd-clone-3              SKIP (openmp)
-  vect/vect-simd-clone-4              SKIP (openmp)
-  vect/vect-simd-clone-5              SKIP (openmp)
-  vect/vect-simd-clone-6              SKIP (openmp)
-  vect/vect-simd-clone-7              SKIP (openmp)
-  vect/vect-simd-clone-8              SKIP (openmp)
-  vect/vect-simd-clone-9              SKIP (openmp)
-  vect/vect-simd-clone-10             SKIP (openmp)
+  vect/vect-simd-8                    SKIP (avx)
+  vect/vect-simd-9                    SKIP (avx)
+  vect/vect-simd-10                   SKIP (avx)
+  vect/vect-simd-11                   SKIP (avx)
+  vect/vect-simd-12                   SKIP (avx)
+  vect/vect-simd-13                   SKIP (avx)
+  vect/vect-simd-14                   SKIP (avx)
+  vect/vect-simd-15                   SKIP (avx)
+  vect/vect-simd-16                   SKIP (avx)
+  vect/vect-simd-17                   SKIP (avx)
+  vect/vect-simd-18                   SKIP (avx)
+  vect/vect-simd-19                   SKIP (avx)
+  vect/vect-simd-20                   SKIP (avx)
+  vect/vect-simd-clone-1              SKIP (avx)
+  vect/vect-simd-clone-2              SKIP (avx)
+  vect/vect-simd-clone-3              SKIP (avx)
+  vect/vect-simd-clone-4              SKIP (avx)
+  vect/vect-simd-clone-5              SKIP (avx)
+  vect/vect-simd-clone-6              SKIP (avx)
+  vect/vect-simd-clone-7              SKIP (avx)
+  vect/vect-simd-clone-8              SKIP (avx)
+  vect/vect-simd-clone-9              SKIP (avx)
+  vect/vect-simd-clone-10             SKIP (avx)
   vect/vect-simd-clone-10a            SKIP (openmp)
-  vect/vect-simd-clone-11             SKIP (openmp)
-  vect/vect-simd-clone-12             SKIP (missing include)
+  vect/vect-simd-clone-11             SKIP (avx)
+  vect/vect-simd-clone-12             SKIP (avx)
   vect/vect-simd-clone-12a            SKIP (openmp)
-  vect/vect-simd-clone-13             PASS
-  vect/vect-simd-clone-14             PASS
-  vect/vect-simd-clone-15             SKIP (openmp)
-  vect/vect-simd-clone-16             SKIP (openmp)
-  vect/vect-simd-clone-16b            PASS
-  vect/vect-simd-clone-16c            PASS
-  vect/vect-simd-clone-16d            PASS
+  vect/vect-simd-clone-13             SKIP (avx)
+  vect/vect-simd-clone-14             SKIP (avx)
+  vect/vect-simd-clone-15             SKIP (avx)
+  vect/vect-simd-clone-16             SKIP (avx)
+  vect/vect-simd-clone-16b            SKIP (avx)
+  vect/vect-simd-clone-16c            SKIP (avx)
+  vect/vect-simd-clone-16d            SKIP (avx)
   vect/vect-simd-clone-16e            SKIP (x86-only)
   vect/vect-simd-clone-16f            SKIP (x86-only)
-  vect/vect-simd-clone-17             SKIP (openmp)
-  vect/vect-simd-clone-17b            PASS
-  vect/vect-simd-clone-17c            PASS
-  vect/vect-simd-clone-17d            PASS
+  vect/vect-simd-clone-17             SKIP (avx)
+  vect/vect-simd-clone-17b            SKIP (avx)
+  vect/vect-simd-clone-17c            SKIP (avx)
+  vect/vect-simd-clone-17d            SKIP (avx)
   vect/vect-simd-clone-17e            SKIP (x86-only)
   vect/vect-simd-clone-17f            SKIP (x86-only)
-  vect/vect-simd-clone-18             SKIP (openmp)
-  vect/vect-simd-clone-18b            PASS
-  vect/vect-simd-clone-18c            PASS
-  vect/vect-simd-clone-18d            PASS
+  vect/vect-simd-clone-18             SKIP (avx)
+  vect/vect-simd-clone-18b            SKIP (avx)
+  vect/vect-simd-clone-18c            SKIP (avx)
+  vect/vect-simd-clone-18d            SKIP (avx)
   vect/vect-simd-clone-18e            SKIP (x86-only)
   vect/vect-simd-clone-18f            SKIP (x86-only)
   vect/vect-simd-clone-19             PASS (compile only)
-  vect/vect-simd-clone-20             SKIP (openmp)
+  vect/vect-simd-clone-20             SKIP (avx)
   vect/vect-simd-clone-21             SKIP (openmp)
   vect/vect-singleton_1               PASS (compile only)
   vect/vect-strided-a-mult            PASS
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3616/3628 passed (99%), 12 failed (0 compile/12 runtime), 335 skipped.
+Torture: 3603/3610 passed (99%), 7 failed (0 compile/7 runtime), 353 skipped.
 
-Runtime failures: scal-to-vec1 scal-to-vec3 vect/bb-slp-pow-1 vect/group-no-gaps-1 vect/pr96854 vect/pr101145_3 vect/vect-alias-check-14 vect/vect-cond-arith-1 vect/vect-cond-arith-3 vect/vect-cond-arith-7 vect/vect-fma-1 vect/vect-ifcvt-18
+Runtime failures: vect/bb-slp-pow-1 vect/group-no-gaps-1 vect/pr96854 vect/pr101145_3 vect/vect-alias-check-14 vect/vect-cond-arith-1 vect/vect-cond-arith-7

@@ -4674,7 +4674,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 18;
     else if (streq(platform, "linux"))
-        max_fail = 12;
+        max_fail = 9;
     else
         max_fail = 0;
 
