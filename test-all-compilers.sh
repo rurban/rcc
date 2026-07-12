@@ -36,9 +36,9 @@ resolve_bin() {
 	fi
 }
 
-GCC="$(resolve_bin gcc)"
-[ -z "$GCC" ] && GCC="gcc"
-CLANG="$(resolve_bin clang)"
+GCC="$(resolve_bin gcc) -std=gnu89"
+[ -z "$GCC" ] && GCC="gcc -std=gnu89"
+CLANG="$(resolve_bin clang) -std=gnu89"
 TCC="$(resolve_bin tcc)"
 KEFIR="$(resolve_bin kefir)"
 if [ -z "$KEFIR" ] && [ -x /opt/kefir/bin/kefir ]; then
