@@ -1270,11 +1270,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int shadow_space = 0;
 #endif
 
-    bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || (node->ty->kind == TY_COMPLEX
+    bool has_hidden_retbuf = node->ty &&
+        (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION
 #ifdef _WIN32
-                                                                                                        && node->ty->size > 8
+         || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
 #endif
-                                                                                                        ));
+        );
 
     // Cross-architecture builtins (x86_64 and arm64)
     if (call_target && !has_hidden_retbuf) {
@@ -3392,8 +3393,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // Narrow float args for builtin calls that map to float
                 // variants (e.g. __builtin_fmaxf→fmaxf).  Double variants
                 // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
-                if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT
-                    && call_target && call_target[strlen(call_target)-1] == 'f')
+                if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
                     x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             } else if (argv[i]->ty && is_complex(argv[i]->ty)) {
                 bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
@@ -3497,6 +3497,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
+        return addr;
+    }
+#endif
+#ifndef _WIN32
+    // Linux SysV: _Complex double returns in xmm0:xmm1,
+    // _Complex float returns in xmm0 (packed as two singles).
+    if (node->ty && is_complex(node->ty)) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        int base_sz = node->ty->base ? node->ty->base->size : 8;
+        if (node->ty->size <= 8) {
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+        } else {
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1);
+        }
         return addr;
     }
 #endif
@@ -8536,6 +8551,22 @@ static VReg gen(Node *node) {
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
                 free_reg(src);
 #endif
+#ifndef _WIN32
+            } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
+                       is_complex(current_fn_def->ty->return_ty)) {
+                // Linux SysV: return _Complex double in xmm0:xmm1,
+                // _Complex float in xmm0 (packed).
+                int src = gen_addr(node->lhs);
+                if (src < 0) src = gen(node->lhs);
+                int base_sz = node->lhs->ty->base ? node->lhs->ty->base->size : 8;
+                if (node->lhs->ty->size <= 8) {
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                } else {
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                    x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz));
+                }
+                free_reg(src);
+#endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
@@ -12429,11 +12460,12 @@ struct ObjFile *codegen(Program *prog) {
 #ifndef ARCH_ARM64
         int param_xmm_index = 0;
         int stack_param_index = 0;
-        int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (is_complex(fn->ty->return_ty)
+        int param_index = fn->ty->return_ty &&
+                (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #ifdef _WIN32
-                                                                                                                                && fn->ty->return_ty->size > 8
+                 || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
 #endif
-                                                                                                                                ))
+                     )
             ? 1
             : 0;
 #ifdef _WIN32
