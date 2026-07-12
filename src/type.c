@@ -84,6 +84,7 @@ Type *pointer_to(Type *base) {
     ty->size = 8;
     ty->align = 8;
     ty->base = base;
+    ty->is_unsigned = true; // pointers compare as unsigned
     return ty;
 }
 

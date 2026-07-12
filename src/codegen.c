@@ -8335,6 +8335,29 @@ static VReg gen(Node *node) {
             node->lhs->lhs->kind == ND_LVAR) {
             VReg idx = gen(node->lhs->rhs);
             VReg base = gen(node->lhs->lhs);
+            // When register pressure causes idx and base to share the
+            // same VReg, idx's original value is in its spill slot while
+            // the register now holds base.  Reload idx before the add,
+            // otherwise asm_add_reg_reg emits a self-add (e.g. add %rsi,%rsi).
+            if (idx == base && (spilled_regs & (1 << idx))) {
+#ifdef ARCH_ARM64
+                asm_ldur_fp(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
+                spilled_regs &= ~(1 << idx);
+                arm64_add_reg(cg_sec, 1, REG(base), REG(base), ARM64_X16, ARM64_LSL, 0); // add base, base, x16
+                free_reg(idx); // idx and base share a VReg
+                emit_load(node->ty, base, base, 0);
+                return base;
+#else
+                // On x86-64 the register holds base after the spill;
+                // add idx's spilled value directly from the spill slot.
+                asm_add_spill_reg(cg_sec, idx, 8, spill_offset(idx)); // add spill, reg
+                spilled_regs &= ~(1 << idx);
+                // idx and base are the same VReg; free once (via idx).
+                free_reg(idx);
+                emit_load(node->ty, base, base, 0);
+                return base;
+#endif
+            }
 #ifdef ARCH_ARM64
             asm_add_reg_reg(cg_sec, base, idx, 8); // add base, base, idx
             free_reg(idx);
@@ -11656,8 +11679,15 @@ static VReg gen(Node *node) {
             if (!strcmp(inst, "cmp")) {
                 asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
             } else {
-                if (!strcmp(inst, "add")) asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz); // add rr_lhs, rr_rhs
-                else if (!strcmp(inst, "sub"))
+                if (!strcmp(inst, "add")) {
+                    if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                        asm_ldur_fp(cg_sec, ARM64_X16, spill_offset(r_lhs));
+                        spilled_regs &= ~(1 << r_lhs);
+                        arm64_add_reg(cg_sec, sf, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
+                    } else {
+                        asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                    }
+                } else if (!strcmp(inst, "sub"))
                     asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz); // sub rr_lhs, rr_rhs
                 else if (!strcmp(inst, "mul"))
                     asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz); // imul rr_lhs, rr_rhs
@@ -11694,8 +11724,14 @@ static VReg gen(Node *node) {
             // int would be treated as a large positive offset.
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 asm_movsx(cg_sec, r_rhs, r_rhs, 8, 4);
-            if (!strcmp(inst, "add")) asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "sub"))
+            if (!strcmp(inst, "add")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_add_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "sub"))
                 asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz);
             else if (!strcmp(inst, "imul"))
                 asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz);

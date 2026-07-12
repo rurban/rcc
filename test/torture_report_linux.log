@@ -2760,7 +2760,7 @@
   vect/pr101145                       PASS
   vect/pr101145_1                     PASS
   vect/pr101145_2                     PASS
-  vect/pr101145_3                     FAIL (runtime)
+  vect/pr101145_3                     PASS
   vect/pr101145inf                    PASS
   vect/pr101145inf_1                  PASS
   vect/pr101445                       PASS
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3602/3610 passed (99%), 8 failed (0 compile/8 runtime), 353 skipped.
+Torture: 3603/3610 passed (99%), 7 failed (0 compile/7 runtime), 353 skipped.
 
-Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854 vect/pr101145_3 vect/pr108608 vect/vect-early-break_90 vect/vect-early-break_92 vect/vect-early-break_93
+Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854 vect/pr108608 vect/vect-early-break_90 vect/vect-early-break_92 vect/vect-early-break_93
