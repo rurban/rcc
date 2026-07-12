@@ -13351,11 +13351,12 @@ struct ObjFile *codegen(Program *prog) {
             X86Reg greg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
             int max_gp = 6;
 #endif
-            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+            int gp = fn->ty->return_ty &&
+                    (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #ifdef _WIN32
-                                                                                                                           && fn->ty->return_ty->size > 8
+                     || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #endif
-                                                                                                                           ))
+                         )
                 ? 1
                 : 0;
             int xfp = 0;
@@ -13584,11 +13585,13 @@ struct ObjFile *codegen(Program *prog) {
 #endif
         }
 
-        if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+        bool has_retbuf = fn->ty->return_ty &&
+            (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #ifdef _WIN32
-                                                                                                                  && fn->ty->return_ty->size > 8
+             || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #endif
-                                                                                                                  ))) {
+            );
+        if (has_retbuf) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var->name && var->name == kw_retbuf) {
