@@ -1119,6 +1119,43 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         is_asm_call = true;
     }
 
+    // Rename __builtin_* math functions to their library counterparts.
+    // The type signature was set by declare_builtin_on_demand() in the parser.
+    bool is_builtin_call = (call_target && !strncmp(call_target, "__builtin_", 10));
+    if (is_builtin_call) {
+        if (!strcmp(call_target, "__builtin_powf")) call_target = "powf";
+        else if (!strcmp(call_target, "__builtin_pow"))
+            call_target = "pow";
+        else if (!strcmp(call_target, "__builtin_fmaxf"))
+            call_target = "fmaxf";
+        else if (!strcmp(call_target, "__builtin_fmax"))
+            call_target = "fmax";
+        else if (!strcmp(call_target, "__builtin_fminf"))
+            call_target = "fminf";
+        else if (!strcmp(call_target, "__builtin_fmin"))
+            call_target = "fmin";
+        else if (!strcmp(call_target, "__builtin_fmaf"))
+            call_target = "fmaf";
+        else if (!strcmp(call_target, "__builtin_fma"))
+            call_target = "fma";
+        else if (!strcmp(call_target, "__builtin_fabsf"))
+            call_target = "fabsf";
+        else if (!strcmp(call_target, "__builtin_fabs"))
+            call_target = "fabs";
+        else if (!strcmp(call_target, "__builtin_copysignf"))
+            call_target = "copysignf";
+        else if (!strcmp(call_target, "__builtin_copysign"))
+            call_target = "copysign";
+        else if (!strcmp(call_target, "__builtin_creal"))
+            call_target = "creal";
+        else if (!strcmp(call_target, "__builtin_crealf"))
+            call_target = "crealf";
+        else if (!strcmp(call_target, "__builtin_cimag"))
+            call_target = "cimag";
+        else if (!strcmp(call_target, "__builtin_cimagf"))
+            call_target = "cimagf";
+    }
+
     // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
     if (call_target &&
         (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
@@ -3352,6 +3389,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8)); // movq 8(%s), %s
             } else if (arg_is_float[i]) {
                 asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %%xmm{fp_idx}
+                // Narrow float args for __builtin_* external library calls.
+                if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT)
+                    x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             } else if (argv[i]->ty && is_complex(argv[i]->ty)) {
                 bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
                 if (cfloat) {
@@ -9586,6 +9626,24 @@ static VReg gen(Node *node) {
             op_addr[i] = -1;
         }
 
+        // x86-64 specific register constraints: "a"=rax, "b"=rbx, "c"=rcx,
+        // "d"=rdx, "S"=rsi, "D"=rdi.  We encode them as sentinel values
+        // -(X86Reg+3) so they don't collide with virtual regs (0..7).
+        // Sentinels: X86_RAX(0)=-3, RCX(1)=-4, RDX(2)=-5, RBX(3)=-6,
+        //            RSI(6)=-9, RDI(7)=-10.
+#define ASM_X86_REG(r) (-((int)(r)) - 3)
+#define ASM_IS_X86_REG(v) ((v) <= -3 && (v) >= -18)
+#define ASM_GET_X86_REG(v) ((X86Reg)(-((v)) - 3))
+        static const char *x86_phy_reg64[] = {
+            "%rax", "%rcx", "%rdx", "%rbx", "%rsp", "%rbp", "%rsi", "%rdi",
+            "%r8", "%r9", "%r10", "%r11", "%r12", "%r13", "%r14", "%r15"};
+        static const char *x86_phy_reg32[] = {
+            "%eax", "%ecx", "%edx", "%ebx", "%esp", "%ebp", "%esi", "%edi",
+            "%r8d", "%r9d", "%r10d", "%r11d", "%r12d", "%r13d", "%r14d", "%r15d"};
+
+        // Helper: map constraint char to X86Reg; returns true on match.
+        // Inline switch avoids block/nested-function portability issues.
+#define X86REG_CASE(ch, reg) case ch: xreg = reg; is_x86_reg = true; break
         // First pass: allocate registers for outputs and memory operands.
         // Defer matching input constraints (digit) to second pass.
         for (int i = 0; i < node->asm_noperands; i++) {
@@ -9593,14 +9651,55 @@ static VReg gen(Node *node) {
             const char *c = op->constraint;
             while (*c == '=' || *c == '+' || *c == '&') c++;
 
-            if (op->is_memory) {
+            // Check for x86-specific register constraints
+            X86Reg xreg = X86_RAX;
+            bool is_x86_reg = false;
+            switch (*c) {
+                X86REG_CASE('a', X86_RAX);
+                X86REG_CASE('b', X86_RBX);
+                X86REG_CASE('c', X86_RCX);
+                X86REG_CASE('d', X86_RDX);
+                X86REG_CASE('S', X86_RSI);
+                X86REG_CASE('D', X86_RDI);
+            default: break;
+            }
+
+            if (is_x86_reg) {
+                int sz = op->expr->ty ? op->expr->ty->size : 4;
+                const char *rname = (sz == 4) ? x86_phy_reg32[xreg]
+                                              : x86_phy_reg64[xreg];
+                if (op->is_output && !op->is_rw) {
+                    // Output-only x86 reg: capture address for store-back
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else if (op->is_rw) {
+                    // Read-write x86 reg: load current value into physical reg
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    x86_mov_rm(cg_sec, sz, xreg, x86_mem(REG(r_addr), 0));
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else {
+                    // Input x86 reg: move value into physical register
+                    VReg r_in = gen(op->expr);
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), xreg, REG(r_in));
+                    free_reg(r_in);
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                }
+            } else if (op->is_memory) {
                 // "m" constraint: compute address, use as memory ref in template
                 VReg r = gen_addr(op->expr);
                 op_regs[i] = r;
                 op->reg = r;
                 snprintf(op->asm_str, sizeof(op->asm_str), "(%s)", reg64[r]);
             } else if (op->is_output && !op->is_rw) {
-                // Output-only: "=r" → allocate fresh register, store back after asm.
+                // Output-only: "=r" -> allocate fresh register, store back after asm.
                 // "=m" is handled above (is_memory).
                 VReg r_addr = gen_addr(op->expr);
                 op_addr[i] = r_addr;
@@ -9640,23 +9739,45 @@ static VReg gen(Node *node) {
             const char *c = op->constraint;
             while (*c == '=' || *c == '+' || *c == '&') c++;
             int ref = *c - '0';
-            if (ref >= 0 && ref < node->asm_noperands && op_regs[ref] >= 0) {
-                VReg r = op_regs[ref];
-                // Load the input value into the shared register
-                VReg r_in = gen(op->expr);
-                if (r_in != r) {
-                    int sz = op->expr->ty ? op->expr->ty->size : 4;
-                    if (sz <= 4)
-                        asm_mov_reg_reg(cg_sec, r, r_in, 4); // mov r_in -> r (load input into output reg)
-                    else
-                        asm_mov_reg_reg(cg_sec, r, r_in, 8); // mov r_in -> r
+            if (ref >= 0 && ref < node->asm_noperands) {
+                int sz = op->expr->ty ? op->expr->ty->size : 4;
+                if (ASM_IS_X86_REG(op_regs[ref])) {
+                    // Referenced output uses an x86 physical register
+                    X86Reg xreg = ASM_GET_X86_REG(op_regs[ref]);
+                    VReg r_in = gen(op->expr);
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), xreg, REG(r_in));
+                    free_reg(r_in);
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    strncpy(op->asm_str, node->asm_ops[ref].asm_str,
+                            sizeof(op->asm_str) - 1);
+                    op->asm_str[sizeof(op->asm_str) - 1] = '\0';
+                } else if (op_regs[ref] >= 0) {
+                    VReg r = op_regs[ref];
+                    // Load the input value into the shared register
+                    VReg r_in = gen(op->expr);
+                    if (r_in != r) {
+                        if (sz <= 4)
+                            asm_mov_reg_reg(cg_sec, r, r_in, 4); // mov r_in -> r (load input into output reg)
+                        else
+                            asm_mov_reg_reg(cg_sec, r, r_in, 8); // mov r_in -> r
+                    }
+                    free_reg(r_in);
+                    op_regs[i] = r;
+                    op->reg = r;
+                    strncpy(op->asm_str, node->asm_ops[ref].asm_str,
+                            sizeof(op->asm_str) - 1);
+                    op->asm_str[sizeof(op->asm_str) - 1] = '\0';
                 }
-                free_reg(r_in);
-                op_regs[i] = r;
-                op->reg = r;
-                strncpy(op->asm_str, node->asm_ops[ref].asm_str, sizeof(op->asm_str) - 1);
-                op->asm_str[sizeof(op->asm_str) - 1] = '\0';
             }
+        }
+
+        // Save address registers for x86 register outputs that may be
+        // clobbered by the asm (e.g. cpuid overwrites %rbx which may hold
+        // the address of an output variable).
+        for (int i = 0; i < node->asm_noperands; i++) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+                asm_push(cg_sec, REG(op_addr[i]));
         }
 
         // Emit template with operand substitution, wrapped in AT&T syntax
@@ -9729,12 +9850,23 @@ static VReg gen(Node *node) {
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
+
+        // Restore saved address registers (reverse order) so that
+        // the store-back below uses the correct address values.
+        for (int i = node->asm_noperands - 1; i >= 0; i--) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+                asm_pop(cg_sec, REG(op_addr[i]));
+        }
         // Store back register outputs ("=r", "+r") to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
             if (op_addr[i] < 0) continue;
             AsmOperand *op = &node->asm_ops[i];
             int sz = op->expr->ty ? op->expr->ty->size : 4;
-            if (sz == 1)
+            if (ASM_IS_X86_REG(op_regs[i])) {
+                // Store x86 physical register to output address
+                X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
+                x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), xreg);
+            } else if (sz == 1)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 1); // movb op_regs[i], (%op_addr[i])
             else if (sz == 2)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 2); // movw op_regs[i], (%op_addr[i])
@@ -9744,7 +9876,8 @@ static VReg gen(Node *node) {
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 8); // movq op_regs[i], (%op_addr[i])
         }
 
-        // Free registers
+
+        // Free registers (skip x86 physical reg sentinels)
         for (int i = 0; i < node->asm_noperands; i++)
             if (op_regs[i] >= 0) free_reg(op_regs[i]);
         for (int i = 0; i < node->asm_noperands; i++)

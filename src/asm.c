@@ -2164,6 +2164,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_fstpt_m(buf, M(0));
         return true;
     }
+    if (!strcmp(mnem, "cpuid")) {
+        x86_cpuid(buf);
+        return true;
+    }
 
     // Unknown
     fprintf(stderr, "warning: unknown x86 instruction: %s\n", mnem);

@@ -797,6 +797,8 @@ static void add_type_internal(Node *node) {
         // Both arithmetic: usual arithmetic conversions
         if (tty && ety && is_number(tty) && is_number(ety)) {
             node->ty = usual_arith_type(tty, ety);
+            if (tty != node->ty) insert_arith_cast(&node->then, node->ty);
+            if (ety != node->ty) insert_arith_cast(&node->els, node->ty);
             return;
         }
         // Pointer/integer mismatch: warn and use the pointer type

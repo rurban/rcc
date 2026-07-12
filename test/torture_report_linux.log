@@ -2195,7 +2195,7 @@
   vect/bb-slp-pattern-1               PASS
   vect/bb-slp-pattern-2               PASS
   vect/bb-slp-phis-1                  PASS (compile only)
-  vect/bb-slp-pow-1                   FAIL (runtime)
+  vect/bb-slp-pow-1                   PASS
   vect/bb-slp-pr54400                 PASS
   vect/bb-slp-pr58135                 PASS (compile only)
   vect/bb-slp-pr65935                 PASS
@@ -2568,7 +2568,7 @@
   vect/pr65947-14                     PASS
   vect/pr65951                        PASS
   vect/pr66142                        SKIP (avx)
-  vect/pr66251                        PASS
+  vect/pr66251                        FAIL (runtime)
   vect/pr66253                        PASS
   vect/pr66278                        PASS (compile only)
   vect/pr66623                        PASS
@@ -2800,7 +2800,7 @@
   vect/pr107326                       PASS (compile only)
   vect/pr108314                       PASS (compile only)
   vect/pr108316                       PASS (compile only)
-  vect/pr108608                       PASS
+  vect/pr108608                       FAIL (runtime)
   vect/pr108950                       PASS (compile only)
   vect/pr109011-1                     SKIP (openmp)
   vect/pr109011-2                     SKIP (openmp)
@@ -3164,7 +3164,7 @@
   vect/vect-alias-check-11            PASS
   vect/vect-alias-check-12            PASS
   vect/vect-alias-check-13            PASS (compile only)
-  vect/vect-alias-check-14            FAIL (runtime)
+  vect/vect-alias-check-14            PASS
   vect/vect-alias-check-15            PASS
   vect/vect-alias-check-16            PASS
   vect/vect-alias-check-17            PASS (compile only)
@@ -3245,13 +3245,13 @@
   vect/vect-cond-11                   PASS
   vect/vect-cond-12                   PASS (compile only)
   vect/vect-cond-13                   PASS
-  vect/vect-cond-arith-1              FAIL (runtime)
+  vect/vect-cond-arith-1              PASS
   vect/vect-cond-arith-2              SKIP (gimple)
   vect/vect-cond-arith-3              PASS
   vect/vect-cond-arith-4              PASS
   vect/vect-cond-arith-5              PASS
   vect/vect-cond-arith-6              PASS
-  vect/vect-cond-arith-7              FAIL (runtime)
+  vect/vect-cond-arith-7              PASS
   vect/vect-cond-arith-8              PASS (compile only)
   vect/vect-cond-reduc-1              PASS (compile only)
   vect/vect-cond-reduc-2              PASS (compile only)
@@ -3391,10 +3391,10 @@
   vect/vect-early-break_87            PASS
   vect/vect-early-break_88            PASS
   vect/vect-early-break_89            PASS (compile only)
-  vect/vect-early-break_90            PASS
+  vect/vect-early-break_90            FAIL (runtime)
   vect/vect-early-break_91            PASS
-  vect/vect-early-break_92            PASS
-  vect/vect-early-break_93            PASS
+  vect/vect-early-break_92            FAIL (runtime)
+  vect/vect-early-break_93            FAIL (runtime)
   vect/vect-early-break_94-pr113144   PASS (compile only)
   vect/vect-early-break_95-pr113137   PASS (compile only)
   vect/vect-early-break_96-pr113136   PASS (compile only)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3603/3610 passed (99%), 7 failed (0 compile/7 runtime), 353 skipped.
+Torture: 3602/3610 passed (99%), 8 failed (0 compile/8 runtime), 353 skipped.
 
-Runtime failures: vect/bb-slp-pow-1 vect/group-no-gaps-1 vect/pr96854 vect/pr101145_3 vect/vect-alias-check-14 vect/vect-cond-arith-1 vect/vect-cond-arith-7
+Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854 vect/pr101145_3 vect/pr108608 vect/vect-early-break_90 vect/vect-early-break_92 vect/vect-early-break_93

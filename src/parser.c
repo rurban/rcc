@@ -476,6 +476,124 @@ LVar *find_global_name(char *name) {
     return NULL;
 }
 
+// Declare a __builtin_* math function with its proper type signature on first
+// use.  Avoids preprocessor macros and strcmp-based return-type tables.
+// Returns an ND_LVAR node with the function's type, or NULL if unknown.
+static Node *declare_builtin_on_demand(Token *tok) {
+    const char *name = tok->name;
+    Type *ret_ty = NULL;
+    Type *param_tys[3] = {NULL};
+    int nparams = 0;
+
+    // float(float, float) group
+    if (!strcmp(name, "__builtin_powf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmaxf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fminf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmaf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        param_tys[2] = ty_float;
+        nparams = 3;
+    } else if (!strcmp(name, "__builtin_fabsf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_copysignf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+        // double(double, double) group
+    } else if (!strcmp(name, "__builtin_pow")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmax")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmin")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fma")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        param_tys[2] = ty_double;
+        nparams = 3;
+    } else if (!strcmp(name, "__builtin_fabs")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_copysign")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+        // double(double _Complex) group
+    } else if (!strcmp(name, "__builtin_creal")) {
+        ret_ty = ty_double;
+        param_tys[0] = complex_type(ty_double);
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_cimag")) {
+        ret_ty = ty_double;
+        param_tys[0] = complex_type(ty_double);
+        nparams = 1;
+        // float(float _Complex) group
+    } else if (!strcmp(name, "__builtin_crealf")) {
+        ret_ty = ty_float;
+        param_tys[0] = complex_type(ty_float);
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_cimagf")) {
+        ret_ty = ty_float;
+        param_tys[0] = complex_type(ty_float);
+        nparams = 1;
+    } else {
+        return NULL;
+    }
+    // Build param type list
+    Type param_head = {};
+    Type *pcur = &param_head;
+    for (int i = 0; i < nparams; i++) {
+        Type *pt = arena_alloc(sizeof(Type));
+        *pt = *param_tys[i];
+        pt->param_next = NULL;
+        pcur = pcur->param_next = pt;
+    }
+
+    Type *fty = func_type(ret_ty);
+    fty->param_types = param_head.param_next;
+
+    LVar *var = arena_alloc(sizeof(LVar));
+    memset(var, 0, sizeof(LVar));
+    var->name = tok->name;
+    var->ty = pointer_to(fty);
+    var->is_function = true;
+    var->is_extern = true;
+    global_htab_add(var);
+
+    Node *node = new_var_node(var, tok);
+    node->ty = pointer_to(fty);
+    return node;
+}
+
 // Does this AST (sub)tree contain a __builtin_va_arg_pack() placeholder?
 static bool node_uses_va_arg_pack(Node *n) {
     if (!n)
@@ -5763,6 +5881,8 @@ static Node *primary(Token **rest, Token *tok) {
                 LVar *gvar = find_global_name(tok->name);
                 if (gvar && gvar->is_function)
                     node->lhs = new_var_node(gvar, tok);
+                else if (!strncmp(tok->name, "__builtin_", 10))
+                    node->lhs = declare_builtin_on_demand(tok);
             }
             tok = skip(tok->next, "(");
             Node head = {};
