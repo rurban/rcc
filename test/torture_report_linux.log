@@ -2800,7 +2800,7 @@
   vect/pr107326                       PASS (compile only)
   vect/pr108314                       PASS (compile only)
   vect/pr108316                       PASS (compile only)
-  vect/pr108608                       FAIL (runtime)
+  vect/pr108608                       PASS
   vect/pr108950                       PASS (compile only)
   vect/pr109011-1                     SKIP (openmp)
   vect/pr109011-2                     SKIP (openmp)
@@ -3391,10 +3391,10 @@
   vect/vect-early-break_87            PASS
   vect/vect-early-break_88            PASS
   vect/vect-early-break_89            PASS (compile only)
-  vect/vect-early-break_90            FAIL (runtime)
+  vect/vect-early-break_90            PASS
   vect/vect-early-break_91            PASS
-  vect/vect-early-break_92            FAIL (runtime)
-  vect/vect-early-break_93            FAIL (runtime)
+  vect/vect-early-break_92            PASS
+  vect/vect-early-break_93            PASS
   vect/vect-early-break_94-pr113144   PASS (compile only)
   vect/vect-early-break_95-pr113137   PASS (compile only)
   vect/vect-early-break_96-pr113136   PASS (compile only)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3603/3610 passed (99%), 7 failed (0 compile/7 runtime), 353 skipped.
+Torture: 3607/3610 passed (99%), 3 failed (0 compile/3 runtime), 353 skipped.
 
-Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854 vect/pr108608 vect/vect-early-break_90 vect/vect-early-break_92 vect/vect-early-break_93
+Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854

@@ -8460,13 +8460,14 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         Node *node = assign(&tok, tok);
         check_type(node);
         if (extract_reloc(node, &label, &addend)) {
-            var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
-            var->init_size = var->ty->size;
             var->has_init = true;
-            if (label)
+            if (label) {
+                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                var->init_size = var->ty->size;
                 append_reloc(var, 0, label, addend);
-            else
+            } else {
                 var->init_val = addend;
+            }
             *rest = tok;
             return;
         }
