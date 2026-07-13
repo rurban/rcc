@@ -869,6 +869,16 @@ static int arm64_hfa_info(Type *ty, int *elem_size) {
             return -1;
         return 1;
     }
+    if (ty->kind == TY_COMPLEX && ty->base && is_flonum(ty->base)) {
+        int base_sz = ty->base->size;
+        if (base_sz != 4 && base_sz != 8)
+            return -1;
+        if (*elem_size == 0)
+            *elem_size = base_sz;
+        else if (*elem_size != base_sz)
+            return -1;
+        return 2;
+    }
     if (ty->kind != TY_STRUCT)
         return -1;
     int count = 0;
@@ -2477,8 +2487,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
-        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
-            arg_sizes[i] = 8; // old-style float -> double promotion
+        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || argv[i]->ty->kind == TY_COMPLEX))
+            arg_hfa_count[i] = arm64_hfa_count(argv[i]->ty, &arg_hfa_elem_size[i]);
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
@@ -8427,7 +8437,41 @@ static VReg gen(Node *node) {
 #endif
                 }
             }
-
+        } else if (is_complex(from) && is_complex(to) && from->size != to->size) {
+            // Complex type promotion/demotion (e.g. _Complex float → _Complex double)
+            int alloc = (to->size + 7) & ~7;
+            fn_struct_ret_off += alloc;
+            if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+            int result_off = current_fn_stack_size + fn_struct_ret_off;
+            int result = alloc_reg();
+            int base_to = to->base ? to->base->size : 8;
+            int base_from = from->base ? from->base->size : 4;
+#ifdef ARCH_ARM64
+            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
+            // Convert real part
+            if (base_from == 4 && base_to == 8) {
+                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0); // ldr s0, [r]
+                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0); // str d0, [result]
+                // Convert imag part (offset 4 bytes for float imag)
+                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4); // ldr s0, [r, #4]
+                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8); // str d0, [result, #8]
+            }
+#else
+            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
+            if (base_from == 4 && base_to == 8) {
+                // float complex → double complex
+                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+                x86_movsd_mr(cg_sec, x86_mem(REG(result), 0), X86_XMM0); // movsd %xmm0, (result)
+                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 4)); // movss 4(r), %xmm0
+                asm_cvtss2sd(cg_sec);
+                x86_movsd_mr(cg_sec, x86_mem(REG(result), 8), X86_XMM0); // movsd %xmm0, 8(result)
+            }
+#endif
+            free_reg(r);
+            return result;
         } else if (to->size == 1) {
 #ifdef ARCH_ARM64
             if (to->is_unsigned)
