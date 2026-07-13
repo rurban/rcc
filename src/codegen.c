@@ -5197,8 +5197,10 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         return;
     }
 
-    // Complex types: gen() returns address, need to load and OR components
-    if (cond->ty && is_complex(cond->ty)) {
+    // Complex types: gen() returns address, need to load and OR components.
+    // Exception: ND_ASSIGN with complex funcall RHS already returns a
+    // boolean truthiness value from its own inline check.
+    if (cond->ty && is_complex(cond->ty) && cond->kind != ND_ASSIGN) {
         VReg addr = gen(cond);
         int base_sz = cond->ty->base ? cond->ty->base->size : 8;
 #ifdef ARCH_ARM64
