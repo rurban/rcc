@@ -3938,11 +3938,11 @@ static void asm_fcmge_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_fcmge_simd(s, 1, qd, qn, qm);
 }
 
-// Packed float min/max
-static void asm_fmin_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+// Packed float min/max (available for future use)
+__attribute__((unused)) static void asm_fmin_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_fmin_simd(s, 0, qd, qn, qm); // fmin v{qd}.4s, v{qn}.4s, v{qm}.4s
 }
-static void asm_fmax_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+__attribute__((unused)) static void asm_fmax_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_fmax_simd(s, 0, qd, qn, qm); // fmax v{qd}.4s, v{qn}.4s, v{qm}.4s
 }
 
@@ -3968,7 +3968,7 @@ static void asm_orr_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
 static void asm_eor_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_eor_simd(s, qd, qn, qm); // eor v{qd}.16b, v{qn}.16b, v{qm}.16b
 }
-static void asm_bic_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+__attribute__((unused)) static void asm_bic_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_bic_simd(s, qd, qn, qm); // bic v{qd}.16b, v{qn}.16b, v{qm}.16b
 }
 static void asm_not_v16b(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
@@ -3993,12 +3993,12 @@ static void asm_frsqrte_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
 static void asm_frsqrts_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_frsqrts_simd(s, 0, qd, qn, qm); // frsqrts v{qd}.4s, v{qn}.4s, v{qm}.4s
 }
-static void asm_frecpe_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+__attribute__((unused)) static void asm_frecpe_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
     arm64_frecpe_simd(s, 0, qd, qn); // frecpe v{qd}.4s, v{qn}.4s
 }
 
-// Lane extraction: UMOV Wd, Vn.S[lane]
-static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm64Reg vn, int lane) {
+// Lane extraction: UMOV Wd, Vn.S[lane] (available for future use)
+__attribute__((unused)) static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm64Reg vn, int lane) {
     arm64_umov_s(s, wd, vn, lane); // umov w{wd}, v{vn}.s[lane]
 }
 #endif // ARCH_ARM64

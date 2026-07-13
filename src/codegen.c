@@ -4852,8 +4852,9 @@ static VReg gen_addr(Node *node) {
                 else if (!is_flonum(node->lhs->ty->base) && !is_flonum(node->ty->base))
                     emit_complex_convert_int(src, dst, node->lhs->ty, node->ty);
                 else {
+#ifndef ARCH_ARM64
                     // Mixed int/float complex: convert each component
-                    // int complex → float complex: load ints, convert to float
+                    // int complex -> float complex: load ints, convert to float
                     if (is_flonum(node->ty->base)) {
                         int fsz = node->lhs->ty->base->size;
                         int tsz = node->ty->base->size;
@@ -4884,7 +4885,7 @@ static VReg gen_addr(Node *node) {
                             x86_movsd_mr(cg_sec, x86_mem(REG(dst), 8), X86_XMM1);
                         }
                     } else {
-                        // float complex → int complex: load doubles, convert to ints
+                        // float complex -> int complex: load doubles, convert to ints
                         int tsz = node->ty->base->size;
                         x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
                         x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
@@ -4901,6 +4902,12 @@ static VReg gen_addr(Node *node) {
                             x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), tsz), X86_RCX);
                         }
                     }
+#else
+                    // ARM64: fall through to gen() for mixed complex conversion
+                    free_reg(src);
+                    free_reg(dst);
+                    return gen(node);
+#endif
                 }
                 free_reg(src);
                 return dst;
@@ -7087,6 +7094,7 @@ static VReg gen(Node *node) {
                 return dst;
             }
 
+#ifndef ARCH_ARM64
             // Complex-to-complex assignment with mixed int/float base types
             // (e.g. _Complex double = _Complex int): convert components.
             if (node->lhs->ty->kind == TY_COMPLEX && node->rhs->ty && node->rhs->ty->kind == TY_COMPLEX &&
@@ -7164,6 +7172,7 @@ static VReg gen(Node *node) {
                 free_reg(src);
                 return dst;
             }
+#endif
 
             // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
             // store the value directly instead of copying bytes from the address in the register.
@@ -8505,7 +8514,7 @@ static VReg gen(Node *node) {
             // otherwise asm_add_reg_reg emits a self-add (e.g. add %rsi,%rsi).
             if (idx == base && (spilled_regs & (1 << idx))) {
 #ifdef ARCH_ARM64
-                asm_ldur_fp(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
+                asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
                 spilled_regs &= ~(1 << idx);
                 arm64_add_reg(cg_sec, 1, REG(base), REG(base), ARM64_X16, ARM64_LSL, 0); // add base, base, x16
                 free_reg(idx); // idx and base share a VReg
@@ -8618,7 +8627,7 @@ static VReg gen(Node *node) {
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
                 free_reg(src);
 #endif
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(ARCH_ARM64)
             } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
                        is_complex(current_fn_def->ty->return_ty)) {
                 // Linux SysV: return _Complex double in xmm0:xmm1,
@@ -11861,9 +11870,9 @@ static VReg gen(Node *node) {
             } else {
                 if (!strcmp(inst, "add")) {
                     if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
-                        asm_ldur_fp(cg_sec, ARM64_X16, spill_offset(r_lhs));
+                        asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(r_lhs));
                         spilled_regs &= ~(1 << r_lhs);
-                        arm64_add_reg(cg_sec, sf, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
+                        arm64_add_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
                     } else {
                         asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                     }
