@@ -4832,8 +4832,8 @@ static VReg gen_addr(Node *node) {
             // address as-is would make callers read/write past the smaller
             // object. Materialize a converted copy on the stack instead.
             if (node->ty->kind == TY_COMPLEX && node->lhs->ty && node->lhs->ty->kind == TY_COMPLEX &&
-                is_flonum(node->lhs->ty->base) == is_flonum(node->ty->base) &&
-                node->lhs->ty->base->size != node->ty->base->size) {
+                (node->lhs->ty->base->size != node->ty->base->size ||
+                 is_flonum(node->lhs->ty->base) != is_flonum(node->ty->base))) {
                 VReg src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs); // gen() for complex exprs also returns an address
@@ -4847,10 +4847,61 @@ static VReg gen_addr(Node *node) {
 #else
                 asm_lea_rbp_reg(cg_sec, dst, 8, result_off); // lea -result_off(%rbp), dst
 #endif
-                if (is_flonum(node->lhs->ty->base))
+                if (is_flonum(node->lhs->ty->base) && is_flonum(node->ty->base))
                     emit_complex_convert_float(src, dst, node->lhs->ty, node->ty);
-                else
+                else if (!is_flonum(node->lhs->ty->base) && !is_flonum(node->ty->base))
                     emit_complex_convert_int(src, dst, node->lhs->ty, node->ty);
+                else {
+                    // Mixed int/float complex: convert each component
+                    // int complex → float complex: load ints, convert to float
+                    if (is_flonum(node->ty->base)) {
+                        int fsz = node->lhs->ty->base->size;
+                        int tsz = node->ty->base->size;
+                        bool uns = node->lhs->ty->base->is_unsigned;
+                        if (fsz == 8) {
+                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0));
+                            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(src), 8));
+                        } else {
+                            // Sign/zero-extend narrower int to 32/64-bit before cvtsi2sd
+                            int load_sz = fsz <= 4 ? 4 : 8;
+                            if (uns) {
+                                x86_mov_rm(cg_sec, fsz, X86_RAX, x86_mem(REG(src), 0));
+                                x86_mov_rm(cg_sec, fsz, X86_RCX, x86_mem(REG(src), fsz));
+                            } else {
+                                x86_movsx_rm(cg_sec, load_sz, fsz, X86_RAX, x86_mem(REG(src), 0));
+                                x86_movsx_rm(cg_sec, load_sz, fsz, X86_RCX, x86_mem(REG(src), fsz));
+                            }
+                        }
+                        x86_cvtsi2sd(cg_sec, fsz <= 4 ? 4 : 8, X86_XMM0, X86_RAX);
+                        x86_cvtsi2sd(cg_sec, fsz <= 4 ? 4 : 8, X86_XMM1, X86_RCX);
+                        if (tsz == 4) {
+                            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0);
+                            x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1);
+                            x86_movss_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+                            x86_movss_mr(cg_sec, x86_mem(REG(dst), 4), X86_XMM1);
+                        } else {
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 8), X86_XMM1);
+                        }
+                    } else {
+                        // float complex → int complex: load doubles, convert to ints
+                        int tsz = node->ty->base->size;
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
+                        x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RAX, X86_XMM0);
+                        x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RCX, X86_XMM1);
+                        if (tsz == 8) {
+                            x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_RCX);
+                        } else if (tsz == 4) {
+                            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), X86_RCX);
+                        } else {
+                            x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), tsz), X86_RCX);
+                        }
+                    }
+                }
                 free_reg(src);
                 return dst;
             }
@@ -8367,8 +8418,8 @@ static VReg gen(Node *node) {
                 x86_mov_rr(cg_sec, 8, REG(addr), X86_RSP); // movq %rsp, addr
                 VReg v = gen(node->lhs);
                 if (is_complex(node->lhs->ty)) {
-                    asm_mov_reg_reg(cg_sec, 0, v, 8);
-                    asm_mov_reg_reg(cg_sec, addr, 0, 8);
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
                     if (complex_sz > 8) {
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), base_sz), X86_RAX); // movq %rax, base_sz(addr)
@@ -10795,8 +10846,8 @@ static VReg gen(Node *node) {
                     asm_str_x16_reg_uoff(cg_sec, addr_lhs, base_sz); // str x16, [addr_lhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), 0), X86_RAX); // movq %rax, (addr_lhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
@@ -10827,8 +10878,8 @@ static VReg gen(Node *node) {
                     asm_str_x16_reg_uoff(cg_sec, addr_rhs, base_sz); // str x16, [addr_rhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), 0), X86_RAX); // movq %rax, (addr_rhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
@@ -11313,8 +11364,8 @@ static VReg gen(Node *node) {
                     arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 8)); // str x16, [addr_lhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), 0), X86_RAX); // movq %rax, (addr_lhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
@@ -11354,8 +11405,8 @@ static VReg gen(Node *node) {
                     arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(base_sz / 8)); // str x16, [addr_rhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), 0), X86_RAX); // movq %rax, (addr_rhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
