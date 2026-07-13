@@ -6212,6 +6212,7 @@ static VReg gen_vector(Node *node) {
             x86_pcmpeqd(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = all ones
             x86_pxor(cg_sec, X86_XMM0, X86_XMM1); // ~a
         } else if (flt) {
+            // TODO: use sign-bit XOR instead of 0-a to preserve -0 and NaN sign
             x86_xorps(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0.0
             if (esz == 8) x86_subpd(cg_sec, X86_XMM1, X86_XMM0);
             else
@@ -6272,10 +6273,16 @@ static VReg gen_vector(Node *node) {
 } while(0)
 
 #ifdef ARCH_ARM64
+    VReg addr_lhs = R_NONE, addr_rhs = R_NONE;
     if (lvec) {
-        VReg a = gen_addr(node->lhs);
-        asm_ldr_q(cg_sec, ASM_Q2, a);
-        free_reg(a);
+        addr_lhs = gen_addr(node->lhs);
+    }
+    if (rvec) {
+        addr_rhs = gen_addr(node->rhs);
+    }
+    if (lvec) {
+        asm_ldr_q(cg_sec, ASM_Q2, addr_lhs);
+        free_reg(addr_lhs);
     } else {
         VReg a = gen_scalar_addr(node->lhs);
         VReg t = alloc_reg();
@@ -6288,9 +6295,8 @@ static VReg gen_vector(Node *node) {
         free_reg(t);
     }
     if (rvec) {
-        VReg b = gen_addr(node->rhs);
-        asm_ldr_q(cg_sec, ASM_Q1, b);
-        free_reg(b);
+        asm_ldr_q(cg_sec, ASM_Q1, addr_rhs);
+        free_reg(addr_rhs);
     } else {
         VReg b = gen_scalar_addr(node->rhs);
         VReg t = alloc_reg();
@@ -6306,52 +6312,58 @@ static VReg gen_vector(Node *node) {
     VReg dst = alloc_int128_addr();
     switch (node->kind) {
     case ND_ADD:
-        if (flt) asm_fadd_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fadd v0.4s, v0.4s, v1.4s
+        if (flt) esz == 8 ? asm_fadd_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                          : asm_fadd_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         else
             error("vector_size: integer vector add not yet implemented on arm64");
         break;
     case ND_SUB:
-        if (flt) asm_fsub_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fsub v0.4s, v0.4s, v1.4s
+        if (flt) esz == 8 ? asm_fsub_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                          : asm_fsub_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         else
             error("vector_size: integer vector sub not yet implemented on arm64");
         break;
     case ND_MUL:
         if (!flt) error("vector_size: integer vector multiply not supported");
-        asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fmul v0.4s, v0.4s, v1.4s
+        esz == 8 ? asm_fmul_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_DIV:
         if (!flt) error("vector_size: integer vector divide not supported");
-        asm_fdiv_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fdiv v0.4s, v0.4s, v1.4s
+        esz == 8 ? asm_fdiv_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fdiv_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_BITAND:
-        asm_and_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // and v0.16b, v0.16b, v1.16b
+        asm_and_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_BITOR:
-        asm_orr_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // orr v0.16b, v0.16b, v1.16b
+        asm_orr_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_BITXOR:
-        asm_eor_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // eor v0.16b, v0.16b, v1.16b
+        asm_eor_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_LT:
         if (!flt) error("vector_size: integer vector compare not supported");
-        // NEON: fcmgt v0.4s, v1.4s, v0.4s  →  v0 = v1 > v0  (i.e. v0 = v0 < v1)
-        asm_fcmgt_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0); // fcmgt v0.4s, v1.4s, v0.4s
+        esz == 8 ? asm_fcmgt_v2d(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0)
+                 : asm_fcmgt_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0);
         break;
     case ND_LE:
         if (!flt) error("vector_size: integer vector compare not supported");
-        // NEON: fcmge → v0 = v1 >= v0  →  v0 = v0 <= v1
-        asm_fcmge_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0); // fcmge v0.4s, v1.4s, v0.4s
+        esz == 8 ? asm_fcmge_v2d(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0)
+                 : asm_fcmge_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0);
         break;
     case ND_EQ:
-        if (flt) asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fcmeq v0.4s, v0.4s, v1.4s
+        if (flt)
+            esz == 8 ? asm_fcmeq_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                     : asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         else
-            asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // same encoding works for integer bit comparison
+            asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
         break;
     case ND_NE:
         if (!flt) error("vector_size: integer vector compare not supported");
-        // NEON: fcmeq + not → v0 = !(v0 == v1)
-        asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // fcmeq v0.4s, v0.4s, v1.4s
-        asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0); // not v0.16b, v0.16b
+        esz == 8 ? asm_fcmeq_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0);
         break;
     default:
         error("vector_size: unsupported vector op %d", node->kind);
@@ -6360,24 +6372,28 @@ static VReg gen_vector(Node *node) {
     return dst;
 #else
     /* x86: load lhs into xmm2, rhs into xmm1, with scalar broadcast support */
+    VReg addr_lhs = R_NONE, addr_rhs = R_NONE;
+    if (lvec) {
+        addr_lhs = gen_addr(node->lhs);
+    }
+    if (rvec) {
+        addr_rhs = gen_addr(node->rhs);
+    }
+    /* Load lhs into xmm2, rhs into xmm1, with scalar broadcast support */
     if (lvec && rvec) {
-        VReg a = gen_addr(node->lhs);
-        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
-        free_reg(a);
-        VReg b = gen_addr(node->rhs);
-        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
-        free_reg(b);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(addr_lhs), 0));
+        free_reg(addr_lhs);
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(addr_rhs), 0));
+        free_reg(addr_rhs);
     } else if (lvec) {
-        VReg a = gen_addr(node->lhs);
-        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
-        free_reg(a);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(addr_lhs), 0));
+        free_reg(addr_lhs);
         EMIT_BROADCAST(X86_XMM1, node->rhs);
     } else {
         EMIT_BROADCAST(X86_XMM2, node->lhs);
         if (rvec) {
-            VReg b = gen_addr(node->rhs);
-            x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
-            free_reg(b);
+            x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(addr_rhs), 0));
+            free_reg(addr_rhs);
         } else {
             EMIT_BROADCAST(X86_XMM1, node->rhs);
         }

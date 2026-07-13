@@ -3915,6 +3915,29 @@ static void asm_fdiv_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_fdiv_simd(s, 0, qd, qn, qm); // fdiv v{qd}.4s, v{qn}.4s, v{qm}.4s
 }
 
+// Packed double arithmetic: Qd = Qn OP Qm  (2D = 2 x float64, sz=1)
+static void asm_fadd_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fadd_simd(s, 1, qd, qn, qm); // fadd v{qd}.2d, v{qn}.2d, v{qm}.2d
+}
+static void asm_fsub_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fsub_simd(s, 1, qd, qn, qm);
+}
+static void asm_fmul_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fmul_simd(s, 1, qd, qn, qm);
+}
+static void asm_fdiv_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fdiv_simd(s, 1, qd, qn, qm);
+}
+static void asm_fcmeq_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmeq_simd(s, 1, qd, qn, qm);
+}
+static void asm_fcmgt_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmgt_simd(s, 1, qd, qn, qm);
+}
+static void asm_fcmge_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
+    arm64_fcmge_simd(s, 1, qd, qn, qm);
+}
+
 // Packed float min/max
 static void asm_fmin_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn, Arm64Reg qm) {
     arm64_fmin_simd(s, 0, qd, qn, qm); // fmin v{qd}.4s, v{qn}.4s, v{qm}.4s

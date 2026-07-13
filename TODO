@@ -1,10 +1,5 @@
-- integer vector add/sub/mult/divide/compare support and 2000 torture tests
-  dg-require-effective-target vect_int
-- run the peephole checks directly in the codegen pass.
-  it only needs to check at the beginning of each node against the previously
-  last emitted line. So store at the last line of each node the pattern to
-  check against, if it would be a peep pattern. See peep patterns 1-5. Then
-  we can spare the extra peep pass, and the expensive check against a string.
+- optimize branch/label handling to use local position vars instead of a
+  hash table/linked list entry search, when possible. See the `asml` branches.
 - optimize arena_alloc: for the SIMD checks we enforce for each string a
   min-size of 16.
   we dont need that, only for the very end of a 4MB chunk. we can keep min-size 8.
