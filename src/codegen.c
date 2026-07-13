@@ -1587,6 +1587,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 VReg r_arg = gen(arg);
 #ifdef ARCH_ARM64
                 asm_shr_imm(cg_sec, r_arg, 8, 63); // shr $63, r_arg
+                return r_arg;
 #else
                 VReg r = alloc_reg();
                 asm_movq_r_xmm(cg_sec, 0, r_arg); // movq r_arg, %xmm0
@@ -1595,8 +1596,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(r_arg);
                 return r;
 #endif
-                free_reg(r_arg);
-                return r_arg;
             }
         }
 
@@ -4782,8 +4781,9 @@ static VReg gen_addr(Node *node) {
         int c = ++rcc_label_count;
         VReg r = alloc_reg();
         VReg cond = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         {
             size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
@@ -4802,7 +4802,7 @@ static VReg gen_addr(Node *node) {
         free_reg(else_r);
         cg_def_label(format(".L.end.%d", c));
 #else
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         {
             size_t o = asm_jcc_label(cg_sec, X86_E); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
@@ -4985,9 +4985,9 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     if (cond->kind == ND_LOGOR) {
         int c = ++rcc_label_count;
         const char *skip_label = format(".L.or_skip.%d", c);
-        // If lhs is true, skip to end (don't branch to label)
         VReg lhs = gen(cond->lhs);
-        asm_cmp_zero(cg_sec, lhs, cond->lhs->ty->size); // cmp $0, rlhs
+        int lhs_sz = (cond->lhs->ty && is_flonum(cond->lhs->ty)) ? 8 : cond->lhs->ty->size;
+        asm_cmp_zero(cg_sec, lhs, lhs_sz); // cmp $0, rlhs
         free_reg(lhs);
 #ifdef ARCH_ARM64
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
@@ -5188,7 +5188,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     }
 
     VReg r = gen(cond);
-    int sz = cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4);
+    int sz = (cond->ty && is_flonum(cond->ty)) ? 8 : (cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4));
 #ifdef ARCH_ARM64
     asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
@@ -5961,11 +5961,12 @@ static VReg gen_int128(Node *node) {
         int c = ++rcc_label_count;
         int cond_r = gen(node->cond);
         int dst = alloc_int128_addr();
+        int cond_cmp_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : (node->cond->ty ? node->cond->ty->size : 4);
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
         emit_jcc_fixup(cg_sec, ARM64_EQ, format(".L.else.%d", c));
 #else
-        asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
         emit_jcc_fixup(cg_sec, X86_E, format(".L.else.%d", c));
 #endif
         free_reg(cond_r);
@@ -9154,8 +9155,9 @@ static VReg gen(Node *node) {
         const char *end_label = format(".L.cond_end.%d", c);
         VReg r = alloc_reg();
         int cond = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
@@ -9169,7 +9171,7 @@ static VReg gen(Node *node) {
         asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
         free_reg(else_r);
 #else
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
@@ -9335,13 +9337,14 @@ static VReg gen(Node *node) {
         if (r_then != -1) free_reg(r_then);
         cg_def_label(cont_label); // b.ne .L.begin.%d
         VReg r = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
         size_t do_j = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
         asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
 #else
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
         size_t do_j = asm_jcc_label(cg_sec, X86_NE); // jcc label
         asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
