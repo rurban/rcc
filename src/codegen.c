@@ -4049,9 +4049,21 @@ static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
         }
     } else {
         // float complex → int complex: load from src, convert, store to dst
-        if (fsz == 4) {
+        if (fsz == 8) {
+            arm64_ldr_fp(cg_sec, 3, ARM64_D0, REG(src), 0);
+            arm64_ldr_fp(cg_sec, 3, ARM64_D1, REG(src), 8);
+            if (to->base->is_unsigned) {
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+            } else {
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+            }
+            arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
+            arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
+        } else if (fsz == 4) {
             arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(src), 0);
-            arm64_ldr_fp(cg_sec, 2, ARM64_S1, REG(src), 1);
+            arm64_ldr_fp(cg_sec, 2, ARM64_S1, REG(src), 4);
             if (to->base->is_unsigned) {
                 arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
                 arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
@@ -8429,7 +8441,7 @@ static VReg gen(Node *node) {
                 }
             }
         } else if (is_complex(from) && is_complex(to) && from->size != to->size) {
-            // Complex type promotion/demotion (e.g. _Complex float → _Complex double)
+            // Complex type promotion/demotion (e.g., _Complex float → _Complex double)
             int alloc = (to->size + 7) & ~7;
             fn_struct_ret_off += alloc;
             if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
@@ -8611,12 +8623,18 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
             asm_add_reg_reg(cg_sec, base, idx, 8); // add base, base, idx
             free_reg(idx);
-            emit_load(node->ty, base, base, 0); // load from [base]
+            // For aggregate types, return the address, not the loaded value
+            if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION &&
+                node->ty->kind != TY_COMPLEX)
+                emit_load(node->ty, base, base, 0); // load from [base]
             return base;
 #else
             asm_add_reg_reg(cg_sec, idx, base, 8); // add idx, base
             free_reg(base);
-            emit_load(node->ty, idx, idx, 0); // load from (idx)
+            // For aggregate types, return the address, not the loaded value
+            if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION &&
+                node->ty->kind != TY_COMPLEX)
+                emit_load(node->ty, idx, idx, 0); // load from (idx)
             return idx;
 #endif
         }
@@ -11489,7 +11507,7 @@ static VReg gen(Node *node) {
             free_reg(v);
             need_free_lhs = 1;
         }
-        if (addr_rhs < 0) {
+        if (addr_rhs < 0 || (is_complex(node->rhs->ty) && node->rhs->ty->size < complex_sz)) {
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
             arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #complex_sz
@@ -11500,10 +11518,10 @@ static VReg gen(Node *node) {
 #endif
             int v = gen(node->rhs);
             if (is_complex(node->rhs->ty)) {
-                int rhs_sz = node->rhs->ty->size;
-                int rhs_base = node->rhs->ty->base ? node->rhs->ty->base->size : 8;
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
+                int rhs_sz = node->rhs->ty->size;
+                int rhs_base = node->rhs->ty->base ? node->rhs->ty->base->size : 8;
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), 0); // ldr x16, [v]
                 arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), 0); // str x16, [addr_rhs]
                 if (rhs_sz > rhs_base) {
