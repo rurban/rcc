@@ -5524,8 +5524,9 @@ static VReg gen_int128(Node *node) {
             return addr;
         }
         // Complex-to-complex cast: delegate to gen_addr which handles conversion
-        if (from && is_complex(from) && is_complex(to))
+        if (from && is_complex(from) && is_complex(to)) {
             return gen_addr(node);
+        }
         int val = gen(node->lhs);
         if (from && from->size < 8) {
             if (from->is_unsigned)
@@ -11499,13 +11500,15 @@ static VReg gen(Node *node) {
 #endif
             int v = gen(node->rhs);
             if (is_complex(node->rhs->ty)) {
+                int rhs_sz = node->rhs->ty->size;
+                int rhs_base = node->rhs->ty->base ? node->rhs->ty->base->size : 8;
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), 0); // ldr x16, [v]
                 arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), 0); // str x16, [addr_rhs]
-                if (complex_sz > 8) {
-                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(base_sz / 8)); // ldr x16, [v, #base_sz]
-                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(base_sz / 8)); // str x16, [addr_rhs, #base_sz]
+                if (rhs_sz > rhs_base) {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(rhs_base / 8)); // ldr x16, [v, #rhs_base]
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(rhs_base / 8)); // str x16, [addr_rhs, #rhs_base]
                 }
 #else
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
