@@ -2272,7 +2272,7 @@
   vect/ggc-pr37574                    PASS (compile only)
   vect/gimplefe-40                    SKIP (gimple)
   vect/gimplefe-41                    SKIP (gimple)
-  vect/group-no-gaps-1                FAIL (runtime)
+  vect/group-no-gaps-1                PASS
   vect/if-cvt-stores-vect-ifcvt-18    PASS
   vect/no-fast-math-vect16            PASS
   vect/no-fre-pre-pr50208             PASS (compile only)
@@ -2568,7 +2568,7 @@
   vect/pr65947-14                     PASS
   vect/pr65951                        PASS
   vect/pr66142                        SKIP (avx)
-  vect/pr66251                        FAIL (runtime)
+  vect/pr66251                        PASS
   vect/pr66253                        PASS
   vect/pr66278                        PASS (compile only)
   vect/pr66623                        PASS
@@ -2717,7 +2717,7 @@
   vect/pr96698                        PASS (compile only)
   vect/pr96783-1                      PASS
   vect/pr96783-2                      PASS
-  vect/pr96854                        FAIL (runtime)
+  vect/pr96854                        PASS
   vect/pr96920                        PASS (compile only)
   vect/pr97081-2                      PASS
   vect/pr97081                        PASS
@@ -3964,6 +3964,4 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3607/3610 passed (99%), 3 failed (0 compile/3 runtime), 353 skipped.
-
-Runtime failures: vect/group-no-gaps-1 vect/pr66251 vect/pr96854
+Torture: 3610/3610 passed (100%), 0 failed, 353 skipped.

@@ -7544,8 +7544,8 @@ static VReg gen(Node *node) {
             }
 #endif
         }
-        VReg r1 = gen_addr(node->lhs);
         VReg r2 = gen(node->rhs);
+        VReg r1 = gen_addr(node->lhs);
 #ifdef ARCH_ARM64
         emit_store(node->lhs->ty, r2, r1, 0);
 #else
