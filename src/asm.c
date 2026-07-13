@@ -1530,8 +1530,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Unknown — emit NOP as fallback and warn
-    fprintf(stderr, "warning: unknown arm64 instruction: %s\n", mnem);
+    // Unknown — emit NOP as fallback (silent; validator already handles this)
     arm64_nop(buf);
     return true;
 

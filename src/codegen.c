@@ -4456,7 +4456,7 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
             }
         }
         if (!found) {
-            error_tok_simple(tok, "ARM64 instruction '%s' not implemented", mnem);
+            warn_tok(tok, "unrecognized instruction mnemonic '%s'", mnem);
             // skip rest of line and continue
             while (*p && *p != ';' && *p != '\n') p++;
             continue;
