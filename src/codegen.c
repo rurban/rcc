@@ -5187,6 +5187,38 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         return;
     }
 
+    // Complex types: gen() returns address, need to load and OR components
+    if (cond->ty && is_complex(cond->ty)) {
+        VReg addr = gen(cond);
+        int base_sz = cond->ty->base ? cond->ty->base->size : 8;
+#ifdef ARCH_ARM64
+        VReg rt = alloc_reg();
+        asm_ldr_reg_off(cg_sec, rt, addr, 8, 0);
+        if (cond->ty->size > base_sz) {
+            VReg rt2 = alloc_reg();
+            asm_ldr_reg_off(cg_sec, rt2, addr, 8, base_sz);
+            arm64_orr_reg(cg_sec, 1, REG(rt), REG(rt), REG(rt2), ARM64_LSL, 0);
+            free_reg(rt2);
+        }
+        asm_cmp_zero(cg_sec, rt, 8);
+        size_t cj = asm_jcc_label(cg_sec, ARM64_EQ);
+        asm_fixup_add(cg_sec, cj, label, 1);
+        free_reg(rt);
+        free_reg(addr);
+#else
+        VReg rt = alloc_reg();
+        x86_mov_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), 0));
+        if (cond->ty->size > 8)
+            x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), base_sz));
+        asm_cmp_zero(cg_sec, rt, 8);
+        size_t cj = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, cj, label, 1);
+        free_reg(rt);
+        free_reg(addr);
+#endif
+        return;
+    }
+
     VReg r = gen(cond);
     int sz = (cond->ty && is_flonum(cond->ty)) ? 8 : (cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4));
 #ifdef ARCH_ARM64
