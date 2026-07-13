@@ -3223,6 +3223,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(val);
             }
             arg_regs[i] = addr;
+        } else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            // Small struct passed by value in a GP register.
+            // gen() for ND_DEREF / ND_MEMBER may return the address, not the value.
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(val), x86_mem(REG(addr), 0)); // mov (addr), val
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
         } else
             arg_regs[i] = gen(argv[i]);
 
@@ -4076,12 +4089,51 @@ static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
         }
     }
 #else
-    (void)src;
-    (void)dst;
-    (void)from;
-    (void)to;
-    (void)fsz;
-    (void)from_int;
+    // x86-64: convert between int and float complex components
+    if (from_int) {
+        // int complex -> float complex: load ints, cvtsi2sd, store doubles
+        if (fsz == 4) {
+            VReg r1 = alloc_reg(), r2 = alloc_reg();
+            if (from->base->is_unsigned) {
+                x86_mov_rm(cg_sec, 4, REG(r1), x86_mem(REG(src), 0)); // movl (src), r1
+                x86_mov_rm(cg_sec, 4, REG(r2), x86_mem(REG(src), 4)); // movl 4(src), r2
+            } else {
+                asm_movsx_base_off_reg(cg_sec, r1, src, 0, 8, 4); // movslq (src), r1
+                asm_movsx_base_off_reg(cg_sec, r2, src, 4, 8, 4); // movslq 4(src), r2
+            }
+            // Save real to xmm0, then store
+            asm_cvtsi2sd(cg_sec, r1, 4); // cvtsi2sd r1, %xmm0
+            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_XMM0); // movsd %xmm0, (dst)
+            // Save imag to xmm0, then store
+            asm_cvtsi2sd(cg_sec, r2, 4); // cvtsi2sd r2, %xmm0
+            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_XMM0); // movsd %xmm0, 8(dst)
+            free_reg(r1);
+            free_reg(r2);
+        }
+    } else {
+        // float complex -> int complex: load doubles, cvttsd2si, store ints
+        if (fsz == 8) {
+            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
+            VReg r = alloc_reg();
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r (32-bit)
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
+            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 8)); // movsd 8(src), %xmm0
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
+            free_reg(r);
+        } else if (fsz == 4) {
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 0)); // movss (src), %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            VReg r = alloc_reg();
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 4)); // movss 4(src), %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
+            free_reg(r);
+        }
+    }
 #endif
 }
 
