@@ -4025,7 +4025,54 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
 #endif
 }
 
-// Convert a TY_COMPLEX value at address `src` (integer base type
+// Convert between mixed int/float complex bases at the same address.
+// Used for _Complex int ↔ _Complex double and similar.
+static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
+    int fsz = from->base->size, tsz = to->base->size;
+    bool from_int = is_integer(from->base);
+    (void)tsz;
+#ifdef ARCH_ARM64
+    if (from_int) {
+        // int complex → float complex: load from src, convert, store to dst
+        if (fsz == 4) {
+            if (from->base->is_unsigned) {
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(src), 0);
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X1, REG(src), 1);
+            } else {
+                arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(src), 0);
+                arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(src), 1);
+            }
+            arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
+            arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+            arm64_str_fp(cg_sec, 3, ARM64_D0, REG(dst), 0);
+            arm64_str_fp(cg_sec, 3, ARM64_D1, REG(dst), 8);
+        }
+    } else {
+        // float complex → int complex: load from src, convert, store to dst
+        if (fsz == 4) {
+            arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(src), 0);
+            arm64_ldr_fp(cg_sec, 2, ARM64_S1, REG(src), 1);
+            if (to->base->is_unsigned) {
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+            } else {
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+            }
+            arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
+            arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
+        }
+    }
+#else
+    (void)src;
+    (void)dst;
+    (void)from;
+    (void)to;
+    (void)fsz;
+    (void)from_int;
+#endif
+}
+
 // `from->base`, e.g. _Complex char) to a TY_COMPLEX value at address `dst`
 // (integer base type `to->base`, e.g. _Complex int), sign- or
 // zero-extending (per from->base->is_unsigned) or truncating each
@@ -5476,7 +5523,9 @@ static VReg gen_int128(Node *node) {
 #endif
             return addr;
         }
-        // from smaller integer to int128
+        // Complex-to-complex cast: delegate to gen_addr which handles conversion
+        if (from && is_complex(from) && is_complex(to))
+            return gen_addr(node);
         int val = gen(node->lhs);
         if (from && from->size < 8) {
             if (from->is_unsigned)
@@ -6957,6 +7006,12 @@ static VReg gen(Node *node) {
                     node->ty->base->size != node->rhs->ty->base->size) {
                     emit_complex_convert_float(dst, dst, node->rhs->ty, node->ty);
                 }
+                // Mixed int↔float complex bases (e.g. _Complex int → _Complex double)
+                if (node->ty->kind == TY_COMPLEX && node->rhs->ty->kind == TY_COMPLEX &&
+                    ((is_integer(node->ty->base) && is_flonum(node->rhs->ty->base)) ||
+                     (is_flonum(node->ty->base) && is_integer(node->rhs->ty->base)))) {
+                    emit_complex_convert_mixed(dst, dst, node->rhs->ty, node->ty);
+                }
                 // For complex return values used as a condition (e.g. if (c = f())),
                 // test whether the value is non-zero.
                 if (node->ty->kind == TY_COMPLEX) {
@@ -7139,85 +7194,18 @@ static VReg gen(Node *node) {
                 return dst;
             }
 
-#ifndef ARCH_ARM64
             // Complex-to-complex assignment with mixed int/float base types
             // (e.g. _Complex double = _Complex int): convert components.
             if (node->lhs->ty->kind == TY_COMPLEX && node->rhs->ty && node->rhs->ty->kind == TY_COMPLEX &&
                 is_flonum(node->lhs->ty->base) != is_flonum(node->rhs->ty->base)) {
                 if (is_flonum(node->lhs->ty->base)) {
-                    // int complex → float complex: load int, convert to float/double
-                    int fsz = node->rhs->ty->base->size;
-                    int tsz = node->lhs->ty->base->size;
-                    bool uns = node->rhs->ty->base->is_unsigned;
-                    if (fsz == 8) {
-                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0));
-                        x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(src), 8));
-                    } else if (fsz == 4) {
-                        if (uns) {
-                            x86_mov_rm(cg_sec, 4, X86_RAX, x86_mem(REG(src), 0));
-                            x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(REG(src), 4));
-                        } else {
-                            x86_movsx_rm(cg_sec, 8, 4, X86_RAX, x86_mem(REG(src), 0));
-                            x86_movsx_rm(cg_sec, 8, 4, X86_RCX, x86_mem(REG(src), 4));
-                        }
-                    } else if (fsz == 2) {
-                        if (uns) {
-                            x86_movzx_rm(cg_sec, 4, 2, X86_RAX, x86_mem(REG(src), 0));
-                            x86_movzx_rm(cg_sec, 4, 2, X86_RCX, x86_mem(REG(src), 2));
-                        } else {
-                            x86_movsx_rm(cg_sec, 4, 2, X86_RAX, x86_mem(REG(src), 0));
-                            x86_movsx_rm(cg_sec, 4, 2, X86_RCX, x86_mem(REG(src), 2));
-                        }
-                    } else {
-                        if (uns) {
-                            x86_movzx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(REG(src), 0));
-                            x86_movzx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(REG(src), 1));
-                        } else {
-                            x86_movsx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(REG(src), 0));
-                            x86_movsx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(REG(src), 1));
-                        }
-                    }
-                    if (fsz <= 4)
-                        fsz = 4;
-                    x86_cvtsi2sd(cg_sec, fsz, X86_XMM0, X86_RAX);
-                    x86_cvtsi2sd(cg_sec, fsz, X86_XMM1, X86_RCX);
-                    // Narrow to float if target is _Complex float
-                    if (tsz == 4) {
-                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0);
-                        x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1);
-                        x86_movss_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
-                        x86_movss_mr(cg_sec, x86_mem(REG(dst), 4), X86_XMM1);
-                    } else {
-                        x86_movsd_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
-                        x86_movsd_mr(cg_sec, x86_mem(REG(dst), 8), X86_XMM1);
-                    }
+                    emit_complex_convert_mixed(src, dst, node->rhs->ty, node->lhs->ty);
                 } else {
-                    // float complex → int complex: load double, convert to int, store
-                    int fsz = node->rhs->ty->base->size;
-                    (void)fsz; // always 8 (double) or 4 (float) promoted to 8
-                    int tsz = node->lhs->ty->base->size;
-                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
-                    x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
-                    x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RAX, X86_XMM0);
-                    x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RCX, X86_XMM1);
-                    if (tsz == 8) {
-                        x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_RAX);
-                        x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_RCX);
-                    } else if (tsz == 4) {
-                        x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), X86_RAX);
-                        x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), X86_RCX);
-                    } else if (tsz == 2) {
-                        x86_mov_mr(cg_sec, 2, x86_mem(REG(dst), 0), X86_RAX);
-                        x86_mov_mr(cg_sec, 2, x86_mem(REG(dst), 2), X86_RCX);
-                    } else {
-                        x86_mov_mr(cg_sec, 1, x86_mem(REG(dst), 0), X86_RAX);
-                        x86_mov_mr(cg_sec, 1, x86_mem(REG(dst), 1), X86_RCX);
-                    }
+                    emit_complex_convert_mixed(src, dst, node->rhs->ty, node->lhs->ty);
                 }
                 free_reg(src);
                 return dst;
             }
-#endif
 
             // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
             // store the value directly instead of copying bytes from the address in the register.
@@ -8450,15 +8438,24 @@ static VReg gen(Node *node) {
             int base_from = from->base ? from->base->size : 4;
 #ifdef ARCH_ARM64
             asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
-            // Convert real part
             if (base_from == 4 && base_to == 8) {
-                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0); // ldr s0, [r]
-                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
-                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0); // str d0, [result]
-                // Convert imag part (offset 4 bytes for float imag)
-                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4); // ldr s0, [r, #4]
-                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
-                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8); // str d0, [result, #8]
+                if (is_flonum(from->base)) {
+                    // _Complex float → _Complex double
+                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0);
+                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4);
+                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8);
+                } else {
+                    // _Complex int → _Complex double
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(r), 0);
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(r), 1);
+                    arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
+                    arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D1, REG(result), 8);
+                }
             }
 #else
             asm_lea_rbp_reg(cg_sec, result, 8, result_off);

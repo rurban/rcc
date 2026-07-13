@@ -4664,11 +4664,11 @@ static int run_torture_suite(bool summary_only) {
     if (only_test_count > 0)
         max_fail = 0;
     else if (streq(platform, "arm64_cross"))
-        max_fail = 8;
+        max_fail = 2;
     else if (streq(platform, "arm64"))
-        max_fail = 8;
+        max_fail = 2;
     else if (streq(platform, "darwin_cross"))
-        max_fail = 9;
+        max_fail = 3;
     else if (streq(platform, "mingw_cross"))
         max_fail = 6;
     else if (streq(platform, "mingw"))
