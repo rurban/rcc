@@ -3964,6 +3964,8 @@ typedef enum {
     SKIP_MODE,
     SKIP_MISSING_INCLUDE,
     SKIP_C99_RUNTIME,
+    SKIP_SIGNAL,
+    SKIP_POSIX_MEMALIGN,
     SKIP_C11_INCOMPAT,
     SKIP_ERROR,
     SKIP_FENV,
@@ -3988,9 +3990,9 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
     //case SKIP_VECTOR_SIZE: return "vector_size";
-    case SKIP_MODE: return "attribute-mode";
-    case SKIP_MISSING_INCLUDE: return "missing-include";
     case SKIP_C99_RUNTIME: return "c99-runtime";
+    case SKIP_SIGNAL: return "signal";
+    case SKIP_POSIX_MEMALIGN: return "posix_memalign";
     case SKIP_C11_INCOMPAT: return "c11-incompat";
     case SKIP_ERROR: return "error";
     case SKIP_FENV: return "fenv-exceptions";
@@ -4049,6 +4051,15 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
     // msvcrt.dll doesn't support C99 format specifiers like %hhd, %lld
     if (contains(content, "dg-require-effective-target c99_runtime"))
         return SKIP_C99_RUNTIME;
+    // Windows lacks POSIX signals (struct sigaction, sigemptyset, etc.)
+    if (contains(content, "dg-require-effective-target alarm") ||
+        contains(content, "dg-require-effective-target signal"))
+        return SKIP_SIGNAL;
+    // posix_memalign is POSIX, not available on Windows.
+    // Also catch dg-skip-if directives that reference posix_memalign.
+    if (contains(content, "dg-require-effective-target posix_memalign") ||
+        (contains(content, "dg-skip-if") && contains(content, "posix_memalign")))
+        return SKIP_POSIX_MEMALIGN;
 #endif
     /* Template files (included by runners) and __GIMPLE FE tests */
     if (contains(name, "-template") || contains(name, "complex-operations"))
@@ -4670,9 +4681,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 3;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 21;
+        max_fail = 5;
     else if (streq(platform, "mingw"))
-        max_fail = 21;
+        max_fail = 5;
     else if (streq(platform, "linux"))
         max_fail = 0;
     else

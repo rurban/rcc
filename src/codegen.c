@@ -3133,7 +3133,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < reg_nargs; i++) {
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
             arg_regs[i] = gen_addr(argv[i]);
-        else
+        else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(val), x86_mem(REG(addr), 0)); // mov (addr), val
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
+        } else
             arg_regs[i] = gen(argv[i]);
 #ifdef _WIN32
         // For struct-returning function used as arg: gen returns buffer address;
@@ -3160,9 +3171,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         // Win64: large structs (>8 bytes) are passed by pointer on the stack
-        VReg r = ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
-            ? gen_addr(argv[i])
-            : gen(argv[i]);
+        VReg r;
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+            r = gen_addr(argv[i]);
+        else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                r = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(r), x86_mem(REG(addr), 0)); // mov (addr), r
+                free_reg(addr);
+            } else {
+                r = gen(argv[i]);
+            }
+        } else
+            r = gen(argv[i]);
         int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
         if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
@@ -3363,6 +3386,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         int argi = i + (has_hidden_retbuf ? 1 : 0);
         if (arg_is_float[i]) {
             asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %xmm{fp_idx}
+            // Narrow float args for builtin calls that map to float
+            // variants (e.g. __builtin_fmaxf→fmaxf). Double variants
+            // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
+            if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
+                x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, 0(%rsp)
         } else if (arg_sizes[i] == 1) {
             if (argv[i]->ty && !argv[i]->ty->is_unsigned)
