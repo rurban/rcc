@@ -4681,9 +4681,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 3;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 5;
+        max_fail = 1;
     else if (streq(platform, "mingw"))
-        max_fail = 5;
+        max_fail = 1;
     else if (streq(platform, "linux"))
         max_fail = 0;
     else

@@ -3131,7 +3131,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool is_oldstyle = !fn_type_w || (fn_type_w->kind == TY_FUNC && fn_type_w->is_oldstyle);
     int reg_nargs = nargs < max_gp_args - (has_hidden_retbuf ? 1 : 0) ? nargs : max_gp_args - (has_hidden_retbuf ? 1 : 0);
     for (int i = 0; i < reg_nargs; i++) {
-        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || is_complex(argv[i]->ty)) && argv[i]->ty->size > 8)
             arg_regs[i] = gen_addr(argv[i]);
         else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
             int addr = gen_addr(argv[i]);
@@ -3147,13 +3147,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         } else
             arg_regs[i] = gen(argv[i]);
 #ifdef _WIN32
-        // For struct-returning function used as arg: gen returns buffer address;
-        // for structs ≤8 bytes, load the value from it.
-        if (argv[i]->kind == ND_FUNCALL && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8 && argv[i]->ty->size > 0) {
-            x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
-        }
         // Win64: an 8-byte _Complex is passed by value in a GP register.
-        // gen() returns the address of the complex value; load it.
+        // gen() returns the address; load it.
+        // (Struct/union ≤8 byte funcall args already handled by gen_addr+load above.)
         if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
             x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
         }
@@ -3172,7 +3168,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         // Win64: large structs (>8 bytes) are passed by pointer on the stack
         VReg r;
-        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || is_complex(argv[i]->ty)) && argv[i]->ty->size > 8)
             r = gen_addr(argv[i]);
         else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
             int addr = gen_addr(argv[i]);
@@ -3394,14 +3390,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, 0(%rsp)
         } else if (arg_sizes[i] == 1) {
             if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                x86_movsx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, %s
+                x86_movsx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movsbl %s, %s
             else
-                x86_movzx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // mov %s, %s
-        } else if (arg_sizes[i] == 2) {
-            if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                x86_movsx(cg_sec, 4, 2, cg_x86_argreg[argi], REG(arg_regs[i])); // movsbl %s, %s
-            else
-                x86_movzx(cg_sec, 4, 2, cg_x86_argreg[argi], REG(arg_regs[i])); // movzbl %s, %s
+                x86_movzx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movzbl %s, %s
         } else if (arg_sizes[i] == 4) {
             if (argv[i]->ty->is_unsigned)
                 x86_mov_rr(cg_sec, 4, cg_x86_argreg[argi], REG(arg_regs[i])); // movswl %s, %s
@@ -3538,15 +3529,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
 #ifdef _WIN32
-    // Win64: an 8-byte _Complex return value comes back by value in RAX (no
-    // hidden return pointer — see has_hidden_retbuf above). Store it where
-    // the caller wants it (hidden_ret_reg, e.g. from `c = f()`) or, if no
-    // destination was provided, materialize it on the stack and return its
-    // address, matching the convention that gen() returns the address of a
-    // complex value.
-    if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
+    // Win64: structs ≤8 bytes returned by value in RAX (no hidden retbuf).
+    // The gen() caller expects an address; return a temp slot containing RAX.
+    if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || is_complex(node->ty)) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
+        int sz = node->ty->size <= 4 ? 4 : 8;
+        x86_mov_mr(cg_sec, sz, x86_mem(REG(addr), 0), X86_RAX); // mov rax, (addr)
         return addr;
     }
 #endif
@@ -8856,23 +8844,33 @@ static VReg gen(Node *node) {
                 cg_def_label(format(".L.retcopy_end.%d", c));
                 asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
 #else
-                asm_mov_rbp(cg_sec, X86_R9, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R9
-                x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
-                cg_def_label(format(".L.retcopy.%d", c));
-                x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
+#ifdef _WIN32
+                if (node->lhs->ty->size <= 8) {
+                    // Win64: struct ≤8 bytes returned by value in RAX.
+                    // Load the struct value into RAX directly, no sret copy.
+                    int sz = node->lhs->ty->size <= 4 ? 4 : 8;
+                    x86_mov_rm(cg_sec, sz, X86_RAX, x86_mem(REG(src), 0)); // movl/movq (src), %rax
+                } else
+#endif
                 {
-                    size_t o = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
+                    asm_mov_rbp(cg_sec, X86_R9, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R9
+                    x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
+                    cg_def_label(format(".L.retcopy.%d", c));
+                    x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
+                    {
+                        size_t o = asm_jcc_label(cg_sec, X86_E);
+                        asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
+                    }
+                    x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
+                    x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
+                    x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
+                    {
+                        size_t o = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
+                    }
+                    cg_def_label(format(".L.retcopy_end.%d", c));
+                    x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 }
-                x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
-                x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
-                x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
-                }
-                cg_def_label(format(".L.retcopy_end.%d", c));
-                x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 free_reg(src);
 #endif
             } else if (node->lhs->ty && is_complex(node->lhs->ty)) {
@@ -12716,9 +12714,12 @@ struct ObjFile *codegen(Program *prog) {
         int param_xmm_index = 0;
         int stack_param_index = 0;
         int param_index = fn->ty->return_ty &&
-                (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
+                ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)
 #ifdef _WIN32
-                 || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
+                     && fn->ty->return_ty->size > 8 ||
+                 (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
+#else
+                 || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16)
 #endif
                      )
             ? 1
@@ -13845,7 +13846,11 @@ struct ObjFile *codegen(Program *prog) {
 #ifdef _WIN32
              || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #endif
-            );
+                 )
+#ifdef _WIN32
+            && fn->ty->return_ty->size > 8
+#endif
+            ;
         if (has_retbuf) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {

@@ -424,7 +424,7 @@
   20011223-1                          PASS
   20020103-1                          PASS
   20020107-1                          PASS
-  20020108-1                          SKIP (attribute-mode)
+  20020108-1                          SKIP (unknown)
   20020118-1                          PASS
   20020127-1                          PASS
   20020129-1                          PASS
@@ -601,10 +601,10 @@
   20041218-2                          PASS
   20050104-1                          PASS
   20050106-1                          PASS
-  20050107-1                          SKIP (attribute-mode)
+  20050107-1                          SKIP (unknown)
   20050111-1                          PASS
-  20050119-1                          SKIP (attribute-mode)
-  20050119-2                          SKIP (attribute-mode)
+  20050119-1                          SKIP (unknown)
+  20050119-2                          SKIP (unknown)
   20050121-1                          PASS
   20050124-1                          PASS
   20050125-1                          PASS
@@ -1204,7 +1204,7 @@
   c23-version-1                       PASS (compile only)
   c23-version-2                       PASS (compile only)
   call-trap-1                         PASS
-  cbrt                                SKIP (attribute-mode)
+  cbrt                                SKIP (unknown)
   cmpdi-1                             PASS
   cmpsf-1                             PASS
   cmpsi-1                             PASS
@@ -1292,7 +1292,7 @@
   mayalias-3                          PASS
   medce-1                             PASS
   memchr-1                            PASS
-  memclr                              SKIP (attribute-mode)
+  memclr                              SKIP (unknown)
   memcpy-1                            PASS
   memcpy-2                            PASS
   memcpy-a1                           PASS
@@ -1305,7 +1305,7 @@
   memset-3                            PASS
   memset-4                            PASS
   minmaxcmp-1                         PASS
-  misalign                            SKIP (attribute-mode)
+  misalign                            SKIP (unknown)
   mod-1                               PASS
   mode-dependent-address              PASS
   mul-sext                            PASS
@@ -1366,7 +1366,7 @@
   pr22493-1                           PASS
   pr22630                             PASS
   pr23047                             PASS
-  pr23135                             SKIP (attribute-mode)
+  pr23135                             SKIP (unknown)
   pr23324                             PASS
   pr23467                             PASS
   pr23604                             PASS
@@ -1974,7 +1974,7 @@
   shiftdi                             PASS
   shiftopt-1                          PASS
   signed1bitfield-1                   PASS
-  simd-1                              SKIP (attribute-mode)
+  simd-1                              SKIP (unknown)
   simd-2                              PASS
   simd-4                              PASS
   simd-5                              PASS
@@ -2064,7 +2064,7 @@
   zero-struct-1                       PASS
   zero-struct-2                       PASS
   zerolen-1                           PASS
-  zerolen-2                           SKIP (attribute-mode)
+  zerolen-2                           SKIP (unknown)
   vect/O-pr46167                      PASS (compile only)
   vect/O1-pr33854                     PASS (compile only)
   vect/O1-pr41008                     PASS (compile only)

@@ -5,9 +5,9 @@ Generated: July 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 117
-- **Failed**: 3
-- **Pass Rate**: 97%
+- **Passed**: 116
+- **Failed**: 4
+- **Pass Rate**: 96%
 
 ## Detailed Results
 
@@ -141,7 +141,7 @@ Generated: July 2026
 | 136_atomic_gcc_style        | PASS     | Output matches                |
 | 137_funcall_struct_args     | PASS     | Output matches                |
 | 138_arm64_encoding          | PASS     | Output matches                |
-| 139_arm64_errors            | PASS     | Output matches                |
+| 139_arm64_errors            | MISMATCH | Output differs                |
 | 140_arm64_extasm            | PASS     | Output matches                |
 | 141_riscv_asm               | SKIP     | Skipped                       |
 | 142_int_conversion          | PASS     | Output matches                |
