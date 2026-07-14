@@ -3535,11 +3535,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
         int ret = temp_ret_reg != R_NONE ? temp_ret_reg : hidden_ret_reg;
 #ifdef _WIN32
-        // On Windows, structs ≤8 bytes are passed by value. When the caller
-        // did NOT provide a hidden ret buffer (hidden_ret_reg == -1), the
-        // return register holds the buffer address; load the value from it.
-        if (hidden_ret_reg == -1 && node->ty->size <= 8 && node->ty->size > 0) {
-            x86_mov_rm(cg_sec, node->ty->size, REG(ret), x86_mem(X86_RAX, 0)); // movsx (size) (%rax), %ret
+        // Win64: structs ≤8 bytes returned by value in RAX (not via pointer).
+        // The callee returns the struct value in RAX; store it into the
+        // destination buffer pointed to by ret.
+        if (node->ty->size <= 8 && node->ty->size > 0) {
+            int sz = node->ty->size <= 4 ? 4 : 8;
+            x86_mov_mr(cg_sec, sz, x86_mem(REG(ret), 0), X86_RAX); // movq %rax, (ret)
         }
 #endif
         return ret;

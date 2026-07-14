@@ -187,7 +187,7 @@ compiler and tests, it is much faster now.
 The original windows repo is now at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 3610/3610 GCC torture tests passed on Linux, Windows and macOS (100%). It passes much more tests than clang, gcc and all other known C compilers.
+This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 3610/3610 GCC torture tests passed on Linux, Windows and macOS (100%). It passes much more tests than gcc, clang and all other known C compilers.
 
 ## Test Results
 
