@@ -1281,12 +1281,14 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #endif
 
     bool has_hidden_retbuf = node->ty &&
-        (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION
+        (
 #ifdef _WIN32
-         || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->size > 8) || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
+#else
+                                 node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION
 #endif
 #ifdef ARCH_ARM64
-         || node->ty->kind == TY_COMPLEX
+                                 || node->ty->kind == TY_COMPLEX
 #endif
         );
 
@@ -13624,11 +13626,13 @@ struct ObjFile *codegen(Program *prog) {
             int max_gp = 6;
 #endif
             int gp = fn->ty->return_ty &&
-                    (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
+                    (
 #ifdef _WIN32
-                     || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
+                         ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
+#else
+                         fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #endif
-                         )
+                             )
                 ? 1
                 : 0;
             int xfp = 0;
