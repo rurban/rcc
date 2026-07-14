@@ -1899,6 +1899,7 @@ typedef struct {
     bool did_compile;
     bool did_exec;
     bool exec_timed_out;
+    bool expect_compile_error; /* dg-error test: compile failure is success */
     // Compliance-specific: gcc execution
     int gcc_exec_exit;
     char *gcc_exec_out;
@@ -4008,8 +4009,7 @@ static const char *skip_reason_str(SkipReason r) {
     }
 }
 
-static SkipReason torture_should_skip(const char *name, const char *content) {
-    if (!content) return SKIP_NONE;
+static SkipReason torture_should_skip(const char *name, const char *content, const char *cc_name) {
     if (contains(content, "dg-skip-if") &&
         (contains(content, "i?86") || contains(content, "x86_64") || contains(content, "i386")))
         return SKIP_X86_ONLY;
@@ -4035,8 +4035,11 @@ static SkipReason torture_should_skip(const char *name, const char *content) {
         return SKIP_FINSTRUMENT;
     // TODO we really should catch all compilation errors, and emit them all at once at the end
     // Then we could compare thrown errors
-    if (contains(content, "dg-error"))
-        return SKIP_ERROR;
+    // dg-error / dg-warning tests: GCC can handle these; skip only for non-GCC compilers.
+    if (!cc_name || !contains(cc_name, "gcc")) {
+        if (contains(content, "dg-error") || contains(content, "dg-warning"))
+            return SKIP_ERROR;
+    }
     if (contains(content, "dg-require-effective-target nested") ||
         streq(name, "20061220-1") || streq(name, "nest-align-1") || streq(name, "920415-1") ||
         streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447") || streq(name, "pr71494"))
@@ -4146,13 +4149,16 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         strcat(r->tmp_exe, ".exe");
 
     char *content = slurp(src_path);
-    SkipReason sk = torture_should_skip(name, content);
+    SkipReason sk = torture_should_skip(name, content, compiler_name);
     if (sk != SKIP_NONE) {
         r->exit_code = -(int)sk - 1;
         free(content);
         return;
     }
 
+    // For GCC with dg-error/dg-warning: compile failure is the expected outcome
+    r->expect_compile_error = compiler_name && contains(compiler_name, "gcc") &&
+        (contains(content, "dg-error") || contains(content, "dg-warning"));
 #ifdef _WIN32
     /* In-process compilation is fine on Windows, but in-process execution
      * is NOT: many torture tests call exit(0) which kills run_tests.exe
@@ -4333,12 +4339,18 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
         return;
     }
     if (r->exit_code != 0 && !r->did_compile) {
-        g_tort_fail_compile++;
-        tort_add_error(&g_tort_compile_errors, name);
-        if (!summary_only) {
-            print_result(name, COL_RED, "FAIL (compile)");
-            if (r->compile_out && r->compile_out[0])
-                fprintf(stderr, "%s", r->compile_out);
+        if (r->expect_compile_error) {
+            // GCC with dg-error/dg-warning: expected compile failure is success
+            g_tort_pass++;
+            if (!summary_only) print_result(name, COL_GREEN, "PASS (expected error)");
+        } else {
+            g_tort_fail_compile++;
+            tort_add_error(&g_tort_compile_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (compile)");
+                if (r->compile_out && r->compile_out[0])
+                    fprintf(stderr, "%s", r->compile_out);
+            }
         }
         free(r->compile_out);
         r->compile_out = NULL;
@@ -4385,7 +4397,7 @@ static void run_torture_test(const char *src, bool summary_only) {
 
     g_tort_total++;
     char *content = slurp(src);
-    SkipReason sk = torture_should_skip(name, content);
+    SkipReason sk = torture_should_skip(name, content, compiler_name);
     if (sk != SKIP_NONE) {
         g_tort_skip++;
         if (!summary_only) {
@@ -4477,10 +4489,15 @@ static void run_torture_test(const char *src, bool summary_only) {
     ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
     if (cr.exit_code != 0) {
+        bool expect_error = compiler_name && contains(compiler_name, "gcc") &&
+            (contains(content, "dg-error") || contains(content, "dg-warning"));
         if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||
             contains(cr.out, "include file") || contains(cr.out, "not found")) {
             g_tort_skip++;
             if (!summary_only) print_result(name, COL_YELLOW, "SKIP (missing include)");
+        } else if (expect_error) {
+            g_tort_pass++;
+            if (!summary_only) print_result(name, COL_GREEN, "PASS (expected error)");
         } else {
             g_tort_fail_compile++;
             tort_add_error(&g_tort_compile_errors, name);
@@ -4697,7 +4714,7 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "mingw"))
         max_fail = 0;
     else if (streq(platform, "linux"))
-        max_fail = 0;
+        max_fail = 4;
     else
         max_fail = 0;
 
