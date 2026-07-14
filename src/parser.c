@@ -191,6 +191,7 @@ static Token *pending_cleanup_tok;
 static bool pending_constructor;
 static bool pending_destructor;
 static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
+static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
 // VLA-containing struct: emit size-capture code before the next statement
@@ -473,6 +474,124 @@ LVar *find_global_name(char *name) {
         if (var->name == name)
             return var;
     return NULL;
+}
+
+// Declare a __builtin_* math function with its proper type signature on first
+// use.  Avoids preprocessor macros and strcmp-based return-type tables.
+// Returns an ND_LVAR node with the function's type, or NULL if unknown.
+static Node *declare_builtin_on_demand(Token *tok) {
+    const char *name = tok->name;
+    Type *ret_ty = NULL;
+    Type *param_tys[3] = {NULL};
+    int nparams = 0;
+
+    // float(float, float) group
+    if (!strcmp(name, "__builtin_powf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmaxf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fminf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmaf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        param_tys[2] = ty_float;
+        nparams = 3;
+    } else if (!strcmp(name, "__builtin_fabsf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_copysignf")) {
+        ret_ty = ty_float;
+        param_tys[0] = ty_float;
+        param_tys[1] = ty_float;
+        nparams = 2;
+        // double(double, double) group
+    } else if (!strcmp(name, "__builtin_pow")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmax")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fmin")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+    } else if (!strcmp(name, "__builtin_fma")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        param_tys[2] = ty_double;
+        nparams = 3;
+    } else if (!strcmp(name, "__builtin_fabs")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_copysign")) {
+        ret_ty = ty_double;
+        param_tys[0] = ty_double;
+        param_tys[1] = ty_double;
+        nparams = 2;
+        // double(double _Complex) group
+    } else if (!strcmp(name, "__builtin_creal")) {
+        ret_ty = ty_double;
+        param_tys[0] = complex_type(ty_double);
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_cimag")) {
+        ret_ty = ty_double;
+        param_tys[0] = complex_type(ty_double);
+        nparams = 1;
+        // float(float _Complex) group
+    } else if (!strcmp(name, "__builtin_crealf")) {
+        ret_ty = ty_float;
+        param_tys[0] = complex_type(ty_float);
+        nparams = 1;
+    } else if (!strcmp(name, "__builtin_cimagf")) {
+        ret_ty = ty_float;
+        param_tys[0] = complex_type(ty_float);
+        nparams = 1;
+    } else {
+        return NULL;
+    }
+    // Build param type list
+    Type param_head = {};
+    Type *pcur = &param_head;
+    for (int i = 0; i < nparams; i++) {
+        Type *pt = arena_alloc(sizeof(Type));
+        *pt = *param_tys[i];
+        pt->param_next = NULL;
+        pcur = pcur->param_next = pt;
+    }
+
+    Type *fty = func_type(ret_ty);
+    fty->param_types = param_head.param_next;
+
+    LVar *var = arena_alloc(sizeof(LVar));
+    memset(var, 0, sizeof(LVar));
+    var->name = tok->name;
+    var->ty = pointer_to(fty);
+    var->is_function = true;
+    var->is_extern = true;
+    global_htab_add(var);
+
+    Node *node = new_var_node(var, tok);
+    node->ty = pointer_to(fty);
+    return node;
 }
 
 // Does this AST (sub)tree contain a __builtin_va_arg_pack() placeholder?
@@ -1272,6 +1391,28 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "vector_size") || equalc(tok, "__vector_size__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    // Clear any in-flight pending size while evaluating the
+                    // argument: a nested sizeof(type) re-enters declarator,
+                    // which would otherwise consume the pending value and
+                    // vectorize the sizeof operand (e.g. attribute text parsed
+                    // twice makes vector_size(4*sizeof(float)) yield 64).
+                    int saved_pending = pending_vector_size;
+                    pending_vector_size = 0;
+                    (void)saved_pending;
+                    Node *node = expr(&tok, tok);
+                    long long val = 0;
+                    if (!eval_const_expr(node, &val))
+                        error_tok(tok, "expected constant vector_size");
+                    pending_vector_size = (int)val;
+                    tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "(")) {
                     tok = skip_balanced(tok);
                 } else {
@@ -1841,6 +1982,38 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
     return ty;
 }
 
+// GCC __attribute__((vector_size(N))): build a vector type as a TY_STRUCT of
+// N/elem_size scalar element-members (element type `elem`), so all existing
+// struct machinery (by-value pass/return, copy, brace init, compound literals,
+// ABI classification) applies unchanged. Vectors additionally allow subscript
+// (handled in postfix) and, unlike arrays, are first-class by-value values.
+// align is the natural vector alignment (== total size).
+static Type *make_vector_type(Type *elem, int total_size) {
+    if (!elem || elem->size <= 0 || (!is_integer(elem) && !is_flonum(elem)))
+        error("vector_size applied to non-scalar type");
+    if (total_size <= 0 || total_size % (int)elem->size != 0)
+        error("vector_size %d is not a multiple of element size %d", total_size, (int)elem->size);
+    int n = total_size / (int)elem->size;
+    Type *ty = arena_alloc(sizeof(Type));
+    ty->kind = TY_STRUCT;
+    ty->is_vector = true;
+    ty->base = elem;
+    ty->size = total_size;
+    ty->align = total_size;
+    Member head = {0};
+    Member *cur = &head;
+    for (int i = 0; i < n; i++) {
+        Member *m = arena_alloc(sizeof(Member));
+        m->ty = elem;
+        char *nm = format("__v%d", i);
+        m->name = str_intern(nm, strlen(nm));
+        m->offset = i * (int)elem->size;
+        cur = cur->next = m;
+    }
+    ty->members = head.next;
+    return ty;
+}
+
 static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     int decl_align = 0;
     tok = read_type_attrs(tok, &decl_align, NULL);
@@ -1909,6 +2082,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         if (name)
             *name = NULL;
         ty = type_suffix(rest, tok, ty, NULL);
+        if (pending_vector_size) {
+            ty = make_vector_type(ty, pending_vector_size);
+            pending_vector_size = 0;
+        }
         return apply_type_align(ty, decl_align);
     }
 
@@ -1918,6 +2095,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     tok = tok->next;
     tok = read_type_attrs(tok, &decl_align, NULL);
     ty = type_suffix(rest, tok, ty, decl_name);
+    if (pending_vector_size) {
+        ty = make_vector_type(ty, pending_vector_size);
+        pending_vector_size = 0;
+    }
     return apply_type_align(ty, decl_align);
 }
 
@@ -3063,6 +3244,24 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         ty = copy_type(ty);
         ty->qual |= quals;
     }
+    // Apply a type-level vector_size attribute to the base type here, not in
+    // declarator(), so every declarator of a multi-declarator declaration
+    // inherits it: `vector(4,float) f1, f2;` must make f2 a vector too.
+    // Trailing per-declarator attributes still apply in declarator().
+    if (pending_vector_size) {
+        // mode(SI) etc. adjusts the ELEMENT type and must be folded in before
+        // the vector is built, or declarator()'s pending_mode handling would
+        // shrink the whole vector to the element size.
+        if (pending_mode) {
+            ty = copy_type(ty);
+            int sizes[] = {0, 1, 2, 4, 8};
+            ty->size = sizes[pending_mode];
+            ty->align = ty->size;
+            pending_mode = 0;
+        }
+        ty = make_vector_type(ty, pending_vector_size);
+        pending_vector_size = 0;
+    }
     *rest = tok;
     return ty;
 }
@@ -3687,8 +3886,24 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     eidx = (int)ev;
                 }
                 tok = skip(tok, "]");
+                /* Nested designator: [N][M]=val for multi-dimensional arrays */
+                if (equalc(tok, "[")) {
+                    tok = tok->next;
+                    Node *n2 = assign(&tok, tok);
+                    long long sv2 = 0;
+                    eval_const_expr(n2, &sv2);
+                    int sidx2 = (int)sv2;
+                    tok = skip(tok, "]");
+                    tok = skip(tok, "=");
+                    /* Apply value to a[sidx][sidx2] */
+                    if (len == 0 || sidx < len)
+                        tok = global_init_one(tok, var, ty->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
+                    else
+                        tok = skip_initializer(tok);
+                    idx = sidx + 1;
+                    continue;
+                }
                 tok = skip(tok, "=");
-                idx = sidx;
             }
             Token *val_start = tok;
             for (int i = sidx; i <= eidx; i++) {
@@ -4104,8 +4319,22 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     eidx = (int)ev;
                 }
                 tok = skip(tok, "]");
+                /* Nested designator: [N][M]=val for multi-dimensional arrays */
+                if (equalc(tok, "[")) {
+                    Node *inner = new_array_elem_lvalue_node(lhs, sidx, tok);
+                    tok = tok->next;
+                    Node *n2 = assign(&tok, tok);
+                    long long sv2 = 0;
+                    eval_const_expr(n2, &sv2);
+                    int sidx2 = (int)sv2;
+                    tok = skip(tok, "]");
+                    tok = skip(tok, "=");
+                    Node *elem_lhs = new_array_elem_lvalue_node(inner, sidx2, tok);
+                    tok = local_init_one(tok, elem_lhs, ty->base->base, cur);
+                    idx = sidx + 1;
+                    continue;
+                }
                 tok = skip(tok, "=");
-                idx = sidx;
             }
             Token *val_start = tok;
             if (sidx != eidx && !equalc(tok, "{")) {
@@ -4396,6 +4625,10 @@ static Node *declaration(Token **rest, Token *tok) {
             tok = tok->next;
             continue;
         }
+
+        // -W: warn when a local declaration shadows a typedef name
+        if (opt_W && !attr.is_typedef && name && typedef_find_name(name))
+            warn_tok(tok, "declaration of '%s' shadows a global declaration", name);
 
         if (attr.is_typedef) {
             add_typedef(name, ty);
@@ -4803,6 +5036,13 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         if (is_typename(tok)) {
             // A typedef name followed by ':' is a label, not a declaration.
             if (find_typedef(tok) && equalc(tok->next, ":")) {
+                cur = cur->next = stmt(&tok, tok);
+                continue;
+            }
+            // A typedef name shadowed by a local variable is an expression,
+            // not a declaration (e.g. `unsigned char s; … s = expr;` when
+            // a typedef `s` is also in scope).
+            if (find_typedef(tok) && find_var(tok)) {
                 cur = cur->next = stmt(&tok, tok);
                 continue;
             }
@@ -5641,6 +5881,8 @@ static Node *primary(Token **rest, Token *tok) {
                 LVar *gvar = find_global_name(tok->name);
                 if (gvar && gvar->is_function)
                     node->lhs = new_var_node(gvar, tok);
+                else if (!strncmp(tok->name, "__builtin_", 10))
+                    node->lhs = declare_builtin_on_demand(tok);
             }
             tok = skip(tok->next, "(");
             Node head = {};
@@ -5813,7 +6055,16 @@ static Node *primary(Token **rest, Token *tok) {
             Token *start = tok;
             Node *idx = expr(&tok, tok->next);
             tok = skip(tok, "]");
-            node = new_unary(ND_DEREF, new_binary(ND_ADD, node, idx, start), start);
+            if (node->ty && node->ty->is_vector) {
+                // Vector subscript v[i]: vectors are TY_STRUCT (not arrays), so
+                // synthesize element access via the vector's address:
+                //   v[i]  =>  *((elem *)&v + i)
+                Node *addr = new_unary(ND_ADDR, node, start);
+                addr->ty = pointer_to(node->ty->base);
+                node = new_unary(ND_DEREF, new_binary(ND_ADD, addr, idx, start), start);
+            } else {
+                node = new_unary(ND_DEREF, new_binary(ND_ADD, node, idx, start), start);
+            }
             check_type(node);
             continue;
         }
@@ -5917,6 +6168,148 @@ static Node *type_size_node(Type *ty, Token *tok) {
         return result;
     }
     return new_num(ty->size, tok);
+}
+
+// ---- Vector (__attribute__((vector_size))) element-wise lowering ----------
+// gen_vector() in codegen only covers 16-byte two-vector ops that map to a
+// packed SSE instruction. Everything else — integer mul/div/mod, shifts,
+// scalar<->vector broadcast, integer compares, non-16-byte vectors — is
+// lowered here at parse time into per-lane scalar ops:
+//   a OP b  =>  (tA = a, tB = b, tR.__v0 = tA.__v0 OP tB.__v0, ..., tR)
+// so the existing scalar codegen does the work on every target.
+
+// Lane accessor: v.__v<i>
+static Node *vec_lane(LVar *var, Type *vt, int i, Token *tok) {
+    Member *mem = vt->members;
+    for (int j = 0; j < i && mem; j++)
+        mem = mem->next;
+    Node *m = new_unary(ND_MEMBER, new_var_node(var, tok), tok);
+    m->member = mem;
+    m->ty = mem->ty;
+    return m;
+}
+
+// Bind an operand to a fresh temp so it is evaluated exactly once.
+// Appends the binding assignment to *chain and returns the temp.
+static LVar *vec_bind(Node **chain, Node *operand, Type *ty, Token *tok) {
+    LVar *v = new_var("", ty, true);
+    Node *as = new_binary(ND_ASSIGN, new_var_node(v, tok), operand, tok);
+    *chain = *chain ? new_binary(ND_COMMA, *chain, as, tok) : as;
+    return v;
+}
+
+// Runtime lane access v[idx]: *((elem *)&v + idx)
+static Node *vec_gather(LVar *var, Type *vt, Node *idx, Token *tok) {
+    Node *addr = new_unary(ND_ADDR, new_var_node(var, tok), tok);
+    addr->ty = pointer_to(vt->base);
+    return new_unary(ND_DEREF, new_binary(ND_ADD, addr, idx, tok), tok);
+}
+
+static Node *vector_lower(Node *node) {
+    NodeKind k = node->kind;
+    bool un = (k == ND_NEG || k == ND_BITNOT);
+    switch (k) {
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_NEG:
+    case ND_BITNOT:
+        break;
+    default:
+        return node;
+    }
+    check_type(node->lhs);
+    if (!un && node->rhs)
+        check_type(node->rhs);
+    Type *lt = node->lhs ? node->lhs->ty : NULL;
+    Type *rt = (!un && node->rhs) ? node->rhs->ty : NULL;
+    bool lv = lt && lt->is_vector;
+    bool rv = rt && rt->is_vector;
+    if (!lv && !rv)
+        return node;
+    Type *vt = lv ? lt : rt;
+    Type *elem = vt->base;
+    int n = (int)(vt->size / elem->size);
+    bool cmp = (k == ND_EQ || k == ND_NE || k == ND_LT || k == ND_LE);
+    bool bitop = (k == ND_BITAND || k == ND_BITOR || k == ND_BITXOR || k == ND_BITNOT);
+    bool arith = (k == ND_ADD || k == ND_SUB || k == ND_MUL || k == ND_DIV);
+    // Float-vector arithmetic, compares and bitwise ops stay on the packed
+    // SSE/NEON path (addps/mulps/cmpps/andps/...). They operate on the raw
+    // lane values/bits, which per-lane scalar floating-point ops cannot express
+    // correctly (compare masks are all-ones/zero, not scalar 1/0).
+    if ((cmp || bitop || arith) && is_flonum(elem)) {
+        node->ty = vt;
+        if (!un && !lv) {
+            Node *cast = new_unary(ND_CAST, node->lhs, node->tok);
+            cast->ty = elem;
+            node->lhs = cast;
+        }
+        if (!un && !rv) {
+            Node *cast = new_unary(ND_CAST, node->rhs, node->tok);
+            cast->ty = elem;
+            node->rhs = cast;
+        }
+        return node;
+    }
+    Token *tok = node->tok;
+    Node *chain = NULL;
+    // Bind operands; a scalar operand is converted to the element type once
+    // (GCC broadcast semantics). Shift counts keep integer type instead.
+    LVar *ta, *tb = NULL;
+    if (lv) {
+        ta = vec_bind(&chain, node->lhs, lt, tok);
+    } else {
+        Node *cast = new_unary(ND_CAST, node->lhs, tok);
+        cast->ty = elem;
+        ta = vec_bind(&chain, cast, elem, tok);
+    }
+    if (!un) {
+        if (rv) {
+            tb = vec_bind(&chain, node->rhs, rt, tok);
+        } else {
+            Type *bt = (k == ND_SHL || k == ND_SHR) ? ty_int : elem;
+            Node *cast = new_unary(ND_CAST, node->rhs, tok);
+            cast->ty = bt;
+            tb = vec_bind(&chain, cast, bt, tok);
+        }
+    }
+    LVar *tr = new_var("", vt, true);
+    for (int i = 0; i < n; i++) {
+        Node *a = lv ? vec_lane(ta, lt, i, tok) : new_var_node(ta, tok);
+        Node *val;
+        if (un) {
+            val = new_unary(k, a, tok);
+        } else {
+            Node *b = rv ? vec_lane(tb, rt, i, tok) : new_var_node(tb, tok);
+            val = new_binary(k, a, b, tok);
+        }
+        if (cmp) {
+            // GCC vector compare: lane = (a OP b) ? -1 : 0 in the lane width
+            val = new_unary(ND_NEG, val, tok);
+            // Type the child before presetting the cast type: add_type
+            // early-returns on typed nodes without descending into children.
+            check_type(val);
+            Node *cast = new_unary(ND_CAST, val, tok);
+            cast->ty = elem;
+            val = cast;
+        }
+        Node *st = new_binary(ND_ASSIGN, vec_lane(tr, vt, i, tok), val, tok);
+        chain = new_binary(ND_COMMA, chain, st, tok);
+    }
+    chain = new_binary(ND_COMMA, chain, new_var_node(tr, tok), tok);
+    check_type(chain);
+    return chain;
 }
 
 static Node *unary(Token **rest, Token *tok) {
@@ -6817,6 +7210,67 @@ static Node *unary(Token **rest, Token *tok) {
         bool is_const = arg->kind == ND_NUM || arg->kind == ND_FNUM || arg->kind == ND_STR || eval_const_expr(arg, &cv);
         return new_num(is_const ? 1 : 0, start);
     }
+    // GCC __builtin_shuffle(vec, mask) / __builtin_shuffle(vec0, vec1, mask):
+    // per-lane gather r.__v<i> = data[mask.__v<i> & (N-1)]; mask indices are
+    // taken modulo N (modulo 2N for the two-vector form, upper half selects
+    // from vec1).
+    if (equalc(tok, "__builtin_shuffle")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *a1 = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *a2 = assign(&tok, tok);
+        Node *a3 = NULL;
+        if (equalc(tok, ","))
+            a3 = assign(&tok, tok->next);
+        *rest = skip(tok, ")");
+        check_type(a1);
+        check_type(a2);
+        if (a3)
+            check_type(a3);
+        Node *mask = a3 ? a3 : a2;
+        if (!a1->ty || !a1->ty->is_vector || !mask->ty || !mask->ty->is_vector)
+            error_tok(start, "__builtin_shuffle requires vector arguments");
+        Type *vt = a1->ty;
+        Type *mt = mask->ty;
+        int n = (int)(vt->size / vt->base->size);
+        Node *chain = NULL;
+        LVar *ta = vec_bind(&chain, a1, vt, start);
+        LVar *tb = a3 ? vec_bind(&chain, a2, a2->ty, start) : NULL;
+        LVar *tm = vec_bind(&chain, mask, mt, start);
+        LVar *tr = new_var("", vt, true);
+        for (int i = 0; i < n; i++) {
+            Node *val;
+            if (!tb) {
+                Node *idx = new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                                       new_num(n - 1, start), start);
+                val = vec_gather(ta, vt, idx, start);
+            } else {
+                // j = mask & (2N-1);  j < N ? vec0[j] : vec1[j - N]
+                // (j - N == j & (N-1) for j in [N, 2N) with power-of-two N)
+                Node *j = new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                                     new_num(2 * n - 1, start), start);
+                Node *cnode = new_node(ND_COND, start);
+                cnode->cond = new_binary(ND_LT, j, new_num(n, start), start);
+                cnode->then = vec_gather(
+                    ta, vt,
+                    new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                               new_num(2 * n - 1, start), start),
+                    start);
+                cnode->els = vec_gather(
+                    tb, a2->ty,
+                    new_binary(ND_BITAND, vec_lane(tm, mt, i, start),
+                               new_num(n - 1, start), start),
+                    start);
+                val = cnode;
+            }
+            Node *st = new_binary(ND_ASSIGN, vec_lane(tr, vt, i, start), val, start);
+            chain = new_binary(ND_COMMA, chain, st, start);
+        }
+        chain = new_binary(ND_COMMA, chain, new_var_node(tr, start), start);
+        check_type(chain);
+        return chain;
+    }
     if (equalc(tok, "__builtin_choose_expr")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
@@ -6933,11 +7387,11 @@ static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "+"))
         return unary(rest, tok->next);
     if (equalc(tok, "-"))
-        return new_unary(ND_NEG, unary(rest, tok->next), tok);
+        return vector_lower(new_unary(ND_NEG, unary(rest, tok->next), tok));
     if (equalc(tok, "!"))
         return new_unary(ND_NOT, unary(rest, tok->next), tok);
     if (equalc(tok, "~"))
-        return new_unary(ND_BITNOT, unary(rest, tok->next), tok);
+        return vector_lower(new_unary(ND_BITNOT, unary(rest, tok->next), tok));
     if (equalc(tok, "&"))
         return new_unary(ND_ADDR, unary(rest, tok->next), tok);
     if (equalc(tok, "*"))
@@ -7395,7 +7849,10 @@ static Node *unary(Token **rest, Token *tok) {
                         Node *val = assign(&tok, tok);
                         check_type(val);
                         Node *asgn = new_binary(ND_ASSIGN, member_access, val, start);
-                        asgn->ty = mem->ty;
+                        // Type via check_type so the ND_ASSIGN typing rule
+                        // inserts the implicit conversion cast (e.g. int->float
+                        // for `(struct S){1,2}` with float members, C11 6.7.9p11).
+                        check_type(asgn);
                         result = new_binary(ND_COMMA, result, asgn, start);
                         result->ty = ty;
                     }
@@ -7575,15 +8032,15 @@ static Node *mul(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "*")) {
-            node = new_binary(ND_MUL, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_MUL, node, unary(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "/")) {
-            node = new_binary(ND_DIV, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_DIV, node, unary(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "%")) {
-            node = new_binary(ND_MOD, node, unary(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_MOD, node, unary(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7596,11 +8053,11 @@ static Node *add(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "+")) {
-            node = new_binary(ND_ADD, node, mul(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_ADD, node, mul(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "-")) {
-            node = new_binary(ND_SUB, node, mul(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SUB, node, mul(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7613,11 +8070,11 @@ static Node *shift(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "<<")) {
-            node = new_binary(ND_SHL, node, add(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SHL, node, add(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, ">>")) {
-            node = new_binary(ND_SHR, node, add(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_SHR, node, add(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7630,19 +8087,19 @@ static Node *relational(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "<")) {
-            node = new_binary(ND_LT, node, shift(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_LT, node, shift(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "<=")) {
-            node = new_binary(ND_LE, node, shift(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_LE, node, shift(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, ">")) {
-            node = new_binary(ND_LT, shift(&tok, tok->next), node, start);
+            node = vector_lower(new_binary(ND_LT, shift(&tok, tok->next), node, start));
             continue;
         }
         if (equalc(tok, ">=")) {
-            node = new_binary(ND_LE, shift(&tok, tok->next), node, start);
+            node = vector_lower(new_binary(ND_LE, shift(&tok, tok->next), node, start));
             continue;
         }
         *rest = tok;
@@ -7655,11 +8112,11 @@ static Node *equality(Token **rest, Token *tok) {
     for (;;) {
         Token *start = tok;
         if (equalc(tok, "==")) {
-            node = new_binary(ND_EQ, node, relational(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_EQ, node, relational(&tok, tok->next), start));
             continue;
         }
         if (equalc(tok, "!=")) {
-            node = new_binary(ND_NE, node, relational(&tok, tok->next), start);
+            node = vector_lower(new_binary(ND_NE, node, relational(&tok, tok->next), start));
             continue;
         }
         *rest = tok;
@@ -7671,7 +8128,7 @@ static Node *bitand(Token **rest, Token *tok) {
     Node *node = equality(&tok, tok);
     while (equalc(tok, "&")) {
         Token *start = tok;
-        node = new_binary(ND_BITAND, node, equality(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITAND, node, equality(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7681,7 +8138,7 @@ static Node *bitxor(Token **rest, Token *tok) {
     Node *node = bitand(&tok, tok);
     while (equalc(tok, "^")) {
         Token *start = tok;
-        node = new_binary(ND_BITXOR, node, bitand(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITXOR, node, bitand(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7691,7 +8148,7 @@ static Node *bitor(Token **rest, Token *tok) {
     Node *node = bitxor(&tok, tok);
     while (equalc(tok, "|")) {
         Token *start = tok;
-        node = new_binary(ND_BITOR, node, bitxor(&tok, tok->next), start);
+        node = vector_lower(new_binary(ND_BITOR, node, bitxor(&tok, tok->next), start));
     }
     *rest = tok;
     return node;
@@ -7771,6 +8228,7 @@ static Node *to_assign(Node *binary) {
     Node *op = commutative
         ? new_binary(binary->kind, binary->rhs, deref_r, tok)
         : new_binary(binary->kind, deref_r, binary->rhs, tok);
+    op = vector_lower(op);
     Node *expr2 = new_binary(ND_ASSIGN, deref_w, op, tok);
     return new_binary(ND_COMMA, expr1, expr2, tok);
 }
@@ -8002,13 +8460,14 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         Node *node = assign(&tok, tok);
         check_type(node);
         if (extract_reloc(node, &label, &addend)) {
-            var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
-            var->init_size = var->ty->size;
             var->has_init = true;
-            if (label)
+            if (label) {
+                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                var->init_size = var->ty->size;
                 append_reloc(var, 0, label, addend);
-            else
+            } else {
                 var->init_val = addend;
+            }
             *rest = tok;
             return;
         }

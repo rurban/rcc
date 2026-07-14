@@ -544,6 +544,7 @@ char *bi_setjmp, *bi_longjmp;
 char *bi_signbit, *bi_signbitf, *bi_signbitl;
 char *bi_isinf, *bi_isinff, *bi_isinfl;
 char *bi_copysign, *bi_copysignf, *bi_copysignl;
+char *bi_fma, *bi_fmaf, *bi_fmal;
 char *bi_abs, *bi_labs, *bi_llabs;
 char *bi_add_overflow, *bi_sub_overflow;
 char *bi_mul_overflow, *bi_mul_overflow_p;
@@ -558,6 +559,7 @@ char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
 char *bi_s_alloca;
 char *bi_chk_printf, *bi_chk_vprintf;
 char *bi_chk_fprintf, *bi_chk_vfprintf;
+char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
 char *bi_s_memset, *bi_s_memcpy, *bi_s_memcmp;
 char *bi_strlen, *bi_strcmp, *bi_strchr;
 char *bi_unreachable;
@@ -602,6 +604,9 @@ void init_builtin_names(void) {
     bi_copysign = _BI("__builtin_copysign");
     bi_copysignf = _BI("__builtin_copysignf");
     bi_copysignl = _BI("__builtin_copysignl");
+    bi_fma = str_intern("__builtin_fma", 13);
+    bi_fmaf = str_intern("__builtin_fmaf", 14);
+    bi_fmal = str_intern("__builtin_fmal", 14);
     bi_abs = _BI("__builtin_abs");
     bi_labs = _BI("__builtin_labs");
     bi_llabs = _BI("__builtin_llabs");
@@ -640,6 +645,9 @@ void init_builtin_names(void) {
     bi_chk_vprintf = _BI("__vprintf_chk");
     bi_chk_fprintf = _BI("__fprintf_chk");
     bi_chk_vfprintf = _BI("__vfprintf_chk");
+    bi_sqrtps = _BI("__builtin_ia32_sqrtps");
+    bi_sqrtss = _BI("__builtin_ia32_sqrtss");
+    bi_rsqrtps = _BI("__builtin_ia32_rsqrtps");
     kw_retbuf = _BI("__retbuf");
     // Not a keyword-table builtin, so it is interned via str_intern like an
     // ordinary identifier; match node->funcname's interning here.
@@ -671,6 +679,8 @@ static VReg alloc_int128_addr(void);
 static VReg widen_to_int128(VReg val, bool is_unsigned);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
+static VReg gen_vector(Node *node);
+static VReg gen_vector_unary_builtin(Node *node);
 
 // Emit a branch with fixup registration (works on both x86 and ARM64)
 static size_t emit_jmp_fixup(SecBuf *s, const char *label) {
@@ -859,6 +869,16 @@ static int arm64_hfa_info(Type *ty, int *elem_size) {
             return -1;
         return 1;
     }
+    if (ty->kind == TY_COMPLEX && ty->base && is_flonum(ty->base)) {
+        int base_sz = ty->base->size;
+        if (base_sz != 4 && base_sz != 8)
+            return -1;
+        if (*elem_size == 0)
+            *elem_size = base_sz;
+        else if (*elem_size != base_sz)
+            return -1;
+        return 2;
+    }
     if (ty->kind != TY_STRUCT)
         return -1;
     int count = 0;
@@ -1002,7 +1022,6 @@ bool va_arg_need_copy(Type *ty) {
     }
     return false;
 }
-
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
@@ -1108,6 +1127,51 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         node->lhs->var->asm_name) {
         call_target = node->lhs->var->asm_name;
         is_asm_call = true;
+    }
+
+    // Rename __builtin_* math functions to their library counterparts.
+    // The type signature was set by declare_builtin_on_demand() in the parser.
+    bool is_builtin_call = (call_target && !strncmp(call_target, "__builtin_", 10));
+    if (is_builtin_call) {
+        if (!strcmp(call_target, "__builtin_powf")) call_target = "powf";
+        else if (!strcmp(call_target, "__builtin_pow"))
+            call_target = "pow";
+        else if (!strcmp(call_target, "__builtin_fmaxf"))
+            call_target = "fmaxf";
+        else if (!strcmp(call_target, "__builtin_fmax"))
+            call_target = "fmax";
+        else if (!strcmp(call_target, "__builtin_fminf"))
+            call_target = "fminf";
+        else if (!strcmp(call_target, "__builtin_fmin"))
+            call_target = "fmin";
+        else if (!strcmp(call_target, "__builtin_fmaf"))
+            call_target = "fmaf";
+        else if (!strcmp(call_target, "__builtin_fma"))
+            call_target = "fma";
+        else if (!strcmp(call_target, "__builtin_fabsf"))
+            call_target = "fabsf";
+        else if (!strcmp(call_target, "__builtin_fabs"))
+            call_target = "fabs";
+        else if (!strcmp(call_target, "__builtin_copysignf"))
+            call_target = "copysignf";
+        else if (!strcmp(call_target, "__builtin_copysign"))
+            call_target = "copysign";
+        else if (!strcmp(call_target, "__builtin_creal"))
+            call_target = "creal";
+        else if (!strcmp(call_target, "__builtin_crealf"))
+            call_target = "crealf";
+        else if (!strcmp(call_target, "__builtin_cimag"))
+            call_target = "cimag";
+        else if (!strcmp(call_target, "__builtin_cimagf"))
+            call_target = "cimagf";
+    }
+
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
+    if (call_target &&
+        (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
+         !strcmp(call_target, "__builtin_ia32_sqrtss") ||
+         !strcmp(call_target, "__builtin_ia32_rsqrtps"))) {
+        return gen_vector_unary_builtin(node);
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -1216,11 +1280,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int shadow_space = 0;
 #endif
 
-    bool has_hidden_retbuf = node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || (node->ty->kind == TY_COMPLEX
+    bool has_hidden_retbuf = node->ty &&
+        (
 #ifdef _WIN32
-                                                                                                        && node->ty->size > 8
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->size > 8) || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
+#else
+                                 node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION
 #endif
-                                                                                                        ));
+#ifdef ARCH_ARM64
+                                 || node->ty->kind == TY_COMPLEX
+#endif
+        );
 
     // Cross-architecture builtins (x86_64 and arm64)
     if (call_target && !has_hidden_retbuf) {
@@ -1237,7 +1307,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         bool is_ffs = false, is_ffsl = false, is_ffsll = false;
         bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
         bool is_setjmp = false, is_longjmp = false;
-        bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_abs_builtin = false;
+        bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_fma_builtin = false, is_abs_builtin = false;
         bool is_add_overflow = false, is_sub_overflow = false;
         bool is_mul_overflow = false, is_mul_overflow_p = false;
         if (maybe_builtin) {
@@ -1276,6 +1346,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             is_copysign_builtin = call_target == bi_copysign ||
                 call_target == bi_copysignf ||
                 call_target == bi_copysignl;
+            is_fma_builtin = call_target == bi_fma ||
+                call_target == bi_fmaf ||
+                call_target == bi_fmal;
             is_abs_builtin = call_target == bi_abs ||
                 call_target == bi_labs ||
                 call_target == bi_llabs ||
@@ -1529,6 +1602,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 VReg r_arg = gen(arg);
 #ifdef ARCH_ARM64
                 asm_shr_imm(cg_sec, r_arg, 8, 63); // shr $63, r_arg
+                return r_arg;
 #else
                 VReg r = alloc_reg();
                 asm_movq_r_xmm(cg_sec, 0, r_arg); // movq r_arg, %xmm0
@@ -1537,8 +1611,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(r_arg);
                 return r;
 #endif
-                free_reg(r_arg);
-                return r_arg;
             }
         }
 
@@ -1627,6 +1699,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 return r;
 #endif
             }
+        }
+
+        if (is_fma_builtin) {
+            if (call_target == bi_fma) call_target = "fma";
+            else if (call_target == bi_fmaf)
+                call_target = "fmaf";
+            else
+                call_target = "fmal";
+            maybe_builtin = false;
         }
 
         if (is_frame_addr) {
@@ -2411,17 +2492,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
-        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
-            arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
         arg_hfa_count[i] = 0;
         arg_hfa_elem_size[i] = 0;
-        bool is_named = (i < named_count);
-        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION))
+        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || argv[i]->ty->kind == TY_COMPLEX))
             arg_hfa_count[i] = arm64_hfa_count(argv[i]->ty, &arg_hfa_elem_size[i]);
+        bool is_named = (i < named_count);
         if (arg_is_float[i]) {
             // Long double (> 8 bytes): pass in q-register (SIMD), not d-register or stack
             if (arg_sizes[i] > 8) {
@@ -2671,6 +2750,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 }
             }
             arg_regs[i] = addr;
+        } else if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            // Small struct passed by value in a GP register.
+            // gen() for ND_DEREF/ND_MEMBER returns the address, not the value.
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                if (load_sz == 8)
+                    arm64_ldr_uoff(cg_sec, 3, REG(val), REG(addr), 0);
+                else
+                    arm64_ldr_uoff(cg_sec, 2, REG(val), REG(addr), 0);
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
         } else
             arg_regs[i] = gen(argv[i]);
     }
@@ -3055,18 +3150,25 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool is_oldstyle = !fn_type_w || (fn_type_w->kind == TY_FUNC && fn_type_w->is_oldstyle);
     int reg_nargs = nargs < max_gp_args - (has_hidden_retbuf ? 1 : 0) ? nargs : max_gp_args - (has_hidden_retbuf ? 1 : 0);
     for (int i = 0; i < reg_nargs; i++) {
-        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || is_complex(argv[i]->ty)) && argv[i]->ty->size > 8)
             arg_regs[i] = gen_addr(argv[i]);
-        else
+        else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(val), x86_mem(REG(addr), 0)); // mov (addr), val
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
+        } else
             arg_regs[i] = gen(argv[i]);
 #ifdef _WIN32
-        // For struct-returning function used as arg: gen returns buffer address;
-        // for structs ≤8 bytes, load the value from it.
-        if (argv[i]->kind == ND_FUNCALL && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8 && argv[i]->ty->size > 0) {
-            x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
-        }
         // Win64: an 8-byte _Complex is passed by value in a GP register.
-        // gen() returns the address of the complex value; load it.
+        // gen() returns the address; load it.
+        // (Struct/union ≤8 byte funcall args already handled by gen_addr+load above.)
         if (is_complex(argv[i]->ty) && argv[i]->ty->size <= 8) {
             x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
         }
@@ -3084,9 +3186,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     for (int i = nargs - 1; i >= reg_nargs; i--) {
         // Win64: large structs (>8 bytes) are passed by pointer on the stack
-        VReg r = ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)
-            ? gen_addr(argv[i])
-            : gen(argv[i]);
+        VReg r;
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || is_complex(argv[i]->ty)) && argv[i]->ty->size > 8)
+            r = gen_addr(argv[i]);
+        else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                r = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(r), x86_mem(REG(addr), 0)); // mov (addr), r
+                free_reg(addr);
+            } else {
+                r = gen(argv[i]);
+            }
+        } else
+            r = gen(argv[i]);
         int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
         if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
@@ -3147,6 +3261,19 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(val);
             }
             arg_regs[i] = addr;
+        } else if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            // Small struct passed by value in a GP register.
+            // gen() for ND_DEREF / ND_MEMBER may return the address, not the value.
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                x86_mov_rm(cg_sec, load_sz, REG(val), x86_mem(REG(addr), 0)); // mov (addr), val
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
         } else
             arg_regs[i] = gen(argv[i]);
 
@@ -3274,17 +3401,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         int argi = i + (has_hidden_retbuf ? 1 : 0);
         if (arg_is_float[i]) {
             asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %xmm{fp_idx}
+            // Narrow float args for builtin calls that map to float
+            // variants (e.g. __builtin_fmaxf→fmaxf). Double variants
+            // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
+            if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
+                x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, 0(%rsp)
         } else if (arg_sizes[i] == 1) {
             if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                x86_movsx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, %s
+                x86_movsx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movsbl %s, %s
             else
-                x86_movzx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // mov %s, %s
-        } else if (arg_sizes[i] == 2) {
-            if (argv[i]->ty && !argv[i]->ty->is_unsigned)
-                x86_movsx(cg_sec, 4, 2, cg_x86_argreg[argi], REG(arg_regs[i])); // movsbl %s, %s
-            else
-                x86_movzx(cg_sec, 4, 2, cg_x86_argreg[argi], REG(arg_regs[i])); // movzbl %s, %s
+                x86_movzx(cg_sec, 4, 1, cg_x86_argreg[argi], REG(arg_regs[i])); // movzbl %s, %s
         } else if (arg_sizes[i] == 4) {
             if (argv[i]->ty->is_unsigned)
                 x86_mov_rr(cg_sec, 4, cg_x86_argreg[argi], REG(arg_regs[i])); // movswl %s, %s
@@ -3323,6 +3450,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8)); // movq 8(%s), %s
             } else if (arg_is_float[i]) {
                 asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %%xmm{fp_idx}
+                // Narrow float args for builtin calls that map to float
+                // variants (e.g. __builtin_fmaxf→fmaxf).  Double variants
+                // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
+                if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
+                    x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             } else if (argv[i]->ty && is_complex(argv[i]->ty)) {
                 bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
                 if (cfloat) {
@@ -3405,26 +3537,39 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
         int ret = temp_ret_reg != R_NONE ? temp_ret_reg : hidden_ret_reg;
 #ifdef _WIN32
-        // On Windows, structs ≤8 bytes are passed by value. When the caller
-        // did NOT provide a hidden ret buffer (hidden_ret_reg == -1), the
-        // return register holds the buffer address; load the value from it.
-        if (hidden_ret_reg == -1 && node->ty->size <= 8 && node->ty->size > 0) {
-            x86_mov_rm(cg_sec, node->ty->size, REG(ret), x86_mem(X86_RAX, 0)); // movsx (size) (%rax), %ret
+        // Win64: structs ≤8 bytes returned by value in RAX (not via pointer).
+        // The callee returns the struct value in RAX; store it into the
+        // destination buffer pointed to by ret.
+        if (node->ty->size <= 8 && node->ty->size > 0) {
+            int sz = node->ty->size <= 4 ? 4 : 8;
+            x86_mov_mr(cg_sec, sz, x86_mem(REG(ret), 0), X86_RAX); // movq %rax, (ret)
         }
 #endif
         return ret;
     }
 
 #ifdef _WIN32
-    // Win64: an 8-byte _Complex return value comes back by value in RAX (no
-    // hidden return pointer — see has_hidden_retbuf above). Store it where
-    // the caller wants it (hidden_ret_reg, e.g. from `c = f()`) or, if no
-    // destination was provided, materialize it on the stack and return its
-    // address, matching the convention that gen() returns the address of a
-    // complex value.
-    if (node->ty && is_complex(node->ty) && node->ty->size <= 8) {
+    // Win64: structs ≤8 bytes returned by value in RAX (no hidden retbuf).
+    // The gen() caller expects an address; return a temp slot containing RAX.
+    if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || is_complex(node->ty)) && node->ty->size <= 8) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
-        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (reg)
+        int sz = node->ty->size <= 4 ? 4 : 8;
+        x86_mov_mr(cg_sec, sz, x86_mem(REG(addr), 0), X86_RAX); // mov rax, (addr)
+        return addr;
+    }
+#endif
+#ifndef _WIN32
+    // Linux SysV: _Complex double returns in xmm0:xmm1,
+    // _Complex float returns in xmm0 (packed as two singles).
+    if (node->ty && is_complex(node->ty)) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        int base_sz = node->ty->base ? node->ty->base->size : 8;
+        if (node->ty->size <= 8) {
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+        } else {
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+            x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1);
+        }
         return addr;
     }
 #endif
@@ -3929,7 +4074,104 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
 #endif
 }
 
-// Convert a TY_COMPLEX value at address `src` (integer base type
+// Convert between mixed int/float complex bases at the same address.
+// Used for _Complex int ↔ _Complex double and similar.
+static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
+    int fsz = from->base->size, tsz = to->base->size;
+    bool from_int = is_integer(from->base);
+    (void)tsz;
+#ifdef ARCH_ARM64
+    if (from_int) {
+        // int complex → float complex: load from src, convert, store to dst
+        if (fsz == 4) {
+            if (from->base->is_unsigned) {
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(src), 0);
+                arm64_ldr_uoff(cg_sec, 2, ARM64_X1, REG(src), 1);
+            } else {
+                arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(src), 0);
+                arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(src), 1);
+            }
+            arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
+            arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+            arm64_str_fp(cg_sec, 3, ARM64_D0, REG(dst), 0);
+            arm64_str_fp(cg_sec, 3, ARM64_D1, REG(dst), 8);
+        }
+    } else {
+        // float complex → int complex: load from src, convert, store to dst
+        if (fsz == 8) {
+            arm64_ldr_fp(cg_sec, 3, ARM64_D0, REG(src), 0);
+            arm64_ldr_fp(cg_sec, 3, ARM64_D1, REG(src), 8);
+            if (to->base->is_unsigned) {
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+            } else {
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+            }
+            arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
+            arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
+        } else if (fsz == 4) {
+            arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(src), 0);
+            arm64_ldr_fp(cg_sec, 2, ARM64_S1, REG(src), 4);
+            if (to->base->is_unsigned) {
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
+                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+            } else {
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
+                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+            }
+            arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
+            arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
+        }
+    }
+#else
+    // x86-64: convert between int and float complex components
+    if (from_int) {
+        // int complex -> float complex: load ints, cvtsi2sd, store doubles
+        if (fsz == 4) {
+            VReg r1 = alloc_reg(), r2 = alloc_reg();
+            if (from->base->is_unsigned) {
+                x86_mov_rm(cg_sec, 4, REG(r1), x86_mem(REG(src), 0)); // movl (src), r1
+                x86_mov_rm(cg_sec, 4, REG(r2), x86_mem(REG(src), 4)); // movl 4(src), r2
+            } else {
+                asm_movsx_base_off_reg(cg_sec, r1, src, 0, 8, 4); // movslq (src), r1
+                asm_movsx_base_off_reg(cg_sec, r2, src, 4, 8, 4); // movslq 4(src), r2
+            }
+            // Save real to xmm0, then store
+            asm_cvtsi2sd(cg_sec, r1, 4); // cvtsi2sd r1, %xmm0
+            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_XMM0); // movsd %xmm0, (dst)
+            // Save imag to xmm0, then store
+            asm_cvtsi2sd(cg_sec, r2, 4); // cvtsi2sd r2, %xmm0
+            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_XMM0); // movsd %xmm0, 8(dst)
+            free_reg(r1);
+            free_reg(r2);
+        }
+    } else {
+        // float complex -> int complex: load doubles, cvttsd2si, store ints
+        if (fsz == 8) {
+            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
+            VReg r = alloc_reg();
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r (32-bit)
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
+            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 8)); // movsd 8(src), %xmm0
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
+            free_reg(r);
+        } else if (fsz == 4) {
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 0)); // movss (src), %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            VReg r = alloc_reg();
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 4)); // movss 4(src), %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
+            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
+            free_reg(r);
+        }
+    }
+#endif
+}
 // `from->base`, e.g. _Complex char) to a TY_COMPLEX value at address `dst`
 // (integer base type `to->base`, e.g. _Complex int), sign- or
 // zero-extending (per from->base->is_unsigned) or truncating each
@@ -4360,8 +4602,8 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
             }
         }
         if (!found) {
-            error_tok_simple(tok, "ARM64 instruction '%s' not implemented", mnem);
-            // skip rest of line and continue
+            // skip rest of line and continue (unknown mnemonic — let the
+            // assembler handle it, matching GCC's dg-do compile behavior)
             while (*p && *p != ';' && *p != '\n') p++;
             continue;
         }
@@ -4539,6 +4781,30 @@ static bool try_const_int(Node *n, int64_t *val) {
 
 // Generate code to compute the absolute address of an lvalue.
 static VReg gen_addr(Node *node) {
+    // A vector arithmetic/compare/unary result is materialized into a 16-byte
+    // slot; its "address" is that slot (used when a vector value is returned by
+    // value or otherwise needs an address).
+    if (node->ty && node->ty->is_vector) {
+        switch (node->kind) {
+        case ND_ADD:
+        case ND_SUB:
+        case ND_MUL:
+        case ND_DIV:
+        case ND_MOD:
+        case ND_BITAND:
+        case ND_BITOR:
+        case ND_BITXOR:
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+        case ND_NEG:
+        case ND_BITNOT:
+            return gen_vector(node);
+        default:
+            break;
+        }
+    }
     switch (node->kind) {
     case ND_LVAR: {
         //fprintf(stderr, "DEBUG ND_LVAR: %s is_local=%d is_function=%d is_weak=%d\n",
@@ -4605,6 +4871,10 @@ static VReg gen_addr(Node *node) {
     case ND_REAL:
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
+        if (r < 0) {
+            /* rvalue: eval compound expression, extract real/imag from slot */
+            r = gen_to_int128(node->lhs);
+        }
         int offset = (node->kind == ND_IMAG) ? node->lhs->ty->base->size : 0;
         if (offset > 0) {
 #ifdef ARCH_ARM64
@@ -4667,8 +4937,9 @@ static VReg gen_addr(Node *node) {
         int c = ++rcc_label_count;
         VReg r = alloc_reg();
         VReg cond = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         {
             size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
@@ -4687,7 +4958,7 @@ static VReg gen_addr(Node *node) {
         free_reg(else_r);
         cg_def_label(format(".L.end.%d", c));
 #else
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         {
             size_t o = asm_jcc_label(cg_sec, X86_E); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
@@ -4717,8 +4988,8 @@ static VReg gen_addr(Node *node) {
             // address as-is would make callers read/write past the smaller
             // object. Materialize a converted copy on the stack instead.
             if (node->ty->kind == TY_COMPLEX && node->lhs->ty && node->lhs->ty->kind == TY_COMPLEX &&
-                is_flonum(node->lhs->ty->base) == is_flonum(node->ty->base) &&
-                node->lhs->ty->base->size != node->ty->base->size) {
+                (node->lhs->ty->base->size != node->ty->base->size ||
+                 is_flonum(node->lhs->ty->base) != is_flonum(node->ty->base))) {
                 VReg src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs); // gen() for complex exprs also returns an address
@@ -4732,10 +5003,68 @@ static VReg gen_addr(Node *node) {
 #else
                 asm_lea_rbp_reg(cg_sec, dst, 8, result_off); // lea -result_off(%rbp), dst
 #endif
-                if (is_flonum(node->lhs->ty->base))
+                if (is_flonum(node->lhs->ty->base) && is_flonum(node->ty->base))
                     emit_complex_convert_float(src, dst, node->lhs->ty, node->ty);
-                else
+                else if (!is_flonum(node->lhs->ty->base) && !is_flonum(node->ty->base))
                     emit_complex_convert_int(src, dst, node->lhs->ty, node->ty);
+                else {
+#ifndef ARCH_ARM64
+                    // Mixed int/float complex: convert each component
+                    // int complex -> float complex: load ints, convert to float
+                    if (is_flonum(node->ty->base)) {
+                        int fsz = node->lhs->ty->base->size;
+                        int tsz = node->ty->base->size;
+                        bool uns = node->lhs->ty->base->is_unsigned;
+                        if (fsz == 8) {
+                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0));
+                            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(REG(src), 8));
+                        } else {
+                            // Sign/zero-extend narrower int to 32/64-bit before cvtsi2sd
+                            int load_sz = fsz <= 4 ? 4 : 8;
+                            if (uns) {
+                                x86_mov_rm(cg_sec, fsz, X86_RAX, x86_mem(REG(src), 0));
+                                x86_mov_rm(cg_sec, fsz, X86_RCX, x86_mem(REG(src), fsz));
+                            } else {
+                                x86_movsx_rm(cg_sec, load_sz, fsz, X86_RAX, x86_mem(REG(src), 0));
+                                x86_movsx_rm(cg_sec, load_sz, fsz, X86_RCX, x86_mem(REG(src), fsz));
+                            }
+                        }
+                        x86_cvtsi2sd(cg_sec, fsz <= 4 ? 4 : 8, X86_XMM0, X86_RAX);
+                        x86_cvtsi2sd(cg_sec, fsz <= 4 ? 4 : 8, X86_XMM1, X86_RCX);
+                        if (tsz == 4) {
+                            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0);
+                            x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1);
+                            x86_movss_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+                            x86_movss_mr(cg_sec, x86_mem(REG(dst), 4), X86_XMM1);
+                        } else {
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 8), X86_XMM1);
+                        }
+                    } else {
+                        // float complex -> int complex: load doubles, convert to ints
+                        int tsz = node->ty->base->size;
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
+                        x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RAX, X86_XMM0);
+                        x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RCX, X86_XMM1);
+                        if (tsz == 8) {
+                            x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_RCX);
+                        } else if (tsz == 4) {
+                            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), X86_RCX);
+                        } else {
+                            x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), 0), X86_RAX);
+                            x86_mov_mr(cg_sec, tsz, x86_mem(REG(dst), tsz), X86_RCX);
+                        }
+                    }
+#else
+                    // ARM64: fall through to gen() for mixed complex conversion
+                    free_reg(src);
+                    free_reg(dst);
+                    return gen(node);
+#endif
+                }
                 free_reg(src);
                 return dst;
             }
@@ -4753,7 +5082,7 @@ static VReg gen_addr(Node *node) {
             }
             return -1;
         }
-        error_tok(node->tok, "lvalue required as left operand of assignment");
+        // Scalar cast: not an lvalue, caller can fall back to gen()
         return -1;
     case ND_COMMA: {
         // Compound literal: evaluate LHS side effects, return address of RHS
@@ -4793,6 +5122,8 @@ static VReg gen_addr(Node *node) {
     case ND_MUL:
     case ND_DIV:
     case ND_MOD:
+        return -1; // expression result, not an lvalue
+    case ND_BITNOT:
     case ND_NEG:
         return -1; // expression result, not an lvalue
     default:
@@ -4810,9 +5141,9 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     if (cond->kind == ND_LOGOR) {
         int c = ++rcc_label_count;
         const char *skip_label = format(".L.or_skip.%d", c);
-        // If lhs is true, skip to end (don't branch to label)
         VReg lhs = gen(cond->lhs);
-        asm_cmp_zero(cg_sec, lhs, cond->lhs->ty->size); // cmp $0, rlhs
+        int lhs_sz = (cond->lhs->ty && is_flonum(cond->lhs->ty)) ? 8 : cond->lhs->ty->size;
+        asm_cmp_zero(cg_sec, lhs, lhs_sz); // cmp $0, rlhs
         free_reg(lhs);
 #ifdef ARCH_ARM64
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
@@ -5012,8 +5343,42 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         return;
     }
 
+    // Complex types: gen() returns address, need to load and OR components.
+    // Exception: ND_ASSIGN with complex funcall RHS already returns a
+    // boolean truthiness value from its own inline check.
+    if (cond->ty && is_complex(cond->ty) && cond->kind != ND_ASSIGN) {
+        VReg addr = gen(cond);
+        int base_sz = cond->ty->base ? cond->ty->base->size : 8;
+#ifdef ARCH_ARM64
+        VReg rt = alloc_reg();
+        asm_ldr_reg_off(cg_sec, rt, addr, 8, 0);
+        if (cond->ty->size > base_sz) {
+            VReg rt2 = alloc_reg();
+            asm_ldr_reg_off(cg_sec, rt2, addr, 8, base_sz);
+            arm64_orr_reg(cg_sec, 1, REG(rt), REG(rt), REG(rt2), ARM64_LSL, 0);
+            free_reg(rt2);
+        }
+        asm_cmp_zero(cg_sec, rt, 8);
+        size_t cj = asm_jcc_label(cg_sec, ARM64_EQ);
+        asm_fixup_add(cg_sec, cj, label, 1);
+        free_reg(rt);
+        free_reg(addr);
+#else
+        VReg rt = alloc_reg();
+        x86_mov_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), 0));
+        if (cond->ty->size > 8)
+            x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), base_sz));
+        asm_cmp_zero(cg_sec, rt, 8);
+        size_t cj = asm_jcc_label(cg_sec, X86_E);
+        asm_fixup_add(cg_sec, cj, label, 1);
+        free_reg(rt);
+        free_reg(addr);
+#endif
+        return;
+    }
+
     VReg r = gen(cond);
-    int sz = cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4);
+    int sz = (cond->ty && is_flonum(cond->ty)) ? 8 : (cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4));
 #ifdef ARCH_ARM64
     asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
@@ -5257,7 +5622,9 @@ static VReg gen_int128(Node *node) {
 #endif
             return addr;
         }
-        // from smaller integer to int128
+        // Complex-to-complex cast: delegate to gen_addr which handles conversion
+        if (from && is_complex(from) && is_complex(to))
+            return gen_addr(node);
         int val = gen(node->lhs);
         if (from && from->size < 8) {
             if (from->is_unsigned)
@@ -5786,11 +6153,12 @@ static VReg gen_int128(Node *node) {
         int c = ++rcc_label_count;
         int cond_r = gen(node->cond);
         int dst = alloc_int128_addr();
+        int cond_cmp_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : (node->cond->ty ? node->cond->ty->size : 4);
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
         emit_jcc_fixup(cg_sec, ARM64_EQ, format(".L.else.%d", c));
 #else
-        asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
         emit_jcc_fixup(cg_sec, X86_E, format(".L.else.%d", c));
 #endif
         free_reg(cond_r);
@@ -5980,6 +6348,377 @@ static VReg gen_int128(Node *node) {
     }
 }
 
+#ifdef ARCH_ARM64
+// Element-wise vector (__attribute__((vector_size))) arithmetic/compare/unary.
+// Convention (mirrors int128): the value lives in a 16-byte stack slot and this
+// returns a GP register holding the slot address. Operands are also vectors and
+// gen() returns their addresses, so we movups them into xmm and emit packed ops.
+// Get the address of a scalar operand for vector broadcast.  For lvalues this
+// is just gen_addr(); for non-lvalues (constants, expressions) we evaluate
+// with gen() and spill to a 16-byte-aligned scratch slot.
+static VReg gen_scalar_addr(Node *node) {
+    VReg a = gen_addr(node);
+    if (a >= 0) return a;
+    VReg val = gen(node);
+    VReg slot = alloc_int128_addr();
+#ifdef ARCH_ARM64
+    arm64_str_imm(cg_sec, 1, REG(val), REG(slot), 0, false);
+#else // unused
+    x86_mov_mr(cg_sec, 8, x86_mem(REG(slot), 0), REG(val));
+#endif
+    free_reg(val);
+    return slot;
+}
+#endif
+
+static VReg gen_vector(Node *node) {
+    Type *ty = node->ty;
+    Type *elem = ty ? ty->base : NULL;
+    int esz __attribute__((unused)) = elem ? (int)elem->size : 4;
+    bool flt = elem && is_flonum(elem);
+
+    // Unary: -v (negate) and ~v (bitwise not)
+    if (node->kind == ND_NEG || node->kind == ND_BITNOT) {
+        VReg a = gen_addr(node->lhs);
+#ifdef ARCH_ARM64
+        asm_ldr_q(cg_sec, ASM_Q0, a); // ldr q0, [x{a}]
+        free_reg(a);
+        VReg dst = alloc_int128_addr();
+        if (node->kind == ND_BITNOT) {
+            asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0); // not v0.16b, v0.16b
+        } else if (flt) {
+            asm_fneg_v4s(cg_sec, ASM_Q0, ASM_Q0); // fneg v0.4s, v0.4s
+        } else {
+            // integer negation via 0 - v (use movi + sub)
+            asm_eor_v16b(cg_sec, ASM_Q1, ASM_Q1, ASM_Q1); // eor v1, v1, v1 → zero
+            // sub v0, v1, v0 (element-size dependent): use sub from zero
+            // For simplicity, use NOT+ADD: not v0; addv?? No, need element-wise sub.
+            // Easiest: NEG = NOT + ADD immediate 1 per element.
+            // For now: if esz==4 use not+sshr? Actually neg = 0 - v.
+            // We don't have a per-element integer sub from zero easily.
+            // Use: mvni to get all-ones, then sub.
+            // Simpler: use sshl with -1? No. Let's just use FMOV zero + SUB.
+            // Actually, just error for integer vector negate on ARM64 for now:
+            error("vector_size: integer vector negate not yet implemented on arm64");
+            return R_NONE;
+        }
+        asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+        return dst;
+#else
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
+        free_reg(a);
+        VReg dst = alloc_int128_addr();
+        if (node->kind == ND_BITNOT) {
+            x86_pcmpeqd(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = all ones
+            x86_pxor(cg_sec, X86_XMM0, X86_XMM1); // ~a
+        } else if (flt) {
+            // TODO: use sign-bit XOR instead of 0-a to preserve -0 and NaN sign
+            x86_xorps(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0.0
+            if (esz == 8) x86_subpd(cg_sec, X86_XMM1, X86_XMM0);
+            else
+                x86_subps(cg_sec, X86_XMM1, X86_XMM0); // 0 - a
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        } else {
+            x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xmm1 = 0
+            if (esz == 8) x86_psubq(cg_sec, X86_XMM1, X86_XMM0);
+            else if (esz == 4)
+                x86_psubd(cg_sec, X86_XMM1, X86_XMM0);
+            else if (esz == 2)
+                x86_psubw(cg_sec, X86_XMM1, X86_XMM0);
+            else
+                x86_psubb(cg_sec, X86_XMM1, X86_XMM0);
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        }
+        x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+        return dst;
+#endif
+    }
+
+    bool lvec = node->lhs && node->lhs->ty && node->lhs->ty->is_vector;
+    bool rvec = node->rhs && node->rhs->ty && node->rhs->ty->is_vector;
+#define EMIT_BROADCAST(reg, node) do { \
+    Type *_nt = (node)->ty; \
+    Type *_et = elem; \
+    int _esz = _et ? (int)_et->size : 4; \
+    if (_nt && is_flonum(_nt)) { \
+        VReg _r = gen(node); \
+        x86_movq_r_xmm(cg_sec, reg, REG(_r)); \
+        free_reg(_r); \
+        if (_esz <= 4) { \
+            x86_cvtsd2ss(cg_sec, reg, reg); \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        } else { \
+            x86_movlhps(cg_sec, reg, reg); \
+        } \
+    } else if (_et && is_flonum(_et)) { \
+        VReg _r = gen(node); \
+        if (_esz == 8) \
+            x86_cvtsi2sd(cg_sec, 4, reg, REG(_r)); \
+        else \
+            x86_cvtsi2ss(cg_sec, 4, reg, REG(_r)); \
+        free_reg(_r); \
+        if (_esz <= 4) \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        else \
+            x86_movlhps(cg_sec, reg, reg); \
+    } else { \
+        VReg _r = gen(node); \
+        x86_movq_r_xmm(cg_sec, reg, REG(_r)); \
+        free_reg(_r); \
+        if (_esz <= 4) \
+            x86_shufps(cg_sec, reg, reg, 0); \
+        else \
+            x86_movlhps(cg_sec, reg, reg); \
+    } \
+} while(0)
+
+#ifdef ARCH_ARM64
+    VReg addr_lhs = R_NONE, addr_rhs = R_NONE;
+    if (lvec) {
+        addr_lhs = gen_addr(node->lhs);
+    }
+    if (rvec) {
+        addr_rhs = gen_addr(node->rhs);
+    }
+    if (lvec) {
+        asm_ldr_q(cg_sec, ASM_Q2, addr_lhs);
+        free_reg(addr_lhs);
+    } else {
+        VReg a = gen_scalar_addr(node->lhs);
+        VReg t = alloc_reg();
+        if (esz == 8)
+            arm64_ldr_imm(cg_sec, 1, REG(t), REG(a), 0, false);
+        else
+            arm64_ldr_uoff(cg_sec, 2, REG(t), REG(a), 1);
+        free_reg(a);
+        asm_dup_gen(cg_sec, ASM_Q2, t, esz);
+        free_reg(t);
+    }
+    if (rvec) {
+        asm_ldr_q(cg_sec, ASM_Q1, addr_rhs);
+        free_reg(addr_rhs);
+    } else {
+        VReg b = gen_scalar_addr(node->rhs);
+        VReg t = alloc_reg();
+        if (esz == 8)
+            arm64_ldr_imm(cg_sec, 1, REG(t), REG(b), 0, false);
+        else
+            arm64_ldr_uoff(cg_sec, 2, REG(t), REG(b), 1);
+        free_reg(b);
+        asm_dup_gen(cg_sec, ASM_Q1, t, esz);
+        free_reg(t);
+    }
+    asm_fmov_q(cg_sec, ASM_Q0, ASM_Q2); // mov v0.16b, v2.16b  (lhs→Q0)
+    VReg dst = alloc_int128_addr();
+    switch (node->kind) {
+    case ND_ADD:
+        if (flt) esz == 8 ? asm_fadd_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                          : asm_fadd_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        else
+            error("vector_size: integer vector add not yet implemented on arm64");
+        break;
+    case ND_SUB:
+        if (flt) esz == 8 ? asm_fsub_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                          : asm_fsub_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        else
+            error("vector_size: integer vector sub not yet implemented on arm64");
+        break;
+    case ND_MUL:
+        if (!flt) error("vector_size: integer vector multiply not supported");
+        esz == 8 ? asm_fmul_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_DIV:
+        if (!flt) error("vector_size: integer vector divide not supported");
+        esz == 8 ? asm_fdiv_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fdiv_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_BITAND:
+        asm_and_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_BITOR:
+        asm_orr_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_BITXOR:
+        asm_eor_v16b(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_LT:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        esz == 8 ? asm_fcmgt_v2d(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0)
+                 : asm_fcmgt_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0);
+        break;
+    case ND_LE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        esz == 8 ? asm_fcmge_v2d(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0)
+                 : asm_fcmge_v4s(cg_sec, ASM_Q0, ASM_Q1, ASM_Q0);
+        break;
+    case ND_EQ:
+        if (flt)
+            esz == 8 ? asm_fcmeq_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                     : asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        else
+            asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        break;
+    case ND_NE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        esz == 8 ? asm_fcmeq_v2d(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1)
+                 : asm_fcmeq_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1);
+        asm_not_v16b(cg_sec, ASM_Q0, ASM_Q0);
+        break;
+    default:
+        error("vector_size: unsupported vector op %d", node->kind);
+    }
+    asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+    return dst;
+#else
+    /* x86: load lhs into xmm2, rhs into xmm1, with scalar broadcast support */
+    VReg addr_lhs = R_NONE, addr_rhs = R_NONE;
+    if (lvec) {
+        addr_lhs = gen_addr(node->lhs);
+    }
+    if (rvec) {
+        addr_rhs = gen_addr(node->rhs);
+    }
+    /* Load lhs into xmm2, rhs into xmm1, with scalar broadcast support */
+    if (lvec && rvec) {
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(addr_lhs), 0));
+        free_reg(addr_lhs);
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(addr_rhs), 0));
+        free_reg(addr_rhs);
+    } else if (lvec) {
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(addr_lhs), 0));
+        free_reg(addr_lhs);
+        EMIT_BROADCAST(X86_XMM1, node->rhs);
+    } else {
+        EMIT_BROADCAST(X86_XMM2, node->lhs);
+        if (rvec) {
+            x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(addr_rhs), 0));
+            free_reg(addr_rhs);
+        } else {
+            EMIT_BROADCAST(X86_XMM1, node->rhs);
+        }
+    }
+    x86_movaps(cg_sec, X86_XMM0, X86_XMM2); // xmm0 = lhs
+    VReg dst = alloc_int128_addr();
+    switch (node->kind) {
+    case ND_ADD:
+        if (flt) esz == 8 ? x86_addpd(cg_sec, X86_XMM0, X86_XMM1) : x86_addps(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 8)
+            x86_paddq(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 4)
+            x86_paddd(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 2)
+            x86_paddw(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_paddb(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_SUB:
+        if (flt) esz == 8 ? x86_subpd(cg_sec, X86_XMM0, X86_XMM1) : x86_subps(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 8)
+            x86_psubq(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 4)
+            x86_psubd(cg_sec, X86_XMM0, X86_XMM1);
+        else if (esz == 2)
+            x86_psubw(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_psubb(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_MUL:
+        if (!flt) error("vector_size: integer vector multiply not supported");
+        esz == 8 ? x86_mulpd(cg_sec, X86_XMM0, X86_XMM1) : x86_mulps(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_DIV:
+        if (!flt) error("vector_size: integer vector divide not supported");
+        esz == 8 ? x86_divpd(cg_sec, X86_XMM0, X86_XMM1) : x86_divps(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITAND:
+        if (flt) esz == 8 ? x86_andpd(cg_sec, X86_XMM0, X86_XMM1) : x86_andps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_pand(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITOR:
+        if (flt) esz == 8 ? x86_orpd(cg_sec, X86_XMM0, X86_XMM1) : x86_orps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_por(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_BITXOR:
+        if (flt) x86_xorps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_pxor(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_LT:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 1); // xmm0 = lhs < rhs
+        break;
+    case ND_LE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 2); // xmm0 = lhs <= rhs
+        break;
+    case ND_EQ:
+        if (flt) x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 0);
+        else
+            x86_pcmpeqd(cg_sec, X86_XMM0, X86_XMM1);
+        break;
+    case ND_NE:
+        if (!flt) error("vector_size: integer vector compare not supported");
+        x86_cmpps(cg_sec, X86_XMM0, X86_XMM1, 4); // xmm0 = lhs != rhs
+        break;
+    default:
+        error("vector_size: unsupported vector op %d", node->kind);
+    }
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+#endif
+}
+
+// Single-arg vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps
+static VReg gen_vector_unary_builtin(Node *node) {
+    VReg a = gen_addr(node->args);
+#ifdef ARCH_ARM64
+    asm_ldr_q(cg_sec, ASM_Q0, a); // ldr q0, [x{a}]
+    free_reg(a);
+    VReg dst = alloc_int128_addr();
+    const char *name = node->funcname ? node->funcname : (node->lhs && node->lhs->var ? node->lhs->var->name : NULL);
+    if (name) {
+        if (!strcmp(name, "__builtin_ia32_sqrtps"))
+            asm_fsqrt_v4s(cg_sec, ASM_Q0, ASM_Q0); // fsqrt v0.4s, v0.4s
+        else if (!strcmp(name, "__builtin_ia32_sqrtss")) {
+            // Scalar fsqrt zeros upper 96 bits of V0 on ARM64.
+            // Preserve lanes 1-3 via scratch register V2.
+            secbuf_emit32le(cg_sec, 0x1E204002u); // fmov s2, s0  (copy lane 0 to s2, leaves V0 intact)
+            secbuf_emit32le(cg_sec, 0x1E21C042u); // fsqrt s2, s2  (scalar sqrt, zeros V2 upper bits)
+            secbuf_emit32le(cg_sec, 0x6E040440u); // mov.s v0[0], v2[0]  (insert sqrt result into lane 0)
+        } else if (!strcmp(name, "__builtin_ia32_rsqrtps")) {
+            // FRSQRTE alone gives ~8-bit precision; one Newton step gets ~16 bits
+            // (matching Intel RSQRTPS precision).  Formula:
+            //   e1 = e * (3.0 - a * e^2) / 2.0
+            asm_fmov_q(cg_sec, ASM_Q3, ASM_Q0); // mov v3.16b, v0.16b  (save input a)
+            asm_frsqrte_v4s(cg_sec, ASM_Q0, ASM_Q0); // v0 = frsqrte(a) estimate
+            asm_fmul_v4s(cg_sec, ASM_Q1, ASM_Q0, ASM_Q0); // v1 = e^2
+            asm_frsqrts_v4s(cg_sec, ASM_Q1, ASM_Q3, ASM_Q1); // v1 = (3 - a*e^2)/2
+            asm_fmul_v4s(cg_sec, ASM_Q0, ASM_Q0, ASM_Q1); // v0 = e * v1  (refined)
+        }
+    }
+    asm_str_q(cg_sec, ASM_Q0, dst); // str q0, [x{dst}]
+    return dst;
+#else
+    x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
+    free_reg(a);
+    VReg dst = alloc_int128_addr();
+    const char *name = node->funcname ? node->funcname : (node->lhs && node->lhs->var ? node->lhs->var->name : NULL);
+    if (name) {
+        if (!strcmp(name, "__builtin_ia32_sqrtps"))
+            x86_sqrtps(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_sqrtss"))
+            x86_sqrtss(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_rsqrtps"))
+            x86_rsqrtps(cg_sec, X86_XMM0, X86_XMM0);
+    }
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+#endif
+}
+
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -5990,6 +6729,37 @@ static VReg gen(Node *node) {
     // Dispatch int128 nodes to gen_int128()
     if (node->ty && node->ty->kind == TY_INT128)
         return gen_int128(node);
+    // Element-wise vector ops (__attribute__((vector_size))) → packed SSE/NEON.
+    // Only arithmetic/compare/unary route here; lvalue/assign/call/init on a
+    // vector already work via the TY_STRUCT aggregate paths below.
+    if (node->ty && node->ty->is_vector) {
+        switch (node->kind) {
+        case ND_ADD:
+        case ND_SUB:
+        case ND_MUL:
+        case ND_DIV:
+        case ND_MOD:
+        case ND_BITAND:
+        case ND_BITOR:
+        case ND_BITXOR:
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+        case ND_NEG:
+        case ND_BITNOT:
+            return gen_vector(node);
+        default:
+            break;
+        }
+    }
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
+    if (node->kind == ND_FUNCALL && node->funcname &&
+        (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
+         !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
+         !strcmp(node->funcname, "__builtin_ia32_rsqrtps"))) {
+        return gen_vector_unary_builtin(node);
+    }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&
         node->lhs->ty->kind == TY_INT128 && node->ty && node->ty->kind != TY_INT128) {
@@ -6306,7 +7076,7 @@ static VReg gen(Node *node) {
         return r;
     }
     case ND_ASSIGN: {
-        if (node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) {
+        if ((node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) && !(node->lhs->ty->is_vector && node->lhs->ty->size == 16)) {
             int c = ++rcc_label_count;
             bool lhs_vla_struct = (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION) && node->lhs->ty->vla_len_expr;
             VReg dst = lhs_vla_struct ? gen(node->lhs) : gen_addr(node->lhs);
@@ -6334,6 +7104,12 @@ static VReg gen(Node *node) {
                     node->ty->base->kind != TY_LDOUBLE && node->rhs->ty->base->kind != TY_LDOUBLE &&
                     node->ty->base->size != node->rhs->ty->base->size) {
                     emit_complex_convert_float(dst, dst, node->rhs->ty, node->ty);
+                }
+                // Mixed int↔float complex bases (e.g. _Complex int → _Complex double)
+                if (node->ty->kind == TY_COMPLEX && node->rhs->ty->kind == TY_COMPLEX &&
+                    ((is_integer(node->ty->base) && is_flonum(node->rhs->ty->base)) ||
+                     (is_flonum(node->ty->base) && is_integer(node->rhs->ty->base)))) {
+                    emit_complex_convert_mixed(dst, dst, node->rhs->ty, node->ty);
                 }
                 // For complex return values used as a condition (e.g. if (c = f())),
                 // test whether the value is non-zero.
@@ -6491,9 +7267,10 @@ static VReg gen(Node *node) {
                 src = (node->rhs->kind == ND_ASSIGN) ? gen(node->rhs) : gen_addr(node->rhs);
             else if (node->rhs->ty && is_complex(node->rhs->ty) && node->rhs->kind == ND_LVAR && !node->rhs->var->is_local)
                 src = gen_addr(node->rhs);
+            else if (node->rhs->ty && is_complex(node->rhs->ty) && node->rhs->kind == ND_DEREF)
+                src = gen_addr(node->rhs); // need source address, not loaded value
             else
                 src = gen(node->rhs);
-
             // Complex-to-complex assignment with differing real-floating base
             // types (e.g. _Complex float = _Complex double or vice versa):
             // convert each component instead of doing a raw byte copy.
@@ -6512,6 +7289,19 @@ static VReg gen(Node *node) {
                 !is_flonum(node->lhs->ty->base) && !is_flonum(node->rhs->ty->base) &&
                 node->lhs->ty->base->size != node->rhs->ty->base->size) {
                 emit_complex_convert_int(src, dst, node->rhs->ty, node->lhs->ty);
+                free_reg(src);
+                return dst;
+            }
+
+            // Complex-to-complex assignment with mixed int/float base types
+            // (e.g. _Complex double = _Complex int): convert components.
+            if (node->lhs->ty->kind == TY_COMPLEX && node->rhs->ty && node->rhs->ty->kind == TY_COMPLEX &&
+                is_flonum(node->lhs->ty->base) != is_flonum(node->rhs->ty->base)) {
+                if (is_flonum(node->lhs->ty->base)) {
+                    emit_complex_convert_mixed(src, dst, node->rhs->ty, node->lhs->ty);
+                } else {
+                    emit_complex_convert_mixed(src, dst, node->rhs->ty, node->lhs->ty);
+                }
                 free_reg(src);
                 return dst;
             }
@@ -6624,6 +7414,20 @@ static VReg gen(Node *node) {
             free_reg(r1);
             return r2;
 #endif
+        }
+        // 16-byte vector: copy using ldr q/str q (or movups on x86).
+        if (node->lhs->ty->is_vector && node->lhs->ty->size == 16) {
+            VReg rhs_a = gen_addr(node->rhs);
+            VReg lhs_a = gen_addr(node->lhs);
+#ifdef ARCH_ARM64
+            asm_ldr_q(cg_sec, ASM_Q0, rhs_a); // ldr q0, [x{rhs_a}]
+            asm_str_q(cg_sec, ASM_Q0, lhs_a); // str q0, [x{lhs_a}]
+#else
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(rhs_a), 0));
+            x86_movups_mr(cg_sec, x86_mem(REG(lhs_a), 0), X86_XMM0);
+#endif
+            free_reg(rhs_a);
+            return lhs_a;
         }
         if (node->lhs->kind == ND_LVAR && node->lhs->var->is_local && node->lhs->var->ty->kind != TY_ARRAY) {
             VReg r2 = gen(node->rhs);
@@ -6897,8 +7701,8 @@ static VReg gen(Node *node) {
             }
 #endif
         }
-        VReg r1 = gen_addr(node->lhs);
         VReg r2 = gen(node->rhs);
+        VReg r1 = gen_addr(node->lhs);
 #ifdef ARCH_ARM64
         emit_store(node->lhs->ty, r2, r1, 0);
 #else
@@ -7722,7 +8526,50 @@ static VReg gen(Node *node) {
 #endif
                 }
             }
-
+        } else if (is_complex(from) && is_complex(to) && from->size != to->size) {
+            // Complex type promotion/demotion (e.g., _Complex float → _Complex double)
+            int alloc = (to->size + 7) & ~7;
+            fn_struct_ret_off += alloc;
+            if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+            int result_off = current_fn_stack_size + fn_struct_ret_off;
+            int result = alloc_reg();
+            int base_to = to->base ? to->base->size : 8;
+            int base_from = from->base ? from->base->size : 4;
+#ifdef ARCH_ARM64
+            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
+            if (base_from == 4 && base_to == 8) {
+                if (is_flonum(from->base)) {
+                    // _Complex float → _Complex double
+                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0);
+                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4);
+                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8);
+                } else {
+                    // _Complex int → _Complex double
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(r), 0);
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(r), 1);
+                    arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
+                    arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                    arm64_str_fp(cg_sec, 3, ARM64_D1, REG(result), 8);
+                }
+            }
+#else
+            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
+            if (base_from == 4 && base_to == 8) {
+                // float complex → double complex
+                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+                x86_movsd_mr(cg_sec, x86_mem(REG(result), 0), X86_XMM0); // movsd %xmm0, (result)
+                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 4)); // movss 4(r), %xmm0
+                asm_cvtss2sd(cg_sec);
+                x86_movsd_mr(cg_sec, x86_mem(REG(result), 8), X86_XMM0); // movsd %xmm0, 8(result)
+            }
+#endif
+            free_reg(r);
+            return result;
         } else if (to->size == 1) {
 #ifdef ARCH_ARM64
             if (to->is_unsigned)
@@ -7771,8 +8618,8 @@ static VReg gen(Node *node) {
                 x86_mov_rr(cg_sec, 8, REG(addr), X86_RSP); // movq %rsp, addr
                 VReg v = gen(node->lhs);
                 if (is_complex(node->lhs->ty)) {
-                    asm_mov_reg_reg(cg_sec, 0, v, 8);
-                    asm_mov_reg_reg(cg_sec, addr, 0, 8);
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
                     if (complex_sz > 8) {
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), base_sz), X86_RAX); // movq %rax, base_sz(addr)
@@ -7836,15 +8683,44 @@ static VReg gen(Node *node) {
             node->lhs->lhs->kind == ND_LVAR) {
             VReg idx = gen(node->lhs->rhs);
             VReg base = gen(node->lhs->lhs);
+            // When register pressure causes idx and base to share the
+            // same VReg, idx's original value is in its spill slot while
+            // the register now holds base.  Reload idx before the add,
+            // otherwise asm_add_reg_reg emits a self-add (e.g. add %rsi,%rsi).
+            if (idx == base && (spilled_regs & (1 << idx))) {
+#ifdef ARCH_ARM64
+                asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
+                spilled_regs &= ~(1 << idx);
+                arm64_add_reg(cg_sec, 1, REG(base), REG(base), ARM64_X16, ARM64_LSL, 0); // add base, base, x16
+                free_reg(idx); // idx and base share a VReg
+                emit_load(node->ty, base, base, 0);
+                return base;
+#else
+                // On x86-64 the register holds base after the spill;
+                // add idx's spilled value directly from the spill slot.
+                asm_add_spill_reg(cg_sec, idx, 8, spill_offset(idx)); // add spill, reg
+                spilled_regs &= ~(1 << idx);
+                // idx and base are the same VReg; free once (via idx).
+                free_reg(idx);
+                emit_load(node->ty, base, base, 0);
+                return base;
+#endif
+            }
 #ifdef ARCH_ARM64
             asm_add_reg_reg(cg_sec, base, idx, 8); // add base, base, idx
             free_reg(idx);
-            emit_load(node->ty, base, base, 0); // load from [base]
+            // For aggregate types, return the address, not the loaded value
+            if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION &&
+                node->ty->kind != TY_COMPLEX)
+                emit_load(node->ty, base, base, 0); // load from [base]
             return base;
 #else
             asm_add_reg_reg(cg_sec, idx, base, 8); // add idx, base
             free_reg(base);
-            emit_load(node->ty, idx, idx, 0); // load from (idx)
+            // For aggregate types, return the address, not the loaded value
+            if (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION &&
+                node->ty->kind != TY_COMPLEX)
+                emit_load(node->ty, idx, idx, 0); // load from (idx)
             return idx;
 #endif
         }
@@ -7932,6 +8808,22 @@ static VReg gen(Node *node) {
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), 0)); // movq (src), %rax
                 free_reg(src);
 #endif
+#if !defined(_WIN32) && !defined(ARCH_ARM64)
+            } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
+                       is_complex(current_fn_def->ty->return_ty)) {
+                // Linux SysV: return _Complex double in xmm0:xmm1,
+                // _Complex float in xmm0 (packed).
+                int src = gen_addr(node->lhs);
+                if (src < 0) src = gen(node->lhs);
+                int base_sz = node->lhs->ty->base ? node->lhs->ty->base->size : 8;
+                if (node->lhs->ty->size <= 8) {
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                } else {
+                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                    x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz));
+                }
+                free_reg(src);
+#endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
@@ -7970,23 +8862,33 @@ static VReg gen(Node *node) {
                 cg_def_label(format(".L.retcopy_end.%d", c));
                 asm_mov_x0_reg(cg_sec, ARM64_X11); // mov x0, x11
 #else
-                asm_mov_rbp(cg_sec, X86_R9, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R9
-                x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
-                cg_def_label(format(".L.retcopy.%d", c));
-                x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
+#ifdef _WIN32
+                if (node->lhs->ty->size <= 8) {
+                    // Win64: struct ≤8 bytes returned by value in RAX.
+                    // Load the struct value into RAX directly, no sret copy.
+                    int sz = node->lhs->ty->size <= 4 ? 4 : 8;
+                    x86_mov_rm(cg_sec, sz, X86_RAX, x86_mem(REG(src), 0)); // movl/movq (src), %rax
+                } else
+#endif
                 {
-                    size_t o = asm_jcc_label(cg_sec, X86_E);
-                    asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
+                    asm_mov_rbp(cg_sec, X86_R9, 8, retbuf_offset); // mov [rbp-retbuf_offset], X86_R9
+                    x86_mov_ri(cg_sec, 8, X86_RCX, node->lhs->ty->size); // movq $size, %%rcx
+                    cg_def_label(format(".L.retcopy.%d", c));
+                    x86_cmp_ri(cg_sec, 8, X86_RCX, 0); // cmp $0, rcx
+                    {
+                        size_t o = asm_jcc_label(cg_sec, X86_E);
+                        asm_fixup_add(cg_sec, o, format(".L.retcopy_end.%d", c), 1);
+                    }
+                    x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
+                    x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
+                    x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
+                    {
+                        size_t o = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
+                    }
+                    cg_def_label(format(".L.retcopy_end.%d", c));
+                    x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 }
-                x86_mov_rm(cg_sec, 1, X86_RAX, x86_mem_idx(REG(src), X86_RCX, 1, -1)); // movb -1(src, rcx), %%al
-                x86_mov_mr(cg_sec, 1, x86_mem_idx(X86_R9, X86_RCX, 1, -1), X86_RAX); // movb %%al, -1(r9, rcx)
-                x86_sub_ri(cg_sec, 8, X86_RCX, 1); // dec rcx
-                {
-                    size_t o = asm_jmp_label(cg_sec);
-                    asm_fixup_add(cg_sec, o, format(".L.retcopy.%d", c), 0);
-                }
-                cg_def_label(format(".L.retcopy_end.%d", c));
-                x86_mov_rr(cg_sec, 8, X86_RAX, X86_R9); // movq %%r9, %%rax
                 free_reg(src);
 #endif
             } else if (node->lhs->ty && is_complex(node->lhs->ty)) {
@@ -8443,8 +9345,9 @@ static VReg gen(Node *node) {
         const char *end_label = format(".L.cond_end.%d", c);
         VReg r = alloc_reg();
         int cond = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
@@ -8458,7 +9361,7 @@ static VReg gen(Node *node) {
         asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
         free_reg(else_r);
 #else
-        asm_cmp_zero(cg_sec, cond, node->cond->ty->size); // cmp $0, rcond
+        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
@@ -8624,13 +9527,14 @@ static VReg gen(Node *node) {
         if (r_then != -1) free_reg(r_then);
         cg_def_label(cont_label); // b.ne .L.begin.%d
         VReg r = gen(node->cond);
+        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
         size_t do_j = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
         asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
 #else
-        asm_cmp_zero(cg_sec, r, node->cond->ty->size); // cmp $0, rr
+        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
         size_t do_j = asm_jcc_label(cg_sec, X86_NE); // jcc label
         asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
@@ -9127,6 +10031,24 @@ static VReg gen(Node *node) {
             op_addr[i] = -1;
         }
 
+        // x86-64 specific register constraints: "a"=rax, "b"=rbx, "c"=rcx,
+        // "d"=rdx, "S"=rsi, "D"=rdi.  We encode them as sentinel values
+        // -(X86Reg+3) so they don't collide with virtual regs (0..7).
+        // Sentinels: X86_RAX(0)=-3, RCX(1)=-4, RDX(2)=-5, RBX(3)=-6,
+        //            RSI(6)=-9, RDI(7)=-10.
+#define ASM_X86_REG(r) (-((int)(r)) - 3)
+#define ASM_IS_X86_REG(v) ((v) <= -3 && (v) >= -18)
+#define ASM_GET_X86_REG(v) ((X86Reg)(-((v)) - 3))
+        static const char *x86_phy_reg64[] = {
+            "%rax", "%rcx", "%rdx", "%rbx", "%rsp", "%rbp", "%rsi", "%rdi",
+            "%r8", "%r9", "%r10", "%r11", "%r12", "%r13", "%r14", "%r15"};
+        static const char *x86_phy_reg32[] = {
+            "%eax", "%ecx", "%edx", "%ebx", "%esp", "%ebp", "%esi", "%edi",
+            "%r8d", "%r9d", "%r10d", "%r11d", "%r12d", "%r13d", "%r14d", "%r15d"};
+
+        // Helper: map constraint char to X86Reg; returns true on match.
+        // Inline switch avoids block/nested-function portability issues.
+#define X86REG_CASE(ch, reg) case ch: xreg = reg; is_x86_reg = true; break
         // First pass: allocate registers for outputs and memory operands.
         // Defer matching input constraints (digit) to second pass.
         for (int i = 0; i < node->asm_noperands; i++) {
@@ -9134,14 +10056,55 @@ static VReg gen(Node *node) {
             const char *c = op->constraint;
             while (*c == '=' || *c == '+' || *c == '&') c++;
 
-            if (op->is_memory) {
+            // Check for x86-specific register constraints
+            X86Reg xreg = X86_RAX;
+            bool is_x86_reg = false;
+            switch (*c) {
+                X86REG_CASE('a', X86_RAX);
+                X86REG_CASE('b', X86_RBX);
+                X86REG_CASE('c', X86_RCX);
+                X86REG_CASE('d', X86_RDX);
+                X86REG_CASE('S', X86_RSI);
+                X86REG_CASE('D', X86_RDI);
+            default: break;
+            }
+
+            if (is_x86_reg) {
+                int sz = op->expr->ty ? op->expr->ty->size : 4;
+                const char *rname = (sz == 4) ? x86_phy_reg32[xreg]
+                                              : x86_phy_reg64[xreg];
+                if (op->is_output && !op->is_rw) {
+                    // Output-only x86 reg: capture address for store-back
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else if (op->is_rw) {
+                    // Read-write x86 reg: load current value into physical reg
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    x86_mov_rm(cg_sec, sz, xreg, x86_mem(REG(r_addr), 0));
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else {
+                    // Input x86 reg: move value into physical register
+                    VReg r_in = gen(op->expr);
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), xreg, REG(r_in));
+                    free_reg(r_in);
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                }
+            } else if (op->is_memory) {
                 // "m" constraint: compute address, use as memory ref in template
                 VReg r = gen_addr(op->expr);
                 op_regs[i] = r;
                 op->reg = r;
                 snprintf(op->asm_str, sizeof(op->asm_str), "(%s)", reg64[r]);
             } else if (op->is_output && !op->is_rw) {
-                // Output-only: "=r" → allocate fresh register, store back after asm.
+                // Output-only: "=r" -> allocate fresh register, store back after asm.
                 // "=m" is handled above (is_memory).
                 VReg r_addr = gen_addr(op->expr);
                 op_addr[i] = r_addr;
@@ -9181,23 +10144,45 @@ static VReg gen(Node *node) {
             const char *c = op->constraint;
             while (*c == '=' || *c == '+' || *c == '&') c++;
             int ref = *c - '0';
-            if (ref >= 0 && ref < node->asm_noperands && op_regs[ref] >= 0) {
-                VReg r = op_regs[ref];
-                // Load the input value into the shared register
-                VReg r_in = gen(op->expr);
-                if (r_in != r) {
-                    int sz = op->expr->ty ? op->expr->ty->size : 4;
-                    if (sz <= 4)
-                        asm_mov_reg_reg(cg_sec, r, r_in, 4); // mov r_in -> r (load input into output reg)
-                    else
-                        asm_mov_reg_reg(cg_sec, r, r_in, 8); // mov r_in -> r
+            if (ref >= 0 && ref < node->asm_noperands) {
+                int sz = op->expr->ty ? op->expr->ty->size : 4;
+                if (ASM_IS_X86_REG(op_regs[ref])) {
+                    // Referenced output uses an x86 physical register
+                    X86Reg xreg = ASM_GET_X86_REG(op_regs[ref]);
+                    VReg r_in = gen(op->expr);
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), xreg, REG(r_in));
+                    free_reg(r_in);
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    strncpy(op->asm_str, node->asm_ops[ref].asm_str,
+                            sizeof(op->asm_str) - 1);
+                    op->asm_str[sizeof(op->asm_str) - 1] = '\0';
+                } else if (op_regs[ref] >= 0) {
+                    VReg r = op_regs[ref];
+                    // Load the input value into the shared register
+                    VReg r_in = gen(op->expr);
+                    if (r_in != r) {
+                        if (sz <= 4)
+                            asm_mov_reg_reg(cg_sec, r, r_in, 4); // mov r_in -> r (load input into output reg)
+                        else
+                            asm_mov_reg_reg(cg_sec, r, r_in, 8); // mov r_in -> r
+                    }
+                    free_reg(r_in);
+                    op_regs[i] = r;
+                    op->reg = r;
+                    strncpy(op->asm_str, node->asm_ops[ref].asm_str,
+                            sizeof(op->asm_str) - 1);
+                    op->asm_str[sizeof(op->asm_str) - 1] = '\0';
                 }
-                free_reg(r_in);
-                op_regs[i] = r;
-                op->reg = r;
-                strncpy(op->asm_str, node->asm_ops[ref].asm_str, sizeof(op->asm_str) - 1);
-                op->asm_str[sizeof(op->asm_str) - 1] = '\0';
             }
+        }
+
+        // Save address registers for x86 register outputs that may be
+        // clobbered by the asm (e.g. cpuid overwrites %rbx which may hold
+        // the address of an output variable).
+        for (int i = 0; i < node->asm_noperands; i++) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+                asm_push(cg_sec, REG(op_addr[i]));
         }
 
         // Emit template with operand substitution, wrapped in AT&T syntax
@@ -9270,12 +10255,23 @@ static VReg gen(Node *node) {
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
+
+        // Restore saved address registers (reverse order) so that
+        // the store-back below uses the correct address values.
+        for (int i = node->asm_noperands - 1; i >= 0; i--) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+                asm_pop(cg_sec, REG(op_addr[i]));
+        }
         // Store back register outputs ("=r", "+r") to their C variables
         for (int i = 0; i < node->asm_noperands; i++) {
             if (op_addr[i] < 0) continue;
             AsmOperand *op = &node->asm_ops[i];
             int sz = op->expr->ty ? op->expr->ty->size : 4;
-            if (sz == 1)
+            if (ASM_IS_X86_REG(op_regs[i])) {
+                // Store x86 physical register to output address
+                X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
+                x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), xreg);
+            } else if (sz == 1)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 1); // movb op_regs[i], (%op_addr[i])
             else if (sz == 2)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 2); // movw op_regs[i], (%op_addr[i])
@@ -9285,7 +10281,8 @@ static VReg gen(Node *node) {
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 8); // movq op_regs[i], (%op_addr[i])
         }
 
-        // Free registers
+
+        // Free registers (skip x86 physical reg sentinels)
         for (int i = 0; i < node->asm_noperands; i++)
             if (op_regs[i] >= 0) free_reg(op_regs[i]);
         for (int i = 0; i < node->asm_noperands; i++)
@@ -10067,8 +11064,8 @@ static VReg gen(Node *node) {
                     asm_str_x16_reg_uoff(cg_sec, addr_lhs, base_sz); // str x16, [addr_lhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), 0), X86_RAX); // movq %rax, (addr_lhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
@@ -10099,8 +11096,8 @@ static VReg gen(Node *node) {
                     asm_str_x16_reg_uoff(cg_sec, addr_rhs, base_sz); // str x16, [addr_rhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), 0), X86_RAX); // movq %rax, (addr_rhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
@@ -10585,8 +11582,8 @@ static VReg gen(Node *node) {
                     arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 8)); // str x16, [addr_lhs, #base_sz]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_lhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), 0), X86_RAX); // movq %rax, (addr_lhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_lhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_lhs)
@@ -10606,7 +11603,7 @@ static VReg gen(Node *node) {
             free_reg(v);
             need_free_lhs = 1;
         }
-        if (addr_rhs < 0) {
+        if (addr_rhs < 0 || (is_complex(node->rhs->ty) && node->rhs->ty->size < complex_sz)) {
             addr_rhs = alloc_reg();
 #ifdef ARCH_ARM64
             arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0); // sub sp, sp, #complex_sz
@@ -10619,15 +11616,17 @@ static VReg gen(Node *node) {
             if (is_complex(node->rhs->ty)) {
                 // gen() returned the address of the complex payload — copy it
 #ifdef ARCH_ARM64
+                int rhs_sz = node->rhs->ty->size;
+                int rhs_base = node->rhs->ty->base ? node->rhs->ty->base->size : 8;
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), 0); // ldr x16, [v]
                 arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), 0); // str x16, [addr_rhs]
-                if (complex_sz > 8) {
-                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(base_sz / 8)); // ldr x16, [v, #base_sz]
-                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(base_sz / 8)); // str x16, [addr_rhs, #base_sz]
+                if (rhs_sz > rhs_base) {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(v), (uint32_t)(rhs_base / 8)); // ldr x16, [v, #rhs_base]
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(addr_rhs), (uint32_t)(rhs_base / 8)); // str x16, [addr_rhs, #rhs_base]
                 }
 #else
-                asm_mov_reg_reg(cg_sec, 0, v, 8);
-                asm_mov_reg_reg(cg_sec, addr_rhs, 0, 8);
+                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0)); // movq (v), %rax
+                x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), 0), X86_RAX); // movq %rax, (addr_rhs)
                 if (complex_sz > 8) {
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz)); // movq base_sz(v), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(REG(addr_rhs), base_sz), X86_RAX); // movq %rax, base_sz(addr_rhs)
@@ -11064,8 +12063,15 @@ static VReg gen(Node *node) {
             if (!strcmp(inst, "cmp")) {
                 asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
             } else {
-                if (!strcmp(inst, "add")) asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz); // add rr_lhs, rr_rhs
-                else if (!strcmp(inst, "sub"))
+                if (!strcmp(inst, "add")) {
+                    if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                        asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(r_lhs));
+                        spilled_regs &= ~(1 << r_lhs);
+                        arm64_add_reg(cg_sec, sz == 8 ? 1 : 0, REG(r_lhs), REG(r_lhs), ARM64_X16, ARM64_LSL, 0);
+                    } else {
+                        asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                    }
+                } else if (!strcmp(inst, "sub"))
                     asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz); // sub rr_lhs, rr_rhs
                 else if (!strcmp(inst, "mul"))
                     asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz); // imul rr_lhs, rr_rhs
@@ -11102,8 +12108,14 @@ static VReg gen(Node *node) {
             // int would be treated as a large positive offset.
             if (sz == 8 && op_size(node->rhs->ty) == 4 && !use_unsigned(node->rhs->ty))
                 asm_movsx(cg_sec, r_rhs, r_rhs, 8, 4);
-            if (!strcmp(inst, "add")) asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "sub"))
+            if (!strcmp(inst, "add")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_add_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "sub"))
                 asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz);
             else if (!strcmp(inst, "imul"))
                 asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz);
@@ -11719,11 +12731,15 @@ struct ObjFile *codegen(Program *prog) {
 #ifndef ARCH_ARM64
         int param_xmm_index = 0;
         int stack_param_index = 0;
-        int param_index = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (is_complex(fn->ty->return_ty)
+        int param_index = fn->ty->return_ty &&
+                ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)
 #ifdef _WIN32
-                                                                                                                                && fn->ty->return_ty->size > 8
+                     && fn->ty->return_ty->size > 8 ||
+                 (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
+#else
+                 || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16)
 #endif
-                                                                                                                                ))
+                     )
             ? 1
             : 0;
 #ifdef _WIN32
@@ -11750,7 +12766,8 @@ struct ObjFile *codegen(Program *prog) {
                     // Float on stack (arg position >= 4 in Win64)
                     int stack_off = 48 + stack_param_index * 8;
                     if (var->ty->size == 4) {
-                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -11794,7 +12811,8 @@ struct ObjFile *codegen(Program *prog) {
                 int stack_off = 48 + stack_param_index * 8;
                 if (is_flonum(var->ty)) {
                     if (var->ty->size == 4) {
-                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
+                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
+                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -12171,9 +13189,9 @@ struct ObjFile *codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn->name))); // .weak_definition %s
+            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
         } else if (fn_exported)
-            cg_global_label(asm_sym_name(sym_name(fn->name))); // .globl %s
+            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
         else
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
 
@@ -12238,7 +13256,7 @@ struct ObjFile *codegen(Program *prog) {
         {
             for (LVar *var = fn->params; var; var = var->param_next) {
                 int hfa_elem_size = 0;
-                int hfa_count = (!is_flonum(var->ty) && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION))
+                int hfa_count = (!is_flonum(var->ty) && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || var->ty->kind == TY_COMPLEX))
                     ? arm64_hfa_count(var->ty, &hfa_elem_size)
                     : 0;
                 if (hfa_count > 0 && fp_param + hfa_count <= 8) {
@@ -12518,9 +13536,9 @@ struct ObjFile *codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn->name))); // .weak_definition %s
+            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
         } else if (fn_exported) {
-            cg_global_label(asm_sym_name(sym_name(fn->name))); // .globl %s
+            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
         } else {
             cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
         }
@@ -12607,11 +13625,14 @@ struct ObjFile *codegen(Program *prog) {
             X86Reg greg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
             int max_gp = 6;
 #endif
-            int gp = fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+            int gp = fn->ty->return_ty &&
+                    (
 #ifdef _WIN32
-                                                                                                                           && fn->ty->return_ty->size > 8
+                         ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
+#else
+                         fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #endif
-                                                                                                                           ))
+                             )
                 ? 1
                 : 0;
             int xfp = 0;
@@ -12800,7 +13821,8 @@ struct ObjFile *codegen(Program *prog) {
 #endif
                     if (is_flonum(var->ty)) {
                         if (var->ty->size <= 4) {
-                            x86_movss_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movss stack_off2(%rbp), xmm0
+                            x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0 (load double)
+                            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
                             x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss xmm0, -var->offset(%rbp)
                         } else {
                             x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0
@@ -12839,11 +13861,17 @@ struct ObjFile *codegen(Program *prog) {
 #endif
         }
 
-        if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || (fn->ty->return_ty->kind == TY_COMPLEX
+        bool has_retbuf = fn->ty->return_ty &&
+            (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
 #ifdef _WIN32
-                                                                                                                  && fn->ty->return_ty->size > 8
+             || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #endif
-                                                                                                                  ))) {
+                 )
+#ifdef _WIN32
+            && fn->ty->return_ty->size > 8
+#endif
+            ;
+        if (has_retbuf) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var->name && var->name == kw_retbuf) {

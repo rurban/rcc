@@ -1247,7 +1247,7 @@ static char *skip_spaces(char *p) {
     return p;
 }
 
-static long eval_pp_expr(char **rest, char *p, char *filename);
+static int64_t eval_pp_expr(char **rest, char *p, char *filename);
 
 // Set when the current #if expression contains an unsigned-typed operand
 // (u/U integer suffix, or a u8''/u''/U'' character constant). Relational
@@ -1266,7 +1266,7 @@ static void normalize_attr_name(char *s) {
 }
 
 static unsigned pp_eval_line_no;
-static long eval_primary(char **rest, char *p, char *filename) {
+static int64_t eval_primary(char **rest, char *p, char *filename) {
     p = skip_spaces(p);
 
     if (pp_startswith(p, "defined")) {
@@ -1439,7 +1439,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
     }
 
     if (*p == '(') {
-        long val = eval_pp_expr(&p, p + 1, filename);
+        int64_t val = eval_pp_expr(&p, p + 1, filename);
         p = skip_spaces(p);
         if (*p == ')')
             p++;
@@ -1448,13 +1448,13 @@ static long eval_primary(char **rest, char *p, char *filename) {
     }
 
     if (*p == '!') {
-        long val = !eval_primary(&p, p + 1, filename);
+        int64_t val = !eval_primary(&p, p + 1, filename);
         *rest = p;
         return val;
     }
 
     if (*p == '-') {
-        long val = -eval_primary(&p, p + 1, filename);
+        int64_t val = -eval_primary(&p, p + 1, filename);
         *rest = p;
         return val;
     }
@@ -1462,7 +1462,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
     if (isdigit((unsigned char)*p)) {
         // Handle C23 0b/0B binary and 0o/0O octal prefixes
         if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
-            long val = 0;
+            int64_t val = 0;
             p += 2;
             while (*p == '0' || *p == '1' || *p == '\'') {
                 if (*p != '\'') val = val * 2 + (*p - '0');
@@ -1472,7 +1472,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
             return val;
         }
         if (p[0] == '0' && (p[1] == 'o' || p[1] == 'O')) {
-            long val = 0;
+            int64_t val = 0;
             p += 2;
             while ((*p >= '0' && *p <= '7') || *p == '\'') {
                 if (*p != '\'') val = val * 8 + (*p - '0');
@@ -1490,7 +1490,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
             np++;
         }
         tmp[ti] = '\0';
-        long val = strtol(tmp, &np, 0);
+        int64_t val = strtoll(tmp, &np, 0);
         p += np - tmp;
         // Consume integer suffixes; u/U makes the expression unsigned
         while (*p == 'u' || *p == 'U' || *p == 'l' || *p == 'L') {
@@ -1523,7 +1523,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
         }
         if (*q == '\'') {
             q++;
-            long val = 0;
+            int64_t val = 0;
             while (*q && *q != '\'' && *q != '\n') {
                 if (*q == '\\') {
                     q++;
@@ -1567,7 +1567,7 @@ static long eval_primary(char **rest, char *p, char *filename) {
                 q++;
                 *rest = q;
                 if (!prefix)
-                    val = (long)(signed char)val;
+                    val = (int64_t)(signed char)val;
                 else if (prefix != 'L')
                     // u8/u/U character constants have unsigned type
                     pp_expr_unsigned = true;
@@ -1637,16 +1637,16 @@ static long eval_primary(char **rest, char *p, char *filename) {
     return 0;
 }
 
-static long eval_mul(char **rest, char *p, char *filename) {
-    long val = eval_primary(&p, p, filename);
+static int64_t eval_mul(char **rest, char *p, char *filename) {
+    int64_t val = eval_primary(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '*') val *= eval_primary(&p, p + 1, filename);
         else if (*p == '/') {
-            long rhs = eval_primary(&p, p + 1, filename);
+            int64_t rhs = eval_primary(&p, p + 1, filename);
             val = rhs ? val / rhs : 0;
         } else if (*p == '%') {
-            long rhs = eval_primary(&p, p + 1, filename);
+            int64_t rhs = eval_primary(&p, p + 1, filename);
             val = rhs ? val % rhs : 0;
         } else
             break;
@@ -1655,8 +1655,8 @@ static long eval_mul(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_add(char **rest, char *p, char *filename) {
-    long val = eval_mul(&p, p, filename);
+static int64_t eval_add(char **rest, char *p, char *filename) {
+    int64_t val = eval_mul(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '+') val += eval_mul(&p, p + 1, filename);
@@ -1669,8 +1669,8 @@ static long eval_add(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_shift(char **rest, char *p, char *filename) {
-    long val = eval_add(&p, p, filename);
+static int64_t eval_shift(char **rest, char *p, char *filename) {
+    int64_t val = eval_add(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (pp_startswith(p, "<<")) val = val << eval_add(&p, p + 2, filename);
@@ -1683,22 +1683,22 @@ static long eval_shift(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_rel(char **rest, char *p, char *filename) {
-    long val = eval_shift(&p, p, filename);
+static int64_t eval_rel(char **rest, char *p, char *filename) {
+    int64_t val = eval_shift(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
-        long rhs;
+        int64_t rhs;
         if (pp_startswith(p, "<=")) rhs = eval_shift(&p, p + 2, filename),
-                                    val = pp_expr_unsigned ? (unsigned long)val <= (unsigned long)rhs : val <= rhs;
+                                    val = pp_expr_unsigned ? (uint64_t)val <= (uint64_t)rhs : val <= rhs;
         else if (pp_startswith(p, ">="))
             rhs = eval_shift(&p, p + 2, filename),
-            val = pp_expr_unsigned ? (unsigned long)val >= (unsigned long)rhs : val >= rhs;
+            val = pp_expr_unsigned ? (uint64_t)val >= (uint64_t)rhs : val >= rhs;
         else if (*p == '<')
             rhs = eval_shift(&p, p + 1, filename),
-            val = pp_expr_unsigned ? (unsigned long)val < (unsigned long)rhs : val < rhs;
+            val = pp_expr_unsigned ? (uint64_t)val < (uint64_t)rhs : val < rhs;
         else if (*p == '>')
             rhs = eval_shift(&p, p + 1, filename),
-            val = pp_expr_unsigned ? (unsigned long)val > (unsigned long)rhs : val > rhs;
+            val = pp_expr_unsigned ? (uint64_t)val > (uint64_t)rhs : val > rhs;
         else
             break;
     }
@@ -1706,8 +1706,8 @@ static long eval_rel(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_eq(char **rest, char *p, char *filename) {
-    long val = eval_rel(&p, p, filename);
+static int64_t eval_eq(char **rest, char *p, char *filename) {
+    int64_t val = eval_rel(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (pp_startswith(p, "==")) val = val == eval_rel(&p, p + 2, filename);
@@ -1720,8 +1720,8 @@ static long eval_eq(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitand(char **rest, char *p, char *filename) {
-    long val = eval_eq(&p, p, filename);
+static int64_t eval_bitand(char **rest, char *p, char *filename) {
+    int64_t val = eval_eq(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '&' && p[1] != '&') val &= eval_eq(&p, p + 1, filename);
@@ -1732,8 +1732,8 @@ static long eval_bitand(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitxor(char **rest, char *p, char *filename) {
-    long val = eval_bitand(&p, p, filename);
+static int64_t eval_bitxor(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitand(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '^') val ^= eval_bitand(&p, p + 1, filename);
@@ -1744,8 +1744,8 @@ static long eval_bitxor(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_bitor(char **rest, char *p, char *filename) {
-    long val = eval_bitxor(&p, p, filename);
+static int64_t eval_bitor(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitxor(&p, p, filename);
     for (;;) {
         p = skip_spaces(p);
         if (*p == '|' && p[1] != '|') val |= eval_bitxor(&p, p + 1, filename);
@@ -1756,43 +1756,45 @@ static long eval_bitor(char **rest, char *p, char *filename) {
     return val;
 }
 
-static long eval_land(char **rest, char *p, char *filename) {
-    long val = eval_bitor(&p, p, filename);
+static int64_t eval_land(char **rest, char *p, char *filename) {
+    int64_t val = eval_bitor(&p, p, filename);
     while (pp_startswith(skip_spaces(p), "&&")) {
         p = skip_spaces(p);
-        long rhs = eval_bitor(&p, p + 2, filename);
+        int64_t rhs = eval_bitor(&p, p + 2, filename);
         val = val && rhs;
     }
     *rest = p;
     return val;
 }
 
-static long eval_pp_expr(char **rest, char *p, char *filename) {
-    long val = eval_land(&p, p, filename);
+static int64_t eval_pp_expr(char **rest, char *p, char *filename) {
+    int64_t val = eval_land(&p, p, filename);
     while (pp_startswith(skip_spaces(p), "||")) {
         p = skip_spaces(p);
-        long rhs = eval_land(&p, p + 2, filename);
+        int64_t rhs = eval_land(&p, p + 2, filename);
         val = val || rhs;
     }
     p = skip_spaces(p);
     if (*p == '?') {
         p++;
-        long true_val = eval_pp_expr(&p, p, filename);
+        int64_t true_val = eval_pp_expr(&p, p, filename);
         p = skip_spaces(p);
         if (*p == ':')
             p++;
-        long false_val = eval_pp_expr(&p, p, filename);
+        int64_t false_val = eval_pp_expr(&p, p, filename);
         val = val ? true_val : false_val;
     }
     *rest = p;
     return val;
 }
 
-static long eval_condition(char *expr, char *filename, unsigned line_no) {
+static int64_t eval_condition(char *expr, char *filename, unsigned line_no) {
     pp_eval_line_no = line_no;
     pp_expr_unsigned = false;
     char *rest = expr;
-    return eval_pp_expr(&rest, expr, filename);
+    int64_t ret;
+    ret = eval_pp_expr(&rest, expr, filename);
+    return ret;
 }
 static int count_unmatched_parens(char *start, char *end) {
     int open = 0;
@@ -2494,44 +2496,49 @@ char *preprocess(char *filename, char *p) {
         define_pre("__builtin_puts", "puts");
         define_pre("__builtin_sprintf", "sprintf");
 
+        /* __builtin_assume_aligned(ptr, align) — hint, return ptr unchanged */
+        define_macro("__builtin_assume_aligned", true, (char *[]){"__p", "__a"}, 2, "(__p)");
+        /* math builtins: declared with proper types on first use (see parser.c) */
+
         // _FORTIFY_SOURCE: __builtin___*_chk using __builtin_object_size
         // String/memory functions with bounds checking
         {
             char *p4[] = {"__dest", "__src", "__len", "__bos", NULL};
-            define_macro("__builtin___memcpy_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
-            define_macro("__builtin___memmove_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memmove(__dest,__src,__len))");
+            char *p4m[] = {"__dest", "__src", "__len", "__bos", NULL};
+            define_macro("__builtin___memcpy_chk", true, p4m, 4,
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
+            define_macro("__builtin___memmove_chk", true, p4m, 4,
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memmove(__dest,__src,__len))");
             define_macro("__builtin___memset_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memset(__dest,__src,__len))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memset(__dest,__src,__len))");
             define_macro("__builtin___memcmp_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_memcmp(__dest,__src,__len))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_memcmp(__dest,__src,__len))");
             char *p3s[] = {"__dest", "__src", "__bos", NULL};
             define_macro("__builtin___strcpy_chk", true, p3s, 3,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcpy(__dest,__src))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcpy(__dest,__src))");
             define_macro("__builtin___strncpy_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_strncpy(__dest,__src,__len))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_strncpy(__dest,__src,__len))");
             define_macro("__builtin___strcat_chk", true, p3s, 3,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__dest)+__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcat(__dest,__src))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__dest)+__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcat(__dest,__src))");
             define_macro("__builtin___strncat_chk", true, p4, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__dest)+(__len)+1)?(abort(),(__dest)):__builtin_strncat(__dest,__src,__len))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__dest)+(__len)+1)?(abort(),(__dest)):__builtin_strncat(__dest,__src,__len))");
             char *p2[] = {"__s", "__bos", NULL};
             define_macro("__builtin___strlen_chk", true, p2, 2,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__builtin_strlen(__s)+1)?(abort(),0):__builtin_strlen(__s))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__s)+1)?(abort(),0):__builtin_strlen(__s))");
             char *p2f[] = {"__fmt", "__bos", NULL};
             define_macro("__builtin___printf_chk", true, p2f, 2, "__builtin_printf");
             define_macro("__builtin___fprintf_chk", true, p2f, 2, "__builtin_fprintf");
             define_macro("__builtin___vfprintf_chk", true, p2f, 2, "__builtin_vfprintf");
             char *p3f[] = {"__dest", "__fmt", "__bos", NULL};
             define_macro("__builtin___sprintf_chk", true, p3f, 3,
-                         "((__bos)!=(size_t)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
+                         "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
             define_macro("__builtin___vsprintf_chk", true, p3f, 3,
-                         "((__bos)!=(size_t)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
+                         "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
             char *p4f[] = {"__dest", "__len", "__fmt", "__bos", NULL};
             define_macro("__builtin___snprintf_chk", true, p4f, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
             define_macro("__builtin___vsnprintf_chk", true, p4f, 4,
-                         "((__bos)!=(size_t)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
+                         "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
 
             // POSIX I/O _chk wrappers: pass through without compile-time check
             define_pre("__builtin___read_chk", "read");
@@ -2574,6 +2581,7 @@ char *preprocess(char *filename, char *p) {
 
         // __builtin_conjf/conj/conjl are handled inline in parser
         // __builtin_signbit is handled inline in codegen (glibc signbit is a macro, not a function)
+        define_pre("signbit", "__builtin_signbit");
         define_pre("__builtin_trap", "abort");
         // __builtin_unreachable() is handled as a builtin funcall in codegen
         define_macro("__builtin_clear_padding", true, (char *[]){"ptr"}, 1, "__builtin_memset(ptr, 0, sizeof(*(ptr)))");

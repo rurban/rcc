@@ -84,6 +84,7 @@ Type *pointer_to(Type *base) {
     ty->size = 8;
     ty->align = 8;
     ty->base = base;
+    ty->is_unsigned = true; // pointers compare as unsigned
     return ty;
 }
 
@@ -337,6 +338,9 @@ static Type *composite_type(Type *t1, Type *t2) {
                 off += m->ty->size;
             }
             result->size = (off + max_align - 1) / max_align * max_align;
+            // Unnamed bitfields (padding) are absent from the member list but
+            if (result->size < t1->size) result->size = t1->size;
+            if (result->size < t2->size) result->size = t2->size;
             if (result->size == 0) result->size = t1->size > t2->size ? t1->size : t2->size;
             result->align = max_align;
         } else {
@@ -356,12 +360,40 @@ static Type *composite_type(Type *t1, Type *t2) {
     }
 }
 
+// Check if two types are structurally identical.
+static bool same_type(Type *a, Type *b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case TY_PTR:
+        return same_type(a->base, b->base);
+    case TY_ARRAY:
+        return a->size == b->size && same_type(a->base, b->base);
+    case TY_FUNC:
+        if (a->is_variadic != b->is_variadic) return false;
+        if (!same_type(a->return_ty, b->return_ty)) return false;
+        // Compare parameter types
+        {
+            Type *pa = a->param_types, *pb = b->param_types;
+            for (; pa && pb; pa = pa->param_next, pb = pb->param_next)
+                if (!same_type(pa, pb)) return false;
+            if (pa || pb) return false;
+        }
+        return true;
+    default:
+        return a->size == b->size && a->is_unsigned == b->is_unsigned;
+    }
+}
+
 static void insert_arith_cast(Node **operand, Type *to) {
     Node *cast = arena_alloc(sizeof(Node));
     cast->kind = ND_CAST;
     cast->lhs = *operand;
     cast->ty = to;
     cast->tok = (*operand)->tok;
+    cast->next = (*operand)->next;
+    (*operand)->next = NULL;
     *operand = cast;
     add_type_internal(cast->lhs);
     add_type_internal(cast);
@@ -401,6 +433,50 @@ static void add_type_internal(Node *node) {
         return;
     default:
         break;
+    }
+
+    // GCC __attribute__((vector_size)) element-wise operators. When an operand
+    // is a vector, the result is the vector type and no scalar promotions or
+    // casts are inserted — packed codegen (gen_vector) handles the lanes. A
+    // vector combined with a scalar broadcasts the scalar to all lanes.
+    {
+        Type *lvt = node->lhs ? node->lhs->ty : NULL;
+        Type *rvt = node->rhs ? node->rhs->ty : NULL;
+        bool lv = lvt && lvt->is_vector;
+        bool rv = rvt && rvt->is_vector;
+        if (lv || rv) {
+            switch (node->kind) {
+            case ND_ADD:
+            case ND_SUB:
+            case ND_MUL:
+            case ND_DIV:
+            case ND_MOD:
+            case ND_BITAND:
+            case ND_BITOR:
+            case ND_BITXOR:
+            case ND_SHL: // lane-wise shifts (count vector or broadcast scalar)
+            case ND_SHR:
+            case ND_EQ: // vector comparisons yield a same-shape mask vector
+            case ND_NE:
+            case ND_LT:
+            case ND_LE: {
+                Type *vt = lv ? lvt : rvt;
+                Type *elem = vt->base;
+                node->ty = vt;
+                if (!lv && node->lhs->ty != elem)
+                    insert_arith_cast(&node->lhs, elem);
+                if (!rv && node->rhs->ty != elem)
+                    insert_arith_cast(&node->rhs, elem);
+                return;
+            }
+            case ND_NEG:
+            case ND_BITNOT:
+                node->ty = lvt;
+                return;
+            default:
+                break;
+            }
+        }
     }
 
     switch (node->kind) {
@@ -750,6 +826,8 @@ static void add_type_internal(Node *node) {
         // Both arithmetic: usual arithmetic conversions
         if (tty && ety && is_number(tty) && is_number(ety)) {
             node->ty = usual_arith_type(tty, ety);
+            if (tty != node->ty) insert_arith_cast(&node->then, node->ty);
+            if (ety != node->ty) insert_arith_cast(&node->els, node->ty);
             return;
         }
         // Pointer/integer mismatch: warn and use the pointer type
@@ -828,8 +906,21 @@ static void add_type_internal(Node *node) {
         } else {
             node->ty = ty_int;
         }
+        // Insert implicit casts for arguments when prototype is available
+        Type *param_types = NULL;
+        if (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_PTR &&
+            node->lhs->ty->base && node->lhs->ty->base->kind == TY_FUNC)
+            param_types = node->lhs->ty->base->param_types;
+        else if (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_FUNC)
+            param_types = node->lhs->ty->param_types;
         for (Node *n = node->args; n; n = n->next)
             check_type(n);
+        // Insert implicit casts for arguments when prototype is available
+        for (Node **argp = &node->args; *argp && param_types;
+             argp = &(*argp)->next, param_types = param_types->param_next) {
+            if (!same_type((*argp)->ty, param_types))
+                insert_arith_cast(argp, param_types);
+        }
         return;
     case ND_STR:
         node->ty = pointer_to(ty_char);

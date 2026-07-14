@@ -71,19 +71,20 @@ rcc -O1 -time:
 - **Compile-Time Function Execution (CTFE)** — AST interpreter evaluates pure functions with constant arguments at compile time with -O1.
 - **C preprocessor** — `#include`, `#define`, `#ifdef`/`#ifndef`/`#if`, `#pragma once`, macro expansion with token pasting.
 - **Floating-point support** — `float`/`double/long double` arithmetic, casts, function calls via SSE2 on x86-64 (xmm0–xmm7) or via ARM64 NEON/FP (v0–v7). 80-bit long double x87 on x86-64 via `fld`/`fstp` (truncated to 64 bits on store). ARM64 ELF 128-bit long double passed in register pairs (v0–v7 in even-odd pairs) following the AAPCS64 calling convention. Float args properly classified as SSE/FP class with separate GP/FP argument counters. ARM64 on APPLE only uses 8-byte doubles.
+- **Vector/SIMD support** — x86-64 SSE/AVX and ARM64 NEON vector types via `__attribute__((vector_size(N)))`, with full arithmetic, comparison, shuffle, and broadcast operations on float and integer element types.
 - **Windows x64 ABI** — Shadow space, correct volatile/non-volatile register handling, 16-byte stack alignment.
 - **SystemV x64 ABI** — No Shadow space. amd64 calling convention. Float and struct alignment specialities.
 - **ARM64 ABI (AAPCS64)** — x29 frame pointer, x30 link register, x0–x7 argument/return registers, x8 indirect result register, x9–x15 caller-saved, x19–x28 callee-saved. Variadic args passed on the stack. 16-byte stack alignment. NEON v0–v7 for FP/SIMD args; long double pairs on ELF use even-odd register pairs.
-- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins. Mandatory SSE4.2 not yet.
+- **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins, and `_FORTIFY_SOURCE` check functions. Mandatory SSE4.2 not yet.
 - **Bounds checking builtins** — `__builtin_object_size` returns compile-time size for arrays/structs, `(size_t)-1` for pointers. `__builtin_dynamic_object_size` additionally reads the glibc malloc chunk header at runtime for heap pointers, returning the actual allocated size (may be larger than requested due to rounding). Unlike GCC -O2 which tracks malloc size through the optimizer, rcc reads the chunk metadata.
 - **Insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, `vector_size`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support.
 
-trampolines, -finstrument, vector_size, fmv, full \_Decimal/Float/Binary support (aliased to float).
-Not yet: C23 `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types.
+TODO: trampolines, -finstrument, fmv, full \_Decimal/Float/Binary support
+(still aliased to float), C23 `_BitInt`, `#embed`, `<stdbit.h>`, decimal float types.
 
 Unsupported (skipped in torture tests):
 
@@ -94,8 +95,8 @@ Unsupported (skipped in torture tests):
 
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
-The test suites has all tests passed on linux, darwin, mingw-cross,
-arm64-cross, darwin-cross. On Linux we achieved a 100% pass rate (1809/1809) on the GCC torture suite. On Windows we still fail 20000402-1 c23-tag-composite-10.
+The test suites has all tests passed on linux, darwin, windows, mingw-cross,
+arm64-cross, darwin-cross.
 
 ## Build
 
@@ -139,8 +140,8 @@ compiler and tests, it is much faster now.
     -O0                disable peephole optimizer
     -O1                enable CTFE optimizations
     -g                 emit DWARF line-number debug info
-    -W                 print diagnostic warnings (stack spilling)
-    -Werror            error on all warnings (but not internal spill to check warnings)
+    -W                 print diagnostic warnings (-Wshadow, stack spilling with -v)
+    -Werror            error on all warnings (but not internal stack spill warnings)
     -Wno-homoglypth    suppress homoglyph unicode identifier warnings
     -Lpath             add linker path
     -lname             add lib
@@ -186,7 +187,7 @@ compiler and tests, it is much faster now.
 The original windows repo is now at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 1809/1809 GCC torture tests passed on Linux and macOS (100%), on Windows we still have 2 torture test fails. It passes much more tests than clang, gcc and all other known C compilers.
+This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 3610/3610 GCC torture tests passed on Linux, Windows and macOS (100%). It passes much more tests than gcc, clang and all other known C compilers.
 
 ## Test Results
 
@@ -195,16 +196,20 @@ Linux x86-64 GCC torture suite (test/torture/), generated by
 
 <!-- TEST_RESULTS_TABLE_START -->
 
-| Compiler | Platform | Passed | Failed | Skipped | Notes                  |
-| -------- | -------- | ------ | ------ | ------- | ---------------------- |
-| rcc      | Linux    | 1809   | 0      | 256     | **100%**               |
-| gcc      | Linux    | 1691   | 118    | 256     | 93%, 117c/1r failures  |
-| ccc      | Linux    | 1649   | 160    | 256     | 91%, 140c/20r failures |
-| clang    | Linux    | 1593   | 216    | 256     | 88%, 199c/17r failures |
-| tcc      | Linux    | 1498   | 314    | 253     | 82%, 297c/17r failures |
-| kefir    | Linux    | 1249   | 560    | 256     | 69%, 548c/12r failures |
-| slimcc   | Linux    | 1142   | 667    | 256     | 63%, 659c/8r failures  |
+| Compiler | Passed | Failed | Skipped | Notes                  |
+| -------- | ------ | ------ | ------- | ---------------------- |
+| rcc      | 3610   | 0      | 353     | 100% pass rate         |
+| gcc      | 2940   | 670    | 353     | 81%, 633c/37r failures |
+| ccc      | 3401   | 209    | 353     | 94%, 178c/31r failures |
+| clang    | 3240   | 370    | 353     | 89%, 364c/6r failures  |
+| tcc      | 2185   | 443    | 1335    | 83%, 426c/17r failures |
+| kefir    | 2677   | 933    | 353     | 74%, 918c/15r failures |
+| slimcc   | 1751   | 874    | 1338    | 66%, 866c/8r failures  |
 
+<!-- TEST_RESULTS_TABLE_END -->
+
+gcc and clang need -std=gnu89 to pass all K&R tests. Default gcc and clang fail
+118 K&R tests, rcc not.
 All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 ## Old Known Limitations

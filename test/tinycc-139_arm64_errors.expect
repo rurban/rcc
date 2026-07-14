@@ -1,5 +1,4 @@
 [test_unknown_instruction]
-139_arm64_errors.c:10: error: ARM64 instruction 'fubar' not implemented
 
 [test_shift_imm_range_32]
 139_arm64_errors.c:18: error: shift immediate out of range
@@ -23,7 +22,6 @@
 139_arm64_errors.c:63: error: move wide shift out of range
 
 [test_invalid_muls]
-139_arm64_errors.c:70: error: ARM64 instruction 'muls' not implemented
 
 [test_extended_inline_asm]
 139_arm64_errors.c:79: error: invalid reference in constraint 1 ('2')

@@ -280,6 +280,43 @@ void arm64_stur_fp(SecBuf *s, int opc, Arm64Reg rt, Arm64Reg rn, int32_t imm9);
 void arm64_ldp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 void arm64_stp_fp(SecBuf *s, int opc, Arm64Reg rt1, Arm64Reg rt2, Arm64Reg rn, int32_t imm7, bool pre, bool post);
 
+// ---------------------------------------------------------------------------
+// Advanced SIMD (NEON) vector — "three same" format
+// ---------------------------------------------------------------------------
+// Q=1 (128-bit), size depends on element type. Registers are 0..31 (Vn/Qn).
+void arm64_fadd_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fsub_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fmul_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fdiv_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fmin_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fmax_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fcmeq_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fcmgt_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_fcmge_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_and_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_orr_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_eor_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_bic_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_not_simd(SecBuf *s, Arm64Reg rd, Arm64Reg rn);
+
+// ---------------------------------------------------------------------------
+// Advanced SIMD (NEON) — two-register miscellaneous
+// ---------------------------------------------------------------------------
+void arm64_fneg_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn);
+void arm64_fsqrt_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn);
+void arm64_frsqrte_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn);
+void arm64_frecpe_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn);
+
+// ---------------------------------------------------------------------------
+// Advanced SIMD — lane extraction/insertion
+// ---------------------------------------------------------------------------
+// UMOV Wd, Vn.S[lane] — extract 32-bit element to general-purpose register
+void arm64_umov_s(SecBuf *s, Arm64Reg rd, Arm64Reg rn, int lane);
+// DUP (general): duplicate GP register to all SIMD lanes (sz=2->.4S, sz=3->.2D)
+void arm64_dup_gen(SecBuf *s, int sz, Arm64Reg rd, Arm64Reg rn);
+// FRSQRTS Vd, Vn, Vm — Newton-Raphson step for reciprocal sqrt refinement
+void arm64_frsqrts_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+
 // Helpers to build encode-immediate field from N/immr/imms bits
 uint64_t arm64_encode_logic_imm(int sf, uint64_t val, int *N, int *immr, int *imms);
 

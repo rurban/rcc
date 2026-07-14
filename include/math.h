@@ -16,6 +16,8 @@ double ceil(double);
 double round(double);
 double trunc(double);
 double fmod(double, double);
+double fma(double, double, double);
+float fmaf(float, float, float);
 double atan2(double, double);
 double asin(double);
 double acos(double);

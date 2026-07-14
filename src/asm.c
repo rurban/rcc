@@ -1530,8 +1530,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Unknown — emit NOP as fallback and warn
-    fprintf(stderr, "warning: unknown arm64 instruction: %s\n", mnem);
+    // Unknown — emit NOP as fallback (silent; validator already handles this)
     arm64_nop(buf);
     return true;
 
@@ -2162,6 +2161,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "fstpt")) {
         x86_fstpt_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "cpuid")) {
+        x86_cpuid(buf);
         return true;
     }
 

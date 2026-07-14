@@ -106,6 +106,7 @@ extern char *bi_setjmp, *bi_longjmp;
 extern char *bi_signbit, *bi_signbitf, *bi_signbitl;
 extern char *bi_isinf, *bi_isinff, *bi_isinfl;
 extern char *bi_copysign, *bi_copysignf, *bi_copysignl;
+extern char *bi_fma, *bi_fmaf, *bi_fmal;
 extern char *bi_abs, *bi_labs, *bi_llabs;
 extern char *bi_add_overflow, *bi_sub_overflow;
 extern char *bi_mul_overflow, *bi_mul_overflow_p;
@@ -122,6 +123,7 @@ extern char *bi_s_scanf, *bi_s_fscanf, *bi_s_sscanf;
 extern char *bi_s_alloca;
 extern char *bi_chk_printf, *bi_chk_vprintf;
 extern char *bi_chk_fprintf, *bi_chk_vfprintf;
+extern char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
 
 //
 // Parser
@@ -195,6 +197,8 @@ struct Type {
     bool is_unsigned;
     bool is_enum; // enum type — treated as unsigned for bitfield extraction
     bool is_signed_char; // signed char vs plain char (both have is_unsigned=false)
+    bool is_vector; // GCC __attribute__((vector_size(N))): TY_STRUCT of N scalar
+    // element-members, base = element type, align = total size
     unsigned char qual; // TypeQual flags: const/volatile/restrict
     Type *base; // for pointer/array
     Member *members; // for struct

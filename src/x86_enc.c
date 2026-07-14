@@ -749,6 +749,105 @@ void x86_pxor(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit3(s, 0x0f, 0xef, modrxmm(3, d, sr));
 }
 
+// ---------------------------------------------------------------------------
+// Packed SSE (128-bit vector) — used by __attribute__((vector_size(16)))
+// ---------------------------------------------------------------------------
+// Packed-single ops have no mandatory prefix (0F xx); packed-double add 0x66.
+static void sse_rr_np(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, op, modrxmm(3, d, sr));
+}
+static void sse_rr_66(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, op, modrxmm(3, d, sr));
+}
+static void sse_rr_f3(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0xf3);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, op, modrxmm(3, d, sr));
+}
+
+// movups xmm, m128 (load, unaligned): 0F 10 /r
+void x86_movups_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
+    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    emit2(s, 0x0f, 0x10);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+// movups m128, xmm (store, unaligned): 0F 11 /r
+void x86_movups_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    emit2(s, 0x0f, 0x11);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+
+// Packed-single float arithmetic (xmm, xmm)
+void x86_addps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x58, d, sr); }
+void x86_subps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x5c, d, sr); }
+void x86_mulps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x59, d, sr); }
+void x86_divps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x5e, d, sr); }
+void x86_minps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x5d, d, sr); }
+void x86_maxps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x5f, d, sr); }
+// Packed-single bitwise
+void x86_andps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x54, d, sr); }
+void x86_andnps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x55, d, sr); }
+void x86_orps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x56, d, sr); }
+// Packed-single unary (dst = op(src))
+void x86_sqrtps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x51, d, sr); }
+void x86_rsqrtps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x52, d, sr); }
+void x86_sqrtss(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_f3(s, 0x51, d, sr); }
+void x86_rcpps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x53, d, sr); }
+// Packed-single shuffles / unpacks
+void x86_unpcklps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x14, d, sr); }
+void x86_unpckhps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x15, d, sr); }
+void x86_movhlps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x12, d, sr); }
+void x86_movlhps(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_np(s, 0x16, d, sr); }
+// cmpps xmm, xmm, imm8: 0F C2 /r ib (imm: 0=eq,1=lt,2=le,4=neq,5=nlt,6=nle)
+void x86_cmpps(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0xc2, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+// shufps xmm, xmm, imm8: 0F C6 /r ib
+void x86_shufps(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0xc6, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+// shufpd xmm, xmm, imm8: 66 0F C6 /r ib
+void x86_shufpd(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0xc6, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+
+// movmskps r32, xmm: 0F 50 /r (reg=GP dst, rm=xmm src)
+void x86_movmskps(SecBuf *s, X86Reg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x50, modrxmm(3, (X86XmmReg)d, sr));
+}
+// Packed-double arithmetic / bitwise (66 0F xx) — for __m128d (2×double)
+void x86_addpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x58, d, sr); }
+void x86_subpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x5c, d, sr); }
+void x86_mulpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x59, d, sr); }
+void x86_divpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x5e, d, sr); }
+void x86_andpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x54, d, sr); }
+void x86_orpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x56, d, sr); }
+// Packed integer (66 0F xx) — for integer vector_size types
+void x86_paddd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfe, d, sr); }
+void x86_psubd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfa, d, sr); }
+void x86_paddq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xd4, d, sr); }
+void x86_psubq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfb, d, sr); }
+void x86_paddw(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfd, d, sr); }
+void x86_psubw(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xf9, d, sr); }
+void x86_paddb(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfc, d, sr); }
+void x86_psubb(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xf8, d, sr); }
+void x86_pand(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xdb, d, sr); }
+void x86_por(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xeb, d, sr); }
+void x86_pcmpeqd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x76, d, sr); }
+void x86_pcmpgtd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x66, d, sr); }
+
 // x87
 void x86_fldl_m(SecBuf *s, X86Mem m) {
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
