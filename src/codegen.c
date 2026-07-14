@@ -1285,6 +1285,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #ifdef _WIN32
          || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
 #endif
+#ifdef ARCH_ARM64
+         || node->ty->kind == TY_COMPLEX
+#endif
         );
 
     // Cross-architecture builtins (x86_64 and arm64)
@@ -2487,17 +2490,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
-        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || argv[i]->ty->kind == TY_COMPLEX))
-            arg_hfa_count[i] = arm64_hfa_count(argv[i]->ty, &arg_hfa_elem_size[i]);
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
         arg_hfa_count[i] = 0;
         arg_hfa_elem_size[i] = 0;
-        bool is_named = (i < named_count);
-        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION))
+        if (!arg_is_float[i] && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || argv[i]->ty->kind == TY_COMPLEX))
             arg_hfa_count[i] = arm64_hfa_count(argv[i]->ty, &arg_hfa_elem_size[i]);
+        bool is_named = (i < named_count);
         if (arg_is_float[i]) {
             // Long double (> 8 bytes): pass in q-register (SIMD), not d-register or stack
             if (arg_sizes[i] > 8) {
@@ -2747,6 +2748,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 }
             }
             arg_regs[i] = addr;
+        } else if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size <= 8) {
+            // Small struct passed by value in a GP register.
+            // gen() for ND_DEREF/ND_MEMBER returns the address, not the value.
+            int addr = gen_addr(argv[i]);
+            if (addr >= 0) {
+                int load_sz = argv[i]->ty->size <= 4 ? 4 : 8;
+                VReg val = alloc_reg();
+                if (load_sz == 8)
+                    arm64_ldr_uoff(cg_sec, 3, REG(val), REG(addr), 0);
+                else
+                    arm64_ldr_uoff(cg_sec, 2, REG(val), REG(addr), 0);
+                free_reg(addr);
+                arg_regs[i] = val;
+            } else {
+                arg_regs[i] = gen(argv[i]);
+            }
         } else
             arg_regs[i] = gen(argv[i]);
     }
@@ -4152,7 +4169,6 @@ static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
     }
 #endif
 }
-
 // `from->base`, e.g. _Complex char) to a TY_COMPLEX value at address `dst`
 // (integer base type `to->base`, e.g. _Complex int), sign- or
 // zero-extending (per from->base->is_unsigned) or truncating each
@@ -4583,8 +4599,8 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
             }
         }
         if (!found) {
-            warn_tok(tok, "unrecognized instruction mnemonic '%s'", mnem);
-            // skip rest of line and continue
+            // skip rest of line and continue (unknown mnemonic — let the
+            // assembler handle it, matching GCC's dg-do compile behavior)
             while (*p && *p != ';' && *p != '\n') p++;
             continue;
         }
@@ -5604,9 +5620,8 @@ static VReg gen_int128(Node *node) {
             return addr;
         }
         // Complex-to-complex cast: delegate to gen_addr which handles conversion
-        if (from && is_complex(from) && is_complex(to)) {
+        if (from && is_complex(from) && is_complex(to))
             return gen_addr(node);
-        }
         int val = gen(node->lhs);
         if (from && from->size < 8) {
             if (from->is_unsigned)
@@ -13238,7 +13253,7 @@ struct ObjFile *codegen(Program *prog) {
         {
             for (LVar *var = fn->params; var; var = var->param_next) {
                 int hfa_elem_size = 0;
-                int hfa_count = (!is_flonum(var->ty) && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION))
+                int hfa_count = (!is_flonum(var->ty) && (var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || var->ty->kind == TY_COMPLEX))
                     ? arm64_hfa_count(var->ty, &hfa_elem_size)
                     : 0;
                 if (hfa_count > 0 && fp_param + hfa_count <= 8) {
