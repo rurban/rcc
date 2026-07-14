@@ -4168,20 +4168,25 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         int ai = 0;
         ca[ai++] = (char *)rcc;
         ca[ai++] = (char *)rccflags;
-        // Parse dg-options from test file
-        if (content) {
-            char *dg = strstr(content, "dg-options");
-            if (dg) {
-                char *q1 = strchr(dg, '"');
-                if (q1) {
-                    char *q2 = strchr(q1 + 1, '"');
-                    if (q2) {
-                        int ol = (int)(q2 - q1 - 1);
-                        char *opts = strndup(q1 + 1, (size_t)ol);
-                        char *sv = NULL;
-                        for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
-                            ca[ai++] = tok;
+        // Parse dg-options and dg-additional-options from test file.
+        if (content && ai < 30) {
+            const char *patterns[] = {"dg-additional-options \"", "dg-options \"", NULL};
+            for (int pi = 0; patterns[pi] && ai < 30; pi++) {
+                char *pos = content;
+                char *dg;
+                while ((dg = strstr(pos, patterns[pi])) != NULL && ai < 30) {
+                    char *q1 = strchr(dg, '"');
+                    if (q1) {
+                        char *q2 = strchr(q1 + 1, '"');
+                        if (q2) {
+                            int ol = (int)(q2 - q1 - 1);
+                            char *opts = strndup(q1 + 1, (size_t)ol);
+                            char *sv = NULL;
+                            for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
+                                ca[ai++] = tok;
+                        }
                     }
+                    pos = dg + 1;
                 }
             }
         }
@@ -4408,20 +4413,27 @@ static void run_torture_test(const char *src, bool summary_only) {
     int ai = 0;
     ca[ai++] = (char *)rcc;
     ca[ai++] = (char *)rccflags;
-    // Parse dg-options from test file
-    if (content) {
-        char *dg = strstr(content, "dg-options");
-        if (dg) {
-            char *q1 = strchr(dg, '"');
-            if (q1) {
-                char *q2 = strchr(q1 + 1, '"');
-                if (q2) {
-                    int ol = (int)(q2 - q1 - 1);
-                    char *opts = strndup(q1 + 1, (size_t)ol);
-                    char *sv = NULL;
-                    for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
-                        ca[ai++] = tok;
+    // Parse dg-options and dg-additional-options from test file.
+    // Process dg-additional-options first (longer string) to avoid
+    // dg-options matching it as a substring.
+    if (content && ai < 30) {
+        const char *patterns[] = {"dg-additional-options \"", "dg-options \"", NULL};
+        for (int pi = 0; patterns[pi] && ai < 30; pi++) {
+            char *pos = content;
+            char *dg;
+            while ((dg = strstr(pos, patterns[pi])) != NULL && ai < 30) {
+                char *q1 = strchr(dg, '"');
+                if (q1) {
+                    char *q2 = strchr(q1 + 1, '"');
+                    if (q2) {
+                        int ol = (int)(q2 - q1 - 1);
+                        char *opts = strndup(q1 + 1, (size_t)ol);
+                        char *sv = NULL;
+                        for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
+                            ca[ai++] = tok;
+                    }
                 }
+                pos = dg + 1; // advance past match for multiple directives
             }
         }
     }
@@ -4681,9 +4693,9 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "darwin_cross"))
         max_fail = 1;
     else if (streq(platform, "mingw_cross"))
-        max_fail = 2;
+        max_fail = 0;
     else if (streq(platform, "mingw"))
-        max_fail = 2;
+        max_fail = 0;
     else if (streq(platform, "linux"))
         max_fail = 0;
     else
