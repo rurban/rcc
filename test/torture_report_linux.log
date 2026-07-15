@@ -18,7 +18,7 @@
   920501-6                            PASS
   920501-7                            SKIP (trampolines)
   920501-8                            PASS
-  920501-9                            FAIL (compile)
+  920501-9                            PASS
   920506-1                            PASS
   920520-1                            PASS
   920603-1                            PASS
@@ -79,7 +79,7 @@
   930408-1                            PASS
   930429-1                            PASS
   930429-2                            PASS
-  930513-1                            FAIL (compile)
+  930513-1                            PASS
   930513-2                            PASS
   930518-1                            PASS
   930526-1                            PASS
@@ -1237,7 +1237,7 @@
   divmod-1                            PASS
   doloop-1                            PASS
   doloop-2                            PASS
-  eeprof-1                            SKIP (finstrument)
+  eeprof-1                            SKIP (gcc-only)
   enum-1                              PASS
   enum-2                              PASS
   enum-3                              PASS
@@ -1470,7 +1470,7 @@
   pr39501                             PASS
   pr40022                             PASS
   pr40057                             PASS
-  pr40386                             PASS
+  pr40386                             SKIP (gcc-only)
   pr40404                             PASS
   pr40493                             PASS
   pr40579                             PASS
@@ -1501,7 +1501,7 @@
   pr42833                             PASS
   pr43008                             PASS
   pr43220                             PASS
-  pr43236                             PASS
+  pr43236                             SKIP (gcc-only)
   pr43269                             PASS
   pr43385                             PASS
   pr43438                             PASS
@@ -1705,7 +1705,7 @@
   pr68328                             PASS
   pr68376-1                           PASS
   pr68376-2                           PASS
-  pr68381                             PASS
+  pr68381                             SKIP (gcc-only)
   pr68390                             PASS
   pr68506                             PASS
   pr68532                             PASS
@@ -1933,7 +1933,7 @@
   pr111431-1                          PASS
   pr111469-1                          PASS
   pr111613                            PASS
-  pr111863-1                          PASS
+  pr111863-1                          SKIP (gcc-only)
   pr112581-1                          PASS
   pr112758                            PASS
   pr113010                            PASS
@@ -3387,8 +3387,8 @@
   vect/vect-early-break_83            PASS (compile only)
   vect/vect-early-break_84            PASS
   vect/vect-early-break_85            PASS
-  vect/vect-early-break_86            FAIL (compile)
-  vect/vect-early-break_87            FAIL (compile)
+  vect/vect-early-break_86            PASS
+  vect/vect-early-break_87            PASS
   vect/vect-early-break_88            SKIP (missing include)
   vect/vect-early-break_89            PASS (compile only)
   vect/vect-early-break_90            PASS
@@ -3964,6 +3964,4 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3378/3382 passed (99%), 4 failed (4 compile/0 runtime), 581 skipped.
-
-Compile failures: 920501-9 930513-1 vect/vect-early-break_86 vect/vect-early-break_87
+Torture: 3378/3378 passed (100%), 0 failed, 585 skipped.

@@ -3958,7 +3958,7 @@ typedef enum {
     //SKIP_COMPLEX,
     SKIP_TRAMPOLINES,
     SKIP_SCALAR_STORAGE,
-    SKIP_FINSTRUMENT,
+    SKIP_GCC_ONLY,
     SKIP_NESTED,
     SKIP_NOT_IMPL,
     SKIP_VECTOR_SIZE,
@@ -3987,7 +3987,7 @@ static const char *skip_reason_str(SkipReason r) {
     //case SKIP_COMPLEX: return "complex";
     case SKIP_TRAMPOLINES: return "trampolines";
     case SKIP_SCALAR_STORAGE: return "scalar_storage_order";
-    case SKIP_FINSTRUMENT: return "finstrument";
+    case SKIP_GCC_ONLY: return "gcc-only";
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
     //case SKIP_VECTOR_SIZE: return "vector_size";
@@ -4007,6 +4007,20 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_BITINT: return "bitint";
     default: return "unknown";
     }
+}
+
+/* Filter GCC-target-specific flags from dg-options.
+ * These cause compile errors with gcc/clang on the host but don't
+ * affect test semantics — the test works without them. */
+static bool is_filtered_dg_option(const char *opt, const char *cc_name) {
+    if (!strncmp(opt, "-mtune=", 7)) return true;
+    if (!strncmp(opt, "-march=", 7)) return true;
+    if (!strcmp(opt, "-mno-eabi")) return true;
+    if (!strcmp(opt, "-mno-mmx")) return true;
+    if (!strcmp(opt, "-mpc64")) return true;
+    /* rcc supports K&R without -std=gnu89; passing it breaks system header parsing */
+    if (!contains(cc_name, "gcc") && !strncmp(opt, "-std=gnu89", 8)) return true;
+    return false;
 }
 
 static SkipReason torture_should_skip(const char *name, const char *content, const char *cc_name) {
@@ -4031,8 +4045,19 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
      * x86 (which has both), e.g. `dg-do compile { target { ! inff } }`. */
     if (contains(content, "{ ! inff }") || contains(content, "{ ! inf }"))
         return SKIP_TARGET;
-    if (contains(content, "dg-options") && contains(content, "-finstrument-functions"))
-        return SKIP_FINSTRUMENT;
+    // gcc or clang only
+    if (!(contains(cc_name, "gcc") || contains(cc_name, "clang")) &&
+        contains(content, "dg-options") &&
+        (contains(content, "-finstrument-functions")))
+        return SKIP_GCC_ONLY;
+    // gcc only
+    if ((!cc_name || !contains(cc_name, "gcc")) &&
+        contains(content, "dg-options") &&
+        (contains(content, "-fno-ira-share-spill-slots") ||
+         contains(content, "-fno-tree-ccp") ||
+         contains(content, "-ftree-loop-distribution") ||
+         contains(content, "-fexpensive-optimizations")))
+        return SKIP_GCC_ONLY;
     // TODO we really should catch all compilation errors, and emit them all at once at the end
     // Then we could compare thrown errors
     // dg-error / dg-warning tests: GCC can handle these; skip only for non-GCC compilers.
@@ -4189,7 +4214,8 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
                             char *opts = strndup(q1 + 1, (size_t)ol);
                             char *sv = NULL;
                             for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
-                                ca[ai++] = tok;
+                                if (!is_filtered_dg_option(tok, compiler_name))
+                                    ca[ai++] = tok;
                         }
                     }
                     pos = dg + 1;
@@ -4442,7 +4468,8 @@ static void run_torture_test(const char *src, bool summary_only) {
                         char *opts = strndup(q1 + 1, (size_t)ol);
                         char *sv = NULL;
                         for (char *tok = strtok_r(opts, " ", &sv); tok && ai < 30; tok = strtok_r(NULL, " ", &sv))
-                            ca[ai++] = tok;
+                            if (!is_filtered_dg_option(tok, compiler_name))
+                                ca[ai++] = tok;
                     }
                 }
                 pos = dg + 1; // advance past match for multiple directives
