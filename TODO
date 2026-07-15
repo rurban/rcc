@@ -1,11 +1,17 @@
-- optimize branch/label handling to use local position vars instead of a
-  hash table/linked list entry search, when possible. See the `asml` branches.
+- optimize branch/label handling to use local position vars instead of
+  a hash table/linked list entry search, when possible. See the first
+  3 commits from the asml branch. but this is too complicated. a
+  local var is enough to hold a label position, which can be patched
+  in a branch insn withint the same block.
 - optimize arena_alloc: for the SIMD checks we enforce for each string a
   min-size of 16.
   we dont need that, only for the very end of a 4MB chunk. we can keep min-size 8.
-- add -O2 passes, like -finline and -funroll, but no need for SSA analysis.
+- add -O2 passes, like -finline and -funroll, but no need for SSA analysis (yet).
 - for the CTFE check, set more pure attributes to known library function calls,
   which are pure in the given arguments. observe the purity of calls in CTFE
-- optional QBE backend for -O2
+- optional QBE backend for -O2?
 - Missing C23 features (https://en.cppreference.com/c/compiler_support/23):
   _BitInt, decimal, interchange and extended float types, FENV_ACCESS.
+  But for larger codegen changes extract them into extra files.
+  vector support is already too much for codegen.c, and can be extracted into
+  an extra c file.

@@ -1395,7 +1395,7 @@ static size_t asm_jmp_label(SecBuf *s) {
 }
 
 // Emit B to a known target position (backward branch — no fixup needed)
-__attribute__((unused)) static size_t asm_b_back(SecBuf *s, size_t target_off) {
+static size_t asm_b_back(SecBuf *s, size_t target_off) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     arm64_b(s, 0);
@@ -1414,7 +1414,7 @@ __attribute__((unused)) static size_t asm_b_back(SecBuf *s, size_t target_off) {
 }
 
 // Emit B.cond to a known target position (backward — no fixup needed)
-__attribute__((unused)) static size_t asm_bcond_back(SecBuf *s, int cond, size_t target_off) {
+static size_t asm_bcond_back(SecBuf *s, int cond, size_t target_off) {
     size_t off = s->len;
 #ifdef ARCH_ARM64
     arm64_bcond(s, (Arm64Cond)cond, 0);
@@ -1430,6 +1430,33 @@ __attribute__((unused)) static size_t asm_bcond_back(SecBuf *s, int cond, size_t
 #endif
     asm_record(ASM_JCC, off, 1, -1, -1, -1, 0, 0, 0, NULL, cond, -1, false);
     return off;
+}
+
+// Patch a single forward branch instruction at instr_off to point to target_off.
+// type: 0=jmp (B), 1=jcc (B.cond)
+static void asm_patch_branch(SecBuf *s, size_t instr_off, size_t target_off, int type) {
+    if (instr_off == (size_t)-1) return; // no branch to patch
+#ifdef ARCH_ARM64
+    uint32_t insn = *(uint32_t *)(s->data + instr_off);
+    int64_t delta = (int64_t)((int64_t)target_off - (int64_t)instr_off);
+    if (type == 0) {
+        // B: 26-bit signed word offset in bits [25:0]
+        int64_t imm = delta / 4;
+        insn = (insn & ~0x03FFFFFFU) | (uint32_t)(imm & 0x03FFFFFFU);
+    } else {
+        // B.cond: 19-bit signed word offset in bits [23:5]
+        int64_t imm = delta / 4;
+        insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
+    }
+    secbuf_patch32le(s, instr_off, insn);
+#else
+    int32_t disp;
+    if (type == 0)
+        disp = (int32_t)(target_off - (instr_off + 5));
+    else
+        disp = (int32_t)(target_off - (instr_off + 6));
+    secbuf_patch32le(s, type == 0 ? instr_off + 1 : instr_off + 2, (uint32_t)disp);
+#endif
 }
 
 

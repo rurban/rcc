@@ -5132,29 +5132,56 @@ static VReg gen_addr(Node *node) {
     }
 }
 
-static void gen_cond_branch_inv(Node *cond, const char *label) {
+// Store a forward branch fixup. Uses fwd_off (direct patch) if non-NULL,
+// otherwise shared_label (hash table) if non-NULL,
+// otherwise auto-generates and resolves immediately.
+static void cg_add_fwd(size_t instr_off, int type, size_t *fwd_off, const char *shared_label) {
+    if (fwd_off) {
+        *fwd_off = instr_off;
+    } else if (shared_label) {
+        asm_fixup_add(cg_sec, instr_off, shared_label, type);
+    } else {
+        int c = ++rcc_label_count;
+        const char *lbl = format(".L.gcbi.%d", c);
+        asm_fixup_add(cg_sec, instr_off, lbl, type);
+        cg_def_label(lbl);
+    }
+}
+
+// Emit a conditional branch to label when the condition is FALSE (inverted sense).
+// If shared_label != NULL: all branches fix up to this label (via asm_fixup_add).
+// If shared_label == NULL:
+//   fwd_off != NULL → store single branch offset for direct patching via asm_patch_branch.
+//   fwd_off == NULL → auto-generate label and resolve via cg_def_label (hash table fallback).
+static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_label) {
     if (cond->kind == ND_LOGAND) {
-        gen_cond_branch_inv(cond->lhs, label);
-        gen_cond_branch_inv(cond->rhs, label);
+        // Two recursive calls share the same label.
+        // Only call cg_def_label when we own the label;
+        // if the caller provided shared_label, defer to the caller.
+        bool own_label = (shared_label == NULL);
+        if (own_label) {
+            int c = ++rcc_label_count;
+            shared_label = format(".L.gcbi.%d", c);
+        }
+        gen_cond_branch_inv(cond->lhs, NULL, shared_label);
+        gen_cond_branch_inv(cond->rhs, NULL, shared_label);
+        if (own_label)
+            cg_def_label(shared_label);
         return;
     }
     if (cond->kind == ND_LOGOR) {
-        int c = ++rcc_label_count;
-        const char *skip_label = format(".L.or_skip.%d", c);
         VReg lhs = gen(cond->lhs);
         int lhs_sz = (cond->lhs->ty && is_flonum(cond->lhs->ty)) ? 8 : cond->lhs->ty->size;
         asm_cmp_zero(cg_sec, lhs, lhs_sz); // cmp $0, rlhs
         free_reg(lhs);
 #ifdef ARCH_ARM64
-        size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-        asm_fixup_add(cg_sec, o, skip_label, 1); // fcmp d0, d1
+        size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne skip
 #else
-        size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-        asm_fixup_add(cg_sec, o, skip_label, 1); // fixup add for forward branch
+        size_t o = asm_jcc_label(cg_sec, X86_NE); // jne skip
 #endif
-        // If lhs was false, check rhs; if rhs is also false, branch to label
-        gen_cond_branch_inv(cond->rhs, label);
-        cg_def_label(skip_label); // b.eq %s
+        // If lhs was false, check rhs; if rhs is also false, branch to target
+        gen_cond_branch_inv(cond->rhs, fwd_off, shared_label);
+        asm_patch_branch(cg_sec, o, cg_sec->len, 1); // patch skip to here
         return;
     }
     if (cond->kind == ND_EQ || cond->kind == ND_NE || cond->kind == ND_LT || cond->kind == ND_LE) {
@@ -5164,11 +5191,11 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             asm_cmp_zero(cg_sec, r, 4); // cmpl $0, rr
             free_reg(r);
 #ifdef ARCH_ARM64
-            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
+            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
 #else
-            size_t o = asm_jcc_label(cg_sec, X86_E); // je label
+            size_t o = asm_jcc_label(cg_sec, X86_E); // je target
 #endif
-            asm_fixup_add(cg_sec, o, label, 1);
+            cg_add_fwd(o, 1, fwd_off, shared_label);
             return;
         }
         if (cond->lhs->ty && is_complex(cond->lhs->ty)) {
@@ -5177,17 +5204,16 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
 #ifdef ARCH_ARM64
             asm_cmp_zero(cg_sec, r, 4);
             {
-                size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
-                asm_fixup_add(cg_sec, o, label, 1);
+                size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
+                cg_add_fwd(o, 1, fwd_off, shared_label);
             }
 #else
             asm_cmp_zero(cg_sec, r, 4); // testl r, r
             {
-                size_t o = asm_jcc_label(cg_sec, X86_E); // je label
-                asm_fixup_add(cg_sec, o, label, 1);
+                size_t o = asm_jcc_label(cg_sec, X86_E); // je target
+                cg_add_fwd(o, 1, fwd_off, shared_label);
             }
 #endif
-            free_reg(r);
             return;
         }
         if (is_flonum(cond->lhs->ty)) {
@@ -5198,14 +5224,23 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
             asm_fcmp(cg_sec, 1); // fcmp d0, d1
             if (cond->kind == ND_EQ) {
+                // 2 branches to same target
+                const char *lbl = shared_label;
+                bool own_lbl = false;
+                if (!lbl) {
+                    int c = ++rcc_label_count;
+                    lbl = format(".L.gcbi.%d", c);
+                    own_lbl = true;
+                }
                 {
                     size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, ARM64_VS); // b.vs label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
+                if (own_lbl) cg_def_label(lbl);
             } else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
                 {
@@ -5213,30 +5248,39 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
                     asm_fixup_add(cg_sec, _cj, format(".L.fc.skip.%d", c), 1);
                 }
                 {
-                    size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
+                    cg_add_fwd(o, 1, fwd_off, shared_label);
                 }
                 cg_def_label(format(".L.fc.skip.%d", c));
             } else if (cond->kind == ND_LT) {
-                size_t o = asm_jcc_label(cg_sec, ARM64_PL); // b.pl label
-                asm_fixup_add(cg_sec, o, label, 1);
-            } else if (cond->kind == ND_LE) {
-                size_t o = asm_jcc_label(cg_sec, ARM64_HI); // b.hi label
-                asm_fixup_add(cg_sec, o, label, 1);
+                size_t o = asm_jcc_label(cg_sec, ARM64_PL); // b.pl target
+                cg_add_fwd(o, 1, fwd_off, shared_label);
+            } else {
+                size_t o = asm_jcc_label(cg_sec, ARM64_HI); // b.hi target
+                cg_add_fwd(o, 1, fwd_off, shared_label);
             }
 #else
             asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq X86_XMM0, r_lhs
             asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq X86_XMM1, r_rhs
-            asm_ucomisd(cg_sec); // je %s
+            asm_ucomisd(cg_sec); // ucomisd
             if (cond->kind == ND_EQ) {
+                // 2 branches to same target
+                const char *lbl = shared_label;
+                bool own_lbl = false;
+                if (!lbl) {
+                    int c = ++rcc_label_count;
+                    lbl = format(".L.gcbi.%d", c);
+                    own_lbl = true;
+                }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_NE); // jne label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
+                if (own_lbl) cg_def_label(lbl);
             } else if (cond->kind == ND_NE) {
                 int c = ++rcc_label_count;
                 {
@@ -5244,28 +5288,44 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
                     asm_fixup_add(cg_sec, o, format(".L.fc.skip.%d", c), 1);
                 }
                 {
-                    size_t o = asm_jcc_label(cg_sec, X86_E); // je label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    size_t o = asm_jcc_label(cg_sec, X86_E); // je target
+                    cg_add_fwd(o, 1, fwd_off, shared_label);
                 }
                 cg_def_label(format(".L.fc.skip.%d", c));
             } else if (cond->kind == ND_LT) {
+                const char *lbl = shared_label;
+                bool own_lbl = false;
+                if (!lbl) {
+                    int c = ++rcc_label_count;
+                    lbl = format(".L.gcbi.%d", c);
+                    own_lbl = true;
+                }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_AE); // jae label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
-            } else if (cond->kind == ND_LE) {
+                if (own_lbl) cg_def_label(lbl);
+            } else {
+                const char *lbl = shared_label;
+                bool own_lbl = false;
+                if (!lbl) {
+                    int c = ++rcc_label_count;
+                    lbl = format(".L.gcbi.%d", c);
+                    own_lbl = true;
+                }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_A); // ja label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
                 {
                     size_t o = asm_jcc_label(cg_sec, X86_P); // jp label
-                    asm_fixup_add(cg_sec, o, label, 1);
+                    asm_fixup_add(cg_sec, o, lbl, 1);
                 }
+                if (own_lbl) cg_def_label(lbl);
             }
 #endif
             free_reg(r_rhs);
@@ -5297,47 +5357,33 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         }
         free_reg(r_lhs);
 
-        (void)cond; // used in branch emission below
-#ifndef ARCH_ARM64
-        __attribute__((unused)) char *jmp = "";
-        if (cond->kind == ND_EQ)
-            jmp = "jne";
-        else if (cond->kind == ND_NE)
-            jmp = "je";
-        else if (cond->kind == ND_LT)
-            jmp = use_unsigned_cmp(cond) ? "jae" : "jge";
-        else if (cond->kind == ND_LE)
-            jmp = use_unsigned_cmp(cond) ? "ja" : "jg";
-#endif
-
-        // Emit conditional branch
 #ifdef ARCH_ARM64
         if (cond->kind == ND_EQ) {
-            size_t o = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         } else if (cond->kind == ND_NE) {
-            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         } else if (cond->kind == ND_LT) {
-            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HS : ARM64_GE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
-        } else if (cond->kind == ND_LE) {
-            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HI : ARM64_GT); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HS : ARM64_GE); // b.hs/b.ge target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
+        } else {
+            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? ARM64_HI : ARM64_GT); // b.hi/b.gt target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         }
 #else
         if (cond->kind == ND_EQ) {
-            size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-            asm_fixup_add(cg_sec, o, label, 1); // fixup add for forward branch
+            size_t o = asm_jcc_label(cg_sec, X86_NE); // jne target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         } else if (cond->kind == ND_NE) {
-            size_t o = asm_jcc_label(cg_sec, X86_E);
-            asm_fixup_add(cg_sec, o, label, 1);
+            size_t o = asm_jcc_label(cg_sec, X86_E); // je target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         } else if (cond->kind == ND_LT) {
-            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_AE : X86_GE);
-            asm_fixup_add(cg_sec, o, label, 1);
-        } else if (cond->kind == ND_LE) {
-            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_A : X86_G);
-            asm_fixup_add(cg_sec, o, label, 1);
+            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_AE : X86_GE); // jae/jge target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
+        } else {
+            size_t o = asm_jcc_label(cg_sec, use_unsigned_cmp(cond) ? X86_A : X86_G); // ja/jg target
+            cg_add_fwd(o, 1, fwd_off, shared_label);
         }
 #endif
         return;
@@ -5360,7 +5406,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
         }
         asm_cmp_zero(cg_sec, rt, 8);
         size_t cj = asm_jcc_label(cg_sec, ARM64_EQ);
-        asm_fixup_add(cg_sec, cj, label, 1);
+        cg_add_fwd(cj, 1, fwd_off, shared_label);
         free_reg(rt);
         free_reg(addr);
 #else
@@ -5370,7 +5416,7 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
             x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), base_sz));
         asm_cmp_zero(cg_sec, rt, 8);
         size_t cj = asm_jcc_label(cg_sec, X86_E);
-        asm_fixup_add(cg_sec, cj, label, 1);
+        cg_add_fwd(cj, 1, fwd_off, shared_label);
         free_reg(rt);
         free_reg(addr);
 #endif
@@ -5383,12 +5429,12 @@ static void gen_cond_branch_inv(Node *cond, const char *label) {
     asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, ARM64_EQ);
-    asm_fixup_add(cg_sec, cond_off, label, 1);
+    cg_add_fwd(cond_off, 1, fwd_off, shared_label);
 #else
     asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
     size_t cond_off = asm_jcc_label(cg_sec, X86_E);
-    asm_fixup_add(cg_sec, cond_off, label, 1);
+    cg_add_fwd(cond_off, 1, fwd_off, shared_label);
 #endif
 }
 
@@ -9454,92 +9500,81 @@ static VReg gen(Node *node) {
         }
         int c = ++rcc_label_count;
         const char *end_label = format(".L.end.%d", c);
-        const char *else_label = format(".L.else.%d", c);
-
+        size_t else_jmp = (size_t)-1;
+        size_t end_jmp = (size_t)-1;
         if (node->els) {
-            gen_cond_branch_inv(node->cond, else_label);
+            const char *else_label = format(".L.else.%d", c);
+            gen_cond_branch_inv(node->cond, &else_jmp, else_label);
             VReg r1 = gen(node->then);
             if (r1 != -1) free_reg(r1);
-#ifdef ARCH_ARM64
-            size_t if_jmp_off = asm_jmp_label(cg_sec); // b %s
-            asm_fixup_add(cg_sec, if_jmp_off, end_label, 0); // fixup add for forward branch
-#else
-            size_t if_jmp_off = asm_jmp_label(cg_sec); // %s:
-            asm_fixup_add(cg_sec, if_jmp_off, end_label, 0); // fixup add for forward branch
-#endif
-            cg_def_label(else_label); // %s:
+            end_jmp = asm_jmp_label(cg_sec); // jmp end
+            asm_patch_branch(cg_sec, else_jmp, cg_sec->len, 1); // else:
+            cg_def_label(else_label);
             VReg r2 = gen(node->els);
             if (r2 != -1) free_reg(r2);
-            cg_def_label(end_label); // b %s
+            asm_patch_branch(cg_sec, end_jmp, cg_sec->len, 0); // end:
+            cg_def_label(end_label);
         } else {
-            gen_cond_branch_inv(node->cond, end_label);
+            gen_cond_branch_inv(node->cond, &end_jmp, end_label);
             VReg r1 = gen(node->then);
             if (r1 != -1) free_reg(r1);
-            cg_def_label(end_label); // jmp %s
+            asm_patch_branch(cg_sec, end_jmp, cg_sec->len, 1); // end:
+            cg_def_label(end_label);
         }
         return -1;
     }
     case ND_FOR: {
         int c = ++rcc_label_count;
-        const char *begin_label = format(".L.begin.%d", c);
-        const char *end_label = format(".L.end.%d", c);
         const char *cont_label = format(".L.continue.%d", c);
+        const char *end_label = format(".L.end.%d", c);
 
         if (node->init) {
             VReg r = gen(node->init);
             if (r != -1) free_reg(r);
         }
+        size_t begin_pos = cg_sec->len; // begin label
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = c;
         ctrl_depth++;
-        cg_def_label(begin_label); // %s:
+        size_t end_jmp = (size_t)-1;
         if (node->cond) {
-            gen_cond_branch_inv(node->cond, end_label);
+            gen_cond_branch_inv(node->cond, &end_jmp, end_label);
         }
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_def_label(cont_label); // %s:
+        cg_def_label(cont_label); // continue label
         if (node->inc) {
             VReg r_inc = gen(node->inc);
             if (r_inc != -1) free_reg(r_inc);
         }
-#ifdef ARCH_ARM64
-        size_t for_jmp_off = asm_jmp_label(cg_sec); // b %s
-        asm_fixup_add(cg_sec, for_jmp_off, begin_label, 0); // fixup add for forward branch
-#else
-        size_t for_jmp_off = asm_jmp_label(cg_sec); // %s:
-        asm_fixup_add(cg_sec, for_jmp_off, begin_label, 0); // fixup add for forward branch
-#endif
-        cg_def_label(end_label); // .L.continue.%d:
+        asm_b_back(cg_sec, begin_pos); // b begin
+        asm_patch_branch(cg_sec, end_jmp, cg_sec->len, 1); // patch cond branch
+        cg_def_label(end_label); // end label (for break)
         ctrl_depth--;
         return -1;
     }
     case ND_DO: {
         int c = ++rcc_label_count;
-        const char *begin_label = format(".L.begin.%d", c);
-        const char *end_label = format(".L.end.%d", c);
         const char *cont_label = format(".L.continue.%d", c);
-        cg_def_label(begin_label); // cmp %s, #0
+        size_t begin_pos = cg_sec->len; // begin label
         break_stack[ctrl_depth] = c;
         continue_stack[ctrl_depth] = c;
         ctrl_depth++;
         VReg r_then = gen(node->then);
         if (r_then != -1) free_reg(r_then);
-        cg_def_label(cont_label); // b.ne .L.begin.%d
+        cg_def_label(cont_label); // continue:
         VReg r = gen(node->cond);
         int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
-        size_t do_j = asm_jcc_label(cg_sec, ARM64_NE); // jcc label
-        asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
+        asm_bcond_back(cg_sec, ARM64_NE, begin_pos); // b.ne begin
 #else
         asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
         free_reg(r);
-        size_t do_j = asm_jcc_label(cg_sec, X86_NE); // jcc label
-        asm_fixup_add(cg_sec, do_j, begin_label, 1); // fixup add for forward branch
+        asm_bcond_back(cg_sec, X86_NE, begin_pos); // jne begin
 #endif
-        cg_def_label(end_label); // jmp %s
+        cg_def_label(format(".L.end.%d", c)); // end:
         ctrl_depth--;
         return -1;
     }
