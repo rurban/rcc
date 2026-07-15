@@ -42,8 +42,7 @@ Linux:
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
-- **Compile-time performance**: RCC emits assembly to stdout then invokes GCC (`system()`) to assemble and link, which is ~2× slower than TCC's native internal assembler/linker. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Generated code quality is on par with TCC. A refactor to emit native assembly by ourself is in work, because that's 92% of the time spent.
-  CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel.
+- **Compile-time performance**: RCC invokes GCC (`system()`) to link, which is ~2× slower than TCC's native internal assembler/linker. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Faster branch patching and a native linker as in TCC is in works. Generated code quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel.
 
 rcc -O1 -time:
 
@@ -140,14 +139,21 @@ compiler and tests, it is much faster now.
     -O0                disable peephole optimizer
     -O1                enable CTFE optimizations
     -g                 emit DWARF line-number debug info
+    -std={c23,c17,c11,c99,c89,...}
+                       sets __STDC_VERSION__
     -W                 print diagnostic warnings (-Wshadow, stack spilling with -v)
     -Werror            error on all warnings (but not internal stack spill warnings)
+    -pedantic-errors   same
     -Wno-homoglypth    suppress homoglyph unicode identifier warnings
+    -Wunknown-warning-option
+                       for autoconf probes
     -Lpath             add linker path
     -lname             add lib
     -pthread           link with pthreads library
     -shared            create shared library
     -static            link statically
+    -rpath path        => -Wl,-rpath,path
+    -soname name       => -Wl,-soname,name
     -Wl,<opt>          pass option to linker
     -mms-bitfields     use MSVC bitfields (default on Windows)
     -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
@@ -156,6 +162,7 @@ compiler and tests, it is much faster now.
     -time              print timing for each compilation substep
     -v                 be more verbose
     -xc                treat input as C
+    -x none            reset language input
     -###               dry-run (print commands, don't execute)
     -dM                dump all macro definitions (use with -E)
     -fdump-ast         dump AST to stderr for debugging
@@ -166,28 +173,36 @@ compiler and tests, it is much faster now.
 
 ## Project Structure
 
-| File                | Description                                                                |
-| ------------------- | -------------------------------------------------------------------------- |
-| `src/main.c`        | Driver: CLI, assembler/linker invocation                                   |
-| `src/lexer.c`       | Tokenizer with number/string/char literal support                          |
-| `src/preprocess.c`  | C preprocessor (`#include`, `#define`, `#if`, macros)                      |
-| `src/parser.c`      | Recursive-descent parser → AST                                             |
-| `src/type.c`        | Type system (primitives, pointers, arrays, structs, functions)             |
-| `src/codegen.c`     | x86-64/ARM64 code generator with register allocator and peephole optimizer |
-| `src/opt.c`         | AST-level optimizer and CTFE interpreter                                   |
-| `src/alloc.c`       | Arena memory allocator                                                     |
-| `src/unicode.{c,h}` | libu8ident unicode identifier checks                                       |
-| `src/rcc.h`         | Shared data structures and declarations                                    |
-| `include/`          | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)             |
-| `bench/`            | Benchmark suite and runner script                                          |
-| `test/`             | Test programs                                                              |
+| File                  | Description                                                                 |
+| --------------------- | --------------------------------------------------------------------------- |
+| `src/main.c`          | Driver: CLI, assembler/linker invocation                                    |
+| `src/lexer.c`         | Tokenizer with number/string/char literal support                           |
+| `src/preprocess.c`    | C preprocessor (`#include`, `#define`, `#if`, macros)                       |
+| `src/parser.c`        | Recursive-descent parser → AST                                              |
+| `src/type.c`          | Type system (primitives, pointers, arrays, structs, functions)              |
+| `src/codegen.c`       | x86-64/ARM64 code generator with register allocator and peephole optimizer  |
+| `src/opt.c`           | AST-level optimizer and CTFE interpreter                                    |
+| `src/alloc.c`         | Arena memory allocator                                                      |
+| `src/unicode.{c,h}`   | libu8ident unicode identifier checks                                        |
+| `src/rcc.h`           | Shared data structures and declarations                                     |
+| `src/asm.{c,h}`       | Built-in assembler: parse generated `.s` text → `ObjFile` → ELF/Mach-O/COFF |
+| `src/codegen_asm.h`   | Codegen ASM wrappers — emit assembled bytes directly via encoder functions  |
+| `src/x86_enc.{c,h}`   | x86-64 instruction encoder (ModR/M, REX, VEX, SSE/AVX)                      |
+| `src/arm64_enc.{c,h}` | ARM64 / AArch64 instruction encoder                                         |
+| `src/obj.{c,h}`       | Object file representation: sections, symbols, relocations, SecBuf          |
+| `src/elf_write.c`     | ELF object file writer                                                      |
+| `src/macho_write.c`   | Mach-O object file writer                                                   |
+| `src/coff_write.c`    | COFF object file writer                                                     |
+| `include/`            | Minimal C standard library headers (`stdio.h`, `math.h`, etc.)              |
+| `bench/`              | Benchmark suite and runner script                                           |
+| `test/`               | Test programs                                                               |
 
 ## Unix fork
 
 The original windows repo is now at https://github.com/DocDamage/realtime-c-compiler with
 [those](tcc_test_report_mingw1.1.md) test results (61/129 passed tcc tests), and [those](https://github.com/rurban/rcc/blob/old-mingw/bench/bench_report_mingw.md) benchmarks. Tested in the `old-mingw` branch via github actions.
 
-This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 3610/3610 GCC torture tests passed on Linux, Windows and macOS (100%). It passes much more tests than gcc, clang and all other known C compilers.
+This fork passes all tests for all architectures (x86_64 on linux and windows, aarch64 on macos) on all our testsuites. 3610/3610 GCC torture tests passed on Linux, Windows and macOS (100%). It passes much more tests than clang, gcc and all other known C compilers.
 
 ## Test Results
 
