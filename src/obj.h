@@ -170,6 +170,12 @@ struct ObjFile {
     int sym_count;
     int sym_cap;
 
+    // Symbol name hash table for fast lookups (FNV-1a, chaining)
+    struct SymHashNode {
+        int sym_idx;
+        struct SymHashNode *next;
+    } *sym_htab[4096];
+
     ObjReloc *text_relocs;
     int text_reloc_count;
     int text_reloc_cap;

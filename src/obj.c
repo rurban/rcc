@@ -148,6 +148,14 @@ void objfile_free(ObjFile *obj) {
     free(obj->data_tls_relocs);
     free(obj->thread_vars_relocs);
     free(obj->unwind);
+    for (int i = 0; i < 4096; i++) {
+        struct SymHashNode *n = obj->sym_htab[i];
+        while (n) {
+            struct SymHashNode *next = n->next;
+            free(n);
+            n = next;
+        }
+    }
     memset(obj, 0, sizeof(*obj));
 }
 
@@ -168,18 +176,24 @@ UnwindEntry *objfile_add_unwind(ObjFile *obj) {
 
 int objfile_add_sym(ObjFile *obj, const char *name, int section,
                     uint64_t offset, uint64_t size, SymBind bind, SymType type) {
-    // Check for existing symbol with same name
-    for (int i = 0; i < obj->sym_count; i++) {
-        if (strcmp(obj->syms[i].name, name) == 0) {
+    // Fast path: hash table lookup
+    uint32_t h = 2166136261u;
+    for (const char *s = name; *s; s++) {
+        h ^= (uint8_t)*s;
+        h *= 16777619;
+    }
+    h &= 4095;
+    for (struct SymHashNode *n = obj->sym_htab[h]; n; n = n->next) {
+        if (strcmp(obj->syms[n->sym_idx].name, name) == 0) {
             // Update to defined version if previously undefined
-            if (obj->syms[i].section == SEC_UNDEF && section != SEC_UNDEF) {
-                obj->syms[i].section = section;
-                obj->syms[i].offset = offset;
-                obj->syms[i].size = size;
-                obj->syms[i].bind = bind;
-                obj->syms[i].type = type;
+            if (obj->syms[n->sym_idx].section == SEC_UNDEF && section != SEC_UNDEF) {
+                obj->syms[n->sym_idx].section = section;
+                obj->syms[n->sym_idx].offset = offset;
+                obj->syms[n->sym_idx].size = size;
+                obj->syms[n->sym_idx].bind = bind;
+                obj->syms[n->sym_idx].type = type;
             }
-            return i;
+            return n->sym_idx;
         }
     }
     if (obj->sym_count == obj->sym_cap) {
@@ -197,13 +211,24 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     obj->syms[idx].size = size;
     obj->syms[idx].bind = bind;
     obj->syms[idx].type = type;
+    // Insert into hash table
+    struct SymHashNode *node = malloc(sizeof(struct SymHashNode));
+    node->sym_idx = idx;
+    node->next = obj->sym_htab[h];
+    obj->sym_htab[h] = node;
     return idx;
 }
 
 int objfile_find_sym(ObjFile *obj, const char *name) {
-    for (int i = 0; i < obj->sym_count; i++)
-        if (strcmp(obj->syms[i].name, name) == 0)
-            return i;
+    uint32_t h = 2166136261u;
+    for (const char *s = name; *s; s++) {
+        h ^= (uint8_t)*s;
+        h *= 16777619;
+    }
+    h &= 4095;
+    for (struct SymHashNode *n = obj->sym_htab[h]; n; n = n->next)
+        if (strcmp(obj->syms[n->sym_idx].name, name) == 0)
+            return n->sym_idx;
     return -1;
 }
 
