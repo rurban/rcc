@@ -1390,6 +1390,23 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         tok = tok->next;
                     continue;
                 }
+                if (equalc(tok, "pure") || equalc(tok, "__pure__")) {
+                    if (attr)
+                        attr->is_reproducible = true;
+                    tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "const") || equalc(tok, "__const__")) {
+                    if (attr)
+                        attr->is_unsequenced = true;
+                    tok = tok->next;
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
 
                 if (equalc(tok, "vector_size") || equalc(tok, "__vector_size__")) {
                     tok = tok->next;

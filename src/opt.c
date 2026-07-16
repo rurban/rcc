@@ -1,11 +1,124 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "rcc.h"
 #include <string.h>
+#include <ctype.h>
+#include <limits.h>
+#include <ctype.h>
 
 #define CF_NEXT 0
 #define CF_RETURN 1
 
-static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, bool *success);
+// Known pure/const library functions that can be folded at compile time.
+// "const" = result depends only on args, no side effects, no global state.
+// "pure"  = no side effects (may read global state, e.g. errno).
+typedef enum { PF_CONST,
+               PF_PURE } PureKind;
+
+typedef struct PureFn PureFn;
+struct PureFn {
+    const char *name;
+    PureKind kind;
+    // Evaluator: returns the folded value, or LONG_MIN if can't fold.
+    // args[0..nargs-1] are the integer argument values.
+    // str_args[0..nargs-1] are the string argument pointers (NULL if not a string).
+    long (*eval)(int *args, char **str_args, int nargs);
+};
+
+static long eval_abs(int *args, char **str_args, int nargs) {
+    (void)str_args;
+    return nargs >= 1 ? (args[0] < 0 ? -(long)args[0] : (long)args[0]) : LONG_MIN;
+}
+
+static long eval_strlen(int *args, char **str_args, int nargs) {
+    (void)args;
+    if (nargs >= 1 && str_args && str_args[0])
+        return (long)strlen(str_args[0]);
+    return LONG_MIN;
+}
+
+static long eval_strcmp(int *args, char **str_args, int nargs) {
+    (void)args;
+    if (nargs >= 2 && str_args && str_args[0] && str_args[1])
+        return (long)strcmp(str_args[0], str_args[1]);
+    return LONG_MIN;
+}
+
+static long eval_isdigit(int *args, char **str_args, int nargs) {
+    (void)str_args;
+    return nargs >= 1 ? (long)!!isdigit(args[0] & 0xff) : LONG_MIN;
+}
+
+static long eval_toupper(int *args, char **str_args, int nargs) {
+    (void)str_args;
+    return nargs >= 1 ? (long)toupper(args[0] & 0xff) : LONG_MIN;
+}
+
+static const PureFn pure_fns[] = {
+    {"abs", PF_CONST, eval_abs},
+    {"labs", PF_CONST, eval_abs},
+    {"llabs", PF_CONST, eval_abs},
+    {"strlen", PF_PURE, eval_strlen},
+    {"strcmp", PF_PURE, eval_strcmp},
+    {"isdigit", PF_PURE, eval_isdigit},
+    {"toupper", PF_PURE, eval_toupper},
+    {NULL, 0, NULL},
+};
+
+// Check if a function call is pure/const. First checks C23
+// [[unsequenced]] / [[reproducible]] attributes on the global
+// symbol, then falls back to the known-pure table.
+static PureKind fn_purity(const char *name) {
+    LVar *g = find_global_name((char *)name);
+    if (g && g->is_function) {
+        if (g->is_unsequenced) return PF_CONST;
+        if (g->is_reproducible) return PF_PURE;
+    }
+    for (const PureFn *p = pure_fns; p->name; p++)
+        if (strcmp(p->name, name) == 0)
+            return p->kind;
+    return -1; // not pure
+}
+
+// Try to fold a call to a known pure function with constant args.
+// Returns true if folded, storing result in *result.
+static bool try_fold_pure(const char *name, Node *args, long *result) {
+    int iargs[10];
+    char *strs[10];
+    int nargs = 0;
+    bool all_const = true;
+    for (Node *arg = args; arg; arg = arg->next) {
+        if (nargs >= 10) return false;
+        strs[nargs] = NULL;
+        if (arg->kind == ND_NUM) {
+            iargs[nargs] = (int)arg->val;
+        } else if (arg->kind == ND_NEG && arg->lhs && arg->lhs->kind == ND_NUM) {
+            iargs[nargs] = (int)-(arg->lhs->val);
+        } else if (arg->kind == ND_STR && arg->str) {
+            iargs[nargs] = 0;
+            strs[nargs] = arg->str;
+        } else {
+            all_const = false;
+            break;
+        }
+        nargs++;
+    }
+    if (!all_const) return false;
+
+    // Check known-pure table and C23 purity attributes
+    if (fn_purity(name) >= 0) {
+        for (const PureFn *p = pure_fns; p->name; p++) {
+            if (strcmp(p->name, name) == 0) {
+                long v = p->eval(iargs, strs, nargs);
+                if (v != LONG_MIN) {
+                    *result = v;
+                    return true;
+                }
+                break;
+            }
+        }
+    }
+    return false;
+}
 
 static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, bool *success) {
     if (!node || !*success) return 0;
@@ -198,16 +311,39 @@ static Node *optimize_node(Program *prog, Node *node) {
         }
     }
 
-    if (node->kind == ND_FUNCALL && node->funcname) {
+    if (node->kind == ND_FUNCALL) {
+        // Resolve function name from funcname or lhs->var for folding
+        const char *fname = node->funcname;
+        if (!fname && node->lhs && node->lhs->kind == ND_LVAR && node->lhs->var)
+            fname = node->lhs->var->name;
+
+        // First: try folding via known pure-function table (strlen, abs, etc.)
+        if (fname && !has_addr_arg(node)) {
+            long fold_val;
+            if (try_fold_pure(fname, node->args, &fold_val)) {
+                Node *fold = arena_alloc(sizeof(Node));
+                fold->kind = ND_NUM;
+                fold->val = fold_val;
+                fold->ty = node->ty;
+                return fold;
+            }
+        }
+
+        // Second: CTFE for user-defined functions with const args
+        if (!node->funcname) return node;
         bool all_const = true;
         int args[10];
         int nargs = 0;
         for (Node *arg = node->args; arg; arg = arg->next) {
-            if (arg->kind != ND_NUM) {
+            if (arg->kind == ND_NUM)
+                args[nargs] = (int)arg->val;
+            else if (arg->kind == ND_STR && arg->str)
+                args[nargs] = arg->str_id;
+            else {
                 all_const = false;
                 break;
             }
-            if (nargs < 10) args[nargs++] = arg->val;
+            if (nargs < 10) nargs++;
         }
         if (all_const && !has_addr_arg(node) && node->funcname != bi_s_printf) {
             Function *target = NULL;
@@ -219,7 +355,7 @@ static Node *optimize_node(Program *prog, Node *node) {
             }
             if (target && target->body && !has_cleanup_local(target)) {
                 bool success = true;
-                int env[256] = {0}; // simple addressing
+                int env[256] = {0};
                 LVar *param = target->params;
                 for (int i = 0; i < nargs; i++) {
                     if (param) {
@@ -237,7 +373,7 @@ static Node *optimize_node(Program *prog, Node *node) {
                     Node *fold = arena_alloc(sizeof(Node));
                     fold->kind = ND_NUM;
                     fold->val = result;
-                    fold->ty = node->ty; // assume integer
+                    fold->ty = node->ty;
                     return fold;
                 }
             }
