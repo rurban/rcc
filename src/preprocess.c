@@ -109,6 +109,14 @@ typedef struct {
 // (they call arena_alloc directly and run with this flag clear).
 static bool pp_in_expand = false;
 
+// Set by expand_text when it leaves a function-like invocation unexpanded
+// because its closing ')' was not yet in view (parse_macro_args returned -1).
+// expand_line uses this to decide whether a fixpoint rescan can make further
+// progress: expand_text already iterates to an internal textual fixpoint, so
+// without a deferral a second pass provably reproduces identical output and
+// can be skipped.
+static bool pp_saw_deferred = false;
+
 static Macro *macros;
 static OnceFile *once_files;
 static int pp_counter;
@@ -748,9 +756,17 @@ static char *expand_line(char *text, char *filename, unsigned line_no) {
     pp_in_expand = true; // keep the final strip_bluepaint copy in scratch too
     char *cur = text;
     for (int i = 0; i < 8; i++) {
+        pp_saw_deferred = false;
         char *next = expand_text(cur, filename, line_no, 0);
-        if (strcmp(next, cur) == 0)
+        // expand_text already ran to an internal fixpoint. Another pass can
+        // only progress if a function-like invocation was deferred (closing
+        // ')' not yet in view) and this pass actually changed the text. The
+        // deferred check short-circuits, so the common no-macro-across-lines
+        // path pays no extra strcmp and runs expand_text exactly once.
+        if (!pp_saw_deferred || strcmp(next, cur) == 0) {
+            cur = next;
             break;
+        }
         cur = next;
     }
     char *r = strip_bluepaint(cur);
@@ -1215,6 +1231,7 @@ static char *expand_text_inner(char *text, char *filename, unsigned line_no, int
             if (argc < 0) {
                 // Closing paren not in view — leave the name for the
                 // top-level fixpoint rescan.
+                pp_saw_deferred = true;
                 sb_puts(&sb, name);
                 continue;
             }
