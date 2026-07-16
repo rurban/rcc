@@ -673,6 +673,8 @@ int main(int argc, char **argv) {
 
         if (opt_dryrun) {
             puts(cmd);
+            free(libs);
+            free(cmd);
             return 0;
         }
         if (!status) {
@@ -702,6 +704,8 @@ int main(int argc, char **argv) {
         // Cleanup temp files
         for (OutPath *p = out_paths; p; p = p->next)
             remove(p->path);
+        free(libs);
+        free(cmd);
 
         return status ? 1 : 0;
     }

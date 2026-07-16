@@ -17,24 +17,27 @@ struct Chunk {
 static Chunk *current_chunk;
 
 void *arena_alloc(size_t size) {
-    // Align to 16 bytes: satisfies struct padding and guarantees SIMD
-    // loads (SSE2/NEON 16-byte reads in u8ident_check_ident_align16) never read
-    // past the end of a chunk into unmapped memory.
-    size = (size + 15) & ~15;
+    // Align to 8 bytes normally; only enforce 16-byte alignment at the
+    // very end of a chunk, where a SIMD load (SSE2/NEON 16-byte reads
+    // in u8ident_check_ident_align16) could read past unmapped memory.
+    size_t aligned = (size + 7) & ~7;
 
-    if (!current_chunk || current_chunk->used + size > current_chunk->size) {
+    if (!current_chunk || current_chunk->used + aligned > current_chunk->size) {
         size_t chunk_size = 4096 * 1024; // 4MB chunks
-        if (size > chunk_size) {
-            chunk_size = size;
+        if (aligned > chunk_size) {
+            chunk_size = aligned;
         }
         Chunk *chunk = calloc(1, sizeof(Chunk) + chunk_size);
         chunk->next = current_chunk;
         chunk->size = chunk_size;
         current_chunk = chunk;
+    } else if (current_chunk->used + aligned + 15 >= current_chunk->size) {
+        // Near chunk end — bump to 16 to keep SIMD loads in bounds
+        aligned = (size + 15) & ~15;
     }
 
     void *ptr = current_chunk->data + current_chunk->used;
-    current_chunk->used += size;
+    current_chunk->used += aligned;
     return ptr;
 }
 

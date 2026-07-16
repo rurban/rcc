@@ -53,7 +53,7 @@ inline
 static unsigned int
 hash (const char *str, size_t len)
 {
-  static const unsigned short asso_values[] =
+  static const unsigned short asso_values[256] =
     {
       514, 514, 514, 514, 514, 514, 514, 514, 514, 514,
       514, 514, 514, 514, 514, 514, 514, 514, 514, 514,
