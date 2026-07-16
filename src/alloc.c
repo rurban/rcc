@@ -41,6 +41,58 @@ void *arena_alloc(size_t size) {
     return ptr;
 }
 
+//
+// Scratch Arena (resettable)
+//
+// Transient allocations made during macro expansion go here instead of the
+// permanent arena above. scratch_reset() rewinds every chunk to empty and
+// reuses them, so peak memory tracks the largest single expanded line rather
+// than the sum of every expansion in the translation unit. Never store here
+// anything that must outlive the current preprocessed source line.
+static Chunk *scratch_head; // oldest chunk; retained across resets for reuse
+static Chunk *scratch_cur; // chunk currently being filled
+
+void *scratch_alloc(size_t size) {
+    size_t aligned = (size + 7) & ~7;
+
+    // Reuse an already-allocated chunk (from a previous line) if it has room,
+    // otherwise append a fresh one at the tail.
+    while (scratch_cur && scratch_cur->used + aligned > scratch_cur->size)
+        scratch_cur = scratch_cur->next;
+
+    if (!scratch_cur) {
+        size_t chunk_size = 4096 * 1024; // 4MB chunks
+        if (aligned > chunk_size)
+            chunk_size = aligned;
+        Chunk *chunk = calloc(1, sizeof(Chunk) + chunk_size);
+        chunk->size = chunk_size;
+        chunk->used = 0;
+        chunk->next = NULL;
+        if (!scratch_head) {
+            scratch_head = chunk;
+        } else {
+            Chunk *tail = scratch_head;
+            while (tail->next)
+                tail = tail->next;
+            tail->next = chunk;
+        }
+        scratch_cur = chunk;
+    } else if (scratch_cur->used + aligned + 15 >= scratch_cur->size) {
+        // Near chunk end — bump to 16 to keep SIMD loads in bounds
+        aligned = (size + 15) & ~15;
+    }
+
+    void *ptr = scratch_cur->data + scratch_cur->used;
+    scratch_cur->used += aligned;
+    return ptr;
+}
+
+void scratch_reset(void) {
+    for (Chunk *c = scratch_head; c; c = c->next)
+        c->used = 0;
+    scratch_cur = scratch_head;
+}
+
 char *format(char *fmt, ...) {
     char buf[2048];
     va_list ap;

@@ -102,6 +102,13 @@ typedef struct {
     int cap;
 } StrBuf;
 
+// True while inside macro expansion (expand_text and its callees). When set,
+// pp_strndup / StrBuf growth allocate from the resettable scratch arena so the
+// transient strings are reclaimed per source line instead of leaking into the
+// permanent arena. str_intern and the persistent output buffer are unaffected
+// (they call arena_alloc directly and run with this flag clear).
+static bool pp_in_expand = false;
+
 static Macro *macros;
 static OnceFile *once_files;
 static int pp_counter;
@@ -206,14 +213,14 @@ static bool pp_is_digit_sep(const char *start, const char *p) {
 }
 
 static char *pp_strndup(char *p, int len) {
-    char *s = arena_alloc(len + 1);
+    char *s = pp_in_expand ? scratch_alloc(len + 1) : arena_alloc(len + 1);
     memcpy(s, p, len);
     s[len] = '\0';
     return s;
 }
 
 static void sb_init(StrBuf *sb, int cap) {
-    sb->buf = arena_alloc(cap);
+    sb->buf = pp_in_expand ? scratch_alloc(cap) : arena_alloc(cap);
     sb->len = 0;
     sb->cap = cap;
     sb->buf[0] = '\0';
@@ -227,7 +234,7 @@ static void sb_reserve(StrBuf *sb, int needed) {
     while (new_cap < needed)
         new_cap *= 2;
 
-    char *new_buf = arena_alloc(new_cap);
+    char *new_buf = pp_in_expand ? scratch_alloc(new_cap) : arena_alloc(new_cap);
     memcpy(new_buf, sb->buf, sb->len + 1);
     sb->buf = new_buf;
     sb->cap = new_cap;
@@ -737,6 +744,8 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
 // macro pasted/expanded to `f (` with the args in following text) still gets
 // expanded. Blue paint persists across iterations and is stripped once here.
 static char *expand_line(char *text, char *filename, unsigned line_no) {
+    bool save = pp_in_expand;
+    pp_in_expand = true; // keep the final strip_bluepaint copy in scratch too
     char *cur = text;
     for (int i = 0; i < 8; i++) {
         char *next = expand_text(cur, filename, line_no, 0);
@@ -744,7 +753,9 @@ static char *expand_line(char *text, char *filename, unsigned line_no) {
             break;
         cur = next;
     }
-    return strip_bluepaint(cur);
+    char *r = strip_bluepaint(cur);
+    pp_in_expand = save;
+    return r;
 }
 
 static int find_param_index(Macro *m, char *name) {
@@ -1057,7 +1068,20 @@ static int parse_macro_args(char *p, char **args, int max_args, char **end_out) 
     return -1;
 }
 
+static char *expand_text_inner(char *text, char *filename, unsigned line_no, int depth);
+
+// Wrapper: mark the expansion region so transient allocations use the scratch
+// arena. Nested calls save/restore, so the flag clears only when the outermost
+// expansion returns; by then its result has been read into the caller's buffer.
 static char *expand_text(char *text, char *filename, unsigned line_no, int depth) {
+    bool save = pp_in_expand;
+    pp_in_expand = true;
+    char *r = expand_text_inner(text, filename, line_no, depth);
+    pp_in_expand = save;
+    return r;
+}
+
+static char *expand_text_inner(char *text, char *filename, unsigned line_no, int depth) {
     if (depth > 20)
         return text;
 
@@ -1237,7 +1261,6 @@ static char *expand_text(char *text, char *filename, unsigned line_no, int depth
 
     if (strcmp(sb.buf, text) != 0)
         return expand_text(sb.buf, filename, line_no, depth + 1);
-    return sb.buf;
     return sb.buf;
 }
 
@@ -1873,6 +1896,11 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
     int acc_quote = 0;
 
     for (char *p = input; *p;) {
+        // Reclaim the previous line's expansion scratch. Safe: every expand_line
+        // result is copied into `out` (permanent arena) before the next iteration,
+        // and #include recursion returns a permanent-arena buffer too.
+        scratch_reset();
+
         char *line = p;
         while (*p && *p != '\n')
             p++;

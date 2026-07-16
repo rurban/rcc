@@ -18,27 +18,27 @@ Windows:
 
 | Compiler   | Execute (ms) | Compile (ms) | Total (ms) |
 | ---------- | -----------: | -----------: | ---------: |
-| RCC        |         1009 |          514 |       1523 |
-| TCC 0.9.27 |         1005 |          431 |       1436 |
-| GCC -O0    |         3012 |          417 |       3429 |
-| GCC -O2    |         1002 |          115 |       1117 |
+| RCC        |         1201 |          472 |       1673 |
+| TCC 0.9.27 |         1194 |          385 |       1579 |
+| GCC -O0    |         1191 |          362 |       1553 |
+| GCC -O2    |         1192 |           91 |       1283 |
+| CLANG -O2  |         1196 |          145 |       1341 |
 
 Linux:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           54 |          622 |        676 |
-| RCC -O1   |           57 |          586 |        643 |
-| TCC       |       **10** |          566 |    **576** |
-| SLIMCC    |           52 |          630 |        682 |
-| KEFIR     |          189 |          673 |        862 |
-| KEFIR -O1 |          232 |      **499** |        731 |
-| CCC       |           38 |          593 |        631 |
-| CCC -O2   |           39 |          577 |        616 |
-| GCC -O0   |           73 |          576 |        649 |
-| GCC -O2   |          195 |          212 |        407 |
-| Clang -O0 |          108 |          636 |        744 |
-| Clang -O2 |          154 |          230 |        384 |
+| RCC       |           41 |          628 |        669 |
+| RCC -O1   |           40 |          614 |        654 |
+| TCC       |        **7** |          573 |    **580** |
+| SLIMCC    |           51 |          630 |        681 |
+| KEFIR     |          237 |          674 |        911 |
+| KEFIR -O1 |          208 |      **504** |        712 |
+| CCC       |           63 |          622 |        685 |
+| GCC -O0   |           72 |          585 |        657 |
+| GCC -O2   |          215 |          233 |        448 |
+| Clang -O0 |          130 |          677 |        807 |
+| Clang -O2 |          150 |          233 |        383 |
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
@@ -46,13 +46,13 @@ Linux:
 
 rcc -O1 -time:
 
-    preprocess  bench.c:    495 us
-    lex         bench.c:    156 us
-    parse       bench.c:    292 us
-    typecheck   bench.c:      6 us
-    opt(CTFE)   bench.c:     27 us
-    codegen     bench.c:   1108 us
-    link        bench_o1: 41045 us
+preprocess bench.c: 4609 us
+lex bench.c: 412 us
+parse bench.c: 411 us
+typecheck bench.c: 8 us
+opt(CTFE) bench.c: 17 us
+codegen bench.c: 521 us
+link bench_o1: 29332 us
 
 ## Key Features
 

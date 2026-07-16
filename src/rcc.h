@@ -75,6 +75,8 @@ extern char *current_debug_filename;
 
 // Allocator / Utils
 void *arena_alloc(size_t size);
+void *scratch_alloc(size_t size); // resettable arena for transient PP expansion strings
+void scratch_reset(void); // rewind scratch arena (all prior scratch pointers die)
 char *format(char *fmt, ...);
 char *str_intern(const char *start, int len);
 void str_intern_resize(size_t src_bytes); // call after read_file(), before preprocess()
