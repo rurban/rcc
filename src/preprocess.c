@@ -45,13 +45,20 @@ static char *kw_has_c_attribute;
 static char *kw_va_args;
 static char *kw_va_opt;
 
+// Hash an interned name by its pointer, not its bytes.
+//
+// Every Macro name goes through str_intern(), and the table already compares
+// identity with `m->name == iname` rather than strcmp, so pointer-keying adds
+// no assumption the bucket walk did not already make. Walking the string here
+// re-hashed bytes str_intern() had just hashed, once per identifier
+// occurrence in the translation unit.
+//
+// Callers MUST pass a str_intern()ed pointer; a non-interned name with equal
+// bytes hashes to a different bucket and would not be found.
 static uint32_t macro_hash(const char *name) {
-    uint32_t h = 2166136261u;
-    for (; *name; name++) {
-        h ^= (uint8_t)*name;
-        h *= 16777619;
-    }
-    return h & (MACRO_HT_SIZE - 1);
+    uint64_t v = (uint64_t)(uintptr_t)name;
+    v *= 0x9E3779B97F4A7C15ull; // fibonacci mix; interned ptrs are 8-byte aligned
+    return (uint32_t)(v >> 45) & (MACRO_HT_SIZE - 1);
 }
 
 static void macro_ht_add(Macro *m) {
