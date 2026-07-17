@@ -76,11 +76,44 @@ else
 	REPORT="bench/bench_report.md"
 fi
 
+# The gortex code-index daemon reindexes on every source edit and can sit at
+# ~35% CPU, which both slows the benchmark and wrecks its repeatability
+# (observed wall-clock spread: 47% with it running vs 6% with it paused).
+# SIGSTOP/SIGCONT rather than stop/start: pausing keeps the warm index, so a
+# bench run does not cost a full re-warm afterwards.
+GORTEX_PIDS=""
+
+pause_gortex() {
+	command -v pgrep >/dev/null 2>&1 || return 0
+	GORTEX_PIDS="$(pgrep -x gortex 2>/dev/null || true)"
+	[ -n "$GORTEX_PIDS" ] || return 0
+	# shellcheck disable=SC2086
+	kill -STOP $GORTEX_PIDS 2>/dev/null || true
+	printf "Paused gortex daemon while benchmarking (pid: %s)\n" "$(echo "$GORTEX_PIDS" | tr '\n' ' ')"
+}
+
+resume_gortex() {
+	[ -n "$GORTEX_PIDS" ] || return 0
+	# shellcheck disable=SC2086
+	kill -CONT $GORTEX_PIDS 2>/dev/null || true
+	GORTEX_PIDS=""
+}
+
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
 	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$CCC_EXE"
+	# Must run on every exit path: a paused daemon left behind is worse than a
+	# noisy benchmark.
+	resume_gortex
 }
 trap cleanup EXIT
+# EXIT alone does not fire on a signal in all shells; resume explicitly, then
+# re-raise so the caller still sees a signal death.
+trap 'cleanup; trap - INT; kill -INT $$' INT
+trap 'cleanup; trap - TERM; kill -TERM $$' TERM
+trap 'cleanup; trap - HUP; kill -HUP $$' HUP
+
+pause_gortex
 
 # time_ms: prints elapsed ms for a command
 # Usage: elapsed=$(time_ms cmd args...)
