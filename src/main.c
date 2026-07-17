@@ -454,23 +454,23 @@ int main(int argc, char **argv) {
         char *contents = read_file(cur_path);
         str_intern_resize(strlen(contents)); // size hash for this file
 
-        // Always preprocess - opt_E just outputs preprocessed result
+        // Single-scan: preprocess() returns the token stream directly;
+        // no separate tokenize() pass needed.
         uint64_t t0 = opt_time ? now_us() : 0;
-        char *preprocessed = preprocess(cur_path, contents);
+        Token *tok = preprocess(cur_path, contents);
         if (opt_time)
             fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
 
-        if (opt_E) {
-            printf("%s", preprocessed);
+        if (opt_dM) {
+            printf("%s", dump_macros_text());
             continue;
         }
 
-        t0 = opt_time ? now_us() : 0;
-        Token *tok = tokenize(cur_path, preprocessed);
-        if (opt_time)
-            fprintf(stderr, "  lex         %s: %6llu us\n", cur_path,
-                    (unsigned long long)(now_us() - t0));
+        if (opt_E) {
+            pp_print_tokens(tok);
+            continue;
+        }
 
         t0 = opt_time ? now_us() : 0;
         Program *prog = parse(tok);

@@ -234,8 +234,7 @@ int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
     char *contents = read_file((char *)path);
     if (!contents) return -1;
 
-    char *preprocessed = preprocess((char *)path, contents);
-    Token *tok = tokenize((char *)path, preprocessed);
+    Token *tok = preprocess((char *)path, contents);
     Program *prog = parse(tok);
     prog->in_path = (char *)path;
 

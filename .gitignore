@@ -72,6 +72,7 @@ amazon_bug_bounty/
 pngout.png
 rcc-preview2.png
 /chat_export*.md
+.gortex.yaml
 
 # Bench artifacts
 bench/sqlite3.c

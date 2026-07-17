@@ -39,6 +39,8 @@ typedef enum {
     TK_FNUM, // Floating-point literals
     TK_STR, // String literals
     TK_EOF, // End of file
+    TK_NL, // Newline (preprocessor-internal, never reaches the parser)
+    TK_CNL, // Newline inside a block comment (preprocessor-internal)
 } TokenKind;
 
 // Token type
@@ -82,8 +84,15 @@ char *str_intern(const char *start, int len);
 void str_intern_resize(size_t src_bytes); // call after read_file(), before preprocess()
 char *path_basename(char *path);
 
-// Lexer entry point
-char *preprocess(char *filename, char *p);
+// Lexer entry points
+// preprocess() is the single scanner: it lexes each source file once and
+// runs macro expansion on the token stream, returning parser-ready tokens.
+Token *preprocess(char *filename, char *p);
+void pp_print_tokens(Token *tok); // -E: re-create the lines from the tokens
+char *dump_macros_text(void); // -dM
+Token *lex_one(char **pp, int *plineno);
+extern bool lex_pp_mode;
+void register_source_buffer(char *start, char *end);
 void add_define(char *def);
 void add_undef(char *name);
 void add_include_path(const char *path);

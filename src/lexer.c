@@ -59,6 +59,40 @@ char *current_input;
 char *current_filename;
 int current_line_offset = 0;
 int line_num = 1;
+
+// Preprocessor lexing mode: the token-based preprocessor drives lex_one()
+// directly. In this mode newlines surface as TK_NL tokens (one per logical
+// line, comments included as TK_CNL), '#' is an ordinary punctuator, and the
+// caller (the preprocessor) owns all line-number accounting.
+bool lex_pp_mode = false;
+static int pp_pending_cnl; // comment newlines owed to the PP as TK_CNL
+
+// Registry of all lexed source buffers (main file + every include), so error
+// reporting can bound its line scan to the buffer that actually owns `loc`.
+// Needed once tokens point into per-file buffers instead of one big
+// preprocessed text.
+typedef struct SrcBuf SrcBuf;
+struct SrcBuf {
+    SrcBuf *next;
+    char *start;
+    char *end;
+};
+static SrcBuf *src_bufs;
+
+void register_source_buffer(char *start, char *end) {
+    SrcBuf *b = arena_alloc(sizeof(SrcBuf));
+    b->start = start;
+    b->end = end;
+    b->next = src_bufs;
+    src_bufs = b;
+}
+
+static char *source_buffer_base(char *loc) {
+    for (SrcBuf *b = src_bufs; b; b = b->next)
+        if (b->start <= loc && loc < b->end)
+            return b->start;
+    return current_input;
+}
 // Tracks the filename from #line directives for error/warning messages.
 // Updated unconditionally (not gated on opt_g) so warnings in included
 char *current_debug_filename;
@@ -130,9 +164,11 @@ static void verror_at(char *loc, int len, const char *file, int lineno,
         fprintf(stderr, "\n");
         exit(1);
     }
-    // Find line containing `loc`
+    // Find line containing `loc`, bounded by the buffer that owns it
+    // (tokens may point into any included file's buffer, not current_input).
+    char *base = source_buffer_base(loc);
     char *line = loc;
-    while (current_input < line && line[-1] != '\n')
+    while (base < line && line[-1] != '\n')
         line--;
 
     char *end = loc;
@@ -307,6 +343,8 @@ static int read_punct(char *p) {
     case '%':
     case '^':
         return p[1] == '=' ? 2 : 1;
+    case '#':
+        return p[1] == '#' ? 2 : 1;
     default:
         return ispunct(*p) ? 1 : 0;
     }
@@ -380,33 +418,47 @@ static char read_escaped_char(char **new_pos, char *p) {
     return c;
 }
 
-// Tokenize a given string and return new tokens.
-// Note: Input should already be preprocessed by the caller.
-Token *tokenize(char *filename, char *p) {
-    current_input = p;
-    current_filename = filename;
-    /* Reset #line-directive tracking from any previous tokenize() call in
-     * this process (e.g. rcc_lib compiling multiple files in-process);
-     * otherwise a leftover current_line_offset/line_num from the previous
-     * file's buffer produces bogus line numbers in warn_tok()/error_at()
-     * for files with no #line directive of their own. */
-    current_line_offset = 0;
-    line_num = 1;
-    current_debug_filename = filename;
+/* Lex a single token starting at *pp, advancing *pp and *plineno past it.
+ * Whitespace, comments and preprocessor directives are consumed without
+ * producing a token, so the scan keeps going until a token is produced or
+ * the input runs out.  Returns NULL at end of input.
+ * Callers must have set current_input/current_debug_filename (tokenize does).
+ *
+ * In lex_pp_mode the preprocessor drives the scan: newline then surfaces as
+ * a TK_NL token and the caller owns line accounting; a block comment emits
+ * one TK_CNL per embedded newline (queued via pp_pending_cnl); '#' lexes as
+ * an ordinary punctuator.
+ */
+Token *lex_one(char **pp, int *plineno) {
+    char *p = *pp;
+    int cur_lineno = *plineno;
     Token head = {};
     Token *cur = &head;
-    int cur_lineno = 1;
+
+    if (lex_pp_mode && pp_pending_cnl > 0) {
+        pp_pending_cnl--;
+        return new_token(TK_CNL, p, p, cur_lineno);
+    }
 
     while (*p) {
+        if (cur != &head)
+            break; // a token was emitted on the previous round
         // Skip whitespace characters.
         if (isspace(*p)) {
-            if (*p == '\n') cur_lineno++;
+            if (*p == '\n') {
+                if (lex_pp_mode) {
+                    cur = cur->next = new_token(TK_NL, p, p + 1, cur_lineno);
+                    p++;
+                    continue;
+                }
+                cur_lineno++;
+            }
             p++;
             continue;
         }
 
         // Skip preprocessor directives naively
-        if (*p == '#') {
+        if (*p == '#' && !lex_pp_mode) {
             // Check for #line directive: # line_number "filename"
             char *q = p + 1;
             while (*q == ' ' || *q == '\t') q++;
@@ -497,6 +549,19 @@ Token *tokenize(char *filename, char *p) {
             char *q = strstr(p + 2, "*/");
             if (!q)
                 error_at(p, "unclosed block comment");
+            if (lex_pp_mode) {
+                // Hand embedded newlines to the PP one at a time as TK_CNL;
+                // it owns line accounting and directive-boundary detection.
+                for (char *r = p + 2; r < q; r++)
+                    if (*r == '\n')
+                        pp_pending_cnl++;
+                p = q + 2;
+                if (pp_pending_cnl > 0) {
+                    pp_pending_cnl--;
+                    cur = cur->next = new_token(TK_CNL, p, p, cur_lineno);
+                }
+                continue;
+            }
             for (char *r = p + 2; r < q; r++)
                 if (*r == '\n') cur_lineno++;
             p = q + 2;
@@ -658,35 +723,35 @@ Token *tokenize(char *filename, char *p) {
             } else {
                 cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
                 if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
-                    int64_t val = 0;
+                    uint64_t val = 0;
                     char *bp = q + 2;
                     while (*bp == '0' || *bp == '1' || *bp == '\'') {
-                        if (*bp != '\'') val = val * 2 + (*bp - '0');
+                        if (*bp != '\'') val = val * 2 + (uint64_t)(*bp - '0');
                         bp++;
                     }
-                    cur->val = val;
+                    cur->val = (int64_t)val;
                 } else if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
-                    int64_t val = 0;
+                    uint64_t val = 0;
                     for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (*rp != '\'') val = val * 16 + (isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
-                    cur->val = val;
+                        if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
+                    cur->val = (int64_t)val;
                 } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {
-                    int64_t val = 0;
+                    uint64_t val = 0;
                     for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (*rp - '0');
-                    cur->val = val;
+                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
+                    cur->val = (int64_t)val;
                 } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
                     // Octal: leading 0 followed by digit (not x/b),
                     // possibly with a digit separator right after the 0
-                    int64_t val = 0;
+                    uint64_t val = 0;
                     for (char *rp = q + 1; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (*rp - '0');
-                    cur->val = val;
+                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
+                    cur->val = (int64_t)val;
                 } else {
-                    int64_t val = 0;
+                    uint64_t val = 0;
                     for (char *rp = q; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (isdigit(*rp)) val = val * 10 + (*rp - '0');
-                    cur->val = val;
+                        if (isdigit(*rp)) val = val * 10 + (uint64_t)(*rp - '0');
+                    cur->val = (int64_t)val;
                 }
             }
             cur->len = (int)(p - q);
@@ -721,9 +786,13 @@ Token *tokenize(char *filename, char *p) {
         }
         if (is_ident1(*p)) {
             // Don't tokenize L/u/U as identifiers if followed by string/char literal
+            bool std_c23 = opt_std_version && strcmp(opt_std_version, "202311L") >= 0;
             if ((*p == 'L' || *p == 'U') && (p[1] == '"' || p[1] == '\'')) {
                 // Fall through to string/char literal handling
-            } else if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && (p[2] == '"' || p[2] == '\'')))) {
+            } else if (*p == 'u' && (p[1] == '"' || p[1] == '\'' || (p[1] == '8' && p[2] == '"') ||
+                                     // u8'' character constants are C23-only; in
+                                     // older modes u8 is an ordinary identifier.
+                                     (p[1] == '8' && p[2] == '\'' && std_c23))) {
                 // Fall through to string/char literal handling
             } else {
                 char *start = p;
@@ -761,102 +830,93 @@ Token *tokenize(char *filename, char *p) {
         }
 
         if (*p == '"') {
-            char *start = p - prefix; // Include prefix in start position
+            // Include the prefix in the start position.  prefix holds the
+            // prefix *character* ('8' for u8, else 'L'/'u'/'U'), not a
+            // length, so map it back to how many bytes p was advanced.
+            char *start = p - (prefix ? (prefix == '8' ? 2 : 1) : 0);
             p++;
             char *buf = arena_alloc(2048); // Pre-allocate scratch buffer
             int len = 0;
 
-            for (;;) {
-                while (*p && *p != '"' && *p != '\n') {
-                    if (*p == '\\') {
+            while (*p && *p != '"' && *p != '\n') {
+                if (*p == '\\') {
+                    p++;
+                    uint32_t val = 0;
+                    bool have_cp = false;
+                    if (*p == 'u' || *p == 'U') {
+                        int n_digits = (*p == 'u') ? 4 : 8;
                         p++;
-                        uint32_t val = 0;
-                        bool have_cp = false;
-                        if (*p == 'u' || *p == 'U') {
-                            int n_digits = (*p == 'u') ? 4 : 8;
+                        for (int i = 0; i < n_digits; i++) {
+                            int digit = from_hex(*p);
+                            if (digit < 0) error_at(p, "invalid unicode escape");
+                            val = val * 16 + digit;
                             p++;
-                            for (int i = 0; i < n_digits; i++) {
-                                int digit = from_hex(*p);
-                                if (digit < 0) error_at(p, "invalid unicode escape");
+                        }
+                        have_cp = true;
+                    } else if (prefix && prefix != '8' &&
+                               (*p == 'x' || ('0' <= *p && *p <= '7'))) {
+                        // In L/u/U strings a numeric escape denotes a wide
+                        // character value, not a byte. The buffer holds
+                        // UTF-8 that the wide-string converter decodes, so
+                        // encode the value; a raw byte >= 0x80 would be an
+                        // invalid UTF-8 sequence there.
+                        if (*p == 'x') {
+                            p++;
+                            int digit = from_hex(*p);
+                            if (digit < 0)
+                                error_at(p, "invalid hex escape");
+                            while ((digit = from_hex(*p)) >= 0) {
                                 val = val * 16 + digit;
                                 p++;
                             }
-                            have_cp = true;
-                        } else if (prefix && prefix != '8' &&
-                                   (*p == 'x' || ('0' <= *p && *p <= '7'))) {
-                            // In L/u/U strings a numeric escape denotes a wide
-                            // character value, not a byte. The buffer holds
-                            // UTF-8 that the wide-string converter decodes, so
-                            // encode the value; a raw byte >= 0x80 would be an
-                            // invalid UTF-8 sequence there.
-                            if (*p == 'x') {
-                                p++;
-                                int digit = from_hex(*p);
-                                if (digit < 0)
-                                    error_at(p, "invalid hex escape");
-                                while ((digit = from_hex(*p)) >= 0) {
-                                    val = val * 16 + digit;
-                                    p++;
-                                }
-                            } else {
-                                int n = 0;
-                                while (n < 3 && '0' <= *p && *p <= '7') {
-                                    val = val * 8 + (*p - '0');
-                                    p++;
-                                    n++;
-                                }
-                            }
-                            have_cp = true;
                         } else {
-                            buf[len++] = read_escaped_char(&p, p);
-                        }
-                        if (have_cp) {
-                            // Encode as UTF-8
-                            if (val < 0x80) {
-                                buf[len++] = (char)val;
-                            } else if (val < 0x800) {
-                                buf[len++] = 0xC0 | (val >> 6);
-                                buf[len++] = 0x80 | (val & 0x3F);
-                            } else if (val < 0x10000) {
-                                buf[len++] = 0xE0 | (val >> 12);
-                                buf[len++] = 0x80 | ((val >> 6) & 0x3F);
-                                buf[len++] = 0x80 | (val & 0x3F);
-                            } else {
-                                buf[len++] = 0xF0 | (val >> 18);
-                                buf[len++] = 0x80 | ((val >> 12) & 0x3F);
-                                buf[len++] = 0x80 | ((val >> 6) & 0x3F);
-                                buf[len++] = 0x80 | (val & 0x3F);
+                            int n = 0;
+                            while (n < 3 && '0' <= *p && *p <= '7') {
+                                val = val * 8 + (*p - '0');
+                                p++;
+                                n++;
                             }
                         }
+                        have_cp = true;
                     } else {
-                        char sc = *p++;
-                        if (!prefix && opt_exec_charset && (unsigned char)sc < 0x80)
-                            sc = (char)to_exec_charset((uint8_t)sc);
-                        buf[len++] = sc;
+                        buf[len++] = read_escaped_char(&p, p);
                     }
+                    if (have_cp) {
+                        // Encode as UTF-8
+                        if (val < 0x80) {
+                            buf[len++] = (char)val;
+                        } else if (val < 0x800) {
+                            buf[len++] = 0xC0 | (val >> 6);
+                            buf[len++] = 0x80 | (val & 0x3F);
+                        } else if (val < 0x10000) {
+                            buf[len++] = 0xE0 | (val >> 12);
+                            buf[len++] = 0x80 | ((val >> 6) & 0x3F);
+                            buf[len++] = 0x80 | (val & 0x3F);
+                        } else {
+                            buf[len++] = 0xF0 | (val >> 18);
+                            buf[len++] = 0x80 | ((val >> 12) & 0x3F);
+                            buf[len++] = 0x80 | ((val >> 6) & 0x3F);
+                            buf[len++] = 0x80 | (val & 0x3F);
+                        }
+                    }
+                } else {
+                    char sc = *p++;
+                    if (!prefix && opt_exec_charset && (unsigned char)sc < 0x80)
+                        sc = (char)to_exec_charset((uint8_t)sc);
+                    buf[len++] = sc;
                 }
-                if (*p != '"') error_at(start, "unclosed string literal");
-                p++;
-
-                // String concatenation: merge adjacent string literals
-                char *q = p;
-                while (isspace(*q)) {
-                    if (*q == '\n') cur_lineno++;
-                    q++;
-                }
-                if (q[0] == 'u' && q[1] == '8' && q[2] == '"')
-                    q += 2;
-                else if ((*q == 'L' || *q == 'u' || *q == 'U') && q[1] == '"')
-                    q++;
-                if (*q != '"')
-                    break;
-                p = q + 1;
             }
+            if (*p != '"') error_at(start, "unclosed string literal");
+            p++;
 
             buf[len] = '\0';
             cur = cur->next = new_token(TK_STR, start, p, cur_lineno);
             cur->str = str_intern(buf, len); // intern it
+            // len stays the decoded content length (the parser relies on
+            // it); the raw source span (prefix..closing quote) goes in val
+            // so the preprocessor can recover the exact spelling.
             cur->len = len;
+            cur->val = (int64_t)(p - start);
             cur->string_literal_prefix = prefix;
             continue;
         }
@@ -946,6 +1006,33 @@ Token *tokenize(char *filename, char *p) {
 
         error_at(p, "invalid token");
     }
+
+    *pp = p;
+    *plineno = cur_lineno;
+    return head.next;
+}
+
+// Tokenize a given string and return new tokens.
+// Used for internally generated sources (parser builtins); user code reaches
+// the parser through the token-based preprocessor (preprocess()).
+Token *tokenize(char *filename, char *p) {
+    lex_pp_mode = false;
+    current_input = p;
+    current_filename = filename;
+    /* Reset #line-directive tracking from any previous tokenize() call in
+     * this process (e.g. rcc_lib compiling multiple files in-process);
+     * otherwise a leftover current_line_offset/line_num from the previous
+     * file's buffer produces bogus line numbers in warn_tok()/error_at()
+     * for files with no #line directive of their own. */
+    current_line_offset = 0;
+    line_num = 1;
+    current_debug_filename = filename;
+    Token head = {};
+    Token *cur = &head;
+    int cur_lineno = 1;
+
+    for (Token *tk; (tk = lex_one(&p, &cur_lineno)) != NULL;)
+        cur = cur->next = tk;
 
     cur->next = new_token(TK_EOF, p, p, cur_lineno);
     return head.next;
