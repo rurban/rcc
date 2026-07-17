@@ -480,88 +480,95 @@ LVar *find_global_name(char *name) {
 // use.  Avoids preprocessor macros and strcmp-based return-type tables.
 // Returns an ND_LVAR node with the function's type, or NULL if unknown.
 static Node *declare_builtin_on_demand(Token *tok) {
-    const char *name = tok->name;
     Type *ret_ty = NULL;
     Type *param_tys[3] = {NULL};
     int nparams = 0;
 
+#if 0
+    // Every name below starts with "__builtin_", so one length + prefix test
+    // rejects all other identifiers before the equalc() chain is walked.
+    // Already check before the single call.
+    if (!tok->ptr || tok->len <= 10 || memcmp(tok->ptr, "__builtin_", 10))
+        return NULL;
+#endif
+
     // float(float, float) group
-    if (!strcmp(name, "__builtin_powf")) {
+    if (equalc(tok, "__builtin_powf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         param_tys[1] = ty_float;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fmaxf")) {
+    } else if (equalc(tok, "__builtin_fmaxf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         param_tys[1] = ty_float;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fminf")) {
+    } else if (equalc(tok, "__builtin_fminf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         param_tys[1] = ty_float;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fmaf")) {
+    } else if (equalc(tok, "__builtin_fmaf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         param_tys[1] = ty_float;
         param_tys[2] = ty_float;
         nparams = 3;
-    } else if (!strcmp(name, "__builtin_fabsf")) {
+    } else if (equalc(tok, "__builtin_fabsf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         nparams = 1;
-    } else if (!strcmp(name, "__builtin_copysignf")) {
+    } else if (equalc(tok, "__builtin_copysignf")) {
         ret_ty = ty_float;
         param_tys[0] = ty_float;
         param_tys[1] = ty_float;
         nparams = 2;
         // double(double, double) group
-    } else if (!strcmp(name, "__builtin_pow")) {
+    } else if (equalc(tok, "__builtin_pow")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fmax")) {
+    } else if (equalc(tok, "__builtin_fmax")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fmin")) {
+    } else if (equalc(tok, "__builtin_fmin")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         nparams = 2;
-    } else if (!strcmp(name, "__builtin_fma")) {
+    } else if (equalc(tok, "__builtin_fma")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         param_tys[2] = ty_double;
         nparams = 3;
-    } else if (!strcmp(name, "__builtin_fabs")) {
+    } else if (equalc(tok, "__builtin_fabs")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         nparams = 1;
-    } else if (!strcmp(name, "__builtin_copysign")) {
+    } else if (equalc(tok, "__builtin_copysign")) {
         ret_ty = ty_double;
         param_tys[0] = ty_double;
         param_tys[1] = ty_double;
         nparams = 2;
         // double(double _Complex) group
-    } else if (!strcmp(name, "__builtin_creal")) {
+    } else if (equalc(tok, "__builtin_creal")) {
         ret_ty = ty_double;
         param_tys[0] = complex_type(ty_double);
         nparams = 1;
-    } else if (!strcmp(name, "__builtin_cimag")) {
+    } else if (equalc(tok, "__builtin_cimag")) {
         ret_ty = ty_double;
         param_tys[0] = complex_type(ty_double);
         nparams = 1;
         // float(float _Complex) group
-    } else if (!strcmp(name, "__builtin_crealf")) {
+    } else if (equalc(tok, "__builtin_crealf")) {
         ret_ty = ty_float;
         param_tys[0] = complex_type(ty_float);
         nparams = 1;
-    } else if (!strcmp(name, "__builtin_cimagf")) {
+    } else if (equalc(tok, "__builtin_cimagf")) {
         ret_ty = ty_float;
         param_tys[0] = complex_type(ty_float);
         nparams = 1;
@@ -5898,7 +5905,7 @@ static Node *primary(Token **rest, Token *tok) {
                 LVar *gvar = find_global_name(tok->name);
                 if (gvar && gvar->is_function)
                     node->lhs = new_var_node(gvar, tok);
-                else if (!strncmp(tok->name, "__builtin_", 10))
+                else if (tok->len > 10 && !memcmp(tok->ptr, "__builtin_", 10))
                     node->lhs = declare_builtin_on_demand(tok);
             }
             tok = skip(tok->next, "(");
