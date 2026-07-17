@@ -541,13 +541,22 @@ static void strip_comments(char *p) {
     }
 }
 
-static Macro *find_macro(char *name) {
-    name = str_intern(name, strlen(name));
-    uint32_t h = macro_hash(name);
+// Lookup by a name that is already interned. Macro names are interned, so
+// identity is pointer equality and no re-intern is needed. The hot path in
+// expand_text_inner() has already interned the identifier it scanned; going
+// through find_macro() there would re-hash and re-compare the same bytes to
+// arrive back at the pointer it started with.
+// Callers MUST pass a pointer returned by str_intern().
+static Macro *find_macro_interned(char *iname) {
+    uint32_t h = macro_hash(iname);
     for (Macro *m = macro_htab[h]; m; m = m->hash_next)
-        if (m->hash == h && m->name == name)
+        if (m->hash == h && m->name == iname)
             return m;
     return NULL;
+}
+
+static Macro *find_macro(char *name) {
+    return find_macro_interned(str_intern(name, strlen(name)));
 }
 
 static void push_macro(char *name) {
@@ -1204,7 +1213,8 @@ static char *expand_text_inner(char *text, char *filename, unsigned line_no, int
             }
         }
 
-        Macro *m = find_macro(name);
+        // `name` came from str_intern() above.
+        Macro *m = find_macro_interned(name);
         if (!m) {
             sb_puts(&sb, name);
             continue;
