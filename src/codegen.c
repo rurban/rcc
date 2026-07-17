@@ -3614,8 +3614,10 @@ static int add_float_literal(double val, int size) {
 // Names that GAS treats as keywords in Intel syntax (segment registers and
 // expression operators).  Global symbols with these names need a safe alias.
 static bool is_asm_reserved(const char *name) {
-    static const char *kw[] = {
-        "cs", "ds", "es", "fs", "gs", "ss",
+    // Dispatch on the first byte before comparing: this runs on every variable
+    // reference and call target in codegen, and almost every real identifier is
+    // rejected by its first byte alone.
+    static const char *reg_kw[] = {
         "%al", "%ah", "%ax", "%eax", "%rax",
         "%bl", "%bh", "%bx", "%ebx", "%rbx",
         "%cl", "%ch", "%cx", "%ecx", "%rcx",
@@ -3632,11 +3634,28 @@ static bool is_asm_reserved(const char *name) {
         "%r13", "%r13b", "%r13w", "%r13d",
         "%r14", "%r14b", "%r14w", "%r14d",
         "%r15", "%r15b", "%r15w", "%r15d",
-        "and", "or", "not", "xor", "shl", "shr",
         NULL};
-    for (int i = 0; kw[i]; i++)
-        if (strcmp(name, kw[i]) == 0) return true;
-    return false;
+    switch (name[0]) {
+    case '%':
+        for (int i = 0; reg_kw[i]; i++)
+            if (strcmp(name, reg_kw[i]) == 0) return true;
+        return false;
+    // segment registers
+    case 'c': return name[1] == 's' && !name[2];
+    case 'd': return name[1] == 's' && !name[2];
+    case 'e': return name[1] == 's' && !name[2];
+    case 'f': return name[1] == 's' && !name[2];
+    case 'g': return name[1] == 's' && !name[2];
+    // "ss", plus the "shl"/"shr" mnemonics
+    case 's':
+        if (name[1] == 's') return !name[2];
+        return name[1] == 'h' && (name[2] == 'l' || name[2] == 'r') && !name[3];
+    case 'a': return name[1] == 'n' && name[2] == 'd' && !name[3];
+    case 'o': return name[1] == 'r' && !name[2];
+    case 'n': return name[1] == 'o' && name[2] == 't' && !name[3];
+    case 'x': return name[1] == 'o' && name[2] == 'r' && !name[3];
+    default: return false;
+    }
 }
 
 #ifndef ARCH_ARM64

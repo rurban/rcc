@@ -1,3 +1,13 @@
+- perf: change preprocess() to return tokens instead of text.
+  Currently main.c does preprocess(file, contents) -> char*, then tokenize()
+  re-scans that string from scratch: every token is scanned twice, and the
+  whole translation unit is materialized as text in between. tcc lexes once
+  and the preprocessor works on the token stream; that is the main structural
+  reason we are ~8x slower than tcc on sqlite3.c.
+  Plan: have the lexer be the single scanner, make preprocess consume and
+  produce Token* (splicing macro expansions into the stream), and drop the
+  text round-trip. This subsumes both the preprocess and lex substeps.
+
 - add -O2 passes, like -finline and -funroll, but no need for SSA analysis (yet).
 - optional QBE backend for -O2?
 - SSA conversion for -O2?
