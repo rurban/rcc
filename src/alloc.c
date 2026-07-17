@@ -128,6 +128,7 @@ struct InternedStr {
 
 // Dynamic hash table: sized per input file by str_intern_resize().
 // Heap-allocated so it doesn't permanently occupy cache during codegen.
+// hash_size is always a power of two, so buckets are masked, not divided.
 static InternedStr **strings = NULL;
 static uint32_t hash_size = 0;
 
@@ -163,7 +164,7 @@ void str_intern_resize(size_t src_bytes) {
     for (uint32_t i = 0; i < hash_size; i++) {
         for (InternedStr *s = strings[i]; s;) {
             InternedStr *next = s->next;
-            uint32_t h = hash_str(s->str, s->len) % new_size;
+            uint32_t h = hash_str(s->str, s->len) & (new_size - 1);
             s->next = ns[h];
             ns[h] = s;
             s = next;
@@ -176,7 +177,7 @@ void str_intern_resize(size_t src_bytes) {
 
 char *str_intern(const char *start, int len) {
     ensure_str_intern_init();
-    uint32_t h = hash_str(start, len) % hash_size;
+    uint32_t h = hash_str(start, len) & (hash_size - 1);
 
     for (InternedStr *s = strings[h]; s; s = s->next) {
         if (s->len == len && !memcmp(s->str, start, len))
