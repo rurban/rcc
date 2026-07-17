@@ -291,6 +291,15 @@ static void sb_puts(StrBuf *sb, char *s) {
     sb->buf[sb->len] = '\0';
 }
 
+// Append a known-length run. Like sb_puts but without the strlen, for callers
+// that copy a span of the input verbatim.
+static void sb_putn(StrBuf *sb, char *s, int len) {
+    sb_reserve(sb, sb->len + len + 1);
+    memcpy(sb->buf + sb->len, s, len);
+    sb->len += len;
+    sb->buf[sb->len] = '\0';
+}
+
 typedef struct {
     char *text;
     int *line_counts;
@@ -1140,7 +1149,15 @@ static char *expand_text_inner(char *text, char *filename, unsigned line_no, int
         }
 
         if (!pp_is_ident1(*p)) {
-            sb_putc(&sb, *p++);
+            // Copy the whole run of ordinary characters (whitespace, operators,
+            // punctuation, digits) in one memcpy. Per-char sb_putc cost a bounds
+            // check and two stores per byte, and most of a C source line is this.
+            // Stopping early is always safe: the loop just re-enters and handles
+            // the stop character in its own branch.
+            char *run = p++;
+            while (*p && !pp_is_ident1(*p) && *p != '"' && *p != '\'' && *p != '\x02')
+                p++;
+            sb_putn(&sb, run, (int)(p - run));
             continue;
         }
 
