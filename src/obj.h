@@ -170,11 +170,17 @@ struct ObjFile {
     int sym_count;
     int sym_cap;
 
-    // Symbol name hash table for fast lookups (FNV-1a, chaining)
+    // Symbol name hash table for fast lookups (FNV-1a, chaining).
+    // Grown with the symbol count: a fixed 4096 buckets left sqlite3.c's 28k
+    // symbols on chains ~7 long, and every chain step cost a strcmp. Each node
+    // keeps its full hash so a chain miss is an int compare, not a strcmp, and
+    // so growing can rehash without touching the strings.
     struct SymHashNode {
+        uint32_t hash;
         int sym_idx;
         struct SymHashNode *next;
-    } *sym_htab[4096];
+    } **sym_htab;
+    uint32_t sym_htab_size; // power of two, 0 until first insert
 
     ObjReloc *text_relocs;
     int text_reloc_count;

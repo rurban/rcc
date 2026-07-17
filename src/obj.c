@@ -108,9 +108,48 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v) {
 // ObjFile
 // ---------------------------------------------------------------------------
 
+#define SYM_HT_INIT 4096 // power of two
+
+static uint32_t sym_hash(const char *name) {
+    uint32_t h = 2166136261u;
+    for (const char *s = name; *s; s++) {
+        h ^= (uint8_t)*s;
+        h *= 16777619;
+    }
+    return h;
+}
+
+// Double the bucket array once the table averages >2 symbols per bucket.
+// Nodes carry their hash, so this never re-reads a symbol name.
+static void sym_htab_grow(ObjFile *obj) {
+    uint32_t new_size = obj->sym_htab_size * 2;
+    struct SymHashNode **nt = calloc(new_size, sizeof(*nt));
+    if (!nt)
+        return; // keep the smaller table; correctness does not depend on size
+    for (uint32_t i = 0; i < obj->sym_htab_size; i++) {
+        struct SymHashNode *n = obj->sym_htab[i];
+        while (n) {
+            struct SymHashNode *next = n->next;
+            uint32_t b = n->hash & (new_size - 1);
+            n->next = nt[b];
+            nt[b] = n;
+            n = next;
+        }
+    }
+    free(obj->sym_htab);
+    obj->sym_htab = nt;
+    obj->sym_htab_size = new_size;
+}
+
 void objfile_init(ObjFile *obj) {
     // wrong -Wstringop-overflow= warning. known gcc bug
     memset(obj, 0, sizeof(ObjFile));
+    obj->sym_htab_size = SYM_HT_INIT;
+    obj->sym_htab = calloc(obj->sym_htab_size, sizeof(*obj->sym_htab));
+    if (!obj->sym_htab) {
+        fprintf(stderr, "objfile: out of memory\n");
+        exit(1);
+    }
     secbuf_init(&obj->text);
     secbuf_init(&obj->data);
     secbuf_init(&obj->rodata);
@@ -148,7 +187,7 @@ void objfile_free(ObjFile *obj) {
     free(obj->data_tls_relocs);
     free(obj->thread_vars_relocs);
     free(obj->unwind);
-    for (int i = 0; i < 4096; i++) {
+    for (uint32_t i = 0; i < obj->sym_htab_size; i++) {
         struct SymHashNode *n = obj->sym_htab[i];
         while (n) {
             struct SymHashNode *next = n->next;
@@ -156,6 +195,7 @@ void objfile_free(ObjFile *obj) {
             n = next;
         }
     }
+    free(obj->sym_htab);
     memset(obj, 0, sizeof(*obj));
 }
 
@@ -177,14 +217,9 @@ UnwindEntry *objfile_add_unwind(ObjFile *obj) {
 int objfile_add_sym(ObjFile *obj, const char *name, int section,
                     uint64_t offset, uint64_t size, SymBind bind, SymType type) {
     // Fast path: hash table lookup
-    uint32_t h = 2166136261u;
-    for (const char *s = name; *s; s++) {
-        h ^= (uint8_t)*s;
-        h *= 16777619;
-    }
-    h &= 4095;
-    for (struct SymHashNode *n = obj->sym_htab[h]; n; n = n->next) {
-        if (strcmp(obj->syms[n->sym_idx].name, name) == 0) {
+    uint32_t h = sym_hash(name);
+    for (struct SymHashNode *n = obj->sym_htab[h & (obj->sym_htab_size - 1)]; n; n = n->next) {
+        if (n->hash == h && strcmp(obj->syms[n->sym_idx].name, name) == 0) {
             // Update to defined version if previously undefined
             if (obj->syms[n->sym_idx].section == SEC_UNDEF && section != SEC_UNDEF) {
                 obj->syms[n->sym_idx].section = section;
@@ -213,21 +248,20 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     obj->syms[idx].type = type;
     // Insert into hash table
     struct SymHashNode *node = malloc(sizeof(struct SymHashNode));
+    node->hash = h;
     node->sym_idx = idx;
-    node->next = obj->sym_htab[h];
-    obj->sym_htab[h] = node;
+    uint32_t b = h & (obj->sym_htab_size - 1);
+    node->next = obj->sym_htab[b];
+    obj->sym_htab[b] = node;
+    if ((uint32_t)obj->sym_count > obj->sym_htab_size * 2)
+        sym_htab_grow(obj);
     return idx;
 }
 
 int objfile_find_sym(ObjFile *obj, const char *name) {
-    uint32_t h = 2166136261u;
-    for (const char *s = name; *s; s++) {
-        h ^= (uint8_t)*s;
-        h *= 16777619;
-    }
-    h &= 4095;
-    for (struct SymHashNode *n = obj->sym_htab[h]; n; n = n->next)
-        if (strcmp(obj->syms[n->sym_idx].name, name) == 0)
+    uint32_t h = sym_hash(name);
+    for (struct SymHashNode *n = obj->sym_htab[h & (obj->sym_htab_size - 1)]; n; n = n->next)
+        if (n->hash == h && strcmp(obj->syms[n->sym_idx].name, name) == 0)
             return n->sym_idx;
     return -1;
 }
