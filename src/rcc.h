@@ -269,6 +269,7 @@ extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_time;
+extern bool fenv_access; // #pragma STDC FENV_ACCESS state
 extern int pack_align;
 extern bool sse42_available;
 

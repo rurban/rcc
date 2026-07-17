@@ -151,6 +151,7 @@ static void clear_macros(void) {
 int pack_align = 0;
 int pack_align_stack[16];
 int pack_align_idx = 0;
+bool fenv_access = false;
 
 // Reset preprocessor global state between independent rcc_lib compiles
 // (each compile starts as if from a fresh process: no leftover -D/-U/-I
@@ -2071,6 +2072,27 @@ static char *preprocess_file(char *filename, char *input, int *line_counts, int 
                         }
                     }
                     sb_putc(&out, '\n');
+                } else if (pp_startswith(s, "STDC")) {
+                    s += 4;
+                    while (s < end && isspace((unsigned char)*s)) s++;
+                    if (pp_startswith(s, "FENV_ACCESS")) {
+                        s += 11;
+                        while (s < end && isspace((unsigned char)*s)) s++;
+                        if (pp_startswith(s, "ON")) {
+                            fenv_access = true;
+                            sb_puts(&out, "# pragma fenv(1)\n");
+                        } else if (pp_startswith(s, "OFF")) {
+                            fenv_access = false;
+                            sb_puts(&out, "# pragma fenv(0)\n");
+                        } else if (pp_startswith(s, "DEFAULT")) {
+                            fenv_access = false;
+                            sb_puts(&out, "# pragma fenv(0)\n");
+                        } else {
+                            sb_putc(&out, '\n');
+                        }
+                    } else {
+                        sb_putc(&out, '\n');
+                    }
                 } else {
                     sb_putc(&out, '\n');
                 }
@@ -2512,6 +2534,10 @@ char *preprocess(char *filename, char *p) {
         if (opt_std_version)
             define_pre("__STDC_VERSION__", (char *)opt_std_version);
 
+        // __STDC_FENV_ACCESS__ indicates support for the #pragma
+        if (!find_macro("__STDC_FENV_ACCESS__"))
+            define_pre("__STDC_FENV_ACCESS__", "1");
+
         // C23 makes bool/true/false first-class; programs may use them without
         // including <stdbool.h>.  Model `bool` as _Bool via a predefined macro
         // (true/false are handled directly by the parser so they carry _Bool
@@ -2669,6 +2695,12 @@ char *preprocess(char *filename, char *p) {
         // Math classification builtins — handled inline in codegen
         // __builtin_isinf* are handled inline in codegen (not macros)
         // so they work on all targets including MSVCRT where isinf() is missing.
+#ifdef _WIN32
+        // MSVCRT lacks isinf(); redirect to inline builtins
+        define_pre("isinf", "__builtin_isinf");
+        define_pre("isinff", "__builtin_isinff");
+        define_pre("isinfl", "__builtin_isinfl");
+#endif
         define_pre("__builtin_isnan", "isnan");
         define_pre("__builtin_isnanf", "isnan");
         define_pre("__builtin_isnanl", "isnan");

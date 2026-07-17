@@ -12786,14 +12786,11 @@ struct ObjFile *codegen(Program *prog) {
         int param_xmm_index = 0;
         int stack_param_index = 0;
         int param_index = fn->ty->return_ty &&
-                ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION)
 #ifdef _WIN32
-                     && fn->ty->return_ty->size > 8 ||
-                 (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
+                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8))
 #else
-                 || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16)
+                ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16))
 #endif
-                     )
             ? 1
             : 0;
 #ifdef _WIN32

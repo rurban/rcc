@@ -312,6 +312,12 @@ test check: $(TARGET) $(RUN_TESTS)
 	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
 test-all check-all: $(TARGET) $(RUN_TESTS) lint
 	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
+test-unit check-unit: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER) --unit-tests --parallel
+test-compliance check-compliance: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER) --compliance --parallel
+test-ctest check-ctest: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER) --ctest --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
 test-full check-full:
@@ -405,6 +411,7 @@ clean:
 TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
-.PHONY: clean leanclean test check test-extra check-extra check-full check-torture \
-	test-full test-torture lint bench install dist bench prof FORCE
+.PHONY: clean leanclean test check check-full check-torture check-all test-all \
+	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest \
+        lint bench install dist bench prof FORCE
 FORCE:

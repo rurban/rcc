@@ -446,6 +446,10 @@ Token *tokenize(char *filename, char *p) {
                 while (*r == ' ' || *r == '\t') r++;
                 if (startswith(r, "pack"))
                     is_pack_pragma = true;
+                else if (startswith(r, "fenv"))
+                    is_pack_pragma = true;
+                else if (startswith(r, "STDC"))
+                    is_pack_pragma = true;
                 else if (startswith(r, "unicode")) {
                     // #pragma unicode ScriptName
                     r += 7;

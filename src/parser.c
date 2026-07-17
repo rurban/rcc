@@ -1672,28 +1672,35 @@ static bool eval_double_const_expr(Node *node, double *val) {
         *val = (double)node->val;
         return true;
     case ND_ADD:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         if (!eval_double_const_expr(node->lhs, &lhs) || !eval_double_const_expr(node->rhs, &rhs)) return false;
         *val = lhs + rhs;
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         return true;
     case ND_SUB:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         if (!eval_double_const_expr(node->lhs, &lhs) || !eval_double_const_expr(node->rhs, &rhs)) return false;
         *val = lhs - rhs;
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         return true;
     case ND_MUL:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         if (!eval_double_const_expr(node->lhs, &lhs) || !eval_double_const_expr(node->rhs, &rhs)) return false;
         *val = lhs * rhs;
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         return true;
     case ND_DIV:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         if (!eval_double_const_expr(node->lhs, &lhs) || !eval_double_const_expr(node->rhs, &rhs)) return false;
         *val = lhs / rhs;
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         return true;
     case ND_NEG:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
         return eval_double_const_expr(node->lhs, &lhs) && ((*val = -lhs), true);
     case ND_CAST:
+        if (fenv_access && node->ty && is_flonum(node->ty)) return false;
+        if (fenv_access && node->lhs && node->lhs->ty && is_flonum(node->lhs->ty)) return false;
         if (!eval_double_const_expr(node->lhs, val)) return false;
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         if (node->ty && is_integer(node->ty)) *val = (double)(int64_t)*val;
@@ -4994,6 +5001,7 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     TagLog *saved_tag_log = tag_scope_checkpoint();
     EnumLog *saved_enum_log = enum_scope_checkpoint();
     int saved_block_depth = current_block_depth;
+    int saved_fenv_access = fenv_access;
 
     Node head = {};
     Node *cur = &head;
@@ -5011,6 +5019,23 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                     pack_align = tok->val;
                 else
                     pack_align = 0;
+                tok = tok->next;
+                if (equalc(tok, ")"))
+                    tok = tok->next;
+            }
+            continue;
+        }
+
+        // Handle # pragma fenv(N) emitted by the preprocessor
+        if (equalc(tok, "#") && equalc(tok->next, "pragma") &&
+            equalc(tok->next->next, "fenv")) {
+            tok = tok->next->next->next;
+            if (equalc(tok, "(")) {
+                tok = tok->next;
+                if (tok->kind == TK_NUM)
+                    fenv_access = tok->val;
+                else
+                    fenv_access = false;
                 tok = tok->next;
                 if (equalc(tok, ")"))
                     tok = tok->next;
@@ -5104,6 +5129,7 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     else
         node->body = append_cleanup_range(node->body, locals, saved_locals, tok);
     current_block_depth = saved_block_depth;
+    fenv_access = saved_fenv_access;
     locals = saved_locals;
     typedef_scope_restore(saved_typedef_log);
     tag_scope_restore(saved_tag_log);
@@ -8803,6 +8829,22 @@ Program *parse(Token *tok) {
                     pack_align = tok->val;
                 else
                     pack_align = 0;
+                tok = tok->next;
+                if (equalc(tok, ")"))
+                    tok = tok->next;
+            }
+            continue;
+        }
+
+        if (equalc(tok, "#") && equalc(tok->next, "pragma") &&
+            equalc(tok->next->next, "fenv")) {
+            tok = tok->next->next->next;
+            if (equalc(tok, "(")) {
+                tok = tok->next;
+                if (tok->kind == TK_NUM)
+                    fenv_access = tok->val;
+                else
+                    fenv_access = false;
                 tok = tok->next;
                 if (equalc(tok, ")"))
                     tok = tok->next;
