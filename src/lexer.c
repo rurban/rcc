@@ -277,24 +277,39 @@ static bool startswith(char *p, char *q) {
 }
 
 // Read a punctuator token from p and returns its length.
+// Dispatch on the first byte: this runs on every punctuator token, and the
+// previous chain cost up to 23 strncmp calls to recognize a bare ';'.
+// Reading p[1]/p[2] is safe: the input is NUL-terminated and a NUL simply
+// fails the match, so we never scan past the terminator.
 static int read_punct(char *p) {
-    if (startswith(p, "..."))
-        return 3;
-    if (startswith(p, "<<=") || startswith(p, ">>="))
-        return 3;
-    if (startswith(p, "==") || startswith(p, "!=") ||
-        startswith(p, "<=") || startswith(p, ">=") ||
-        startswith(p, "++") || startswith(p, "--") ||
-        startswith(p, "&&") || startswith(p, "||") ||
-        startswith(p, "->") || startswith(p, "<<") ||
-        startswith(p, ">>") || startswith(p, "+=") ||
-        startswith(p, "-=") || startswith(p, "*=") ||
-        startswith(p, "/=") || startswith(p, "%=") ||
-        startswith(p, "&=") || startswith(p, "|=") ||
-        startswith(p, "^="))
-        return 2;
-
-    return ispunct(*p) ? 1 : 0;
+    switch (*p) {
+    case '.':
+        return (p[1] == '.' && p[2] == '.') ? 3 : 1;
+    case '<':
+        if (p[1] == '<') return p[2] == '=' ? 3 : 2; // <<= <<
+        return p[1] == '=' ? 2 : 1; // <= <
+    case '>':
+        if (p[1] == '>') return p[2] == '=' ? 3 : 2; // >>= >>
+        return p[1] == '=' ? 2 : 1; // >= >
+    case '=':
+    case '!':
+        return p[1] == '=' ? 2 : 1;
+    case '+':
+        return (p[1] == '+' || p[1] == '=') ? 2 : 1;
+    case '-':
+        return (p[1] == '-' || p[1] == '=' || p[1] == '>') ? 2 : 1;
+    case '&':
+        return (p[1] == '&' || p[1] == '=') ? 2 : 1;
+    case '|':
+        return (p[1] == '|' || p[1] == '=') ? 2 : 1;
+    case '*':
+    case '/':
+    case '%':
+    case '^':
+        return p[1] == '=' ? 2 : 1;
+    default:
+        return ispunct(*p) ? 1 : 0;
+    }
 }
 
 static bool is_ident1(char c) {
