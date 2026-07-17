@@ -7,8 +7,23 @@
   Plan: have the lexer be the single scanner, make preprocess consume and
   produce Token* (splicing macro expansions into the stream), and drop the
   text round-trip. This subsumes both the preprocess and lex substeps.
+- perf: find out where parse() actually spends its time.
+  Measured on bench/sqlite3.c (warm, -O3 build, -march=native):
+    rcc -c 2.08-2.26s vs tcc -c 0.25s (8.4x);  rcc -E 0.62s vs tcc -E 0.33s (1.9x)
+    -time phases: preprocess 616ms, lex 321ms, parse 567ms, typecheck 43ms, codegen 514ms
+  So the preprocessor itself is within 2x of tcc, but parse alone (567ms) is
+  2.3x tcc's *entire* compile.  567ms for 298k lines is ~1.9us/line, which is
+  far too slow for recursive descent.  A perf flat profile shows no parser
+  function above 1.8% self (primary 1.80, unary 1.73, add_type_internal 3.23);
+  the expression-precedence cascade is nearly free.  So the time is not in the
+  parsing functions themselves and is so far unaccounted for -- suspect symbol
+  /typedef/tag lookup (find_var, find_typedef, find_tag) or AST allocation.
+  Note perf --call-graph=dwarf unwinds badly through the LTO build (main shows
+  only 59% inclusive); use a -fno-lto build or LBR before trusting inclusive %.
+  Together parse+codegen are ~1.08s and are untouched by the tokenizing-pp
+  work above, i.e. that is where the remaining 8x actually lives.
 - Missing C23 features (https://en.cppreference.com/c/compiler_support/23):
-  _BitInt, decimal, interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__), FENV_ACCESS.
+  _BitInt, decimal, interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__)
   But for larger codegen changes extract them into extra files.
   vector support is already too much for codegen.c, and can be extracted into
   an extra c file.
