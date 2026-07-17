@@ -7,12 +7,12 @@
   Plan: have the lexer be the single scanner, make preprocess consume and
   produce Token* (splicing macro expansions into the stream), and drop the
   text round-trip. This subsumes both the preprocess and lex substeps.
+- Missing C23 features (https://en.cppreference.com/c/compiler_support/23):
+  _BitInt, decimal, interchange and extended float types (just aliased, no __STDC_IEC_60559_TYPES__), FENV_ACCESS.
+  But for larger codegen changes extract them into extra files.
+  vector support is already too much for codegen.c, and can be extracted into
+  an extra c file.
 
 - add -O2 passes, like -finline and -funroll, but no need for SSA analysis (yet).
 - optional QBE backend for -O2?
 - SSA conversion for -O2?
-- Missing C23 features (https://en.cppreference.com/c/compiler_support/23):
-  _BitInt, decimal, interchange and extended float types, FENV_ACCESS.
-  But for larger codegen changes extract them into extra files.
-  vector support is already too much for codegen.c, and can be extracted into
-  an extra c file.

@@ -75,13 +75,23 @@ static int inline_pack_counter;
 #define GLOBAL_HASH_SIZE 8192
 static LVar *global_htab[GLOBAL_HASH_SIZE];
 
+// Hash an identifier name by its pointer, not its bytes.
+//
+// Identifier names come from str_intern() (see tokenize()), and every table
+// keyed by this hash -- global_htab, typedef_htab, tag_htab, enum_htab --
+// resolves a bucket with `x->name == name`, pointer identity, not strcmp.
+// Keying on the pointer therefore cannot change a lookup outcome: a byte-equal
+// but distinct pointer failed that comparison before and now merely hashes to
+// a different bucket, still not found. Walking the string re-hashed bytes
+// str_intern() had already hashed, once per identifier occurrence.
+//
+// Callers doing `% GLOBAL_HASH_SIZE` / `% SCOPE_HASH_SIZE` keep working: both
+// are compile-time powers of two, so the modulo is already an AND, and the
+// low bits returned here are well mixed.
 static uint32_t hash_name(const char *s) {
-    uint32_t h = 2166136261u;
-    for (int i = 0; s[i]; i++) {
-        h ^= (unsigned char)s[i];
-        h *= 16777619;
-    }
-    return h;
+    uint64_t v = (uint64_t)(uintptr_t)s;
+    v *= 0x9E3779B97F4A7C15ull; // fibonacci mix; interned ptrs are 8-byte aligned
+    return (uint32_t)(v >> 32);
 }
 
 static void global_htab_add(LVar *var) {
