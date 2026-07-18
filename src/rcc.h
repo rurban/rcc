@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <float.h>
+#include <setjmp.h>
 
 #ifndef VERSION
 #define VERSION "v1.2-dev"
@@ -67,6 +68,16 @@ __attribute__((noreturn)) void error_at(char *loc, char *fmt, ...);
 __attribute__((noreturn)) void error_tok(Token *tok, char *fmt, ...);
 __attribute__((noreturn)) void error_tok_simple(Token *tok, char *fmt, ...);
 void warn_tok(Token *tok, char *fmt, ...);
+
+// Error collection (GH #34): parse errors are counted and recovered from
+// (longjmp back into parse()'s top-level loop) instead of exiting, unless
+// -Wfatal-errors. Compilation stops early after opt_fmax_errors errors.
+extern int error_count;
+extern bool opt_Wfatal_errors;
+extern int opt_fmax_errors; // 0 = unlimited
+extern jmp_buf error_recovery_jmp;
+extern bool error_recovery_active;
+extern Token *error_recovery_tok; // token to resynchronize from
 
 // Lexer state (for token injection)
 extern char *current_input;

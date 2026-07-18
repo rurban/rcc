@@ -137,6 +137,8 @@ void help(void) {
            "-W                  enable more compiler warnings\n"
            "-Werror             treat all warnings as errors\n"
            "-pedantic-errors    same\n"
+           "-Wfatal-errors      exit at the first error\n"
+           "-fmax-errors=N      exit after N errors (default 20, 0 = unlimited)\n"
            "-Werror=unknown-warning-option  for autoconf probes\n"
            "-Wno-unknown-warning-option     we warn on unknown warning options by default\n"
            "-Wno-homoglyph      disable Unicode indentifer homoglyph warnings\n"
@@ -282,6 +284,10 @@ int main(int argc, char **argv) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
             opt_Werror = true;
+        } else if (!strcmp(argv[i], "-Wfatal-errors")) {
+            opt_Wfatal_errors = true;
+        } else if (!strncmp(argv[i], "-fmax-errors=", 13)) {
+            opt_fmax_errors = atoi(argv[i] + 13);
         } else if (!strcmp(argv[i], "-Wno-homoglyph")) {
             opt_Wno_homoglyph = true;
         } else if (!strcmp(argv[i], "-Werror=unknown-warning-option")) {
@@ -501,6 +507,12 @@ int main(int argc, char **argv) {
         if (opt_fdump_ast)
             dump_ast(prog);
 
+        // Parse errors were collected (GH #34): the AST is incomplete, so
+        // skip typecheck/codegen for this file; more inputs may still be
+        // parsed for their diagnostics. Failure exit happens after the loop.
+        if (error_count)
+            continue;
+
         // Type system / Semantic checks
         t0 = opt_time ? now_us() : 0;
         for (TLItem *item = prog->items; item; item = item->next) {
@@ -599,6 +611,11 @@ int main(int argc, char **argv) {
             out_paths = p;
         }
     }
+
+    // Collected errors (GH #34): everything was diagnosed, now fail.
+    if (error_count)
+        return 1;
+
     // Assemble / Link if not just compiling to assembly or preprocessing
     if (!opt_S && !opt_E) {
         if (opt_dryrun) {

@@ -234,9 +234,14 @@ int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
     char *contents = read_file((char *)path);
     if (!contents) return -1;
 
+    error_count = 0; // fresh diagnostics per compile
     Token *tok = preprocess((char *)path, contents);
     Program *prog = parse(tok);
     prog->in_path = (char *)path;
+
+    // Parse errors were collected (GH #34): the AST is incomplete.
+    if (error_count)
+        return -1;
 
     // Type system / semantic checks
     for (TLItem *item = prog->items; item; item = item->next) {

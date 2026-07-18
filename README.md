@@ -147,6 +147,8 @@ compiler and tests, it is much faster now.
     -W                 print diagnostic warnings (-Wshadow, stack spilling with -v)
     -Werror            error on all warnings (but not internal stack spill warnings)
     -pedantic-errors   same
+    -Wfatal-errors     exit at the first error (errors are collected otherwise)
+    -fmax-errors=N     exit after N errors (default 20, 0 = unlimited)
     -Wno-homoglypth    suppress homoglyph unicode identifier warnings
     -Wunknown-warning-option
                        for autoconf probes

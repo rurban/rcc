@@ -8736,6 +8736,42 @@ static char *parse_toplevel_asm(Token **rest, Token *tok) {
     return str_intern(buf, pos);
 }
 
+// Error recovery (GH #34): on a recoverable parse error, error_tok() longjmps
+// back into parse()'s top-level loop. State that must survive the longjmp
+// lives in these statics (locals of parse() would be indeterminate).
+static TLItem tl_item_head;
+static TLItem *tl_item_cur;
+static Token *rec_iter_tok;
+static TypedefLog *rec_typedef_cp;
+static TagLog *rec_tag_cp;
+static EnumLog *rec_enum_cp;
+static Typedef *rec_typedefs;
+static TagScope *rec_tags;
+static EnumConst *rec_enum_consts;
+
+// Skip tokens to the next top-level synchronization point: a ';' at brace
+// depth 0 or the '}' closing the outermost open block (plus a trailing ';').
+// `depth` is the compound-statement nesting depth at the error site.
+static Token *sync_toplevel(Token *tok, int depth) {
+    while (tok->kind != TK_EOF) {
+        if (equalc(tok, "{")) {
+            depth++;
+        } else if (equalc(tok, "}")) {
+            depth--;
+            if (depth <= 0) {
+                tok = tok->next;
+                if (equalc(tok, ";"))
+                    tok = tok->next;
+                return tok;
+            }
+        } else if (equalc(tok, ";") && depth <= 0) {
+            return tok->next;
+        }
+        tok = tok->next;
+    }
+    return tok;
+}
+
 Program *parse(Token *tok) {
     static char *kw_main;
     static bool parser_inited = false;
@@ -8815,10 +8851,55 @@ Program *parse(Token *tok) {
     memset(enum_htab, 0, sizeof(enum_htab));
     enum_log = NULL;
     str_lits = NULL;
-    TLItem item_head = {};
-    TLItem *item_cur = &item_head;
+    tl_item_head.next = NULL;
+    tl_item_cur = &tl_item_head;
+
+    // Recovery point: error_tok() longjmps here on a parse error (unless
+    // -Wfatal-errors). Restore file-scope parser state and resynchronize
+    // at the next top-level ';' or matching '}'.
+    error_recovery_tok = NULL;
+    if (setjmp(error_recovery_jmp)) {
+        int depth = current_block_depth;
+        locals = NULL;
+        label_scopes = NULL;
+        pending_gotos = NULL;
+        current_switch = NULL;
+        current_loop = NULL;
+        parser_current_fn = NULL;
+        current_fn_scope_locals = NULL;
+        current_block_depth = 0;
+        suppress_fn_scope_update = false;
+        fn_uses_vla = false;
+        pending_asm_name = NULL;
+        pending_alias_target = NULL;
+        pending_constructor = false;
+        pending_destructor = false;
+        pending_cleanup_func = NULL;
+        pending_cleanup_tok = NULL;
+        pending_vla_struct_capture = NULL;
+        pending_mode = 0;
+        pending_vector_size = 0;
+        typedef_scope_restore(rec_typedef_cp);
+        tag_scope_restore(rec_tag_cp);
+        enum_scope_restore(rec_enum_cp);
+        typedefs = rec_typedefs;
+        tags = rec_tags;
+        enum_consts = rec_enum_consts;
+        tok = sync_toplevel(error_recovery_tok, depth);
+        if (tok == rec_iter_tok) // no forward progress: force a skip
+            tok = sync_toplevel(tok->next, 0);
+    }
+    error_recovery_active = true;
 
     while (tok->kind != TK_EOF) {
+        // Checkpoint file-scope state for error recovery.
+        rec_iter_tok = tok;
+        rec_typedef_cp = typedef_scope_checkpoint();
+        rec_tag_cp = tag_scope_checkpoint();
+        rec_enum_cp = enum_scope_checkpoint();
+        rec_typedefs = typedefs;
+        rec_tags = tags;
+        rec_enum_consts = enum_consts;
 
         if (equalc(tok, "#") && equalc(tok->next, "pragma") &&
             equalc(tok->next->next, "pack")) {
@@ -8857,7 +8938,7 @@ Program *parse(Token *tok) {
             TLItem *item = arena_alloc(sizeof(TLItem));
             item->kind = TL_ASM;
             item->asm_str = str;
-            item_cur = item_cur->next = item;
+            tl_item_cur = tl_item_cur->next = item;
             tok = skip(tok, ";");
             continue;
         }
@@ -9252,7 +9333,7 @@ Program *parse(Token *tok) {
                         TLItem *item = arena_alloc(sizeof(TLItem));
                         item->kind = TL_FUNC;
                         item->fn = fn;
-                        item_cur = item_cur->next = item;
+                        tl_item_cur = tl_item_cur->next = item;
                     }
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
@@ -9340,8 +9421,10 @@ Program *parse(Token *tok) {
         }
     }
 
+    error_recovery_active = false;
+
     Program *prog = arena_alloc(sizeof(Program));
-    prog->items = item_head.next;
+    prog->items = tl_item_head.next;
     prog->globals = globals;
     prog->strs = str_lits;
     return prog;

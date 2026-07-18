@@ -119,16 +119,46 @@ static const char *display_filename(const char *file) {
 }
 
 
+// Error collection (GH #34): while the parser's top-level recovery point is
+// active, errors are printed immediately, counted, and recovered from via
+// longjmp instead of exiting, so one run reports every error. -Wfatal-errors
+// restores exit-on-first-error; -fmax-errors=N caps the count (0 = no cap).
+int error_count = 0;
+bool opt_Wfatal_errors = false;
+int opt_fmax_errors = 20;
+jmp_buf error_recovery_jmp;
+bool error_recovery_active = false;
+Token *error_recovery_tok = NULL;
+
+// Count an error whose message has already been printed, then either recover
+// (longjmp back into parse()'s top-level loop) or exit. Control never returns
+// to the caller, so the error_* wrappers keep their noreturn contract.
+static __attribute__((noreturn)) void error_finish(void) {
+    error_count++;
+    if (opt_Wfatal_errors) {
+        fprintf(stderr, "compilation terminated due to -Wfatal-errors.\n");
+        exit(1);
+    }
+    if (!error_recovery_active || !error_recovery_tok)
+        exit(1);
+    if (opt_fmax_errors && error_count >= opt_fmax_errors) {
+        fprintf(stderr, "compilation terminated due to -fmax-errors=%d.\n",
+                opt_fmax_errors);
+        exit(1);
+    }
+    longjmp(error_recovery_jmp, 1);
+}
+
 // Reports an error and exit.
 // cppcheck-suppress va_end_missing
-// TODO not-returning attribute
 void error(char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     fprintf(stderr, "\033[1;31merror:\033[0m ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
-    exit(1);
+    error_recovery_tok = NULL; // no token to resume from
+    error_finish();
 }
 
 // Compute the reported line number for a location in the preprocessed source.
@@ -150,19 +180,19 @@ static int compute_line_no(char *loc) {
     return reported_line;
 }
 
-// Gorgeous error reporting with pointing carets.
+// Gorgeous error reporting with pointing carets. Print-only; the caller
+// finishes via error_finish().
 // `file` / `lineno` come from the offending token (tok->filename / tok->lineno),
 // captured when the token was created so they stay correct after tokenizing has
 // advanced the global #line state. Pass file=NULL / lineno=0 to fall back to the
 // current lexer position.
-// TODO not-returning attribute
 static void verror_at(char *loc, int len, const char *file, int lineno,
                       char *fmt, va_list ap) {
     if (!loc) {
         fprintf(stderr, "\033[1;31merror:\033[0m ");
         vfprintf(stderr, fmt, ap);
         fprintf(stderr, "\n");
-        exit(1);
+        return;
     }
     // Find line containing `loc`, bounded by the buffer that owns it
     // (tokens may point into any included file's buffer, not current_input).
@@ -194,18 +224,17 @@ static void verror_at(char *loc, int len, const char *file, int lineno,
     fprintf(stderr, "\033[1;31m^");
     for (int i = 1; i < tilde_len; i++) fprintf(stderr, "~");
     fprintf(stderr, "\033[0m\n");
-
-    exit(1);
 }
 
-// Reports an error location and exit.
+// Reports an error location and exit or recover.
 // cppcheck-suppress va_end_missing
 // cppcheck-suppress uninitvar
 void error_at(char *loc, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     verror_at(loc, 1, NULL, 0, fmt, ap);
-    exit(1);
+    error_recovery_tok = NULL; // no token to resume from
+    error_finish();
 }
 
 // Like error_tok but prints filename:line: error: message only (no source context).
@@ -221,7 +250,8 @@ __attribute__((noreturn)) void error_tok_simple(Token *tok, char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
-    exit(1);
+    error_recovery_tok = tok;
+    error_finish();
 }
 
 // cppcheck-suppress va_end_missing
@@ -231,12 +261,14 @@ void error_tok(Token *tok, char *fmt, ...) {
         va_list ap;
         va_start(ap, fmt);
         verror_at(NULL, 0, NULL, 0, fmt, ap);
-        exit(1);
+        error_recovery_tok = NULL;
+        error_finish();
     }
     va_list ap;
     va_start(ap, fmt);
     verror_at(tok->ptr, tok->len, tok->filename, tok->lineno, fmt, ap);
-    exit(1);
+    error_recovery_tok = tok;
+    error_finish();
 }
 
 
@@ -252,8 +284,12 @@ void warn_tok(Token *tok, char *fmt, ...) {
         vfprintf(stderr, fmt, ap);
         fprintf(stderr, "\n");
         va_end(ap);
-        if (opt_Werror)
-            exit(1);
+        if (opt_Werror) {
+            error_count++;
+            if (opt_Wfatal_errors ||
+                (opt_fmax_errors && error_count >= opt_fmax_errors))
+                exit(1);
+        }
         return;
     }
     // Compute line number
@@ -289,8 +325,12 @@ void warn_tok(Token *tok, char *fmt, ...) {
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
-    if (opt_Werror)
-        exit(1);
+    if (opt_Werror) {
+        error_count++;
+        if (opt_Wfatal_errors ||
+            (opt_fmax_errors && error_count >= opt_fmax_errors))
+            exit(1);
+    }
 }
 
 // Create a new token.
