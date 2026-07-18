@@ -4,66 +4,88 @@ _Generated: July 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           52 |          639 |        691 |
-| RCC -O1   |           51 |          619 |        670 |
-| TCC       |           15 |          578 |        593 |
-| SLIMCC    |           52 |          645 |        697 |
-| KEFIR     |          224 |          678 |        902 |
-| KEFIR -O1 |          229 |          497 |        726 |
-| CCC       |           62 |          563 |        625 |
-| GCC -O0   |           83 |          566 |        649 |
-| GCC -O2   |          190 |          215 |        405 |
-| Clang -O0 |           99 |          622 |        721 |
-| Clang -O2 |          151 |          234 |        385 |
+| RCC       |           53 |          635 |        688 |
+| RCC -O1   |           49 |          613 |        662 |
+| RCC -O2   |           43 |          638 |        681 |
+| TCC       |            7 |          581 |        588 |
+| SLIMCC    |           55 |          635 |        690 |
+| KEFIR     |          225 |          680 |        905 |
+| KEFIR -O1 |          205 |          500 |        705 |
+| CCC       |           46 |          580 |        626 |
+| GCC -O0   |           90 |          579 |        669 |
+| GCC -O2   |          208 |          213 |        421 |
+| Clang -O0 |          101 |          635 |        736 |
+| Clang -O2 |          139 |          238 |        377 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:   4030 us
-  parse       bench.c:    453 us
-  typecheck   bench.c:     11 us
-  codegen     bench.c:    508 us
-  link        bench:    41633 us
+  preprocess  bench.c:   4323 us
+  parse       bench.c:    418 us
+  typecheck   bench.c:      9 us
+  codegen     bench.c:    587 us
+  link        bench_rcc:  35821 us
 
 RCC -O1:
-  preprocess  bench.c:   4215 us
-  parse       bench.c:    473 us
-  typecheck   bench.c:     11 us
-  opt(CTFE)   bench.c:     21 us
-  codegen     bench.c:    414 us
-  link        bench_o1: 38308 us
+  preprocess  bench.c:   5837 us
+  parse       bench.c:    607 us
+  typecheck   bench.c:      9 us
+  opt         bench.c:     36 us
+  codegen     bench.c:    469 us
+  link        bench_rcc_o1:  37128 us
+```
+
+RCC -O2:
+preprocess bench.c: 4401 us
+parse bench.c: 432 us
+typecheck bench.c: 11 us
+opt bench.c: 30 us
+codegen bench.c: 363 us
+link bench_rcc_o2: 41804 us
+
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
+
 RCC:
-  preprocess  sqlite3.c: 259227 us
-  parse       sqlite3.c: 144888 us
-  typecheck   sqlite3.c:  14028 us
-  codegen     sqlite3.c: 119232 us
+preprocess sqlite3.c: 255827 us
+parse sqlite3.c: 147659 us
+typecheck sqlite3.c: 14200 us
+codegen sqlite3.c: 125084 us
 
 RCC -O1:
-  preprocess  sqlite3.c: 269230 us
-  parse       sqlite3.c: 142854 us
-  typecheck   sqlite3.c:  14139 us
-  opt(CTFE)   sqlite3.c:  32073 us
-  codegen     sqlite3.c: 125969 us
+preprocess sqlite3.c: 268183 us
+parse sqlite3.c: 159399 us
+typecheck sqlite3.c: 16904 us
+opt sqlite3.c: 46326 us
+codegen sqlite3.c: 118977 us
+
+```
+
+RCC -O2:
+  preprocess  sqlite3.c: 258312 us
+  parse       sqlite3.c: 146970 us
+  typecheck   sqlite3.c:  13921 us
+  opt         sqlite3.c: 194119 us
+  codegen     sqlite3.c: 119374 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |       597 ms |
-| RCC -O1   |       626 ms |
-| TCC       |       141 ms |
-| SLIMCC    |      1326 ms |
-| KEFIR     |     23844 ms |
-| KEFIR -O1 |     26488 ms |
-| CCC       |     18885 ms |
-| GCC -O0   |     10645 ms |
-| GCC -O2   |     68493 ms |
-| Clang -O0 |      3073 ms |
-| Clang -O2 |     38009 ms |
+| RCC       |       632 ms |
+| RCC -O1   |       641 ms |
+| RCC -O2   |       788 ms |
+| TCC       |       134 ms |
+| SLIMCC    |      1291 ms |
+| KEFIR     |     25802 ms |
+| KEFIR -O1 |     40953 ms |
+| CCC       |     29506 ms |
+| GCC -O0   |     16882 ms |
+| GCC -O2   |     71355 ms |
+| Clang -O0 |      3107 ms |
+| Clang -O2 |     48458 ms |

@@ -59,6 +59,7 @@ fi
 
 RCC_EXE="bench/bench_rcc"
 RCC_O1_EXE="bench/bench_rcc_o1"
+RCC_O2_EXE="bench/bench_rcc_o2"
 TCC_EXE="bench/bench_tcc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
@@ -100,7 +101,7 @@ resume_gortex() {
 }
 
 cleanup() {
-	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
+	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
 	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$CCC_EXE"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
@@ -209,6 +210,10 @@ printf "\n--- RCC -O1 ---\n"
 rcc_o1_time=$("$RCC" -time -O1 "$SRC" -o "$RCC_O1_EXE" 2>&1 >/dev/null) || true
 printf '%s\n' "$rcc_o1_time" | column -t
 rm -f "$RCC_O1_EXE"
+printf "\n--- RCC -O2 ---\n"
+rcc_o2_time=$("$RCC" -time -O2 "$SRC" -o "$RCC_O2_EXE" 2>&1 >/dev/null) || true
+printf '%s\n' "$rcc_o2_time" | column -t
+rm -f "$RCC_O2_EXE"
 
 # ---- Large file substep timing ----
 if download_sqlite; then
@@ -223,6 +228,9 @@ if download_sqlite; then
     printf "\n--- RCC -O1 ---\n"
     rcc_large_o1_time=$("$RCC" -time -O1 -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o1_time" | column -t
+    printf "\n--- RCC -O2 ---\n"
+    rcc_large_o2_time=$("$RCC" -time -O2 -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    printf '%s\n' "$rcc_large_o2_time" | column -t
 fi
 
 echo ""
@@ -232,6 +240,7 @@ echo "======================================"
 
 run_bench "RCC" "$RCC" "$SRC -o $RCC_EXE" "$RCC_EXE"
 run_bench "RCC -O1" "$RCC" "-O1 $SRC -o $RCC_O1_EXE" "$RCC_O1_EXE"
+run_bench "RCC -O2" "$RCC" "-O2 $SRC -o $RCC_O2_EXE" "$RCC_O2_EXE"
 if [ -n "$TCC" ]; then
     run_bench "TCC" "$TCC" "$SRC -o $TCC_EXE" "$TCC_EXE" || true
 fi
@@ -303,6 +312,7 @@ if [ -f "$LARGE_SRC" ]; then
 
     _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null
     _compile_large "RCC -O1" "$RCC" -O1 -c "$LARGE_SRC" -o /dev/null
+    _compile_large "RCC -O2" "$RCC" -O2 -c "$LARGE_SRC" -o /dev/null
     if [ -n "$TCC" ]; then
 	# TCC defines __GNUC__ but doesn't support __uint128_t casts on ARM64
 	_compile_large "TCC" "$TCC" -DSQLITE_DISABLE_INTRINSIC -c "$LARGE_SRC" -o /dev/null
@@ -354,6 +364,9 @@ printf '%s\n' "$rcc_time" | sed 's|[^ ]*/||g'
 printf "\nRCC -O1:\n"
 printf '%s\n' "$rcc_o1_time" | sed 's|[^ ]*/||g'
 printf '```\n'
+printf "\nRCC -O2:\n"
+printf '%s\n' "$rcc_o2_time" | sed 's|[^ ]*/||g'
+printf '```\n'
 if [ -n "${rcc_large_time:-}" ]; then
 	printf "\n## RCC Substep Timing -- sqlite3.c\n\n"
 	printf '```\n'
@@ -361,6 +374,9 @@ if [ -n "${rcc_large_time:-}" ]; then
 	printf '%s\n' "$rcc_large_time" | sed 's|[^ ]*/||g'
 	printf "\nRCC -O1:\n"
 	printf '%s\n' "$rcc_large_o1_time" | sed 's|[^ ]*/||g'
+	printf '```\n'
+	printf "\nRCC -O2:\n"
+	printf '%s\n' "$rcc_large_o2_time" | sed 's|[^ ]*/||g'
 	printf '```\n'
 fi
 if [ -n "${large_results:-}" ]; then

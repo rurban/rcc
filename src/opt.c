@@ -262,6 +262,301 @@ static bool has_addr_arg(Node *node) {
     return false;
 }
 
+// ---- -finline: inline tiny leaf functions --------------------------------
+//
+// A deliberately small, fast inliner in the spirit of gcc's
+// -finline-small-functions. Only functions whose whole body is a single
+// "return EXPR;" are candidates, and only when every argument is a
+// side-effect-free "simple" expression. Under those constraints the call
+// can be replaced in place by EXPR with each parameter reference rewritten
+// to its argument, without introducing any new locals, labels or control
+// flow - so no stack-offset surgery is needed and the transform stays cheap.
+
+#define MAX_INLINE_PARAMS 16
+// gcc-style budgets (max-inline-insns-{auto,single}), but in units of our
+// crude expr_cost() rather than GIMPLE instructions.
+#define INLINE_COST_AUTO 20 // functions not declared `inline`
+#define INLINE_COST_INLINE 60 // functions the programmer marked `inline`
+
+// gcc-style cost estimate: roughly the number of "instructions" in an
+// expression. Leaves (constants, variable reads) are free; each operator
+// counts one; division/modulo and nested calls are pricier. This mirrors
+// the intent of estimate_num_insns() without its precision.
+static int expr_cost(Node *n) {
+    if (!n) return 0;
+    int c;
+    switch (n->kind) {
+    case ND_NUM:
+    case ND_FNUM:
+    case ND_STR:
+    case ND_LVAR:
+        c = 0;
+        break;
+    case ND_FUNCALL:
+        c = 3;
+        break;
+    case ND_DIV:
+    case ND_MOD:
+        c = 2;
+        break;
+    default:
+        c = 1;
+        break;
+    }
+    c += expr_cost(n->lhs) + expr_cost(n->rhs) + expr_cost(n->cond) +
+        expr_cost(n->then) + expr_cost(n->els);
+    for (Node *a = n->args; a; a = a->next)
+        c += expr_cost(a);
+    return c;
+}
+
+// Deep-clone an expression subtree. Sub-lists (body/args) are cloned as
+// fresh lists; the root's `next` is cleared so the caller can splice it in.
+static Node *clone_expr(Node *n) {
+    if (!n) return NULL;
+    Node *c = arena_alloc(sizeof(Node));
+    *c = *n;
+    c->next = NULL;
+    c->lhs = clone_expr(n->lhs);
+    c->rhs = clone_expr(n->rhs);
+    c->cond = clone_expr(n->cond);
+    c->then = clone_expr(n->then);
+    c->els = clone_expr(n->els);
+    c->init = clone_expr(n->init);
+    c->inc = clone_expr(n->inc);
+    c->stmt_expr_result = clone_expr(n->stmt_expr_result);
+    Node bhead = {0}, *bt = &bhead;
+    for (Node *b = n->body; b; b = b->next) {
+        bt->next = clone_expr(b);
+        bt = bt->next;
+    }
+    c->body = bhead.next;
+    Node ahead = {0}, *at = &ahead;
+    for (Node *a = n->args; a; a = a->next) {
+        at->next = clone_expr(a);
+        at = at->next;
+    }
+    c->args = ahead.next;
+    return c;
+}
+
+// True if evaluating `n` has no side effects and duplicating or dropping
+// the evaluation is observationally safe, so it can replace a parameter
+// used any number of times (including zero).
+static bool arg_is_simple(Node *n) {
+    if (!n) return false;
+    switch (n->kind) {
+    case ND_NUM:
+    case ND_FNUM:
+    case ND_STR:
+    case ND_LVAR:
+        return true;
+    case ND_NEG:
+    case ND_BITNOT:
+    case ND_NOT:
+    case ND_ADDR:
+    case ND_CAST:
+    case ND_MEMBER:
+        return arg_is_simple(n->lhs);
+    default:
+        return false;
+    }
+}
+
+// Does an expression call `name` (interned pointer)? Used to skip directly
+// recursive functions, which would otherwise expand without bound.
+static bool calls_name(Node *n, char *name) {
+    if (!n) return false;
+    if (n->kind == ND_FUNCALL) {
+        if (n->funcname == name)
+            return true;
+        if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var && n->lhs->var->name == name)
+            return true;
+    }
+    if (calls_name(n->lhs, name) || calls_name(n->rhs, name) ||
+        calls_name(n->cond, name) || calls_name(n->then, name) ||
+        calls_name(n->els, name) || calls_name(n->init, name) ||
+        calls_name(n->inc, name) || calls_name(n->stmt_expr_result, name))
+        return true;
+    for (Node *b = n->body; b; b = b->next)
+        if (calls_name(b, name)) return true;
+    for (Node *a = n->args; a; a = a->next)
+        if (calls_name(a, name)) return true;
+    return false;
+}
+
+// True if the expression writes to a parameter variable itself or takes its
+// address. Substituting an r-value argument for such a parameter would be
+// unsound (e.g. `x++` on a by-value param, or escaping `&x`). Writes made
+// *through* a pointer parameter are unaffected and intentionally allowed.
+static bool writes_param(Node *n, LVar **params, int nparams) {
+    if (!n) return false;
+    switch (n->kind) {
+    case ND_ASSIGN:
+    case ND_PRE_INC:
+    case ND_POST_INC:
+    case ND_PRE_DEC:
+    case ND_POST_DEC:
+    case ND_ADDR:
+        if (n->lhs && n->lhs->kind == ND_LVAR)
+            for (int i = 0; i < nparams; i++)
+                if (n->lhs->var == params[i]) return true;
+        break;
+    default:
+        break;
+    }
+    if (writes_param(n->lhs, params, nparams) || writes_param(n->rhs, params, nparams) ||
+        writes_param(n->cond, params, nparams) || writes_param(n->then, params, nparams) ||
+        writes_param(n->els, params, nparams) || writes_param(n->init, params, nparams) ||
+        writes_param(n->inc, params, nparams) || writes_param(n->stmt_expr_result, params, nparams))
+        return true;
+    for (Node *b = n->body; b; b = b->next)
+        if (writes_param(b, params, nparams)) return true;
+    for (Node *a = n->args; a; a = a->next)
+        if (writes_param(a, params, nparams)) return true;
+    return false;
+}
+
+// True if the expression references a local variable of the callee that is
+// not one of its parameters (e.g. a statement-expression or compound-literal
+// temporary). Such a variable lives in the callee's frame; cloning it into
+// the caller would alias an unrelated stack slot, so those bodies are not
+// inlined.
+static bool refs_nonparam_local(Node *n, LVar **params, int nparams) {
+    if (!n) return false;
+    if (n->kind == ND_LVAR && n->var && n->var->is_local) {
+        bool is_param = false;
+        for (int i = 0; i < nparams; i++)
+            if (n->var == params[i]) is_param = true;
+        if (!is_param) return true;
+    }
+    if (refs_nonparam_local(n->lhs, params, nparams) || refs_nonparam_local(n->rhs, params, nparams) ||
+        refs_nonparam_local(n->cond, params, nparams) || refs_nonparam_local(n->then, params, nparams) ||
+        refs_nonparam_local(n->els, params, nparams) || refs_nonparam_local(n->init, params, nparams) ||
+        refs_nonparam_local(n->inc, params, nparams) || refs_nonparam_local(n->stmt_expr_result, params, nparams))
+        return true;
+    for (Node *b = n->body; b; b = b->next)
+        if (refs_nonparam_local(b, params, nparams)) return true;
+    for (Node *a = n->args; a; a = a->next)
+        if (refs_nonparam_local(a, params, nparams)) return true;
+    return false;
+}
+
+// Rewrite parameter references to their argument expressions, in place.
+static void subst_params(Node *n, LVar **params, Node **args, int nparams) {
+    if (!n) return;
+    if (n->kind == ND_LVAR) {
+        for (int i = 0; i < nparams; i++) {
+            if (n->var == params[i]) {
+                Node *saved_next = n->next;
+                Node *rep = clone_expr(args[i]);
+                *n = *rep;
+                n->next = saved_next; // keep our position in any list
+                return; // substituted subtree is argument-owned
+            }
+        }
+        return;
+    }
+    subst_params(n->lhs, params, args, nparams);
+    subst_params(n->rhs, params, args, nparams);
+    subst_params(n->cond, params, args, nparams);
+    subst_params(n->then, params, args, nparams);
+    subst_params(n->els, params, args, nparams);
+    subst_params(n->init, params, args, nparams);
+    subst_params(n->inc, params, args, nparams);
+    subst_params(n->stmt_expr_result, params, args, nparams);
+    for (Node *b = n->body; b; b = b->next)
+        subst_params(b, params, args, nparams);
+    for (Node *a = n->args; a; a = a->next)
+        subst_params(a, params, args, nparams);
+}
+
+// If `fn`'s whole body is a single "return EXPR;" (optionally wrapped in one
+// { ... } block), return EXPR; otherwise NULL.
+static Node *inlinable_return_expr(Function *fn) {
+    Node *b = fn->body;
+    if (!b || b->next) return NULL;
+    if (b->kind == ND_BLOCK) {
+        b = b->body;
+        if (!b || b->next) return NULL;
+    }
+    if (b->kind != ND_RETURN || !b->lhs) return NULL;
+    return b->lhs;
+}
+
+// Try to inline a call. On success returns the replacement expression;
+// otherwise NULL (leaving the call unchanged).
+static Node *try_inline(Program *prog, Node *call) {
+    // A direct call carries its target either in funcname or, for an
+    // in-scope function, as an ND_LVAR in lhs. Names are interned, so a
+    // pointer compare identifies the callee.
+    char *name = call->funcname;
+    if (!name && call->lhs && call->lhs->kind == ND_LVAR && call->lhs->var)
+        name = call->lhs->var->name;
+    if (!name || name == bi_s_printf) return NULL;
+
+    // The call must yield a scalar value; struct/union/void returns are not
+    // safe to splice as a plain expression here.
+    Type *rt = call->ty;
+    if (!rt || rt->kind == TY_VOID || rt->kind == TY_STRUCT || rt->kind == TY_UNION)
+        return NULL;
+
+    Function *fn = NULL;
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_FUNC && item->fn->name == name) {
+            fn = item->fn;
+            break;
+        }
+    if (!fn || !fn->body || fn->is_variadic || (fn->ty && fn->ty->is_variadic))
+        return NULL;
+    if (has_cleanup_local(fn)) return NULL;
+
+    Node *ret_expr = inlinable_return_expr(fn);
+    if (!ret_expr) return NULL;
+    if (calls_name(ret_expr, fn->name)) return NULL; // directly recursive
+
+    int cost = expr_cost(ret_expr);
+    int budget = fn->is_inline ? INLINE_COST_INLINE : INLINE_COST_AUTO;
+    if (cost > budget) return NULL;
+
+    // Collect scalar parameters and match them to simple arguments.
+    LVar *params[MAX_INLINE_PARAMS];
+    Node *args[MAX_INLINE_PARAMS];
+    int nparams = 0;
+    for (LVar *p = fn->params; p; p = p->param_next) {
+        if (nparams >= MAX_INLINE_PARAMS) return NULL;
+        if (!(p->ty && (is_integer(p->ty) || is_flonum(p->ty) || p->ty->kind == TY_PTR)))
+            return NULL;
+        params[nparams++] = p;
+    }
+    int nargs = 0;
+    for (Node *a = call->args; a; a = a->next) {
+        if (nargs >= MAX_INLINE_PARAMS) return NULL;
+        if (!arg_is_simple(a)) return NULL;
+        args[nargs++] = a;
+    }
+    if (nargs != nparams) return NULL;
+    if (writes_param(ret_expr, params, nparams)) return NULL;
+    if (refs_nonparam_local(ret_expr, params, nparams)) return NULL;
+
+    Node *inl = clone_expr(ret_expr);
+    subst_params(inl, params, args, nparams);
+
+    // Preserve the call's result type, matching the implicit return
+    // conversion, by inserting a cast when the expression's type differs.
+    if (inl->ty && (inl->ty->kind != rt->kind || inl->ty->size != rt->size)) {
+        Node *cast = arena_alloc(sizeof(Node));
+        memset(cast, 0, sizeof(Node));
+        cast->kind = ND_CAST;
+        cast->lhs = inl;
+        cast->tok = call->tok;
+        cast->ty = rt;
+        return cast;
+    }
+    if (!inl->ty) inl->ty = rt;
+    return inl;
+}
+
 static Node *optimize_node(Program *prog, Node *node) {
     if (!node) return NULL;
     node->lhs = optimize_node(prog, node->lhs);
@@ -329,7 +624,16 @@ static Node *optimize_node(Program *prog, Node *node) {
             }
         }
 
-        // Second: CTFE for user-defined functions with const args
+        // Second: -finline. Replace a call to a tiny "return EXPR;" function
+        // with the substituted expression when the arguments are simple.
+        // Runs before the funcname gate below because in-scope direct calls
+        // carry their target in lhs, not funcname.
+        if (opt_finline) {
+            Node *inl = try_inline(prog, node);
+            if (inl) return inl;
+        }
+
+        // Third: CTFE for user-defined functions with const args
         if (!node->funcname) return node;
         bool all_const = true;
         int args[10];

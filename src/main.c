@@ -129,6 +129,8 @@ void help(void) {
            "-o file             set output filename\n"
            "-O0                 disable peephole optimizer\n"
            "-O1                 enable peephole + CTFE optimizations\n"
+           "-O2, -O3            -O1 plus -finline\n"
+           "-finline            inline tiny \"return EXPR;\" functions (-fno-inline to disable)\n"
            "-g                  emit DWARF line-number debug info\n"
            "-std={c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
            "-W                  enable more compiler warnings\n"
@@ -166,6 +168,7 @@ void help(void) {
 
 bool opt_O0 = false;
 bool opt_O1 = false;
+bool opt_finline = false; // -finline / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
@@ -257,8 +260,17 @@ int main(int argc, char **argv) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
             opt_O0 = true;
-        } else if (!strcmp(argv[i], "-O1") || !strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
+        } else if (!strcmp(argv[i], "-O1")) {
             opt_O1 = true;
+        } else if (!strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
+            opt_O1 = true;
+            opt_finline = true; // -O2 and up enable inlining
+        } else if (!strcmp(argv[i], "-finline") || !strcmp(argv[i], "-finline-functions") ||
+                   !strcmp(argv[i], "-finline-small-functions")) {
+            opt_finline = true;
+        } else if (!strcmp(argv[i], "-fno-inline") || !strcmp(argv[i], "-fno-inline-functions") ||
+                   !strcmp(argv[i], "-fno-inline-small-functions")) {
+            opt_finline = false;
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
@@ -496,11 +508,11 @@ int main(int argc, char **argv) {
                     (unsigned long long)(now_us() - t0));
 
         // CTFE runs only with -O1; peephole skipped with -O0.
-        if (opt_O1) {
+        if (opt_O1 || opt_finline) {
             t0 = opt_time ? now_us() : 0;
             optimize(prog);
             if (opt_time)
-                fprintf(stderr, "  opt(CTFE)   %s: %6llu us\n", cur_path,
+                fprintf(stderr, "  opt         %s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
         }
 

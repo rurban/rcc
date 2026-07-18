@@ -4,40 +4,57 @@ _Generated: July 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           52 |          572 |        624 |
-| RCC -O1   |           54 |          624 |        678 |
-| TCC       |           40 |          514 |        554 |
-| GCC -O0   |           59 |          434 |        493 |
-| GCC -O2   |          103 |          263 |        366 |
-| Clang -O0 |           53 |          433 |        486 |
-| Clang -O2 |          104 |          275 |        379 |
+| RCC       |           74 |          712 |        786 |
+| RCC -O1   |           88 |          744 |        832 |
+| RCC -O2   |          122 |          802 |        924 |
+| TCC       |           88 |          733 |        821 |
+| GCC -O0   |          258 |          661 |        919 |
+| GCC -O2   |          273 |          363 |        636 |
+| Clang -O0 |          127 |          566 |        693 |
+| Clang -O2 |          291 |          344 |        635 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:    591 us
-  parse       bench.c:     93 us
+  preprocess  bench.c:   1020 us
+  parse       bench.c:    130 us
   typecheck   bench.c:      4 us
-  codegen     bench.c:    110 us
-  link        bench_rcc:  45185 us
+  codegen     bench.c:    123 us
+  link        bench_rcc:  66443 us
 
 RCC -O1:
-  preprocess  bench.c:    494 us
-  parse       bench.c:     93 us
+  preprocess  bench.c:    560 us
+  parse       bench.c:    129 us
   typecheck   bench.c:      5 us
-  opt(CTFE)   bench.c:     15 us
-  codegen     bench.c:    104 us
-  link        bench_rcc_o1:  44113 us
+  opt         bench.c:     15 us
+  codegen     bench.c:    111 us
+  link        bench_rcc_o1:  59371 us
+```
+
+RCC -O2:
+preprocess bench.c: 572 us
+parse bench.c: 96 us
+typecheck bench.c: 4 us
+opt bench.c: 14 us
+codegen bench.c: 106 us
+link bench_rcc_o2: 59623 us
+
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
+
 RCC:
 [1;31merror:[0m too many macro arguments
 
 RCC -O1:
+[1;31merror:[0m too many macro arguments
+
+```
+
+RCC -O2:
 [1;31merror:[0m too many macro arguments
 ```
 
@@ -45,8 +62,8 @@ RCC -O1:
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| TCC       |        97 ms |
-| GCC -O0   |      1054 ms |
-| GCC -O2   |      9425 ms |
-| Clang -O0 |       986 ms |
-| Clang -O2 |     10444 ms |
+| TCC       |       190 ms |
+| GCC -O0   |      1927 ms |
+| GCC -O2   |     15126 ms |
+| Clang -O0 |      1541 ms |
+| Clang -O2 |     14326 ms |

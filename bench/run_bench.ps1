@@ -19,6 +19,7 @@ if (Test-Path $TCC_INSTALL) {
 
 $RCC_EXE    = Join-Path $ScriptDir "bench_rcc.exe"
 $RCC_O1_EXE = Join-Path $ScriptDir "bench_rcc_o1.exe"
+$RCC_O2_EXE = Join-Path $ScriptDir "bench_rcc_o2.exe"
 $TCC_EXE    = Join-Path $ScriptDir "bench_tcc.exe"
 $GCC_EXE    = Join-Path $ScriptDir "bench_gcc.exe"
 $GCC_O2     = Join-Path $ScriptDir "bench_gcc_o2.exe"
@@ -45,10 +46,12 @@ function Run-Time {
     }
     Remove-Item $RCC_EXE    -Force -ErrorAction SilentlyContinue
     Remove-Item $RCC_O1_EXE -Force -ErrorAction SilentlyContinue
+    Remove-Item $RCC_O2_EXE -Force -ErrorAction SilentlyContinue
 }
 
 Run-Time "RCC"     "-time $SRC -o $RCC_EXE"
 Run-Time "RCC -O1" "-time -O1 $SRC -o $RCC_O1_EXE"
+Run-Time "RCC -O2" "-time -O2 $SRC -o $RCC_O2_EXE"
 
 Write-Host ""
 Write-Host "=============================================" -ForegroundColor Cyan
@@ -121,6 +124,10 @@ if ($r) { $results += $r }
 Write-Host ""
 
 $r = Run-Bench "RCC -O1 (optimized)" $RCC "-O1 $SRC -o $RCC_O1_EXE" $RCC_O1_EXE "Yellow"
+if ($r) { $results += $r }
+Write-Host ""
+
+$r = Run-Bench "RCC -O2 (optimized)" $RCC "-O2 $SRC -o $RCC_O2_EXE" $RCC_O2_EXE "Yellow"
 if ($r) { $results += $r }
 Write-Host ""
 

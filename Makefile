@@ -304,8 +304,10 @@ prof: rcc_prof
 
 ifeq ($(OS),Windows_NT)
 TEST_RUNNER = ./run_tests.exe ./rcc.exe
+TEST_RUNNER_O2 = ./run_tests.exe "./rcc.exe -O2"
 else
 TEST_RUNNER = ./run_tests ./rcc
+TEST_RUNNER_O2 = ./run_tests "./rcc -O2"
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
@@ -323,6 +325,7 @@ test-torture check-torture: $(TARGET) $(RUN_TESTS)
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all
+	ulimit -f 2097152; $(TEST_RUNNER_O2) --parallel
 	-./mingw-test.sh
 	-./arm64-test.sh
 	-./darwin-test.sh
