@@ -129,8 +129,9 @@ void help(void) {
            "-o file             set output filename\n"
            "-O0                 disable peephole optimizer\n"
            "-O1                 enable peephole + CTFE optimizations\n"
-           "-O2, -O3            -O1 plus -finline\n"
+           "-O2, -O3            -O1 plus -finline, -funroll\n"
            "-finline            inline tiny \"return EXPR;\" functions (-fno-inline to disable)\n"
+           "-funroll            unroll const-sized for-loops (-fno-unroll to disable)\n"
            "-g                  emit DWARF line-number debug info\n"
            "-std={c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
            "-W                  enable more compiler warnings\n"
@@ -169,6 +170,7 @@ void help(void) {
 bool opt_O0 = false;
 bool opt_O1 = false;
 bool opt_finline = false; // -finline / enabled at -O2+
+bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
@@ -265,12 +267,17 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
             opt_O1 = true;
             opt_finline = true; // -O2 and up enable inlining
+            opt_funroll = true; // -O2 and up enable unrolling
         } else if (!strcmp(argv[i], "-finline") || !strcmp(argv[i], "-finline-functions") ||
                    !strcmp(argv[i], "-finline-small-functions")) {
             opt_finline = true;
         } else if (!strcmp(argv[i], "-fno-inline") || !strcmp(argv[i], "-fno-inline-functions") ||
                    !strcmp(argv[i], "-fno-inline-small-functions")) {
             opt_finline = false;
+        } else if (!strcmp(argv[i], "-funroll") || !strcmp(argv[i], "-funroll-loops")) {
+            opt_funroll = true;
+        } else if (!strcmp(argv[i], "-fno-unroll") || !strcmp(argv[i], "-fno-unroll-loops")) {
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
@@ -508,7 +515,7 @@ int main(int argc, char **argv) {
                     (unsigned long long)(now_us() - t0));
 
         // CTFE runs only with -O1; peephole skipped with -O0.
-        if (opt_O1 || opt_finline) {
+        if (opt_O1 || opt_finline || opt_funroll) {
             t0 = opt_time ? now_us() : 0;
             optimize(prog);
             if (opt_time)

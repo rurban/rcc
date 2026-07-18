@@ -557,6 +557,148 @@ static Node *try_inline(Program *prog, Node *call) {
     return inl;
 }
 
+// ---- -funroll: unroll const-sized loops ---------------------------------
+//
+// A fast loop unroller for for-loops with a constant, known iteration count.
+// Only the simplest pattern is handled:
+//   for (i = START; i < END; i++) BODY    or
+//   for (i = START; i <= END; i++) BODY
+// where START and END are compile-time integer constants, the induction
+// variable is incremented (++i or i++), and the body carries no break or
+// continue (which would have no enclosing loop to target after unrolling).
+
+#define MAX_UNROLL_ITERS 16
+
+
+// True if the subtree contains a break or continue (which would lose their
+// enclosing loop after unrolling).
+static bool has_break_or_continue(Node *n) {
+    if (!n) return false;
+    if (n->kind == ND_BREAK || n->kind == ND_CONTINUE) return true;
+    if (has_break_or_continue(n->lhs)) return true;
+    if (has_break_or_continue(n->rhs)) return true;
+    if (has_break_or_continue(n->cond)) return true;
+    if (has_break_or_continue(n->then)) return true;
+    if (has_break_or_continue(n->els)) return true;
+    if (has_break_or_continue(n->init)) return true;
+    if (has_break_or_continue(n->inc)) return true;
+    for (Node *c = n->body; c; c = c->next)
+        if (has_break_or_continue(c)) return true;
+    for (Node *c = n->args; c; c = c->next)
+        if (has_break_or_continue(c)) return true;
+    return false;
+}
+
+// Substitute every ND_LVAR reference to `var` with ND_NUM `val`.
+static void subst_lvar(Node *n, LVar *var, long val) {
+    if (!n) return;
+    if (n->kind == ND_LVAR && n->var == var) {
+        n->kind = ND_NUM;
+        n->val = val;
+        n->var = NULL;
+        return;
+    }
+    subst_lvar(n->lhs, var, val);
+    subst_lvar(n->rhs, var, val);
+    subst_lvar(n->cond, var, val);
+    subst_lvar(n->then, var, val);
+    subst_lvar(n->els, var, val);
+    subst_lvar(n->init, var, val);
+    subst_lvar(n->inc, var, val);
+    for (Node *c = n->body; c; c = c->next)
+        subst_lvar(c, var, val);
+    for (Node *c = n->args; c; c = c->next)
+        subst_lvar(c, var, val);
+}
+
+// Compute the constant iteration count of a for-loop with the canonical form
+//   for (i = START; i < END; i++)  or  for (i = START; i <= END; i++)
+// Returns the count on success, -1 if the loop doesn't match this pattern.
+static int loop_iteration_count(Node *node) {
+    if (!node->init || !node->cond || !node->inc) return -1;
+
+    // init must be: var = START (constant)
+    if (node->init->kind != ND_ASSIGN) return -1;
+    Node *ivar = node->init->lhs;
+    Node *istart = node->init->rhs;
+    if (!ivar || ivar->kind != ND_LVAR || !ivar->var) return -1;
+    if (!istart || istart->kind != ND_NUM) return -1;
+    long start = istart->val;
+
+    // cond must be: var < END or var <= END
+    int cmp; // 0 = <, 1 = <=
+    if (node->cond->kind == ND_LT) cmp = 0;
+    else if (node->cond->kind == ND_LE)
+        cmp = 1;
+    else
+        return -1;
+    Node *c_lhs = node->cond->lhs;
+    Node *c_rhs = node->cond->rhs;
+    if (!c_lhs || c_lhs->kind != ND_LVAR || c_lhs->var != ivar->var) return -1;
+    if (!c_rhs || c_rhs->kind != ND_NUM) return -1;
+    long end = c_rhs->val;
+
+    // inc must be: i++ or ++i on the same variable
+    if (node->inc->kind != ND_POST_INC && node->inc->kind != ND_PRE_INC)
+        return -1;
+    Node *inc_target = node->inc->lhs;
+    if (!inc_target || inc_target->kind != ND_LVAR || inc_target->var != ivar->var)
+        return -1;
+
+    long count = cmp ? (end - start + 1) : (end - start);
+    if (count <= 0 || count > MAX_UNROLL_ITERS) return -1;
+    return (int)count;
+}
+
+// Try to unroll a const-sized for-loop. On success returns an ND_BLOCK
+// containing the init followed by N copies of the body (with the induction
+// variable substituted by its value in each copy). On failure returns NULL.
+static Node *try_unroll(Node *node) {
+    if (node->kind != ND_FOR) return NULL;
+
+    int count = loop_iteration_count(node);
+    if (count < 0) return NULL;
+
+    // Safety: refuse to unroll if the body has break or continue.
+    if (has_break_or_continue(node->then)) return NULL;
+
+    long start_val = node->init->rhs->val;
+    LVar *ivar = node->init->lhs->var;
+
+    // tag the init so it isn't freed when node is replaced
+    node->init->next = NULL;
+
+    // Build the unrolled result as a flat statement list chained via `next`.
+    // The first statement is the init; subsequent statements are the body
+    // clones with the induction variable substituted.
+    Node head = {0}, *tail = &head;
+
+    // 1) init statement
+    tail->next = node->init;
+    tail = node->init;
+
+    // 2) count copies of the body
+    for (int k = 0; k < count; k++) {
+        if (node->then->kind == ND_BLOCK) {
+            // Clone each statement in the compound body
+            for (Node *s = node->then->body; s; s = s->next) {
+                Node *copy = clone_expr(s);
+                subst_lvar(copy, ivar, start_val + k);
+                tail->next = copy;
+                tail = copy;
+            }
+        } else {
+            // Single-statement body
+            Node *copy = clone_expr(node->then);
+            subst_lvar(copy, ivar, start_val + k);
+            tail->next = copy;
+            tail = copy;
+        }
+    }
+
+    return head.next; // the first statement (init), with the rest chained
+}
+
 static Node *optimize_node(Program *prog, Node *node) {
     if (!node) return NULL;
     node->lhs = optimize_node(prog, node->lhs);
@@ -684,6 +826,11 @@ static Node *optimize_node(Program *prog, Node *node) {
         }
     }
 
+    // -funroll: unroll const-sized for-loops
+    if (opt_funroll && node->kind == ND_FOR) {
+        Node *unrolled = try_unroll(node);
+        if (unrolled) return unrolled;
+    }
     return node;
 }
 

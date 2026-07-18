@@ -73,6 +73,7 @@ pngout.png
 rcc-preview2.png
 /chat_export*.md
 .gortex.yaml
+.gortex
 
 # Bench artifacts
 bench/sqlite3.c

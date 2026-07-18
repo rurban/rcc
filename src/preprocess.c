@@ -391,19 +391,20 @@ static int param_or_va(Macro *m, char *name) {
 }
 static unsigned compute_hh_mask(Macro *m, Token *body) {
     unsigned mask = 0;
-    Token *prev = NULL, *prev2 = NULL;
+    Token *prev = NULL;
     for (Token *b = body; b && b->kind != TK_EOF; b = b->next) {
         if (b->kind == TK_IDENT) {
             int idx = param_or_va(m, b->name);
             if (idx >= 0) {
-                Token *n1 = b->next, *n2 = n1 ? n1->next : NULL;
-                int is_hashhash = n1 && n1->kind == TK_PUNCT && n1->len == 2 && n1->ptr[0] == '#' && n1->ptr[1] == '#';
-                int was_hashhash = prev && prev->kind == TK_PUNCT && prev->len == 2 && prev->ptr[0] == '#' && prev->ptr[1] == '#';
+                Token *n1 = b->next;
+                int is_hashhash = n1 && n1->kind == TK_PUNCT &&
+                    n1->len == 2 && n1->ptr[0] == '#' && n1->ptr[1] == '#';
+                int was_hashhash = prev && prev->kind == TK_PUNCT &&
+                    prev->len == 2 && prev->ptr[0] == '#' && prev->ptr[1] == '#';
                 if (is_hashhash) mask |= 1u << idx;
                 if (was_hashhash) mask |= 1u << idx;
             }
         }
-        prev2 = prev;
         prev = b;
     }
     return mask;

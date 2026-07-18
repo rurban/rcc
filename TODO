@@ -4,7 +4,7 @@
   vector support is already too much for codegen.c, and can be extracted into
   an extra c file.
 
-- add -O2 passes, like ~~-finline and~~(_done_) -funroll, but no need for SSA analysis (yet).
+- add more cheap -O2 passes, but no need for SSA analysis (yet).
 
 - optional QBE backend for -O2?
 

@@ -77,7 +77,7 @@ rcc -O1 -time:
 - **Inline builtins** — `memset`, `memcpy`, `memcmp`, `strlen`, `strcmp`, `strchr` expanded inline(`rep stosb`/`rep movsb`/`repe cmpsb`/`repne scasb`/ byte loops), avoiding libc call overhead. Also most other GCC/clang builtins, and `_FORTIFY_SOURCE` check functions. Mandatory SSE4.2 not yet.
 - **Bounds checking builtins** — `__builtin_object_size` returns compile-time size for arrays/structs, `(size_t)-1` for pointers. `__builtin_dynamic_object_size` additionally reads the glibc malloc chunk header at runtime for heap pointers, returning the actual allocated size (may be larger than requested due to rounding). Unlike GCC -O2 which tracks malloc size through the optimizer, rcc reads the chunk metadata.
 - **Insecure C11-C26 unicode identifier** checks, instead using true TR39 advised homoglyph/confusable checks via my [libu8indent](https://github.com/rurban/libu8ident/) library. Checking unicode security guidelines for identifiers.
-- Simple function inliner with -O2.
+- Simple function inliner and const-loop unroller with -O2.
 
 ## Supported C Features
 
@@ -140,7 +140,7 @@ compiler and tests, it is much faster now.
     -o file            set output filename
     -O0                disable peephole optimizer
     -O1                enable CTFE optimizations
-    -O2                enable -finline optimization
+    -O2                enable -finline, -funroll optimizations
     -g                 emit DWARF line-number debug info
     -std={c23,c17,c11,c99,c89,...}
                        sets __STDC_VERSION__

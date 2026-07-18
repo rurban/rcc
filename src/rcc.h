@@ -264,6 +264,7 @@ extern Type *ty_nullptr_t;
 extern bool opt_O0;
 extern bool opt_O1;
 extern bool opt_finline;
+extern bool opt_funroll;
 extern bool opt_v;
 /* Value for the __STDC_VERSION__ predefined macro, selected by -std=.
  * NULL means do not define it (C90/C89, which has no __STDC_VERSION__). */
