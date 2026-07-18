@@ -46,13 +46,12 @@ Linux:
 
 rcc -O1 -time:
 
-    preprocess bench.c:   3497 us
-    lex        bench.c:    330 us
-    parse      bench.c:    498 us
-    typecheck  bench.c:     10 us
-    opt(CTFE)  bench.c:     22 us
-    codegen    bench.c:    433 us
-    link       bench_o1: 40287 us
+    preprocess  bench.c:   4215 us
+    parse       bench.c:    473 us
+    typecheck   bench.c:     11 us
+    opt(CTFE)   bench.c:     21 us
+    codegen     bench.c:    414 us
+    link        bench_o1: 38308 us
 
 ## Key Features
 

@@ -6800,11 +6800,11 @@ static Node *unary(Token **rest, Token *tok) {
         Node *ptr = assign(&tok, tok);
         check_type(ptr);
         if (ptr->ty->kind != TY_PTR && ptr->ty->kind != TY_ARRAY)
-            error_tok(start, "pointer expected");
+            error_tok_simple(start, "pointer expected");
         else {
             Type *base = ptr->ty->base;
             if (!base || base->size == 0 || base->size > 8 || (base->size & (base->size - 1)))
-                error_tok(start, "integral or integer-sized pointer target type expected");
+                error_tok_simple(start, "integral or integer-sized pointer target type expected");
         }
         tok = skip(tok, ",");
         Node *node = new_node(ND_ATOMIC_LOAD, start);
@@ -6892,9 +6892,9 @@ static Node *unary(Token **rest, Token *tok) {
             Type *base = ptr->ty->base;
             if ((expected->ty->kind == TY_PTR || expected->ty->kind == TY_ARRAY) && expected->ty->base) {
                 if (expected->ty->base->size != base->size)
-                    error_tok(start, "pointer target type mismatch in argument 2");
+                    error_tok_simple(start, "pointer target type mismatch in argument 2");
             } else {
-                error_tok(start, "pointer target type mismatch in argument 2");
+                error_tok_simple(start, "pointer target type mismatch in argument 2");
             }
         }
         Node *node = new_node(ND_ATOMIC_CAS, start);
@@ -6931,7 +6931,7 @@ static Node *unary(Token **rest, Token *tok) {
     if (ptr->ty->kind == TY_PTR || ptr->ty->kind == TY_ARRAY) { \
         Type *base = ptr->ty->base; \
         if (!base || base->kind == TY_PTR || base->size == 0 || base->size > 8 || (base->size & (base->size - 1))) \
-            error_tok(start, "integral or integer-sized pointer target type expected"); \
+            error_tok_simple(start, "integral or integer-sized pointer target type expected"); \
         else if (ty_const(base)) \
             warn_tok(start, "assignment of read-only location"); \
     } \
