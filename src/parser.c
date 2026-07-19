@@ -2271,6 +2271,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         *ety = fixed_underlying ? *fixed_underlying : *ty_int;
         ety->qual = 0; // qualifiers on the underlying type don't apply
         ety->is_enum = true;
+        ety->is_enum_fixed = (fixed_underlying != NULL);
         // C23 `enum tag : type;` declares the tag with a fixed underlying
         // type — register it so sizeof(enum tag) sees the right size.
         if (tag_name && fixed_underlying) {
@@ -5245,11 +5246,9 @@ static Token *stmt_iter_tok;
 static Token *sync_stmt(Token *tok) {
     int depth = 0;
     while (tok->kind != TK_EOF) {
-        ", tok->ptr);
-            if (equalc(tok, "{")) {
+        if (equalc(tok, "{")) {
             depth++;
-        }
-        else if (equalc(tok, "}")) {
+        } else if (equalc(tok, "}")) {
             if (depth == 0) {
                 // Don't return at a '}' that is part of a compound literal
                 // or initializer (followed by '.' , ';' or similar).
@@ -5263,8 +5262,7 @@ static Token *sync_stmt(Token *tok) {
             } else {
                 depth--;
             }
-        }
-        else if (equalc(tok, ";") && depth == 0) {
+        } else if (equalc(tok, ";") && depth == 0) {
             return tok->next;
         }
         tok = tok->next;
@@ -7061,8 +7059,7 @@ static Node *unary(Token **rest, Token *tok) {
         if (equalc(tok, ",")) {
             int depth = 0;
             while (tok->kind != TK_EOF) {
-                ", tok->ptr);
-                    if (equalc(tok, "(")) depth++;
+                if (equalc(tok, "(")) depth++;
                 else if (equalc(tok, ")")) {
                     if (depth == 0) break;
                     depth--;
@@ -9202,11 +9199,9 @@ static EnumConst *rec_enum_consts;
 // `depth` is the compound-statement nesting depth at the error site.
 static Token *sync_toplevel(Token *tok, int depth) {
     while (tok->kind != TK_EOF) {
-        ", tok->ptr);
-            if (equalc(tok, "{")) {
+        if (equalc(tok, "{")) {
             depth++;
-        }
-        else if (equalc(tok, "}")) {
+        } else if (equalc(tok, "}")) {
             depth--;
             if (depth <= 0) {
                 tok = tok->next;
@@ -9214,8 +9209,7 @@ static Token *sync_toplevel(Token *tok, int depth) {
                     tok = tok->next;
                 return tok;
             }
-        }
-        else if (equalc(tok, ";") && depth <= 0) {
+        } else if (equalc(tok, ";") && depth <= 0) {
             return tok->next;
         }
         tok = tok->next;
@@ -9347,9 +9341,8 @@ Program *parse(Token *tok) {
     error_recovery_active = true;
 
     while (tok->kind != TK_EOF) {
-        ", tok->ptr);
-            // Checkpoint file-scope state for error recovery.
-            rec_iter_tok = tok;
+        // Checkpoint file-scope state for error recovery.
+        rec_iter_tok = tok;
         rec_typedef_cp = typedef_scope_checkpoint();
         rec_tag_cp = tag_scope_checkpoint();
         rec_enum_cp = enum_scope_checkpoint();
@@ -9474,6 +9467,22 @@ Program *parse(Token *tok) {
                 error_tok(tok, "alignment specified for unnamed declaration");
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' in empty declaration");
+            if (base->is_enum_fixed) {
+                if (attr.is_extern || attr.is_static)
+                    error_tok(tok, "storage class specifier in empty declaration with 'enum' underlying type");
+                if (attr.is_tls)
+                    error_tok(tok, "'_Thread_local' in empty declaration with 'enum' underlying type");
+                if (attr.is_inline)
+                    error_tok(tok, "'inline' in empty declaration");
+                if (attr.is_noreturn_std)
+                    error_tok(tok, "'_Noreturn' in empty declaration");
+                if (attr.is_auto || attr.is_auto_type)
+                    error_tok(tok, "'auto' in file-scope empty declaration");
+                if (attr.is_register)
+                    error_tok(tok, "'register' in file-scope empty declaration");
+                if (attr.has_alignas)
+                    error_tok(tok, "'alignas' in empty declaration with 'enum' underlying type");
+            }
             tok = tok->next;
             continue;
         }

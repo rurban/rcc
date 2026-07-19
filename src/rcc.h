@@ -221,6 +221,7 @@ struct Type {
     int align; // alignment
     bool is_unsigned;
     bool is_enum; // enum type — treated as unsigned for bitfield extraction
+    bool is_enum_fixed; // C23 enum with fixed underlying type
     bool is_signed_char; // signed char vs plain char (both have is_unsigned=false)
     bool is_vector; // GCC __attribute__((vector_size(N))): TY_STRUCT of N scalar
     // element-members, base = element type, align = total size
