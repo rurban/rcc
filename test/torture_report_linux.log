@@ -965,7 +965,7 @@
   c23-attr-reproducible-5             PASS
   c23-attr-syntax-1                   PASS (compile only)
   c23-attr-syntax-2                   PASS (compile only)
-  c23-attr-syntax-3                   FAIL (dg-error lines)
+  c23-attr-syntax-3                   PASS (expected error)
   c23-attr-syntax-4                   PASS (compile only)
   c23-attr-syntax-5                   PASS (compile only)
   c23-attr-syntax-6                   PASS (expected error)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3584/3592 passed (99%), 8 failed (8 compile/0 runtime), 371 skipped.
+Torture: 3585/3592 passed (99%), 7 failed (7 compile/0 runtime), 371 skipped.
 
-Compile failures: c11-align-5 c23-attr-syntax-3 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
+Compile failures: c11-align-5 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1

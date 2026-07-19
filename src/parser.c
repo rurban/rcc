@@ -2216,12 +2216,17 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
 static Type *enum_specifier(Token **rest, Token *tok) {
     tok = skip(tok, "enum");
     // C23: attributes allowed between enum keyword and tag name
+    bool c23_tag_attrs = equalc(tok, "[") && tok->next &&
+        equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr;
     tok = read_type_attrs(tok, NULL, NULL);
     char *tag_name = NULL;
     if (tok->kind == TK_IDENT) {
         tag_name = tok->name;
         tok = tok->next;
     }
+    if (c23_tag_attrs && tag_name && !equalc(tok, "{") && !equalc(tok, ";") &&
+        !equalc(tok, ":"))
+        error_tok(tok, "expected '{' or ';' after attributes on enum tag");
 
     // C23: optional fixed underlying type — enum [tag] : type
     // Only consume ':' if what follows is a real type specifier, not a
@@ -2564,6 +2569,10 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     tok = tok->next;
     int struct_attr_align = 0;
     VarAttr struct_attr = {};
+    // C23 [[]] attributes in this position are only valid when the type
+    // contents are being defined, or in the lone "struct attr id;" form.
+    bool c23_tag_attrs = equalc(tok, "[") && tok->next &&
+        equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr;
     tok = read_type_attrs(tok, &struct_attr_align, &struct_attr);
     char *type_cleanup = pending_cleanup_func;
     pending_cleanup_func = NULL;
@@ -2574,6 +2583,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         tag_tok = tok;
         tok = tok->next;
     }
+    if (c23_tag_attrs && tag_tok && !equalc(tok, "{") && !equalc(tok, ";"))
+        error_tok(tok, "expected '{' or ';' after attributes on struct or union tag");
 
     Type *ty = NULL;
     if (tag_tok) {
@@ -3436,6 +3447,10 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 static Type *type_name(Token **rest, Token *tok) {
     VarAttr attr = {};
     bool _saved_in_type_name = in_type_name;
+    // C23: prefix attributes cannot appear on type names
+    if (equalc(tok, "[") && tok->next && equalc(tok->next, "[") &&
+        tok->ptr + tok->len == tok->next->ptr)
+        error_tok(tok, "expected type name, not an attribute specifier");
     in_type_name = true;
     Type *base = declspec(&tok, tok, &attr);
     Type *ty = declarator(&tok, tok, copy_type(base), NULL);
@@ -5323,6 +5338,10 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 (equalc(after_attr, "struct") || equalc(after_attr, "union") ||
                  equalc(after_attr, "enum")))
                 error_tok(after_attr, "empty declaration");
+            // Attributes cannot prefix a static_assert-declaration
+            if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0 &&
+                (equalc(t, "static_assert") || equalc(t, "_Static_assert")))
+                error_tok(t, "expected declaration specifiers before static_assert");
             tok = t;
             continue;
         }
@@ -5939,7 +5958,15 @@ static Node *stmt(Token **rest, Token *tok) {
         record_label_scope(node->label_name, locals);
         resolve_pending_gotos(node->label_name, locals);
         tok = tok->next->next;
+        Token *before_attrs = tok;
         tok = skip_attributes(tok);
+        // Declarations, including attribute declarations, cannot appear
+        // after labels when a statement is expected. (C23 [[]] attrs only)
+        if (tok != before_attrs && equalc(tok, ";") &&
+            equalc(before_attrs, "[") && before_attrs->next &&
+            equalc(before_attrs->next, "[") &&
+            before_attrs->ptr + before_attrs->len == before_attrs->next->ptr)
+            error_tok(tok, "expected statement before attribute declaration");
         // C23: a label may immediately precede a declaration, or appear at the
         // end of a compound statement (before '}').  In those cases the label
         // has an empty (null) statement body and the enclosing block parses the
