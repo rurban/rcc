@@ -9467,6 +9467,12 @@ Program *parse(Token *tok) {
                 error_tok(tok, "alignment specified for unnamed declaration");
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' in empty declaration");
+            if (attr.is_auto || attr.is_auto_type) {
+                if (attr.is_auto_type && !(attr.is_extern || attr.is_static || attr.is_typedef))
+                    error_tok(tok, "empty declaration");
+                else if (attr.is_auto)
+                    error_tok(tok, "'auto' in empty declaration");
+            }
             if (base->is_enum_fixed) {
                 if (attr.is_extern || attr.is_static)
                     error_tok(tok, "storage class specifier in empty declaration with 'enum' underlying type");
@@ -9847,6 +9853,14 @@ Program *parse(Token *tok) {
                 error_tok(tok, "expected ';', ',', or '{'");
             } else {
                 // C11 6.7.4p2: _Noreturn only on function declarations
+                if (attr.is_auto_type) {
+                    if (ty->kind == TY_PTR)
+                        error_tok(tok, "plain identifier with auto");
+                    if (!equalc(tok, "="))
+                        error_tok(tok, "initialized data declaration");
+                }
+                if (attr.is_auto && !attr.is_auto_type)
+                    error_tok(tok, "file-scope declaration");
                 if (attr.is_noreturn_std)
                     error_tok(tok, "'_Noreturn' on a non-function declaration");
                 if (attr.is_typedef) {
@@ -9926,6 +9940,8 @@ Program *parse(Token *tok) {
                     break;
                 }
                 if (equalc(tok, ",")) {
+                    if (attr.is_auto_type || attr.is_auto)
+                        error_tok(tok, "only a single declarator allowed with `auto`");
                     tok = tok->next;
                     continue;
                 }
