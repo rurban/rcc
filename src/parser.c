@@ -18,6 +18,7 @@ struct VarAttr {
     bool is_packed;
     bool is_constexpr;
     bool is_auto_type;
+    bool is_auto;
     bool is_register;
     char *diag_warning;
     char *diag_error;
@@ -1118,11 +1119,16 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     tok = tok->next;
                     continue;
                 }
-                // namespace:: (two separate : tokens)
-                if (tok->next && equalc(tok->next, ":") &&
-                    tok->next->next && equalc(tok->next->next, ":")) {
-                    tok = tok->next->next->next; // skip ident ::
-                    continue;
+                // namespace:: (two adjacent : tokens)
+                if (tok->next && equalc(tok->next, ":")) {
+                    Token *c1 = tok->next;
+                    if (c1->next && equalc(c1->next, ":") &&
+                        c1->ptr + c1->len == c1->next->ptr) {
+                        tok = c1->next->next; // skip ident ::
+                        continue;
+                    }
+                    // Single colon after namespace name: expected ']' before ':'
+                    error_tok(c1, "expected ']' before ':'");
                 }
                 bool consumed = false;
                 if (tok->kind != TK_IDENT)
@@ -3086,16 +3092,24 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
 
         if (equalc(tok, "typedef")) {
+            if (attr->is_typedef)
+                error_tok(tok, "duplicate 'typedef'");
             attr->is_typedef = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "extern")) {
+            if (attr->is_extern)
+                error_tok(tok, "duplicate 'extern'");
             attr->is_extern = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "static")) {
+            if (attr->is_static)
+                error_tok(tok, "duplicate 'static'");
+            if (attr->is_register)
+                error_tok(tok, "multiple storage classes in declaration specifiers");
             attr->is_static = true;
             tok = tok->next;
             continue;
@@ -3122,16 +3136,27 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             continue;
         }
         if (equalc(tok, "register")) {
+            if (attr->is_register)
+                error_tok(tok, "duplicate 'register'");
+            if (attr->is_static)
+                error_tok(tok, "multiple storage classes in declaration specifiers");
+            if (attr->is_tls)
+                error_tok(tok, "'register' used with 'thread_local'");
             attr->is_register = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "auto")) {
+            attr->is_auto = true;
             has_auto_seen = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "__thread") || equalc(tok, "_Thread_local") || equalc(tok, "thread_local")) {
+            if (attr->is_tls)
+                error_tok(tok, "duplicate 'thread_local'");
+            if (attr->is_register)
+                error_tok(tok, "'thread_local' used with 'register'");
             attr->is_tls = true;
             tok = tok->next;
             continue;
@@ -3463,7 +3488,12 @@ static Type *type_name(Token **rest, Token *tok) {
         tok->ptr + tok->len == tok->next->ptr)
         error_tok(tok, "expected type name, not an attribute specifier");
     in_type_name = true;
+    Token *tn_start = tok;
     Type *base = declspec(&tok, tok, &attr);
+    if (attr.is_typedef || attr.is_extern || attr.is_auto_type || attr.is_auto)
+        error_tok(tn_start, "storage class specifier in type name");
+    if (!in_compound_literal && (attr.is_static || attr.is_register || attr.is_tls))
+        error_tok(tn_start, "storage class specifier in type name");
     Type *ty = declarator(&tok, tok, copy_type(base), NULL);
     in_type_name = _saved_in_type_name;
     tok = skip_attributes(tok);
@@ -4387,8 +4417,12 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
             tok = tok->next;
             Token *compound_start = find_compound_literal_start(tok);
+            // C23: file-scope compound literals may not specify register/thread_local
             Token *t = tok;
             while (equalc(t, "(")) t = t->next;
+            for (Token *u = t; u && !equalc(u, ")"); u = u->next)
+                if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
+                    error_tok(u, "file-scope compound literal specifies storage class");
             bool saved_icl = in_compound_literal;
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
@@ -7812,8 +7846,13 @@ static Node *unary(Token **rest, Token *tok) {
         return new_unary(ND_NOT, unary(rest, tok->next), tok);
     if (equalc(tok, "~"))
         return vector_lower(new_unary(ND_BITNOT, unary(rest, tok->next), tok));
-    if (equalc(tok, "&"))
-        return new_unary(ND_ADDR, unary(rest, tok->next), tok);
+    if (equalc(tok, "&")) {
+        Node *node = unary(rest, tok->next);
+        check_type(node);
+        if (node->kind == ND_LVAR && node->var && node->var->is_register)
+            error_tok(tok, "address of register compound literal requested");
+        return new_unary(ND_ADDR, node, tok);
+    }
     if (equalc(tok, "*"))
         return new_unary(ND_DEREF, unary(rest, tok->next), tok);
     if (equalc(tok, "sizeof")) {
@@ -7972,20 +8011,33 @@ static Node *unary(Token **rest, Token *tok) {
             // (static, register, thread_local, _Thread_local).
             bool is_storage = false;
             bool is_tls = false;
+            bool is_register_cl = false;
+            bool has_static_cl = false;
             for (Token *t = start->next; t && !equalc(t, ")"); t = t->next) {
-                if (equalc(t, "static") || equalc(t, "register"))
+                if (equalc(t, "static")) {
                     is_storage = true;
+                    has_static_cl = true;
+                }
+                if (equalc(t, "register")) {
+                    is_storage = true;
+                    is_register_cl = true;
+                }
                 if (equalc(t, "_Thread_local") || equalc(t, "thread_local")) {
                     is_storage = true;
                     is_tls = true;
                 }
             }
+            if (current_block_depth > 0 && is_tls && !has_static_cl)
+                error_tok(start, "compound literal implicitly auto and declared 'thread_local'");
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *var;
             if (is_storage) {
                 var = new_var(name, ty, false);
-                var->is_static = true;
+                if (is_register_cl)
+                    var->is_register = true;
+                else
+                    var->is_static = true;
                 var->is_tls = is_tls;
             } else {
                 var = new_var(name, ty, true);
@@ -8840,6 +8892,12 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         // Pointer initialized with &(compound literal): &(struct T){...}
         if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
             tok = tok->next; // skip &
+            // C23: file-scope compound literals may not specify register/thread_local
+            Token *tt = tok;
+            while (equalc(tt, "(")) tt = tt->next;
+            for (Token *u = tt; u && !equalc(u, ")"); u = u->next)
+                if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
+                    error_tok(u, "file-scope compound literal specifies storage class");
 
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;

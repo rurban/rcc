@@ -348,6 +348,7 @@ struct LVar {
     Reloc *relocs;
     char *cleanup_func; // __attribute__((__cleanup__(func)))
     bool is_tls; // __thread / _Thread_local
+    bool is_register; // register compound literal
     bool is_deprecated; // C23 [[deprecated]]
     char *deprecated_msg; // C23 [[deprecated("reason")]]
     bool is_nodiscard; // C23 [[nodiscard]]
