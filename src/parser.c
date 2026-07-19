@@ -18,12 +18,14 @@ struct VarAttr {
     bool is_packed;
     bool is_constexpr;
     bool is_auto_type;
+    bool is_register;
     char *diag_warning;
     char *diag_error;
     DiagEntry *diag_entries;
     unsigned char bitfield_mode;
     bool is_noreturn;
-    bool is_noreturn_std; // C11 `_Noreturn` keyword (constraint-checked)
+    bool is_noreturn_std;
+    bool has_alignas; // C11 `_Noreturn` keyword (constraint-checked)
     bool is_deprecated;
     char *deprecated_msg;
     bool is_reproducible;
@@ -1013,6 +1015,7 @@ static Token *skip_balanced(Token *tok) {
 static Type *type_name(Token **rest, Token *tok);
 
 static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr);
+static bool in_type_name = false;
 
 static Token *skip_attributes(Token *tok) {
     return read_type_attrs(tok, NULL, NULL);
@@ -1148,6 +1151,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             (tok->kw == ID_ALIGNAS && opt_std_version && strcmp(opt_std_version, "202311L") >= 0)) {
             tok = tok->next;
             tok = skip(tok, "(");
+            if (attr) attr->has_alignas = true;
             if (is_typename(tok)) {
                 Token *aty_tok = tok;
                 Type *ty = type_name(&tok, tok);
@@ -1914,6 +1918,8 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             // C11 6.7.4p2: _Noreturn only on function declarations
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' on function parameter");
+            if (attr.has_alignas)
+                error_tok(tok, "alignment specified for parameter");
             tok = skip_attributes(tok);
 
             // Preserve VLA dim expression from single-dimension VLA param (e.g. b[a++])
@@ -2131,7 +2137,13 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         while (equalc(tok, "__cdecl") || equalc(tok, "__stdcall") || equalc(tok, "__fastcall") ||
                equalc(tok, "__thiscall") || equalc(tok, "__vectorcall"))
             tok = tok->next;
+        Token *cur = tok;
         tok = read_type_attrs(tok, &decl_align, NULL);
+        if (ty->kind == TY_PTR && tok != cur &&
+            (cur->kw == ID__ALIGNAS ||
+             (cur->kw == ID_ALIGNAS && opt_std_version &&
+              strcmp(opt_std_version, "202311L") >= 0)))
+            error_tok(cur, "'_Alignas' cannot be specified for a pointer");
         if (equalc(tok, "*")) {
             ty = pointer_to(ty);
             tok = tok->next;
@@ -3058,6 +3070,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             continue;
         }
         if (equalc(tok, "register")) {
+            attr->is_register = true;
             tok = tok->next;
             continue;
         }
@@ -3392,8 +3405,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
 static Type *type_name(Token **rest, Token *tok) {
     VarAttr attr = {};
+    bool _saved_in_type_name = in_type_name;
+    in_type_name = true;
     Type *base = declspec(&tok, tok, &attr);
     Type *ty = declarator(&tok, tok, copy_type(base), NULL);
+    in_type_name = _saved_in_type_name;
     tok = skip_attributes(tok);
     *rest = tok;
     return ty;
@@ -4768,6 +4784,8 @@ static Node *declaration(Token **rest, Token *tok) {
 
         if (attr.is_typedef) {
             add_typedef(name, ty);
+        } else if (attr.is_register && attr.has_alignas) {
+            error_tok(tok, "alignment specified for register variable");
         } else if (attr.is_static) {
             // C11 6.7.4p3: a non-static inline function may not define a
             // modifiable object with static storage duration.
@@ -5640,6 +5658,16 @@ static Node *stmt(Token **rest, Token *tok) {
         if (!equalc(tok, ";")) {
             if (is_typename(tok) || equalc(tok, "_Static_assert") ||
                 equalc(tok, "static_assert")) {
+                if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
+                    Token *s = tok->next->next;
+                    while (s && !equalc(s, ",") && !equalc(s, ")")) {
+                        if (equalc(s, "{")) {
+                            error_tok(s, "declaration of static_assert in for loop declares a type");
+                            break;
+                        }
+                        s = s->next;
+                    }
+                }
                 node->init = declaration(&tok, tok);
             } else {
                 node->init = expr(&tok, tok);
@@ -9243,6 +9271,8 @@ Program *parse(Token *tok) {
 
         if (equalc(tok, ";")) {
             // C11 6.7.4p2: _Noreturn requires a function declarator
+            if (attr.has_alignas)
+                error_tok(tok, "alignment specified for unnamed declaration");
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' in empty declaration");
             tok = tok->next;
@@ -9281,6 +9311,8 @@ Program *parse(Token *tok) {
 
             // C11 6.7.1: _Thread_local cannot appear with typedef or on
             // a function declaration.
+            if (attr.has_alignas && (attr.is_typedef || is_func))
+                error_tok(tok, attr.is_typedef ? "alignment specified for typedef" : "alignment specified for function");
             if (attr.is_tls && (attr.is_typedef || is_func))
                 error_tok(tok, attr.is_typedef ? "'_Thread_local' with typedef" : "'_Thread_local' storage class on function");
 
