@@ -177,6 +177,7 @@ const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
 bool opt_Werror = false;
+bool opt_pedantic = false;
 bool opt_Werror_unknown = false;
 bool opt_Wno_homoglyph = false;
 bool opt_dryrun = false;
@@ -424,6 +425,9 @@ int main(int argc, char **argv) {
             ; // silently ignored
         } else if (!strcmp(argv[i], "-pedantic-errors")) {
             opt_Werror = true;
+            opt_pedantic = true;
+        } else if (!strcmp(argv[i], "-pedantic") || !strcmp(argv[i], "-Wpedantic")) {
+            opt_pedantic = true;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             if (opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);

@@ -25,7 +25,7 @@ struct VarAttr {
     unsigned char bitfield_mode;
     bool is_noreturn;
     bool is_noreturn_std;
-    bool has_alignas; // C11 `_Noreturn` keyword (constraint-checked)
+    bool has_alignas;
     bool is_deprecated;
     char *deprecated_msg;
     bool is_reproducible;
@@ -2620,10 +2620,10 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (cond->ty && !is_integer(cond->ty))
                 error_tok(cond->tok, "static_assert condition is not an integer");
             // C11 6.6p6: floating operands only as immediate cast operands
-            if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
                 is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
-                error_tok(cond->tok,
-                          "static_assert condition is not an integer constant expression");
+                warn_tok(cond->tok,
+                         "static_assert condition is not an integer constant expression");
             long long v = 0;
             if (!eval_const_expr(cond, &v))
                 error_tok(cond->tok, "static_assert condition must be constant");
@@ -4681,10 +4681,10 @@ static Node *declaration(Token **rest, Token *tok) {
         if (cond->ty && !is_integer(cond->ty))
             error_tok(cond->tok, "static_assert condition is not an integer");
         // C11 6.6p6: floating operands only as immediate cast operands
-        if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+        if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
             is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
-            error_tok(cond->tok,
-                      "static_assert condition is not an integer constant expression");
+            warn_tok(cond->tok,
+                     "static_assert condition is not an integer constant expression");
         long long val = 0;
         if (!eval_const_expr(cond, &val))
             error_tok(cond->tok, "static_assert condition must be a constant expression");
@@ -7771,18 +7771,18 @@ static Node *unary(Token **rest, Token *tok) {
             Token *aty_tok = tok->next->next;
             Type *ty = parse_cast_type(&tok, tok->next);
             // C11 6.5.3.4p1: no function or incomplete types.
-            // Enforced with -pedantic-errors/-Werror; gcc accepts as extension.
-            if (opt_Werror && ty->kind == TY_FUNC)
-                error_tok(aty_tok, "'_Alignof' applied to a function type");
-            if (opt_Werror && (ty->kind == TY_VOID || ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members)))
-                error_tok(aty_tok, "'_Alignof' applied to an incomplete type");
+            // Enforced with -pedantics/-Werror; gcc accepts as extension.
+            if (ty->kind == TY_FUNC)
+                warn_tok(aty_tok, "'_Alignof' applied to a function type");
+            if (ty->kind == TY_VOID || ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members))
+                warn_tok(aty_tok, "'_Alignof' applied to an incomplete type");
             *rest = tok;
             Node *n = new_num(ty->align, start);
             n->ty = ty_ulong; // _Alignof returns size_t (unsigned)
             return n;
         }
-        if (std_spelling && opt_Werror)
-            error_tok(tok->next, "'_Alignof' applied to an expression");
+        if (opt_pedantic && std_spelling)
+            warn_tok(tok->next, "'_Alignof' applied to an expression");
         Node *node = unary(&tok, tok->next);
         check_type(node);
         *rest = tok;
@@ -9241,13 +9241,13 @@ Program *parse(Token *tok) {
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);
             check_type(cond);
-            if (cond->ty && !is_integer(cond->ty))
-                error_tok(cond->tok, "static_assert condition is not an integer");
+            if (opt_pedantic && cond->ty && !is_integer(cond->ty))
+                warn_tok(cond->tok, "static_assert condition is not an integer");
             // C11 6.6p6: floating operands only as immediate cast operands
-            if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
                 is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
-                error_tok(cond->tok,
-                          "static_assert condition is not an integer constant expression");
+                warn_tok(cond->tok,
+                         "static_assert condition is not an integer constant expression");
             long long v = 0;
             if (!eval_const_expr(cond, &v))
                 error_tok(cond->tok, "static_assert condition must be constant");
@@ -9271,6 +9271,8 @@ Program *parse(Token *tok) {
 
         if (equalc(tok, ";")) {
             // C11 6.7.4p2: _Noreturn requires a function declarator
+            if (attr.has_alignas)
+                error_tok(tok, "alignment specified for unnamed declaration");
             if (attr.has_alignas)
                 error_tok(tok, "alignment specified for unnamed declaration");
             if (attr.is_noreturn_std)
@@ -9311,6 +9313,8 @@ Program *parse(Token *tok) {
 
             // C11 6.7.1: _Thread_local cannot appear with typedef or on
             // a function declaration.
+            if (attr.has_alignas && (attr.is_typedef || is_func))
+                error_tok(tok, attr.is_typedef ? "alignment specified for typedef" : "alignment specified for function");
             if (attr.has_alignas && (attr.is_typedef || is_func))
                 error_tok(tok, attr.is_typedef ? "alignment specified for typedef" : "alignment specified for function");
             if (attr.is_tls && (attr.is_typedef || is_func))

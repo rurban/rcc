@@ -286,6 +286,7 @@ extern const char *opt_std_version;
 extern const char *opt_exec_charset;
 extern bool opt_W;
 extern bool opt_Werror;
+extern bool opt_pedantic;
 extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;
 extern bool opt_ms_bitfields;

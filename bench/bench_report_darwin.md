@@ -4,41 +4,41 @@ _Generated: July 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |          136 |          709 |        845 |
-| RCC -O1   |          113 |          721 |        834 |
-| RCC -O2   |          113 |          749 |        862 |
-| TCC       |          128 |          692 |        820 |
-| GCC -O0   |          205 |          601 |        806 |
-| GCC -O2   |          246 |          353 |        599 |
-| Clang -O0 |          152 |          601 |        753 |
-| Clang -O2 |          204 |          367 |        571 |
+| RCC       |           55 |          672 |        727 |
+| RCC -O1   |           54 |          614 |        668 |
+| RCC -O2   |           65 |          617 |        682 |
+| TCC       |           45 |          524 |        569 |
+| GCC -O0   |           81 |          435 |        516 |
+| GCC -O2   |           96 |          270 |        366 |
+| Clang -O0 |           62 |          454 |        516 |
+| Clang -O2 |          102 |          264 |        366 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:   1120 us
-  parse       bench.c:    368 us
+  preprocess  bench.c:    627 us
+  parse       bench.c:    123 us
   typecheck   bench.c:      4 us
-  codegen     bench.c:    292 us
-  link        bench_rcc: 109473 us
+  codegen     bench.c:    107 us
+  link        bench_rcc:  53264 us
 
 RCC -O1:
-  preprocess  bench.c:    611 us
-  parse       bench.c:    104 us
-  typecheck   bench.c:      5 us
-  opt         bench.c:     16 us
-  codegen     bench.c:    111 us
-  link        bench_rcc_o1:  59716 us
+  preprocess  bench.c:    569 us
+  parse       bench.c:    105 us
+  typecheck   bench.c:      4 us
+  opt         bench.c:     15 us
+  codegen     bench.c:    107 us
+  link        bench_rcc_o1:  52570 us
 ```
 
 RCC -O2:
-preprocess bench.c: 577 us
-parse bench.c: 111 us
-typecheck bench.c: 4 us
+preprocess bench.c: 549 us
+parse bench.c: 109 us
+typecheck bench.c: 5 us
 opt bench.c: 16 us
-codegen bench.c: 111 us
-link bench_rcc_o2: 56790 us
+codegen bench.c: 109 us
+link bench_rcc_o2: 56359 us
 
 ```
 
@@ -62,8 +62,8 @@ RCC -O2:
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| TCC       |       188 ms |
-| GCC -O0   |      1623 ms |
-| GCC -O2   |     15246 ms |
-| Clang -O0 |      1341 ms |
-| Clang -O2 |     12908 ms |
+| TCC       |        99 ms |
+| GCC -O0   |       938 ms |
+| GCC -O2   |     10085 ms |
+| Clang -O0 |       978 ms |
+| Clang -O2 |     10026 ms |

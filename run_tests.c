@@ -4818,7 +4818,7 @@ static int run_torture_suite(bool summary_only) {
         /*
     if (streq(platform, "arm64_cross"))
            max_fail = 29;
-    else if (streq(platform, "arm64"))
+    else if (streq(platform, "arm64"))g
         max_fail = 0;
     else if (streq(platform, "darwin_cross"))
         max_fail = 0;
@@ -4829,8 +4829,8 @@ static int run_torture_suite(bool summary_only) {
     else if (streq(platform, "linux"))
         max_fail = 0;
     else
-    */
-        max_fail = 11;
+        */
+        max_fail = 9;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
