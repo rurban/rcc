@@ -5245,13 +5245,26 @@ static Token *stmt_iter_tok;
 static Token *sync_stmt(Token *tok) {
     int depth = 0;
     while (tok->kind != TK_EOF) {
-        if (equalc(tok, "{")) {
+        ", tok->ptr);
+            if (equalc(tok, "{")) {
             depth++;
-        } else if (equalc(tok, "}")) {
-            if (depth == 0)
-                return tok;
-            depth--;
-        } else if (equalc(tok, ";") && depth == 0) {
+        }
+        else if (equalc(tok, "}")) {
+            if (depth == 0) {
+                // Don't return at a '}' that is part of a compound literal
+                // or initializer (followed by '.' , ';' or similar).
+                // Only return if this is the block's own closing '}' —
+                // no ';' directly after it (a compound literal always has ';'
+                // after its closing '}').
+                if (!equalc(tok->next, ";") && !equalc(tok->next, ".") &&
+                    !equalc(tok->next, ")") && !equalc(tok->next, "]"))
+                    return tok;
+                // Compound literal } followed by something — keep going
+            } else {
+                depth--;
+            }
+        }
+        else if (equalc(tok, ";") && depth == 0) {
             return tok->next;
         }
         tok = tok->next;
@@ -5293,6 +5306,7 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         tok = sync_stmt(error_recovery_tok);
         if (tok == stmt_iter_tok && tok->kind != TK_EOF)
             tok = sync_stmt(tok->next); // no forward progress: force a skip
+
         if (tok->kind == TK_EOF) {
             // Ran off the block: unwind to the top-level recovery point
             // (all statement frames die, so deactivate this level).
@@ -7047,7 +7061,8 @@ static Node *unary(Token **rest, Token *tok) {
         if (equalc(tok, ",")) {
             int depth = 0;
             while (tok->kind != TK_EOF) {
-                if (equalc(tok, "(")) depth++;
+                ", tok->ptr);
+                    if (equalc(tok, "(")) depth++;
                 else if (equalc(tok, ")")) {
                     if (depth == 0) break;
                     depth--;
@@ -9187,9 +9202,11 @@ static EnumConst *rec_enum_consts;
 // `depth` is the compound-statement nesting depth at the error site.
 static Token *sync_toplevel(Token *tok, int depth) {
     while (tok->kind != TK_EOF) {
-        if (equalc(tok, "{")) {
+        ", tok->ptr);
+            if (equalc(tok, "{")) {
             depth++;
-        } else if (equalc(tok, "}")) {
+        }
+        else if (equalc(tok, "}")) {
             depth--;
             if (depth <= 0) {
                 tok = tok->next;
@@ -9197,7 +9214,8 @@ static Token *sync_toplevel(Token *tok, int depth) {
                     tok = tok->next;
                 return tok;
             }
-        } else if (equalc(tok, ";") && depth <= 0) {
+        }
+        else if (equalc(tok, ";") && depth <= 0) {
             return tok->next;
         }
         tok = tok->next;
@@ -9329,8 +9347,9 @@ Program *parse(Token *tok) {
     error_recovery_active = true;
 
     while (tok->kind != TK_EOF) {
-        // Checkpoint file-scope state for error recovery.
-        rec_iter_tok = tok;
+        ", tok->ptr);
+            // Checkpoint file-scope state for error recovery.
+            rec_iter_tok = tok;
         rec_typedef_cp = typedef_scope_checkpoint();
         rec_tag_cp = tag_scope_checkpoint();
         rec_enum_cp = enum_scope_checkpoint();
