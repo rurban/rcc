@@ -5145,6 +5145,9 @@ static Node *declaration(Token **rest, Token *tok) {
         } else if (attr.is_auto_type) {
             if (!equalc(tok, "="))
                 error_tok(tok, "__auto_type requires an initializer");
+            for (LVar *lv = locals; lv; lv = lv->next)
+                if (lv->name == name && lv->is_extern)
+                    error_tok(tok, "underspecified declaration of '%s', already declared", name);
             Token *start = tok;
             tok = tok->next;
             Node *init_expr = expr(&tok, tok);
