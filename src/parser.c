@@ -1052,6 +1052,10 @@ static unsigned char collect_type_quals(Token **rest, Token *tok) {
 
 
 static bool is_typename(Token *tok) {
+    // C23: [[ starts an attribute list, valid in declaration specifiers
+    if (equalc(tok, "[") && tok->next && equalc(tok->next, "[") &&
+        tok->ptr + tok->len == tok->next->ptr)
+        return true;
     if (tok->kw == ID___ATTRIBUTE || tok->kw == ID___ATTRIBUTE__ ||
         tok->kw == ID___DECLSPEC || tok->kw == ID__ALIGNAS)
         return true;
@@ -1086,7 +1090,27 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
         }
         // C23 [[attribute]] syntax — parse into VarAttr
         if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
+            // In C11 mode, [[ is two separate [ tokens
+            if (opt_pedantic && opt_std_version && strcmp(opt_std_version, "202311L") < 0) {
+                warn_tok(tok, "[[attributes]] before C23 are not supported");
+                // skip to matching ]]
+                int bd = 1;
+                tok = tok->next->next;
+                while (tok && tok->kind != TK_EOF && bd > 0) {
+                    if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) bd++;
+                    else if (equalc(tok, "]") && equalc(tok->next, "]")) {
+                        bd--;
+                        tok = tok->next;
+                    }
+                    tok = tok->next;
+                }
+                continue;
+            }
             tok = tok->next->next; // skip [[
+            // Empty [[]]: check what follows to decide if it's an empty declaration
+            bool empty_attr = equalc(tok, "]") && tok->next && equalc(tok->next, "]") &&
+                tok->ptr + tok->len == tok->next->ptr;
+            Token *after_attr = empty_attr ? tok->next->next : NULL;
             while (tok && tok->kind != TK_EOF &&
                    !(equalc(tok, "]") && tok->next && equalc(tok->next, "]") && tok->ptr + tok->len == tok->next->ptr)) {
                 if (equalc(tok, ",")) {
@@ -1145,6 +1169,12 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 }
             }
             if (tok) tok = tok->next->next; // skip ]]
+            // Empty [[]] before struct/union/enum/; is only invalid in C23+
+            if (empty_attr && after_attr && opt_std_version &&
+                strcmp(opt_std_version, "202311L") >= 0 &&
+                (equalc(after_attr, "struct") || equalc(after_attr, "union") ||
+                 equalc(after_attr, "enum")))
+                error_tok(after_attr, "empty declaration");
             continue;
         }
         if (tok->kw == ID__ALIGNAS ||
@@ -5250,6 +5280,7 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             continue;
         }
         // C23 static_assert / C11 _Static_assert at block scope
+        // C23 static_assert / C11 _Static_assert at block scope
         if (equalc(tok, "static_assert") || equalc(tok, "_Static_assert")) {
             cur->next = declaration(&tok, tok);
             while (cur->next)
@@ -5258,7 +5289,25 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         }
         // C23 [[attribute]] at statement level
         if (equalc(tok, "[") && equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr) {
+            if (opt_pedantic && opt_std_version && strcmp(opt_std_version, "202311L") < 0) {
+                warn_tok(tok, "[[attributes]] before C23 are not supported");
+                int bd = 1;
+                Token *tt = tok->next->next;
+                while (tt && tt->kind != TK_EOF && bd > 0) {
+                    if (equalc(tt, "[") && equalc(tt->next, "[") && tt->ptr + tt->len == tt->next->ptr) bd++;
+                    else if (equalc(tt, "]") && equalc(tt->next, "]")) {
+                        bd--;
+                        tt = tt->next;
+                    }
+                    tt = tt->next;
+                }
+                tok = tt;
+                continue;
+            }
             Token *t = tok->next->next;
+            bool empty_attr = equalc(t, "]") && t->next && equalc(t->next, "]") &&
+                t->ptr + t->len == t->next->ptr;
+            Token *after_attr = empty_attr ? t->next->next : NULL;
             int depth = 1;
             while (depth > 0 && t->kind != TK_EOF) {
                 if (equalc(t, "[") && equalc(t->next, "[") && t->ptr + t->len == t->next->ptr) depth++;
@@ -5268,6 +5317,12 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 }
                 t = t->next;
             }
+            // Empty [[]] before struct/union/enum/; is only invalid in C23+
+            if (empty_attr && after_attr && opt_std_version &&
+                strcmp(opt_std_version, "202311L") >= 0 &&
+                (equalc(after_attr, "struct") || equalc(after_attr, "union") ||
+                 equalc(after_attr, "enum")))
+                error_tok(after_attr, "empty declaration");
             tok = t;
             continue;
         }

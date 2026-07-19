@@ -136,7 +136,7 @@ void help(void) {
            "-std={c23,c17,c11,c99,c89,...}  sets __STDC_VERSION__\n"
            "-W                  enable more compiler warnings\n"
            "-Werror             treat all warnings as errors\n"
-           "-pedantic-errors    same\n"
+           "-pedantic-errors    treat pedantic warnings as errors\n"
            "-Wfatal-errors      exit at the first error\n"
            "-fmax-errors=N      exit after N errors (default 20, 0 = unlimited)\n"
            "-Werror=unknown-warning-option  for autoconf probes\n"
