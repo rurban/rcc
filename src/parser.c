@@ -1016,6 +1016,7 @@ static Type *type_name(Token **rest, Token *tok);
 
 static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr);
 static bool in_type_name = false;
+static bool in_compound_literal = false;
 
 static Token *skip_attributes(Token *tok) {
     return read_type_attrs(tok, NULL, NULL);
@@ -1179,6 +1180,10 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
         }
         if (tok->kw == ID__ALIGNAS ||
             (tok->kw == ID_ALIGNAS && opt_std_version && strcmp(opt_std_version, "202311L") >= 0)) {
+            // C11 6.7.5: alignment specifiers are not part of a type name,
+            // except in compound literals (C23 6.5.2.5).
+            if (in_type_name && !in_compound_literal)
+                error_tok(tok, "alignment specified for type name");
             tok = tok->next;
             tok = skip(tok, "(");
             if (attr) attr->has_alignas = true;
@@ -2132,7 +2137,13 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     while (equalc(tok, "*")) {
         ty = pointer_to(ty);
         tok = tok->next;
+        Token *attr_start = tok;
         tok = read_type_attrs(tok, &decl_align, NULL);
+        if (tok != attr_start &&
+            (attr_start->kw == ID__ALIGNAS ||
+             (attr_start->kw == ID_ALIGNAS && opt_std_version &&
+              strcmp(opt_std_version, "202311L") >= 0)))
+            error_tok(attr_start, "'_Alignas' cannot be specified for a pointer");
         unsigned char pq = collect_type_quals(&tok, tok);
         if (pq) {
             ty = copy_type(ty);
@@ -3461,9 +3472,25 @@ static Type *type_name(Token **rest, Token *tok) {
 }
 
 static Type *parse_cast_type(Token **rest, Token *tok) {
+    // Compound literals (type){init} allow _Alignas in the type name;
+    // peek past the matching ')' for '{'.
+    bool saved_icl = in_compound_literal;
+    int depth = 0;
+    for (Token *t = tok; t && t->kind != TK_EOF; t = t->next) {
+        if (equalc(t, "("))
+            depth++;
+        else if (equalc(t, ")")) {
+            if (--depth == 0) {
+                if (equalc(t->next, "{"))
+                    in_compound_literal = true;
+                break;
+            }
+        }
+    }
     tok = skip(tok, "(");
     Type *ty = type_name(&tok, tok);
     *rest = skip(tok, ")");
+    in_compound_literal = saved_icl;
     return ty;
 }
 
@@ -3876,7 +3903,12 @@ static Token *find_compound_literal_start(Token *tok) {
         t = t->next;
     if (!is_typename(t))
         return NULL;
+    // Lookahead for a compound-literal type name: _Alignas is allowed here
+    // (C23 6.5.2.5), so suppress the type-name alignment diagnostic.
+    bool saved_icl = in_compound_literal;
+    in_compound_literal = true;
     Type *ty = type_name(&t, t);
+    in_compound_literal = saved_icl;
     if (!ty)
         return NULL;
     while (equalc(t, ")"))
@@ -4357,7 +4389,10 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
             while (equalc(t, "(")) t = t->next;
+            bool saved_icl = in_compound_literal;
+            in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
+            in_compound_literal = saved_icl;
             while (equalc(t, ")")) t = t->next;
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
@@ -8809,7 +8844,10 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
             while (equalc(t, "(")) t = t->next;
+            bool saved_icl = in_compound_literal;
+            in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
+            in_compound_literal = saved_icl;
             while (equalc(t, ")")) t = t->next;
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);

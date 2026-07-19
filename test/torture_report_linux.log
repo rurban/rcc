@@ -813,10 +813,10 @@
   c11-align-2                         PASS (expected error)
   c11-align-3                         PASS (expected error)
   c11-align-4                         PASS (compile only)
-  c11-align-5                         FAIL (dg-error lines)
+  c11-align-5                         PASS (expected error)
   c11-align-6                         PASS
   c11-align-7                         PASS (compile only)
-  c11-align-8                         PASS (compile only)
+  c11-align-8                         PASS (expected error)
   c11-align-9                         PASS (compile only)
   c11-anon-struct-1                   PASS (compile only)
   c11-anon-struct-2                   PASS (expected error)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3585/3592 passed (99%), 7 failed (7 compile/0 runtime), 371 skipped.
+Torture: 3586/3592 passed (99%), 6 failed (6 compile/0 runtime), 371 skipped.
 
-Compile failures: c11-align-5 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
+Compile failures: c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
