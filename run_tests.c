@@ -4830,7 +4830,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
     else
     */
-        max_fail = 13;
+        max_fail = 11;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {

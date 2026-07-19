@@ -2608,7 +2608,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (cond->ty && !is_integer(cond->ty))
                 error_tok(cond->tok, "static_assert condition is not an integer");
             // C11 6.6p6: floating operands only as immediate cast operands
-            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+            if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
                 is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
                 error_tok(cond->tok,
                           "static_assert condition is not an integer constant expression");
@@ -4665,7 +4665,7 @@ static Node *declaration(Token **rest, Token *tok) {
         if (cond->ty && !is_integer(cond->ty))
             error_tok(cond->tok, "static_assert condition is not an integer");
         // C11 6.6p6: floating operands only as immediate cast operands
-        if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+        if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
             is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
             error_tok(cond->tok,
                       "static_assert condition is not an integer constant expression");
@@ -5638,13 +5638,8 @@ static Node *stmt(Token **rest, Token *tok) {
         tok = skip(tok->next, "(");
 
         if (!equalc(tok, ";")) {
-            if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
-                Token *sa = tok;
-                node->init = declaration(&tok, tok); // evaluates the assertion
-                // C11/C23 6.8.5.3: the for-init declaration must declare
-                // identifiers with automatic storage (C2Y relaxes this).
-                error_tok(sa, "'_Static_assert' in 'for' loop initial declaration");
-            } else if (is_typename(tok)) {
+            if (is_typename(tok) || equalc(tok, "_Static_assert") ||
+                equalc(tok, "static_assert")) {
                 node->init = declaration(&tok, tok);
             } else {
                 node->init = expr(&tok, tok);
@@ -7743,23 +7738,22 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         // The standard spellings require a parenthesized type name;
         // __alignof__/__alignof on expressions is the GNU extension.
-        bool std_spelling = equalc(tok, "_Alignof") || equalc(tok, "alignof");
+        bool std_spelling = equalc(tok, "_Alignof");
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
             Token *aty_tok = tok->next->next;
             Type *ty = parse_cast_type(&tok, tok->next);
-            // C11 6.5.3.4p1: no function or incomplete types
-            if (ty->kind == TY_FUNC)
+            // C11 6.5.3.4p1: no function or incomplete types.
+            // Enforced with -pedantic-errors/-Werror; gcc accepts as extension.
+            if (opt_Werror && ty->kind == TY_FUNC)
                 error_tok(aty_tok, "'_Alignof' applied to a function type");
-            if (ty->kind == TY_VOID ||
-                ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
-                 ty->size == 0 && !ty->members))
+            if (opt_Werror && (ty->kind == TY_VOID || ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members)))
                 error_tok(aty_tok, "'_Alignof' applied to an incomplete type");
             *rest = tok;
             Node *n = new_num(ty->align, start);
             n->ty = ty_ulong; // _Alignof returns size_t (unsigned)
             return n;
         }
-        if (std_spelling)
+        if (std_spelling && opt_Werror)
             error_tok(tok->next, "'_Alignof' applied to an expression");
         Node *node = unary(&tok, tok->next);
         check_type(node);
@@ -9222,7 +9216,7 @@ Program *parse(Token *tok) {
             if (cond->ty && !is_integer(cond->ty))
                 error_tok(cond->tok, "static_assert condition is not an integer");
             // C11 6.6p6: floating operands only as immediate cast operands
-            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+            if (opt_Werror && cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
                 is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
                 error_tok(cond->tok,
                           "static_assert condition is not an integer constant expression");

@@ -938,7 +938,7 @@
   c23-align-10                        PASS (compile only)
   c23-attr-deprecated-1               PASS (compile only)
   c23-attr-deprecated-2               PASS (compile only)
-  c23-attr-deprecated-3               FAIL (dg-error lines)
+  c23-attr-deprecated-3               PASS (expected error)
   c23-attr-deprecated-4               PASS (compile only)
   c23-attr-fallthrough-1              PASS (compile only)
   c23-attr-fallthrough-2              PASS (compile only)
@@ -1004,7 +1004,7 @@
   c23-complit-7                       PASS (compile only)
   c23-complit-8                       PASS (compile only)
   c23-concat-1                        PASS (expected error)
-  c23-constexpr-1                     PASS (compile only)
+  c23-constexpr-1                     PASS (expected error)
   c23-constexpr-2a                    PASS
   c23-constexpr-2b                    PASS (compile only)
   c23-constexpr-3                     FAIL (dg-error lines)
@@ -1014,7 +1014,7 @@
   c23-constexpr-7                     PASS (compile only)
   c23-constexpr-8                     PASS (compile only)
   c23-constexpr-9                     PASS (compile only)
-  c23-constexpr-10                    FAIL (dg-error lines)
+  c23-constexpr-10                    PASS (expected error)
   c23-digit-separators-1              PASS
   c23-digit-separators-2              PASS (expected error)
   c23-digit-separators-3              PASS (expected error)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3579/3592 passed (99%), 13 failed (13 compile/0 runtime), 371 skipped.
+Torture: 3581/3592 passed (99%), 11 failed (11 compile/0 runtime), 371 skipped.
 
-Compile failures: c11-align-3 c11-align-5 c11-static-assert-3 c23-attr-deprecated-3 c23-attr-syntax-3 c23-attr-syntax-6 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-constexpr-10 c23-enum-7 c23-tag-composite-1
+Compile failures: c11-align-3 c11-align-5 c11-static-assert-3 c23-attr-syntax-3 c23-attr-syntax-6 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
