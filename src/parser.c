@@ -23,6 +23,7 @@ struct VarAttr {
     DiagEntry *diag_entries;
     unsigned char bitfield_mode;
     bool is_noreturn;
+    bool is_noreturn_std; // C11 `_Noreturn` keyword (constraint-checked)
     bool is_deprecated;
     char *deprecated_msg;
     bool is_reproducible;
@@ -215,6 +216,7 @@ static Node *current_loop;
 static int static_local_counter;
 static LVar *current_fn_scope_locals;
 static char *parser_current_fn;
+static bool current_fn_is_inline; // parsing body of a non-static inline fn
 static int current_block_depth;
 static bool suppress_fn_scope_update;
 static bool fn_uses_vla;
@@ -1103,7 +1105,15 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     else if (equalc(tok, "deprecated")) {
                         attr->is_deprecated = true;
                         Token *next = tok->next;
-                        if (equalc(next, "(") && next->next && next->next->kind == TK_STR) {
+                        if (equalc(next, "(")) {
+                            // C23 6.7.13.4: one optional string literal
+                            if (equalc(next->next, ")"))
+                                error_tok(next, "parentheses must be omitted if "
+                                                "attribute argument list is empty");
+                            if (!next->next || next->next->kind != TK_STR)
+                                error_tok(next->next ? next->next : next,
+                                          "expected string literal in deprecated "
+                                          "attribute");
                             size_t len = next->next->len;
                             attr->deprecated_msg = arena_alloc(len + 3);
                             attr->deprecated_msg[0] = '"';
@@ -1139,13 +1149,28 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             tok = tok->next;
             tok = skip(tok, "(");
             if (is_typename(tok)) {
+                Token *aty_tok = tok;
                 Type *ty = type_name(&tok, tok);
+                if (ty->kind == TY_FUNC)
+                    error_tok(aty_tok, "alignment specified for function type");
+                if (ty->kind == TY_VOID)
+                    error_tok(aty_tok, "alignment specified for void type");
+                if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+                    ty->size == 0 && !ty->members)
+                    error_tok(aty_tok, "alignment specified for incomplete type");
                 maybe_update_align(align, ty->align);
             } else {
                 Node *node = expr(&tok, tok);
+                check_type(node);
                 long long val = 0;
+                if (node->ty &&
+                    (node->ty->kind == TY_NULLPTR_T || !is_integer(node->ty)))
+                    error_tok(tok, "alignment is not an integer constant");
                 if (!eval_const_expr(node, &val))
                     error_tok(tok, "expected alignment");
+                // C11 6.7.5: valid alignments are 0 or a positive power of 2
+                if (val < 0 || (val & (val - 1)))
+                    error_tok(node->tok, "alignment is not a positive power of 2");
                 maybe_update_align(align, (int)val);
             }
             tok = skip(tok, ")");
@@ -1886,6 +1911,9 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             Type *base = declspec(&tok, tok, &attr);
             char *pname = NULL;
             Type *pty = declarator(&tok, tok, copy_type(base), &pname);
+            // C11 6.7.4p2: _Noreturn only on function declarations
+            if (attr.is_noreturn_std)
+                error_tok(tok, "'_Noreturn' on function parameter");
             tok = skip_attributes(tok);
 
             // Preserve VLA dim expression from single-dimension VLA param (e.g. b[a++])
@@ -2233,7 +2261,8 @@ static Type *enum_specifier(Token **rest, Token *tok) {
             Node *node = conditional(&tok, tok);
             check_type(node);
             long long v = 0;
-            if (!eval_const_expr(node, &v))
+            if ((node->ty && node->ty->kind == TY_NULLPTR_T) ||
+                !eval_const_expr(node, &v))
                 error_tok(tok, "expected constant expression for enum value");
             val = v;
             explicit_val = true;
@@ -2461,6 +2490,34 @@ static Node *vla_ptr_incdec(Node *lhs, bool is_inc, bool is_post, Token *tok) {
     return seq;
 }
 
+// Does member m expose name n (directly or through an anonymous
+// struct/union member)? Names are interned: pointer compare suffices.
+static bool member_exposes(Member *m, char *n) {
+    if (m->name)
+        return m->name == n;
+    if (m->ty && (m->ty->kind == TY_STRUCT || m->ty->kind == TY_UNION))
+        for (Member *im = m->ty->members; im; im = im->next)
+            if (member_exposes(im, n))
+                return true;
+    return false;
+}
+
+// C11 6.7.2.1: member names (including those reachable through anonymous
+// members) must be unique within the enclosing struct/union.
+static void check_duplicate_member(Member *list, Member *newm, Token *tok) {
+    if (newm->tok)
+        tok = newm->tok; // point at the member's own declaration line
+    if (newm->name) {
+        for (Member *m = list; m; m = m->next)
+            if (member_exposes(m, newm->name))
+                error_tok(tok, "duplicate member '%s'", newm->name);
+    } else if (newm->ty &&
+               (newm->ty->kind == TY_STRUCT || newm->ty->kind == TY_UNION)) {
+        for (Member *im = newm->ty->members; im; im = im->next)
+            check_duplicate_member(list, im, tok);
+    }
+}
+
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     int struct_attr_align = 0;
@@ -2548,6 +2605,13 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);
             check_type(cond);
+            if (cond->ty && !is_integer(cond->ty))
+                error_tok(cond->tok, "static_assert condition is not an integer");
+            // C11 6.6p6: floating operands only as immediate cast operands
+            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+                is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
+                error_tok(cond->tok,
+                          "static_assert condition is not an integer constant expression");
             long long v = 0;
             if (!eval_const_expr(cond, &v))
                 error_tok(cond->tok, "static_assert condition must be constant");
@@ -2558,8 +2622,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     msg = tok->str;
                     tok = tok->next;
                 } else {
-                    Node *e = conditional(&tok, tok);
-                    (void)e;
+                    error_tok(tok, "expected string literal in static assertion");
                 }
             }
             tok = skip(tok, ")");
@@ -2567,12 +2630,21 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (!v) error_tok(st, "%s", msg);
             continue;
         }
+        Token *mdecl_start = tok;
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)
             error_tok(tok, "invalid storage class in member declaration");
+        if (attr.is_noreturn_std)
+            error_tok(tok, "'_Noreturn' in member declaration");
         if (!base)
             error_tok(tok, "expected member type");
         if (equalc(tok, ";")) {
+            // C11 6.7.2.1p13: only an untagged struct/union specifier forms
+            // an anonymous member; a tagged one (or a typedef name, or a
+            // non-aggregate type) declares nothing.
+            if (!((equalc(mdecl_start, "struct") || equalc(mdecl_start, "union")) &&
+                  equalc(mdecl_start->next, "{")))
+                error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {
                 // bf_unit_size = 0;
@@ -2593,6 +2665,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     bit_pos = offset * 8;
                     if (max_align < a) max_align = a;
                 }
+                mem->tok = mdecl_start;
+                check_duplicate_member(head.next, mem, mdecl_start);
                 cur = cur->next = mem;
             }
             tok = tok->next;
@@ -2609,7 +2683,11 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (equalc(tok, ":")) {
                 tok = tok->next;
                 Node *width_node = conditional(&tok, tok);
+                check_type(width_node);
                 long long w;
+                if (width_node->ty && width_node->ty->kind == TY_NULLPTR_T)
+                    error_tok(width_node->tok,
+                              "bitfield width is not an integer constant expression");
                 if (!eval_const_expr(width_node, &w))
                     error_tok(tok, "bitfield width must be a constant expression");
                 bit_width = (int)w;
@@ -2638,6 +2716,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     bit_pos = offset * 8;
                     if (max_align < a) max_align = a;
                 }
+                mem->tok = mdecl_start;
+                check_duplicate_member(head.next, mem, mdecl_start);
                 cur = cur->next = mem;
                 if (!equalc(tok, ",")) break;
                 tok = tok->next;
@@ -2709,6 +2789,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
 
             Member *mem = arena_alloc(sizeof(Member));
             mem->name = name;
+            mem->tok = tok;
+            check_duplicate_member(head.next, mem, tok);
             mem->bit_width = bit_width;
             mem->bf_load_size = 0;
 
@@ -2971,6 +3053,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         }
         if (equalc(tok, "_Noreturn")) {
             attr->is_noreturn = true;
+            attr->is_noreturn_std = true;
             tok = tok->next;
             continue;
         }
@@ -3915,6 +3998,8 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             if (equalc(tok, "[")) {
                 tok = tok->next;
                 Node *n = assign(&tok, tok);
+                if (n->ty && n->ty->kind == TY_NULLPTR_T)
+                    error_tok(n->tok, "array designator is not of integer type");
                 long long sv = 0;
                 eval_const_expr(n, &sv);
                 sidx = (int)sv;
@@ -4348,6 +4433,8 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
             if (equalc(tok, "[")) {
                 tok = tok->next;
                 Node *n = assign(&tok, tok);
+                if (n->ty && n->ty->kind == TY_NULLPTR_T)
+                    error_tok(n->tok, "array designator is not of integer type");
                 long long sv = 0;
                 eval_const_expr(n, &sv);
                 sidx = (int)sv;
@@ -4575,6 +4662,13 @@ static Node *declaration(Token **rest, Token *tok) {
         tok = skip(tok->next, "(");
         Node *cond = conditional(&tok, tok);
         check_type(cond);
+        if (cond->ty && !is_integer(cond->ty))
+            error_tok(cond->tok, "static_assert condition is not an integer");
+        // C11 6.6p6: floating operands only as immediate cast operands
+        if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+            is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
+            error_tok(cond->tok,
+                      "static_assert condition is not an integer constant expression");
         long long val = 0;
         if (!eval_const_expr(cond, &val))
             error_tok(cond->tok, "static_assert condition must be a constant expression");
@@ -4585,9 +4679,7 @@ static Node *declaration(Token **rest, Token *tok) {
                 msg = tok->str;
                 tok = tok->next;
             } else {
-                // Evaluate as expression and skip
-                Node *msg_expr = conditional(&tok, tok);
-                (void)msg_expr;
+                error_tok(tok, "expected string literal in static assertion");
             }
         }
         tok = skip(tok, ")");
@@ -4620,6 +4712,9 @@ static Node *declaration(Token **rest, Token *tok) {
         int decl_align = 0;
         pending_cleanup_func = NULL;
         Type *ty = declarator(&tok, tok, copy_type(base), &name);
+        // C11 6.7.4p2: _Noreturn only on function declarations
+        if (attr.is_noreturn_std && ty->kind != TY_FUNC)
+            error_tok(tok, "'_Noreturn' on a non-function declaration");
         tok = read_type_attrs(tok, &decl_align, NULL);
         if (decl_align > 0 && ty->kind == TY_FUNC) {
             ty = copy_type(ty);
@@ -4674,10 +4769,17 @@ static Node *declaration(Token **rest, Token *tok) {
         if (attr.is_typedef) {
             add_typedef(name, ty);
         } else if (attr.is_static) {
+            // C11 6.7.4p3: a non-static inline function may not define a
+            // modifiable object with static storage duration.
+            if (current_fn_is_inline && !(ty->qual & QUAL_CONST))
+                error_tok(tok, "'%s' is static but declared in inline function '%s'",
+                          name, parser_current_fn ? parser_current_fn : "?");
             // Static local variable: create global storage with unique name
             char *asm_label = format(".Lstatic.%d", static_local_counter++);
             if (equalc(tok, "="))
                 ty = infer_array_type(ty, tok->next);
+            if (ty->kind == TY_VLA)
+                error_tok(tok, "storage size of '%s' is not constant", name);
             // Global entry for storage
             LVar *gvar = arena_alloc(sizeof(LVar));
             gvar->name = asm_label;
@@ -4703,6 +4805,10 @@ static Node *declaration(Token **rest, Token *tok) {
         } else if (attr.is_extern) {
             // Block-scope extern declaration: refers to global storage
             LVar *gvar = find_global_name(name);
+            // C11 6.2.2: thread-local must agree across declarations
+            if (gvar && !gvar->is_function && gvar->is_tls != attr.is_tls)
+                error_tok(tok, "'%s' redeclared with different thread-local storage",
+                          name);
             if (!gvar) {
                 gvar = new_var(name, ty, false);
                 gvar->is_extern = true;
@@ -4992,6 +5098,35 @@ static Node *declaration(Token **rest, Token *tok) {
     return head.next ? head.next : new_node(ND_NULL, tok);
 }
 
+// Statement-level error recovery (GH #34): checkpoints refreshed at every
+// statement so all statements of a block are diagnosed, not just the first.
+// Shared across block nesting; the innermost active block re-arms them at
+// each statement, so they always describe the current statement.
+static TypedefLog *stmt_rec_td;
+static TagLog *stmt_rec_tag;
+static EnumLog *stmt_rec_enum;
+static Token *stmt_iter_tok;
+
+// Skip tokens to the next statement boundary inside a block: past the next
+// ';' at the current brace depth, or to (not past) the '}' closing this
+// block so the statement loop terminates normally.
+static Token *sync_stmt(Token *tok) {
+    int depth = 0;
+    while (tok->kind != TK_EOF) {
+        if (equalc(tok, "{")) {
+            depth++;
+        } else if (equalc(tok, "}")) {
+            if (depth == 0)
+                return tok;
+            depth--;
+        } else if (equalc(tok, ";") && depth == 0) {
+            return tok->next;
+        }
+        tok = tok->next;
+    }
+    return tok;
+}
+
 static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     LVar *saved_locals = locals;
     Typedef *saved_typedefs = typedefs;
@@ -5004,11 +5139,44 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
     int saved_fenv_access = fenv_access;
 
     Node head = {};
-    Node *cur = &head;
+    Node *volatile cur = &head;
     tok = skip(tok, "{");
     current_block_depth++;
 
+    // Statement-level recovery point: error_tok() longjmps here from inside
+    // a statement (see error_finish). The parent block's recovery state is
+    // saved on this frame and restored on exit, so nesting unwinds correctly.
+    jmp_buf saved_stmt_jmp;
+    bool saved_stmt_active = stmt_recovery_active;
+    if (saved_stmt_active)
+        memcpy(saved_stmt_jmp, stmt_recovery_jmp, sizeof(jmp_buf));
+    int rec_depth = current_block_depth;
+    if (setjmp(stmt_recovery_jmp)) {
+        current_block_depth = rec_depth;
+        typedef_scope_restore(stmt_rec_td);
+        tag_scope_restore(stmt_rec_tag);
+        enum_scope_restore(stmt_rec_enum);
+        pending_vla_struct_capture = NULL;
+        pending_cleanup_func = NULL;
+        tok = sync_stmt(error_recovery_tok);
+        if (tok == stmt_iter_tok && tok->kind != TK_EOF)
+            tok = sync_stmt(tok->next); // no forward progress: force a skip
+        if (tok->kind == TK_EOF) {
+            // Ran off the block: unwind to the top-level recovery point
+            // (all statement frames die, so deactivate this level).
+            stmt_recovery_active = false;
+            longjmp(error_recovery_jmp, 1);
+        }
+    }
+    stmt_recovery_active = true;
+
     while (!equalc(tok, "}")) {
+        // Checkpoint per statement for error recovery.
+        stmt_iter_tok = tok;
+        stmt_rec_td = typedef_scope_checkpoint();
+        stmt_rec_tag = tag_scope_checkpoint();
+        stmt_rec_enum = enum_scope_checkpoint();
+
         // Handle # pragma pack(N) emitted by the preprocessor
         if (equalc(tok, "#") && equalc(tok->next, "pragma") &&
             equalc(tok->next->next, "pack")) {
@@ -5119,6 +5287,11 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         }
         cur = cur->next = stmt(&tok, tok);
     }
+
+    // Hand recovery back to the enclosing block (or none at file scope).
+    stmt_recovery_active = saved_stmt_active;
+    if (saved_stmt_active)
+        memcpy(stmt_recovery_jmp, saved_stmt_jmp, sizeof(jmp_buf));
 
     Node *node = new_node(ND_BLOCK, tok);
     node->body = head.next;
@@ -5465,7 +5638,13 @@ static Node *stmt(Token **rest, Token *tok) {
         tok = skip(tok->next, "(");
 
         if (!equalc(tok, ";")) {
-            if (is_typename(tok)) {
+            if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
+                Token *sa = tok;
+                node->init = declaration(&tok, tok); // evaluates the assertion
+                // C11/C23 6.8.5.3: the for-init declaration must declare
+                // identifiers with automatic storage (C2Y relaxes this).
+                error_tok(sa, "'_Static_assert' in 'for' loop initial declaration");
+            } else if (is_typename(tok)) {
                 node->init = declaration(&tok, tok);
             } else {
                 node->init = expr(&tok, tok);
@@ -5583,16 +5762,18 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *val_node = conditional(&tok, tok);
         check_type(val_node);
         long long v = 0;
-        if (!eval_const_expr(val_node, &v))
-            error_tok(tok, "expected constant expression for case");
+        if ((val_node->ty && val_node->ty->kind == TY_NULLPTR_T) ||
+            !eval_const_expr(val_node, &v))
+            error_tok(val_node->tok, "case label is not an integer constant expression");
         node->case_val = v;
         if (equalc(tok, "...")) {
             tok = tok->next;
             Node *end_node = conditional(&tok, tok);
             check_type(end_node);
             long long ev = 0;
-            if (!eval_const_expr(end_node, &ev))
-                error_tok(tok, "expected constant expression for case range");
+            if ((end_node->ty && end_node->ty->kind == TY_NULLPTR_T) ||
+                !eval_const_expr(end_node, &ev))
+                error_tok(end_node->tok, "case range is not an integer constant expression");
             node->case_end = ev;
             node->is_case_range = true;
         }
@@ -5788,10 +5969,12 @@ static Node *primary(Token **rest, Token *tok) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Type *ctrl_ty;
-        if (is_typename(tok)) {
+        bool ctrl_is_type = is_typename(tok);
+        if (ctrl_is_type) {
             // C2Y / GCC extension: the controlling operand may be a type name.
             // No lvalue conversion is applied, so qualifiers are preserved
             // (e.g. _Generic(const int, int:1, const int:2) selects const int).
+            // Associations may then be incomplete/function types.
             ctrl_ty = type_name(&tok, tok);
         } else {
             Node *ctrl = assign(&tok, tok);
@@ -5813,12 +5996,42 @@ static Node *primary(Token **rest, Token *tok) {
 
         Node *selected = NULL;
         Node *default_expr = NULL;
+        // C11 6.5.1.1 constraints on the association list
+        Type *assoc_types[64];
+        int n_assoc = 0;
         while (!equalc(tok, ")")) {
             if (equalc(tok, "default")) {
+                if (default_expr)
+                    error_tok(tok, "duplicate 'default' case in _Generic");
                 tok = skip(tok->next, ":");
                 default_expr = assign(&tok, tok);
             } else {
+                Token *aty_tok = tok;
                 Type *ty = type_name(&tok, tok);
+                if (!ctrl_is_type) {
+                    // C11 6.5.1.1: expression-controlled associations must be
+                    // complete object types other than VLAs.
+                    if (ty->kind == TY_FUNC)
+                        error_tok(aty_tok, "_Generic association has function type");
+                    if (ty->kind == TY_VLA)
+                        error_tok(aty_tok, "_Generic association has variable length type");
+                    if (ty->kind == TY_VOID ||
+                        ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+                         ty->size == 0 && !ty->members))
+                        error_tok(aty_tok, "_Generic association has incomplete type");
+                }
+                // Duplicate-type check on scalar non-pointer types only:
+                // type_equal() is deliberately loose on pointer/function
+                // shapes, which would yield false duplicates here.
+                if (ty->kind != TY_PTR && ty->kind != TY_FUNC)
+                    for (int i = 0; i < n_assoc; i++)
+                        if (assoc_types[i]->kind == ty->kind &&
+                            type_equal(assoc_types[i], ty) &&
+                            assoc_types[i]->qual == ty->qual)
+                            error_tok(aty_tok,
+                                      "_Generic: two compatible types in association list");
+                if (n_assoc < 64)
+                    assoc_types[n_assoc++] = ty;
                 tok = skip(tok, ":");
                 Node *expr = assign(&tok, tok);
                 // Association types must match the controlling type exactly,
@@ -5988,6 +6201,13 @@ static Node *primary(Token **rest, Token *tok) {
                 LVar *var = find_var(tok);
                 if (!var)
                     error_tok(tok, "undeclared variable");
+                // C11 6.7.4p3: a non-static inline function may not reference
+                // a modifiable object with internal linkage.
+                if (current_fn_is_inline && var->is_static && !var->is_local &&
+                    var->ty && !(var->ty->qual & QUAL_CONST) &&
+                    find_global_name(tok->name) == var)
+                    error_tok(tok, "'%s' is static but used in inline function '%s'",
+                              tok->name, parser_current_fn ? parser_current_fn : "?");
                 node = new_var_node(var, tok);
                 tok = tok->next;
             }
@@ -7521,13 +7741,26 @@ static Node *unary(Token **rest, Token *tok) {
     }
     if (equalc(tok, "__alignof__") || equalc(tok, "__alignof") || equalc(tok, "_Alignof") || equalc(tok, "alignof")) {
         Token *start = tok;
+        // The standard spellings require a parenthesized type name;
+        // __alignof__/__alignof on expressions is the GNU extension.
+        bool std_spelling = equalc(tok, "_Alignof") || equalc(tok, "alignof");
         if (equalc(tok->next, "(") && is_typename(tok->next->next)) {
+            Token *aty_tok = tok->next->next;
             Type *ty = parse_cast_type(&tok, tok->next);
+            // C11 6.5.3.4p1: no function or incomplete types
+            if (ty->kind == TY_FUNC)
+                error_tok(aty_tok, "'_Alignof' applied to a function type");
+            if (ty->kind == TY_VOID ||
+                ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+                 ty->size == 0 && !ty->members))
+                error_tok(aty_tok, "'_Alignof' applied to an incomplete type");
             *rest = tok;
             Node *n = new_num(ty->align, start);
             n->ty = ty_ulong; // _Alignof returns size_t (unsigned)
             return n;
         }
+        if (std_spelling)
+            error_tok(tok->next, "'_Alignof' applied to an expression");
         Node *node = unary(&tok, tok->next);
         check_type(node);
         *rest = tok;
@@ -8858,7 +9091,11 @@ Program *parse(Token *tok) {
     // -Wfatal-errors). Restore file-scope parser state and resynchronize
     // at the next top-level ';' or matching '}'.
     error_recovery_tok = NULL;
+    stmt_recovery_active = false;
     if (setjmp(error_recovery_jmp)) {
+        // All compound-statement frames died in the unwind.
+        stmt_recovery_active = false;
+        current_fn_is_inline = false;
         int depth = current_block_depth;
         locals = NULL;
         label_scopes = NULL;
@@ -8982,6 +9219,13 @@ Program *parse(Token *tok) {
             tok = skip(tok->next, "(");
             Node *cond = conditional(&tok, tok);
             check_type(cond);
+            if (cond->ty && !is_integer(cond->ty))
+                error_tok(cond->tok, "static_assert condition is not an integer");
+            // C11 6.6p6: floating operands only as immediate cast operands
+            if (cond->kind == ND_CAST && cond->lhs && cond->lhs->ty &&
+                is_flonum(cond->lhs->ty) && cond->lhs->kind != ND_FNUM)
+                error_tok(cond->tok,
+                          "static_assert condition is not an integer constant expression");
             long long v = 0;
             if (!eval_const_expr(cond, &v))
                 error_tok(cond->tok, "static_assert condition must be constant");
@@ -8992,8 +9236,7 @@ Program *parse(Token *tok) {
                     msg = tok->str;
                     tok = tok->next;
                 } else {
-                    Node *e = conditional(&tok, tok);
-                    (void)e;
+                    error_tok(tok, "expected string literal in static assertion");
                 }
             }
             tok = skip(tok, ")");
@@ -9005,6 +9248,9 @@ Program *parse(Token *tok) {
         Type *base = declspec(&tok, tok, &attr);
 
         if (equalc(tok, ";")) {
+            // C11 6.7.4p2: _Noreturn requires a function declarator
+            if (attr.is_noreturn_std)
+                error_tok(tok, "'_Noreturn' in empty declaration");
             tok = tok->next;
             continue;
         }
@@ -9038,6 +9284,11 @@ Program *parse(Token *tok) {
             }
 
             bool is_func = ty->kind == TY_FUNC || equalc(tok, "(");
+
+            // C11 6.7.1: _Thread_local cannot appear with typedef or on
+            // a function declaration.
+            if (attr.is_tls && (attr.is_typedef || is_func))
+                error_tok(tok, attr.is_typedef ? "'_Thread_local' with typedef" : "'_Thread_local' storage class on function");
 
             if (is_func) {
                 // Apply trailing attribute alignment to function type
@@ -9202,6 +9453,9 @@ Program *parse(Token *tok) {
 
                 // For typedefs like 'typedef int functype(int);', register the type
                 if (attr.is_typedef) {
+                    // C11 6.7.4p2: _Noreturn only on function declarations
+                    if (attr.is_noreturn_std)
+                        error_tok(tok, "'_Noreturn' with typedef");
                     add_typedef(name, fty);
                     if (!equalc(tok, ";") && !equalc(tok, ","))
                         error_tok(tok, "expected ';' or ',' after typedef");
@@ -9259,7 +9513,10 @@ Program *parse(Token *tok) {
                         error_tok(tok, "typedef cannot have function body");
 
                     LVar *fn_locals = NULL;
+                    current_fn_is_inline = attr.is_inline && !attr.is_static &&
+                        !attr.is_gnu_inline;
                     Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
+                    current_fn_is_inline = false;
                     // Implicit return 0 for main if no explicit return
                     if (name == kw_main) {
                         Node *last = body->body;
@@ -9353,6 +9610,9 @@ Program *parse(Token *tok) {
                 }
                 error_tok(tok, "expected ';', ',', or '{'");
             } else {
+                // C11 6.7.4p2: _Noreturn only on function declarations
+                if (attr.is_noreturn_std)
+                    error_tok(tok, "'_Noreturn' on a non-function declaration");
                 if (attr.is_typedef) {
                     add_typedef(name, ty);
                 } else {
@@ -9369,6 +9629,10 @@ Program *parse(Token *tok) {
                             ty = src->ty;
                     }
                     LVar *var = find_global_name(name);
+                    // C11 6.2.2: thread-local must agree across declarations
+                    if (var && !var->is_function && var->is_tls != attr.is_tls)
+                        error_tok(tok, "'%s' redeclared with different thread-local storage",
+                                  name);
                     if (var) {
                         if (var->ty->kind == TY_ARRAY && ty->kind == TY_ARRAY && var->ty->size > 0)
                             ty = var->ty;
@@ -9393,6 +9657,19 @@ Program *parse(Token *tok) {
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
                     if (equalc(tok, "=")) {
+                        // C23 6.7.1p6: a 'constexpr' object of integer type
+                        // needs an integer constant expression initializer;
+                        // a floating-typed expression (5.0, 2*2.5, i.x) is not.
+                        if (attr.is_constexpr && is_integer(ty) &&
+                            !equalc(tok->next, "{")) {
+                            Token *probe_tok = tok->next;
+                            Node *probe = assign(&probe_tok, probe_tok);
+                            check_type(probe);
+                            if (probe->ty && !is_integer(probe->ty))
+                                error_tok(tok->next,
+                                          "'constexpr' integer initializer is not "
+                                          "an integer constant expression");
+                        }
                         tok = tok->next;
                         global_initializer(&tok, tok, var);
                     }

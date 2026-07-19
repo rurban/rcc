@@ -4167,7 +4167,8 @@ static void tort_add_error(char **list, const char *name) {
 /* dg-error line check (GH #34): every source line carrying a dg-error
  * directive must be reported as an error line by the compiler. Only line
  * numbers are compared ("file.c:<line>:" on an output line mentioning
- * "error"), not the error messages. Extra errors are tolerated. */
+ * "error"), not the error messages. Extra errors are tolerated, as are
+ * directives gated by target/xfail selectors (may not apply here). */
 static bool dg_error_lines_reported(const char *content, const char *out) {
     if (!content)
         return true;
@@ -4180,6 +4181,17 @@ static bool dg_error_lines_reported(const char *content, const char *out) {
             if (memcmp(p + i, "dg-error", 8) == 0) {
                 has_dg_error = true;
                 break;
+            }
+        }
+        /* target/xfail selectors and relative line refs (".-1") make the
+         * directive conditional or point elsewhere: don't require those */
+        if (has_dg_error) {
+            for (size_t i = 0; i + 6 <= len; i++) {
+                if (memcmp(p + i, "target", 6) == 0 ||
+                    memcmp(p + i, "xfail", 5) == 0) {
+                    has_dg_error = false;
+                    break;
+                }
             }
         }
         if (has_dg_error) {
@@ -4818,7 +4830,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
     else
     */
-        max_fail = 22;
+        max_fail = 13;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {

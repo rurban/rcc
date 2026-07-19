@@ -129,6 +129,8 @@ int opt_fmax_errors = 20;
 jmp_buf error_recovery_jmp;
 bool error_recovery_active = false;
 Token *error_recovery_tok = NULL;
+jmp_buf stmt_recovery_jmp;
+bool stmt_recovery_active = false;
 
 // Count an error whose message has already been printed, then either recover
 // (longjmp back into parse()'s top-level loop) or exit. Control never returns
@@ -146,6 +148,9 @@ static __attribute__((noreturn)) void error_finish(void) {
                 opt_fmax_errors);
         exit(1);
     }
+    // Prefer the innermost (statement-level) recovery point when armed.
+    if (stmt_recovery_active)
+        longjmp(stmt_recovery_jmp, 1);
     longjmp(error_recovery_jmp, 1);
 }
 
@@ -333,6 +338,20 @@ void warn_tok(Token *tok, char *fmt, ...) {
     }
 }
 
+// Lexer-level recoverable error (GH #34): print, count, continue. Unlike
+// error_at(), the lexer can always resume at the next character, so no
+// longjmp is needed; compilation fails at the end via error_count.
+static void lex_error_at(char *loc, char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    verror_at(loc, 1, NULL, 0, fmt, ap);
+    va_end(ap);
+    error_count++;
+    if (opt_Wfatal_errors ||
+        (opt_fmax_errors && error_count >= opt_fmax_errors))
+        exit(1);
+}
+
 // Create a new token.
 static Token *new_token(TokenKind kind, char *start, char *end, int lineno) {
     Token *tok = arena_alloc(sizeof(Token));
@@ -457,6 +476,13 @@ static char read_escaped_char(char **new_pos, char *p) {
     *new_pos = p + 1;
     return c;
 }
+
+// Directive-line tracking (GH #34): in lex_pp_mode a '#' at the start of a
+// line begins a preprocessor directive. Header names (<gnu/stubs-32.h>),
+// #error prose, and unexpanded macro bodies are lexed as ordinary tokens,
+// so the new lexer diagnostics must stay silent until the next newline.
+static bool lex_in_directive = false;
+static bool lex_at_line_start = true;
 
 /* Lex a single token starting at *pp, advancing *pp and *plineno past it.
  * Whitespace, comments and preprocessor directives are consumed without
@@ -656,6 +682,21 @@ Token *lex_one(char **pp, int *plineno) {
                 }
             }
 
+            // Numeric constant diagnostics (GH #34), reported per constant so
+            // every offending line is diagnosed. Suppressed when '#' follows:
+            // the single-scan lexer sees macro bodies before ## pasting, so
+            // `0x##x` must stay silent here.
+            bool has_base_prefix =
+                q[0] == '0' &&
+                (q[1] == 'x' || q[1] == 'X' || q[1] == 'b' || q[1] == 'B' ||
+                 q[1] == 'o' || q[1] == 'O');
+            bool base_prefix_empty = has_base_prefix && p == q + 2;
+            if (has_base_prefix && *p != '#' && !lex_in_directive) {
+                if (base_prefix_empty)
+                    lex_error_at(q, "invalid suffix on integer constant");
+                else if (dsep && q[2] == '\'')
+                    lex_error_at(q + 2, "digit separator after base indicator");
+            }
             // Check for float/imaginary suffix: f/F (incl. _FloatN forms),
             // l/L, i/I/j/J in any order
             int fkind = 0; // 0=double, 1=float, 2=long double
@@ -675,6 +716,8 @@ Token *lex_one(char **pp, int *plineno) {
                         } else if (p[0] == '1' && p[1] == '2' && p[2] == '8') {
                             fkind = 2;
                             p += 3; // F128->long double (correct on ARM64; stub on x86)
+                            if (*p == 'x' || *p == 'X')
+                                p++; // F128x
                         } else if (p[0] == '1' && p[1] == '6') {
                             fkind = 1;
                             p += 2; // F16->float (nearest supported type)
@@ -688,6 +731,16 @@ Token *lex_one(char **pp, int *plineno) {
                         fkind = 2;
                         have_kind = true;
                         p++;
+                    } else if (!have_kind && (*p == 'q' || *p == 'Q')) {
+                        fkind = 2; // GNU Q (_Float128) -> long double
+                        have_kind = true;
+                        p++;
+                    } else if (!have_kind && (*p == 'b' || *p == 'B') &&
+                               (p[1] == 'f' || p[1] == 'F') && p[2] == '1' &&
+                               p[3] == '6') {
+                        fkind = 1; // BF16 (bfloat16) -> float
+                        have_kind = true;
+                        p += 4;
                     } else if (!is_imag &&
                                (*p == 'i' || *p == 'I' || *p == 'j' || *p == 'J')) {
                         is_imag = true;
@@ -695,7 +748,7 @@ Token *lex_one(char **pp, int *plineno) {
                     } else
                         break;
                 }
-                // Also handle DD/DF/DL decimal suffixes
+                // Also handle DD/DF/DL and C23 D32/D64/D128[x] decimal suffixes
                 if (!have_kind && !is_imag &&
                     (*p == 'd' || *p == 'D') &&
                     (p[1] == 'd' || p[1] == 'D' || p[1] == 'f' || p[1] == 'F' || p[1] == 'l' || p[1] == 'L')) {
@@ -705,6 +758,21 @@ Token *lex_one(char **pp, int *plineno) {
                     else
                         fkind = 2;
                     p += 2;
+                } else if (!have_kind && !is_imag && (*p == 'd' || *p == 'D') &&
+                           isdigit(p[1])) {
+                    p++;
+                    if (p[0] == '3' && p[1] == '2') {
+                        fkind = 1; // D32 -> nearest binary type
+                        p += 2;
+                    } else if (p[0] == '6' && p[1] == '4') {
+                        fkind = 0; // D64
+                        p += 2;
+                    } else if (p[0] == '1' && p[1] == '2' && p[2] == '8') {
+                        fkind = 2; // D128
+                        p += 3;
+                    }
+                    if (*p == 'x' || *p == 'X')
+                        p++; // D64x etc.
                 }
             } else {
                 // Integer suffix: u/U, l/L, C23 wb/WB (_BitInt), and the
@@ -721,6 +789,16 @@ Token *lex_one(char **pp, int *plineno) {
                     is_imag = true;
                     p++;
                 }
+            }
+
+            // Remaining identifier characters form an invalid suffix
+            // (`0B0p0`, `123abc`); same '#' suppression as above.
+            if (!base_prefix_empty && !lex_in_directive &&
+                (is_ident1(*p) || isdigit((unsigned char)*p)) && *p != '#') {
+                lex_error_at(p, "invalid suffix on %s constant",
+                             is_float ? "floating" : "integer");
+                while (is_ident2(*p))
+                    p++; // consume the rest of the pp-number
             }
             if (is_float) {
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
@@ -888,7 +966,10 @@ Token *lex_one(char **pp, int *plineno) {
                         p++;
                         for (int i = 0; i < n_digits; i++) {
                             int digit = from_hex(*p);
-                            if (digit < 0) error_at(p, "invalid unicode escape");
+                            if (digit < 0) {
+                                lex_error_at(p, "invalid unicode escape");
+                                break;
+                            }
                             val = val * 16 + digit;
                             p++;
                         }
@@ -904,7 +985,7 @@ Token *lex_one(char **pp, int *plineno) {
                             p++;
                             int digit = from_hex(*p);
                             if (digit < 0)
-                                error_at(p, "invalid hex escape");
+                                lex_error_at(p, "invalid hex escape");
                             while ((digit = from_hex(*p)) >= 0) {
                                 val = val * 16 + digit;
                                 p++;
@@ -946,8 +1027,10 @@ Token *lex_one(char **pp, int *plineno) {
                     buf[len++] = sc;
                 }
             }
-            if (*p != '"') error_at(start, "unclosed string literal");
-            p++;
+            if (*p != '"')
+                lex_error_at(start, "unclosed string literal");
+            else
+                p++;
 
             buf[len] = '\0';
             cur = cur->next = new_token(TK_STR, start, p, cur_lineno);
@@ -975,7 +1058,9 @@ Token *lex_one(char **pp, int *plineno) {
             char *start = p;
             p++;
             uint32_t cval = 0;
+            int nchars = 0;
             while (*p && *p != '\'' && *p != '\n') {
+                nchars++;
                 if (*p == '\\') {
                     p++;
                     if (char_prefix && (*p == 'u' || *p == 'U')) {
@@ -985,11 +1070,18 @@ Token *lex_one(char **pp, int *plineno) {
                         cval = 0;
                         for (int i = 0; i < n_digits; i++) {
                             int digit = from_hex(*p);
-                            if (digit < 0) error_at(p, "invalid unicode escape");
+                            if (digit < 0) {
+                                lex_error_at(p, "invalid unicode escape");
+                                break;
+                            }
                             cval = cval * 16 + digit;
                             p++;
                         }
-                    } else if (char_prefix && char_prefix != '8' &&
+                        // C23: u8'' holds one UTF-8 code unit (<= 0x7F)
+                        if (char_prefix == '8' && cval > 0x7f && !lex_in_directive)
+                            lex_error_at(start,
+                                         "character not encodable in a single code unit");
+                    } else if (char_prefix &&
                                (*p == 'x' || ('0' <= *p && *p <= '7'))) {
                         // Wide char literal: numeric escape is a full wide
                         // character value; (uint8_t) would truncate L'\x2219'
@@ -998,7 +1090,7 @@ Token *lex_one(char **pp, int *plineno) {
                             p++;
                             int digit = from_hex(*p);
                             if (digit < 0)
-                                error_at(p, "invalid hex escape");
+                                lex_error_at(p, "invalid hex escape");
                             while ((digit = from_hex(*p)) >= 0) {
                                 cval = cval * 16 + digit;
                                 p++;
@@ -1011,6 +1103,8 @@ Token *lex_one(char **pp, int *plineno) {
                                 n++;
                             }
                         }
+                        if (char_prefix == '8' && cval > 0xff && !lex_in_directive)
+                            lex_error_at(start, "hex escape sequence out of range");
                     } else {
                         cval = (uint8_t)read_escaped_char(&p, p);
                     }
@@ -1023,8 +1117,17 @@ Token *lex_one(char **pp, int *plineno) {
                         cval = to_exec_charset(cval);
                 }
             }
-            if (*p != '\'') error_at(start, "unclosed character literal");
-            p++;
+            if (*p != '\'') {
+                if (!lex_in_directive)
+                    lex_error_at(start, "unclosed character literal");
+            } else {
+                if (p == start + 1 && !lex_in_directive)
+                    lex_error_at(start, "empty character literal");
+                if (char_prefix && nchars > 1 && !lex_in_directive)
+                    lex_error_at(start,
+                                 "multi-character literal cannot have an encoding prefix");
+                p++;
+            }
             cur = cur->next = new_token(TK_NUM, start, p, cur_lineno);
             // Plain char literals have type int with the value of a
             // (signed) char: '\xe2' is -30, not 226. Prefixed literals
@@ -1044,11 +1147,23 @@ Token *lex_one(char **pp, int *plineno) {
             continue;
         }
 
-        error_at(p, "invalid token");
+        lex_error_at(p, "invalid token");
+        p++;
     }
 
     *pp = p;
     *plineno = cur_lineno;
+    if (head.next) {
+        if (head.next->kind == TK_NL) {
+            lex_at_line_start = true;
+            lex_in_directive = false;
+        } else {
+            if (lex_at_line_start && head.next->kind == TK_PUNCT &&
+                head.next->len == 1 && head.next->ptr[0] == '#')
+                lex_in_directive = true;
+            lex_at_line_start = false;
+        }
+    }
     return head.next;
 }
 
@@ -1057,6 +1172,8 @@ Token *lex_one(char **pp, int *plineno) {
 // the parser through the token-based preprocessor (preprocess()).
 Token *tokenize(char *filename, char *p) {
     lex_pp_mode = false;
+    lex_in_directive = false;
+    lex_at_line_start = true;
     current_input = p;
     current_filename = filename;
     /* Reset #line-directive tracking from any previous tokenize() call in

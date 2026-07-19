@@ -78,6 +78,8 @@ extern int opt_fmax_errors; // 0 = unlimited
 extern jmp_buf error_recovery_jmp;
 extern bool error_recovery_active;
 extern Token *error_recovery_tok; // token to resynchronize from
+extern jmp_buf stmt_recovery_jmp; // statement-level recovery (finer-grained)
+extern bool stmt_recovery_active;
 
 // Lexer state (for token injection)
 extern char *current_input;
@@ -210,6 +212,7 @@ struct Member {
     int bit_width; // 0 = not a bitfield
     int bit_offset; // bit position within the storage unit
     int bf_load_size; // effective R/W size for dense-packed bitfields (0 = use ty->size)
+    Token *tok; // declaration site, for diagnostics (may be NULL)
 };
 
 struct Type {

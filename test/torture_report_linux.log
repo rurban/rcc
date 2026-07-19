@@ -819,8 +819,8 @@
   c11-align-8                         PASS (compile only)
   c11-align-9                         PASS (compile only)
   c11-anon-struct-1                   PASS (compile only)
-  c11-anon-struct-2                   FAIL (dg-error lines)
-  c11-anon-struct-3                   PASS (compile only)
+  c11-anon-struct-2                   PASS (expected error)
+  c11-anon-struct-3                   PASS (expected error)
   c11-atomic-1                        PASS (compile only)
   c11-atomic-2                        PASS (compile only)
   c11-atomic-3                        PASS (compile only)
@@ -873,7 +873,7 @@
   c11-fordecl-3                       SKIP (missing include)
   c11-fordecl-4                       SKIP (missing include)
   c11-generic-1                       PASS
-  c11-generic-2                       FAIL (dg-error lines)
+  c11-generic-2                       PASS (expected error)
   c11-generic-3                       PASS (expected error)
   c11-keywords-1                      PASS (compile only)
   c11-labels-1                        PASS (compile only)
@@ -884,7 +884,7 @@
   c11-noreturn-2                      PASS
   c11-noreturn-3                      PASS (compile only)
   c11-noreturn-4                      PASS (compile only)
-  c11-noreturn-5                      FAIL (dg-error lines)
+  c11-noreturn-5                      PASS (expected error)
   c11-null-pointer-constant-1         PASS (compile only)
   c11-nullptr-1                       PASS (compile only)
   c11-nullptr-2                       PASS (compile only)
@@ -898,7 +898,7 @@
   c11-pointer-float-1                 PASS (compile only)
   c11-qual-1                          PASS (compile only)
   c11-static-assert-1                 PASS (compile only)
-  c11-static-assert-2                 FAIL (dg-error lines)
+  c11-static-assert-2                 PASS (expected error)
   c11-static-assert-3                 FAIL (dg-error lines)
   c11-static-assert-4                 PASS (expected error)
   c11-static-assert-5                 PASS (compile only)
@@ -917,7 +917,7 @@
   c11-stddef-1                        PASS (compile only)
   c11-stdint-1                        PASS (compile only)
   c11-thread-local-1                  PASS (compile only)
-  c11-thread-local-2                  FAIL (dg-error lines)
+  c11-thread-local-2                  PASS (expected error)
   c11-true_min-1                      PASS
   c11-typedef-1                       PASS (compile only)
   c11-typeof-1                        PASS (compile only)
@@ -983,7 +983,7 @@
   c23-auto-4                          PASS (compile only)
   c23-binary-constants-1              SKIP (missing include)
   c23-binary-constants-2              PASS (compile only)
-  c23-binary-constants-3              FAIL (dg-error lines)
+  c23-binary-constants-3              PASS (expected error)
   c23-bool-1                          PASS
   c23-bool-2                          PASS
   c23-bool-errors-1                   PASS (compile only)
@@ -1016,7 +1016,7 @@
   c23-constexpr-9                     PASS (compile only)
   c23-constexpr-10                    FAIL (dg-error lines)
   c23-digit-separators-1              PASS
-  c23-digit-separators-2              FAIL (dg-error lines)
+  c23-digit-separators-2              PASS (expected error)
   c23-digit-separators-3              PASS (expected error)
   c23-empty-init-1                    PASS
   c23-empty-init-2                    PASS (compile only)
@@ -1100,7 +1100,7 @@
   c23-nullptr-3                       PASS (compile only)
   c23-nullptr-4                       PASS (compile only)
   c23-nullptr-5                       PASS
-  c23-nullptr-6                       FAIL (dg-error lines)
+  c23-nullptr-6                       PASS (expected error)
   c23-nullptr-7                       PASS (compile only)
   c23-octal-constants-1               PASS (compile only)
   c23-octal-constants-2               PASS (compile only)
@@ -1151,7 +1151,7 @@
   c23-tag-3                           PASS (compile only)
   c23-tag-4                           PASS (compile only)
   c23-tag-5                           PASS
-  c23-tag-6                           FAIL (dg-error lines)
+  c23-tag-6                           PASS (expected error)
   c23-tag-7                           PASS (compile only)
   c23-tag-8                           PASS (compile only)
   c23-tag-9                           PASS (compile only)
@@ -1184,7 +1184,7 @@
   c23-tag-incomplete-1                PASS (compile only)
   c23-tag-incomplete-2                PASS (compile only)
   c23-tag-incomplete-alias-1          PASS
-  c23-thread-local-1                  PASS (compile only)
+  c23-thread-local-1                  PASS (expected error)
   c23-thread-local-2                  PASS (compile only)
   c23-typeof-1                        PASS
   c23-typeof-2                        PASS (compile only)
@@ -1198,7 +1198,7 @@
   c23-unreachable-1                   PASS
   c23-utf8char-1                      PASS (compile only)
   c23-utf8char-2                      SKIP (no-iconv)
-  c23-utf8char-3                      PASS (compile only)
+  c23-utf8char-3                      PASS (expected error)
   c23-utf8str-type                    PASS (compile only)
   c23-utf8str                         PASS (expected error)
   c23-version-1                       PASS (compile only)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3570/3592 passed (99%), 22 failed (22 compile/0 runtime), 371 skipped.
+Torture: 3579/3592 passed (99%), 13 failed (13 compile/0 runtime), 371 skipped.
 
-Compile failures: c11-align-3 c11-align-5 c11-anon-struct-2 c11-generic-2 c11-noreturn-5 c11-static-assert-2 c11-static-assert-3 c11-thread-local-2 c23-attr-deprecated-3 c23-attr-syntax-3 c23-attr-syntax-6 c23-attr-syntax-7 c23-auto-3 c23-binary-constants-3 c23-complit-5 c23-constexpr-3 c23-constexpr-10 c23-digit-separators-2 c23-enum-7 c23-nullptr-6 c23-tag-6 c23-tag-composite-1
+Compile failures: c11-align-3 c11-align-5 c11-static-assert-3 c23-attr-deprecated-3 c23-attr-syntax-3 c23-attr-syntax-6 c23-attr-syntax-7 c23-auto-3 c23-complit-5 c23-constexpr-3 c23-constexpr-10 c23-enum-7 c23-tag-composite-1
