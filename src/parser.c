@@ -1947,7 +1947,12 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     LVar *saved_locals = locals;
 
     if (equalc(tok, "void") && equalc(tok->next, ")")) {
-        tok = tok->next->next;
+        *rest = tok->next->next;
+        locals = saved_locals;
+        ty = func_type(ty);
+        ty->param_types = NULL;
+        ty->is_variadic = false;
+        return ty;
     } else {
         while (!equalc(tok, ")")) {
             if (pcur != &param_head)
@@ -3050,6 +3055,20 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (name)
                 cur = cur->next = mem;
 
+            // Consume GCC function specifiers like __cond_acquires(true, lock)
+            while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                tok = tok->next;
+                tok = skip(tok, "(");
+                int pdepth = 1;
+                while (pdepth > 0 && tok->kind != TK_EOF) {
+                    if (equalc(tok, "(")) pdepth++;
+                    else if (equalc(tok, ")"))
+                        pdepth--;
+                    tok = tok->next;
+                }
+                if (equalc(tok, ","))
+                    tok = tok->next;
+            }
             if (!equalc(tok, ","))
                 break;
             tok = tok->next;
@@ -4498,7 +4517,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         }
         if (!var->is_local)
             if (!var->is_local)
-            error_tok(tok, "expected constant expression in initializer");
+                if (!var->is_local)
+                    if (!var->is_local)
+                        error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     if (is_flonum(ty)) {
@@ -4514,7 +4535,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         }
         if (!var->is_local)
             if (!var->is_local)
-            error_tok(tok, "expected constant expression in initializer");
+                if (!var->is_local)
+                    if (!var->is_local)
+                        error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     long long val = 0;
@@ -4524,7 +4547,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     }
     if (!var->is_local)
         if (!var->is_local)
-        error_tok(tok, "expected constant expression in initializer");
+            if (!var->is_local)
+                if (!var->is_local)
+                    error_tok(tok, "expected constant expression in initializer");
     return tok;
 }
 
@@ -4909,6 +4934,20 @@ static Node *declaration(Token **rest, Token *tok) {
             locals = lvar;
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
+            // Consume GCC function specifiers like __cond_acquires(true, lock)
+            while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                tok = tok->next;
+                tok = skip(tok, "(");
+                int pdepth = 1;
+                while (pdepth > 0 && tok->kind != TK_EOF) {
+                    if (equalc(tok, "(")) pdepth++;
+                    else if (equalc(tok, ")"))
+                        pdepth--;
+                    tok = tok->next;
+                }
+                if (equalc(tok, ","))
+                    tok = tok->next;
+            }
             if (!equalc(tok, ","))
                 break;
             tok = tok->next;
@@ -9875,6 +9914,22 @@ Program *parse(Token *tok) {
                     tok = tok->next;
                     continue;
                 }
+                // Consume GCC function specifiers like __cond_acquires(true, lock)
+                while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    int pdepth = 1;
+                    while (pdepth > 0 && tok->kind != TK_EOF) {
+                        if (equalc(tok, "(")) pdepth++;
+                        else if (equalc(tok, ")"))
+                            pdepth--;
+                        tok = tok->next;
+                    }
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                }
+                if (equalc(tok, ";") || equalc(tok, "{") || equalc(tok, ","))
+                    break;
                 error_tok(tok, "expected ';', ',', or '{'");
             } else {
                 // C11 6.7.4p2: _Noreturn only on function declarations
