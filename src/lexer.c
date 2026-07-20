@@ -667,6 +667,8 @@ Token *lex_one(char **pp, int *plineno) {
                 p += 2;
                 while (*p == '0' || *p == '1' ||
                        (dsep && *p == '\'' && (p[1] == '0' || p[1] == '1'))) p++;
+                if (p > q + 2 && isdigit((unsigned char)*p))
+                    lex_error_at(p, "invalid digit \"\%c\" in binary constant", *p);
             } else {
                 while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 if (*p == '.' && p[1] != '.') {
@@ -795,8 +797,8 @@ Token *lex_one(char **pp, int *plineno) {
             // (`0B0p0`, `123abc`); same '#' suppression as above.
             if (!base_prefix_empty && !lex_in_directive &&
                 (is_ident1(*p) || isdigit((unsigned char)*p)) && *p != '#') {
-                lex_error_at(p, "invalid suffix on %s constant",
-                             is_float ? "floating" : "integer");
+                if ((isdigit((unsigned char)*p) || has_base_prefix) && !base_prefix_empty) lex_error_at(p, "invalid suffix on %s constant",
+                                                                                                        is_float ? "floating" : "integer");
                 while (is_ident2(*p))
                     p++; // consume the rest of the pp-number
             }

@@ -3334,7 +3334,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
         if (equalc(tok, "typeof")) {
             // typeof is only a keyword in C23+ or GNU mode; in C11 it's an identifier
-            if (!opt_std_version || strcmp(opt_std_version, "202311L") < 0)
+            if (!opt_gnu_mode && (!opt_std_version || strcmp(opt_std_version, "202311L") < 0))
                 break;
             tok = tok->next;
             tok = skip(tok, "(");
