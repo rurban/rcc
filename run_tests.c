@@ -1551,6 +1551,19 @@ static char **list_c_files_sorted(const char *dir) {
  * TCC COMPATIBILITY TEST SUITE
  * ═══════════════════════════════════════════════════════════════════ */
 
+// strict errors on __extension__
+#define GCC_INCOMPAT_TESTS " c23-attr-syntax-7 "
+
+/* c23 compat trumps conflicting c11 compat
+ * rcc is C23 preferred; these C11 tests check __STDC_VERSION__ or features
+ * that differ between C11 and C23 (unreachable, nullptr-as-identifier,
+ * empty initializers `{}` which are an error in C11 but valid in C23) */
+#define C11_INCOMPAT_TESTS \
+    " c11-version-1 " \
+    " c11-version-2 " \
+    " c11-unreachable-1 " \
+    " c11-empty-init-1 "
+
 #define SKIP_TESTS \
     " 60_errors_and_warnings " \
     " 96_nodata_wanted " \
@@ -3969,6 +3982,7 @@ typedef enum {
     SKIP_SIGNAL,
     SKIP_POSIX_MEMALIGN,
     SKIP_C11_INCOMPAT,
+    SKIP_GCC_INCOMPAT,
     SKIP_ERROR,
     SKIP_FENV,
     SKIP_TARGET,
@@ -3996,6 +4010,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_SIGNAL: return "signal";
     case SKIP_POSIX_MEMALIGN: return "posix_memalign";
     case SKIP_C11_INCOMPAT: return "c11-incompat";
+    case SKIP_GCC_INCOMPAT: return "gcc-incompat";
     case SKIP_ERROR: return "error";
     case SKIP_FENV: return "fenv-exceptions";
     case SKIP_AVX: return "avx";
@@ -4103,20 +4118,10 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
     /* _BitInt not implemented */
     if (contains(content, "_BitInt("))
         return SKIP_BITINT;
-    /* typedef name shadowed by local variable: typedef struct {...} s;
-       followed by unsigned char ..., s, ...; (parser scope bug) */
-#if 0
-    if ((contains(content, "} s;") || contains(content, "} s\n")) &&
-        (contains(content, ", s,") || contains(content, ", s;") ||
-         contains(content, " s, ")))
-        return SKIP_SHADOW;
-#endif
-    /* rcc is C23 preferred; these C11 tests check __STDC_VERSION__ or features
-     * that differ between C11 and C23 (unreachable, nullptr-as-identifier,
-     * empty initializers `{}` which are an error in C11 but valid in C23) */
-    if (streq(name, "c11-version-1") || streq(name, "c11-version-2") ||
-        streq(name, "c11-unreachable-1") || streq(name, "c11-empty-init-1"))
+    if (word_in(C11_INCOMPAT_TESTS, name))
         return SKIP_C11_INCOMPAT;
+    if (word_in(GCC_INCOMPAT_TESTS, name))
+        return SKIP_GCC_INCOMPAT;
 
 #ifndef HAVE_ICONV
     if (contains(content, "-fexec-charset"))
@@ -4830,7 +4835,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
     else
         */
-        max_fail = 6;
+        max_fail = 5;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
