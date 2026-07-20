@@ -4496,7 +4496,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local)
+            if (!var->is_local)
+            error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     if (is_flonum(ty)) {
@@ -4510,7 +4512,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local)
+            if (!var->is_local)
+            error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     long long val = 0;
@@ -4518,7 +4522,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         write_scalar_bytes(var, offset, ty->size, (int64_t)val);
         return tok;
     }
-    error_tok(tok, "expected constant expression in initializer");
+    if (!var->is_local)
+        if (!var->is_local)
+        error_tok(tok, "expected constant expression in initializer");
     return tok;
 }
 
