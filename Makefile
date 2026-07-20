@@ -42,7 +42,7 @@ CFLAGS += -flto=thin
 #endif
 endif
 
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/cg_builtins.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 # Shared headers every object must be rebuilt for (see %$(OBJ_EXT) rule).
 HDRS = $(wildcard src/*.h)

@@ -2299,9 +2299,6 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__builtin_isnan", "isnan");
         define_pre("__builtin_isnanf", "isnan");
         define_pre("__builtin_isnanl", "isnan");
-        define_pre("__builtin_isfinite", "isfinite");
-        define_pre("__builtin_isnormal", "isnormal");
-        define_pre("__builtin_fpclassify", "fpclassify");
         define_pre("__builtin_snprintf", "snprintf");
         define_pre("__builtin_fprintf", "fprintf");
         define_pre("__builtin_vprintf", "vprintf");

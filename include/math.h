@@ -52,6 +52,8 @@ int isinf(double);
 int isnan(double);
 int isfinite(double);
 int signbit(double);
+int isnormal(double);
+int fpclassify(double);
 
 float sinf(float);
 float cosf(float);
@@ -91,5 +93,11 @@ float tanhf(float);
 #define HUGE_VAL (1.0/0.0)
 #define HUGE_VALF ((float)(1.0/0.0))
 #define HUGE_VALL ((long double)(1.0/0.0))
+
+#define FP_NAN          0
+#define FP_INFINITE     1
+#define FP_NORMAL       2
+#define FP_SUBNORMAL    3
+#define FP_ZERO         4
 
 #endif

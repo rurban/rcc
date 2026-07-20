@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 static int failures;
 
@@ -94,6 +95,56 @@ int main(void) {
     assert_eq(__builtin_strcmp("xyz", "xyz"), 0, "alias strcmp");
     p = __builtin_strchr("abcaba", 'b');
     assert_eq(*p, 'b', "alias strchr");
+
+    /* __builtin_isfinite */
+    assert_eq(__builtin_isfinite(3.14), 1, "isfinite(3.14)");
+    assert_eq(__builtin_isfinite(0.0), 1, "isfinite(0.0)");
+    assert_eq(__builtin_isfinite(-0.0), 1, "isfinite(-0.0)");
+    assert_eq(__builtin_isfinite(1.0/0.0), 0, "isfinite(inf)");
+    assert_eq(__builtin_isfinite(-1.0/0.0), 0, "isfinite(-inf)");
+    assert_eq(__builtin_isfinite(0.0/0.0), 0, "isfinite(NaN)");
+    /* __builtin_isfinitef */
+    assert_eq(__builtin_isfinitef(3.14f), 1, "isfinitef(3.14)");
+    assert_eq(__builtin_isfinitef(0.0f), 1, "isfinitef(0.0)");
+    assert_eq(__builtin_isfinitef(1.0f/0.0f), 0, "isfinitef(inf)");
+    assert_eq(__builtin_isfinitef(0.0f/0.0f), 0, "isfinitef(NaN)");
+    /* __builtin_isfinitel */
+    assert_eq(__builtin_isfinitel(3.14L), 1, "isfinitel(3.14)");
+    assert_eq(__builtin_isfinitel(0.0L), 1, "isfinitel(0.0)");
+    assert_eq(__builtin_isfinitel(1.0L/0.0L), 0, "isfinitel(inf)");
+    assert_eq(__builtin_isfinitel(0.0L/0.0L), 0, "isfinitel(NaN)");
+
+    /* __builtin_isnormal */
+    assert_eq(__builtin_isnormal(3.14), 1, "isnormal(3.14)");
+    assert_eq(__builtin_isnormal(0.0), 0, "isnormal(0.0)");
+    assert_eq(__builtin_isnormal(1.0/0.0), 0, "isnormal(inf)");
+    assert_eq(__builtin_isnormal(0.0/0.0), 0, "isnormal(NaN)");
+    /* __builtin_isnormalf */
+    assert_eq(__builtin_isnormalf(3.14f), 1, "isnormalf(3.14)");
+    assert_eq(__builtin_isnormalf(0.0f), 0, "isnormalf(0.0)");
+    assert_eq(__builtin_isnormalf(1.0f/0.0f), 0, "isnormalf(inf)");
+    assert_eq(__builtin_isnormalf(0.0f/0.0f), 0, "isnormalf(NaN)");
+    /* __builtin_isnormall */
+    assert_eq(__builtin_isnormall(3.14L), 1, "isnormall(3.14)");
+    assert_eq(__builtin_isnormall(0.0L), 0, "isnormall(0.0)");
+    assert_eq(__builtin_isnormall(1.0L/0.0L), 0, "isnormall(inf)");
+    assert_eq(__builtin_isnormall(0.0L/0.0L), 0, "isnormall(NaN)");
+    /* __builtin_fpclassify */
+    assert_eq(__builtin_fpclassify(3.14), FP_NORMAL, "fpclassify(3.14)");
+    assert_eq(__builtin_fpclassify(0.0), FP_ZERO, "fpclassify(0.0)");
+    assert_eq(__builtin_fpclassify(1.0/0.0), FP_INFINITE, "fpclassify(inf)");
+    assert_eq(__builtin_fpclassify(0.0/0.0), FP_NAN, "fpclassify(NaN)");
+
+    /* __builtin_fpclassifyf */
+    assert_eq(__builtin_fpclassifyf(3.14f), FP_NORMAL, "fpclassifyf(3.14)");
+    assert_eq(__builtin_fpclassifyf(0.0f), FP_ZERO, "fpclassifyf(0.0)");
+    assert_eq(__builtin_fpclassifyf(1.0f/0.0f), FP_INFINITE, "fpclassifyf(inf)");
+    assert_eq(__builtin_fpclassifyf(0.0f/0.0f), FP_NAN, "fpclassifyf(NaN)");
+    /* __builtin_fpclassifyl */
+    assert_eq(__builtin_fpclassifyl(3.14L), FP_NORMAL, "fpclassifyl(3.14)");
+    assert_eq(__builtin_fpclassifyl(0.0L), FP_ZERO, "fpclassifyl(0.0)");
+    assert_eq(__builtin_fpclassifyl(1.0L/0.0L), FP_INFINITE, "fpclassifyl(inf)");
+    assert_eq(__builtin_fpclassifyl(0.0L/0.0L), FP_NAN, "fpclassifyl(NaN)");
 
     if (failures)
         printf("%d FAILURES\n", failures);

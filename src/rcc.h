@@ -129,6 +129,9 @@ extern char *bi_prefetch, *bi_frame_address, *bi_return_address;
 extern char *bi_setjmp, *bi_longjmp;
 extern char *bi_signbit, *bi_signbitf, *bi_signbitl;
 extern char *bi_isinf, *bi_isinff, *bi_isinfl;
+extern char *bi_isfinite, *bi_isfinitef, *bi_isfinitel;
+extern char *bi_isnormal, *bi_isnormalf, *bi_isnormall;
+extern char *bi_fpclassify, *bi_fpclassifyf, *bi_fpclassifyl;
 extern char *bi_copysign, *bi_copysignf, *bi_copysignl;
 extern char *bi_fma, *bi_fmaf, *bi_fmal;
 extern char *bi_abs, *bi_labs, *bi_llabs;
@@ -148,6 +151,7 @@ extern char *bi_s_alloca;
 extern char *bi_chk_printf, *bi_chk_vprintf;
 extern char *bi_chk_fprintf, *bi_chk_vfprintf;
 extern char *bi_sqrtps, *bi_sqrtss, *bi_rsqrtps;
+
 
 //
 // Parser
@@ -193,6 +197,7 @@ typedef enum {
 typedef struct Node Node;
 typedef struct Type Type;
 typedef struct Member Member;
+
 
 enum {
     BF_MODE_DEFAULT,
@@ -608,5 +613,6 @@ int utf8_len(char *str);
 // rounds every allocation up to 16 bytes and calloc() zeroes the padding.
 const char *u8ident_check_ident_align16(const char *name, int len);
 void u8ident_allow_script(const char *name);
+
 
 #endif // RCC_H

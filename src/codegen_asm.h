@@ -196,8 +196,8 @@ typedef struct AsmFixupNode {
     struct AsmFixupNode *next;
 } AsmFixupNode;
 
-static AsmFixupNode *asm_fixup_htab[CG_HT_SIZE];
-static int asm_fixup_count = 0;
+extern AsmFixupNode *asm_fixup_htab[CG_HT_SIZE];
+extern int asm_fixup_count;
 
 static void asm_fixup_ht_reset(void) {
     memset(asm_fixup_htab, 0, sizeof(asm_fixup_htab));
@@ -4031,4 +4031,18 @@ __attribute__((unused)) static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm6
 #endif // ARCH_ARM64
 #endif
 
+
+// codegen exports (used by cg_builtins.c)
+extern VReg alloc_reg(void);
+extern void free_reg(VReg i);
+extern VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node *));
+extern void init_builtin_names(void);
+extern int rcc_label_count;
+extern void cg_def_label(const char *name);
+#ifndef ARCH_ARM64
+extern size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label);
+#endif
+#ifdef ARCH_ARM64
+extern void emit_mov_imm64(Arm64Reg reg, uint64_t val);
+#endif
 #endif // CODEGEN_ASM_H
