@@ -11,13 +11,17 @@ RCC="${1:-./rcc}"
 TCC="${TCC:-tcc}"
 GCC="${GCC:-gcc}"
 CLANG="$(which clang 2>/dev/null || true)"
-KEFIR="$(which kefir 2>/dev/null || true)"
-if [ -z "$KEFIR" ] && [ -e "/opt/kefir/bin/kefir" ]; then
-   KEFIR="/opt/kefir/bin/kefir"
-fi
 SLIMCC="$(which slimcc 2>/dev/null || true)"
 if [ -z "$SLIMCC" ] && [ -e "bench/../../slimcc/slimcc" ]; then
    SLIMCC="../slimcc/slimcc"
+fi
+XCC="$(which xcc 2>/dev/null || true)"
+if [ -z "$XCC" ] && [ -e "bench/../../xcc/xcc" ]; then
+   XCC="../xcc/xcc"
+fi
+KEFIR="$(which kefir 2>/dev/null || true)"
+if [ -z "$KEFIR" ] && [ -e "/opt/kefir/bin/kefir" ]; then
+   KEFIR="/opt/kefir/bin/kefir"
 fi
 # https://github.com/anthropics/claudes-c-compiler/
 CCC="$(which ccc 2>/dev/null || true)"
@@ -61,14 +65,15 @@ RCC_EXE="bench/bench_rcc"
 RCC_O1_EXE="bench/bench_rcc_o1"
 RCC_O2_EXE="bench/bench_rcc_o2"
 TCC_EXE="bench/bench_tcc"
+SLIMCC_EXE="bench/bench_slimcc"
+XCC_EXE="bench/bench_xcc"
+KEFIR_EXE="bench/bench_kefir"
+KEFIR_O1_EXE="bench/bench_kefir_o1"
+CCC_EXE="bench/bench_ccc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
 CLANG_EXE="bench/bench_clang"
 CLANG_O2_EXE="bench/bench_clang_o2"
-KEFIR_EXE="bench/bench_kefir"
-KEFIR_O1_EXE="bench/bench_kefir_o1"
-SLIMCC_EXE="bench/bench_slimcc"
-CCC_EXE="bench/bench_ccc"
 
 RUNS=3
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -102,7 +107,7 @@ resume_gortex() {
 
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
-	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$CCC_EXE"
+	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
 	resume_gortex
@@ -247,6 +252,9 @@ fi
 if [ -n "$SLIMCC" ]; then
    run_bench "SLIMCC" "$SLIMCC" "$SRC -o $SLIMCC_EXE" "$SLIMCC_EXE" || true
 fi
+if [ -n "$XCC" ]; then
+   run_bench "XCC" "$XCC" "$SRC -o $XCC_EXE" "$XCC_EXE" || true
+fi
 if [ -n "$KEFIR" ]; then
    run_bench "KEFIR" "$KEFIR" "$SRC -o $KEFIR_EXE" "$KEFIR_EXE" || true
    run_bench "KEFIR -O1" "$KEFIR" "-O1 $SRC -o $KEFIR_O1_EXE" "$KEFIR_O1_EXE" || true
@@ -320,6 +328,9 @@ if [ -f "$LARGE_SRC" ]; then
     if [ -n "$SLIMCC" ]; then
 	# SLIMCC lacks __atomic_store_n; expected to FAIL
 	_compile_large "SLIMCC" "$SLIMCC" -DSQLITE_THREADSAFE=0 -D"__atomic_store_n(x,y,z)" -D"__atomic_load_n(x,z)" -c "$LARGE_SRC" -o /dev/null
+    fi
+    if [ -n "$XCC" ]; then
+	_compile_large "XCC" "$XCC" -c "$LARGE_SRC" -o /dev/null
     fi
     if [ -n "$KEFIR" ]; then
 	_compile_large "KEFIR" "$KEFIR" -c "$LARGE_SRC" -o /dev/null

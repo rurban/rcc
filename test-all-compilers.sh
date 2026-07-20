@@ -40,13 +40,17 @@ GCC="$(resolve_bin gcc)"
 [ -z "$GCC" ] && GCC="gcc"
 CLANG="$(resolve_bin clang)"
 TCC="$(resolve_bin tcc)"
-KEFIR="$(resolve_bin kefir)"
-if [ -z "$KEFIR" ] && [ -x /opt/kefir/bin/kefir ]; then
-	KEFIR="/opt/kefir/bin/kefir"
-fi
 SLIMCC="$(resolve_bin slimcc)"
 if [ -z "$SLIMCC" ] && [ -x ../slimcc/slimcc ]; then
 	SLIMCC="../slimcc/slimcc"
+fi
+XCC="$(which xcc 2>/dev/null || true)"
+if [ -z "$XCC" ] && [ -e "bench/../../xcc/xcc" ]; then
+   XCC="../xcc/xcc"
+fi
+KEFIR="$(resolve_bin kefir)"
+if [ -z "$KEFIR" ] && [ -x /opt/kefir/bin/kefir ]; then
+	KEFIR="/opt/kefir/bin/kefir"
 fi
 CCC="$(resolve_bin ccc)"
 if [ -z "$CCC" ] && [ -x ../claudes-c-compiler/target/release/ccc ]; then
@@ -59,7 +63,7 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir slimcc"
+ROW_NAMES="rcc gcc ccc clang tcc kefir slimcc xcc"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
@@ -69,6 +73,7 @@ bin_for() {
 	tcc) echo "$TCC" ;;
 	kefir) echo "$KEFIR" ;;
 	slimcc) echo "$SLIMCC" ;;
+	xcc) echo "$XCC" ;;
 	esac
 }
 suffix_for() {
