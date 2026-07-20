@@ -448,7 +448,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                 }
             }
         }
-        return -1; // void
+        return 0; // handled, void
     }
 
     if (is_signbit) {
@@ -818,8 +818,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         free_reg(rtmp);
 #endif
         free_reg(rbuf);
-        free_reg(rval);
-        return -1;
+        return 0; // handled, void
     }
 #ifdef ARCH_ARM64
     if (is_add_overflow || is_sub_overflow || is_mul_overflow || is_mul_overflow_p) {
