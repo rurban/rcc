@@ -1117,7 +1117,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             else
                 tok = tok->next->next; // two separate [ tokens
             // Empty [[]]: check what follows to decide if it's an empty declaration
-            bool in_extension = false;
+
             bool empty_attr = equalc(tok, "]") && tok->next && equalc(tok->next, "]") &&
                 tok->ptr + tok->len == tok->next->ptr;
             Token *after_attr = empty_attr ? tok->next->next : NULL;
@@ -1139,11 +1139,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     error_tok(c1, "expected ']' before ':'");
                 }
                 // __extension__ allows GNU attrs in standard [[]] syntax
-                if (equalc(tok, "__extension__") || equalc(tok, "__extension")) {
-                    in_extension = true;
-                    tok = tok->next;
-                    continue;
-                }
+
                 bool consumed = false;
                 if (tok->kind != TK_IDENT)
                     error_tok(tok, "expected attribute identifier");
@@ -1177,11 +1173,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     else if (equalc(tok, "unsequenced"))
                         attr->is_unsequenced = true;
                 }
-                if (!consumed) {
-                    if (in_extension && opt_pedantic)
-                        warn_tok(tok, "'%.*s' attribute ignored", (int)tok->len, tok->ptr);
-                    tok = tok->next;
-                }
+                if (!consumed) tok = tok->next;
                 if (equalc(tok, "(")) {
                     int pdepth = 1;
                     tok = tok->next;
