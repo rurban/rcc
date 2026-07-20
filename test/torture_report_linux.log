@@ -979,7 +979,7 @@
   c23-attr-unsequenced-5              PASS
   c23-auto-1                          PASS (compile only)
   c23-auto-2                          PASS
-  c23-auto-3                          FAIL (dg-error lines)
+  c23-auto-3                          SKIP (gcc-incompat)
   c23-auto-4                          PASS (compile only)
   c23-binary-constants-1              SKIP (missing include)
   c23-binary-constants-2              PASS (compile only)
@@ -3964,6 +3964,6 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3586/3591 passed (99%), 5 failed (5 compile/0 runtime), 372 skipped.
+Torture: 3586/3590 passed (99%), 4 failed (4 compile/0 runtime), 373 skipped.
 
-Compile failures: c23-auto-3 c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
+Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1

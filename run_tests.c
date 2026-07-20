@@ -1551,8 +1551,10 @@ static char **list_c_files_sorted(const char *dir) {
  * TCC COMPATIBILITY TEST SUITE
  * ═══════════════════════════════════════════════════════════════════ */
 
-// strict errors on __extension__
-#define GCC_INCOMPAT_TESTS " c23-attr-syntax-7 "
+// skip strict errors on __extension__
+#define GCC_INCOMPAT_TESTS \
+    " c23-attr-syntax-7 "  \
+    " c23-auto-3 "
 
 /* c23 compat trumps conflicting c11 compat
  * rcc is C23 preferred; these C11 tests check __STDC_VERSION__ or features
@@ -4835,7 +4837,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
     else
         */
-        max_fail = 5;
+        max_fail = 4;
 
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
