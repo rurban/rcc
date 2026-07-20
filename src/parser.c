@@ -2711,6 +2711,12 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (!v) error_tok(st, "%s", msg);
             continue;
         }
+        // C11 6.7.2.1p2: empty declaration (bare semicolon) is valid.
+        // Kernels commonly produce these from empty __VA_ARGS__ in macros.
+        if (equalc(tok, ";")) {
+            tok = tok->next;
+            continue;
+        }
         Token *mdecl_start = tok;
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)

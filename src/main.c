@@ -2,6 +2,7 @@
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include "asm.h"
+#include "codegen_asm.h"
 #include <stdarg.h>
 #ifdef _WIN32
 #include <process.h>
@@ -636,10 +637,19 @@ int main(int argc, char **argv) {
                 // The data/rodata/bss dump is best-effort: PE objdump exits
                 // non-zero when one of the -j sections is absent (e.g. a
                 // .o with no data at all), which is a normal, not an error.
-                snprintf(cmd, sizeof(cmd), "%s -s -j .data -j .rodata -j .bss \"%s\" >> \"%s\"",
+                snprintf(cmd, sizeof(cmd), "%s -s -j .text -j .data -j .rodata -j .bss \"%s\" >> \"%s\"",
                          objdump, tmp_obj_path, asm_path);
                 if (system(cmd) != 0)
                     fprintf(stderr, "rcc: error: objdump failed for -S output\n");
+                // Emit collected .ascii strings for kernel offsets
+                for (CgAsciiStr *a = cg_ascii_strings; a; a = a->next) {
+                    FILE *sf = fopen(asm_path, "a");
+                    if (sf) {
+                        fprintf(sf, "  .ascii \"%s\"\n", a->str);
+                        fclose(sf);
+                    }
+                }
+                cg_ascii_strings = NULL;
                 remove(tmp_obj_path);
                 if (!ok) {
                     fprintf(stderr, "rcc: error: objdump failed for -S output\n");

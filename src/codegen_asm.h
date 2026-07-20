@@ -4032,6 +4032,21 @@ __attribute__((unused)) static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm6
 #endif
 
 
+// .ascii string collector for -S mode (kernel offsets parsing)
+typedef struct CgAsciiStr CgAsciiStr;
+struct CgAsciiStr {
+    CgAsciiStr *next;
+    char *str;
+};
+extern CgAsciiStr *cg_ascii_strings;
+static inline void cg_ascii_add(const char *s) {
+    CgAsciiStr *a = arena_alloc(sizeof(CgAsciiStr));
+    a->str = arena_alloc(strlen(s) + 1);
+    strcpy(a->str, s);
+    a->next = cg_ascii_strings;
+    cg_ascii_strings = a;
+}
+
 // codegen exports (used by cg_builtins.c)
 extern VReg alloc_reg(void);
 extern void free_reg(VReg i);

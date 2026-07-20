@@ -16,6 +16,7 @@ static ObjFile *cg_obj;
 SecBuf *cg_sec;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
+CgAsciiStr *cg_ascii_strings;
 
 static void cg_set_section(int sec) {
     if (!cg_obj) return;
@@ -3758,7 +3759,6 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
 }
 #endif // ARCH_ARM64
 
-#ifdef ARCH_ARM64
 // Try to extract an integer constant from a node (traversing casts).
 // Returns true and sets *val if the node reduces to a compile-time constant.
 static bool try_const_int(Node *n, int64_t *val) {
@@ -3770,9 +3770,6 @@ static bool try_const_int(Node *n, int64_t *val) {
     }
     return false;
 }
-#endif // ARCH_ARM64
-
-// Generate code to compute the absolute address of an lvalue.
 static VReg gen_addr(Node *node) {
     // A vector arithmetic/compare/unary result is materialized into a 16-byte
     // slot; its "address" is that slot (used when a vector value is returned by
@@ -9151,6 +9148,18 @@ static VReg gen(Node *node) {
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
                 emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+            } else if (*c == 'i' || *c == 'n') {
+                // Immediate integer constraint: emit numeric value in template
+                int64_t cval = 0;
+                if (try_const_int(op->expr, &cval)) {
+                    snprintf(op->asm_str, sizeof(op->asm_str), "$%lld", (long long)cval);
+                    op_regs[i] = -1; // no register needed
+                } else {
+                    VReg r = gen(op->expr);
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg64[r]);
+                }
             } else if (*c >= '0' && *c <= '9') {
                 // Matching constraint: defer to second pass
                 op_regs[i] = -2; // sentinel
@@ -9280,6 +9289,22 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
+            const char *a = strstr(out, ".ascii");
+            if (a) {
+                a += 6;
+                while (*a == ' ') a++;
+                if (*a == '"') {
+                    a++;
+                    const char *end = strchr(a, '"');
+                    if (end) {
+                        size_t n = (size_t)(end - a);
+                        char *s = arena_alloc(n + 1);
+                        memcpy(s, a, n);
+                        s[n] = '\0';
+                        cg_ascii_add(s);
+                    }
+                }
+            }
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
