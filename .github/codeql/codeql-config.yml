@@ -1,0 +1,11 @@
+name: "CodeQL config"
+
+# GCC torture-test corpus copied verbatim from upstream GCC testsuite:
+# intentionally odd C snippets (narrow/wide loop comparisons, K&R-style
+# stub declarations, overflow-prone arithmetic) that exercise the
+# vectorizer/optimizer. Not rcc's own logic, so exclude from scanning.
+paths-ignore:
+  - test/torture/**
+
+queries:
+  - uses: security-and-quality
