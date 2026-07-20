@@ -91,6 +91,36 @@ struct CondIncl {
     bool parent_active, active, branch_taken;
 };
 
+// Dependency file tracking (for -Wp,-MMD)
+typedef struct DepEntry DepEntry;
+struct DepEntry {
+    DepEntry *next;
+    char *path;
+};
+static DepEntry *dep_files;
+static void dep_add(const char *path) {
+    for (DepEntry *d = dep_files; d; d = d->next)
+        if (!strcmp(d->path, path)) return;
+    DepEntry *d = arena_alloc(sizeof(DepEntry));
+    d->path = (char *)path;
+    d->next = dep_files;
+    dep_files = d;
+}
+
+// Pre-include files (-include <file>)
+static const char *preinclude_list[64];
+static int nb_preinclude = 0;
+void add_preinclude(const char *path) {
+    if (nb_preinclude < 64)
+        preinclude_list[nb_preinclude++] = path;
+}
+
+// Macro prefix map for diagnostics
+void add_prefix_map(const char *old, const char *new_str) {
+    opt_prefix_map_old = old;
+    opt_prefix_map_new = new_str;
+}
+
 typedef struct MacroStack MacroStack;
 struct MacroStack {
     MacroStack *next;
@@ -525,9 +555,11 @@ static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
         path = path_join(user_include_paths[i], spec);
         if (file_exists(path)) return canonical_path(path);
     }
-    for (int i = 0; sys_include_paths[i]; i++) {
-        path = path_join(sys_include_paths[i], spec);
-        if (file_exists(path)) return canonical_path(path);
+    if (!opt_nostdinc) {
+        for (int i = 0; sys_include_paths[i]; i++) {
+            path = path_join(sys_include_paths[i], spec);
+            if (file_exists(path)) return canonical_path(path);
+        }
     }
     if (file_exists(spec)) return canonical_path(spec);
     return NULL;
@@ -1866,6 +1898,7 @@ static void do_directive(void) {
             exit(1);
         }
         push_level(inc_fpath, inc_fpath, contents);
+        dep_add(inc_fpath);
         return;
     }
     if (dn == dn_line) {
@@ -2350,7 +2383,17 @@ Token *preprocess(char *filename, char *p) {
     lvl = NULL;
     // push_level() splices line continuations itself; passing raw input avoids a
     // double splice that would discard the physical-line counts (breaks __LINE__).
+    // Push main source first, then pre-include files on top (LIFO).
+    // Pre-includes must process first so their macros are visible.
     push_level(resolved_name, full_path(resolved_name), p);
+    for (int i = nb_preinclude - 1; i >= 0; i--) {
+        char *inc_path = full_path((char *)preinclude_list[i]);
+        char *inc_contents = read_pp_file((char *)preinclude_list[i]);
+        if (inc_contents) {
+            push_level(inc_path, inc_path, inc_contents);
+            dep_add(inc_path);
+        }
+    }
     lex_pp_mode = true;
     xout_head = xout_tail = NULL;
 
@@ -2379,4 +2422,28 @@ Token *preprocess(char *filename, char *p) {
     Token *result = concat_strings(xout_head);
     if (opt_dM) return NULL;
     return result;
+}
+
+// Write Make dependency rules (-Wp,-MMD,<file>)
+void write_dep_file(const char *out_path, const char *main_fpath) {
+    if (!opt_depfile || !main_fpath) return;
+    FILE *f = fopen(opt_depfile, "w");
+    if (!f) {
+        fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", opt_depfile);
+        return;
+    }
+    // Target: output file depends on main source + all included files
+    fprintf(f, "%s:", out_path ? out_path : "a.out");
+    if (main_fpath[0] != '/') {
+        // Write relative path
+        fprintf(f, " %s", main_fpath);
+    } else {
+        // Write absolute path - GCC uses the path as-is
+        fprintf(f, " %s", main_fpath);
+    }
+    for (DepEntry *d = dep_files; d; d = d->next) {
+        if (d->path) fprintf(f, " %s", d->path);
+    }
+    fprintf(f, "\n");
+    fclose(f);
 }

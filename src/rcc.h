@@ -109,6 +109,18 @@ void register_source_buffer(char *start, char *end);
 void add_define(char *def);
 void add_undef(char *name);
 void add_include_path(const char *path);
+// -nostdinc: skip system include paths
+extern bool opt_nostdinc;
+// -Wp,-MMD,<file>: write Make dependency rules
+extern const char *opt_depfile;
+// -fmacro-prefix-map=old=new
+extern const char *opt_prefix_map_old;
+extern const char *opt_prefix_map_new;
+// -include <file>: pre-include before main source
+void add_preinclude(const char *path);
+void add_prefix_map(const char *old, const char *new_str);
+// Write dependency file after preprocessing
+void write_dep_file(const char *out_path, const char *main_fpath);
 void rcc_reset_state(void);
 void print_search_dirs(const char *gcc);
 Token *tokenize(char *filename, char *p);

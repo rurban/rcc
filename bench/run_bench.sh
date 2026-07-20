@@ -374,7 +374,6 @@ printf "RCC:\n"
 printf '%s\n' "$rcc_time" | sed 's|[^ ]*/||g'
 printf "\nRCC -O1:\n"
 printf '%s\n' "$rcc_o1_time" | sed 's|[^ ]*/||g'
-printf '```\n'
 printf "\nRCC -O2:\n"
 printf '%s\n' "$rcc_o2_time" | sed 's|[^ ]*/||g'
 printf '```\n'
@@ -385,7 +384,6 @@ if [ -n "${rcc_large_time:-}" ]; then
 	printf '%s\n' "$rcc_large_time" | sed 's|[^ ]*/||g'
 	printf "\nRCC -O1:\n"
 	printf '%s\n' "$rcc_large_o1_time" | sed 's|[^ ]*/||g'
-	printf '```\n'
 	printf "\nRCC -O2:\n"
 	printf '%s\n' "$rcc_large_o2_time" | sed 's|[^ ]*/||g'
 	printf '```\n'

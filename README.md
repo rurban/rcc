@@ -132,6 +132,7 @@ compiler and tests, it is much faster now.
 ## Options
 
     -I path            add include path
+    -include file      pre-include header
     -Dname[=val]       define a macro value
     -Uname             undefine a macro value
     -E                 preprocessor-only
@@ -144,6 +145,7 @@ compiler and tests, it is much faster now.
     -g                 emit DWARF line-number debug info
     -std={c23,c17,c11,c99,c89,...}
                        sets __STDC_VERSION__
+    -nostdinc          do not search system include directories
     -W                 print diagnostic warnings (-Wshadow, stack spilling with -v)
     -Werror            error on all warnings (but not internal stack spill warnings)
     -pedantic-errors   same
@@ -159,11 +161,13 @@ compiler and tests, it is much faster now.
     -static            link statically
     -rpath path        => -Wl,-rpath,path
     -soname name       => -Wl,-soname,name
+    -Wp,-MMD,file      write make dependency rules
     -Wl,<opt>          pass option to linker
     -mms-bitfields     use MSVC bitfields (default on Windows)
     -mno-ms-bitfields  use GCC bitfields (default on non-Windows)
     -pie|-fPIE|-fpie   generate position-independent executable
     -fPIC|-fpic        generate position-independent code
+    -fmacro-prefix-map=old=new  remap paths in diagnostics
     -time              print timing for each compilation substep
     -v                 be more verbose
     -xc                treat input as C

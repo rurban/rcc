@@ -123,6 +123,10 @@ void help(void) {
            "-I path             add include path\n"
            "-Dname[=val]        define a macro\n"
            "-Uname              undefine a macro\n"
+           "-include file       pre-include file before main source\n"
+           "-nostdinc           do not search system include directories\n"
+           "-Wp,-MMD,file       write Make dependency rules\n"
+           "-fmacro-prefix-map=old=new  remap paths in diagnostics\n"
            "-E                  preprocessor-only\n"
            "-S                  assemble-only\n"
            "-c                  compile-only\n"
@@ -161,7 +165,7 @@ void help(void) {
            "-###                dry-run (print commands, don't execute)\n"
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
-           "-fexec-charset=cs   set execution character set (default UTF-8)"
+           "-fexec-charset=cs   set execution character set (default UTF-8)\n"
            "-print-search-dirs  print install, include and library paths\n"
            "-dumpmachine        print target version\n"
            "-dumpversion        print gcc compatibility version\n"
@@ -196,6 +200,14 @@ bool opt_ms_bitfields =
 #endif
 ;
 
+// -nostdinc: skip system include paths
+bool opt_nostdinc = false;
+// -Wp,-MMD,<file>: write Make dependency rules
+const char *opt_depfile = NULL;
+// -fmacro-prefix-map=old=new
+const char *opt_prefix_map_old = NULL;
+const char *opt_prefix_map_new = NULL;
+
 bool sse42_available = false;
 
 int main(int argc, char **argv) {
@@ -221,6 +233,9 @@ int main(int argc, char **argv) {
         ;
     char *input_files[64];
     int n_inputs = 0;
+    // -include <file>: pre-include files before main source
+    const char *preinclude_files[64];
+    int nb_preinclude_files = 0;
     bool opt_S = false;
     bool opt_c = false;
     bool opt_E = false;
@@ -418,6 +433,26 @@ int main(int argc, char **argv) {
             //   -Werror=* = silently ignored (error variant for warnings we don't have)
             //   others  = warn, but only error with -Werror=unknown-warning-option
             // Build systems probe supported warnings via -Werror=unknown-warning-option.
+        } else if (!strcmp(argv[i], "-nostdinc")) {
+            opt_nostdinc = true;
+        } else if (!strncmp(argv[i], "-include", 8) && (argv[i][8] == '=' || argv[i][8] == '\0')) {
+            char *path = argv[i][8] == '=' ? argv[i] + 9 : (++i < argc ? argv[i] : NULL);
+            if (!path) {
+                fprintf(stderr, "error: missing argument for -include\n");
+                return 1;
+            }
+            if (nb_preinclude_files < 64)
+                preinclude_files[nb_preinclude_files++] = path;
+        } else if (!strncmp(argv[i], "-fmacro-prefix-map=", 19)) {
+            char *val = argv[i] + 19;
+            char *eq = strchr(val, '=');
+            if (eq) {
+                *eq = '\0';
+                opt_prefix_map_old = val;
+                opt_prefix_map_new = eq + 1;
+            }
+        } else if (!strncmp(argv[i], "-Wp,-MMD,", 9)) {
+            opt_depfile = argv[i] + 9;
         } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
             opt_exec_charset = argv[i] + 15;
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
@@ -486,10 +521,15 @@ int main(int argc, char **argv) {
         // Single-scan: preprocess() returns the token stream directly;
         // no separate tokenize() pass needed.
         uint64_t t0 = opt_time ? now_us() : 0;
+        // Wire pre-include files (-include <file>)
+        for (int pi = 0; pi < nb_preinclude_files; pi++)
+            add_preinclude(preinclude_files[pi]);
         Token *tok = preprocess(cur_path, contents);
         if (opt_time)
             fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
+        // Write Make dependency file (-Wp,-MMD,<file>)
+        write_dep_file(out_path, cur_path);
 
         if (opt_dM) {
             printf("%s", dump_macros_text());
