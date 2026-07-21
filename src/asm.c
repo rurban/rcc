@@ -158,7 +158,23 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         struct Fixup *fx = &as->fixups[i];
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->section != sec) {
-            asm_error(as, "cross-section fixup");
+            // Cross-section jump/call target — e.g. a `jmp`/`jcc` inside
+            // the kernel's throwaway .altinstr_aux-style out-of-line
+            // section, branching back to the real function body in
+            // .text. A same-section byte-patch can't express this (the
+            // two sections may end up placed anywhere relative to each
+            // other); only the linker can, via a real relocation — same
+            // idea as the `(label) - .` case in the .long/.byte/...
+            // directive handler.
+#ifndef ARCH_ARM64
+            if (fx->kind == FIXUP_REL32) {
+                objfile_add_reloc(as->obj, fx->section, fx->patch_off,
+                                  occurrence_idx, R_X86_64_PC32, fx->addend - 4);
+            } else
+#endif
+                asm_error(as, "cross-section fixup");
+            as->fixups[i] = as->fixups[--as->nfixups];
+            i--;
             continue;
         }
         SecBuf *buf = cur_sec_buf(as);
@@ -2582,7 +2598,12 @@ static void dynstr_append(DynStr *d, const char *s) {
     if (d->len + n + 2 > d->cap) {
         d->cap = d->cap ? d->cap * 2 : 256;
         while (d->cap < d->len + n + 2) d->cap *= 2;
-        d->data = realloc(d->data, d->cap);
+        char *tmp = realloc(d->data, d->cap);
+        if (!tmp) {
+            fprintf(stderr, "rcc: out of memory\n");
+            exit(1);
+        }
+        d->data = tmp;
     }
     memcpy(d->data + d->len, s, n);
     d->len += n;
@@ -3209,6 +3230,24 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
     }
 }
 
+// GAS allows ';' as a statement separator on one physical line — rare in
+// compiler-generated code, but used by hand-written kernel objtool
+// annotation macros, e.g.
+//   912: .pushsection .discard.annotate_data,"M",@progbits,8; .long 912b - .,1 ; .popsection
+// Turn each top-level ';' into a newline in place before splitting into
+// lines, so every later stage (block matching, directive dispatch) only
+// ever has to deal with one statement per line. Skips ';' inside a "..."
+// string literal (irrelevant for any real .s content, but cheap to guard).
+static void split_semicolons(char *buf) {
+    bool in_str = false;
+    for (char *p = buf; *p; p++) {
+        if (*p == '"' && (p == buf || p[-1] != '\\'))
+            in_str = !in_str;
+        else if (*p == ';' && !in_str)
+            *p = '\n';
+    }
+}
+
 // Split `buf` (already NUL-separated at each original newline) into an
 // array of line pointers. Returns the count; `*out_lines` is malloc'd.
 static int split_into_lines(char *buf, char ***out_lines) {
@@ -3218,7 +3257,12 @@ static int split_into_lines(char *buf, char ***out_lines) {
     while (*line || line == buf) {
         if (n == cap) {
             cap *= 2;
-            lines = realloc(lines, (size_t)cap * sizeof(char *));
+            char **tmp = realloc(lines, (size_t)cap * sizeof(char *));
+            if (!tmp) {
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+            lines = tmp;
         }
         lines[n++] = line;
         char *nl = strchr(line, '\n');
@@ -3236,6 +3280,7 @@ static int split_into_lines(char *buf, char ***out_lines) {
 // there's nothing to expand).
 static char *asm_macro_pass(AsmState *as, const char *text) {
     char *scratch = strdup(text);
+    split_semicolons(scratch);
     char **lines;
     int n = split_into_lines(scratch, &lines);
     DynStr out = {0};
@@ -3311,6 +3356,22 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             define_label(&as, lbl, is_global, is_weak, is_func);
             p = skip_ws(colon + 1);
             if (!*p) {
+                line = nl ? nl + 1 : line + strlen(line);
+                continue;
+            }
+            // "label: .directive ..." on one physical line (e.g. objtool
+            // annotation macros: `912: .pushsection .discard..., ...`) —
+            // the remainder after the label is itself a directive, not an
+            // instruction; route it the same way the top-of-loop check
+            // would have if the label prefix weren't there.
+            if (*p == '.') {
+                char *dir = p + 1;
+                char *sp = dir;
+                while (*sp && !isspace((unsigned char)*sp)) sp++;
+                char *args = *sp ? sp + 1 : sp;
+                *sp = 0;
+                for (char *d = dir; *d; d++) *d = tolower((unsigned char)*d);
+                handle_directive(&as, dir, args);
                 line = nl ? nl + 1 : line + strlen(line);
                 continue;
             }
