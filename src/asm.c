@@ -1908,6 +1908,79 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
+    // String instructions (movs/stos/cmps/scas + b/w/l/q size suffix):
+    // no operands, implicit rsi/rdi/rcx, typically rep-prefixed (e.g.
+    // copy_user_generic's "rep movsb", generic memset/memcpy fallbacks).
+    // Must be checked by exact name before the generic "mov" dispatch
+    // below: "movsl" (32-bit string move) textually collides with that
+    // dispatch's movslq-style sign-extend detection (both contain "sl").
+    if (nops == 0) {
+        if (!strcmp(mnem, "movsb")) {
+            x86_movs(buf, 1);
+            return true;
+        }
+        if (!strcmp(mnem, "movsw")) {
+            x86_movs(buf, 2);
+            return true;
+        }
+        if (!strcmp(mnem, "movsl")) {
+            x86_movs(buf, 4);
+            return true;
+        }
+        if (!strcmp(mnem, "movsq")) {
+            x86_movs(buf, 8);
+            return true;
+        }
+        if (!strcmp(mnem, "stosb")) {
+            x86_stos(buf, 1);
+            return true;
+        }
+        if (!strcmp(mnem, "stosw")) {
+            x86_stos(buf, 2);
+            return true;
+        }
+        if (!strcmp(mnem, "stosl")) {
+            x86_stos(buf, 4);
+            return true;
+        }
+        if (!strcmp(mnem, "stosq")) {
+            x86_stos(buf, 8);
+            return true;
+        }
+        if (!strcmp(mnem, "cmpsb")) {
+            x86_cmps(buf, 1);
+            return true;
+        }
+        if (!strcmp(mnem, "cmpsw")) {
+            x86_cmps(buf, 2);
+            return true;
+        }
+        if (!strcmp(mnem, "cmpsl")) {
+            x86_cmps(buf, 4);
+            return true;
+        }
+        if (!strcmp(mnem, "cmpsq")) {
+            x86_cmps(buf, 8);
+            return true;
+        }
+        if (!strcmp(mnem, "scasb")) {
+            x86_scas(buf, 1);
+            return true;
+        }
+        if (!strcmp(mnem, "scasw")) {
+            x86_scas(buf, 2);
+            return true;
+        }
+        if (!strcmp(mnem, "scasl")) {
+            x86_scas(buf, 4);
+            return true;
+        }
+        if (!strcmp(mnem, "scasq")) {
+            x86_scas(buf, 8);
+            return true;
+        }
+    }
+
     // MOV variants (but not the SSE scalar moves movsd/movss, which are
     // handled by their dedicated encoders below).
     if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss")) {
@@ -1982,25 +2055,30 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
 // ADD / SUB / AND / OR / XOR
 // AT&T order is src, dst — ops[0]=src, ops[1]=dst. Besides the
-// reg-dest forms, a memory destination with a register source
-// ("addl %eax, mem", used pervasively by lock-prefixed kernel atomics
-// like arch_atomic_add) must go through fn_mr, not fn_rm (which loads
-// FROM memory into a register — the opposite direction). Without this
-// case the memory-destination form matched no branch here at all and
-// silently encoded nothing while still reporting success.
-#define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr) \
+// reg-dest forms, two memory-destination forms must go through the
+// dedicated mem-destination encoders, not fn_rm (which loads FROM memory
+// into a register — the opposite direction):
+// - reg source ("addl %eax, mem", kernel atomics like arch_atomic_add)
+//   goes through fn_mr.
+// - immediate source ("addl $0, mem", e.g. x86_64's __smp_mb() —
+//   "lock addl $0,-4(%rsp)" — used by every smp_mb()/wq_has_sleeper()
+//   call in the kernel) goes through fn_mi.
+// Without these cases the memory-destination forms matched no branch at
+// all and silently encoded nothing while still reporting success.
+#define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr, fn_mi) \
     if (!strncmp(mnem, name, strlen(name))) { \
         if (is_imm(0)&&is_reg(1)) { fn_ri(buf,sz,R(1),(int32_t)IMM(0)); } \
         else if (is_reg(0)&&is_reg(1)) { fn_rr(buf,sz,R(1),R(0)); } \
         else if (is_mem(0)&&is_reg(1)) { fn_rm(buf,sz,R(1),M(0)); } \
         else if (is_reg(0)&&is_mem(1)) { fn_mr(buf,sz,M(1),R(0)); } \
+        else if (is_imm(0)&&is_mem(1)) { fn_mi(buf,sz,M(1),(int32_t)IMM(0)); } \
         return true; \
     }
-    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm, x86_add_mr)
-    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm, x86_sub_mr)
-    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mr)
-    ALU_OP("or", x86_or_rr, x86_or_ri, x86_or_rm, x86_or_mr)
-    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr)
+    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm, x86_add_mr, x86_add_mi)
+    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm, x86_sub_mr, x86_sub_mi)
+    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mr, x86_and_mi)
+    ALU_OP("or", x86_or_rr, x86_or_ri, x86_or_rm, x86_or_mr, x86_or_mi)
+    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr, x86_xor_mi)
 #undef ALU_OP
 
     // IMUL

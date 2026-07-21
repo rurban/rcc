@@ -252,6 +252,28 @@ void x86_cmp_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     else
         emit_imm32(s, imm);
 }
+void x86_and_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
+    int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit1(s, opsize(0x80, size));
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 4); // /4 = AND
+    if (size == 1) emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
+void x86_xor_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
+    int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit1(s, opsize(0x80, size));
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 6); // /6 = XOR
+    if (size == 1) emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
 void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
     if (dst_sz == 4 && src_sz == 1) {
         maybe_rex(s, 0, dst, 0, src);
@@ -683,6 +705,32 @@ void x86_stosb(SecBuf *s) { emit1(s, 0xaa); }
 void x86_movsb(SecBuf *s) { emit1(s, 0xa4); }
 void x86_cmpsb(SecBuf *s) { emit1(s, 0xa6); }
 void x86_scasb(SecBuf *s) { emit1(s, 0xae); }
+
+// Size-aware string instructions (movsw/l/q, stosw/l/q, cmpsw/l/q,
+// scasw/l/q): all implicit-operand (rsi/rdi/rcx), no ModRM. The kernel's
+// rep-prefixed string ops (e.g. copy_user_generic's "rep movsb", generic
+// memset/memcpy/memcmp fallbacks) need every size, not just byte.
+static void strop_size_pfx(SecBuf *s, int size) {
+    if (size == 2) emit1(s, 0x66);
+    else if (size == 8)
+        emit1(s, rex(1, 0, 0, 0));
+}
+void x86_movs(SecBuf *s, int size) {
+    strop_size_pfx(s, size);
+    emit1(s, size == 1 ? 0xa4 : 0xa5);
+}
+void x86_stos(SecBuf *s, int size) {
+    strop_size_pfx(s, size);
+    emit1(s, size == 1 ? 0xaa : 0xab);
+}
+void x86_cmps(SecBuf *s, int size) {
+    strop_size_pfx(s, size);
+    emit1(s, size == 1 ? 0xa6 : 0xa7);
+}
+void x86_scas(SecBuf *s, int size) {
+    strop_size_pfx(s, size);
+    emit1(s, size == 1 ? 0xae : 0xaf);
+}
 void x86_mfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf0); }
 void x86_cpuid(SecBuf *s) { emit2(s, 0x0f, 0xa2); }
 void x86_ud2(SecBuf *s) { emit2(s, 0x0f, 0x0b); }

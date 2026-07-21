@@ -230,7 +230,48 @@ int main(void)
             __asm__ volatile ("ud2");
     }
 
-    return 0;
+    /* ADD/SUB/AND/OR/XOR with an immediate source and memory destination
+     * ("addl $imm, mem", AT&T src,dst order) — the ALU_OP dispatch had no
+     * case for is_imm(0)&&is_mem(1) either, matching no branch at all.
+     * This is x86_64's __smp_mb() ("lock addl $0,-4(%rsp)"), used by
+     * every smp_mb() in the kernel (wq_has_sleeper() and friends). */
+    {
+        int v = 20;
+        __asm__ volatile ("addl $5, %0" : "+m"(v) :: "memory");
+        if (v != 25) return 22;
+        __asm__ volatile ("subl $3, %0" : "+m"(v) :: "memory");
+        if (v != 22) return 23;
+        __asm__ volatile ("andl $0xf, %0" : "+m"(v) :: "memory");
+        if (v != 6) return 24;
+        __asm__ volatile ("orl $0x10, %0" : "+m"(v) :: "memory");
+        if (v != 0x16) return 25;
+        __asm__ volatile ("xorl $0xff, %0" : "+m"(v) :: "memory");
+        if (v != 0xe9) return 26;
+        /* the exact __smp_mb() form: no output, just the side effect of
+         * executing (correctness here is "doesn't crash / drop bytes"). */
+        __asm__ volatile ("lock addl $0,-4(%%rsp)" ::: "memory", "cc");
+    }
+
+    /* String instructions (movs/stos/cmps/scas) — no operands, implicit
+     * rsi/rdi/rcx, always rep-prefixed in practice. copy_user_generic's
+     * "rep movsb" is used by every raw_copy_{to,from}_user() call. */
+    {
+        char src[16] = "hello world!!!!";
+        char dst[16] = {0};
+        unsigned long n = 16, to = (unsigned long)dst, from = (unsigned long)src;
+        __asm__ volatile ("rep movsb" : "+c"(n), "+D"(to), "+S"(from) :: "memory");
+        for (int i = 0; i < 16; i++)
+            if (dst[i] != src[i]) return 27;
+    }
+    {
+        char buf[8];
+        unsigned long n = 8, to = (unsigned long)buf;
+        __asm__ volatile ("rep stosb" : "+c"(n), "+D"(to) : "a"(0x7a) : "memory");
+        for (int i = 0; i < 8; i++)
+            if (buf[i] != 0x7a) return 28;
+    }
+
+   return 0;
 }
 #else
 int main(void)
