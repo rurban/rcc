@@ -5378,6 +5378,24 @@ static VReg gen_int128(Node *node) {
         free_reg(lhs_a);
         return old_addr;
     }
+    case ND_STMT_EXPR: {
+        // GNU statement expression `({ ...; last_expr; })` in int128
+        // context (e.g. the kernel's typeof()/min()/max() macros applied
+        // to a __int128/unsigned __int128 operand): run the body for side
+        // effects and materialize the trailing expression as the result.
+        VReg result = R_NONE;
+        for (Node *n = node->body; n; n = n->next) {
+            if (node->stmt_expr_result && n->kind == ND_EXPR_STMT && n->lhs == node->stmt_expr_result) {
+                result = gen_to_int128(node->stmt_expr_result);
+            } else {
+                VReg r = gen(n);
+                if (r != -1) free_reg(r);
+            }
+        }
+        if (result == R_NONE)
+            result = alloc_int128_addr();
+        return result;
+    }
     default:
         error("int128: unsupported node kind %d", node->kind);
         return R_NONE;

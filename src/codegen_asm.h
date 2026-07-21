@@ -559,11 +559,20 @@ static inline void asm_peep_try(void) {
     if (asm_last_count >= 3) {
         int h0 = (asm_last_idx - 3 + ASM_HISTORY) % ASM_HISTORY;
         AsmInsn *a0 = &asm_last[h0], *a1 = prv, *a2 = cur;
+        // Require byte-adjacency (a0,a1,a2 contiguous, same as Pattern 1's
+        // safety rule) AND that a2 is exactly the buffer's current tail —
+        // i.e. nothing was emitted after a2 that this fold would need to
+        // preserve. Without these checks a stale/non-adjacent a0 could put
+        // `tail` past cg_sec->len, underflowing the (unsigned) byte count
+        // below into a huge value and reading/moving far past the buffer.
         if ((a0->op == ASM_MOV_LOAD || a0->op == ASM_MOV_RRBP) &&
             (a1->op >= ASM_ADD_RR && a1->op <= ASM_XOR_RR) &&
             a2->op == ASM_MOV_RR &&
             a1->rs == a2->rs && a0->rd == a1->rd && a0->rd == a2->rs &&
-            a2->rd != a0->rd) {
+            a2->rd != a0->rd &&
+            a1->offset == a0->offset + a0->count &&
+            a2->offset == a1->offset + a1->count &&
+            a2->offset + a2->count == cg_sec->len) {
             cg_sec->len = a0->offset;
             if (a0->op == ASM_MOV_LOAD)
                 x86_mov_rm(cg_sec, a0->size, a2->rd, x86_mem(a0->rs, a0->off));
@@ -577,10 +586,9 @@ static inline void asm_peep_try(void) {
             case ASM_XOR_RR: x86_xor_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
             default: break;
             }
-            size_t tail = a2->offset + a2->count;
-            memmove(cg_sec->data + cg_sec->len, cg_sec->data + tail,
-                    cg_sec->len - tail + a0->offset);
-            cg_sec->len -= (tail - cg_sec->len);
+            // a2 was confirmed to be the buffer's tail above, so the
+            // freshly emitted (shorter) replacement is already the new
+            // tail — no trailing bytes to shift down.
             peep_pend_op = ASM_NONE;
             return;
         }
