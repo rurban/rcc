@@ -3383,8 +3383,9 @@ static int run_unit_tests(void) {
             base[sizeof(base) - 1] = '\0';
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
-            /* skip arm64-only tests on non-arm64 */
-            if (streq(base, "test_arm64_asm") && !is_arm64) {
+            /* skip arm64-only tests on non-arm64, and vice versa for x86 */
+            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
+                (streq(base, "test_x86_asm") && is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3443,8 +3444,9 @@ static int run_unit_tests(void) {
                 only_test_found = true;
             }
 
-            /* skip arm64-only tests on non-arm64 */
-            if (streq(base, "test_arm64_asm") && !is_arm64) {
+            /* skip arm64-only tests on non-arm64, and vice versa for x86 */
+            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
+                (streq(base, "test_x86_asm") && is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
