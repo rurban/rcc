@@ -21,6 +21,39 @@ struct Obj { struct Path *paths; };
 
 int prefix__suffix(void) { return 11; }
 
+// GNU extension: a conditional-compilation directive (#ifdef/#else/#endif)
+// may appear in the middle of a function-like macro call's argument list —
+// used by the kernel's struct_group()/__struct_group() (linux/stddef.h) to
+// wrap some grouped-struct members behind config options, e.g.
+// skbuff.h's `struct_group(headers, ... #ifdef CONFIG_NET_XGRESS ... #endif
+// ...);`. The directive must be processed in place (still affecting which
+// tokens are visible) while argument collection continues across it,
+// rather than the whole macro call being abandoned and replayed as raw
+// unexpanded text.
+#define __struct_group(TAG, NAME, ATTRS, MEMBERS...) \
+    union { \
+        struct { MEMBERS } ATTRS; \
+        struct TAG { MEMBERS } ATTRS NAME; \
+    } ATTRS
+#define struct_group(NAME, MEMBERS...) \
+    __struct_group(/* no tag */, NAME, /* no attrs */, MEMBERS)
+
+#define TEST_MACRO_GROUP_CONFIG_ON 1
+
+struct group_test {
+    int a;
+    struct_group(headers,
+        int b;
+#ifdef TEST_MACRO_GROUP_CONFIG_ON
+        int c;
+#else
+        int not_taken;
+#endif
+        int d;
+    );
+    int e;
+};
+
 int main() {
     if (A != 42) return 1;
 
@@ -34,6 +67,13 @@ int main() {
 
     if (GLUE_NAMED(1,)() != 11) return 3;
     if (GLUE_VA(1,)() != 11) return 4;
+
+    struct group_test g;
+    g.headers.b = 1;
+    g.c = 2;
+    g.d = 3;
+    g.e = 4;
+    if (g.b != 1 || g.c != 2 || g.d != 3 || g.e != 4) return 5;
 
     return 0;
 }

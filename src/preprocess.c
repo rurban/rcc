@@ -59,6 +59,13 @@ static char *dn_define, *dn_undef, *dn_include, *dn_line, *dn_error, *dn_warning
 static char *dn_if, *dn_ifdef, *dn_ifndef, *dn_elif, *dn_elifdef, *dn_elifndef;
 static char *dn_else, *dn_endif, *dn_pragma;
 
+// Forward declaration: a conditional-compilation directive (#ifdef/#else/
+// #endif/...) is a GNU extension when it appears in the middle of a
+// function-like macro's argument list (e.g. the kernel's struct_group()
+// wrapping members behind #ifdef CONFIG_FOO). The macro-argument collector
+// needs to process it in place rather than giving up on the whole call.
+static void do_directive(void);
+
 static uint32_t macro_hash(const char *name) {
     uint64_t v = (uint64_t)(uintptr_t)name;
     v *= 0x9E3779B97F4A7C15ull;
@@ -1290,7 +1297,17 @@ static void expand_token(Token *t) {
     Token *rp = NULL;
     for (;;) {
         Token *x = xp_next();
-        if (x == &mark_eof || x == &mark_directive) {
+        if (x == &mark_directive) {
+            // GNU extension: a conditional-compilation directive is allowed
+            // in the middle of a function-like macro call's argument list
+            // (e.g. the kernel's struct_group(NAME, ...#ifdef CONFIG_X...)).
+            // Process it in place — it only flips pp_active()/lvl->conds
+            // state — then keep collecting arguments across it, instead of
+            // giving up on the whole invocation as if it were never called.
+            do_directive();
+            continue;
+        }
+        if (x == &mark_eof) {
             xp_unget(x);
             int filled = argc + (any ? 1 : 0);
             Token *replay = NULL, *reptail = NULL;

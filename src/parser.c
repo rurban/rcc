@@ -2876,14 +2876,17 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             error_tok(tok, "expected member type");
         if (equalc(tok, ";")) {
             // C11 6.7.2.1p13: an untagged struct/union specifier forms an
-            // anonymous member. GNU extension (rejected under -pedantic,
-            // same as GCC): a bare reference to a *previously completed*
-            // tagged struct/union, with no declarator and no fresh body of
-            // its own, is also accepted as an unnamed field whose members
-            // get promoted into the enclosing struct — e.g. the kernel's
-            // `struct filename { struct __filename_head; ... };`. A fresh
-            // `struct TAG { ... };` body, a typedef name, or a
-            // non-aggregate type still declares nothing.
+            // anonymous member. GNU extensions (rejected under -pedantic,
+            // same as GCC), both also accepted as an unnamed field whose
+            // members get promoted into the enclosing struct:
+            // - A *tagged* struct/union with its own fresh body and no
+            //   declarator, so it's still usable by name elsewhere — e.g.
+            //   the kernel's socket_lock_t's
+            //   `union { struct slock_owned { ... }; long combined; };`.
+            // - A bare reference to a *previously completed* tagged
+            //   struct/union, with no declarator and no fresh body of its
+            //   own — e.g. `struct filename { struct __filename_head; ... };`.
+            // A typedef name or a non-aggregate type still declares nothing.
             // Qualifiers (const/volatile/...) may precede or follow the
             // struct/union keyword (`const struct { ... };`), so locate it
             // by scanning rather than assuming it's the first token.
@@ -2898,7 +2901,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                 equalc(su_tok->next->next, "{");
             bool tagged_aggregate = !opt_pedantic && su_tok && !untagged_inline && !tag_has_fresh_body &&
                 (base->kind == TY_STRUCT || base->kind == TY_UNION) && (base->members || base->size > 0);
-            if (!untagged_inline && !tagged_aggregate)
+            if (!untagged_inline && !tagged_aggregate && !tag_has_fresh_body)
                 error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {
