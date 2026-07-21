@@ -58,6 +58,28 @@ typedef struct {
         // section, e.g. `.long 1b - .` in __ex_table)
     } locals[2048];
     int nlocals;
+
+    // GAS macro definitions (.macro/.endm), expanded by asm_macro_pass()
+    // before the main line loop ever sees them. Kernel headers use this
+    // (with .irp/.ifc/.set/.if) to compute e.g. which GP register an
+    // exception-table entry's faulting instruction used.
+    struct AsmMacro {
+        char name[64];
+        char params[8][32];
+        int nparams;
+        char **body; // owned copies of each raw body line
+        int nbody;
+    } macros[16];
+    int nmacros;
+
+    // Assembler-time integer variables (.set NAME, EXPR — GAS macro-time
+    // scratch state, e.g. `.set .Lfound, 0` / `.set .Lfound, .Lfound+1`;
+    // distinct from real object-file symbols).
+    struct AsmVar {
+        char name[64];
+        int64_t value;
+    } vars[64];
+    int nvars;
 } AsmState;
 
 static void asm_error(AsmState *as, const char *msg) {
@@ -2509,6 +2531,723 @@ int assemble_file(const char *asm_path, const char *obj_path) {
     return rc;
 }
 
+// ---------------------------------------------------------------------------
+// GAS macro-assembler pre-pass: .macro/.endm, .irp/.endr, .ifc/.if/.endif,
+// .set, .error, .purgem. Expands all of it into a flat sequence of plain
+// directive/instruction/label lines *before* the real per-line assembler
+// (define_label/handle_directive/encode_x86) ever runs, so none of that
+// existing logic needs to know macros exist. The Linux kernel's
+// _ASM_EXTABLE_TYPE_REG (asm/asm.h) is the motivating case: it defines a
+// throwaway `.macro extable_type_reg` that uses `.irp`+`.ifc` to figure
+// out, at assemble time, which of the 16 GP registers a uaccess
+// instruction's operand was, and `.set`+`.if` to fail loudly if none
+// matched.
+// ---------------------------------------------------------------------------
+
+// strtok() keeps its position in hidden global state, which this module
+// cannot use: .irp expands its body once per value via a *recursive* call
+// into the very same expansion machinery, and that recursive call (e.g. an
+// .ifc or a nested macro invocation) tokenizes its own, unrelated comma
+// list in between two of the outer loop's strtok(NULL, ...) calls,
+// clobbering the outer loop's position and sending it into an infinite
+// re-scan of stale/reused stack memory. An explicit cursor sidesteps that
+// entirely — every loop owns its own.
+static char *next_tok(char **cursor, const char *delims) {
+    if (!*cursor) return NULL;
+    char *p = *cursor;
+    while (*p && strchr(delims, *p)) p++;
+    if (!*p) {
+        *cursor = NULL;
+        return NULL;
+    }
+    char *start = p;
+    while (*p && !strchr(delims, *p)) p++;
+    if (*p) {
+        *p = '\0';
+        p++;
+    } else {
+        p = NULL;
+    }
+    *cursor = p;
+    return start;
+}
+
+typedef struct {
+    char *data;
+    size_t len, cap;
+} DynStr;
+
+static void dynstr_append(DynStr *d, const char *s) {
+    size_t n = strlen(s);
+    if (d->len + n + 2 > d->cap) {
+        d->cap = d->cap ? d->cap * 2 : 256;
+        while (d->cap < d->len + n + 2) d->cap *= 2;
+        d->data = realloc(d->data, d->cap);
+    }
+    memcpy(d->data + d->len, s, n);
+    d->len += n;
+    d->data[d->len++] = '\n';
+    d->data[d->len] = '\0';
+}
+
+// A chain of \NAME -> value substitutions in scope at a given nesting
+// level (macro invocation, .irp iteration). Lookups fall through to the
+// enclosing scope, so a macro body's .irp can still see the macro's own
+// parameters (needed by extable_type_reg's `.ifc \reg, %%\rs`).
+typedef struct ParamMap {
+    struct ParamMap *parent;
+    char names[8][32];
+    char values[8][160];
+    int n;
+} ParamMap;
+
+static const char *param_lookup(const ParamMap *m, const char *name) {
+    for (; m; m = m->parent)
+        for (int i = 0; i < m->n; i++)
+            if (!strcmp(m->names[i], name))
+                return m->values[i];
+    return NULL;
+}
+
+static void param_set(ParamMap *m, const char *name, const char *value) {
+    if (m->n >= (int)(sizeof(m->names) / sizeof(m->names[0]))) return;
+    strncpy(m->names[m->n], name, sizeof(m->names[0]) - 1);
+    strncpy(m->values[m->n], value, sizeof(m->values[0]) - 1);
+    m->n++;
+}
+
+// Replace `\NAME` with its current-scope value and `%%` with a literal
+// `%` (GAS's escape for a literal percent inside a macro body, since `%`
+// alone can carry other meaning there).
+static void subst_params_into(const char *line, const ParamMap *map, char *out, size_t outsz) {
+    size_t oi = 0;
+    for (const char *p = line; *p && oi + 1 < outsz;) {
+        if (p[0] == '%' && p[1] == '%') {
+            out[oi++] = '%';
+            p += 2;
+            continue;
+        }
+        if (p[0] == '\\' && (isalpha((unsigned char)p[1]) || p[1] == '_' || p[1] == '.')) {
+            const char *s = p + 1, *e = s;
+            while (isalnum((unsigned char)*e) || *e == '_' || *e == '.') e++;
+            char name[32];
+            size_t nlen = (size_t)(e - s);
+            if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+            memcpy(name, s, nlen);
+            name[nlen] = '\0';
+            const char *val = param_lookup(map, name);
+            if (val) {
+                for (const char *v = val; *v && oi + 1 < outsz; v++) out[oi++] = *v;
+                p = e;
+                continue;
+            }
+        }
+        out[oi++] = *p++;
+    }
+    out[oi] = '\0';
+}
+
+static int64_t asmvar_get(AsmState *as, const char *name) {
+    for (int i = 0; i < as->nvars; i++)
+        if (!strcmp(as->vars[i].name, name)) return as->vars[i].value;
+    return 0;
+}
+
+static void asmvar_set(AsmState *as, const char *name, int64_t val) {
+    for (int i = 0; i < as->nvars; i++)
+        if (!strcmp(as->vars[i].name, name)) {
+            as->vars[i].value = val;
+            return;
+        }
+    if (as->nvars < (int)(sizeof(as->vars) / sizeof(as->vars[0]))) {
+        strncpy(as->vars[as->nvars].name, name, sizeof(as->vars[0].name) - 1);
+        as->vars[as->nvars].value = val;
+        as->nvars++;
+    }
+}
+
+// Small recursive-descent evaluator for .set/.if expressions: integer
+// literals, \param / bare-name variable references (via asmvar_get), the
+// usual C-ish binary operators by precedence, unary -/!, and parens.
+typedef struct {
+    const char *p;
+    AsmState *as;
+    const ParamMap *map;
+} ExprCtx;
+
+static void expr_ws(ExprCtx *c) {
+    while (*c->p == ' ' || *c->p == '\t') c->p++;
+}
+static int64_t expr_or(ExprCtx *c);
+
+static int64_t expr_primary(ExprCtx *c) {
+    expr_ws(c);
+    if (*c->p == '(') {
+        c->p++;
+        int64_t v = expr_or(c);
+        expr_ws(c);
+        if (*c->p == ')') c->p++;
+        return v;
+    }
+    if (*c->p == '-') {
+        c->p++;
+        return -expr_primary(c);
+    }
+    if (*c->p == '!') {
+        c->p++;
+        return !expr_primary(c);
+    }
+    if (isdigit((unsigned char)*c->p)) {
+        char *end;
+        int64_t v = strtoll(c->p, &end, 0);
+        c->p = end;
+        return v;
+    }
+    bool backslash = (*c->p == '\\');
+    if (backslash) c->p++;
+    if (isalpha((unsigned char)*c->p) || *c->p == '_' || *c->p == '.') {
+        const char *s = c->p;
+        while (isalnum((unsigned char)*c->p) || *c->p == '_' || *c->p == '.') c->p++;
+        char name[64];
+        size_t n = (size_t)(c->p - s);
+        if (n >= sizeof(name)) n = sizeof(name) - 1;
+        memcpy(name, s, n);
+        name[n] = '\0';
+        if (backslash) {
+            const char *val = param_lookup(c->map, name);
+            return val ? strtoll(val, NULL, 0) : 0;
+        }
+        return asmvar_get(c->as, name);
+    }
+    return 0;
+}
+static int64_t expr_mul(ExprCtx *c) {
+    int64_t v = expr_primary(c);
+    for (;;) {
+        expr_ws(c);
+        if (*c->p == '*') {
+            c->p++;
+            v *= expr_primary(c);
+        } else if (*c->p == '/') {
+            c->p++;
+            int64_t d = expr_primary(c);
+            v = d ? v / d : 0;
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_add(ExprCtx *c) {
+    int64_t v = expr_mul(c);
+    for (;;) {
+        expr_ws(c);
+        if (*c->p == '+') {
+            c->p++;
+            v += expr_mul(c);
+        } else if (*c->p == '-' && c->p[1] != '\0') {
+            c->p++;
+            v -= expr_mul(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_shift(ExprCtx *c) {
+    int64_t v = expr_add(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '<' && c->p[1] == '<') {
+            c->p += 2;
+            v <<= expr_add(c);
+        } else if (c->p[0] == '>' && c->p[1] == '>') {
+            c->p += 2;
+            v >>= expr_add(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_rel(ExprCtx *c) {
+    int64_t v = expr_shift(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '<' && c->p[1] == '=') {
+            c->p += 2;
+            v = v <= expr_shift(c);
+        } else if (c->p[0] == '>' && c->p[1] == '=') {
+            c->p += 2;
+            v = v >= expr_shift(c);
+        } else if (c->p[0] == '<') {
+            c->p++;
+            v = v < expr_shift(c);
+        } else if (c->p[0] == '>') {
+            c->p++;
+            v = v > expr_shift(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_eq(ExprCtx *c) {
+    int64_t v = expr_rel(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '=' && c->p[1] == '=') {
+            c->p += 2;
+            v = v == expr_rel(c);
+        } else if (c->p[0] == '!' && c->p[1] == '=') {
+            c->p += 2;
+            v = v != expr_rel(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_and(ExprCtx *c) {
+    int64_t v = expr_eq(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '&' && c->p[1] != '&') {
+            c->p++;
+            v &= expr_eq(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_xor(ExprCtx *c) {
+    int64_t v = expr_and(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '^') {
+            c->p++;
+            v ^= expr_and(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_bor(ExprCtx *c) {
+    int64_t v = expr_xor(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '|' && c->p[1] != '|') {
+            c->p++;
+            v |= expr_xor(c);
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_land(ExprCtx *c) {
+    int64_t v = expr_bor(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '&' && c->p[1] == '&') {
+            c->p += 2;
+            v = (v && expr_bor(c));
+        } else
+            break;
+    }
+    return v;
+}
+static int64_t expr_or(ExprCtx *c) {
+    int64_t v = expr_land(c);
+    for (;;) {
+        expr_ws(c);
+        if (c->p[0] == '|' && c->p[1] == '|') {
+            c->p += 2;
+            v = (v || expr_land(c));
+        } else
+            break;
+    }
+    return v;
+}
+
+static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text) {
+    ExprCtx c = {text, as, map};
+    return expr_or(&c);
+}
+
+// True if `text` is a *complete* assembler-time integer expression — the
+// whole string parses with nothing left over. Used to tell an .Lvar-based
+// arithmetic expression (`\type + (.Lregnr << 8)`, meant to be
+// pre-computed here into a plain number) apart from a symbol/PC-relative
+// reference (`(1b) - .`, a bare `label+addend`, ...), which must reach the
+// real directive handler's symbol/relocation logic untouched.
+static bool try_eval_full_expr(AsmState *as, const ParamMap *map, const char *text, int64_t *out) {
+    ExprCtx c = {text, as, map};
+    int64_t v = expr_or(&c);
+    expr_ws(&c);
+    if (*c.p != '\0') return false;
+    *out = v;
+    return true;
+}
+
+static bool is_data_emit_dir(const char *word) {
+    static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word",
+                                 "long", "quad", "octa", "8byte"};
+    for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
+        if (!strcmp(word, dirs[i])) return true;
+    return false;
+}
+
+// Directive-line matcher: `p` starts a line whose (already lower-cased in
+// the caller) first word equals `dir`, e.g. is_directive(".endm", ".endm")
+// or is_directive(".endm foo", ".endm").
+static bool line_starts_with_dir(const char *p, const char *dir) {
+    size_t dl = strlen(dir);
+    if (strncmp(p, dir, dl) != 0) return false;
+    return p[dl] == '\0' || isspace((unsigned char)p[dl]);
+}
+
+// Find the line index (relative to `lines`) that closes the block opened
+// at `lines[start]` (one of `open_dirs`), skipping nested same-type
+// blocks, terminated by `close_dir`. Returns -1 if unterminated.
+static int find_block_end(char **lines, int nlines, int start,
+                          const char **open_dirs, int nopen, const char *close_dir) {
+    int depth = 1;
+    for (int i = start + 1; i < nlines; i++) {
+        char *p = skip_ws(lines[i]);
+        for (int k = 0; k < nopen; k++)
+            if (line_starts_with_dir(p, open_dirs[k])) {
+                depth++;
+                break;
+            }
+        if (line_starts_with_dir(p, close_dir)) {
+            depth--;
+            if (depth == 0) return i;
+        }
+    }
+    return -1;
+}
+
+static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
+                             const ParamMap *map, DynStr *out);
+
+// Expand a single already-substituted line: if its first token names a
+// currently-defined macro, invoke it (building a new param scope from the
+// `key=value[, ...]` or positional arguments and recursing into the
+// macro's stored body); otherwise emit the line as-is.
+static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, DynStr *out) {
+    char subst[512];
+    subst_params_into(raw, map, subst, sizeof(subst));
+    char *p = skip_ws(subst);
+    trim_end(p);
+    if (!*p) return;
+
+    char first[64];
+    const char *s = p;
+    size_t fi = 0;
+    while (*s && !isspace((unsigned char)*s) && fi + 1 < sizeof(first)) first[fi++] = *s++;
+    first[fi] = '\0';
+    // A label ("name:") is never a macro invocation.
+    bool is_label = fi > 0 && first[fi - 1] == ':';
+
+    int midx = -1;
+    if (!is_label)
+        for (int i = 0; i < as->nmacros; i++)
+            if (!strcmp(as->macros[i].name, first)) {
+                midx = i;
+                break;
+            }
+
+    if (midx < 0) {
+        dynstr_append(out, p);
+        return;
+    }
+
+    struct AsmMacro *mac = &as->macros[midx];
+    ParamMap args = {0};
+    args.parent = (ParamMap *)map;
+    const char *rest = skip_ws((char *)s);
+    int pos = 0;
+    char argbuf[400];
+    strncpy(argbuf, rest, sizeof(argbuf) - 1);
+    argbuf[sizeof(argbuf) - 1] = '\0';
+    char *cursor = argbuf;
+    char *tok = next_tok(&cursor, ",");
+    while (tok) {
+        char *t = skip_ws(tok);
+        trim_end(t);
+        char *eq = strchr(t, '=');
+        if (eq) {
+            *eq = '\0';
+            char *name = t;
+            trim_end(name);
+            char *val = skip_ws(eq + 1);
+            param_set(&args, name, val);
+        } else if (*t && pos < mac->nparams) {
+            param_set(&args, mac->params[pos], t);
+            pos++;
+        }
+        tok = next_tok(&cursor, ",");
+    }
+    // The macro body can itself contain control-flow (.irp/.ifc/.if/.set),
+    // not just plain lines — route it through the full block-aware
+    // processor, not the single-line one.
+    asm_expand_range(as, mac->body, 0, mac->nbody, &args, out);
+}
+
+// Process lines[lo,hi) — the control-flow constructs (.macro/.irp/.ifc/
+// .if/.set/.error/.purgem) that need to see more than one line at a time —
+// appending the flattened, fully-substituted result to *out.
+static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
+                             const ParamMap *map, DynStr *out) {
+    for (int i = lo; i < hi; i++) {
+        char *raw = lines[i];
+        char subst[512];
+        subst_params_into(raw, map, subst, sizeof(subst));
+        char *p = skip_ws(subst);
+        trim_end(p);
+        if (*p != '.') {
+            asm_expand_line(as, raw, map, out);
+            continue;
+        }
+
+        if (line_starts_with_dir(p, ".macro")) {
+            static const char *nested[] = {".macro"};
+            int end = find_block_end(lines, hi, i, nested, 1, ".endm");
+            if (end < 0) {
+                asm_error(as, ".macro without .endm");
+                return;
+            }
+            char *hdr = skip_ws(p + 6);
+            char name[64];
+            const char *s = hdr;
+            size_t ni = 0;
+            while (*s && !isspace((unsigned char)*s) && ni + 1 < sizeof(name)) name[ni++] = *s++;
+            name[ni] = '\0';
+            if (as->nmacros < (int)(sizeof(as->macros) / sizeof(as->macros[0]))) {
+                struct AsmMacro *mac = &as->macros[as->nmacros++];
+                memset(mac, 0, sizeof(*mac));
+                strncpy(mac->name, name, sizeof(mac->name) - 1);
+                char paramsbuf[300];
+                strncpy(paramsbuf, skip_ws((char *)s), sizeof(paramsbuf) - 1);
+                paramsbuf[sizeof(paramsbuf) - 1] = '\0';
+                char *pcursor = paramsbuf;
+                char *ptok = next_tok(&pcursor, ", \t");
+                while (ptok && mac->nparams < (int)(sizeof(mac->params) / sizeof(mac->params[0]))) {
+                    char *colon = strchr(ptok, ':');
+                    if (colon) *colon = '\0';
+                    char *eqd = strchr(ptok, '=');
+                    if (eqd) *eqd = '\0';
+                    if (*ptok) {
+                        strncpy(mac->params[mac->nparams], ptok, sizeof(mac->params[0]) - 1);
+                        mac->nparams++;
+                    }
+                    ptok = next_tok(&pcursor, ", \t");
+                }
+                mac->nbody = end - (i + 1);
+                if (mac->nbody > 0) {
+                    mac->body = calloc((size_t)mac->nbody, sizeof(char *));
+                    for (int b = 0; b < mac->nbody; b++)
+                        mac->body[b] = strdup(lines[i + 1 + b]);
+                }
+            }
+            i = end;
+            continue;
+        }
+        if (line_starts_with_dir(p, ".purgem")) {
+            char *name = skip_ws(p + 7);
+            trim_end(name);
+            for (int k = 0; k < as->nmacros; k++)
+                if (!strcmp(as->macros[k].name, name)) {
+                    for (int b = 0; b < as->macros[k].nbody; b++) free(as->macros[k].body[b]);
+                    free(as->macros[k].body);
+                    as->macros[k] = as->macros[--as->nmacros];
+                    break;
+                }
+            continue;
+        }
+        if (line_starts_with_dir(p, ".irp")) {
+            static const char *nested[] = {".irp"};
+            int end = find_block_end(lines, hi, i, nested, 1, ".endr");
+            if (end < 0) {
+                asm_error(as, ".irp without .endr");
+                return;
+            }
+            char argbuf[400];
+            strncpy(argbuf, skip_ws(p + 4), sizeof(argbuf) - 1);
+            argbuf[sizeof(argbuf) - 1] = '\0';
+            char *ircursor = argbuf;
+            char *sym = next_tok(&ircursor, ",");
+            if (sym) {
+                sym = skip_ws(sym);
+                trim_end(sym);
+                char *val = next_tok(&ircursor, ",");
+                while (val) {
+                    val = skip_ws(val);
+                    trim_end(val);
+                    ParamMap scope = {0};
+                    scope.parent = (ParamMap *)map;
+                    param_set(&scope, sym, val);
+                    asm_expand_range(as, lines, i + 1, end, &scope, out);
+                    val = next_tok(&ircursor, ",");
+                }
+            }
+            i = end;
+            continue;
+        }
+        if (line_starts_with_dir(p, ".ifc") || line_starts_with_dir(p, ".if")) {
+            bool is_ifc = line_starts_with_dir(p, ".ifc");
+            static const char *nested[] = {".ifc", ".if"};
+            int end = find_block_end(lines, hi, i, nested, 2, ".endif");
+            if (end < 0) {
+                asm_error(as, ".if/.ifc without .endif");
+                return;
+            }
+            // A lone `.else` inside [i+1, end) splits the true/false arms.
+            int else_line = -1;
+            for (int k = i + 1; k < end; k++) {
+                char *q = skip_ws(lines[k]);
+                if (line_starts_with_dir(q, ".else")) {
+                    else_line = k;
+                    break;
+                }
+            }
+            bool cond;
+            if (is_ifc) {
+                char argbuf[400];
+                strncpy(argbuf, skip_ws(p + 4), sizeof(argbuf) - 1);
+                argbuf[sizeof(argbuf) - 1] = '\0';
+                char *ifccursor = argbuf;
+                char *a = next_tok(&ifccursor, ",");
+                char *b = next_tok(&ifccursor, ",");
+                char abuf[256] = "", bbuf[256] = "";
+                if (a) {
+                    a = skip_ws(a);
+                    trim_end(a);
+                    subst_params_into(a, map, abuf, sizeof(abuf));
+                }
+                if (b) {
+                    b = skip_ws(b);
+                    trim_end(b);
+                    subst_params_into(b, map, bbuf, sizeof(bbuf));
+                }
+                cond = !strcmp(abuf, bbuf);
+            } else {
+                cond = eval_asm_expr(as, map, skip_ws(p + 3)) != 0;
+            }
+            int take_lo = cond ? i + 1 : (else_line >= 0 ? else_line + 1 : end);
+            int take_hi = cond ? (else_line >= 0 ? else_line : end) : end;
+            asm_expand_range(as, lines, take_lo, take_hi, map, out);
+            i = end;
+            continue;
+        }
+        if (line_starts_with_dir(p, ".set") || line_starts_with_dir(p, ".equiv")) {
+            char *rest = skip_ws(p + (p[1] == 's' ? 4 : 6));
+            char *comma = strchr(rest, ',');
+            if (comma) {
+                *comma = '\0';
+                char *name = rest;
+                trim_end(name);
+                int64_t v = eval_asm_expr(as, map, comma + 1);
+                asmvar_set(as, name, v);
+                continue;
+            }
+            // Not a macro-time integer .set (e.g. "alias, target" symbol
+            // aliasing) — let the real directive handler deal with it.
+            asm_expand_line(as, raw, map, out);
+            continue;
+        }
+        if (line_starts_with_dir(p, ".error")) {
+            asm_error(as, skip_ws(p + 6));
+            continue;
+        }
+        if (p[0] == '.' && isalpha((unsigned char)p[1])) {
+            const char *w = p + 1;
+            char word[16];
+            size_t wl = 0;
+            while (*w && !isspace((unsigned char)*w) && wl + 1 < sizeof(word)) word[wl++] = *w++;
+            word[wl] = '\0';
+            if (is_data_emit_dir(word)) {
+                // `\type + (.Lregnr << 8)`-shaped values (post \param
+                // substitution): pre-compute each comma-separated value
+                // that's a *complete* assembler-time expression into a
+                // plain number here, since handle_directive's own
+                // .long/.byte/... only understands a bare symbol[+addend]
+                // or a numeric literal — it would otherwise silently
+                // truncate at the first non-numeric character (`strtoll`
+                // stopping at "20 + ..." and keeping just 20).
+                char rebuilt[512];
+                size_t rlen = wl + 1;
+                rebuilt[0] = '.';
+                memcpy(rebuilt + 1, word, wl);
+                char valbuf[400];
+                strncpy(valbuf, w, sizeof(valbuf) - 1);
+                valbuf[sizeof(valbuf) - 1] = '\0';
+                char *vcursor = valbuf;
+                char *vtok = next_tok(&vcursor, ",");
+                bool first_val = true;
+                while (vtok) {
+                    char *t = skip_ws(vtok);
+                    trim_end(t);
+                    char piece[80];
+                    int64_t v;
+                    if (*t && try_eval_full_expr(as, map, t, &v))
+                        snprintf(piece, sizeof(piece), "%lld", (long long)v);
+                    else {
+                        strncpy(piece, t, sizeof(piece) - 1);
+                        piece[sizeof(piece) - 1] = '\0';
+                    }
+                    size_t plen = strlen(piece);
+                    if (rlen + 1 + plen + 1 < sizeof(rebuilt)) {
+                        rebuilt[rlen++] = first_val ? ' ' : ',';
+                        memcpy(rebuilt + rlen, piece, plen);
+                        rlen += plen;
+                    }
+                    first_val = false;
+                    vtok = next_tok(&vcursor, ",");
+                }
+                rebuilt[rlen] = '\0';
+                dynstr_append(out, rebuilt);
+                continue;
+            }
+        }
+        asm_expand_line(as, raw, map, out);
+    }
+}
+
+// Split `buf` (already NUL-separated at each original newline) into an
+// array of line pointers. Returns the count; `*out_lines` is malloc'd.
+static int split_into_lines(char *buf, char ***out_lines) {
+    int cap = 64, n = 0;
+    char **lines = malloc((size_t)cap * sizeof(char *));
+    char *line = buf;
+    while (*line || line == buf) {
+        if (n == cap) {
+            cap *= 2;
+            lines = realloc(lines, (size_t)cap * sizeof(char *));
+        }
+        lines[n++] = line;
+        char *nl = strchr(line, '\n');
+        if (!nl) break;
+        *nl = '\0';
+        line = nl + 1;
+    }
+    *out_lines = lines;
+    return n;
+}
+
+// Entry point: expand every .macro/.irp/.ifc/.if/.set construct in `text`
+// into a flat, newline-joined buffer ready for the plain per-line
+// assembler. Always returns a fresh malloc'd buffer (a plain copy when
+// there's nothing to expand).
+static char *asm_macro_pass(AsmState *as, const char *text) {
+    char *scratch = strdup(text);
+    char **lines;
+    int n = split_into_lines(scratch, &lines);
+    DynStr out = {0};
+    asm_expand_range(as, lines, 0, n, NULL, &out);
+    free(lines);
+    free(scratch);
+    if (!out.data) {
+        out.data = strdup("\n");
+    }
+    return out.data;
+}
+
 int assemble_inline(ObjFile *obj, const char *tmpl,
                     inline_fixup_fn on_forward, void *ctx) {
 #ifdef ARCH_ARM64
@@ -2521,13 +3260,17 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
     as.cur_sec = SEC_TEXT;
     as.filename = "<inline asm>";
 
-    // Work on a mutable copy of the template
-    size_t tlen = strlen(tmpl);
-    char *buf = malloc(tlen + 2);
+    // Expand .macro/.irp/.ifc/.if/.set (e.g. the kernel's
+    // _ASM_EXTABLE_TYPE_REG) into a flat sequence of plain lines first, so
+    // the per-line loop below never has to know these constructs exist.
+    char *buf = asm_macro_pass(&as, tmpl);
     if (!buf) return -1;
-    memcpy(buf, tmpl, tlen);
-    buf[tlen] = '\n';
-    buf[tlen + 1] = '\0';
+    for (int mi = 0; mi < as.nmacros; mi++) {
+        for (int b = 0; b < as.macros[mi].nbody; b++) free(as.macros[mi].body[b]);
+        free(as.macros[mi].body);
+    }
+    as.nmacros = 0;
+    as.nvars = 0;
 
     char *line = buf;
     while (*line) {
