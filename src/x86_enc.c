@@ -685,6 +685,7 @@ void x86_cmpsb(SecBuf *s) { emit1(s, 0xa6); }
 void x86_scasb(SecBuf *s) { emit1(s, 0xae); }
 void x86_mfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf0); }
 void x86_cpuid(SecBuf *s) { emit2(s, 0x0f, 0xa2); }
+void x86_ud2(SecBuf *s) { emit2(s, 0x0f, 0x0b); }
 
 // ---------------------------------------------------------------------------
 // SSE / FP helpers

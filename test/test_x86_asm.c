@@ -222,6 +222,14 @@ int main(void)
         if (val != 20 || result != 10) return 21;
     }
 
+    /* ud2 (0F 0B) — kernel BUG()/WARN_ON() traps compile to this in every
+     * translation unit; must at least assemble even when never executed. */
+    {
+        int x = 1;
+        if (x != 1)
+            __asm__ volatile ("ud2");
+    }
+
     return 0;
 }
 #else

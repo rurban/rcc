@@ -1882,6 +1882,10 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_mfence(buf);
         return true;
     }
+    if (!strcmp(mnem, "ud2") || !strcmp(mnem, "ud2a")) {
+        x86_ud2(buf);
+        return true;
+    }
     if (!strcmp(mnem, "cdq")) {
         x86_cdq(buf);
         return true;

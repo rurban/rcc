@@ -232,6 +232,7 @@ void x86_cmpsb(SecBuf *s);
 void x86_scasb(SecBuf *s);
 void x86_mfence(SecBuf *s);
 void x86_cpuid(SecBuf *s);
+void x86_ud2(SecBuf *s);
 
 // SSE / FP
 void x86_movsd_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src);
