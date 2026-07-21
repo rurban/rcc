@@ -3262,6 +3262,43 @@ static const char *x86_subreg(const char *reg32, int sz) {
             return map[i + 1];
     return reg32;
 }
+
+// GCC extended-asm operand size-override modifiers (%b0/%w0/%k0/%q0/%h0):
+// given a GP register operand string in *any* size class (e.g. "%rax",
+// "%eax", "%al" — whatever the operand's natural width produced) and a
+// requested size class, return the same physical register's name in that
+// class. size_class: 0=64-bit, 1=32-bit, 2=16-bit, 3=8-bit low, 4=8-bit
+// high (legacy A/B/C/D only). Returns NULL for a non-register operand
+// (memory/immediate) or a class that register doesn't have (e.g. %h9),
+// in which case the caller should fall back to the unmodified operand
+// text, matching plain GCC's behavior of leaving it alone.
+static const char *x86_reg_resize(const char *reg, int size_class) {
+    static const char *const family[16][5] = {
+        // 64,     32,      16,     8lo,    8hi
+        {"%rax", "%eax", "%ax", "%al", "%ah"},
+        {"%rcx", "%ecx", "%cx", "%cl", "%ch"},
+        {"%rdx", "%edx", "%dx", "%dl", "%dh"},
+        {"%rbx", "%ebx", "%bx", "%bl", "%bh"},
+        {"%rsp", "%esp", "%sp", "%spl", NULL},
+        {"%rbp", "%ebp", "%bp", "%bpl", NULL},
+        {"%rsi", "%esi", "%si", "%sil", NULL},
+        {"%rdi", "%edi", "%di", "%dil", NULL},
+        {"%r8", "%r8d", "%r8w", "%r8b", NULL},
+        {"%r9", "%r9d", "%r9w", "%r9b", NULL},
+        {"%r10", "%r10d", "%r10w", "%r10b", NULL},
+        {"%r11", "%r11d", "%r11w", "%r11b", NULL},
+        {"%r12", "%r12d", "%r12w", "%r12b", NULL},
+        {"%r13", "%r13d", "%r13w", "%r13b", NULL},
+        {"%r14", "%r14d", "%r14w", "%r14b", NULL},
+        {"%r15", "%r15d", "%r15w", "%r15b", NULL},
+    };
+    if (!reg || reg[0] != '%') return NULL;
+    for (int i = 0; i < 16; i++)
+        for (int c = 0; c < 5; c++)
+            if (family[i][c] && !strcmp(reg, family[i][c]))
+                return family[i][size_class];
+    return NULL;
+}
 #endif
 
 #ifdef ARCH_ARM64
@@ -9272,9 +9309,14 @@ static VReg gen(Node *node) {
                 p++;
                 continue;
             }
-            // check for modifier 'l'
+            // check for modifier: 'l' (label operand), or an x86 operand
+            // size override (b/w/k/q = 8/16/32/64-bit, h = legacy high
+            // byte) — GCC extended-asm syntax used constantly in kernel
+            // uaccess/atomic templates to force a specific sub-register
+            // name regardless of the operand's natural width, e.g. %k1 to
+            // get the 32-bit name of a 64-bit pointer operand.
             char mod = 0;
-            if (*p == 'l') { mod = *p++; }
+            if (*p == 'l' || *p == 'b' || *p == 'w' || *p == 'k' || *p == 'q' || *p == 'h') { mod = *p++; }
             if (mod == 'l' && *p == '[') {
                 // %l[name] -> goto label
                 p++;
@@ -9297,6 +9339,16 @@ static VReg gen(Node *node) {
                 p++;
                 if (n < node->asm_noperands) {
                     const char *s = node->asm_ops[n].asm_str;
+#ifndef ARCH_ARM64
+                    if (mod && mod != 'l') {
+                        int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
+                            : mod == 'w'                             ? 2
+                            : mod == 'h'                             ? 4
+                                                                     : 3;
+                        const char *resized = x86_reg_resize(s, size_class);
+                        if (resized) s = resized;
+                    }
+#endif
                     while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
                 }
             } else {
