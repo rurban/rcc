@@ -2393,20 +2393,35 @@ static Type *enum_specifier(Token **rest, Token *tok) {
             tok = skip(tok, ",");
     }
 
-    *rest = tok->next;
+    // GNU extension: enum { ... } __attribute__((packed)) narrows the
+    // underlying type to the smallest integer type that fits the range,
+    // instead of the C-standard "at least int". Peek past '}' for it.
+    VarAttr trailing_attr = {0};
+    Token *after_attrs = read_type_attrs(tok->next, NULL, &trailing_attr);
+    bool is_packed = trailing_attr.is_packed;
+    *rest = after_attrs;
     // C23: with a fixed underlying type, the enum uses exactly that type;
-    // otherwise choose the narrowest integer type >= int that fits all values.
+    // otherwise choose the narrowest integer type >= int that fits all values
+    // (or the narrowest type period, when __packed forces a tight layout).
     Type *ety;
     if (fixed_underlying) {
         ety = fixed_underlying;
     } else if (min_val >= 0) {
         uint64_t umax = (uint64_t)max_val;
-        if (umax <= 0xFFFFFFFFULL)
+        if (is_packed && umax <= 0xFFULL)
+            ety = ty_uchar;
+        else if (is_packed && umax <= 0xFFFFULL)
+            ety = ty_ushort;
+        else if (umax <= 0xFFFFFFFFULL)
             ety = ty_uint;
         else
             ety = ty_ullong;
     } else {
-        if (min_val >= -2147483648LL && max_val <= 2147483647LL)
+        if (is_packed && min_val >= -128 && max_val <= 127)
+            ety = ty_char;
+        else if (is_packed && min_val >= -32768 && max_val <= 32767)
+            ety = ty_short;
+        else if (min_val >= -2147483648LL && max_val <= 2147483647LL)
             ety = ty_int;
         else
             ety = ty_llong;
