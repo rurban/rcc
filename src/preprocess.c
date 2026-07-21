@@ -2439,15 +2439,14 @@ void write_dep_file(const char *out_path, const char *main_fpath) {
         fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", opt_depfile);
         return;
     }
-    // Target: output file depends on main source + all included files
+    // Target: output file depends on main source + all included files.
+    // Input read from stdin ("-") isn't a real path on disk — GCC omits it
+    // from the dependency list rather than emitting an unopenable "-"
+    // entry (which trips up kbuild's fixdep, e.g. scripts/checksyscalls.sh
+    // piping a generated source through `$(CC) ... -x c -`).
     fprintf(f, "%s:", out_path ? out_path : "a.out");
-    if (main_fpath[0] != '/') {
-        // Write relative path
+    if (strcmp(main_fpath, "-") != 0)
         fprintf(f, " %s", main_fpath);
-    } else {
-        // Write absolute path - GCC uses the path as-is
-        fprintf(f, " %s", main_fpath);
-    }
     for (DepEntry *d = dep_files; d; d = d->next) {
         if (d->path) fprintf(f, " %s", d->path);
     }
