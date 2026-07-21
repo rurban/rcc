@@ -1593,6 +1593,28 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     int nops = split_operands(ops_buf, ops, 6);
     SecBuf *buf = &as->obj->text;
 
+    // GAS numeric local labels ("1:") are referenced as "1b" (nearest prior)
+    // or "1f" (nearest next) — a digit-name plus a direction suffix that is
+    // never part of the defined symbol name itself (define_label records
+    // just "1"). Strip a trailing b/f off any purely-numeric operand here,
+    // once, so every lookup_local()/add_fixup() call below — for jmp/jcc/
+    // call/lea and friends — resolves against the name it was actually
+    // defined under instead of silently missing and falling through to a
+    // dangling forward fixup that's never patched.
+    for (int _i = 0; _i < nops; _i++) {
+        char *o = ops[_i];
+        size_t olen = strlen(o);
+        if (olen >= 2 && (o[olen - 1] == 'b' || o[olen - 1] == 'f')) {
+            bool all_digits = true;
+            for (size_t _j = 0; _j < olen - 1; _j++)
+                if (!isdigit((unsigned char)o[_j])) {
+                    all_digits = false;
+                    break;
+                }
+            if (all_digits) o[olen - 1] = '\0';
+        }
+    }
+
     // Determine operand size from mnemonic suffix (0 = derive from operand)
     int sz = suffix_size(mnem);
 
