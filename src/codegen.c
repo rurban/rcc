@@ -3796,6 +3796,21 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
 }
 #endif // ARCH_ARM64
 
+// Try to extract the symbol name of an address-of-global expression
+// (traversing casts), e.g. "i" (key) where an arch_static_branch() caller
+// passed &some_static_key — GCC accepts this as an "i" (immediate) operand
+// since the address is a link-time constant, emitted as "$symbol" (an
+// immediate holding the symbol's address) the same way a numeric
+// immediate is emitted as "$N".
+static bool try_const_addr_sym(Node *n, const char **sym_out) {
+    while (n && n->kind == ND_CAST)
+        n = n->lhs;
+    if (n && n->kind == ND_ADDR && n->lhs && n->lhs->kind == ND_LVAR && !n->lhs->var->is_local) {
+        *sym_out = asm_sym_name(var_sym_label(n->lhs->var));
+        return true;
+    }
+    return false;
+}
 // Try to extract an integer constant from a node (traversing casts).
 // Returns true and sets *val if the node reduces to a compile-time constant.
 static bool try_const_int(Node *n, int64_t *val) {
@@ -9204,11 +9219,18 @@ static VReg gen(Node *node) {
                 emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
             } else if (*c == 'i' || *c == 'n') {
-                // Immediate integer constraint: emit numeric value in template
+                // Immediate constraint: emit numeric value, or (for an
+                // address-of-global, e.g. jump_label.h's arch_static_branch
+                // passing "i" (key) where key = &some_static_key) the
+                // symbol name as an immediate address, in the template.
                 int64_t cval = 0;
+                const char *sym = NULL;
                 if (try_const_int(op->expr, &cval)) {
                     snprintf(op->asm_str, sizeof(op->asm_str), "$%lld", (long long)cval);
                     op_regs[i] = -1; // no register needed
+                } else if (try_const_addr_sym(op->expr, &sym)) {
+                    snprintf(op->asm_str, sizeof(op->asm_str), "$%s", sym);
+                    op_regs[i] = -1;
                 } else {
                     VReg r = gen(op->expr);
                     op_regs[i] = r;
@@ -9309,14 +9331,17 @@ static VReg gen(Node *node) {
                 p++;
                 continue;
             }
-            // check for modifier: 'l' (label operand), or an x86 operand
-            // size override (b/w/k/q = 8/16/32/64-bit, h = legacy high
-            // byte) — GCC extended-asm syntax used constantly in kernel
-            // uaccess/atomic templates to force a specific sub-register
-            // name regardless of the operand's natural width, e.g. %k1 to
-            // get the 32-bit name of a 64-bit pointer operand.
+            // check for modifier: 'l' (label operand), 'c' (bare constant,
+            // no leading '$' — used in data-directive expressions like
+            // jump_label.h's ".quad %c0 + %c1 - ." inside its __jump_table
+            // entry), or an x86 operand size override (b/w/k/q =
+            // 8/16/32/64-bit, h = legacy high byte) — GCC extended-asm
+            // syntax used constantly in kernel uaccess/atomic templates to
+            // force a specific sub-register name regardless of the
+            // operand's natural width, e.g. %k1 to get the 32-bit name of
+            // a 64-bit pointer operand.
             char mod = 0;
-            if (*p == 'l' || *p == 'b' || *p == 'w' || *p == 'k' || *p == 'q' || *p == 'h') { mod = *p++; }
+            if (*p == 'l' || *p == 'c' || *p == 'b' || *p == 'w' || *p == 'k' || *p == 'q' || *p == 'h') { mod = *p++; }
             if (mod == 'l' && *p == '[') {
                 // %l[name] -> goto label
                 p++;
@@ -9365,8 +9390,9 @@ static VReg gen(Node *node) {
                     }
                 if (found >= 0) {
                     const char *s = node->asm_ops[found].asm_str;
+                    if (mod == 'c' && *s == '$') s++; // bare constant, drop '$'
 #ifndef ARCH_ARM64
-                    if (mod && mod != 'l') {
+                    else if (mod && mod != 'l') {
                         int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
                             : mod == 'w'                             ? 2
                             : mod == 'h'                             ? 4
@@ -9385,8 +9411,9 @@ static VReg gen(Node *node) {
                 p++;
                 if (n < node->asm_noperands) {
                     const char *s = node->asm_ops[n].asm_str;
+                    if (mod == 'c' && *s == '$') s++; // bare constant, drop '$'
 #ifndef ARCH_ARM64
-                    if (mod && mod != 'l') {
+                    else if (mod && mod != 'l') {
                         int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
                             : mod == 'w'                             ? 2
                             : mod == 'h'                             ? 4

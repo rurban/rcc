@@ -41,7 +41,9 @@ typedef struct {
         size_t patch_off; // byte offset in section buffer
         int section;
         char label[128];
-        int kind; // FIXUP_ARM64_B26, FIXUP_ARM64_B19, FIXUP_REL32
+        char label2[128]; // FIXUP_LABELDIFF only: patch = offset(label2) - offset(label)
+        int kind; // FIXUP_ARM64_B26, FIXUP_ARM64_B19, FIXUP_REL32, FIXUP_LABELDIFF
+        int size; // FIXUP_LABELDIFF only: patch field width in bytes (1/2/4/8)
         int64_t addend;
     } fixups[512];
     int nfixups;
@@ -225,6 +227,29 @@ static void add_fixup(AsmState *as, size_t patch_off, int section,
     fx->label[sizeof(fx->label) - 1] = '\0';
     fx->kind = kind;
     fx->addend = addend;
+}
+
+// Add a fixup for "label2 - label" (GAS's label-difference idiom, e.g.
+// the kernel's ALTERNATIVE() macro computing an instruction-block length
+// as "775f-774f"): resolved once BOTH labels are defined, which for a
+// well-formed input always happens by the end of this same assemble_inline
+// call even when one or both are still forward references right now.
+static void add_labeldiff_fixup(AsmState *as, size_t patch_off, int section,
+                                const char *label, const char *label2, int size) {
+    if (as->nfixups >= 511) {
+        asm_error(as, "too many fixups");
+        return;
+    }
+    struct Fixup *fx = &as->fixups[as->nfixups++];
+    fx->patch_off = patch_off;
+    fx->section = section;
+    strncpy(fx->label, label, sizeof(fx->label) - 1);
+    fx->label[sizeof(fx->label) - 1] = '\0';
+    strncpy(fx->label2, label2, sizeof(fx->label2) - 1);
+    fx->label2[sizeof(fx->label2) - 1] = '\0';
+    fx->kind = FIXUP_LABELDIFF;
+    fx->size = size;
+    fx->addend = 0;
 }
 
 // Look up a label offset (returns -1 if not found)
@@ -776,16 +801,32 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                     trim_end(sym);
                     sym = skip_ws(sym);
                 }
+                // Optional "+ addend"/"- addend" (e.g. jump_label.h's
+                // __jump_table entry: ".quad key + branch - .", where
+                // "branch" is a small 0/1 constant to fold into the
+                // relocation's addend, not part of the symbol name).
+                int64_t addend = 0;
+                char *plus = strchr(sym, '+');
+                char *minus = strchr(sym, '-');
+                if (plus) {
+                    addend = strtoll(plus, NULL, 0);
+                    *plus = '\0';
+                    trim_end(sym);
+                } else if (minus) {
+                    addend = strtoll(minus, NULL, 0);
+                    *minus = '\0';
+                    trim_end(sym);
+                }
                 strip_local_label_suffix(sym);
                 int sec_of_sym = 0;
                 int sidx = lookup_local_sym(as, sym, &sec_of_sym);
                 if (sidx < 0) sidx = ensure_sym(as, sym);
                 if (sz == 4) {
                     size_t off = secbuf_emit32le(buf, 0);
-                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC32, 0);
+                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC32, addend);
                 } else {
                     size_t off = secbuf_emit64le(buf, 0);
-                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC64, 0);
+                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC64, addend);
                 }
                 val = strtok(NULL, ",");
                 continue;
@@ -2848,6 +2889,11 @@ typedef struct {
     const char *p;
     AsmState *as;
     const ParamMap *map;
+    bool err; // set when the expression references something that can't be
+    // known at macro-expansion time (a bare "." = current
+    // position), so try_eval_full_expr must not silently treat
+    // it as 0 and must instead defer to the real directive
+    // handler's symbol/relocation logic.
 } ExprCtx;
 
 static void expr_ws(ExprCtx *c) {
@@ -2891,6 +2937,16 @@ static int64_t expr_primary(ExprCtx *c) {
         if (backslash) {
             const char *val = param_lookup(c->map, name);
             return val ? strtoll(val, NULL, 0) : 0;
+        }
+        if (!strcmp(name, ".")) {
+            // Bare "." (current assembly position) — a runtime-only
+            // concept, not knowable during this macro-time pre-evaluation
+            // pass. Without this, "SYM - ." (a cross-section PC-relative
+            // reference GAS idiom, e.g. jump_label.h's __jump_table
+            // entries) got silently mis-evaluated to 0 instead of being
+            // left for the real directive handler's relocation logic.
+            c->err = true;
+            return 0;
         }
         return asmvar_get(c->as, name);
     }
@@ -3040,7 +3096,7 @@ static int64_t expr_or(ExprCtx *c) {
 }
 
 static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text) {
-    ExprCtx c = {text, as, map};
+    ExprCtx c = {text, as, map, false};
     return expr_or(&c);
 }
 
@@ -3051,10 +3107,10 @@ static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text
 // reference (`(1b) - .`, a bare `label+addend`, ...), which must reach the
 // real directive handler's symbol/relocation logic untouched.
 static bool try_eval_full_expr(AsmState *as, const ParamMap *map, const char *text, int64_t *out) {
-    ExprCtx c = {text, as, map};
+    ExprCtx c = {text, as, map, false};
     int64_t v = expr_or(&c);
     expr_ws(&c);
-    if (*c.p != '\0') return false;
+    if (*c.p != '\0' || c.err) return false;
     *out = v;
     return true;
 }
