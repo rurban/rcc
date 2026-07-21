@@ -152,6 +152,7 @@ void help(void) {
            "-pthread            link with pthreads library\n"
            "-shared             create shared library\n"
            "-static             link statically\n"
+           "-nodefaultlibs      do not link default libraries (libc, libgcc, ...)\n"
            "-rpath path         => -Wl,-rpath,path\n"
            "-soname name        => -Wl,-soname,name\n"
            "-Wl,<opt>           pass option to linker\n"
@@ -367,7 +368,11 @@ int main(int argc, char **argv) {
             xappendf(&libs, &libs_len, &libs_cap, " -Wl,-rpath,%s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
                    !strcmp(argv[i], "-shared") || !strcmp(argv[i], "-static") ||
+                   !strcmp(argv[i], "-nodefaultlibs") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
+            // -nodefaultlibs: link-stage-only flag (unlike -nostdlib, still
+            // links the standard startup files) — forward it to the
+            // backend linker invocation, which already understands it.
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
