@@ -3611,7 +3611,7 @@ static int run_unit_tests(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? passed * 100 / total : 0;
+        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         if (todo > 0)
@@ -3659,7 +3659,7 @@ static void generate_tcc_report(void) {
     struct tm *tm = localtime(&now);
     char date_buf[64];
     strftime(date_buf, sizeof(date_buf), "%B %Y", tm);
-    int pct = total > 0 ? passed * 100 / total : 0;
+    int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
     if (compiler_name)
@@ -3948,7 +3948,7 @@ static int run_tcc_suite(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? passed * 100 / total : 0;
+        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         printf("\nTCC: %d/%d passed (%d%%), %s%d failed%s.\n",
@@ -4844,7 +4844,7 @@ static int run_torture_suite(bool summary_only) {
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
-        int pct = eff > 0 ? g_tort_pass * 100 / eff : 0;
+        int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
         const char *red = fail > max_fail ? COL_RED : "";
         const char *rst = fail > max_fail ? COL_RESET : "";
         printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
@@ -5235,7 +5235,7 @@ static int run_compliance_suite(void) {
      * compliance section in the unified report just like the sequential run. */
     int comp_total = comp_pass + comp_fail;
     if (only_test_count == 0) {
-        int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
+        int comp_pct = comp_total > 0 ? (comp_pass * 100 + comp_total / 2) / comp_total : 0;
         const char *red = comp_fail > 0 ? COL_RED : "";
         const char *rst = comp_fail > 0 ? COL_RESET : "";
         printf("\nCompliance: %d/%d passed (%d%%), %s%d failed%s",
@@ -5608,7 +5608,7 @@ static int run_ctest_suite(void) {
         for (char **f = files; *f; f++) free(*f);
         free(files);
 
-        int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+        int ctest_pct = ctest_total > 0 ? (ctest_pass * 100 + ctest_total / 2) / ctest_total : 0;
         const char *red = ctest_fail2 > 0 ? COL_RED : "";
         const char *rst = ctest_fail2 > 0 ? COL_RESET : "";
         printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
@@ -5689,14 +5689,15 @@ static int run_ctest_suite(void) {
     }
     pclose(fp);
 
-    int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+    int ctest_eff = ctest_total - ctest_skip;
+    int ctest_pct = ctest_eff > 0 ? (ctest_pass * 100 + ctest_eff / 2) / ctest_eff : 0;
     const char *red = ctest_fail > 0 ? COL_RED : "";
     const char *rst = ctest_fail > 0 ? COL_RESET : "";
     printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
-           ctest_pass, ctest_total, ctest_pct, red, ctest_fail, rst, ctest_skip);
+           ctest_pass, ctest_eff, ctest_pct, red, ctest_fail, rst, ctest_skip);
     if (g_log_fp)
         fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
-                ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
+                ctest_pass, ctest_eff, ctest_pct, ctest_fail, ctest_skip);
 
     if (only_test_count == 0) {
         char sp[256], sc[256];
@@ -5773,13 +5774,15 @@ static void generate_report(void) {
         free(c);
     }
 
-    int ov_total = 0, ov_pass = 0, ov_fail = 0;
+    int ov_total = 0, ov_pass = 0, ov_fail = 0, ov_skip = 0;
     for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found) continue;
         ov_total += s[i].total;
         ov_pass += s[i].pass;
         ov_fail += s[i].fail;
+        ov_skip += s[i].skip;
     }
+    int ov_eff = ov_total - ov_skip;
 
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) {
@@ -5801,8 +5804,10 @@ static void generate_report(void) {
     fprintf(rf, "- **Total**: %d\n", ov_total);
     fprintf(rf, "- **Passed**: %d\n", ov_pass);
     fprintf(rf, "- **Failed**: %d\n", ov_fail);
-    if (ov_total > 0)
-        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", ov_pass * 100 / ov_total);
+    if (ov_skip > 0)
+        fprintf(rf, "- **Skipped**: %d\n", ov_skip);
+    if (ov_eff > 0)
+        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", (ov_pass * 100 + ov_eff / 2) / ov_eff);
 
     for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found || s[i].total == 0) continue;
@@ -5818,9 +5823,9 @@ static void generate_report(void) {
             fprintf(rf, "- **Fail Runtime**: %d\n", s[i].fail_runtime);
         int eff = s[i].total - s[i].skip;
         if (s[i].skip > 0 && eff > 0)
-            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", s[i].pass * 100 / eff);
+            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", (s[i].pass * 100 + eff / 2) / eff);
         else if (s[i].total > 0)
-            fprintf(rf, "- **Pass Rate**: %d%%\n", s[i].pass * 100 / s[i].total);
+            fprintf(rf, "- **Pass Rate**: %d%%\n", (s[i].pass * 100 + s[i].total / 2) / s[i].total);
     }
 
     fclose(rf);
