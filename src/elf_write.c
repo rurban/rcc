@@ -31,12 +31,8 @@
 #define SHT_INIT_ARRAY 14
 #define SHT_FINI_ARRAY 15
 
-#define SHF_WRITE     0x1
-#define SHF_ALLOC     0x2
-#define SHF_EXECINSTR 0x4
-#define SHF_MERGE     0x10
-#define SHF_INFO_LINK 0x40
-#define SHF_TLS       0x400
+// SHF_WRITE/ALLOC/EXECINSTR/MERGE/INFO_LINK/TLS come from obj.h — shared
+// with asm.c, which needs them to parse GAS .pushsection flag strings.
 
 #define STB_LOCAL  0
 #define STB_GLOBAL 1
@@ -193,6 +189,34 @@ int elf_write(ObjFile *obj, const char *path) {
     strtab_init(&shstrtab);
     bool has_tdata = obj->data_tls.len > 0;
     bool has_debug = objfile_has_debug(obj);
+    bool has_init_array = obj->init_array.len > 0;
+    bool has_fini_array = obj->fini_array.len > 0;
+    bool has_rela_text = obj->text_reloc_count > 0;
+    bool has_rela_data = obj->data_reloc_count > 0;
+    bool has_rela_rodata = obj->rodata_reloc_count > 0;
+    bool has_rela_init = obj->init_array_reloc_count > 0;
+    bool has_rela_fini = obj->fini_array_reloc_count > 0;
+    bool has_rela_debug_info = has_debug && obj->debug_has_low_pc;
+    bool has_rela_debug_aranges = has_debug && obj->debug_has_aranges_addr;
+    bool has_rela_debug_line = has_debug && obj->debug_has_line_addr;
+
+    // -----------------------------------------------------------------------
+    // Dynamically-registered sections (GAS .section/.pushsection with a name
+    // outside the built-in set, e.g. the kernel's __ex_table). Each gets one
+    // PROGBITS section header, plus a .rela.<name> header if it has relocs.
+    // -----------------------------------------------------------------------
+    int nextra = obj->extra_sec_count;
+    uint32_t *shn_extra = nextra ? calloc((size_t)nextra, sizeof(uint32_t)) : NULL;
+    uint32_t *shn_extra_rela = nextra ? calloc((size_t)nextra, sizeof(uint32_t)) : NULL;
+    int *sh_extra_idx = nextra ? calloc((size_t)nextra, sizeof(int)) : NULL;
+    int *sh_extra_rela_idx = nextra ? calloc((size_t)nextra, sizeof(int)) : NULL;
+    bool *extra_has_relocs = nextra ? calloc((size_t)nextra, sizeof(bool)) : NULL;
+    uint64_t *extra_off = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_size = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_rela_off = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    uint64_t *extra_rela_size = nextra ? calloc((size_t)nextra, sizeof(uint64_t)) : NULL;
+    for (int i = 0; i < nextra; i++)
+        extra_has_relocs[i] = obj->extra_secs[i].reloc_count > 0;
 
     // Section name strings
     uint32_t shn_empty = strtab_add(&shstrtab, "");
@@ -220,109 +244,30 @@ int elf_write(ObjFile *obj, const char *path) {
     uint32_t shn_strtab = strtab_add(&shstrtab, ".strtab");
     uint32_t shn_shstrtab = strtab_add(&shstrtab, ".shstrtab");
     (void)shn_empty;
-
-    // -----------------------------------------------------------------------
-    // Build ELF symbol table (locals first, then globals)
-    // -----------------------------------------------------------------------
-    int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
-    ESymArr ea = {NULL, 0, 0};
-
-    // Index 0: null symbol
-    ESym null_sym = {0};
-    esym_push(&ea, null_sym);
-
-    bool has_init_array = obj->init_array.len > 0;
-    bool has_fini_array = obj->fini_array.len > 0;
-
-    // Section symbols
-    ESym ssym = {0};
-    ssym.info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION);
-    ssym.shndx = 1;
-    esym_push(&ea, ssym); // .text
-    ssym.shndx = 2;
-    esym_push(&ea, ssym); // .data
-    ssym.shndx = 3;
-    esym_push(&ea, ssym); // .bss
-    ssym.shndx = 4;
-    esym_push(&ea, ssym); // .rodata
-    if (has_tdata) {
-        ssym.shndx = 5;
-        esym_push(&ea, ssym); // .tdata
-    }
-    ssym.shndx = has_tdata ? 6 : 5;
-    esym_push(&ea, ssym); // .note.GNU-stack
-
-    // Local user symbols
-    for (int i = 0; i < obj->sym_count; i++) {
-        ObjSym *os = &obj->syms[i];
-        if (os->bind != SB_LOCAL) continue;
-        sym_map[i] = ea.len;
-        ESym es = {0};
-        es.name = strtab_add(&symstrtab, os->name);
-        es.info = ELF64_ST_INFO(STB_LOCAL,
-                                os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
-                                    : os->type == ST_TLS                               ? STT_TLS
-                                                                                       : STT_NOTYPE);
-        es.shndx = os->section == SEC_TEXT ? 1 : os->section == SEC_DATA ? 2
-            : os->section == SEC_BSS                                     ? 3
-            : os->section == SEC_RODATA                                  ? 4
-            : os->section == SEC_TDATA                                   ? (has_tdata ? 5 : SHN_UNDEF)
-                                                                         : SHN_UNDEF;
-        es.value = os->offset;
-        es.size = os->size;
-        esym_push(&ea, es);
-    }
-    int first_global = ea.len;
-
-    // Global/weak user symbols
-    for (int i = 0; i < obj->sym_count; i++) {
-        ObjSym *os = &obj->syms[i];
-        if (os->bind == SB_LOCAL) continue;
-        sym_map[i] = ea.len;
-        ESym es = {0};
-        es.name = strtab_add(&symstrtab, os->name);
-        uint8_t bind = os->bind == SB_WEAK ? STB_WEAK : STB_GLOBAL;
-        es.info = ELF64_ST_INFO(bind,
-                                os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
-                                    : os->type == ST_TLS                               ? STT_TLS
-                                                                                       : STT_NOTYPE);
-        es.shndx = os->section == SEC_TEXT ? 1 : os->section == SEC_DATA ? 2
-            : os->section == SEC_BSS                                     ? 3
-            : os->section == SEC_RODATA                                  ? 4
-            : os->section == SEC_TDATA                                   ? (has_tdata ? 5 : SHN_UNDEF)
-
-                                       : SHN_UNDEF;
-        es.value = os->offset;
-        es.size = os->size;
-        esym_push(&ea, es);
+    for (int i = 0; i < nextra; i++) {
+        shn_extra[i] = strtab_add(&shstrtab, obj->extra_secs[i].name);
+        if (extra_has_relocs[i]) {
+            char relname[300];
+            snprintf(relname, sizeof(relname), ".rela%s", obj->extra_secs[i].name);
+            shn_extra_rela[i] = strtab_add(&shstrtab, relname);
+        }
     }
 
     // -----------------------------------------------------------------------
-    // Section layout:
-    // 0=NULL, 1=.text, 2=.data, 3=.bss, 4=.rodata, 5=.tdata(if tls), 6=.note.GNU-stack
-    // then optional .init_array, .fini_array
-    // then optional .rela.text, .rela.data, .rela.rodata, .rela.init_array, .rela.fini_array
-    // then .symtab, .strtab, .shstrtab
-    // -----------------------------------------------------------------------
-    bool has_rela_text = obj->text_reloc_count > 0;
-    bool has_rela_data = obj->data_reloc_count > 0;
-    bool has_rela_rodata = obj->rodata_reloc_count > 0;
-    bool has_rela_init = obj->init_array_reloc_count > 0;
-    bool has_rela_fini = obj->fini_array_reloc_count > 0;
-    bool has_rela_debug_info = has_debug && obj->debug_has_low_pc;
-    bool has_rela_debug_aranges = has_debug && obj->debug_has_aranges_addr;
-    bool has_rela_debug_line = has_debug && obj->debug_has_line_addr;
-
-    // Section layout:
+    // Section layout (computed before the symbol table so extra sections'
+    // header indices are known when building each STT_SECTION symbol, and
+    // when mapping user symbols defined in an extra section to their shndx):
     // 0=NULL, 1=.text, 2=.data, 3=.bss, 4=.rodata, 5=.tdata(if tls),
     // 6=.note.GNU-stack (5 if no tls)
-    // then optional .debug_line, .debug_info, .debug_abbrev
+    // then optional .debug_line, .debug_info, .debug_abbrev, .debug_aranges
     // then optional .init_array, .fini_array
-    // then optional .rela.*
-
+    // then any dynamically-registered sections (PROGBITS)
+    // then optional .rela.text, .rela.data, .rela.rodata
+    // then any dynamically-registered sections' .rela.<name>
+    // then optional .rela.debug_info, .rela.debug_aranges, .rela.debug_line
+    // then optional .rela.init_array, .rela.fini_array
     // then .symtab, .strtab, .shstrtab
-    // Note: .note is always at index 5 (no tdata) or 6 (with tdata)
-    // It has no variable; shidx starts after it.
+    // -----------------------------------------------------------------------
     int shidx = has_tdata ? 7 : 6;
     int sh_debug_line_idx = has_debug ? shidx++ : -1;
     int sh_debug_info_idx = has_debug ? shidx++ : -1;
@@ -330,9 +275,12 @@ int elf_write(ObjFile *obj, const char *path) {
     int sh_debug_aranges_idx = has_debug ? shidx++ : -1;
     int sh_init_array_idx = has_init_array ? shidx++ : -1;
     int sh_fini_array_idx = has_fini_array ? shidx++ : -1;
+    for (int i = 0; i < nextra; i++) sh_extra_idx[i] = shidx++;
     int sh_rela_text_idx = has_rela_text ? shidx++ : -1;
     int sh_rela_data_idx = has_rela_data ? shidx++ : -1;
     int sh_rela_rodata_idx = has_rela_rodata ? shidx++ : -1;
+    for (int i = 0; i < nextra; i++)
+        sh_extra_rela_idx[i] = extra_has_relocs[i] ? shidx++ : -1;
     int sh_rela_debug_info_idx = has_rela_debug_info ? shidx++ : -1;
     int sh_rela_debug_aranges_idx = has_rela_debug_aranges ? shidx++ : -1;
     int sh_rela_debug_line_idx = has_rela_debug_line ? shidx++ : -1;
@@ -352,6 +300,94 @@ int elf_write(ObjFile *obj, const char *path) {
     (void)sh_rela_debug_info_idx;
     (void)sh_rela_debug_aranges_idx;
     (void)sh_rela_debug_line_idx;
+
+    // -----------------------------------------------------------------------
+    // Build ELF symbol table (locals first, then globals)
+    // -----------------------------------------------------------------------
+    int *sym_map = calloc((size_t)(obj->sym_count + 1), sizeof(int));
+    ESymArr ea = {NULL, 0, 0};
+
+    // Index 0: null symbol
+    ESym null_sym = {0};
+    esym_push(&ea, null_sym);
+
+    // Section symbols
+    ESym ssym = {0};
+    ssym.info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION);
+    ssym.shndx = 1;
+    esym_push(&ea, ssym); // .text
+    ssym.shndx = 2;
+    esym_push(&ea, ssym); // .data
+    ssym.shndx = 3;
+    esym_push(&ea, ssym); // .bss
+    ssym.shndx = 4;
+    esym_push(&ea, ssym); // .rodata
+    if (has_tdata) {
+        ssym.shndx = 5;
+        esym_push(&ea, ssym); // .tdata
+    }
+    ssym.shndx = has_tdata ? 6 : 5;
+    esym_push(&ea, ssym); // .note.GNU-stack
+    for (int i = 0; i < nextra; i++) {
+        ssym.shndx = (uint16_t)sh_extra_idx[i];
+        esym_push(&ea, ssym);
+    }
+
+    // A user symbol's section header index: built-in fixed slots, a
+    // dynamically-registered section's assigned index, or SHN_UNDEF.
+#define USER_SYM_SHNDX(os)                                                 \
+    ((os)->section == SEC_TEXT       ? 1                                   \
+        : (os)->section == SEC_DATA   ? 2                                  \
+        : (os)->section == SEC_BSS    ? 3                                  \
+        : (os)->section == SEC_RODATA ? 4                                  \
+        : (os)->section == SEC_TDATA  ? (has_tdata ? 5 : SHN_UNDEF)         \
+        : ((os)->section >= SEC_NUM && (os)->section - SEC_NUM < nextra)   \
+            ? (uint16_t)sh_extra_idx[(os)->section - SEC_NUM]              \
+            : SHN_UNDEF)
+
+    // Local user symbols
+    for (int i = 0; i < obj->sym_count; i++) {
+        ObjSym *os = &obj->syms[i];
+        if (os->bind != SB_LOCAL) continue;
+        sym_map[i] = ea.len;
+        ESym es = {0};
+        es.name = strtab_add(&symstrtab, os->name);
+        es.info = ELF64_ST_INFO(STB_LOCAL,
+                                os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
+                                    : os->type == ST_TLS                               ? STT_TLS
+                                                                                       : STT_NOTYPE);
+        es.shndx = USER_SYM_SHNDX(os);
+        es.value = os->offset;
+        es.size = os->size;
+        esym_push(&ea, es);
+    }
+    int first_global = ea.len;
+
+    // Global/weak user symbols
+    for (int i = 0; i < obj->sym_count; i++) {
+        ObjSym *os = &obj->syms[i];
+        if (os->bind == SB_LOCAL) continue;
+        sym_map[i] = ea.len;
+        ESym es = {0};
+        es.name = strtab_add(&symstrtab, os->name);
+        uint8_t bind = os->bind == SB_WEAK ? STB_WEAK : STB_GLOBAL;
+        es.info = ELF64_ST_INFO(bind,
+                                os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
+                                    : os->type == ST_TLS                               ? STT_TLS
+                                                                                       : STT_NOTYPE);
+        es.shndx = USER_SYM_SHNDX(os);
+        es.value = os->offset;
+        es.size = os->size;
+        esym_push(&ea, es);
+    }
+#undef USER_SYM_SHNDX
+
+    // -----------------------------------------------------------------------
+    // File offsets (data section bytes, then relocation tables, then the
+    // symbol/string/section-name tables). Mirrors the header-index layout
+    // above: extra-section data lands after .init_array/.fini_array, extra-
+    // section relocs land after .rela.rodata.
+    // -----------------------------------------------------------------------
     uint64_t text_off = align16(64); // 64 = sizeof ELF header
     uint64_t text_size = obj->text.len;
     uint64_t data_off = align16(text_off + text_size);
@@ -375,13 +411,30 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t init_arr_size = obj->init_array.len;
     uint64_t fini_arr_off = align16(init_arr_off + init_arr_size);
     uint64_t fini_arr_size = obj->fini_array.len;
-    uint64_t rela_txt_off = align16(fini_arr_off + fini_arr_size);
+
+    uint64_t running = fini_arr_off + fini_arr_size;
+    for (int i = 0; i < nextra; i++) {
+        extra_off[i] = align16(running);
+        extra_size[i] = obj->extra_secs[i].buf.len;
+        running = extra_off[i] + extra_size[i];
+    }
+
+    uint64_t rela_txt_off = align16(running);
     uint64_t rela_txt_size = (uint64_t)obj->text_reloc_count * 24;
     uint64_t rela_dat_off = align16(rela_txt_off + rela_txt_size);
     uint64_t rela_dat_size = (uint64_t)obj->data_reloc_count * 24;
     uint64_t rela_rod_off = align16(rela_dat_off + rela_dat_size);
     uint64_t rela_rod_size = (uint64_t)obj->rodata_reloc_count * 24;
-    uint64_t rela_ini_off = align16(rela_rod_off + rela_rod_size);
+
+    running = rela_rod_off + rela_rod_size;
+    for (int i = 0; i < nextra; i++) {
+        if (!extra_has_relocs[i]) continue;
+        extra_rela_off[i] = align16(running);
+        extra_rela_size[i] = (uint64_t)obj->extra_secs[i].reloc_count * 24;
+        running = extra_rela_off[i] + extra_rela_size[i];
+    }
+
+    uint64_t rela_ini_off = align16(running);
     uint64_t rela_ini_size = (uint64_t)obj->init_array_reloc_count * 24;
     uint64_t rela_fin_off = align16(rela_ini_off + rela_ini_size);
     uint64_t rela_fin_size = (uint64_t)obj->fini_array_reloc_count * 24;
@@ -410,6 +463,15 @@ int elf_write(ObjFile *obj, const char *path) {
         free(ea.data);
         free(symstrtab.data);
         free(shstrtab.data);
+        free(shn_extra);
+        free(shn_extra_rela);
+        free(sh_extra_idx);
+        free(sh_extra_rela_idx);
+        free(extra_has_relocs);
+        free(extra_off);
+        free(extra_size);
+        free(extra_rela_off);
+        free(extra_rela_size);
         return -1;
     }
 
@@ -440,7 +502,14 @@ int elf_write(ObjFile *obj, const char *path) {
     if (init_arr_size) wbuf(f, obj->init_array.data, init_arr_size);
     wzeros(f, fini_arr_off - (init_arr_off + init_arr_size));
     if (fini_arr_size) wbuf(f, obj->fini_array.data, fini_arr_size);
-    wzeros(f, rela_txt_off - (fini_arr_off + fini_arr_size));
+
+    uint64_t written_to = fini_arr_off + fini_arr_size;
+    for (int i = 0; i < nextra; i++) {
+        wzeros(f, extra_off[i] - written_to);
+        if (extra_size[i]) wbuf(f, obj->extra_secs[i].buf.data, extra_size[i]);
+        written_to = extra_off[i] + extra_size[i];
+    }
+    wzeros(f, rela_txt_off - written_to);
 
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
@@ -467,7 +536,21 @@ int elf_write(ObjFile *obj, const char *path) {
         w64(f, ELF64_R_INFO((uint32_t)es, r->type));
         wi64(f, r->addend);
     }
-    wzeros(f, rela_ini_off - (rela_rod_off + rela_rod_size));
+
+    written_to = rela_rod_off + rela_rod_size;
+    for (int i = 0; i < nextra; i++) {
+        if (!extra_has_relocs[i]) continue;
+        wzeros(f, extra_rela_off[i] - written_to);
+        for (int j = 0; j < obj->extra_secs[i].reloc_count; j++) {
+            ObjReloc *r = &obj->extra_secs[i].relocs[j];
+            int es = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
+            w64(f, r->offset);
+            w64(f, ELF64_R_INFO((uint32_t)es, r->type));
+            wi64(f, r->addend);
+        }
+        written_to = extra_rela_off[i] + extra_rela_size[i];
+    }
+    wzeros(f, rela_ini_off - written_to);
 
     for (int i = 0; i < obj->init_array_reloc_count; i++) {
         ObjReloc *r = &obj->init_array_relocs[i];
@@ -567,6 +650,10 @@ int elf_write(ObjFile *obj, const char *path) {
         write_shdr(f, shn_fini_array, SHT_FINI_ARRAY, SHF_ALLOC | SHF_WRITE,
                    fini_arr_off, fini_arr_size, 0, 0, 8, 0);
 
+    for (int i = 0; i < nextra; i++)
+        write_shdr(f, shn_extra[i], SHT_PROGBITS, obj->extra_secs[i].sh_flags,
+                   extra_off[i], extra_size[i], 0, 0, 1, obj->extra_secs[i].sh_entsize);
+
     if (has_rela_text)
         write_shdr(f, shn_rela_txt, SHT_RELA, SHF_INFO_LINK,
                    rela_txt_off, rela_txt_size,
@@ -579,6 +666,13 @@ int elf_write(ObjFile *obj, const char *path) {
         write_shdr(f, shn_rela_rod, SHT_RELA, SHF_INFO_LINK,
                    rela_rod_off, rela_rod_size,
                    (uint32_t)sh_symtab_idx, 4 /* .rodata */, 8, 24);
+
+    for (int i = 0; i < nextra; i++)
+        if (extra_has_relocs[i])
+            write_shdr(f, shn_extra_rela[i], SHT_RELA, SHF_INFO_LINK,
+                       extra_rela_off[i], extra_rela_size[i],
+                       (uint32_t)sh_symtab_idx, (uint32_t)sh_extra_idx[i], 8, 24);
+
     if (has_rela_init)
         write_shdr(f, shn_rela_init, SHT_RELA, SHF_INFO_LINK,
                    rela_ini_off, rela_ini_size,
@@ -616,5 +710,14 @@ int elf_write(ObjFile *obj, const char *path) {
     free(ea.data);
     free(symstrtab.data);
     free(shstrtab.data);
+    free(shn_extra);
+    free(shn_extra_rela);
+    free(sh_extra_idx);
+    free(sh_extra_rela_idx);
+    free(extra_has_relocs);
+    free(extra_off);
+    free(extra_size);
+    free(extra_rela_off);
+    free(extra_rela_size);
     return 0;
 }

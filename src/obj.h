@@ -43,7 +43,32 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v);
 #define SEC_FINI_ARRAY  5
 #define SEC_TDATA       6
 #define SEC_THREAD_VARS  7
-#define SEC_NUM         8 // number of sections
+#define SEC_NUM         8 // number of built-in sections; dynamic ones start here
+
+// ELF sh_flags bits needed to describe a dynamically-registered section
+// (shared with elf_write.c, which used to define its own private copies).
+#define SHF_WRITE     0x1
+#define SHF_ALLOC     0x2
+#define SHF_EXECINSTR 0x4
+#define SHF_MERGE     0x10
+#define SHF_STRINGS   0x20
+#define SHF_INFO_LINK 0x40
+#define SHF_TLS       0x400
+
+// A section registered at runtime by name (GAS `.section`/`.pushsection`
+// with a name rcc has no built-in slot for, e.g. the kernel's __ex_table,
+// .fixup, .altinstructions, ...). Indexed starting at SEC_NUM: section id
+// `SEC_NUM + i` is `obj->extra_secs[i]`.
+typedef struct ObjReloc ObjReloc; // full definition below
+typedef struct ExtraSection ExtraSection;
+struct ExtraSection {
+    char *name;
+    SecBuf buf;
+    ObjReloc *relocs;
+    int reloc_count, reloc_cap;
+    uint32_t sh_flags;
+    uint32_t sh_entsize; // 0 if none (GAS ".pushsection NAME, FLAGS, @TYPE, ENTSIZE")
+};
 
 // ---------------------------------------------------------------------------
 // Symbol table
@@ -166,6 +191,13 @@ struct ObjFile {
     SecBuf data_tls; // .tdata — initialized TLS data
     size_t bss_size; // .bss is zero-initialized; just track its size
     SecBuf thread_vars; // __thread_vars — TLV descriptors
+
+    // Dynamically-registered sections (GAS .section/.pushsection with a
+    // name outside the built-in set above). Section id SEC_NUM+i.
+    ExtraSection *extra_secs;
+    int extra_sec_count;
+    int extra_sec_cap;
+
     ObjSym *syms;
     int sym_count;
     int sym_cap;
@@ -250,6 +282,17 @@ int objfile_find_sym(ObjFile *obj, const char *name);
 
 void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
                        int sym_idx, uint32_t type, int64_t addend);
+
+// Look up a dynamically-registered section by name, creating it (with the
+// given sh_flags/sh_entsize) if it doesn't exist yet. Returns its section
+// id (>= SEC_NUM). sh_flags/sh_entsize are only applied on creation.
+int objfile_find_or_add_section(ObjFile *obj, const char *name,
+                                uint32_t sh_flags, uint32_t sh_entsize);
+
+// The growable byte buffer for any section id, built-in or dynamic.
+// Returns NULL for SEC_BSS (zero-initialized; track via obj->bss_size) and
+// SEC_UNDEF.
+SecBuf *objfile_section_buf(ObjFile *obj, int section);
 
 // Append a fresh zeroed Win64 unwind entry and return a pointer to it.
 UnwindEntry *objfile_add_unwind(ObjFile *obj);

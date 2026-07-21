@@ -25,9 +25,15 @@
 // ---------------------------------------------------------------------------
 typedef struct {
     ObjFile *obj;
-    int cur_sec; // current section: SEC_TEXT / SEC_DATA / SEC_BSS / SEC_RODATA
+    int cur_sec; // current section: SEC_TEXT / SEC_DATA / SEC_BSS / SEC_RODATA / ...
     int lineno;
     const char *filename;
+
+    // .pushsection/.popsection stack (GAS section switches nest a handful
+    // of levels deep at most — the kernel's exception-table/fixup macros
+    // never push more than one).
+    int sec_stack[32];
+    int sec_stack_depth;
 
     // Backpatching: forward label references
     // (max 512 pending fixups at once; sufficient for compiler output)
@@ -45,6 +51,11 @@ typedef struct {
         char name[128];
         int section;
         size_t offset;
+        int sym_idx; // objfile symbol table index for this exact occurrence
+        // (numeric labels like "1:" reuse the name, so lookups
+        // by symbol *name* alone can't tell occurrences apart —
+        // needed to reference the *right* one from another
+        // section, e.g. `.long 1b - .` in __ex_table)
     } locals[2048];
     int nlocals;
 } AsmState;
@@ -56,12 +67,8 @@ static void asm_error(AsmState *as, const char *msg) {
 
 // Current section buffer
 static SecBuf *cur_sec_buf(AsmState *as) {
-    switch (as->cur_sec) {
-    case SEC_TEXT: return &as->obj->text;
-    case SEC_DATA: return &as->obj->data;
-    case SEC_RODATA: return &as->obj->rodata;
-    default: return &as->obj->data; // BSS handled specially
-    }
+    SecBuf *b = objfile_section_buf(as->obj, as->cur_sec);
+    return b ? b : &as->obj->data; // BSS/unregistered handled specially
 }
 
 static size_t cur_off(AsmState *as) {
@@ -90,7 +97,29 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
             as->obj->syms[idx].bind = is_weak ? SB_WEAK : SB_GLOBAL;
         if (is_func) as->obj->syms[idx].type = ST_FUNC;
     }
-    (void)idx;
+
+    // GAS numeric local labels ("1:") reuse the same name every time they
+    // recur, so the shared symbol-table slot above only ever holds the
+    // *latest* occurrence's value — fine for same-section jmp/jcc, which
+    // resolve by (name, position) via the locals[] scan below, but useless
+    // for a cross-section reference (e.g. `.long 1b - .` in the kernel's
+    // __ex_table, referencing a label back in .text), which needs a real
+    // relocation against a symbol that stays pinned to *this* occurrence.
+    // Give every numeric-label definition its own private, uniquely-named
+    // symbol for that purpose.
+    bool is_numeric_label = *name != '\0';
+    for (const char *p = name; *p; p++)
+        if (!isdigit((unsigned char)*p)) {
+            is_numeric_label = false;
+            break;
+        }
+    int occurrence_idx = idx;
+    if (is_numeric_label) {
+        static int numeric_label_seq;
+        char uniq[64];
+        snprintf(uniq, sizeof(uniq), ".Lrcc_num%d.%d", atoi(name), numeric_label_seq++);
+        occurrence_idx = objfile_add_sym(as->obj, uniq, sec, off, 0, SB_LOCAL, ST_NOTYPE);
+    }
 
     // Also record as local sym for backpatching
     if (as->nlocals < 2047) {
@@ -99,6 +128,7 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         ls->name[sizeof(ls->name) - 1] = '\0';
         ls->section = sec;
         ls->offset = off;
+        ls->sym_idx = occurrence_idx;
     }
 
     // Resolve any pending fixups for this label
@@ -168,6 +198,32 @@ static int64_t lookup_local(AsmState *as, const char *name, int *sec_out) {
         }
     }
     return -1;
+}
+
+// Nearest-prior ("Nb") resolution of a local label to its own private
+// symbol-table entry, for use in relocations that must survive a
+// cross-section reference (see define_label's occurrence_idx). Returns -1
+// if not found — in particular for a forward ("Nf") reference, which
+// define_label hasn't created an occurrence for yet.
+static int lookup_local_sym(AsmState *as, const char *name, int *sec_out) {
+    for (int i = as->nlocals - 1; i >= 0; i--) {
+        if (strcmp(as->locals[i].name, name) == 0) {
+            if (sec_out) *sec_out = as->locals[i].section;
+            return as->locals[i].sym_idx;
+        }
+    }
+    return -1;
+}
+
+// If `tok` is a GAS numeric local label reference ("1b"/"1f" — one or more
+// digits plus a trailing b/f), strip the direction suffix in place so it
+// matches the bare name define_label() records ("1"). No-op otherwise.
+static void strip_local_label_suffix(char *tok) {
+    size_t len = strlen(tok);
+    if (len < 2 || (tok[len - 1] != 'b' && tok[len - 1] != 'f')) return;
+    for (size_t i = 0; i < len - 1; i++)
+        if (!isdigit((unsigned char)tok[i])) return;
+    tok[len - 1] = '\0';
 }
 
 // Ensure a symbol is in the object's symbol table (for extern refs in relocs)
@@ -460,6 +516,53 @@ static bool parse_x86_mem(const char *s, X86Mem *m) {
 // ---------------------------------------------------------------------------
 // Directive handling
 // ---------------------------------------------------------------------------
+// Parse `NAME[, "FLAGS"[, @TYPE[, ENTSIZE]]]` — the GAS .section/.pushsection
+// argument grammar — and resolve/create the named section. Returns -1 if
+// `args` has no usable name (caller should leave the current section alone).
+static int parse_named_section(AsmState *as, const char *args) {
+    char argbuf[300];
+    strncpy(argbuf, args, sizeof(argbuf) - 1);
+    argbuf[sizeof(argbuf) - 1] = 0;
+
+    char *name = strtok(argbuf, ",");
+    if (!name) return -1;
+    name = skip_ws(name);
+    trim_end(name);
+    size_t nlen = strlen(name);
+    if (nlen >= 2 && name[0] == '"' && name[nlen - 1] == '"') {
+        name[nlen - 1] = '\0';
+        name++;
+    }
+    if (!*name) return -1;
+
+    uint32_t flags = 0;
+    char *flagtok = strtok(NULL, ",");
+    if (flagtok) {
+        flagtok = skip_ws(flagtok);
+        trim_end(flagtok);
+        for (char *p = flagtok; *p; p++) {
+            switch (*p) {
+            case 'a': flags |= SHF_ALLOC; break;
+            case 'w': flags |= SHF_WRITE; break;
+            case 'x': flags |= SHF_EXECINSTR; break;
+            case 'M': flags |= SHF_MERGE; break;
+            case 'S': flags |= SHF_STRINGS; break;
+            case 'T': flags |= SHF_TLS; break;
+            default: break; // 'G' (group), 'o' (link-order), quotes: not needed here
+            }
+        }
+    }
+    strtok(NULL, ","); // @progbits/%progbits — always emitted as SHT_PROGBITS
+    char *entsz_tok = strtok(NULL, ",");
+    uint32_t entsize = 0;
+    if (entsz_tok) {
+        entsz_tok = skip_ws(entsz_tok);
+        trim_end(entsz_tok);
+        entsize = (uint32_t)strtol(entsz_tok, NULL, 0);
+    }
+    return objfile_find_or_add_section(as->obj, name, flags, entsize);
+}
+
 static void handle_directive(AsmState *as, const char *dir, char *args) {
     args = skip_ws(args);
     trim_end(args);
@@ -483,7 +586,38 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             as->cur_sec = SEC_BSS;
         else if (strstr(args, ".text"))
             as->cur_sec = SEC_TEXT;
-        // else: unknown section, ignore (e.g. .note.GNU-stack)
+        else if (strstr(args, ".note.GNU-stack") || strstr(args, ".note.gnu"))
+            ; // marker section elf_write always emits on its own; ignore
+        else {
+            int sec = parse_named_section(as, args);
+            if (sec >= 0) as->cur_sec = sec;
+        }
+    } else if (!strcmp(dir, "pushsection")) {
+        // .pushsection NAME[, "FLAGS"[, @TYPE[, ENTSIZE]]] — save the
+        // current section and switch to (or create) the named one. Used by
+        // e.g. the kernel's _ASM_EXTABLE macros to build __ex_table
+        // entries without corrupting the surrounding .text stream.
+        if (as->sec_stack_depth < (int)(sizeof(as->sec_stack) / sizeof(as->sec_stack[0])))
+            as->sec_stack[as->sec_stack_depth++] = as->cur_sec;
+        else
+            asm_error(as, "pushsection stack overflow");
+        if (strstr(args, ".rodata") || strstr(args, "__const"))
+            as->cur_sec = SEC_RODATA;
+        else if (strstr(args, ".data"))
+            as->cur_sec = SEC_DATA;
+        else if (strstr(args, ".bss"))
+            as->cur_sec = SEC_BSS;
+        else if (strstr(args, ".text"))
+            as->cur_sec = SEC_TEXT;
+        else {
+            int sec = parse_named_section(as, args);
+            if (sec >= 0) as->cur_sec = sec;
+        }
+    } else if (!strcmp(dir, "popsection")) {
+        if (as->sec_stack_depth > 0)
+            as->cur_sec = as->sec_stack[--as->sec_stack_depth];
+        else
+            asm_error(as, "popsection without pushsection");
     } else if (!strcmp(dir, "globl") || !strcmp(dir, "global")) {
         // Mark symbol as global (may not be defined yet)
         char *sym = args;
@@ -569,6 +703,56 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         while (val) {
             val = skip_ws(val);
             trim_end(val);
+
+            // "(SYM) - ." / "SYM - ." — PC-relative-to-this-field, GAS's
+            // idiom for a cross-section table entry pointing back at a
+            // label (e.g. the kernel's `.long (1b) - .` in _ASM_EXTABLE).
+            // "." here is exactly the position being written, so unlike
+            // the ABS64 case below this always needs a real relocation —
+            // the two sections may end up placed anywhere relative to each
+            // other, only the linker knows the final addresses.
+            size_t vlen = strlen(val);
+            bool pc_rel_here = false;
+            if (vlen >= 3) {
+                size_t e = vlen;
+                while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+                if (e > 0 && val[e - 1] == '.') {
+                    e--;
+                    while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+                    if (e > 0 && val[e - 1] == '-') {
+                        e--;
+                        while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+                        val[e] = '\0';
+                        vlen = e;
+                        pc_rel_here = true;
+                    }
+                }
+            }
+            if (pc_rel_here && (sz == 4 || sz == 8)) {
+                char *sym = skip_ws(val);
+                trim_end(sym);
+                size_t slen = strlen(sym);
+                if (slen >= 2 && sym[0] == '(' && sym[slen - 1] == ')') {
+                    sym[slen - 1] = '\0';
+                    sym++;
+                    trim_end(sym);
+                    sym = skip_ws(sym);
+                }
+                strip_local_label_suffix(sym);
+                int sec_of_sym = 0;
+                int sidx = lookup_local_sym(as, sym, &sec_of_sym);
+                if (sidx < 0) sidx = ensure_sym(as, sym);
+                if (sz == 4) {
+                    size_t off = secbuf_emit32le(buf, 0);
+                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC32, 0);
+                } else {
+                    size_t off = secbuf_emit64le(buf, 0);
+                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC64, 0);
+                }
+                val = strtok(NULL, ",");
+                continue;
+            }
+
             // Check if it's a symbol reference (for relocation)
             bool is_sym = val[0] == '.' || isalpha((unsigned char)val[0]) || val[0] == '_';
             if (is_sym && sz == 8) {
@@ -1601,19 +1785,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // call/lea and friends — resolves against the name it was actually
     // defined under instead of silently missing and falling through to a
     // dangling forward fixup that's never patched.
-    for (int _i = 0; _i < nops; _i++) {
-        char *o = ops[_i];
-        size_t olen = strlen(o);
-        if (olen >= 2 && (o[olen - 1] == 'b' || o[olen - 1] == 'f')) {
-            bool all_digits = true;
-            for (size_t _j = 0; _j < olen - 1; _j++)
-                if (!isdigit((unsigned char)o[_j])) {
-                    all_digits = false;
-                    break;
-                }
-            if (all_digits) o[olen - 1] = '\0';
-        }
-    }
+    for (int _i = 0; _i < nops; _i++)
+        strip_local_label_suffix(ops[_i]);
 
     // Determine operand size from mnemonic suffix (0 = derive from operand)
     int sz = suffix_size(mnem);
