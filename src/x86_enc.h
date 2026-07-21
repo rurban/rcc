@@ -119,9 +119,11 @@ void x86_lea(SecBuf *s, int size, X86Reg dst, X86Mem src);
 void x86_add_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_add_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_add_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_add_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_sub_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_sub_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_sub_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_sub_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_imul_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_imul_rri(SecBuf *s, int size, X86Reg dst, X86Reg src, int32_t imm);
 void x86_imul_r(SecBuf *s, int size, X86Reg src); // RDX:RAX = RAX*src
@@ -142,12 +144,15 @@ void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX
 void x86_and_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_and_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_and_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_and_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_or_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_or_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_or_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_or_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_xor_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_xor_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_xor_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_xor_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 
 // Shifts
 void x86_shl_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
@@ -178,6 +183,24 @@ void x86_popcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_lzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_tzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_bswap(SecBuf *s, int size, X86Reg r); // size=4 or 8
+
+// BT/BTS/BTR/BTC r/m, r (memory or register bit-index destination)
+void x86_bt_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_bts_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_btr_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_btc_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_bt_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_bts_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_btr_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_btc_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+
+// XADD r/m, r: adds src to dst, stores dst's original value into src
+void x86_xadd_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_xadd_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+
+// CMPXCHG r/m, r: compares r/m with %al/%eax/%rax; if equal, r/m = src
+void x86_cmpxchg_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_cmpxchg_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 
 // Stack
 void x86_push(SecBuf *s, X86Reg r);

@@ -366,21 +366,38 @@ static void alu_rm(SecBuf *s, int size, int op, X86Reg dst, X86Mem src) {
     emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
 }
 
+// Register-to-memory store form (r/m, r): "addl %eax, mem" and friends —
+// the mirror image of alu_rm (mem, r/reg loaded FROM memory). Without this,
+// any ALU op whose destination is a memory operand and source a register
+// silently encoded nothing (see ALU_OP's dispatch in asm.c).
+static void alu_mr(SecBuf *s, int size, int op, X86Mem dst, X86Reg src) {
+    size16_pfx(s, size);
+    int w = size == 8;
+    emit1(s, rex(w, src > X86_RDI, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit1(s, (uint8_t)((op * 8) | (size == 1 ? 0 : 1)));
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
+}
+
 void x86_add_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 0, d, sr); }
 void x86_add_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 0, d, i); }
 void x86_add_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 0, d, m); }
+void x86_add_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 0, d, sr); }
 void x86_sub_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 5, d, sr); }
 void x86_sub_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 5, d, i); }
 void x86_sub_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 5, d, m); }
+void x86_sub_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 5, d, sr); }
 void x86_and_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 4, d, sr); }
 void x86_and_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 4, d, i); }
 void x86_and_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 4, d, m); }
+void x86_and_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 4, d, sr); }
 void x86_or_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 1, d, sr); }
 void x86_or_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 1, d, i); }
 void x86_or_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 1, d, m); }
+void x86_or_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 1, d, sr); }
 void x86_xor_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 6, d, sr); }
 void x86_xor_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 6, d, i); }
 void x86_xor_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 6, d, m); }
+void x86_xor_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 6, d, sr); }
 void x86_cmp_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) { alu_rr(s, sz, 7, a, b); }
 void x86_cmp_ri(SecBuf *s, int sz, X86Reg a, int32_t i) { alu_ri(s, sz, 7, a, i); }
 void x86_cmp_rm(SecBuf *s, int sz, X86Reg a, X86Mem b) { alu_rm(s, sz, 7, a, b); }
@@ -558,6 +575,43 @@ void x86_bswap(SecBuf *s, int sz, X86Reg r) {
     else if (r > X86_RDI)
         emit1(s, rex(0, 0, 0, 1));
     emit2(s, 0x0f, (uint8_t)(0xc8 + (r & 7)));
+}
+
+// Two-byte-opcode r/m, r form (0F xx /r) with a memory destination:
+// BT/BTS/BTR/BTC, XADD, CMPXCHG all share this shape.
+static void bop_mr(SecBuf *s, int sz, uint8_t op2, X86Mem dst, X86Reg src) {
+    size16_pfx(s, sz);
+    bool needrex = (sz == 8) || src > X86_RDI || dst.base > X86_RDI ||
+        (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (needrex) emit1(s, rex(sz == 8, src > X86_RDI, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit2(s, 0x0f, op2);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
+}
+
+void x86_bt_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { bop_mr(s, sz, 0xa3, d, sr); }
+void x86_bts_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { bop_mr(s, sz, 0xab, d, sr); }
+void x86_btr_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { bop_mr(s, sz, 0xb3, d, sr); }
+void x86_btc_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { bop_mr(s, sz, 0xbb, d, sr); }
+void x86_bt_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xa3, d, sr); }
+void x86_bts_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xab, d, sr); }
+void x86_btr_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xb3, d, sr); }
+void x86_btc_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { bop(s, sz, 0xbb, d, sr); }
+
+// XADD r/m, r (0F C0/C1 /r): adds src into dst, dst's original value -> src.
+void x86_xadd_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) {
+    bop_mr(s, sz, opsize(0xc0, sz), d, sr);
+}
+void x86_xadd_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) {
+    bop(s, sz, opsize(0xc0, sz), d, sr);
+}
+
+// CMPXCHG r/m, r (0F B0/B1 /r): compares r/m with AL/AX/EAX/RAX; if equal,
+// ZF=1 and r/m = src, else ZF=0 and AL/AX/EAX/RAX = r/m.
+void x86_cmpxchg_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) {
+    bop_mr(s, sz, opsize(0xb0, sz), d, sr);
+}
+void x86_cmpxchg_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) {
+    bop(s, sz, opsize(0xb0, sz), d, sr);
 }
 
 // Stack

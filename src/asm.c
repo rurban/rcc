@@ -1977,18 +1977,26 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
 
 // ADD / SUB / AND / OR / XOR
-#define ALU_OP(name, fn_rr, fn_ri, fn_rm) \
+// AT&T order is src, dst — ops[0]=src, ops[1]=dst. Besides the
+// reg-dest forms, a memory destination with a register source
+// ("addl %eax, mem", used pervasively by lock-prefixed kernel atomics
+// like arch_atomic_add) must go through fn_mr, not fn_rm (which loads
+// FROM memory into a register — the opposite direction). Without this
+// case the memory-destination form matched no branch here at all and
+// silently encoded nothing while still reporting success.
+#define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr) \
     if (!strncmp(mnem, name, strlen(name))) { \
         if (is_imm(0)&&is_reg(1)) { fn_ri(buf,sz,R(1),(int32_t)IMM(0)); } \
         else if (is_reg(0)&&is_reg(1)) { fn_rr(buf,sz,R(1),R(0)); } \
         else if (is_mem(0)&&is_reg(1)) { fn_rm(buf,sz,R(1),M(0)); } \
+        else if (is_reg(0)&&is_mem(1)) { fn_mr(buf,sz,M(1),R(0)); } \
         return true; \
     }
-    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm)
-    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm)
-    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm)
-    ALU_OP("or", x86_or_rr, x86_or_ri, x86_add_rm) // or_rm not defined; simplify
-    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm)
+    ALU_OP("add", x86_add_rr, x86_add_ri, x86_add_rm, x86_add_mr)
+    ALU_OP("sub", x86_sub_rr, x86_sub_ri, x86_sub_rm, x86_sub_mr)
+    ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mr)
+    ALU_OP("or", x86_or_rr, x86_or_ri, x86_or_rm, x86_or_mr)
+    ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr)
 #undef ALU_OP
 
     // IMUL
@@ -2071,8 +2079,9 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // CMP / TEST
-    if (!strncmp(mnem, "cmp", 3)) {
+    // CMP / TEST (but not CMPXCHG[8B/16B], handled separately below since
+    // it shares the "cmp" prefix but is a completely different opcode)
+    if (!strncmp(mnem, "cmp", 3) && strncmp(mnem, "cmpxchg", 7)) {
         if (is_imm(0) && is_reg(1))
             x86_cmp_ri(buf, sz, R(1), (int32_t)IMM(0));
         else if (is_reg(0) && is_reg(1))
@@ -2266,22 +2275,77 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Prefixes
-    if (!strcmp(mnem, "lock")) {
-        x86_lock_prefix(buf);
+    // BT/BTS/BTR/BTC r/m, r — kernel bitops (arch_set_bit/clear_bit/
+    // change_bit's non-constant-index path) compile to these against a
+    // memory operand; AT&T order is "bts %bit_index_reg, %mem_or_reg".
+    if (!strncmp(mnem, "bts", 3)) {
+        if (is_mem(1)) x86_bts_mr(buf, sz, M(1), R(0));
+        else
+            x86_bts_rr(buf, sz, R(1), R(0));
         return true;
     }
-    if (!strcmp(mnem, "rep")) {
-        x86_rep_prefix(buf);
+    if (!strncmp(mnem, "btr", 3)) {
+        if (is_mem(1)) x86_btr_mr(buf, sz, M(1), R(0));
+        else
+            x86_btr_rr(buf, sz, R(1), R(0));
         return true;
     }
-    if (!strcmp(mnem, "repe")) {
-        x86_rep_prefix(buf);
+    if (!strncmp(mnem, "btc", 3)) {
+        if (is_mem(1)) x86_btc_mr(buf, sz, M(1), R(0));
+        else
+            x86_btc_rr(buf, sz, R(1), R(0));
         return true;
     }
-    if (!strcmp(mnem, "repne")) {
-        x86_repne_prefix(buf);
+    if (!strncmp(mnem, "bt", 2)) {
+        if (is_mem(1)) x86_bt_mr(buf, sz, M(1), R(0));
+        else
+            x86_bt_rr(buf, sz, R(1), R(0));
         return true;
+    }
+    // XADD r/m, r — this_cpu_add_return/atomic_fetch_add-style ops.
+    if (!strncmp(mnem, "xadd", 4)) {
+        if (is_mem(1)) x86_xadd_mr(buf, sz, M(1), R(0));
+        else
+            x86_xadd_rr(buf, sz, R(1), R(0));
+        return true;
+    }
+    // CMPXCHG r/m, r — atomic_cmpxchg/try_cmpxchg and friends.
+    if (!strncmp(mnem, "cmpxchg", 7) && strncmp(mnem, "cmpxchg8b", 9) &&
+        strncmp(mnem, "cmpxchg16b", 10)) {
+        if (is_mem(1)) x86_cmpxchg_mr(buf, sz, M(1), R(0));
+        else
+            x86_cmpxchg_rr(buf, sz, R(1), R(0));
+        return true;
+    }
+
+    // Prefixes ("lock foo %1,%0", "rep movsb", ...): mnem/ops_str splitting
+    // upstream only cuts at the first whitespace, so the prefix and the
+    // instruction it modifies land in the SAME call — mnem is the prefix
+    // ("lock") and ops_str is the rest of the line starting with the real
+    // mnemonic ("xaddl %0, %1"), not an operand list. Emitting only the
+    // prefix byte and returning here silently drops that instruction
+    // entirely, leaving a dangling prefix byte the CPU decodes as garbage
+    // against whatever follows — this broke every lock-prefixed atomic op
+    // (lock xadd/cmpxchg/bts/btr/btc/...) used throughout kernel atomics.
+    // Re-split ops_str into its own mnemonic + operands and encode that.
+    if (!strcmp(mnem, "lock") || !strcmp(mnem, "rep") ||
+        !strcmp(mnem, "repe") || !strcmp(mnem, "repne")) {
+        if (!strcmp(mnem, "lock"))
+            x86_lock_prefix(buf);
+        else if (!strcmp(mnem, "repne"))
+            x86_repne_prefix(buf);
+        else
+            x86_rep_prefix(buf);
+        char *m2 = ops_str;
+        char *o2 = m2;
+        while (*o2 && !isspace((unsigned char)*o2)) o2++;
+        if (*o2) {
+            *o2++ = 0;
+            o2 = skip_ws(o2);
+        }
+        for (char *c = m2; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (!*m2) return true;
+        return encode_x86(as, m2, o2);
     }
     if (!strcmp(mnem, "int")) {
         if (is_imm(0))

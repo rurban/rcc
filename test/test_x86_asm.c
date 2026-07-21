@@ -27,11 +27,11 @@
  *   corrupting the surrounding code.
  */
 #if defined(__x86_64__) || defined(_M_X64)
-#include <stdio.h>
+#include <stdint.h>
 
 int main(void)
 {
-    long wide = 0x1122334455667788L;
+   long wide = 0x1122334455667788L;
 
     /* %k: 32-bit view of a 64-bit operand — writes only the low dword. */
     {
@@ -167,7 +167,61 @@ int main(void)
         if (loop_n != 0 || loop_count != 5) return 11;
     }
 
-    printf("OK asm x86 operand modifiers/named operands/semicolon stmts\n");
+    /* ADD/SUB/AND/OR/XOR with a memory destination and register source
+     * ("addl %reg, mem", AT&T src,dst order) — the mnem/ops splitter's
+     * dispatch had no case for is_reg(0)&&is_mem(1), so this form
+     * silently encoded zero bytes while still reporting success. Used
+     * pervasively by kernel atomics (arch_atomic_add/sub/or/and/xor). */
+    {
+        int v = 5;
+        __asm__ volatile ("addl %1, %0" : "+m"(v) : "r"(3) : "memory");
+        if (v != 8) return 12;
+        __asm__ volatile ("subl %1, %0" : "+m"(v) : "r"(2) : "memory");
+        if (v != 6) return 13;
+        __asm__ volatile ("andl %1, %0" : "+m"(v) : "r"(0xc) : "memory");
+        if (v != 4) return 14;
+        __asm__ volatile ("orl %1, %0" : "+m"(v) : "r"(0x10) : "memory");
+        if (v != 0x14) return 15;
+        __asm__ volatile ("xorl %1, %0" : "+m"(v) : "r"(0xff) : "memory");
+        if (v != 0xeb) return 16;
+    }
+
+    /* "lock" (and rep/repe/repne) is a prefix byte, not a standalone
+     * instruction — mnem/ops splitting upstream cuts at the first
+     * whitespace, so "lock xaddl %0, %1" arrives as mnem="lock",
+     * ops_str="xaddl %0, %1". Returning right after emitting the prefix
+     * byte discarded that operand string (and the real instruction in
+     * it) entirely, leaving a dangling lock prefix with no instruction
+     * — this broke every lock-prefixed atomic in the kernel. */
+    {
+        int val = 5, add = 3;
+        __asm__ volatile ("lock xaddl %0, %1" : "+r"(add), "+m"(val) : : "memory");
+        if (val != 8 || add != 5) return 17;
+    }
+
+    /* lock bts/btr/btc mem,reg — kernel bitops' non-constant-index path
+     * (arch_set_bit/clear_bit/change_bit). */
+    {
+        unsigned long word = 0;
+        long bit = 5;
+        __asm__ volatile ("lock btsq %1,%0" : "+m"(word) : "Ir"(bit) : "memory");
+        if (word != (1UL << 5)) return 18;
+        __asm__ volatile ("lock btrq %1,%0" : "+m"(word) : "Ir"(bit) : "memory");
+        if (word != 0) return 19;
+        __asm__ volatile ("lock btcq %1,%0" : "+m"(word) : "Ir"(bit) : "memory");
+        if (word != (1UL << 5)) return 20;
+    }
+
+    /* lock cmpxchg mem,reg — atomic_cmpxchg/try_cmpxchg and friends. */
+    {
+        int64_t val = 10, old = 10, newv = 20, result;
+        __asm__ volatile ("lock cmpxchgq %2,%1"
+                           : "=a"(result), "+m"(val)
+                           : "r"(newv), "0"(old)
+                           : "memory");
+        if (val != 20 || result != 10) return 21;
+    }
+
     return 0;
 }
 #else
