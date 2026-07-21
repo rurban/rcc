@@ -1735,6 +1735,107 @@ bool eval_const_expr(Node *node, long long *val) {
             }
             return false;
         }
+    case ND_FUNCALL: {
+        // Fold constant-argument calls to bit-counting builtins. Kernel
+        // (and other) code computes compile-time bit widths via
+        // __builtin_constant_p(n) ? ... clz/ctz/popcount(n) ... : runtime_fn(n)
+        // (see linux/log2.h bits_per()/ilog2()); once __builtin_constant_p
+        // has already folded the condition to a literal 1, this branch must
+        // itself fold to a constant for the enclosing static_assert to hold.
+        if (!node->funcname || !node->args || node->args->next)
+            return false;
+        long long arg;
+        if (!eval_const_expr(node->args, &arg))
+            return false;
+        char *fn = node->funcname;
+        unsigned uv32 = (unsigned)arg;
+        unsigned long long uv64 = (unsigned long long)arg;
+        if (!strcmp(fn, "__builtin_clz")) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 0x80000000u)) {
+                uv32 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_clzl") || !strcmp(fn, "__builtin_clzll")) {
+            if (uv64 == 0) return false;
+            int n = 0;
+            while (!(uv64 & (1ULL << 63))) {
+                uv64 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_ctz")) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_ctzl") || !strcmp(fn, "__builtin_ctzll")) {
+            if (uv64 == 0) return false;
+            int n = 0;
+            while (!(uv64 & 1)) {
+                uv64 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_popcount")) {
+            int n = 0;
+            while (uv32) {
+                n += (int)(uv32 & 1);
+                uv32 >>= 1;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_popcountl") || !strcmp(fn, "__builtin_popcountll")) {
+            int n = 0;
+            while (uv64) {
+                n += (int)(uv64 & 1);
+                uv64 >>= 1;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_ffs")) {
+            if (uv32 == 0) {
+                *val = 0;
+                return true;
+            }
+            int n = 1;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_ffsl") || !strcmp(fn, "__builtin_ffsll")) {
+            if (uv64 == 0) {
+                *val = 0;
+                return true;
+            }
+            int n = 1;
+            while (!(uv64 & 1)) {
+                uv64 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        return false;
+    }
     default:
         return false;
     }
