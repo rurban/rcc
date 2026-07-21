@@ -1768,6 +1768,16 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
+        if (!strcmp(fn, "__builtin_clzl") && ty_long->size == 4) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 0x80000000u)) {
+                uv32 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
         if (!strcmp(fn, "__builtin_clzl") || !strcmp(fn, "__builtin_clzll")) {
             if (uv64 == 0) return false;
             int n = 0;
@@ -1779,6 +1789,16 @@ bool eval_const_expr(Node *node, long long *val) {
             return true;
         }
         if (!strcmp(fn, "__builtin_ctz")) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (!strcmp(fn, "__builtin_ctzl") && ty_long->size == 4) {
             if (uv32 == 0) return false;
             int n = 0;
             while (!(uv32 & 1)) {

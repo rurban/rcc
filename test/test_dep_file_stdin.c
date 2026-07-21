@@ -15,14 +15,30 @@
 int main(void)
 {
     const char *rcc = find_rcc();
-    char cmd[512], obj[64], dep[64];
-    snprintf(obj, sizeof(obj), "/tmp/test_dep_stdin_%d.o", (int)getpid());
-    snprintf(dep, sizeof(dep), "/tmp/test_dep_stdin_%d.d", (int)getpid());
+    const char *td = get_tmpdir();
+    char src[600], obj[600], dep[600], cmd[2048];
+    int pid = (int)getpid();
 
+    snprintf(src, sizeof(src), "%s/test_dep_stdin_%d.c", td, pid);
+    snprintf(obj, sizeof(obj), "%s/test_dep_stdin_%d.o", td, pid);
+    snprintf(dep, sizeof(dep), "%s/test_dep_stdin_%d.d", td, pid);
+
+    FILE *sf = fopen(src, "w");
+    if (!sf) {
+        printf("FAIL: cannot write %s\n", src);
+        return 1;
+    }
+    fputs("int main(void){return 0;}\n", sf);
+    fclose(sf);
+
+    /* Feed the source via stdin redirection ("<") rather than a shell
+     * pipe — works identically under cmd.exe and a POSIX shell, unlike
+     * `echo ... | ...` whose quoting rules differ across the two. */
     snprintf(cmd, sizeof(cmd),
-             "echo 'int main(void){return 0;}' | %s -Wp,-MMD,%s -x c -c -o %s -",
-             rcc, dep, obj);
+             "%s -Wp,-MMD,%s -x c -c -o %s - < %s",
+             rcc, dep, obj, src);
     int rc = system(cmd);
+    remove(src);
     remove(obj);
     if (rc != 0) {
         printf("FAIL: compile from stdin with -Wp,-MMD failed (rc=%d)\n", rc);
@@ -45,9 +61,9 @@ int main(void)
     int bad = 0;
     char *p = content;
     while (*p) {
-        while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
         char *start = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
         if (p - start == 1 && start[0] == '-') bad = 1;
     }
 
