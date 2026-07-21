@@ -410,6 +410,14 @@ static Type *type_unqual(Type *ty) {
 }
 
 static Type *apply_type_align(Type *ty, int align) {
+    // NB: this only raises the alignment *requirement* for this particular
+    // declaration (e.g. `_Alignas(16) unsigned short in[N];`), and must
+    // NOT pad ty->size — a scalar/array element's sizeof is fixed by the
+    // ABI regardless of an over-alignment request on one declared object.
+    // A struct/union whose *own* trailing attribute widens its alignment
+    // (`struct S { ... } __attribute__((aligned(N)));`, changing the type
+    // itself, not just one declaration of it) pads its size separately in
+    // struct_or_union_specifier, where that distinction is still visible.
     if (align <= 0 || align <= ty->align)
         return ty;
     Type *ret = copy_type(ty);
@@ -2848,16 +2856,28 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             error_tok(tok, "expected member type");
         if (equalc(tok, ";")) {
             // C11 6.7.2.1p13: an untagged struct/union specifier forms an
-            // anonymous member. GNU extension: a *tagged* struct/union with
-            // no declarator (referring to a previously completed type) is
-            // also accepted as an unnamed field whose members get promoted
-            // into the enclosing struct — e.g. the kernel's
-            // `struct filename { struct __filename_head; ... };`. A typedef
-            // name or non-aggregate type still declares nothing.
-            bool untagged_inline = (equalc(mdecl_start, "struct") || equalc(mdecl_start, "union")) &&
-                equalc(mdecl_start->next, "{");
-            bool tagged_aggregate = !untagged_inline && (base->kind == TY_STRUCT || base->kind == TY_UNION) &&
-                (base->members || base->size > 0);
+            // anonymous member. GNU extension (rejected under -pedantic,
+            // same as GCC): a bare reference to a *previously completed*
+            // tagged struct/union, with no declarator and no fresh body of
+            // its own, is also accepted as an unnamed field whose members
+            // get promoted into the enclosing struct — e.g. the kernel's
+            // `struct filename { struct __filename_head; ... };`. A fresh
+            // `struct TAG { ... };` body, a typedef name, or a
+            // non-aggregate type still declares nothing.
+            // Qualifiers (const/volatile/...) may precede or follow the
+            // struct/union keyword (`const struct { ... };`), so locate it
+            // by scanning rather than assuming it's the first token.
+            Token *su_tok = NULL;
+            for (Token *t = mdecl_start; t && t != tok; t = t->next)
+                if (equalc(t, "struct") || equalc(t, "union")) {
+                    su_tok = t;
+                    break;
+                }
+            bool untagged_inline = su_tok && equalc(su_tok->next, "{");
+            bool tag_has_fresh_body = su_tok && su_tok->next && su_tok->next->kind == TK_IDENT &&
+                equalc(su_tok->next->next, "{");
+            bool tagged_aggregate = !opt_pedantic && su_tok && !untagged_inline && !tag_has_fresh_body &&
+                (base->kind == TY_STRUCT || base->kind == TY_UNION) && (base->members || base->size > 0);
             if (!untagged_inline && !tagged_aggregate)
                 error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
@@ -3209,6 +3229,19 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         final_align = struct_pack;
     if (struct_attr_align > final_align)
         final_align = struct_attr_align;
+    // A trailing __attribute__((aligned(N))) on the struct/union's own
+    // specifier (`struct S { ... } __attribute__((aligned(N)));`, no
+    // declarator) widens the *type itself* — every array of this type
+    // must keep each element aligned, so unlike a declaration-level
+    // alignas on one object (see apply_type_align), the type's own size
+    // must pad up to N too. Peek here, before this specifier's tokens are
+    // handed back to declspec's generic (non-size-padding) attribute loop.
+    int trailing_align = 0;
+    VarAttr trailing_attr = {0};
+    Token *after_trailing_attrs = read_type_attrs(tok, &trailing_align, &trailing_attr);
+    if (trailing_align > final_align)
+        final_align = trailing_align;
+    tok = after_trailing_attrs;
     ty->align = final_align;
     if (vla_off_acc) {
         // VLA-containing struct: the real runtime size lives in vla_len_expr
