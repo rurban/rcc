@@ -158,6 +158,13 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
     // Resolve any pending fixups for this label
     for (int i = 0; i < as->nfixups; i++) {
         struct Fixup *fx = &as->fixups[i];
+        // FIXUP_LABELDIFF (GAS "A - B" label-difference, e.g. ALTERNATIVE()'s
+        // alt_rlen) is resolved once at the end of assemble_inline once BOTH
+        // labels are known, not here — its `label`/`label2` are ordinary
+        // labels that may legitimately live in a different section than
+        // whichever one happens to be defined first, which isn't the
+        // "cross-section jump target" case below at all.
+        if (fx->kind == FIXUP_LABELDIFF) continue;
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->section != sec) {
             // Cross-section jump/call target — e.g. a `jmp`/`jcc` inside
@@ -311,6 +318,34 @@ static char *trim_end(char *p) {
         p[--len] = '\0';
     }
     return p;
+}
+
+// Match GAS's label-difference idiom "A - B" where both sides are bare
+// label references (no other operators) — e.g. the kernel's ALTERNATIVE()
+// macro computing an instruction-block length as "772b-771b" or
+// "775f-774f" for a .byte/.long/.quad field. On success, NUL-terminates
+// and returns the two operand substrings in place within `val`; on
+// failure (anything fancier — parens, multiple operators, a trailing
+// "- ." PC-relative reference, ...) leaves `val` untouched and returns
+// false so the caller falls through to its existing handling.
+static bool try_parse_label_diff(char *val, char **lbl_a, char **lbl_b) {
+    char *dash = strchr(val, '-');
+    if (!dash) return false;
+    char *a = skip_ws(val);
+    char *aend = dash;
+    while (aend > a && isspace((unsigned char)aend[-1])) aend--;
+    if (aend == a) return false;
+    *aend = '\0';
+    char *b = skip_ws(dash + 1);
+    trim_end(b);
+    if (!*a || !*b) return false;
+    for (char *p = a; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '_' && *p != '.') return false;
+    for (char *p = b; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '_' && *p != '.') return false;
+    *lbl_a = a;
+    *lbl_b = b;
+    return true;
 }
 
 // Parse a comma-separated operand list. Returns count, fills ops[].
@@ -830,6 +865,51 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 }
                 val = strtok(NULL, ",");
                 continue;
+            }
+
+            // "LABEL2 - LABEL1" — GAS's label-difference idiom (the
+            // kernel's ALTERNATIVE() macro: alt_slen/alt_total_slen/
+            // alt_rlen compute an instruction-block's length this way,
+            // e.g. "772b-771b"). Unlike "SYM - .", both operands are
+            // ordinary labels — if both are already defined (backward
+            // references, the common case since these length macros are
+            // used right after the labelled instructions they measure)
+            // the difference is a plain compile-time constant; if either
+            // is still a forward reference, defer via a fixup resolved
+            // once assemble_inline finishes (both labels are always
+            // defined by the end of the same asm block for this idiom).
+            {
+                char *lbl_a, *lbl_b;
+                char valcopy[256];
+                strncpy(valcopy, val, sizeof(valcopy) - 1);
+                valcopy[sizeof(valcopy) - 1] = '\0';
+                if (try_parse_label_diff(valcopy, &lbl_a, &lbl_b)) {
+                    strip_local_label_suffix(lbl_a);
+                    strip_local_label_suffix(lbl_b);
+                    int sec_a = 0, sec_b = 0;
+                    int64_t off_a = lookup_local(as, lbl_a, &sec_a);
+                    int64_t off_b = lookup_local(as, lbl_b, &sec_b);
+                    if (off_a >= 0 && off_b >= 0) {
+                        int64_t diff = off_a - off_b; // "A - B" = offset(A) - offset(B)
+                        switch (sz) {
+                        case 1: secbuf_emit8(buf, (uint8_t)diff); break;
+                        case 2: secbuf_emit16le(buf, (uint16_t)diff); break;
+                        case 4: secbuf_emit32le(buf, (uint32_t)diff); break;
+                        case 8: secbuf_emit64le(buf, (uint64_t)diff); break;
+                        }
+                    } else {
+                        size_t off = 0;
+                        switch (sz) {
+                        case 1: off = secbuf_emit8(buf, 0); break;
+                        case 2: off = secbuf_emit16le(buf, 0); break;
+                        case 4: off = secbuf_emit32le(buf, 0); break;
+                        case 8: off = secbuf_emit64le(buf, 0); break;
+                        }
+                        add_labeldiff_fixup(as, off, as->cur_sec, lbl_a, lbl_b, sz);
+                    }
+                    val = strtok(NULL, ",");
+                    continue;
+                }
             }
 
             // Check if it's a symbol reference (for relocation)
@@ -3627,6 +3707,20 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
     // Resolve forward fixups against existing symbols
     for (int i = 0; i < as.nfixups; i++) {
         struct Fixup *fx = &as.fixups[i];
+        if (fx->kind == FIXUP_LABELDIFF) {
+            int sec_a = 0, sec_b = 0;
+            int64_t off_a = lookup_local(&as, fx->label, &sec_a);
+            int64_t off_b = lookup_local(&as, fx->label2, &sec_b);
+            if (off_a >= 0 && off_b >= 0) {
+                int64_t diff = off_a - off_b; // "A - B" = offset(A) - offset(B)
+                SecBuf *sb = objfile_section_buf(obj, fx->section);
+                if (sb) {
+                    uint64_t v = (uint64_t)diff;
+                    memcpy(sb->data + fx->patch_off, &v, (size_t)fx->size);
+                }
+            }
+            continue;
+        }
         int sec;
         int64_t tgt = lookup_local(&as, fx->label, &sec);
         if (tgt < 0) {
