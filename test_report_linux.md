@@ -2,13 +2,13 @@
 
 **Platform**: Linux x86_64
 
-Generated: July 21 2026 17:58
+Generated: July 21 2026 20:30
 
 ## Overall Summary
 
-- **Total**: 4383
-- **Passed**: 4006
-- **Failed**: 4
+- **Total**: 4391
+- **Passed**: 4013
+- **Failed**: 5
 - **Skipped**: 373
 - **Overall Pass Rate**: 100%
 
@@ -21,10 +21,10 @@ Generated: July 21 2026 17:58
 
 ## RCC Unit Tests
 
-- **Total**: 67
-- **Passed**: 67
-- **Failed**: 0
-- **Pass Rate**: 100%
+- **Total**: 75
+- **Passed**: 74
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## c-testsuite
 

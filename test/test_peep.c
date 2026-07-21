@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_common.h"
 
 int verbose;
 
@@ -186,36 +187,6 @@ static const char peep5_asm_src[] =
     "}\n";
 #endif
 
-/* ── portable temp directory ─────────────────────────────────────── */
-static const char *get_tmpdir(void) {
-#ifdef _WIN32
-    const char *tmp = getenv("TEMP");
-    if (!tmp || !*tmp) tmp = getenv("TMP");
-    if (!tmp || !*tmp) tmp = ".";
-    return tmp;
-#else
-    return "/tmp";
-#endif
-}
-
-static int under_aarch64_qemu(void) {
-    return access("/proc/sys/fs/binfmt_misc/qemu-aarch64", F_OK) == 0;
-}
-
-static const char *find_rcc(void) {
-    const char *env = getenv("RCC");
-    if (env && access(env, X_OK) == 0)
-        return env;
-#ifdef _WIN32
-    return "rcc.exe";
-#elif defined(__aarch64__)
-    if (under_aarch64_qemu() && access("./rcc-arm64", X_OK) == 0)
-        return "./rcc-arm64";
-    return "./rcc";
-#else
-    return "./rcc";
-#endif
-}
 
 static int count_lines(const char *path) {
     FILE *f = fopen(path, "r");

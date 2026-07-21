@@ -17,4 +17,30 @@ int main(void)
     // const int _13 = 13;
     // Compile time error - not an integer constant expression:
     // static_assert(_13 == 13);
+
+    // Bit-counting builtins must constant-fold with a compile-time-constant
+    // argument, same as GCC — the kernel's bits_per()/ilog2() (linux/log2.h)
+    // guard their non-constant fallback behind __builtin_constant_p(n) and
+    // still need clz/ctz/popcount/ffs itself to fold once that branch is
+    // selected, or the surrounding static_assert is rejected as non-constant.
+    static_assert(__builtin_clz(1u) == 31, "clz(1)");
+    static_assert(__builtin_clz(0x80000000u) == 0, "clz(0x80000000)");
+    static_assert(__builtin_clzl(1ul) == (sizeof(long) * 8 - 1), "clzl(1)");
+    static_assert(__builtin_clzll(1ull) == 63, "clzll(1)");
+
+    static_assert(__builtin_ctz(0x80000000u) == 31, "ctz(0x80000000)");
+    static_assert(__builtin_ctz(1u) == 0, "ctz(1)");
+    static_assert(__builtin_ctzl(2ul) == 1, "ctzl(2)");
+    static_assert(__builtin_ctzll(1ull << 40) == 40, "ctzll(1<<40)");
+
+    static_assert(__builtin_popcount(0xFFu) == 8, "popcount(0xFF)");
+    static_assert(__builtin_popcount(0u) == 0, "popcount(0)");
+    static_assert(__builtin_popcountl(0xFul) == 4, "popcountl(0xF)");
+    static_assert(__builtin_popcountll(~0ull) == 64, "popcountll(~0)");
+
+    static_assert(__builtin_ffs(0) == 0, "ffs(0)");
+    static_assert(__builtin_ffs(1) == 1, "ffs(1)");
+    static_assert(__builtin_ffs(8) == 4, "ffs(8)");
+    static_assert(__builtin_ffsl(16l) == 5, "ffsl(16)");
+    static_assert(__builtin_ffsll(1ll << 40) == 41, "ffsll(1<<40)");
 }

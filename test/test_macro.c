@@ -12,6 +12,15 @@ struct Obj { struct Path *paths; };
 #define segx paths[r1].segs
 #define control_points segx[r2].control_points
 
+// A named GNU variadic parameter (args...) or __VA_ARGS__ reached through
+// a ## paste, called with zero trailing arguments, must vanish entirely
+// (not leak the literal parameter name into the output) — the kernel's
+// __try_acquires##__VA_ARGS__##_ctx_lock(1, x) style relied on this.
+#define GLUE_NAMED(x, args...) prefix_##args##_suffix
+#define GLUE_VA(x, ...) prefix_##__VA_ARGS__##_suffix
+
+int prefix__suffix(void) { return 11; }
+
 int main() {
     if (A != 42) return 1;
 
@@ -22,6 +31,9 @@ int main() {
     struct Obj *_obj = &obj;
     int r1 = 0, r2 = 0;
     if (_obj->control_points->val != 7) return 2;
+
+    if (GLUE_NAMED(1,)() != 11) return 3;
+    if (GLUE_VA(1,)() != 11) return 4;
 
     return 0;
 }

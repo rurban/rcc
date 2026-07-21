@@ -114,6 +114,59 @@ int main(void)
         if (result != 8) return 7;
     }
 
+    /* GAS numeric local labels ("1b"/"1f") as actual jump targets, not
+     * just data references — a retry-loop pattern used constantly in
+     * kernel inline asm (x86 jmp/jcc/call/lea operand resolution must
+     * strip the b/f direction suffix before looking up the label). */
+    {
+        long n = 5;
+        __asm__ volatile (
+            "1:\n\t"
+            "decl %k0\n\t"
+            "jnz 1b\n\t"
+            : "=r"(n)
+            : "0"(n)
+        );
+        if (n != 0) return 8;
+    }
+    {
+        int result = 1;
+        __asm__ volatile (
+            "jmp 1f\n\t"
+            "movl $0, %0\n\t"
+            "1:\n\t"
+            : "=r"(result)
+            : "0"(result)
+        );
+        if (result != 1) return 9;
+    }
+
+    /* "i"/"n" immediate operand constraints must emit the numeric value
+     * ($42) rather than falling back to a register name. */
+    {
+        int result;
+        __asm__ volatile ("movl %1, %0" : "=r"(result) : "i"(42));
+        if (result != 42) return 10;
+    }
+
+    /* A numeric-local-label retry loop referencing TWO memory operands
+     * (the common kernel shape: bump a counter, decrement the loop
+     * variable, loop while nonzero) — the decrement must be the last
+     * flag-setting instruction before the jnz, since x86 conditional
+     * jumps test the flags left by whichever instruction executed last,
+     * not by whichever operand "looks" like the loop variable. */
+    {
+        static int loop_n = 5, loop_count = 0;
+        __asm__ volatile (
+            "1:\n\t"
+            "incl %1\n\t"
+            "decl %0\n\t"
+            "jnz 1b\n\t"
+            : "+m"(loop_n), "+m"(loop_count)
+        );
+        if (loop_n != 0 || loop_count != 5) return 11;
+    }
+
     printf("OK asm x86 operand modifiers/named operands/semicolon stmts\n");
     return 0;
 }
