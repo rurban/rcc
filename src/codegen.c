@@ -9334,6 +9334,52 @@ static VReg gen(Node *node) {
                 if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
                 for (const char *s = p; s < end && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
                 p = end + 1;
+            } else if (*p == '[') {
+                // %[name] / %mod[name] -> named operand reference (GCC
+                // extended-asm symbolic names, e.g. `[errout] "+r" (err)`
+                // declared in the constraint list) — used pervasively in
+                // modern kernel templates instead of positional %0/%1 so
+                // adding/reordering operands doesn't require renumbering
+                // every reference. parse_asm_stmt already records each
+                // operand's bracketed name in AsmOperand.name; look it up
+                // here the same way a plain %N looks up by position.
+                p++;
+                const char *end = strchr(p, ']');
+                if (!end) {
+                    out[olen++] = '%';
+                    if (mod) out[olen++] = mod;
+                    out[olen++] = '[';
+                    continue;
+                }
+                char namebuf[64];
+                size_t nlen = (size_t)(end - p);
+                if (nlen >= sizeof(namebuf)) nlen = sizeof(namebuf) - 1;
+                memcpy(namebuf, p, nlen);
+                namebuf[nlen] = '\0';
+                p = end + 1;
+                int found = -1;
+                for (int oi = 0; oi < node->asm_noperands; oi++)
+                    if (node->asm_ops[oi].name[0] && !strcmp(node->asm_ops[oi].name, namebuf)) {
+                        found = oi;
+                        break;
+                    }
+                if (found >= 0) {
+                    const char *s = node->asm_ops[found].asm_str;
+#ifndef ARCH_ARM64
+                    if (mod && mod != 'l') {
+                        int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
+                            : mod == 'w'                             ? 2
+                            : mod == 'h'                             ? 4
+                                                                     : 3;
+                        const char *resized = x86_reg_resize(s, size_class);
+                        if (resized) s = resized;
+                    }
+#endif
+                    while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
+                }
+                // else: unresolved name — drop it, matching the existing
+                // %N-out-of-range behavior below rather than corrupting
+                // the rest of the template.
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
                 p++;
