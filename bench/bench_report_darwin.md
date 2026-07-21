@@ -4,40 +4,40 @@ _Generated: July 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           63 |          768 |        831 |
-| RCC -O1   |          192 |          728 |        920 |
-| RCC -O2   |           98 |          738 |        836 |
-| TCC       |           70 |          689 |        759 |
-| GCC -O0   |          163 |          536 |        699 |
-| GCC -O2   |          136 |          324 |        460 |
-| Clang -O0 |           96 |          527 |        623 |
-| Clang -O2 |          111 |          300 |        411 |
+| RCC       |           59 |          678 |        737 |
+| RCC -O1   |           56 |          625 |        681 |
+| RCC -O2   |           56 |          637 |        693 |
+| TCC       |           43 |          587 |        630 |
+| GCC -O0   |           89 |          485 |        574 |
+| GCC -O2   |          134 |          294 |        428 |
+| Clang -O0 |           62 |          492 |        554 |
+| Clang -O2 |           89 |          292 |        381 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c:   2435 us
-  parse       bench.c:    287 us
-  typecheck   bench.c:     10 us
-  codegen     bench.c:    272 us
-  link        bench_rcc:  90120 us
+  preprocess  bench.c:    642 us
+  parse       bench.c:    133 us
+  typecheck   bench.c:      4 us
+  codegen     bench.c:    120 us
+  link        bench_rcc:  48073 us
 
 RCC -O1:
-  preprocess  bench.c:    715 us
-  parse       bench.c:    134 us
-  typecheck   bench.c:      5 us
-  opt         bench.c:     19 us
-  codegen     bench.c:    133 us
-  link        bench_rcc_o1:  69372 us
+  preprocess  bench.c:    547 us
+  parse       bench.c:    118 us
+  typecheck   bench.c:      4 us
+  opt         bench.c:     14 us
+  codegen     bench.c:    110 us
+  link        bench_rcc_o1:  46654 us
 
 RCC -O2:
-  preprocess  bench.c:    594 us
-  parse       bench.c:    109 us
-  typecheck   bench.c:      5 us
-  opt         bench.c:     18 us
-  codegen     bench.c:    105 us
-  link        bench_rcc_o2:  60581 us
+  preprocess  bench.c:    559 us
+  parse       bench.c:    122 us
+  typecheck   bench.c:      4 us
+  opt         bench.c:     15 us
+  codegen     bench.c:    113 us
+  link        bench_rcc_o2:  46502 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
@@ -57,8 +57,8 @@ RCC -O2:
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| TCC       |       105 ms |
-| GCC -O0   |      1384 ms |
-| GCC -O2   |     16624 ms |
-| Clang -O0 |      2032 ms |
-| Clang -O2 |     19618 ms |
+| TCC       |       103 ms |
+| GCC -O0   |      1063 ms |
+| GCC -O2   |     10952 ms |
+| Clang -O0 |      1110 ms |
+| Clang -O2 |     10714 ms |

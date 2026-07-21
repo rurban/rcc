@@ -2,12 +2,12 @@
 
 **Platform**: macOS ARM64 (native)
 
-Generated: July 21 2026 18:00
+Generated: July 21 2026 18:43
 
 ## Overall Summary
 
-- **Total**: 4385
-- **Passed**: 4001
+- **Total**: 4393
+- **Passed**: 4009
 - **Failed**: 4
 - **Skipped**: 378
 - **Overall Pass Rate**: 100%
@@ -21,8 +21,8 @@ Generated: July 21 2026 18:00
 
 ## RCC Unit Tests
 
-- **Total**: 67
-- **Passed**: 65
+- **Total**: 75
+- **Passed**: 73
 - **Failed**: 0
 - **Pass Rate**: 97%
 

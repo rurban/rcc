@@ -951,6 +951,14 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     int nops = split_operands(ops_buf, ops, 6);
     SecBuf *buf = &as->obj->text;
 
+    // GAS numeric local labels ("1:") are referenced as "1b"/"1f" — see the
+    // matching comment in encode_x86(). emit_arm64_branch() below (used by
+    // b/bl/b.cond/cbz/cbnz and friends) looks up its target directly against
+    // defined label names, so the direction suffix must be stripped here too,
+    // once, before any branch target is resolved.
+    for (int _i = 0; _i < nops; _i++)
+        strip_local_label_suffix(ops[_i]);
+
 // Strip mnemonic suffix for condition codes in B.cond
 // mnem is like "b.eq", "b.ne", etc. Already split at first '.'
 
