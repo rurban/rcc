@@ -1088,7 +1088,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         int is_hashhash = b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#';
         if (is_hashhash && b->next && b->next != end && b->next->kind != TK_EOF) {
             Token *n = b->next;
-            if (m->is_variadic && n && n != end && n->kind == TK_IDENT && n->name == kw_va_args &&
+            if (m->is_variadic && n && n != end && n->kind == TK_IDENT && param_or_va(m, n->name) == vs &&
                 va_empty && rtail && ptok(rtail, ",")) {
                 pop_tail(&rhead, &rtail);
                 b = n;
@@ -1097,10 +1097,13 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             Token *xhead = NULL, *xtail = NULL;
             if (n && n != end && n->kind != TK_EOF && n->kind == TK_IDENT) {
                 int idx = param_or_va(m, n->name);
-                if (idx >= 0 && idx < argc) {
-                    if (m->is_variadic && idx == vs) splice_va(&xhead, &xtail, m, raw_args, argc, n);
-                    else
-                        splice_tokens(&xhead, &xtail, raw_args[idx]);
+                if (m->is_variadic && idx == vs) {
+                    // Variadic slot: splice_va handles argc <= vs (no
+                    // trailing args supplied at all) by producing nothing,
+                    // same as an explicitly empty variadic argument.
+                    splice_va(&xhead, &xtail, m, raw_args, argc, n);
+                } else if (idx >= 0 && idx < argc) {
+                    splice_tokens(&xhead, &xtail, raw_args[idx]);
                 } else
                     append_one(&xhead, &xtail, n);
                 b = n;
@@ -1178,11 +1181,15 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 continue;
             }
             int idx = find_param_index(m, bn);
+            if (m->is_variadic && idx == vs) {
+                // Named GNU variadic param (`args...`) with no trailing
+                // arguments supplied: splice_va yields nothing, same as
+                // literal __VA_ARGS__ above.
+                splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << idx)) ? raw_args : args, argc, b);
+                continue;
+            }
             if (idx >= 0 && idx < argc) {
-                if (m->is_variadic && idx == vs)
-                    splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << idx)) ? raw_args : args, argc, b);
-                else
-                    splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
+                splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
                 continue;
             }
             append_one(&rhead, &rtail, b);
