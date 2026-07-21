@@ -2746,11 +2746,18 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         if (!base)
             error_tok(tok, "expected member type");
         if (equalc(tok, ";")) {
-            // C11 6.7.2.1p13: only an untagged struct/union specifier forms
-            // an anonymous member; a tagged one (or a typedef name, or a
-            // non-aggregate type) declares nothing.
-            if (!((equalc(mdecl_start, "struct") || equalc(mdecl_start, "union")) &&
-                  equalc(mdecl_start->next, "{")))
+            // C11 6.7.2.1p13: an untagged struct/union specifier forms an
+            // anonymous member. GNU extension: a *tagged* struct/union with
+            // no declarator (referring to a previously completed type) is
+            // also accepted as an unnamed field whose members get promoted
+            // into the enclosing struct — e.g. the kernel's
+            // `struct filename { struct __filename_head; ... };`. A typedef
+            // name or non-aggregate type still declares nothing.
+            bool untagged_inline = (equalc(mdecl_start, "struct") || equalc(mdecl_start, "union")) &&
+                equalc(mdecl_start->next, "{");
+            bool tagged_aggregate = !untagged_inline && (base->kind == TY_STRUCT || base->kind == TY_UNION) &&
+                (base->members || base->size > 0);
+            if (!untagged_inline && !tagged_aggregate)
                 error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {
@@ -6857,6 +6864,74 @@ static Node *vector_lower(Node *node) {
     return chain;
 }
 
+// Assign a brace-enclosed initializer into the struct/union member `mem` of
+// lvalue `base` (i.e. `base.mem = { ... }`), appending ND_ASSIGN nodes onto
+// `result`. Recurses when a sub-member is itself a struct/union with its own
+// brace-enclosed value, so arbitrarily deep wrapper structs — very common in
+// the kernel (atomic_t -> arch_spinlock_t -> raw_spinlock_t -> spinlock_t,
+// e.g. `{ { .val = { 0 } } }`) — parse instead of only one level deep.
+static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
+                                       Token **rest, Token *tok, Token *start) {
+    tok = skip(tok, "{");
+    Node *member_access = new_node(ND_MEMBER, start);
+    member_access->lhs = base;
+    member_access->member = mem;
+    member_access->ty = mem->ty;
+    Member *sub = mem->ty->members;
+    while (!equalc(tok, "}")) {
+        Member *target = NULL;
+        if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+            char *name = tok->next->name;
+            Member *m = find_member_by_name(mem->ty, name);
+            if (m) {
+                tok = tok->next->next;
+                tok = skip(tok, "=");
+                target = m;
+                sub = m->next;
+            } else {
+                tok = skip_initializer(tok);
+            }
+        } else if (sub) {
+            target = sub;
+            sub = sub->next;
+        } else {
+            tok = skip_initializer(tok);
+        }
+        if (target) {
+            if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
+                result = assign_nested_struct_init(result, member_access, target, &tok, tok, start);
+            } else {
+                // A lone extra brace layer around a non-aggregate value is a
+                // legal GNU/C11 redundant-brace idiom, e.g. `{ { 0 } }`.
+                bool extra_brace = equalc(tok, "{");
+                if (extra_brace) tok = tok->next;
+                Node *inner_access = new_node(ND_MEMBER, start);
+                inner_access->lhs = member_access;
+                inner_access->member = target;
+                inner_access->ty = target->ty;
+                Node *val = (extra_brace && equalc(tok, "}")) ? new_num(0, start) : assign(&tok, tok);
+                check_type(val);
+                if (extra_brace) {
+                    if (equalc(tok, ",")) tok = tok->next;
+                    tok = skip(tok, "}");
+                }
+                Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
+                asgn->ty = target->ty;
+                result = new_binary(ND_COMMA, result, asgn, start);
+            }
+        }
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (equalc(tok, "}")) break;
+            continue;
+        }
+        break;
+    }
+    tok = skip(tok, "}");
+    *rest = tok;
+    return result;
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -8245,13 +8320,11 @@ static Node *unary(Token **rest, Token *tok) {
                         Token *save = tok;
                         while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                             char *mname = tok->next->name;
-                            Member *m = NULL;
-                            for (Member *mm = cur_ty->members; mm; mm = mm->next) {
-                                if (mm->name == mname) {
-                                    m = mm;
-                                    break;
-                                }
-                            }
+                            // find_member_by_name recurses through anonymous
+                            // struct/union members (e.g. `.ubuf` reachable
+                            // only via an unnamed union), returning a
+                            // synthetic member with the combined offset.
+                            Member *m = find_member_by_name(cur_ty, mname);
                             if (!m) break;
                             found = m;
                             cur_ty = m->ty;
@@ -8343,58 +8416,10 @@ static Node *unary(Token **rest, Token *tok) {
                         if (arr_brace) tok = skip(tok, "}");
                     } else if ((mem->ty->kind == TY_STRUCT || mem->ty->kind == TY_UNION) && equalc(tok, "{")) {
                         // Struct/union member with brace-enclosed initializer
-                        tok = skip(tok, "{");
-                        Member *sub = mem->ty->members;
-                        while (!equalc(tok, "}")) {
-                            Node *var_node = new_var_node(var, start);
-                            Node *member_access = new_node(ND_MEMBER, start);
-                            member_access->lhs = var_node;
-                            member_access->member = mem;
-                            member_access->ty = mem->ty;
-                            // Designated initializer: .name = value
-                            if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-                                char *name = tok->next->name;
-                                tok = tok->next->next;
-                                tok = skip(tok, "=");
-                                Member *m = find_member_by_name(mem->ty, name);
-                                if (m) {
-                                    Node *inner_access = new_node(ND_MEMBER, start);
-                                    inner_access->lhs = member_access;
-                                    inner_access->member = m;
-                                    inner_access->ty = m->ty;
-                                    Node *val = assign(&tok, tok);
-                                    check_type(val);
-                                    Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
-                                    asgn->ty = m->ty;
-                                    result = new_binary(ND_COMMA, result, asgn, start);
-                                    result->ty = ty;
-                                } else {
-                                    tok = skip_initializer(tok);
-                                }
-                            } else if (sub) {
-                                Node *inner_access = new_node(ND_MEMBER, start);
-                                inner_access->lhs = member_access;
-                                inner_access->member = sub;
-                                inner_access->ty = sub->ty;
-                                Node *val = assign(&tok, tok);
-                                check_type(val);
-                                Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
-                                asgn->ty = sub->ty;
-                                result = new_binary(ND_COMMA, result, asgn, start);
-                                result->ty = ty;
-                                sub = sub->next;
-                            } else {
-                                tok = skip_initializer(tok);
-                            }
-                            if (equalc(tok, ",")) {
-                                tok = tok->next;
-                                if (equalc(tok, "}"))
-                                    break;
-                                continue;
-                            }
-                            break;
-                        }
-                        tok = skip(tok, "}");
+                        // (recurses for further nested struct/union members).
+                        Node *var_node = new_var_node(var, start);
+                        result = assign_nested_struct_init(result, var_node, mem, &tok, tok, start);
+                        result->ty = ty;
                     } else if (equalc(tok, "{")) {
                         // Extra braces around a scalar initializer (e.g. { { } } for int*)
                         tok = skip(tok, "{");
