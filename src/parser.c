@@ -1755,10 +1755,14 @@ bool eval_const_expr(Node *node, long long *val) {
         long long arg;
         if (!eval_const_expr(node->args, &arg))
             return false;
+        // node->funcname is tok->name for a plain identifier call, which the
+        // lexer already str_intern's — compare against the pre-interned
+        // bi_* pointers (init_builtin_names(), cg_builtins.c) instead of
+        // strcmp, same convention used everywhere else these are checked.
         char *fn = node->funcname;
         unsigned uv32 = (unsigned)arg;
         unsigned long long uv64 = (unsigned long long)arg;
-        if (!strcmp(fn, "__builtin_clz")) {
+        if (fn == bi_clz) {
             if (uv32 == 0) return false;
             int n = 0;
             while (!(uv32 & 0x80000000u)) {
@@ -1768,7 +1772,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_clzl") && ty_long->size == 4) {
+        if (fn == bi_clzl && ty_long->size == 4) {
             if (uv32 == 0) return false;
             int n = 0;
             while (!(uv32 & 0x80000000u)) {
@@ -1778,7 +1782,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_clzl") || !strcmp(fn, "__builtin_clzll")) {
+        if (fn == bi_clzl || fn == bi_clzll) {
             if (uv64 == 0) return false;
             int n = 0;
             while (!(uv64 & (1ULL << 63))) {
@@ -1788,7 +1792,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_ctz")) {
+        if (fn == bi_ctz) {
             if (uv32 == 0) return false;
             int n = 0;
             while (!(uv32 & 1)) {
@@ -1798,7 +1802,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_ctzl") && ty_long->size == 4) {
+        if (fn == bi_ctzl && ty_long->size == 4) {
             if (uv32 == 0) return false;
             int n = 0;
             while (!(uv32 & 1)) {
@@ -1808,7 +1812,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_ctzl") || !strcmp(fn, "__builtin_ctzll")) {
+        if (fn == bi_ctzl || fn == bi_ctzll) {
             if (uv64 == 0) return false;
             int n = 0;
             while (!(uv64 & 1)) {
@@ -1818,7 +1822,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_popcount")) {
+        if (fn == bi_popcount) {
             int n = 0;
             while (uv32) {
                 n += (int)(uv32 & 1);
@@ -1827,7 +1831,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_popcountl") || !strcmp(fn, "__builtin_popcountll")) {
+        if (fn == bi_popcountl || fn == bi_popcountll) {
             int n = 0;
             while (uv64) {
                 n += (int)(uv64 & 1);
@@ -1836,7 +1840,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_ffs")) {
+        if (fn == bi_ffs) {
             if (uv32 == 0) {
                 *val = 0;
                 return true;
@@ -1849,7 +1853,7 @@ bool eval_const_expr(Node *node, long long *val) {
             *val = n;
             return true;
         }
-        if (!strcmp(fn, "__builtin_ffsl") || !strcmp(fn, "__builtin_ffsll")) {
+        if (fn == bi_ffsl || fn == bi_ffsll) {
             if (uv64 == 0) {
                 *val = 0;
                 return true;
@@ -1860,6 +1864,28 @@ bool eval_const_expr(Node *node, long long *val) {
                 n++;
             }
             *val = n;
+            return true;
+        }
+        // __builtin_bswap16/32/64 must constant-fold too: the kernel's
+        // __swab16/32/64 (linux/swab.h) expand to these when
+        // __HAVE_BUILTIN_BSWAP*__ is set, and are used as case labels /
+        // in static_assert throughout networking headers (netdevice.h).
+        if (fn == bi_bswap16) {
+            *val = (uint16_t)(((uv32 & 0xff) << 8) | ((uv32 >> 8) & 0xff));
+            return true;
+        }
+        if (fn == bi_bswap32) {
+            uint32_t v = (uint32_t)uv32;
+            *val = (uint32_t)(((v & 0x000000ffu) << 24) | ((v & 0x0000ff00u) << 8) |
+                              ((v & 0x00ff0000u) >> 8) | ((v & 0xff000000u) >> 24));
+            return true;
+        }
+        if (fn == bi_bswap64) {
+            uint64_t v = uv64;
+            *val = (int64_t)(uint64_t)(((v & 0x00000000000000ffULL) << 56) | ((v & 0x000000000000ff00ULL) << 40) |
+                                       ((v & 0x0000000000ff0000ULL) << 24) | ((v & 0x00000000ff000000ULL) << 8) |
+                                       ((v & 0x000000ff00000000ULL) >> 8) | ((v & 0x0000ff0000000000ULL) >> 24) |
+                                       ((v & 0x00ff000000000000ULL) >> 40) | ((v & 0xff00000000000000ULL) >> 56));
             return true;
         }
         return false;
@@ -2901,7 +2927,12 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                 equalc(su_tok->next->next, "{");
             bool tagged_aggregate = !opt_pedantic && su_tok && !untagged_inline && !tag_has_fresh_body &&
                 (base->kind == TY_STRUCT || base->kind == TY_UNION) && (base->members || base->size > 0);
-            if (!untagged_inline && !tagged_aggregate && !tag_has_fresh_body)
+            // Like tagged_aggregate, GCC only accepts a tagged-with-fresh-body
+            // member as a GNU extension: rejected under -pedantic (torture's
+            // c11-anon-struct-2.c relies on this — struct s4's `struct s {
+            // int i; };` member must still error under -std=c11 -pedantic-errors).
+            bool tag_fresh_body_ok = !opt_pedantic && tag_has_fresh_body;
+            if (!untagged_inline && !tagged_aggregate && !tag_fresh_body_ok)
                 error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {

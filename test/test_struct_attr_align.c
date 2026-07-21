@@ -40,6 +40,26 @@ struct vm_fault_like {
     void *addr;
 };
 
+/* GNU extension: a *tagged* struct/union with its own fresh body and no
+ * declarator is ALSO an anonymous promoted member — the tag just makes
+ * it separately nameable elsewhere, e.g. the kernel's socket_lock_t:
+ *   union { struct slock_owned { int owned; long slock; }; long combined; };
+ * Distinct from the no-fresh-body case above: this one defines a brand
+ * new type (registered under its tag) rather than referencing one that
+ * already exists. */
+typedef struct {
+    union {
+        struct slock_owned {
+            int owned;
+            long slock;
+        };
+        long combined;
+    };
+    int wq;
+} socket_lock_t;
+
+struct slock_owned standalone_slock; /* the tag must be independently usable */
+
 int main(void)
 {
     struct filename_like f;
@@ -49,6 +69,15 @@ int main(void)
     struct vm_fault_like vf;
     vf.flags = 7; /* promoted member from const struct {...} */
     if (vf.flags != 7) return 2;
+
+    socket_lock_t sl;
+    sl.owned = 5; /* promoted member from tagged struct slock_owned {...} */
+    sl.slock = 9;
+    if (sl.owned != 5 || sl.slock != 9) return 3;
+    sl.combined = 42; /* sibling anonymous union member still reachable */
+
+    standalone_slock.owned = 1;
+    if (standalone_slock.owned != 1) return 4;
 
     return 0;
 }

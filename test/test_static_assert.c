@@ -43,4 +43,11 @@ int main(void)
     static_assert(__builtin_ffs(8) == 4, "ffs(8)");
     static_assert(__builtin_ffsl(16l) == 5, "ffsl(16)");
     static_assert(__builtin_ffsll(1ll << 40) == 41, "ffsll(1<<40)");
+
+    // __builtin_bswap16/32/64 must constant-fold too — the kernel's
+    // __swab16/32/64 (linux/swab.h) expand to these and are used as
+    // case labels / in static_assert throughout networking headers.
+    static_assert(__builtin_bswap16(0x1234) == 0x3412, "bswap16");
+    static_assert(__builtin_bswap32(0x12345678) == 0x78563412u, "bswap32");
+    static_assert(__builtin_bswap64(0x123456789abcdef0ULL) == 0xf0debc9a78563412ULL, "bswap64");
 }
