@@ -2836,6 +2836,33 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
     int struct_pack = pack_align; // capture #pragma pack value at struct start
     if (struct_attr.is_packed && struct_pack == 0) struct_pack = 1;
+    // A packed attribute can also trail the whole declaration —
+    // `struct S { members... } __attribute__((packed));` — rather than
+    // lead it (`struct __attribute__((packed)) S {...}`, already handled
+    // via struct_attr above). GCC packs the *entire* type this way,
+    // including every member's offset, but that decision has to be made
+    // before laying out a single member below, while the attribute
+    // itself is only visible after all of them. Cheaply look ahead past
+    // this body's matching closing brace (plain brace-depth counting,
+    // not real parsing) so struct_pack already reflects it once the
+    // member loop starts; the same tokens get parsed again for real once
+    // control actually reaches that closing brace.
+    if (struct_pack == 0) {
+        int depth = 1;
+        Token *scan = tok;
+        while (scan->kind != TK_EOF && depth > 0) {
+            if (equalc(scan, "{")) depth++;
+            else if (equalc(scan, "}"))
+                depth--;
+            if (depth > 0) scan = scan->next;
+        }
+        if (depth == 0) {
+            int la_align = 0;
+            VarAttr la_attr = {0};
+            read_type_attrs(scan->next, &la_align, &la_attr);
+            if (la_attr.is_packed) struct_pack = 1;
+        }
+    }
     bool use_ms_bitfields = false;
     if (!is_union) {
         if (ty->bitfield_mode == BF_MODE_MS)
