@@ -537,7 +537,19 @@ int main(int argc, char **argv) {
         // Wire pre-include files (-include <file>)
         for (int pi = 0; pi < nb_preinclude_files; pi++)
             add_preinclude(preinclude_files[pi]);
+        // Every other C preprocessor automatically predefines __ASSEMBLER__
+        // when processing a ".S"/".s" input (assembler-with-cpp mode) —
+        // headers rely on it to gate C-only content (struct/enum
+        // definitions, ...) away from what an assembler will ever see,
+        // separately from the kernel's own, Makefile-provided
+        // -D__ASSEMBLY__. Scoped to just this one file via
+        // remove_cmdline_define() below, not left set for any later input
+        // in a multi-file compile.
+        char *dot_ext = strrchr(cur_path, '.');
+        bool is_asm_input = dot_ext && (strcmp(dot_ext, ".S") == 0 || strcmp(dot_ext, ".s") == 0);
+        if (is_asm_input) add_define("__ASSEMBLER__=1");
         Token *tok = preprocess(cur_path, contents);
+        if (is_asm_input) remove_cmdline_define("__ASSEMBLER__");
         if (opt_time)
             fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
@@ -563,10 +575,8 @@ int main(int argc, char **argv) {
         // assembly text, not C: skip parse()/typecheck/codegen entirely
         // and hand it straight to the same assembler used for inline asm.
         {
-            char *dot = strrchr(cur_path, '.');
-            bool is_dot_cap_s = dot && strcmp(dot, ".S") == 0;
-            bool is_dot_s = dot && strcmp(dot, ".s") == 0;
-            if (is_dot_cap_s || is_dot_s) {
+            bool is_dot_cap_s = dot_ext && strcmp(dot_ext, ".S") == 0;
+            if (is_asm_input) {
                 if (opt_dryrun) continue;
                 char *asm_text = is_dot_cap_s ? pp_tokens_to_text(tok) : contents;
                 ObjFile obj;

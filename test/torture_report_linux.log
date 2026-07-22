@@ -1200,7 +1200,7 @@
   c23-utf8char-2                      SKIP (no-iconv)
   c23-utf8char-3                      PASS (expected error)
   c23-utf8str-type                    PASS (compile only)
-  c23-utf8str                         PASS (expected error)
+  c23-utf8str                         PASS (compile only)
   c23-version-1                       PASS (compile only)
   c23-version-2                       PASS (compile only)
   call-trap-1                         PASS

@@ -521,6 +521,25 @@ void add_undef(char *name) {
             return;
         }
 }
+
+// Remove a single #define previously added via add_define(), by name, from
+// the persistent cmdline_macros seed list itself (add_undef() only touches
+// the transient per-file `macros` table preprocess() rebuilds from that
+// seed at the start of each call, so it can't undo a cmdline_macros entry
+// for files processed *afterward*). Used to scope a synthetic compiler-
+// internal macro (__ASSEMBLER__, predefined only while processing one
+// particular .S/.s input, mirroring what every other C preprocessor does
+// automatically for assembly-with-cpp mode) to just that one file in a
+// multi-file compile, without touching any real -D the user passed.
+void remove_cmdline_define(const char *name) {
+    char *iname = str_intern(name, strlen(name));
+    Macro **prev = &cmdline_macros;
+    for (Macro *m = cmdline_macros; m; prev = &m->next, m = m->next)
+        if (m->name == iname) {
+            *prev = m->next;
+            return;
+        }
+}
 static bool is_once_file(char *path) {
     for (OnceFile *f = once_files; f; f = f->next)
         if (f->path == path) return true;
