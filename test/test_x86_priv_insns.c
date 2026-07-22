@@ -16,6 +16,17 @@
  * unsupporting CPU — so this verifies *encoding*, the same way
  * test_label_diff.c does, by objdumping the assembled bytes rather than
  * running them.
+ *
+ * The port-I/O family (outb/inb/outw/inw/outl/inl and their "rep ...s{b,w,l}"
+ * string forms) and vmcall/vmmcall were a second batch found the same way,
+ * via kernel/exit.c: arch/x86/include/asm/shared/io.h's outb()/inb() (used
+ * transitively through native_io_delay()'s port-0x80 delay) and the KVM
+ * hypercall path both silently dropped bytes the same way, and — because the
+ * missing instructions happened to sit inside an ALTERNATIVE()-patched
+ * region and a __ex_table fault-handler pair — corrupted the surrounding
+ * .altinstr_replacement/__ex_table byte offsets badly enough that objtool
+ * failed with "special: can't find new instruction" several steps removed
+ * from the actual missing mnemonics.
  */
 #if defined(__x86_64__) || defined(_M_X64)
 #include <ctype.h>
@@ -174,6 +185,23 @@ int main(void)
     ok &= check_section_bytes(rcc, td, pid, "desc_table_reg",
         ASM_MAIN("\"lldt %%ax\\n\\tltr %%ax\\n\\tstr %%ax\\n\\t\""),
         ".text", "0f00d00f00d80f00c8");
+
+    /* outb %al,%dx / inb %dx,%al / outb %al,$0x80 / inb $0x80,%al */
+    ok &= check_section_bytes(rcc, td, pid, "io_byte",
+        ASM_MAIN("\"outb %%al, %%dx\\n\\tinb %%dx, %%al\\n\\toutb %%al, $0x80\\n\\tinb $0x80, %%al\\n\\t\""),
+        ".text", "eeece680e480");
+    /* outw %ax,%dx / inw %dx,%ax / outl %eax,%dx / inl %dx,%eax */
+    ok &= check_section_bytes(rcc, td, pid, "io_word_long",
+        ASM_MAIN("\"outw %%ax, %%dx\\n\\tinw %%dx, %%ax\\n\\toutl %%eax, %%dx\\n\\tinl %%dx, %%eax\\n\\t\""),
+        ".text", "66ef66edefed");
+    /* insb/outsb/insw/outsw/insl/outsl (implicit %dx/(%rsi)/(%rdi) operands) */
+    ok &= check_section_bytes(rcc, td, pid, "io_string",
+        ASM_MAIN("\"insb\\n\\toutsb\\n\\tinsw\\n\\toutsw\\n\\tinsl\\n\\toutsl\\n\\t\""),
+        ".text", "6c6e666d666f6d6f");
+    /* vmcall: 0F 01 C1, vmmcall: 0F 01 D9 */
+    ok &= check_section_bytes(rcc, td, pid, "vm_calls",
+        ASM_MAIN("\"vmcall\\n\\tvmmcall\\n\\t\""),
+        ".text", "0f01c10f01d9");
 
     if (!ok) return 1;
     printf("OK x86 privileged/feature-gated instruction encoding\n");

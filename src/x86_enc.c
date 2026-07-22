@@ -848,6 +848,27 @@ void x86_sti(SecBuf *s) { emit1(s, 0xfb); }
 void x86_cli(SecBuf *s) { emit1(s, 0xfa); }
 void x86_hlt(SecBuf *s) { emit1(s, 0xf4); }
 
+void x86_outb_dx(SecBuf *s) { emit1(s, 0xee); }
+void x86_outw_dx(SecBuf *s) { emit2(s, 0x66, 0xef); }
+void x86_outl_dx(SecBuf *s) { emit1(s, 0xef); }
+void x86_outb_imm(SecBuf *s, uint8_t imm8) { emit2(s, 0xe6, imm8); }
+void x86_outw_imm(SecBuf *s, uint8_t imm8) { emit3(s, 0x66, 0xe7, imm8); }
+void x86_outl_imm(SecBuf *s, uint8_t imm8) { emit2(s, 0xe7, imm8); }
+void x86_inb_dx(SecBuf *s) { emit1(s, 0xec); }
+void x86_inw_dx(SecBuf *s) { emit2(s, 0x66, 0xed); }
+void x86_inl_dx(SecBuf *s) { emit1(s, 0xed); }
+void x86_inb_imm(SecBuf *s, uint8_t imm8) { emit2(s, 0xe4, imm8); }
+void x86_inw_imm(SecBuf *s, uint8_t imm8) { emit3(s, 0x66, 0xe5, imm8); }
+void x86_inl_imm(SecBuf *s, uint8_t imm8) { emit2(s, 0xe5, imm8); }
+void x86_insb(SecBuf *s) { emit1(s, 0x6c); }
+void x86_insw(SecBuf *s) { emit2(s, 0x66, 0x6d); }
+void x86_insl(SecBuf *s) { emit1(s, 0x6d); }
+void x86_outsb(SecBuf *s) { emit1(s, 0x6e); }
+void x86_outsw(SecBuf *s) { emit2(s, 0x66, 0x6f); }
+void x86_outsl(SecBuf *s) { emit1(s, 0x6f); }
+void x86_vmcall(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xc1); }
+void x86_vmmcall(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xd9); }
+
 // PREFETCHt0/NTA (0F 18 /1, /0) and PREFETCHW (0F 0D /1) — memory-only.
 static void prefetch_m(SecBuf *s, uint8_t op2, int digit, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);

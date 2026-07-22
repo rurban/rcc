@@ -3049,6 +3049,77 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_hlt(buf);
         return true;
     }
+    // Port I/O: "outb %al, %dx" or "outb %al, $imm8" (imm-port form)
+    if (!strcmp(mnem, "outb")) {
+        if (is_imm(1)) x86_outb_imm(buf, (uint8_t)IMM(1));
+        else
+            x86_outb_dx(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "outw")) {
+        if (is_imm(1)) x86_outw_imm(buf, (uint8_t)IMM(1));
+        else
+            x86_outw_dx(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "outl")) {
+        if (is_imm(1)) x86_outl_imm(buf, (uint8_t)IMM(1));
+        else
+            x86_outl_dx(buf);
+        return true;
+    }
+    // "inb %dx, %al" or "inb $imm8, %al"
+    if (!strcmp(mnem, "inb")) {
+        if (is_imm(0)) x86_inb_imm(buf, (uint8_t)IMM(0));
+        else
+            x86_inb_dx(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "inw")) {
+        if (is_imm(0)) x86_inw_imm(buf, (uint8_t)IMM(0));
+        else
+            x86_inw_dx(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "inl")) {
+        if (is_imm(0)) x86_inl_imm(buf, (uint8_t)IMM(0));
+        else
+            x86_inl_dx(buf);
+        return true;
+    }
+    // String port I/O: implicit %dx/(%rsi)/(%rdi) operands, none written out
+    if (!strcmp(mnem, "insb")) {
+        x86_insb(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "insw")) {
+        x86_insw(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "insl")) {
+        x86_insl(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "outsb")) {
+        x86_outsb(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "outsw")) {
+        x86_outsw(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "outsl")) {
+        x86_outsl(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "vmcall")) {
+        x86_vmcall(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "vmmcall")) {
+        x86_vmmcall(buf);
+        return true;
+    }
     if (!strcmp(mnem, "prefetcht0")) {
         x86_prefetcht0(buf, M(0));
         return true;

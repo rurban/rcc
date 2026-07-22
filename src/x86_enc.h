@@ -274,6 +274,29 @@ void x86_wbinvd(SecBuf *s);
 void x86_sti(SecBuf *s);
 void x86_cli(SecBuf *s);
 void x86_hlt(SecBuf *s);
+// Port I/O: "outb %al, %dx" / "outb %al, $imm8", "inb %dx, %al" / "inb $imm8, %al"
+void x86_outb_dx(SecBuf *s);
+void x86_outw_dx(SecBuf *s);
+void x86_outl_dx(SecBuf *s);
+void x86_outb_imm(SecBuf *s, uint8_t imm8);
+void x86_outw_imm(SecBuf *s, uint8_t imm8);
+void x86_outl_imm(SecBuf *s, uint8_t imm8);
+void x86_inb_dx(SecBuf *s);
+void x86_inw_dx(SecBuf *s);
+void x86_inl_dx(SecBuf *s);
+void x86_inb_imm(SecBuf *s, uint8_t imm8);
+void x86_inw_imm(SecBuf *s, uint8_t imm8);
+void x86_inl_imm(SecBuf *s, uint8_t imm8);
+// String port I/O: "insb"/"insw"/"insl", "outsb"/"outsw"/"outsl" (implicit
+// %dx port, (%rsi)/(%rdi) memory operand — no explicit operands in GAS)
+void x86_insb(SecBuf *s);
+void x86_insw(SecBuf *s);
+void x86_insl(SecBuf *s);
+void x86_outsb(SecBuf *s);
+void x86_outsw(SecBuf *s);
+void x86_outsl(SecBuf *s);
+void x86_vmcall(SecBuf *s);
+void x86_vmmcall(SecBuf *s);
 void x86_prefetcht0(SecBuf *s, X86Mem m);
 void x86_prefetchnta(SecBuf *s, X86Mem m);
 void x86_prefetchw(SecBuf *s, X86Mem m);
