@@ -12,8 +12,8 @@ int asm_fixup_count = 0;
 #include <stdarg.h>
 #include <time.h>
 
-static ObjFile *cg_obj;
 SecBuf *cg_sec;
+ObjFile *cg_obj;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
 CgAsciiStr *cg_ascii_strings;
@@ -358,7 +358,7 @@ static void cg_inline_fixup_cb(size_t patch_off, int section, const char *label,
     strcpy(dup, label);
     SecBuf *sbuf = objfile_section_buf(cg_obj, section);
     // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
-    asm_fixup_ht_add_sec(patch_off - 1, dup, 0, sbuf);
+    asm_fixup_ht_add_sec2(patch_off - 1, dup, 0, sbuf, section);
 }
 
 // Bridge for the remaining printf("  <asm line>\n", ...)-based codegen (x86 only):
