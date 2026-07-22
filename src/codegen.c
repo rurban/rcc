@@ -11835,65 +11835,19 @@ struct ObjFile *codegen(Program *prog) {
 
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind == TL_ASM) {
-            // Emit global-scope asm through the assembler
-            // Parse label: "vide: ret" → label "vide", instruction "ret"
-            const char *tp = item->asm_str;
-            char label_buf[256];
-            const char *label_end = strchr(tp, ':');
-            if (label_end && label_end > tp) {
-                size_t lbl_len = (size_t)(label_end - tp);
-                if (lbl_len < sizeof(label_buf)) {
-                    memcpy(label_buf, tp, lbl_len);
-                    label_buf[lbl_len] = '\0';
-                    // Skip whitespace between label and possible insn
-                    const char *insn = label_end + 1;
-                    insn += strspn(insn, " \t");
-                    // Define label at current text position
-                    objfile_add_sym(cg_obj, asm_sym_name(label_buf), SEC_TEXT,
-                                    cg_sec->len, 0, SB_GLOBAL, ST_FUNC);
-                    // If there's an instruction after the label, assemble it
-                    if (*insn) {
-                        // Simple instruction dispatch through the assembler
-                        char mnem[64], ops[256];
-                        int n = 0;
-                        sscanf(insn, "%63s", mnem);
-                        // Handle TCC-specific {$} → immediate $N
-                        const char *rest = insn + strlen(mnem);
-                        while (*rest == ' ' || *rest == '\t') rest++;
-                        for (const char *s = rest; *s && n < (int)sizeof(ops) - 1; s++) {
-                            if (s[0] == '{' && s[1] == '$' && s[2] == '}') {
-                                ops[n++] = '$';
-                                s += 3;
-                                while (*s >= '0' && *s <= '9' && n < (int)sizeof(ops) - 1)
-                                    ops[n++] = *s++;
-                                if (*s && n < (int)sizeof(ops) - 1)
-                                    ops[n++] = *s;
-                                s--;
-                            } else {
-                                ops[n++] = *s;
-                            }
-                        }
-                        ops[n] = '\0';
-                        // Encode known instructions directly
-#ifdef ARCH_ARM64
-                        if (strcmp(mnem, "ret") == 0)
-                            arm64_ret(cg_sec, ARM64_X30);
-                        else if (strcmp(mnem, "nop") == 0)
-                            arm64_nop(cg_sec);
-                        else if (strcmp(mnem, "brk") == 0)
-                            secbuf_emit32le(cg_sec, 0xd4200000u); // brk #0
-#else
-                        if (strcmp(mnem, "ret") == 0)
-                            x86_ret(cg_sec);
-                        else if (strcmp(mnem, "nop") == 0)
-                            x86_nop(cg_sec);
-                        else if (strcmp(mnem, "int3") == 0)
-                            secbuf_emit8(cg_sec, 0xcc);
-#endif
-                        // For other instructions, fall through to nothing (assembler needed)
-                    }
-                }
-            }
+            // File-scope asm(...) — no enclosing function, so there's no
+            // later C-level goto label it could ever forward-reference
+            // (on_forward is only relevant inside a function body).
+            // Previously this had its own tiny hand-rolled parser that
+            // only understood a single "label: insn" line with a
+            // hardcoded handful of instructions (ret/nop/int3), silently
+            // doing nothing for anything else — real uses like the
+            // kernel's raw __define_initcall asm() (.section/label/
+            // .long .../.previous, no C-callable single instruction in
+            // sight) fell straight through that "for other instructions,
+            // assembler needed" gap. Route through the same full
+            // assembler function bodies already use instead.
+            assemble_inline(cg_obj, item->asm_str, NULL, NULL);
             continue;
         }
         Function *fn = item->fn;
