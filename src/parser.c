@@ -4065,6 +4065,33 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
     }
 }
 
+// Does `node` (after stripping casts) look like a genuine address
+// computation (&sym, &sym +/- N, a string literal, ...) rather than a
+// plain value read? Guards the integer-scalar extract_reloc() fallback
+// below it: extract_reloc()'s ND_LVAR case treats *any* reference to a
+// global as "the address of that global" once it's reached as a leaf —
+// correct only when the expression as a whole is already known to
+// represent an address, which every existing (pointer-typed) call site
+// guarantees by construction. A bare non-constant read like
+// "static int vi = some_other_global;" must remain a hard "not a
+// constant expression" error, not silently become "the address of
+// some_other_global" (c11-thread-local-2.c's "static _Thread_local int
+// vi = vv;" — a torture dg-error case — caught this exact overreach).
+static bool looks_like_address_expr(Node *node) {
+    while (node && node->kind == ND_CAST) node = node->lhs;
+    if (!node) return false;
+    switch (node->kind) {
+    case ND_ADDR:
+    case ND_STR:
+        return true;
+    case ND_ADD:
+    case ND_SUB:
+        return looks_like_address_expr(node->lhs) || looks_like_address_expr(node->rhs);
+    default:
+        return false;
+    }
+}
+
 static Token *skip_initializer(Token *tok) {
     // Skip designated initializer: .name = value
     if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
@@ -4807,6 +4834,21 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     if (eval_const_expr(node, &val)) {
         write_scalar_bytes(var, offset, ty->size, (int64_t)val);
         return tok;
+    }
+    // A relocatable address stored in an integer-typed (not pointer-typed)
+    // struct member — e.g. arch/x86/include/asm/processor.h's INIT_THREAD:
+    // "{ .sp = (unsigned long)&__top_init_kernel_stack }", where .sp is a
+    // plain `unsigned long` field. Mirrors the ty->kind == TY_PTR handling
+    // a few lines up; that branch only fires for pointer-typed members, so
+    // an integer-typed member holding a cast address never tried
+    // extract_reloc() at all.
+    {
+        char *label = NULL;
+        int addend = 0;
+        if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
+            append_reloc(var, offset, label, addend);
+            return tok;
+        }
     }
     if (!var->is_local)
         if (!var->is_local)
@@ -9470,6 +9512,28 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             if (eval_double_const_expr(node, &fv)) {
                 var->has_init = true;
                 var->init_val = (int64_t)fv;
+                *rest = tok;
+                return;
+            }
+        }
+
+        // A relocatable address stored in an integer-typed (not pointer-
+        // typed) scalar — e.g. arch/x86/include/asm/processor.h's
+        // INIT_THREAD: "{ .sp = (unsigned long)&__top_init_kernel_stack }",
+        // where .sp is a plain `unsigned long`, not a pointer. Not a
+        // foldable constant (eval_const_expr above correctly rejects it —
+        // the address isn't known until link time) but not an error
+        // either: the TY_PTR branch above already handles exactly this
+        // shape via extract_reloc()/append_reloc() for pointer-typed
+        // globals; scalars just never tried the same fallback.
+        {
+            char *label = NULL;
+            int addend = 0;
+            if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
+                var->has_init = true;
+                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                var->init_size = var->ty->size;
+                append_reloc(var, 0, label, addend);
                 *rest = tok;
                 return;
             }
