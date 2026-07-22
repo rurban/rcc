@@ -1084,11 +1084,26 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
 
             // Check if it's a symbol reference (for relocation)
             bool is_sym = val[0] == '.' || isalpha((unsigned char)val[0]) || val[0] == '_';
-            if (is_sym && sz == 8) {
-                // Emit an absolute 64-bit relocation
+            if (is_sym && (sz == 4 || sz == 8)) {
+                // Emit an absolute 32/64-bit relocation. A bare symbol name
+                // reaching here (not "SYM - .", not a label-difference) is
+                // GAS's plain-absolute-reference case — e.g. the kernel's
+                // ALTINSTR_ENTRY() emits ".4byte X86_FEATURE_RDPID" for its
+                // feature-flag field: at that exact point in the header
+                // chain X86_FEATURE_RDPID isn't yet available as a
+                // preprocessor constant (confirmed byte-for-byte identical
+                // in GCC's own -E output — not an rcc macro-expansion bug),
+                // so __stringify() falls back to the bare macro name and
+                // GAS resolves *that* as an ordinary symbol reference.
+                // Previously only sz==8 was handled here at all — sz==4
+                // (by far the common width for a 32-bit feature-flags
+                // field) fell through untouched, silently emitting nothing
+                // and desyncing every later .altinstructions entry's
+                // offset in the same merged section.
                 int64_t addend = 0;
                 char symname[256];
                 strncpy(symname, val, 255);
+                symname[255] = '\0';
                 // Check for +/-addend
                 char *plus = strchr(symname, '+');
                 char *minus = strchr(symname, '-');
@@ -1099,10 +1114,15 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                     addend = strtoll(minus, NULL, 0);
                     *minus = 0;
                 }
-                size_t off = secbuf_emit64le(buf, (uint64_t)addend);
                 int sidx = ensure_sym(as, symname);
-                objfile_add_reloc(as->obj, as->cur_sec, off, sidx,
-                                  R_AARCH64_ABS64, addend);
+#ifdef ARCH_ARM64
+                uint32_t reltype = (sz == 8) ? R_AARCH64_ABS64 : R_AARCH64_ABS32;
+#else
+                uint32_t reltype = (sz == 8) ? R_X86_64_64 : R_X86_64_32;
+#endif
+                size_t off = (sz == 8) ? secbuf_emit64le(buf, (uint64_t)addend)
+                                       : secbuf_emit32le(buf, (uint32_t)addend);
+                objfile_add_reloc(as->obj, as->cur_sec, off, sidx, reltype, addend);
             } else if (!is_sym) {
                 int64_t v = strtoll(val, NULL, 0);
                 switch (sz) {
