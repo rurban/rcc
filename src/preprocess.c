@@ -1230,6 +1230,15 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
     }
     return rhead;
 }
+// Actual-argument capacity for a function-like macro call. Separate from (and
+// larger than) the formal-parameter cap on #define itself: variadic wrapper
+// macros like the kernel's "#define PARAMS(args...) args" are invoked with
+// however many comma-separated tokens the caller's own expanded arguments
+// happen to contain (e.g. TRACE_EVENT's PARAMS(proto) after proto's own
+// TP_PROTO(...) has argument-prescan-expanded into a bare list), easily
+// exceeding a small fixed cap even though the macro itself takes "any number
+// of args".
+#define MAX_CALL_ARGS 128
 static void expand_token(Token *t) {
     if (!t || t->kind != TK_IDENT) {
         out_append(t);
@@ -1310,7 +1319,7 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    Token *args[32] = {}, *tails[32] = {};
+    Token *args[MAX_CALL_ARGS] = {}, *tails[MAX_CALL_ARGS] = {};
     int argc = 0, depth = 1;
     bool any = false;
     Token *rp = NULL;
@@ -1364,12 +1373,12 @@ static void expand_token(Token *t) {
                 break;
             }
         } else if (ptok(x, ",") && depth == 1) {
-            if (argc >= 32) error("too many macro arguments");
+            if (argc >= MAX_CALL_ARGS) error_tok(t, "too many macro arguments (in %s)", name);
             argc++;
             any = false;
             continue;
         }
-        if (argc < 32) {
+        if (argc < MAX_CALL_ARGS) {
             x->next = NULL;
             if (tails[argc]) tails[argc]->next = x;
             else
@@ -1390,14 +1399,18 @@ static void expand_token(Token *t) {
         return;
     }
     while (argc < m->param_len) args[argc++] = NULL;
-    Token *exp_args[32] = {};
-    Token *args_copy[32] = {};
+    Token *exp_args[MAX_CALL_ARGS] = {};
+    Token *args_copy[MAX_CALL_ARGS] = {};
     for (int i = 0; i < argc; i++) {
         Token *h = NULL, *t_ = NULL;
         splice_tokens(&h, &t_, args[i]);
         args_copy[i] = h;
     }
-    for (int i = 0; i < argc; i++) exp_args[i] = (m->hh_mask & (1u << i)) ? args_copy[i] : expand_list(args_copy[i]);
+    // hh_mask bits only correspond to formal (#define-side) parameter
+    // positions, which are capped at 32; guard i < 32 so an actual argument
+    // index beyond that (only possible for a variadic call) can't alias
+    // into a low bit via an out-of-range shift.
+    for (int i = 0; i < argc; i++) exp_args[i] = (i < 32 && (m->hh_mask & (1u << i))) ? args_copy[i] : expand_list(args_copy[i]);
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
     m->disabled = true;
     push_expansion(subst, m, t);
