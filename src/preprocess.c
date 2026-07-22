@@ -2013,6 +2013,16 @@ static void do_directive(void) {
             } else if (p && p->kind == TK_NUM && p->ptr[0] >= '1' && p->ptr[0] <= '9') {
                 pack_align = p->ptr[0] - '0';
                 emit_pragma_marker("pack", pack_align, true, p);
+            } else {
+                // Bare `#pragma pack()` (no push/pop/number, e.g. every
+                // ACPI table header's pack(1) ... pack() pair) or an
+                // explicit `#pragma pack(0)`: both reset to the compiler's
+                // default alignment. Falling through here silently (the
+                // previous behavior) never reset pack_align, leaking the
+                // most recent pack(N) into every struct declared for the
+                // rest of the translation unit.
+                pack_align = 0;
+                emit_pragma_marker("pack", pack_align, true, p);
             }
             return;
         }
