@@ -212,9 +212,11 @@ void x86_push_imm(SecBuf *s, int32_t imm);
 // Control flow
 void x86_call_rel32(SecBuf *s, int32_t rel32); // fills 0; caller adds reloc
 void x86_call_r(SecBuf *s, X86Reg r);
+void x86_call_m(SecBuf *s, X86Mem m);
 void x86_jmp_rel32(SecBuf *s, int32_t rel32);
 void x86_jmp_rel8(SecBuf *s, int8_t rel8);
 void x86_jmp_r(SecBuf *s, X86Reg r);
+void x86_jmp_m(SecBuf *s, X86Mem m);
 void x86_jcc_rel32(SecBuf *s, X86Cond cc, int32_t rel32);
 void x86_jcc_rel8(SecBuf *s, X86Cond cc, int8_t rel8);
 void x86_ret(SecBuf *s);

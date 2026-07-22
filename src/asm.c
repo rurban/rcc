@@ -2516,8 +2516,20 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // JMP and Jcc
     if (!strcmp(mnem, "jmp") || !strcmp(mnem, "jmpq")) {
+        // AT&T indirect jump/call syntax prefixes the reg/mem operand with
+        // '*' ("jmp *%rax", "jmp *(%rax)") to distinguish it from a direct
+        // jump to a symbol — without stripping it, ops[0][0] is '*', never
+        // '%' or a symbol char, so is_reg()/is_mem() below never match and
+        // this silently fell through to the direct/label path, encoding a
+        // bogus direct jump to whatever symbol "*..." happened to look
+        // like instead of a real indirect jump.
+        if (nops > 0 && ops[0][0] == '*') ops[0]++;
         if (is_reg(0)) {
             x86_jmp_r(buf, R(0));
+            return true;
+        }
+        if (is_mem(0)) {
+            x86_jmp_m(buf, M(0));
             return true;
         }
         // Label-based jump
@@ -2587,8 +2599,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // CALL
     if (!strcmp(mnem, "call") || !strcmp(mnem, "callq")) {
+        // See the identical '*' strip in JMP above.
+        if (nops > 0 && ops[0][0] == '*') ops[0]++;
         if (is_reg(0)) {
             x86_call_r(buf, R(0));
+            return true;
+        }
+        if (is_mem(0)) {
+            x86_call_m(buf, M(0));
             return true;
         }
         char *lbl = ops[0];

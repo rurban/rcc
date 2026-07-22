@@ -663,6 +663,16 @@ void x86_call_r(SecBuf *s, X86Reg r) {
     if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
     emit2(s, 0xff, modrm(3, 2, r));
 }
+// CALL m64 (FF /2): indirect call through a memory operand — "call
+// *mem", e.g. paravirt's "call *%[paravirt_opptr]" through a pv_ops
+// function-pointer slot. No REX.W: the default operand size for FF /2
+// in 64-bit mode is already 64-bit.
+void x86_call_m(SecBuf *s, X86Mem m) {
+    bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, 0xff);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
+}
 void x86_jmp_rel32(SecBuf *s, int32_t rel32) {
     emit1(s, 0xe9);
     emit_imm32(s, rel32);
@@ -671,6 +681,13 @@ void x86_jmp_rel8(SecBuf *s, int8_t rel8) { emit2(s, 0xeb, (uint8_t)rel8); }
 void x86_jmp_r(SecBuf *s, X86Reg r) {
     if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
     emit2(s, 0xff, modrm(3, 4, r));
+}
+// JMP m64 (FF /4): indirect jump through a memory operand — "jmp *mem".
+void x86_jmp_m(SecBuf *s, X86Mem m) {
+    bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, 0xff);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 4);
 }
 void x86_jcc_rel32(SecBuf *s, X86Cond cc, int32_t rel32) {
     emit2(s, 0x0f, (uint8_t)(0x80 | cc));
