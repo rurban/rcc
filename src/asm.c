@@ -758,6 +758,31 @@ static bool parse_x86_mem(const char *s, X86Mem *m) {
 // ---------------------------------------------------------------------------
 // Directive handling
 // ---------------------------------------------------------------------------
+// Does the `.section`/`.pushsection` argument's *leading name field* (up to
+// the first comma, quotes stripped) equal `name` exactly? A plain
+// strstr(args, ".text") — the previous check — matches any section whose
+// name merely *contains* ".text" as a substring, e.g. the kernel's
+// ".static_call.text" (every DEFINE_STATIC_CALL trampoline) or
+// ".data.once"/".bss..page_aligned"-style suffixed names: all of those
+// were being silently folded into the built-in .text/.data/.bss instead of
+// getting their own section, corrupting whatever real .text/.data/.bss
+// content happened to sit at the same offset.
+static bool section_name_is(const char *args, const char *name) {
+    char buf[300];
+    strncpy(buf, args, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = 0;
+    char *field = strtok(buf, ",");
+    if (!field) return false;
+    field = skip_ws(field);
+    trim_end(field);
+    size_t flen = strlen(field);
+    if (flen >= 2 && field[0] == '"' && field[flen - 1] == '"') {
+        field[flen - 1] = '\0';
+        field++;
+    }
+    return !strcmp(field, name);
+}
+
 // Parse `NAME[, "FLAGS"[, @TYPE[, ENTSIZE]]]` — the GAS .section/.pushsection
 // argument grammar — and resolve/create the named section. Returns -1 if
 // `args` has no usable name (caller should leave the current section alone).
@@ -820,13 +845,13 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         as->cur_sec = SEC_RODATA;
     } else if (!strncmp(dir, "section", 7)) {
         // .section .note.GNU-stack or similar — check for specific sections
-        if (strstr(args, ".rodata") || strstr(args, "__const"))
+        if (section_name_is(args, ".rodata") || section_name_is(args, "__const"))
             as->cur_sec = SEC_RODATA;
-        else if (strstr(args, ".data"))
+        else if (section_name_is(args, ".data"))
             as->cur_sec = SEC_DATA;
-        else if (strstr(args, ".bss"))
+        else if (section_name_is(args, ".bss"))
             as->cur_sec = SEC_BSS;
-        else if (strstr(args, ".text"))
+        else if (section_name_is(args, ".text"))
             as->cur_sec = SEC_TEXT;
         else if (strstr(args, ".note.GNU-stack") || strstr(args, ".note.gnu"))
             ; // marker section elf_write always emits on its own; ignore
@@ -843,13 +868,13 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             as->sec_stack[as->sec_stack_depth++] = as->cur_sec;
         else
             asm_error(as, "pushsection stack overflow");
-        if (strstr(args, ".rodata") || strstr(args, "__const"))
+        if (section_name_is(args, ".rodata") || section_name_is(args, "__const"))
             as->cur_sec = SEC_RODATA;
-        else if (strstr(args, ".data"))
+        else if (section_name_is(args, ".data"))
             as->cur_sec = SEC_DATA;
-        else if (strstr(args, ".bss"))
+        else if (section_name_is(args, ".bss"))
             as->cur_sec = SEC_BSS;
-        else if (strstr(args, ".text"))
+        else if (section_name_is(args, ".text"))
             as->cur_sec = SEC_TEXT;
         else {
             int sec = parse_named_section(as, args);
