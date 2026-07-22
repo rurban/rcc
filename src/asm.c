@@ -173,6 +173,28 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         // to patch — it's just the first operand of a length expression).
         if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF) continue;
         if (strcmp(fx->label, name) != 0) continue;
+        if (fx->kind == FIXUP_PCREL_DATA) {
+            // Forward reference in a "(label) - ." data directive (e.g. the
+            // kernel's ALTERNATIVE() macro's ".long 774f - ." pointing at
+            // its own not-yet-seen replacement-instruction label). Always a
+            // real relocation against this occurrence's own private symbol
+            // — same rationale as the already-defined case in the
+            // .long/.quad directive handler just below: the two positions
+            // may end up placed anywhere relative to each other, and using
+            // a plain (non-unique) symbol for "774" would collide with
+            // every *other* occurrence of the same numeric label anywhere
+            // else in the file, all resolving to whichever one happens to
+            // be defined last.
+            if (fx->size == 8)
+                objfile_add_reloc(as->obj, fx->section, fx->patch_off,
+                                  occurrence_idx, R_X86_64_PC64, fx->addend);
+            else
+                objfile_add_reloc(as->obj, fx->section, fx->patch_off,
+                                  occurrence_idx, R_X86_64_PC32, fx->addend);
+            as->fixups[i] = as->fixups[--as->nfixups];
+            i--;
+            continue;
+        }
         if (fx->section != sec) {
             // Cross-section jump/call target — e.g. a `jmp`/`jcc` inside
             // the kernel's throwaway .altinstr_aux-style out-of-line
@@ -1028,13 +1050,33 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 strip_local_label_suffix(sym);
                 int sec_of_sym = 0;
                 int sidx = lookup_local_sym(as, sym, &sec_of_sym);
-                if (sidx < 0) sidx = ensure_sym(as, sym);
-                if (sz == 4) {
-                    size_t off = secbuf_emit32le(buf, 0);
-                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC32, addend);
+                bool is_numeric_ref = sidx < 0 && *sym != '\0';
+                for (const char *pc = sym; is_numeric_ref && *pc; pc++)
+                    if (!isdigit((unsigned char)*pc)) is_numeric_ref = false;
+                if (is_numeric_ref) {
+                    // Forward reference to a not-yet-defined numeric local
+                    // label (e.g. ALTERNATIVE()'s ".long 774f - .",
+                    // referencing its own replacement-instruction label
+                    // before it's been seen). Defer to a fixup resolved
+                    // once that label is actually defined, against its own
+                    // private per-occurrence symbol — falling back to
+                    // ensure_sym() here would create/reuse one shared
+                    // "774" symbol across every *other* occurrence of the
+                    // same reused numeric label anywhere else in this
+                    // translation unit too, all colliding onto whichever
+                    // one is defined last.
+                    size_t off = (sz == 4) ? secbuf_emit32le(buf, 0) : secbuf_emit64le(buf, 0);
+                    add_fixup(as, off, as->cur_sec, sym, FIXUP_PCREL_DATA, addend);
+                    as->fixups[as->nfixups - 1].size = sz;
                 } else {
-                    size_t off = secbuf_emit64le(buf, 0);
-                    objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC64, addend);
+                    if (sidx < 0) sidx = ensure_sym(as, sym);
+                    if (sz == 4) {
+                        size_t off = secbuf_emit32le(buf, 0);
+                        objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC32, addend);
+                    } else {
+                        size_t off = secbuf_emit64le(buf, 0);
+                        objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_X86_64_PC64, addend);
+                    }
                 }
                 val = strtok(NULL, ",");
                 continue;
@@ -2302,15 +2344,22 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // PUSH/POP
-    if (!strncmp(mnem, "push", 4)) {
+    // PUSH/POP — exact-match against the real w/l/q-suffixed forms only:
+    // a prefix match ("push"/"pop") would also swallow popcnt/popcntl/
+    // popcntq (POPCNT, a completely different instruction that merely
+    // happens to start with "pop") and pushf/pushfq/popf/popfq (push/pop
+    // FLAGS, no operand), silently mis-encoding them as PUSH/POP of
+    // whatever garbage operand happened to follow instead of erroring.
+    if (!strcmp(mnem, "push") || !strcmp(mnem, "pushw") ||
+        !strcmp(mnem, "pushl") || !strcmp(mnem, "pushq")) {
         if (is_imm(0))
             x86_push_imm(buf, (int32_t)IMM(0));
         else
             x86_push(buf, R(0));
         return true;
     }
-    if (!strncmp(mnem, "pop", 3)) {
+    if (!strcmp(mnem, "pop") || !strcmp(mnem, "popw") ||
+        !strcmp(mnem, "popl") || !strcmp(mnem, "popq")) {
         x86_pop(buf, R(0));
         return true;
     }
