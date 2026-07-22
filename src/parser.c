@@ -4427,13 +4427,41 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
 // Initialize one object of type `ty` at `base + offset` in global init data.
 // Handles scalars, arrays, structs, compound literals, and flattened init.
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
-    // String literal for char array
-    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR && tok->string_literal_prefix == 0) {
+    // "{ STRLIT }" / "{ STRLIT, }" for a char/wide-char array target is a
+    // superfluous-but-legal single-element brace, exactly equivalent to
+    // the bare "STRLIT" form the two checks just below look for. Unwrap
+    // it here so they see it either way — otherwise it falls into the
+    // generic "array with braces" per-element handler further down,
+    // which parses the string as one scalar element of ty->base and
+    // silently produces garbage for whatever element type it doesn't
+    // happen to fit (no diagnostic for e.g. a mismatched-width wide
+    // string, and wrong bytes even for a same-width match).
+    // Only applies to an array whose element is itself scalar (char-like
+    // or wide-char-like) — a multi-dimensional array's element is another
+    // array (e.g. char[2][3]'s element is char[3]), and "{ "ab" }" there
+    // is the standard brace-elision idiom for initializing just the first
+    // row, correctly handled by the generic "array with braces" per-
+    // element recursion below (which hands "ab" to *that* inner array,
+    // where these same checks apply again).
+    bool scalarish_base = ty->kind == TY_ARRAY && ty->base->kind != TY_ARRAY &&
+        ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION;
+    Token *brace_close = NULL;
+    if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
+        Token *after = tok->next->next;
+        if (equalc(after, ",")) after = after->next;
+        if (equalc(after, "}")) {
+            brace_close = after->next;
+            tok = tok->next; // unwrap: point straight at the string literal
+        }
+    }
+    // String literal for char/char8_t array
+    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR &&
+        (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         int len = tok->len + 1; // include embedded NULs and the terminator
         if (ty->size > 0 && len > ty->size) len = ty->size;
         ensure_init_size(var, offset, len);
         memcpy(var->init_data + offset, tok->str, len);
-        return tok->next;
+        return brace_close ? brace_close : tok->next;
     }
 
     // Wide string literal L"..."/u"..."/U"..." for wchar_t[]/char16_t[]/
@@ -4470,7 +4498,23 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         // If array size is 0 (incomplete), set it
         if (ty->size == 0)
             ty->size = (int64_t)(i + 1) * wchar_size;
-        return tok->next;
+        return brace_close ? brace_close : tok->next;
+    }
+
+    // A string literal directly at an array target (bare, or just
+    // unwrapped from "{ ... }" above) whose prefix is incompatible with
+    // the target's element type/width — e.g. u8"..." (itself an array
+    // of unsigned char per the standard) assigned to a char16_t/
+    // char32_t/wchar_t array, or an L/u/U-prefixed literal assigned to
+    // a plain char/char8_t array — matched neither branch above. This is
+    // a real constraint violation; without this check it fell through to
+    // the generic per-element "array with braces" handling (for the
+    // unwrapped case) or the address-only extract_reloc() fallback much
+    // further below, neither of which validates element-type/width
+    // compatibility at all.
+    if (scalarish_base && tok->kind == TK_STR) {
+        error_tok(tok, "initializing an array of incompatible element type "
+                       "with a string literal");
     }
 
     // Array with braces: { elem1, elem2, ... } with optional [N]=val or [N...M]=val designators
@@ -9337,6 +9381,23 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         global_init_one(tok, var, var->ty, 0);
         *rest = tok->next;
         return;
+    }
+
+    // A string literal reaching here (array target, neither the narrow
+    // char/char8_t branch above nor the wide 2/4-byte-element branch
+    // matched) has a prefix that's incompatible with the target array's
+    // element type — e.g. u8"..." (itself an array of unsigned char, per
+    // the standard) assigned to a char16_t/char32_t/wchar_t array, or an
+    // L/u/U-prefixed literal assigned to a plain char/char8_t array. This
+    // is a real constraint violation in C; without this check it silently
+    // fell through to the generic (address-only) initializer fallback
+    // below, which never validates element-type/width compatibility at
+    // all — no diagnostic, wrong bytes.
+    if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR &&
+        var->ty->base->kind != TY_ARRAY && var->ty->base->kind != TY_STRUCT &&
+        var->ty->base->kind != TY_UNION) {
+        error_tok(tok, "initializing an array of incompatible element type "
+                       "with a string literal");
     }
 
     if (var->ty->kind == TY_PTR) {
