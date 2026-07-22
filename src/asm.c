@@ -3736,13 +3736,26 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
                 sec = obj->syms[sidx].section;
             }
         }
-        if (tgt >= 0 && fx->kind == FIXUP_REL32) {
-            SecBuf *sb = &obj->text;
-            int32_t rel = (int32_t)(tgt - ((int64_t)fx->patch_off + 4) + fx->addend);
-            memcpy(sb->data + fx->patch_off, &rel, 4);
+        if (tgt >= 0 && fx->kind == FIXUP_REL32 && sec == fx->section) {
+            SecBuf *sb = objfile_section_buf(obj, fx->section);
+            if (sb) {
+                int32_t rel = (int32_t)(tgt - ((int64_t)fx->patch_off + 4) + fx->addend);
+                memcpy(sb->data + fx->patch_off, &rel, 4);
+            }
+#ifndef ARCH_ARM64
+        } else if (tgt >= 0 && fx->kind == FIXUP_REL32) {
+            // Same-call-site forward reference but the target ended up in a
+            // *different* section than the branch/call itself (e.g. a
+            // .pushsection'd region jumping back to .text, or vice versa) —
+            // a same-section byte-patch can't express this; needs a real
+            // relocation instead, same as the cross-section case in
+            // define_label()'s own per-label fixup resolution.
+            int sidx = ensure_sym(&as, fx->label);
+            objfile_add_reloc(obj, fx->section, fx->patch_off, sidx, R_X86_64_PC32, fx->addend - 4);
+#endif
         } else if (fx->kind == FIXUP_REL32 && on_forward) {
             // Forward reference: delegate to caller
-            on_forward(fx->patch_off, fx->label, ctx);
+            on_forward(fx->patch_off, fx->section, fx->label, ctx);
         }
     }
 

@@ -193,6 +193,12 @@ typedef struct AsmFixupNode {
     size_t instr_off;
     const char *label;
     int type; // 0=jmp rel32, 1=jcc rel32
+    SecBuf *sbuf; // target buffer if not the resolving label's own section
+    // (e.g. a %l[label] branch inside a .pushsection'd
+    // .altinstr_replacement, forward-referencing a C label
+    // that lives in .text) — NULL means "use whatever SecBuf
+    // the caller passes to asm_fixup_resolve", the common
+    // case where both the branch and the label are in .text.
     struct AsmFixupNode *next;
 } AsmFixupNode;
 
@@ -204,15 +210,20 @@ static inline void asm_fixup_ht_reset(void) {
     asm_fixup_count = 0;
 }
 
-static inline void asm_fixup_ht_add(size_t instr_off, const char *label, int type) {
+static inline void asm_fixup_ht_add_sec(size_t instr_off, const char *label, int type, SecBuf *sbuf) {
     uint32_t h = cg_ht_hash(label);
     AsmFixupNode *n = arena_alloc(sizeof(AsmFixupNode));
     n->instr_off = instr_off;
     n->label = label;
     n->type = type;
+    n->sbuf = sbuf;
     n->next = asm_fixup_htab[h];
     asm_fixup_htab[h] = n;
     asm_fixup_count++;
+}
+
+static inline void asm_fixup_ht_add(size_t instr_off, const char *label, int type) {
+    asm_fixup_ht_add_sec(instr_off, label, type, NULL);
 }
 
 // Record a pending branch fixup (forward reference)
@@ -259,8 +270,15 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
     while (*pp) {
         AsmFixupNode *n = *pp;
         if (strcmp(n->label, label) == 0) {
+            // The branch instruction being patched may live in a different
+            // section than the label just defined (e.g. a %l[label] branch
+            // inside a .pushsection'd .altinstr_replacement, forward-
+            // referencing a C label back in .text) — patch into n->sbuf
+            // when the fixup recorded one, not blindly into the caller's
+            // SecBuf (which always matches the *label's* section).
+            SecBuf *ts = n->sbuf ? n->sbuf : s;
 #ifdef ARCH_ARM64
-            uint32_t insn = *(uint32_t *)(s->data + n->instr_off);
+            uint32_t insn = *(uint32_t *)(ts->data + n->instr_off);
             int64_t delta = (int64_t)((int64_t)target_off - (int64_t)n->instr_off);
             if (n->type == 0) {
                 // B: 26-bit signed word offset in bits [25:0]
@@ -276,14 +294,14 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
                 int64_t imm = delta / 4;
                 insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
             }
-            secbuf_patch32le(s, n->instr_off, insn);
+            secbuf_patch32le(ts, n->instr_off, insn);
 #else
             int32_t disp;
             if (n->type == 0)
                 disp = (int32_t)(target_off - (n->instr_off + 5));
             else
                 disp = (int32_t)(target_off - (n->instr_off + 6));
-            secbuf_patch32le(s, n->type == 0 ? n->instr_off + 1 : n->instr_off + 2, (uint32_t)disp);
+            secbuf_patch32le(ts, n->type == 0 ? n->instr_off + 1 : n->instr_off + 2, (uint32_t)disp);
 #endif
             *pp = n->next;
             asm_fixup_count--;

@@ -344,13 +344,21 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
 
 // Forward-fixup callback for assemble_inline: registers unresolved labels
 // into the codegen fixup table so cg_def_label can patch them later.
-// patch_off is the offset of the 4-byte REL32 operand in cg_obj->text.
-static void cg_inline_fixup_cb(size_t patch_off, const char *label, void *ctx) {
+// patch_off is the offset of the 4-byte REL32 operand within section
+// `section` — not always cg_obj->text: a %l[label] branch inside a
+// .pushsection'd non-.text region (e.g. the kernel's ALTERNATIVE() macro's
+// .altinstr_replacement) can forward-reference a C label that's defined
+// elsewhere (always in .text, via cg_def_label), so the pending fixup must
+// remember which buffer to patch once that label shows up — cg_def_label
+// itself always resolves against cg_sec, which is the *label's* section,
+// not necessarily the branch's.
+static void cg_inline_fixup_cb(size_t patch_off, int section, const char *label, void *ctx) {
     (void)ctx;
     char *dup = arena_alloc(strlen(label) + 1);
     strcpy(dup, label);
+    SecBuf *sbuf = objfile_section_buf(cg_obj, section);
     // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
-    asm_fixup_ht_add(patch_off - 1, dup, 0);
+    asm_fixup_ht_add_sec(patch_off - 1, dup, 0, sbuf);
 }
 
 // Bridge for the remaining printf("  <asm line>\n", ...)-based codegen (x86 only):
