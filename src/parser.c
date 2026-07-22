@@ -3903,8 +3903,19 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
     if (tok->kind == TK_IDENT) {
         // Not a symbol reference: enum constants and the true/false/NULL/
         // nullptr keywords fold to integer constants via the expression path.
+        // _Generic is tokenized as a plain identifier too (no dedicated
+        // token kind), but "_Generic(...)" starts a full selection
+        // expression, not a bare symbol name — without this check it fell
+        // into the plain-identifier branch below, which treated the
+        // literal text "_Generic" itself as the label to reference and
+        // stopped right there (leaving the caller staring at the
+        // following "(" and reporting a confusing "expected ';' or ','"
+        // several tokens later). Found via a real Linux kernel build:
+        // init/version-timestamp.c's init_uts_ns initializer selects its
+        // .ops field's proc_ns_operations pointer via
+        // _Generic((&init_uts_ns), struct foo *: &foo_operations, ...).
         if (find_enum_const(tok) || equalc(tok, "true") || equalc(tok, "false") ||
-            equalc(tok, "NULL") || equalc(tok, "nullptr"))
+            equalc(tok, "NULL") || equalc(tok, "nullptr") || equalc(tok, "_Generic"))
             return false;
         // Use asm_name for static local variables (mangled labels)
         LVar *lv = find_global_name(tok->name);
