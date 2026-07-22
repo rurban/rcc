@@ -420,7 +420,22 @@ static Type *apply_type_align(Type *ty, int align) {
     // struct_or_union_specifier, where that distinction is still visible.
     if (align <= 0 || align <= ty->align)
         return ty;
-    Type *ret = copy_type(ty);
+    // Deliberately not copy_type(): for a *complete* struct/union it
+    // intentionally returns the same Type object (so an incomplete
+    // forward-declared type can still be completed later through every
+    // existing pointer to it) — reusing that here would mutate the shared
+    // type's own alignment in place instead of raising just this one
+    // declaration's requirement, corrupting every other use of the same
+    // struct/union (typedef'd or not, e.g. atomic_long_t) for the rest of
+    // the translation unit. Only fall back to sharing identity for a
+    // still-incomplete type, where a real clone would freeze size/members
+    // at 0 forever and never see the later completion.
+    bool incomplete_aggregate = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+        ty->size == 0 && !ty->members;
+    if (incomplete_aggregate)
+        return ty;
+    Type *ret = arena_alloc(sizeof(Type));
+    *ret = *ty;
     ret->align = align;
     return ret;
 }
