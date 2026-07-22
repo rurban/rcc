@@ -1039,6 +1039,7 @@ static Token *pop_tail(Token **head, Token **tail) {
 // buffer; otherwise (synthesized tokens) default to a separating space.
 static bool str_needs_space(Token *a, Token *b) {
     if (!a || !b) return false;
+    if (a->no_space_after) return false;
     if (!a->ptr || !b->ptr) return true;
     int al; // spelling length is the source span (t->val for strings, not t->len)
     tok_spelling(a, &al);
@@ -1151,6 +1152,15 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             memcpy(pasted + l1, s2, l2);
             pasted[l1 + l2] = '\0';
             Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
+            // pt's spelling lives in a freshly lexed buffer, so the normal
+            // pointer-adjacency check in str_needs_space() can never see it
+            // as touching whatever follows — even when the macro body had
+            // zero whitespace between the ## operator's rhs operand and the
+            // next body token (e.g. "__export_symbol_##sym:"). Recover that
+            // from the pre-substitution body tokens (n, n->next) so a later
+            // #-stringize of this expansion keeps them adjacent too.
+            if (!xhead->next && n->next && !str_needs_space(n, n->next))
+                pt->no_space_after = true;
             splice_tokens(&rhead, &rtail, pt);
             splice_tokens(&rhead, &rtail, xhead->next);
             continue;

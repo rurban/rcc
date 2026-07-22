@@ -60,6 +60,12 @@ struct Token {
     int string_literal_prefix;
     char *filename; // Source file name (after #line substitution)
     int lineno; // Source line number (after #line substitution)
+    // Set on a ## paste result whose macro-body definition had the next
+    // token immediately adjacent (no whitespace) — lets #-stringize keep
+    // them touching even though the pasted token's spelling now lives in a
+    // freshly lexed buffer with no real adjacency to the following token's
+    // original source pointer.
+    bool no_space_after;
 };
 
 // Error reporting
