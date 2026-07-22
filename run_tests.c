@@ -3386,7 +3386,7 @@ static int run_unit_tests(void) {
             /* skip arm64-only tests on non-arm64, and vice versa for x86 */
             if ((streq(base, "test_arm64_asm") && !is_arm64) ||
                 ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
-                  streq(base, "test_label_diff")) &&
+                  streq(base, "test_label_diff") || streq(base, "test_alternative")) &&
                  is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
@@ -3449,7 +3449,7 @@ static int run_unit_tests(void) {
             /* skip arm64-only tests on non-arm64, and vice versa for x86 */
             if ((streq(base, "test_arm64_asm") && !is_arm64) ||
                 ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
-                  streq(base, "test_label_diff")) &&
+                  streq(base, "test_label_diff") || streq(base, "test_alternative")) &&
                  is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");

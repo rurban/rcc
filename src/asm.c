@@ -1017,13 +1017,13 @@ static Arm64Cond parse_arm64_cond(const char *s) {
 // Encode a branch and handle relocation/backpatch
 static void emit_arm64_branch(AsmState *as, uint32_t insn_base,
                               bool is_bl, bool is_cond, const char *target) {
-    SecBuf *buf = &as->obj->text;
+    SecBuf *buf = cur_sec_buf(as);
     size_t off = buf->len;
 
     // Try local label first
     int sec = 0;
     int64_t toff = lookup_local(as, target, &sec);
-    if (toff >= 0 && sec == SEC_TEXT) {
+    if (toff >= 0 && sec == as->cur_sec) {
         // Resolve now
         int32_t delta = (int32_t)((toff - (int64_t)off) / 4);
         if (is_cond)
@@ -1044,10 +1044,10 @@ static void emit_arm64_branch(AsmState *as, uint32_t insn_base,
             if (idx >= 0 && as->obj->syms[idx].section == SEC_UNDEF) {
                 // External symbol → reloc
                 uint32_t rtype = is_bl ? R_AARCH64_CALL26 : R_AARCH64_JUMP26;
-                objfile_add_reloc(as->obj, SEC_TEXT, off, idx, rtype, 0);
+                objfile_add_reloc(as->obj, as->cur_sec, off, idx, rtype, 0);
             } else {
                 // Forward local label → fixup
-                add_fixup(as, off, SEC_TEXT, target,
+                add_fixup(as, off, as->cur_sec, target,
                           is_cond ? FIXUP_ARM64_B19 : FIXUP_ARM64_B26, 0);
             }
         } else {
@@ -1070,7 +1070,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
     ops_buf[511] = 0;
     char *ops[6];
     int nops = split_operands(ops_buf, ops, 6);
-    SecBuf *buf = &as->obj->text;
+    SecBuf *buf = cur_sec_buf(as);
 
     // GAS numeric local labels ("1:") are referenced as "1b"/"1f" — see the
     // matching comment in encode_x86(). emit_arm64_branch() below (used by
@@ -1263,7 +1263,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
                 size_t off = buf->len;
                 arm64_add_imm(buf, sf, r0, r1, 0, 0);
                 int sidx = ensure_sym(as, sym);
-                objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
+                objfile_add_reloc(as->obj, as->cur_sec, off, sidx, rtype, 0);
                 return true;
             }
             if (is_imm) {
@@ -1527,14 +1527,14 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         size_t off = buf->len;
         arm64_adrp(buf, r0, 0);
         int sidx = ensure_sym(as, sname);
-        objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
+        objfile_add_reloc(as->obj, as->cur_sec, off, sidx, rtype, 0);
         return true;
     }
     if (!strcmp(mnem, "adr")) {
         size_t off = buf->len;
         arm64_adr(buf, r0, 0);
         int sidx = ensure_sym(as, ops[1]);
-        objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
+        objfile_add_reloc(as->obj, as->cur_sec, off, sidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
         return true;
     }
 
@@ -1662,7 +1662,7 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
             }
             if (sym && rtype) {
                 int sidx = ensure_sym(as, sym);
-                objfile_add_reloc(as->obj, SEC_TEXT, off, sidx, rtype, 0);
+                objfile_add_reloc(as->obj, as->cur_sec, off, sidx, rtype, 0);
             }
             return true;
         }
@@ -1942,7 +1942,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     ops_buf[511] = 0;
     char *ops[6];
     int nops = split_operands(ops_buf, ops, 6);
-    SecBuf *buf = &as->obj->text;
+    // Not always .text: a .pushsection'd non-.text region (e.g. the kernel's
+    // ALTERNATIVE() macro's .altinstr_replacement, holding real replacement
+    // instructions, not just data directives) needs instructions encoded
+    // into whichever section is actually current.
+    SecBuf *buf = cur_sec_buf(as);
 
     // GAS numeric local labels ("1:") are referenced as "1b" (nearest prior)
     // or "1f" (nearest next) — a digit-name plus a direction suffix that is
@@ -2365,11 +2369,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_jmp_rel32(buf, 0); // placeholder
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
-        if (toff >= 0 && sec == SEC_TEXT) {
+        if (toff >= 0 && sec == as->cur_sec) {
             int32_t delta = (int32_t)(toff - (int64_t)(off + 5));
             secbuf_patch32le(buf, off + 1, (uint32_t)delta);
         } else {
-            add_fixup(as, off + 1, SEC_TEXT, lbl, FIXUP_REL32, 0);
+            add_fixup(as, off + 1, as->cur_sec, lbl, FIXUP_REL32, 0);
         }
         return true;
     }
@@ -2415,11 +2419,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_jcc_rel32(buf, cc, 0); // emits 0F 8X imm32 (6 bytes total)
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
-        if (toff >= 0 && sec == SEC_TEXT) {
+        if (toff >= 0 && sec == as->cur_sec) {
             int32_t delta = (int32_t)(toff - (int64_t)(off + 6));
             secbuf_patch32le(buf, off + 2, (uint32_t)delta);
         } else {
-            add_fixup(as, off + 2, SEC_TEXT, lbl, FIXUP_REL32, 0);
+            add_fixup(as, off + 2, as->cur_sec, lbl, FIXUP_REL32, 0);
         }
         return true;
     }
@@ -2437,12 +2441,12 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         // Check if local label
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
-        if (toff >= 0 && sec == SEC_TEXT) {
+        if (toff >= 0 && sec == as->cur_sec) {
             int32_t delta = (int32_t)(toff - (int64_t)(off + 5));
             secbuf_patch32le(buf, off + 1, (uint32_t)delta);
         } else {
             // External function → PLT32 reloc
-            objfile_add_reloc(as->obj, SEC_TEXT, off + 1, sidx,
+            objfile_add_reloc(as->obj, as->cur_sec, off + 1, sidx,
                               R_X86_64_PLT32, -4);
         }
         return true;
@@ -3667,11 +3671,12 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             }
         }
 
-        if (as.cur_sec != SEC_TEXT) {
-            line = nl ? nl + 1 : line + strlen(line);
-            continue;
-        }
-
+        // Instructions are allowed in any section, not just .text: the
+        // kernel's ALTERNATIVE() macro puts real replacement code in a
+        // .pushsection'd .altinstr_replacement, not just data directives
+        // (unlike e.g. __ex_table/__jump_table, which only ever hold
+        // .long/.quad entries). encode_x86()/encode_arm64() already
+        // target cur_sec_buf(as), whatever that currently is.
         char insn_buf[512];
         strncpy(insn_buf, p, 511);
         insn_buf[511] = 0;
