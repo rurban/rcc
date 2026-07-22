@@ -9057,6 +9057,20 @@ static VReg gen(Node *node) {
                     }
                 }
                 while (*sub && olen < (int)sizeof(out) - 1) out[olen++] = *sub++;
+            } else if (mod == 'l' && *p >= '0' && *p <= '9') {
+                // %lN: positional "asm goto" label reference, numbered
+                // continuing right after the in/out operand indices (see
+                // the matching x86 branch below for the full rationale).
+                int n = *p - '0';
+                p++;
+                int li = n - node->asm_noperands;
+                if (li >= 0 && li < node->asm_ngoto) {
+                    const char *prefix = ".L.label.";
+                    for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
+                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                }
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
                 p++;
@@ -9414,6 +9428,26 @@ static VReg gen(Node *node) {
                 // else: unresolved name — drop it, matching the existing
                 // %N-out-of-range behavior below rather than corrupting
                 // the rest of the template.
+            } else if (mod == 'l' && *p >= '0' && *p <= '9') {
+                // %lN: positional "asm goto" label reference. GCC numbers
+                // goto labels continuing right after the in/out operand
+                // indices (not a separate zero-based space), e.g. with 2
+                // operands the first goto label is %l2 — see
+                // arch/x86/include/asm/uaccess.h's __put_user_goto()
+                // ("mov %0,%1" then "_ASM_EXTABLE_UA(1b, %l2)"). Falling
+                // through to the plain %N operand path below silently
+                // dropped this (out of range for asm_noperands), leaving a
+                // fault-handler extable entry with no relocation at all.
+                int n = *p - '0';
+                p++;
+                int li = n - node->asm_noperands;
+                if (li >= 0 && li < node->asm_ngoto) {
+                    const char *prefix = ".L.label.";
+                    for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
+                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                }
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
                 p++;
