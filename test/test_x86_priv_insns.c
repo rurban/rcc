@@ -73,7 +73,7 @@ static int check_section_bytes(const char *rcc, const char *td, int pid,
     fputs(src, f);
     fclose(f);
 
-    snprintf(cmd, sizeof(cmd), "%s -c -o %s %s 2>/dev/null", rcc, objf, srcf);
+    snprintf(cmd, sizeof(cmd), "%s -c -o %s %s " NULL_REDIRECT, rcc, objf, srcf);
     int rc = system(cmd);
     remove(srcf);
     if (rc != 0) {
@@ -82,7 +82,7 @@ static int check_section_bytes(const char *rcc, const char *td, int pid,
         return 0;
     }
 
-    snprintf(cmd, sizeof(cmd), "objdump -s -j %s %s 2>/dev/null", section, objf);
+    snprintf(cmd, sizeof(cmd), "objdump -s -j %s %s " NULL_REDIRECT, section, objf);
     FILE *p = popen(cmd, "r");
     if (!p) {
         printf("FAIL: [%s] objdump failed to run\n", tag);

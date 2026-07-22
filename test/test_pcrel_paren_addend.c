@@ -62,7 +62,7 @@ int main(void)
         if (!f) { printf("FAIL: cannot write %s\n", srcf); return 1; }
         fputs(src, f);
         fclose(f);
-        snprintf(cmd, sizeof(cmd), "%s -c -o %s %s 2>/dev/null", rcc, objf, srcf);
+        snprintf(cmd, sizeof(cmd), "%s -c -o %s %s " NULL_REDIRECT, rcc, objf, srcf);
         int rc = system(cmd);
         remove(srcf);
         if (rc != 0) {
@@ -70,7 +70,7 @@ int main(void)
             remove(objf);
             return 2;
         }
-        snprintf(cmd, sizeof(cmd), "objdump -t %s 2>/dev/null", objf);
+        snprintf(cmd, sizeof(cmd), "objdump -t %s " NULL_REDIRECT, objf);
         FILE *p = popen(cmd, "r");
         char out[4096];
         size_t n = p ? fread(out, 1, sizeof(out) - 1, p) : 0;
@@ -115,7 +115,7 @@ int main(void)
         if (!f) { printf("FAIL: cannot write %s\n", srcf); return 3; }
         fputs(src, f);
         fclose(f);
-        snprintf(cmd, sizeof(cmd), "%s -o %s %s 2>/dev/null", rcc, exef, srcf);
+        snprintf(cmd, sizeof(cmd), "%s -o %s %s " NULL_REDIRECT, rcc, exef, srcf);
         int rc = system(cmd);
         remove(srcf);
         if (rc != 0) {

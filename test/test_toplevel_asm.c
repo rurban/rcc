@@ -78,7 +78,7 @@ int main(void)
     fputs(src, f);
     fclose(f);
 
-    snprintf(cmd, sizeof(cmd), "%s -c -o %s %s 2>/dev/null", rcc, objf, srcf);
+    snprintf(cmd, sizeof(cmd), "%s -c -o %s %s " NULL_REDIRECT, rcc, objf, srcf);
     int rc = system(cmd);
     remove(srcf);
     if (rc != 0) {
@@ -87,7 +87,7 @@ int main(void)
         return 3;
     }
 
-    snprintf(cmd, sizeof(cmd), "objdump -tr %s 2>/dev/null", objf);
+    snprintf(cmd, sizeof(cmd), "objdump -tr %s " NULL_REDIRECT, objf);
     FILE *p = popen(cmd, "r");
     if (!p) {
         printf("FAIL: objdump failed to run\n");

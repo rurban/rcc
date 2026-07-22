@@ -42,6 +42,17 @@ static const char *find_rcc(void) {
 #endif
 }
 
+// The shell redirection that discards stderr. There is no /dev/null on
+// native Windows — cmd.exe's own redirect setup fails trying to open that
+// path, aborting the whole system()/popen() command before it even runs
+// (this is masked under Wine, whose Z: drive maps the host filesystem
+// root, so /dev/null there resolves to the real device).
+#ifdef _WIN32
+#define NULL_REDIRECT "2>NUL"
+#else
+#define NULL_REDIRECT "2>/dev/null"
+#endif
+
 // The PC-relative (rel32) relocation type name objdump prints for a
 // R_X86_64_PC32-shaped fixup — platform-dependent, since ELF and PE/COFF
 // use entirely different relocation type namespaces for the same thing.
