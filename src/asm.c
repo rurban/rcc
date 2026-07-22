@@ -438,6 +438,60 @@ static bool try_parse_skip_maxdiff(const char *args, char lbl[4][128], int *fill
     return true;
 }
 
+// Match a trailing "- ( . [+-] N )" — GAS's PC-relative-to-here idiom with
+// an explicit parenthesized addend attached to the dot, distinct from the
+// bare "SYM - ." form and from "SYM + N - ." (addend attached to the
+// symbol side instead): the kernel's STATIC_CALL trampolines encode a raw
+// jmp rel32 as ".byte 0xe9; .long target - (. + 4)" — the "+ 4" here is
+// exactly the "4 bytes past the start of this displacement field" PC32
+// reference point every other rel32 fixup in this file already computes
+// as a plain addend, just spelled out explicitly instead of left implicit.
+// On success, NUL-terminates `val` right before the trailing "-" (leaving
+// just the symbol-side text, exactly like the bare "SYM - ." case) and
+// returns the addend; on failure (anything that doesn't parse as this one
+// specific shape) leaves `val` untouched and returns false.
+static bool try_parse_here_addend(char *val, int64_t *addend_out) {
+    size_t e = strlen(val);
+    while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+    if (e == 0 || val[e - 1] != ')') return false;
+    size_t close = e - 1;
+    size_t k = close;
+    while (k > 0 && val[k - 1] != '(') k--;
+    if (k == 0) return false;
+    size_t open = k - 1;
+    char *inner = val + k;
+    val[close] = '\0';
+    char *ip = skip_ws(inner);
+    if (*ip != '.') return false;
+    ip++;
+    ip = skip_ws(ip);
+    int64_t addend = 0;
+    if (*ip == '+' || *ip == '-') {
+        bool neg = *ip == '-';
+        ip = skip_ws(ip + 1); // GAS allows whitespace between the sign and
+        // the digits ("- 4"), which strtoll's grammar
+        // does not — split them ourselves.
+        char *endp;
+        addend = strtoll(ip, &endp, 0);
+        if (endp == ip) return false;
+        if (neg) addend = -addend;
+        ip = skip_ws(endp);
+    }
+    if (*ip != '\0') return false;
+    e = open;
+    while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+    if (e == 0 || val[e - 1] != '-') return false;
+    e--;
+    while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
+    val[e] = '\0';
+    // The whole "( . <op> N )" group is subtracted from SYM, so N's
+    // contribution to the final addend is negated relative to how it's
+    // literally written: "SYM - (. + 4)" == "SYM - . - 4", i.e. addend -4,
+    // not +4.
+    *addend_out = -addend;
+    return true;
+}
+
 // Parse a comma-separated operand list. Returns count, fills ops[].
 // Each ops[i] points into a copy of the operand string (null-terminated).
 static int split_operands(char *line, char **ops, int max_ops) {
@@ -901,6 +955,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             // other, only the linker knows the final addresses.
             size_t vlen = strlen(val);
             bool pc_rel_here = false;
+            int64_t here_addend = 0;
             if (vlen >= 3) {
                 size_t e = vlen;
                 while (e > 0 && isspace((unsigned char)val[e - 1])) e--;
@@ -914,6 +969,9 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                         vlen = e;
                         pc_rel_here = true;
                     }
+                } else if (try_parse_here_addend(val, &here_addend)) {
+                    vlen = strlen(val);
+                    pc_rel_here = true;
                 }
             }
             if (pc_rel_here && (sz == 4 || sz == 8)) {
@@ -930,7 +988,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 // __jump_table entry: ".quad key + branch - .", where
                 // "branch" is a small 0/1 constant to fold into the
                 // relocation's addend, not part of the symbol name).
-                int64_t addend = 0;
+                int64_t addend = here_addend;
                 char *plus = strchr(sym, '+');
                 char *minus = strchr(sym, '-');
                 if (plus) {

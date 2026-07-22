@@ -3392,7 +3392,8 @@ static int run_unit_tests(void) {
                   streq(base, "test_skip_maxdiff") ||
                   streq(base, "test_cross_section_jmp_reloc") ||
                   streq(base, "test_indirect_call_jmp") ||
-                  streq(base, "test_toplevel_asm")) &&
+                  streq(base, "test_toplevel_asm") ||
+                  streq(base, "test_pcrel_paren_addend")) &&
                  is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
@@ -3461,7 +3462,8 @@ static int run_unit_tests(void) {
                   streq(base, "test_skip_maxdiff") ||
                   streq(base, "test_cross_section_jmp_reloc") ||
                   streq(base, "test_indirect_call_jmp") ||
-                  streq(base, "test_toplevel_asm")) &&
+                  streq(base, "test_toplevel_asm") ||
+                  streq(base, "test_pcrel_paren_addend")) &&
                  is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
