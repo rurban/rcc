@@ -4472,11 +4472,17 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     tok = skip(tok, "=");
                     /* Apply value to a[sidx][sidx2] */
                     if (len == 0 || sidx < len)
-                        tok = global_init_one(tok, var, ty->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
+                        tok = global_init_one(tok, var, ty->base->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
                     else
                         tok = skip_initializer(tok);
                     idx = sidx + 1;
-                    continue;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
                 }
                 tok = skip(tok, "=");
             }
@@ -4943,7 +4949,13 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     Node *elem_lhs = new_array_elem_lvalue_node(inner, sidx2, tok);
                     tok = local_init_one(tok, elem_lhs, ty->base->base, cur);
                     idx = sidx + 1;
-                    continue;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
                 }
                 tok = skip(tok, "=");
             }
