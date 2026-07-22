@@ -140,6 +140,7 @@ struct ObjReloc {
 #define FIXUP_ARM64_B26  3
 #define FIXUP_ARM64_B19  4
 #define FIXUP_LABELDIFF  5 // patch = offset(label2) - offset(label); width in `size`
+#define FIXUP_SKIP_MAXDIFF 6 // insert max(0,(A-B)-(C-D)) fill bytes at patch_off
 
 // ---------------------------------------------------------------------------
 // Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by

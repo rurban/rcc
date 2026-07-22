@@ -42,8 +42,12 @@ typedef struct {
         int section;
         char label[128];
         char label2[128]; // FIXUP_LABELDIFF only: patch = offset(label2) - offset(label)
-        int kind; // FIXUP_ARM64_B26, FIXUP_ARM64_B19, FIXUP_REL32, FIXUP_LABELDIFF
+        char label3[128]; // FIXUP_SKIP_MAXDIFF only: C in max(0,(A-B)-(C-D))
+        char label4[128]; // FIXUP_SKIP_MAXDIFF only: D in max(0,(A-B)-(C-D))
+        int kind; // FIXUP_ARM64_B26, FIXUP_ARM64_B19, FIXUP_REL32, FIXUP_LABELDIFF,
+        // FIXUP_SKIP_MAXDIFF
         int size; // FIXUP_LABELDIFF only: patch field width in bytes (1/2/4/8)
+        int fill_byte; // FIXUP_SKIP_MAXDIFF only: byte value to pad with
         int64_t addend;
     } fixups[512];
     int nfixups;
@@ -159,12 +163,15 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
     for (int i = 0; i < as->nfixups; i++) {
         struct Fixup *fx = &as->fixups[i];
         // FIXUP_LABELDIFF (GAS "A - B" label-difference, e.g. ALTERNATIVE()'s
-        // alt_rlen) is resolved once at the end of assemble_inline once BOTH
-        // labels are known, not here — its `label`/`label2` are ordinary
-        // labels that may legitimately live in a different section than
-        // whichever one happens to be defined first, which isn't the
-        // "cross-section jump target" case below at all.
-        if (fx->kind == FIXUP_LABELDIFF) continue;
+        // alt_rlen) and FIXUP_SKIP_MAXDIFF (the alt_rlen/alt_slen padding
+        // computation) are both resolved once at the end of assemble_inline
+        // once all their labels are known, not here — their `label`/etc.
+        // fields are ordinary labels that may legitimately live in a
+        // different section than whichever one happens to be defined
+        // first, which isn't the "cross-section jump target" case below at
+        // all (and FIXUP_SKIP_MAXDIFF's `label` isn't even a branch target
+        // to patch — it's just the first operand of a length expression).
+        if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF) continue;
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->section != sec) {
             // Cross-section jump/call target — e.g. a `jmp`/`jcc` inside
@@ -259,6 +266,43 @@ static void add_labeldiff_fixup(AsmState *as, size_t patch_off, int section,
     fx->addend = 0;
 }
 
+// Add a deferred FIXUP_SKIP_MAXDIFF: at end-of-buffer resolution, once all
+// four labels are known, insert max(0,(offset(a)-offset(b))-(offset(c)-
+// offset(d))) bytes of `fill` at patch_off, shifting everything already
+// recorded after it in this section (see the resolution site for why this
+// self-contained shift is safe rather than needing a full second pass).
+// `locals_mark` is a snapshot of as->nlocals at the moment this .skip is
+// seen — the boundary between labels defined *before* it (like the OLDINSTR
+// "772:" that sits, numerically, at the exact same not-yet-inserted offset
+// as the .skip itself, and must NOT move) and labels defined *after* it
+// (like "773:", at that same numeric offset right now, that MUST move once
+// the padding bytes actually go in). Offset alone can't tell those two
+// apart when nothing has been inserted yet; chronological order (locals[]
+// and fixups[] are both append-only, so array index == chronological
+// order) can.
+static void add_skip_maxdiff_fixup(AsmState *as, size_t patch_off, int section,
+                                   const char *a, const char *b, const char *c,
+                                   const char *d, int fill, int locals_mark) {
+    if (as->nfixups >= 511) {
+        asm_error(as, "too many fixups");
+        return;
+    }
+    struct Fixup *fx = &as->fixups[as->nfixups++];
+    fx->patch_off = patch_off;
+    fx->section = section;
+    strncpy(fx->label, a, sizeof(fx->label) - 1);
+    fx->label[sizeof(fx->label) - 1] = '\0';
+    strncpy(fx->label2, b, sizeof(fx->label2) - 1);
+    fx->label2[sizeof(fx->label2) - 1] = '\0';
+    strncpy(fx->label3, c, sizeof(fx->label3) - 1);
+    fx->label3[sizeof(fx->label3) - 1] = '\0';
+    strncpy(fx->label4, d, sizeof(fx->label4) - 1);
+    fx->label4[sizeof(fx->label4) - 1] = '\0';
+    fx->kind = FIXUP_SKIP_MAXDIFF;
+    fx->fill_byte = fill;
+    fx->addend = (int64_t)locals_mark;
+}
+
 // Look up a label offset (returns -1 if not found)
 static int64_t lookup_local(AsmState *as, const char *name, int *sec_out) {
     for (int i = as->nlocals - 1; i >= 0; i--) {
@@ -345,6 +389,52 @@ static bool try_parse_label_diff(char *val, char **lbl_a, char **lbl_b) {
         if (!isalnum((unsigned char)*p) && *p != '_' && *p != '.') return false;
     *lbl_a = a;
     *lbl_b = b;
+    return true;
+}
+
+// Match the one fixed ".skip" shape the kernel's ALTERNATIVE() macro
+// generates for replacement-vs-original padding:
+//   -(((A-B)-(C-D)) > 0) * ((A-B)-(C-D)),<fill>
+// i.e. max(0,(A-B)-(C-D)) bytes of <fill> — where A/B (the replacement's
+// length) are typically forward references not yet defined at this point
+// in the token stream (they live in a *later* .pushsection'd
+// .altinstr_replacement block), so real evaluation has to wait. Rather
+// than parse the arithmetic generally, this pulls out the (up to) four
+// label-like tokens appearing before the final comma and the trailing
+// fill-byte token; anything that doesn't fit — a different operator
+// shape, a plain numeric count, more or fewer than four labels — falls
+// through to the caller's existing plain-integer handling.
+static bool try_parse_skip_maxdiff(const char *args, char lbl[4][128], int *fill_out) {
+    const char *comma = strrchr(args, ',');
+    if (!comma) return false;
+    char fillbuf[64];
+    const char *fp = skip_ws((char *)comma + 1);
+    size_t flen = strlen(fp);
+    if (flen == 0 || flen >= sizeof(fillbuf)) return false;
+    strncpy(fillbuf, fp, sizeof(fillbuf) - 1);
+    fillbuf[sizeof(fillbuf) - 1] = '\0';
+    trim_end(fillbuf);
+    char *fend;
+    long fill = strtol(fillbuf, &fend, 0);
+    if (*fend) return false;
+
+    int n = 0;
+    const char *p = args;
+    while (*p && p < comma && n < 4) {
+        if (isalnum((unsigned char)*p) || *p == '_' || *p == '.') {
+            const char *start = p;
+            while (isalnum((unsigned char)*p) || *p == '_' || *p == '.') p++;
+            size_t len = (size_t)(p - start);
+            if (len >= 128) return false;
+            memcpy(lbl[n], start, len);
+            lbl[n][len] = '\0';
+            n++;
+        } else {
+            p++;
+        }
+    }
+    if (n != 4) return false;
+    *fill_out = (int)fill;
     return true;
 }
 
@@ -886,27 +976,24 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 if (try_parse_label_diff(valcopy, &lbl_a, &lbl_b)) {
                     strip_local_label_suffix(lbl_a);
                     strip_local_label_suffix(lbl_b);
-                    int sec_a = 0, sec_b = 0;
-                    int64_t off_a = lookup_local(as, lbl_a, &sec_a);
-                    int64_t off_b = lookup_local(as, lbl_b, &sec_b);
-                    if (off_a >= 0 && off_b >= 0) {
-                        int64_t diff = off_a - off_b; // "A - B" = offset(A) - offset(B)
-                        switch (sz) {
-                        case 1: secbuf_emit8(buf, (uint8_t)diff); break;
-                        case 2: secbuf_emit16le(buf, (uint16_t)diff); break;
-                        case 4: secbuf_emit32le(buf, (uint32_t)diff); break;
-                        case 8: secbuf_emit64le(buf, (uint64_t)diff); break;
-                        }
-                    } else {
-                        size_t off = 0;
-                        switch (sz) {
-                        case 1: off = secbuf_emit8(buf, 0); break;
-                        case 2: off = secbuf_emit16le(buf, 0); break;
-                        case 4: off = secbuf_emit32le(buf, 0); break;
-                        case 8: off = secbuf_emit64le(buf, 0); break;
-                        }
-                        add_labeldiff_fixup(as, off, as->cur_sec, lbl_a, lbl_b, sz);
+                    // Always defer, even though both labels are usually
+                    // already-defined backward references at this point
+                    // (the common case, e.g. "772b-771b" right after the
+                    // instructions it measures) — a FIXUP_SKIP_MAXDIFF
+                    // elsewhere in this same buffer (e.g. the padding
+                    // between "772:" and "773:") can still retroactively
+                    // move either label's offset via skip_insert_shift,
+                    // and that shift is only visible to fixups resolved
+                    // *after* it runs, not to a value already baked in
+                    // eagerly here.
+                    size_t off = 0;
+                    switch (sz) {
+                    case 1: off = secbuf_emit8(buf, 0); break;
+                    case 2: off = secbuf_emit16le(buf, 0); break;
+                    case 4: off = secbuf_emit32le(buf, 0); break;
+                    case 8: off = secbuf_emit64le(buf, 0); break;
                     }
+                    add_labeldiff_fixup(as, off, as->cur_sec, lbl_a, lbl_b, sz);
                     val = strtok(NULL, ",");
                     continue;
                 }
@@ -945,6 +1032,14 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             val = strtok(NULL, ",");
         }
     } else if (!strcmp(dir, "zero") || !strcmp(dir, "skip") || !strcmp(dir, "space")) {
+        char mlbl[4][128];
+        int mfill;
+        if (!strcmp(dir, "skip") && try_parse_skip_maxdiff(args, mlbl, &mfill)) {
+            for (int i = 0; i < 4; i++) strip_local_label_suffix(mlbl[i]);
+            add_skip_maxdiff_fixup(as, cur_off(as), as->cur_sec, mlbl[0], mlbl[1],
+                                   mlbl[2], mlbl[3], mfill, as->nlocals);
+            return;
+        }
         int n = atoi(args);
         if (as->cur_sec == SEC_BSS) {
             as->obj->bss_size += (size_t)n;
@@ -1908,6 +2003,7 @@ static int suffix_size(const char *mnem) {
         "push", "pop", "call", "ret", "jmp", "nop", "xchg",
         "bsf", "bsr", "popcnt", "lzcnt", "tzcnt", "bswap",
         "movabs", "lock", "rep", "repe", "repne", "cld", "mfence",
+        "rdfsbase", "rdgsbase", "wrfsbase", "wrgsbase",
         NULL};
     for (int i = 0; no_sfx[i]; i++)
         if (!strcmp(mnem, no_sfx[i])) return 0;
@@ -2005,6 +2101,54 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "mfence")) {
         x86_mfence(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "lfence")) {
+        x86_lfence(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sfence")) {
+        x86_sfence(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdtsc")) {
+        x86_rdtsc(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdtscp")) {
+        x86_rdtscp(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "clac")) {
+        x86_clac(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "stac")) {
+        x86_stac(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "iretq") || !strcmp(mnem, "iret")) {
+        x86_iretq(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "invpcid")) {
+        x86_invpcid(buf, R(1), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "rdfsbase")) {
+        x86_rdfsbase(buf, sz, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "rdgsbase")) {
+        x86_rdgsbase(buf, sz, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "wrfsbase")) {
+        x86_wrfsbase(buf, sz, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "wrgsbase")) {
+        x86_wrgsbase(buf, sz, R(0));
         return true;
     }
     if (!strcmp(mnem, "ud2") || !strcmp(mnem, "ud2a")) {
@@ -2204,7 +2348,20 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     ALU_OP("and", x86_and_rr, x86_and_ri, x86_and_rm, x86_and_mr, x86_and_mi)
     ALU_OP("or", x86_or_rr, x86_or_ri, x86_or_rm, x86_or_mr, x86_or_mi)
     ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr, x86_xor_mi)
+    ALU_OP("adc", x86_adc_rr, x86_adc_ri, x86_adc_rm, x86_adc_mr, x86_adc_mi)
+    ALU_OP("sbb", x86_sbb_rr, x86_sbb_ri, x86_sbb_rm, x86_sbb_mr, x86_sbb_mi)
 #undef ALU_OP
+
+    // MUL (F6/F7 group /4): implicit RDX:RAX = RAX * r/m. Excludes the SSE
+    // mulss/mulsd/mulps/mulpd mnemonics (4th char 's' or 'p'), handled
+    // separately below.
+    if (!strncmp(mnem, "mul", 3) && mnem[3] != 's' && mnem[3] != 'p') {
+        if (is_mem(0))
+            x86_mul_m(buf, sz, M(0));
+        else
+            x86_mul_r(buf, sz, R(0));
+        return true;
+    }
 
     // IMUL
     if (!strncmp(mnem, "imul", 4)) {
@@ -2535,6 +2692,31 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // against whatever follows — this broke every lock-prefixed atomic op
     // (lock xadd/cmpxchg/bts/btr/btc/...) used throughout kernel atomics.
     // Re-split ops_str into its own mnemonic + operands and encode that.
+    // Segment-override prefixes ("ds clflush %0", "ds wrmsr", ...): the
+    // kernel deliberately prepends a redundant segment prefix to some
+    // instructions to pad them to a fixed patchable length for
+    // ALTERNATIVE(); same "prefix mnem, real mnem lands in one call" shape
+    // as lock/rep above.
+    if (!strcmp(mnem, "ds") || !strcmp(mnem, "cs") || !strcmp(mnem, "es") ||
+        !strcmp(mnem, "fs") || !strcmp(mnem, "gs") || !strcmp(mnem, "ss")) {
+        uint8_t seg_byte = !strcmp(mnem, "es") ? 0x26
+            : !strcmp(mnem, "cs")              ? 0x2e
+            : !strcmp(mnem, "ss")              ? 0x36
+            : !strcmp(mnem, "ds")              ? 0x3e
+            : !strcmp(mnem, "fs")              ? 0x64
+                                               : 0x65;
+        x86_seg_prefix(buf, seg_byte);
+        char *m2 = ops_str;
+        char *o2 = m2;
+        while (*o2 && !isspace((unsigned char)*o2)) o2++;
+        if (*o2) {
+            *o2++ = 0;
+            o2 = skip_ws(o2);
+        }
+        for (char *c = m2; *c; c++) *c = (char)tolower((unsigned char)*c);
+        if (!*m2) return true;
+        return encode_x86(as, m2, o2);
+    }
     if (!strcmp(mnem, "lock") || !strcmp(mnem, "rep") ||
         !strcmp(mnem, "repe") || !strcmp(mnem, "repne")) {
         if (!strcmp(mnem, "lock"))
@@ -2677,6 +2859,97 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "cpuid")) {
         x86_cpuid(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdmsr")) {
+        x86_rdmsr(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "wrmsr")) {
+        x86_wrmsr(buf);
+        return true;
+    }
+    if (!strncmp(mnem, "cmpxchg16b", 10)) {
+        x86_cmpxchg16b_m(buf, M(0));
+        return true;
+    }
+    if (!strncmp(mnem, "cmpxchg8b", 9)) {
+        x86_cmpxchg8b_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "wbinvd")) {
+        x86_wbinvd(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sti")) {
+        x86_sti(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cli")) {
+        x86_cli(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "hlt")) {
+        x86_hlt(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "prefetcht0")) {
+        x86_prefetcht0(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "prefetchnta")) {
+        x86_prefetchnta(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "prefetchw")) {
+        x86_prefetchw(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "clflushopt")) {
+        x86_clflushopt(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "clflush")) {
+        x86_clflush(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "clwb")) {
+        x86_clwb(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pause")) {
+        x86_pause(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "swapgs")) {
+        x86_swapgs(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdpmc")) {
+        x86_rdpmc(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdpkru")) {
+        x86_rdpkru(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "wrpkru")) {
+        x86_wrpkru(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "verw")) {
+        x86_verw_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "rdpid")) {
+        x86_rdpid(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "lsl")) {
+        if (is_mem(0))
+            x86_lsl_rm(buf, M(0), R(1));
+        else
+            x86_lsl_rr(buf, R(0), R(1));
         return true;
     }
 
@@ -3587,6 +3860,50 @@ static char *asm_macro_pass(AsmState *as, const char *text) {
     return out.data;
 }
 
+// Insert `n` bytes of `fill` at `patch_off` within `section`'s buffer,
+// shifting everything already recorded after that point: the section's own
+// bytes, every local-label offset (and its mirror in obj->syms[]) at or
+// past patch_off, and every other pending fixup's patch_off at or past it
+// (including not-yet-resolved FIXUP_SKIP_MAXDIFF entries, so nested
+// ALTERNATIVE_2-style constructs — two of these in the same buffer — chain
+// correctly when resolved left to right).
+//
+// This is a real, if narrow, form of the "two-pass assembler" the
+// alt_rlen/alt_slen padding computation was originally deferred on: safe
+// here specifically because the ALTERNATIVE() macro never touches this
+// section again after the padding point within a single assemble_inline
+// call (it immediately .pushsection's away to .altinstructions /
+// .altinstr_replacement) — so no relocation already added against this
+// section can land past patch_off, and there's nothing broader to shift.
+static void skip_insert_shift(AsmState *as, int section, size_t patch_off,
+                              size_t n, uint8_t fill, int locals_mark,
+                              int fixup_idx) {
+    if (n == 0) return;
+    SecBuf *sb = objfile_section_buf(as->obj, section);
+    if (!sb) return;
+    secbuf_reserve(sb, n);
+    memmove(sb->data + patch_off + n, sb->data + patch_off, sb->len - patch_off);
+    memset(sb->data + patch_off, fill, n);
+    sb->len += n;
+
+    // Chronologically-later same-section labels/fixups, not offset-later
+    // ones — see add_skip_maxdiff_fixup's comment for why offset alone is
+    // ambiguous right at the insertion boundary.
+    for (int i = locals_mark; i < as->nlocals; i++) {
+        struct LocalSym *ls = &as->locals[i];
+        if (ls->section != section) continue;
+        ls->offset += n;
+        if (ls->sym_idx >= 0 && ls->sym_idx < as->obj->sym_count &&
+            as->obj->syms[ls->sym_idx].section == section)
+            as->obj->syms[ls->sym_idx].offset += n;
+    }
+    for (int i = fixup_idx + 1; i < as->nfixups; i++) {
+        struct Fixup *fx2 = &as->fixups[i];
+        if (fx2->section == section)
+            fx2->patch_off += n;
+    }
+}
+
 int assemble_inline(ObjFile *obj, const char *tmpl,
                     inline_fixup_fn on_forward, void *ctx) {
 #ifdef ARCH_ARM64
@@ -3625,8 +3942,28 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             continue;
         }
 
+        // A label's colon ends the line's very first token — no whitespace
+        // before it — whether or not anything (whitespace, a comment, or
+        // straight into another statement like "1:jmp foo") follows on the
+        // same physical line. String-literal concatenation in kernel
+        // headers routinely glues "1: " onto a macro that starts mid-
+        // statement (e.g. ALTERNATIVE's OLDINSTR expands to "# ALT:
+        // oldinstr\n...", so "1: " + that becomes one physical line "1: #
+        // ALT: oldinstr"), so the old colon[1]-must-be-whitespace/EOL check
+        // missed both the label itself and left "# ALT: oldinstr" to fall
+        // through as if it were an instruction (mnem "#").
         char *colon = strchr(p, ':');
-        bool is_label = colon && (colon[1] == '\0' || colon[1] == ' ' || colon[1] == '\t');
+        bool is_label = false;
+        if (colon && colon > p) {
+            is_label = true;
+            for (char *c = p; c < colon; c++) {
+                if (isspace((unsigned char)*c) || *c == '%' || *c == ',' ||
+                    *c == '(' || *c == ')') {
+                    is_label = false;
+                    break;
+                }
+            }
+        }
 
         if (!is_label && *p == '.') {
             char *dir = p + 1;
@@ -3649,7 +3986,7 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             bool is_func = (idx >= 0 && obj->syms[idx].type == ST_FUNC);
             define_label(&as, lbl, is_global, is_weak, is_func);
             p = skip_ws(colon + 1);
-            if (!*p) {
+            if (!*p || *p == '#' || *p == ';' || (p[0] == '/' && p[1] == '/')) {
                 line = nl ? nl + 1 : line + strlen(line);
                 continue;
             }
@@ -3709,9 +4046,35 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
 
     free(buf);
 
+    // Resolve FIXUP_SKIP_MAXDIFF entries first and in array order (== source
+    // order == ascending original patch_off): each insertion shifts every
+    // fixup recorded after it, including later not-yet-processed
+    // FIXUP_SKIP_MAXDIFF ones, so processing left to right lets nested
+    // ALTERNATIVE_2-style constructs (two of these in one buffer) chain
+    // correctly. Everything else — FIXUP_LABELDIFF in particular, e.g. the
+    // "773b-771b" total-length field that spans this padding — must wait
+    // until after this pass so it reads final, post-shift offsets.
+    for (int i = 0; i < as.nfixups; i++) {
+        struct Fixup *fx = &as.fixups[i];
+        if (fx->kind != FIXUP_SKIP_MAXDIFF) continue;
+        int sec_a = 0, sec_b = 0, sec_c = 0, sec_d = 0;
+        int64_t off_a = lookup_local(&as, fx->label, &sec_a);
+        int64_t off_b = lookup_local(&as, fx->label2, &sec_b);
+        int64_t off_c = lookup_local(&as, fx->label3, &sec_c);
+        int64_t off_d = lookup_local(&as, fx->label4, &sec_d);
+        if (off_a < 0 || off_b < 0 || off_c < 0 || off_d < 0) continue;
+        int64_t rlen = off_a - off_b;
+        int64_t slen = off_c - off_d;
+        int64_t pad = rlen - slen;
+        if (pad > 0)
+            skip_insert_shift(&as, fx->section, fx->patch_off, (size_t)pad,
+                              (uint8_t)fx->fill_byte, (int)fx->addend, i);
+    }
+
     // Resolve forward fixups against existing symbols
     for (int i = 0; i < as.nfixups; i++) {
         struct Fixup *fx = &as.fixups[i];
+        if (fx->kind == FIXUP_SKIP_MAXDIFF) continue;
         if (fx->kind == FIXUP_LABELDIFF) {
             int sec_a = 0, sec_b = 0;
             int64_t off_a = lookup_local(&as, fx->label, &sec_a);

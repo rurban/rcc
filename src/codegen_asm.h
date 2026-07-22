@@ -3629,67 +3629,6 @@ static inline void asm_negq_mem8(SecBuf *s, VReg rd) {
     X86Mem m = {REG(rd), X86_NOREG, 1, 8};
     x86_neg_m(s, 8, m); // negq 8(rd)
 }
-// ============================================================================
-// x86_64: adc / sbb from memory  (these don't exist in x86_enc.h yet)
-// ============================================================================
-__attribute__((unused)) static void x86_adc_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
-    // ADC r/m, r: opcode 13 /r
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
-    secbuf_emit8(s, 0x13);
-    uint8_t modrm;
-    if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {
-        modrm = ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (srcm.disp >= -128 && srcm.disp < 128) {
-        modrm = 0x40 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)srcm.disp);
-    } else {
-        modrm = 0x80 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)srcm.disp);
-    }
-}
-__attribute__((unused)) static void x86_sbb_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
-    // SBB r/m, r: opcode 1B /r
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
-    secbuf_emit8(s, 0x1B);
-    uint8_t modrm;
-    if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {
-        modrm = ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (srcm.disp >= -128 && srcm.disp < 128) {
-        modrm = 0x40 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)srcm.disp);
-    } else {
-        modrm = 0x80 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)srcm.disp);
-    }
-}
-__attribute__((unused)) static void x86_adc_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm) {
-    // ADC r/m, imm: opcode 83 /2 ib (for 8-bit sign-extended imm)
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dstm.base & 8) ? 0x01 : 0) | ((dstm.index & 8) ? 0x02 : 0));
-    secbuf_emit8(s, 0x83);
-    uint8_t modrm = 0x10; // /2 = reg=2 (010)
-    if (dstm.disp == 0 && (dstm.base & 7) != X86_RBP) {
-        modrm |= (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (dstm.disp >= -128 && dstm.disp < 128) {
-        modrm |= 0x40 | (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)dstm.disp);
-    } else {
-        modrm |= 0x80 | (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)dstm.disp);
-    }
-    secbuf_emit8(s, (uint8_t)imm);
-}
 __attribute__((unused)) static void asm_mov_base_off_rdx(SecBuf *s, VReg base, int64_t disp) {
     X86Mem m = {REG(base), X86_NOREG, 1, disp};
     x86_mov_rm(s, 8, X86_RDX, m); // movq disp(base), %rdx

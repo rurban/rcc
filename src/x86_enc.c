@@ -700,6 +700,7 @@ void x86_xchg_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) {
 void x86_lock_prefix(SecBuf *s) { emit1(s, 0xf0); }
 void x86_rep_prefix(SecBuf *s) { emit1(s, 0xf3); }
 void x86_repne_prefix(SecBuf *s) { emit1(s, 0xf2); }
+void x86_seg_prefix(SecBuf *s, uint8_t byte) { emit1(s, byte); }
 void x86_cld(SecBuf *s) { emit1(s, 0xfc); }
 void x86_stosb(SecBuf *s) { emit1(s, 0xaa); }
 void x86_movsb(SecBuf *s) { emit1(s, 0xa4); }
@@ -732,7 +733,155 @@ void x86_scas(SecBuf *s, int size) {
     emit1(s, size == 1 ? 0xae : 0xaf);
 }
 void x86_mfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf0); }
+void x86_lfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xe8); }
+void x86_sfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf8); }
 void x86_cpuid(SecBuf *s) { emit2(s, 0x0f, 0xa2); }
+void x86_rdtsc(SecBuf *s) { emit2(s, 0x0f, 0x31); }
+void x86_rdtscp(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xf9); }
+void x86_clac(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xca); }
+void x86_stac(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xcb); }
+void x86_iretq(SecBuf *s) { emit2(s, 0x48, 0xcf); }
+
+// INVPCID r64, m128 (64-bit mode): the register operand's width is fixed at
+// 64 bits by the mode itself, so unlike most instructions REX.W is neither
+// needed nor meaningful here.
+void x86_invpcid(SecBuf *s, X86Reg type_reg, X86Mem desc) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, type_reg, desc.index, desc.base);
+    emit3(s, 0x0f, 0x38, 0x82);
+    emit_mem(s, desc.base, desc.index, desc.scale, desc.disp, type_reg);
+}
+
+// RD/WR{FS,GS}BASE r32/r64: mandatory F3 prefix, opcode extension in the
+// ModRM reg field (mod=11, register-direct only — no memory form exists).
+static void fsgsbase_op(SecBuf *s, int size, int digit, X86Reg r) {
+    emit1(s, 0xf3);
+    maybe_rex(s, size == 8, X86_NOREG, X86_NOREG, r);
+    emit2(s, 0x0f, 0xae);
+    emit1(s, modrm(3, digit, r));
+}
+void x86_rdfsbase(SecBuf *s, int size, X86Reg r) { fsgsbase_op(s, size, 0, r); }
+void x86_rdgsbase(SecBuf *s, int size, X86Reg r) { fsgsbase_op(s, size, 1, r); }
+void x86_wrfsbase(SecBuf *s, int size, X86Reg r) { fsgsbase_op(s, size, 2, r); }
+void x86_wrgsbase(SecBuf *s, int size, X86Reg r) { fsgsbase_op(s, size, 3, r); }
+
+// MUL r/m (F6/F7 group, /4): implicit RDX:RAX = RAX * r/m.
+void x86_mul_r(SecBuf *s, int size, X86Reg src) {
+    size16_pfx(s, size);
+    rex_for_size(s, size, X86_NOREG, src);
+    emit2(s, opsize(0xf6, size), modrm(3, 4, src));
+}
+void x86_mul_m(SecBuf *s, int size, X86Mem m) {
+    int needrex = (size == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (size == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(size == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, opsize(0xf6, size));
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 4);
+}
+
+// ADC (op=2) / SBB (op=3): same group-1 ALU shape as ADD/SUB/AND/OR/XOR/CMP.
+void x86_adc_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 2, d, sr); }
+void x86_adc_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 2, d, i); }
+void x86_adc_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 2, d, m); }
+void x86_adc_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 2, d, sr); }
+void x86_adc_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
+    int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (size == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit1(s, opsize(0x80, size));
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 2); // /2 = ADC
+    if (size == 1) emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
+void x86_sbb_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 3, d, sr); }
+void x86_sbb_ri(SecBuf *s, int sz, X86Reg d, int32_t i) { alu_ri(s, sz, 3, d, i); }
+void x86_sbb_rm(SecBuf *s, int sz, X86Reg d, X86Mem m) { alu_rm(s, sz, 3, d, m); }
+void x86_sbb_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { alu_mr(s, sz, 3, d, sr); }
+void x86_sbb_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
+    int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (size == 2) emit1(s, 0x66);
+    if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
+    emit1(s, opsize(0x80, size));
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 3); // /3 = SBB
+    if (size == 1) emit1(s, (uint8_t)imm);
+    else if (size == 2)
+        secbuf_emit16le(s, (uint16_t)imm);
+    else
+        emit_imm32(s, imm);
+}
+
+void x86_rdmsr(SecBuf *s) { emit2(s, 0x0f, 0x32); }
+void x86_wrmsr(SecBuf *s) { emit2(s, 0x0f, 0x30); }
+
+// CMPXCHG8B/16B m64/m128 (0F C7 /1): 16B variant just adds REX.W.
+static void cmpxchgNb_m(SecBuf *s, bool w, X86Mem m) {
+    bool needrex = w || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(w, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit2(s, 0x0f, 0xc7);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 1);
+}
+void x86_cmpxchg8b_m(SecBuf *s, X86Mem m) { cmpxchgNb_m(s, false, m); }
+void x86_cmpxchg16b_m(SecBuf *s, X86Mem m) { cmpxchgNb_m(s, true, m); }
+
+void x86_wbinvd(SecBuf *s) { emit2(s, 0x0f, 0x09); }
+void x86_sti(SecBuf *s) { emit1(s, 0xfb); }
+void x86_cli(SecBuf *s) { emit1(s, 0xfa); }
+void x86_hlt(SecBuf *s) { emit1(s, 0xf4); }
+
+// PREFETCHt0/NTA (0F 18 /1, /0) and PREFETCHW (0F 0D /1) — memory-only.
+static void prefetch_m(SecBuf *s, uint8_t op2, int digit, X86Mem m) {
+    bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit2(s, 0x0f, op2);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+}
+void x86_prefetcht0(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 1, m); }
+void x86_prefetchnta(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 0, m); }
+void x86_prefetchw(SecBuf *s, X86Mem m) { prefetch_m(s, 0x0d, 1, m); }
+
+// CLFLUSH (0F AE /7), CLFLUSHOPT (66 0F AE /7), CLWB (66 0F AE /6) — mem-only.
+void x86_clflush(SecBuf *s, X86Mem m) { prefetch_m(s, 0xae, 7, m); }
+void x86_clflushopt(SecBuf *s, X86Mem m) {
+    emit1(s, 0x66);
+    prefetch_m(s, 0xae, 7, m);
+}
+void x86_clwb(SecBuf *s, X86Mem m) {
+    emit1(s, 0x66);
+    prefetch_m(s, 0xae, 6, m);
+}
+
+void x86_pause(SecBuf *s) { emit2(s, 0xf3, 0x90); }
+void x86_swapgs(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xf8); }
+void x86_rdpmc(SecBuf *s) { emit2(s, 0x0f, 0x33); }
+void x86_rdpkru(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xee); }
+void x86_wrpkru(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xef); }
+
+// VERW r/m16 (0F 00 /5) — memory form only needed so far.
+void x86_verw_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 5, m); }
+
+// RDPID r32/r64 (F3 0F C7 /7): register-direct only, no memory form.
+void x86_rdpid(SecBuf *s, X86Reg dst) {
+    emit1(s, 0xf3);
+    maybe_rex(s, 0, X86_NOREG, X86_NOREG, dst);
+    emit2(s, 0x0f, 0xc7);
+    emit1(s, modrm(3, 7, dst));
+}
+
+// LSL r32/r64, r/m16 (0F 03 /r): AT&T "lsl src, dst" — dst is the reg field.
+void x86_lsl_rr(SecBuf *s, X86Reg src, X86Reg dst) {
+    maybe_rex(s, 0, dst, X86_NOREG, src);
+    emit2(s, 0x0f, 0x03);
+    emit1(s, modrm(3, dst, src));
+}
+void x86_lsl_rm(SecBuf *s, X86Mem src, X86Reg dst) {
+    bool needrex = dst > X86_RDI || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
+    emit2(s, 0x0f, 0x03);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+}
 void x86_ud2(SecBuf *s) { emit2(s, 0x0f, 0x0b); }
 
 // ---------------------------------------------------------------------------
