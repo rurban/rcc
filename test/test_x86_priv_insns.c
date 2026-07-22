@@ -166,6 +166,14 @@ int main(void)
     ok &= check_section_bytes(rcc, td, pid, "ds_prefix",
         ASM_MAIN("\"ds wrmsr\\n\\tds clflush (%%rax)\\n\\t\""),
         ".text", "3e0f303e0fae38");
+    /* lgdt/lidt/sgdt/sidt (%rax): 0F 01 /2,/3,/0,/1, mod=00 rm=rax(0) */
+    ok &= check_section_bytes(rcc, td, pid, "desc_table_mem",
+        ASM_MAIN("\"lgdt (%%rax)\\n\\tlidt (%%rax)\\n\\tsgdt (%%rax)\\n\\tsidt (%%rax)\\n\\t\""),
+        ".text", "0f01100f01180f01000f0108");
+    /* lldt/ltr/str %ax: 0F 00 /2,/3,/1, mod=11 rm=rax(0) */
+    ok &= check_section_bytes(rcc, td, pid, "desc_table_reg",
+        ASM_MAIN("\"lldt %%ax\\n\\tltr %%ax\\n\\tstr %%ax\\n\\t\""),
+        ".text", "0f00d00f00d80f00c8");
 
     if (!ok) return 1;
     printf("OK x86 privileged/feature-gated instruction encoding\n");

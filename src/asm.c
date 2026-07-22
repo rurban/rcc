@@ -2970,6 +2970,40 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_lsl_rr(buf, R(0), R(1));
         return true;
     }
+    if (!strcmp(mnem, "lgdt")) {
+        x86_lgdt(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "lidt")) {
+        x86_lidt(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "sgdt")) {
+        x86_sgdt(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "sidt")) {
+        x86_sidt(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "lldt")) {
+        if (is_mem(0)) x86_lldt_m(buf, M(0));
+        else
+            x86_lldt_r(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "ltr")) {
+        if (is_mem(0)) x86_ltr_m(buf, M(0));
+        else
+            x86_ltr_r(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "str")) {
+        if (is_mem(0)) x86_str_m(buf, M(0));
+        else
+            x86_str_r(buf, R(0));
+        return true;
+    }
 
     // Unknown
     fprintf(stderr, "warning: unknown x86 instruction: %s\n", mnem);

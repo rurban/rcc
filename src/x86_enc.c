@@ -870,6 +870,27 @@ void x86_clwb(SecBuf *s, X86Mem m) {
     prefetch_m(s, 0xae, 6, m);
 }
 
+// LGDT/LIDT/SGDT/SIDT (0F 01 /digit): load/store the (limit,base)
+// pseudo-descriptor — always a memory operand, never a register.
+void x86_lgdt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 2, m); }
+void x86_lidt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 3, m); }
+void x86_sgdt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 0, m); }
+void x86_sidt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 1, m); }
+
+// LLDT/STR/LTR (0F 00 /digit): operate on a 16-bit selector, register or
+// memory — always implicitly 16-bit, no operand-size prefix needed.
+static void seldesc_r(SecBuf *s, int digit, X86Reg r) {
+    if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
+    emit2(s, 0x0f, 0x00);
+    emit1(s, modrm(3, digit, r));
+}
+void x86_lldt_r(SecBuf *s, X86Reg r) { seldesc_r(s, 2, r); }
+void x86_lldt_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 2, m); }
+void x86_ltr_r(SecBuf *s, X86Reg r) { seldesc_r(s, 3, r); }
+void x86_ltr_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 3, m); }
+void x86_str_r(SecBuf *s, X86Reg r) { seldesc_r(s, 1, r); }
+void x86_str_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 1, m); }
+
 void x86_pause(SecBuf *s) { emit2(s, 0xf3, 0x90); }
 void x86_swapgs(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xf8); }
 void x86_rdpmc(SecBuf *s) { emit2(s, 0x0f, 0x33); }
