@@ -1177,6 +1177,41 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         }
         if (!strcmp(dir, "asciz") || !strcmp(dir, "string"))
             secbuf_emit8(buf, 0); // null terminator
+    } else if (!strcmp(dir, "incbin")) {
+        // .incbin "path" — embed a raw binary file's bytes verbatim into
+        // the current section, e.g. usr/initramfs_data.S wrapping the
+        // kernel's built initramfs cpio archive between __irf_start/
+        // __irf_end labels. GAS resolves a relative path against its
+        // current working directory (kbuild always invokes the compiler
+        // from the kernel's own root), so a plain fopen() is enough here
+        // — no include-path search, unlike #include.
+        char *p = strchr(args, '"');
+        if (!p) {
+            asm_error(as, ".incbin: expected a quoted path");
+            return;
+        }
+        p++;
+        char path[512];
+        size_t pi = 0;
+        while (*p && *p != '"' && pi + 1 < sizeof(path)) path[pi++] = *p++;
+        path[pi] = '\0';
+        FILE *bf = fopen(path, "rb");
+        if (!bf) {
+            char msg[600];
+            snprintf(msg, sizeof(msg), ".incbin: cannot open file %s", path);
+            asm_error(as, msg);
+            return;
+        }
+        fseek(bf, 0, SEEK_END);
+        long fsize = ftell(bf);
+        fseek(bf, 0, SEEK_SET);
+        if (fsize > 0) {
+            uint8_t *data = malloc((size_t)fsize);
+            size_t nread = fread(data, 1, (size_t)fsize, bf);
+            secbuf_emitbuf(cur_sec_buf(as), data, nread);
+            free(data);
+        }
+        fclose(bf);
     } else if (!strcmp(dir, "file") || !strcmp(dir, "loc") ||
                !strcmp(dir, "ident")) {
         // Debug info — ignore in binary output
@@ -3375,12 +3410,6 @@ static void subst_params_into(const char *line, const ParamMap *map, char *out, 
     out[oi] = '\0';
 }
 
-static int64_t asmvar_get(AsmState *as, const char *name) {
-    for (int i = 0; i < as->nvars; i++)
-        if (!strcmp(as->vars[i].name, name)) return as->vars[i].value;
-    return 0;
-}
-
 static void asmvar_set(AsmState *as, const char *name, int64_t val) {
     for (int i = 0; i < as->nvars; i++)
         if (!strcmp(as->vars[i].name, name)) {
@@ -3460,7 +3489,21 @@ static int64_t expr_primary(ExprCtx *c) {
             c->err = true;
             return 0;
         }
-        return asmvar_get(c->as, name);
+        // A bare identifier that isn't a *known* .set/.equ assembler-time
+        // variable might be a real assembly label instead — not resolvable
+        // until the main per-line pass defines it. asmvar_get() can't tell
+        // "not found" apart from "found, value 0", so it silently treated
+        // an undefined name as 0; a genuine label-difference expression
+        // like "myB - myA" (neither name ever .set) then evaluated as
+        // "0 - 0 = 0" and got folded in as a wrong literal here instead of
+        // reaching handle_directive's own label/relocation logic
+        // untouched, the same failure mode "." above already guards
+        // against. Found via a real Linux kernel build:
+        // usr/initramfs_data.S's ".quad __irf_end - __irf_start".
+        for (int i = 0; i < c->as->nvars; i++)
+            if (!strcmp(c->as->vars[i].name, name)) return c->as->vars[i].value;
+        c->err = true;
+        return 0;
     }
     return 0;
 }

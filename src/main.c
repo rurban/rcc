@@ -554,6 +554,50 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        // Standalone assembly file, not C source: ".S" (preprocessed, like
+        // the kernel's usr/initramfs_data.S — #ifdef/#include/macros
+        // already resolved above via the same preprocess() every input
+        // goes through) or ".s" (raw, no preprocessing — GAS's own "#" is
+        // a comment character, not a directive, so running it through the
+        // C preprocessor would be wrong). Either way this is plain
+        // assembly text, not C: skip parse()/typecheck/codegen entirely
+        // and hand it straight to the same assembler used for inline asm.
+        {
+            char *dot = strrchr(cur_path, '.');
+            bool is_dot_cap_s = dot && strcmp(dot, ".S") == 0;
+            bool is_dot_s = dot && strcmp(dot, ".s") == 0;
+            if (is_dot_cap_s || is_dot_s) {
+                if (opt_dryrun) continue;
+                char *asm_text = is_dot_cap_s ? pp_tokens_to_text(tok) : contents;
+                ObjFile obj;
+                objfile_init(&obj);
+                if (assemble_inline(&obj, asm_text, NULL, NULL) != 0) {
+                    fprintf(stderr, "rcc: error: failed to assemble %s\n", cur_path);
+                    return 1;
+                }
+                int wr;
+#ifdef _WIN32
+                wr = coff_write(&obj, asm_path);
+#elif __APPLE__
+                wr = macho_write(&obj, asm_path);
+#else
+                wr = elf_write(&obj, asm_path);
+#endif
+                if (wr != 0) {
+                    fprintf(stderr, "rcc: error: cannot write object file %s\n", asm_path);
+                    return 1;
+                }
+                objfile_free(&obj);
+                if (!opt_S) {
+                    OutPath *p = arena_alloc(sizeof(OutPath));
+                    p->path = asm_path;
+                    p->next = out_paths;
+                    out_paths = p;
+                }
+                continue;
+            }
+        }
+
         t0 = opt_time ? now_us() : 0;
         Program *prog = parse(tok);
         prog->in_path = cur_path;

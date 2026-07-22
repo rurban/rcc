@@ -2138,6 +2138,80 @@ static Token *concat_strings(Token *tok) {
     tail->next = NULL;
     return head.next;
 }
+// Re-render a preprocessed token stream back to flat text, the same way
+// pp_print_tokens() does for -E output, but into a heap buffer instead of
+// stdout — used to feed a standalone .S file's preprocessed content
+// (macros expanded, #ifdef/#include resolved) into the assembler, which
+// only ever consumes plain assembly text.
+char *pp_tokens_to_text(Token *tok) {
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    int cur_line = 1;
+    const char *cur_file = NULL;
+    bool first_on_line = true;
+    char *prev_sp = NULL;
+    int prev_sl = 0;
+    for (; tok && tok->kind != TK_EOF; tok = tok->next) {
+        int ln = tok->lineno > 0 ? tok->lineno : cur_line;
+        const char *fn = tok->filename;
+        if (!fn || *fn == '<') {
+            fn = cur_file ? cur_file : "<stdin>";
+            ln = cur_line;
+        }
+        if (!cur_file || strcmp(fn, cur_file) != 0) {
+            cur_line = ln;
+            cur_file = fn;
+        }
+        while (cur_line < ln) {
+            if (len + 2 > cap) {
+                cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            buf[len++] = '\n';
+            cur_line++;
+            first_on_line = true;
+            prev_sp = NULL; // a newline always breaks adjacency
+        }
+        int sl;
+        char *sp = tok_spelling(tok, &sl);
+        // The C lexer splits assembly's dot-containing directive/section
+        // names (".section", ".init.ramfs", "label:") into separate
+        // punctuation + identifier tokens, same as it would "a.b.c" in
+        // real C. Re-glue tokens with no separating space whenever they
+        // were byte-adjacent (no whitespace at all) in whatever buffer
+        // they were lexed from — true both for un-expanded source text
+        // and for a macro body's own internal spacing — so ".", "section"
+        // comes back as ".section" but "section", ".init" (genuinely
+        // space-separated in the source) keeps its space.
+        bool adjacent = prev_sp && sp && prev_sp + prev_sl == sp;
+        if (!first_on_line && !adjacent) {
+            if (len + 2 > cap) {
+                cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            buf[len++] = ' ';
+        }
+        if (sp && sl > 0) {
+            if (len + (size_t)sl + 2 > cap) {
+                while (len + (size_t)sl + 2 > cap) cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            memcpy(buf + len, sp, (size_t)sl);
+            len += (size_t)sl;
+        }
+        first_on_line = false;
+        prev_sp = sp;
+        prev_sl = sl;
+    }
+    if (len + 2 > cap) {
+        cap *= 2;
+        buf = realloc(buf, cap);
+    }
+    buf[len++] = '\n';
+    buf[len] = '\0';
+    return buf;
+}
+
 void pp_print_tokens(Token *tok) {
     int cur_line = 1;
     const char *cur_file = NULL;

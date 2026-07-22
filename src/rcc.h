@@ -102,6 +102,7 @@ char *path_basename(char *path);
 // runs macro expansion on the token stream, returning parser-ready tokens.
 Token *preprocess(char *filename, char *p);
 void pp_print_tokens(Token *tok); // -E: re-create the lines from the tokens
+char *pp_tokens_to_text(Token *tok); // like pp_print_tokens but into a heap buffer
 char *dump_macros_text(void); // -dM
 Token *lex_one(char **pp, int *plineno);
 extern bool lex_pp_mode;
