@@ -139,8 +139,12 @@ void x86_inc_m(SecBuf *s, int size, X86Mem m);
 void x86_dec_m(SecBuf *s, int size, X86Mem m);
 void x86_neg_m(SecBuf *s, int size, X86Mem m);
 void x86_not_m(SecBuf *s, int size, X86Mem m);
-void x86_cdq(SecBuf *s); // sign-extend EAX to EDX:EAX
-void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX
+void x86_cdq(SecBuf *s); // sign-extend EAX to EDX:EAX (AT&T alias: cltd)
+void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX (AT&T alias: cqto)
+void x86_cbw(SecBuf *s); // sign-extend AL to AX (AT&T alias: cbtw)
+void x86_cwde(SecBuf *s); // sign-extend AX to EAX (AT&T alias: cwtl)
+void x86_cdqe(SecBuf *s); // sign-extend EAX to RAX (AT&T alias: cltq)
+void x86_cwd(SecBuf *s); // sign-extend AX to DX:AX (AT&T alias: cwtd)
 
 // Logical
 void x86_and_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
@@ -239,6 +243,7 @@ void x86_movs(SecBuf *s, int size);
 void x86_stos(SecBuf *s, int size);
 void x86_cmps(SecBuf *s, int size);
 void x86_scas(SecBuf *s, int size);
+void x86_lods(SecBuf *s, int size);
 void x86_mfence(SecBuf *s);
 void x86_lfence(SecBuf *s);
 void x86_sfence(SecBuf *s);
@@ -249,6 +254,22 @@ void x86_rdtscp(SecBuf *s);
 void x86_clac(SecBuf *s);
 void x86_stac(SecBuf *s);
 void x86_iretq(SecBuf *s);
+void x86_lahf(SecBuf *s);
+void x86_sahf(SecBuf *s);
+void x86_clc(SecBuf *s);
+void x86_stc(SecBuf *s);
+void x86_std(SecBuf *s);
+void x86_endbr32(SecBuf *s);
+void x86_endbr64(SecBuf *s);
+void x86_int3(SecBuf *s);
+void x86_int1(SecBuf *s);
+void x86_syscall(SecBuf *s);
+void x86_sysenter(SecBuf *s);
+void x86_sysexit(SecBuf *s);
+void x86_sysret(SecBuf *s);
+void x86_rdrand(SecBuf *s, int size, X86Reg r);
+void x86_rdseed(SecBuf *s, int size, X86Reg r);
+void x86_crc32(SecBuf *s, int dst_size, int src_size, X86Reg dst, X86Reg src);
 void x86_invpcid(SecBuf *s, X86Reg type_reg, X86Mem desc);
 void x86_rdfsbase(SecBuf *s, int size, X86Reg r);
 void x86_rdgsbase(SecBuf *s, int size, X86Reg r);

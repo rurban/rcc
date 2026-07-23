@@ -2190,8 +2190,8 @@ static int suffix_size(const char *mnem) {
         "shl", "shr", "sal", "sar", "rol", "ror", "rcl", "rcr",
         "push", "pop", "call", "ret", "jmp", "nop", "xchg",
         "bsf", "bsr", "popcnt", "lzcnt", "tzcnt", "bswap",
-        "movabs", "lock", "rep", "repe", "repne", "cld", "mfence",
-        "rdfsbase", "rdgsbase", "wrfsbase", "wrgsbase",
+        "movabs", "lock", "rep", "repe", "repne", "repz", "repnz", "cld", "mfence",
+        "rdfsbase", "rdgsbase", "wrfsbase", "wrgsbase", "crc32",
         NULL};
     for (int i = 0; no_sfx[i]; i++)
         if (!strcmp(mnem, no_sfx[i])) return 0;
@@ -2207,7 +2207,16 @@ static int suffix_size(const char *mnem) {
 
 // Operand helpers for x86 encoding — macros to avoid nested functions
 #define X86_R(i)    ((i) < nops ? parse_x86_reg64(ops[i]) : X86_NOREG)
-#define X86_IMM(i)  ((i) < nops ? (ops[i][0]=='$' ? strtoll(ops[i]+1,NULL,0) : strtoll(ops[i],NULL,0)) : (int64_t)0)
+// strtoull(), not strtoll(): a 64-bit immediate with the top bit set (e.g.
+// "$0x8000000000000000", a sign-bit mask — real code kernel-wide) is a
+// perfectly ordinary bit pattern to move into a register, but it overflows
+// what strtoll() can represent as *signed*, and per C99 7.20.1.4 an
+// out-of-range strtoll() call saturates to LLONG_MAX instead of preserving
+// the bit pattern. strtoull() has no such ceiling — it parses the full
+// unsigned 64-bit value (or, for a leading '-', the standard-mandated
+// two's-complement negation of the magnitude), and casting that to int64_t
+// is exactly the reinterpretation we want either way.
+#define X86_IMM(i)  ((i) < nops ? (int64_t)(ops[i][0]=='$' ? strtoull(ops[i]+1,NULL,0) : strtoull(ops[i],NULL,0)) : (int64_t)0)
 #define X86_ISREG(i) ((i)<nops && ops[i][0]=='%')
 #define X86_ISIMM(i) ((i)<nops && ops[i][0]=='$')
 #define X86_ISMEM(i) ((i)<nops && strchr(ops[i],'(')!=NULL)
@@ -2339,16 +2348,105 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_wrgsbase(buf, sz, R(0));
         return true;
     }
-    if (!strcmp(mnem, "ud2") || !strcmp(mnem, "ud2a")) {
+    if (!strcmp(mnem, "ud2") || !strcmp(mnem, "ud2a") || !strcmp(mnem, "ud2b")) {
         x86_ud2(buf);
         return true;
     }
-    if (!strcmp(mnem, "cdq")) {
+    // Sign-extension family: each has both an Intel mnemonic and an AT&T
+    // alt-name (cbw/cbtw, cwde/cwtl, cdqe/cltq, cwd/cwtd, cdq/cltd, cqo/
+    // cqto) — GAS accepts either spelling for the same opcode.
+    if (!strcmp(mnem, "cdq") || !strcmp(mnem, "cltd")) {
         x86_cdq(buf);
         return true;
     }
-    if (!strcmp(mnem, "cqo")) {
+    if (!strcmp(mnem, "cqo") || !strcmp(mnem, "cqto")) {
         x86_cqo(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cbw") || !strcmp(mnem, "cbtw")) {
+        x86_cbw(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cwde") || !strcmp(mnem, "cwtl")) {
+        x86_cwde(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cdqe") || !strcmp(mnem, "cltq")) {
+        x86_cdqe(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cwd") || !strcmp(mnem, "cwtd")) {
+        x86_cwd(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "lahf")) {
+        x86_lahf(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sahf")) {
+        x86_sahf(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "clc")) {
+        x86_clc(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "stc")) {
+        x86_stc(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "std")) {
+        x86_std(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "endbr32")) {
+        x86_endbr32(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "endbr64")) {
+        x86_endbr64(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "int3")) {
+        x86_int3(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "int1") || !strcmp(mnem, "icebp")) {
+        x86_int1(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "syscall")) {
+        x86_syscall(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sysenter")) {
+        x86_sysenter(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sysexit")) {
+        x86_sysexit(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sysret")) {
+        x86_sysret(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rdrand")) {
+        x86_rdrand(buf, sz, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "rdseed")) {
+        x86_rdseed(buf, sz, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "crc32") || !strcmp(mnem, "crc32b") || !strcmp(mnem, "crc32w") ||
+        !strcmp(mnem, "crc32l") || !strcmp(mnem, "crc32q")) {
+        // AT&T: crc32 src, dst — src carries the size suffix (or is inferred
+        // from the source register), dst is always 32- or 64-bit.
+        int src_sz = suffix_size(mnem);
+        if (src_sz == 0) src_sz = is_reg(0) ? reg_size_x86(ops[0]) : 4;
+        int dst_sz = is_reg(1) ? reg_size_x86(ops[1]) : 4;
+        x86_crc32(buf, dst_sz, src_sz, R(1), R(0));
         return true;
     }
 
@@ -2441,6 +2539,22 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         if (!strcmp(mnem, "scasq")) {
             x86_scas(buf, 8);
+            return true;
+        }
+        if (!strcmp(mnem, "lodsb")) {
+            x86_lods(buf, 1);
+            return true;
+        }
+        if (!strcmp(mnem, "lodsw")) {
+            x86_lods(buf, 2);
+            return true;
+        }
+        if (!strcmp(mnem, "lodsl")) {
+            x86_lods(buf, 4);
+            return true;
+        }
+        if (!strcmp(mnem, "lodsq")) {
+            x86_lods(buf, 8);
             return true;
         }
     }
@@ -2931,10 +3045,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return encode_x86(as, m2, o2);
     }
     if (!strcmp(mnem, "lock") || !strcmp(mnem, "rep") ||
-        !strcmp(mnem, "repe") || !strcmp(mnem, "repne")) {
+        !strcmp(mnem, "repe") || !strcmp(mnem, "repz") ||
+        !strcmp(mnem, "repne") || !strcmp(mnem, "repnz")) {
         if (!strcmp(mnem, "lock"))
             x86_lock_prefix(buf);
-        else if (!strcmp(mnem, "repne"))
+        else if (!strcmp(mnem, "repne") || !strcmp(mnem, "repnz"))
             x86_repne_prefix(buf);
         else
             x86_rep_prefix(buf);
@@ -3918,14 +4033,12 @@ static char *strip_arg_quotes(char *v) {
     return v;
 }
 
-// Expand a single already-substituted line: if its first token names a
-// currently-defined macro, invoke it (building a new param scope from the
-// `key=value[, ...]` or positional arguments and recursing into the
-// macro's stored body); otherwise emit the line as-is.
-static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, DynStr *out) {
-    char subst[512];
-    subst_params_into(raw, map, subst, sizeof(subst));
-    char *p = skip_ws(subst);
+// Dispatch one already-substituted, already-semicolon-split statement: if
+// its first token names a currently-defined macro, invoke it (building a
+// new param scope from the `key=value[, ...]` or positional arguments and
+// recursing into the macro's stored body); otherwise emit the line as-is.
+static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map, DynStr *out) {
+    p = skip_ws(p);
     trim_end(p);
     if (!*p) return;
 
@@ -3994,6 +4107,38 @@ static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, 
     // not just plain lines — route it through the full block-aware
     // processor, not the single-line one.
     asm_expand_range(as, mac->body, 0, mac->nbody, &args, out);
+}
+
+// Substitute `raw`'s "\param" references, then dispatch the result. A
+// substituted macro argument can itself introduce brand-new ';' statement
+// separators that split_semicolons() never saw — it only runs once, on the
+// raw pre-substitution text — e.g. nospec-branch.h's FILL_RETURN_BUFFER
+// passing __stringify(nop;nop;__FILL_ONE_RETURN) as a macro argument:
+// stringizing turns that into one token whose *text* contains literal ';'
+// characters, and quote-stripping (strip_arg_quotes()) leaves them in place
+// when the argument is substituted into the body. Split those out here too,
+// the same way, so each resulting statement is dispatched (and re-checked
+// for being a macro invocation itself) independently — otherwise the whole
+// multi-statement blob is handed to the instruction encoder as if it were
+// one mnemonic ("nop;nop;...", not a real x86 instruction).
+static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, DynStr *out) {
+    char subst[512];
+    subst_params_into(raw, map, subst, sizeof(subst));
+
+    bool in_str = false;
+    char *start = subst;
+    for (char *q = subst;; q++) {
+        if (*q == '"' && (q == subst || q[-1] != '\\')) in_str = !in_str;
+        if ((*q == ';' && !in_str) || *q == '\0') {
+            bool done = (*q == '\0');
+            char saved = *q;
+            *q = '\0';
+            asm_dispatch_substituted(as, start, map, out);
+            *q = saved;
+            if (done) break;
+            start = q + 1;
+        }
+    }
 }
 
 // Process lines[lo,hi) — the control-flow constructs (.macro/.irp/.ifc/

@@ -115,17 +115,25 @@ static void size16_pfx(SecBuf *s, int size) {
     if (size == 2) emit1(s, 0x66);
 }
 
-// REX.W for 64-bit; no REX for 32-bit; 0x66 for 16-bit; special for 8-bit
+// REX prefix selection by operand size (W for 64-bit, none for 32-bit,
+// special-case for 8/16-bit registers >= R8). The 16-bit 0x66 operand-size
+// override is NOT emitted here — every caller already calls size16_pfx()
+// immediately beforehand, so doing it here too would double it up.
 static void rex_for_size(SecBuf *s, int size, X86Reg reg, X86Reg rm) {
-    if (size == 2)
-        emit1(s, 0x66);
     if (size == 8)
         maybe_rex(s, 1, reg, 0, rm);
     else if (size == 4)
         maybe_rex(s, 0, reg, 0, rm);
     else if (size == 2 || size == 1) {
-        // For 16-bit and 8-bit ops with registers >= R8, need REX
-        if (reg >= X86_R8 || rm >= X86_R8)
+        // 16-bit ops: REX only needed for R8+ registers. 8-bit ops
+        // additionally need REX forced for RSP..RDI (spl/bpl/sil/dil) even
+        // though their index isn't > RDI: without a REX prefix, that same
+        // index instead selects one of the legacy high-byte registers
+        // (ah/bh/ch/dh) — a completely different physical register that
+        // just happens to share the same 3-bit ModRM encoding.
+        bool need_rex = reg >= X86_R8 || rm >= X86_R8 ||
+            (size == 1 && ((reg >= X86_RSP && reg <= X86_RDI) || (rm >= X86_RSP && rm <= X86_RDI)));
+        if (need_rex)
             maybe_rex(s, 0, reg, 0, rm);
     }
 }
@@ -370,7 +378,15 @@ static void alu_ri(SecBuf *s, int size, int op, X86Reg dst, int32_t imm) {
         emit1(s, (uint8_t)imm);
     } else if (dst == X86_RAX) {
         emit1(s, (uint8_t)((op * 8) | (size == 1 ? 4 : 5)));
-        emit_imm32(s, imm);
+        // AX's short form (0x3D + imm16) still only takes a 16-bit
+        // immediate even though the general-register path below sign-
+        // extends to imm32 — an operand like "cmpw $0xff80, %ax" (imm
+        // parsed as the unsigned 65408, not sign-extended to -128) would
+        // otherwise emit a stray extra two bytes into the instruction
+        // stream, corrupting everything that follows it.
+        if (size == 2) secbuf_emit16le(s, (uint16_t)imm);
+        else
+            emit_imm32(s, imm);
     } else {
         emit1(s, 0x81);
         emit1(s, modrm(3, op, dst));
@@ -533,6 +549,10 @@ void x86_not_m(SecBuf *s, int sz, X86Mem m) {
 }
 void x86_cdq(SecBuf *s) { emit1(s, 0x99); }
 void x86_cqo(SecBuf *s) { emit2(s, 0x48, 0x99); }
+void x86_cbw(SecBuf *s) { emit2(s, 0x66, 0x98); }
+void x86_cwde(SecBuf *s) { emit1(s, 0x98); }
+void x86_cdqe(SecBuf *s) { emit2(s, rex(1, 0, 0, 0), 0x98); }
+void x86_cwd(SecBuf *s) { emit2(s, 0x66, 0x99); }
 
 // Shifts
 static void shift_ri(SecBuf *s, int sz, int op, X86Reg r, uint8_t imm) {
@@ -749,6 +769,10 @@ void x86_scas(SecBuf *s, int size) {
     strop_size_pfx(s, size);
     emit1(s, size == 1 ? 0xae : 0xaf);
 }
+void x86_lods(SecBuf *s, int size) {
+    strop_size_pfx(s, size);
+    emit1(s, size == 1 ? 0xac : 0xad);
+}
 void x86_mfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf0); }
 void x86_lfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xe8); }
 void x86_sfence(SecBuf *s) { emit3(s, 0x0f, 0xae, 0xf8); }
@@ -758,6 +782,48 @@ void x86_rdtscp(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xf9); }
 void x86_clac(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xca); }
 void x86_stac(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xcb); }
 void x86_iretq(SecBuf *s) { emit2(s, 0x48, 0xcf); }
+void x86_lahf(SecBuf *s) { emit1(s, 0x9f); }
+void x86_sahf(SecBuf *s) { emit1(s, 0x9e); }
+void x86_clc(SecBuf *s) { emit1(s, 0xf8); }
+void x86_stc(SecBuf *s) { emit1(s, 0xf9); }
+void x86_std(SecBuf *s) { emit1(s, 0xfd); }
+void x86_endbr32(SecBuf *s) {
+    emit2(s, 0xf3, 0x0f);
+    emit2(s, 0x1e, 0xfb);
+}
+void x86_endbr64(SecBuf *s) {
+    emit2(s, 0xf3, 0x0f);
+    emit2(s, 0x1e, 0xfa);
+}
+void x86_int3(SecBuf *s) { emit1(s, 0xcc); }
+void x86_int1(SecBuf *s) { emit1(s, 0xf1); }
+void x86_syscall(SecBuf *s) { emit2(s, 0x0f, 0x05); }
+void x86_sysenter(SecBuf *s) { emit2(s, 0x0f, 0x34); }
+void x86_sysexit(SecBuf *s) { emit2(s, 0x0f, 0x35); }
+void x86_sysret(SecBuf *s) { emit2(s, 0x0f, 0x07); }
+// RDRAND/RDSEED r/m (0F C7 /6, /7): the register operand's REX.W bit
+// selects 64-bit, and a 66 prefix (like other GPR ops) selects 16-bit.
+void x86_rdrand(SecBuf *s, int sz, X86Reg r) {
+    if (sz == 2) emit1(s, 0x66);
+    maybe_rex(s, sz == 8, X86_NOREG, X86_NOREG, r);
+    emit3(s, 0x0f, 0xc7, modrm(3, 6, r));
+}
+void x86_rdseed(SecBuf *s, int sz, X86Reg r) {
+    if (sz == 2) emit1(s, 0x66);
+    maybe_rex(s, sz == 8, X86_NOREG, X86_NOREG, r);
+    emit3(s, 0x0f, 0xc7, modrm(3, 7, r));
+}
+// CRC32 r32/r64, r/m8/16/32/64 (F2 0F 38 F0/F1 /r): dst is always a 32- or
+// 64-bit GPR (never itself 8/16-bit); src_size selects the opcode (F0 for
+// an 8-bit source, F1 otherwise) and, for a 16-bit source, an extra 66
+// prefix ahead of the mandatory F2.
+void x86_crc32(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src) {
+    if (src_sz == 2) emit1(s, 0x66);
+    emit1(s, 0xf2);
+    maybe_rex(s, dst_sz == 8, dst, X86_NOREG, src);
+    emit3(s, 0x0f, 0x38, src_sz == 1 ? 0xf0 : 0xf1);
+    emit1(s, modrm(3, dst, src));
+}
 
 // INVPCID r64, m128 (64-bit mode): the register operand's width is fixed at
 // 64 bits by the mode itself, so unlike most instructions REX.W is neither
