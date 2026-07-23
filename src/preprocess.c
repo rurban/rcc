@@ -1225,7 +1225,22 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 continue;
             }
             if (idx >= 0 && idx < argc) {
+                // The substituted argument's spelling lives in whatever
+                // buffer the call site's actual argument came from, so the
+                // normal pointer-adjacency check (str_needs_space(), and
+                // pp_tokens_to_text()'s own copy of the same idea) can never
+                // see it as touching whatever body token follows — even
+                // when the macro body itself had zero whitespace between
+                // the parameter and the next token (e.g. linkage.h's
+                // "name:" in "SYM_ENTRY(name, ...) ... name:", a label built
+                // from a macro parameter). Recover that from the
+                // pre-substitution body tokens (b, b->next), same trick
+                // already used above for explicit "##" pastes.
+                Token *before = rtail;
                 splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
+                if (rtail && rtail != before && b->next && b->next != end &&
+                    b->next->kind != TK_EOF && !str_needs_space(b, b->next))
+                    rtail->no_space_after = true;
                 continue;
             }
             append_one(&rhead, &rtail, b);
@@ -2193,6 +2208,7 @@ char *pp_tokens_to_text(Token *tok) {
     bool first_on_line = true;
     char *prev_sp = NULL;
     int prev_sl = 0;
+    Token *prev_tok = NULL;
     for (; tok && tok->kind != TK_EOF; tok = tok->next) {
         int ln = tok->lineno > 0 ? tok->lineno : cur_line;
         const char *fn = tok->filename;
@@ -2243,8 +2259,15 @@ char *pp_tokens_to_text(Token *tok) {
         // they were lexed from — true both for un-expanded source text
         // and for a macro body's own internal spacing — so ".", "section"
         // comes back as ".section" but "section", ".init" (genuinely
-        // space-separated in the source) keeps its space.
-        bool adjacent = prev_sp && sp && prev_sp + prev_sl == sp;
+        // space-separated in the source) keeps its space. A macro-expanded
+        // token's spelling can live in a completely different buffer than
+        // whatever body token follows it (the substituted argument text vs.
+        // the macro's own stored definition), so pointer adjacency alone
+        // can't see those as touching even when the macro body had none —
+        // no_space_after (set by subst_range() for exactly this case, e.g.
+        // linkage.h's "name:" built from a macro parameter) overrides that.
+        bool adjacent = (prev_sp && sp && prev_sp + prev_sl == sp) ||
+            (prev_tok && prev_tok->no_space_after);
         if (!first_on_line && !adjacent) {
             if (len + 2 > cap) {
                 cap *= 2;
@@ -2263,6 +2286,7 @@ char *pp_tokens_to_text(Token *tok) {
         first_on_line = false;
         prev_sp = sp;
         prev_sl = sl;
+        prev_tok = tok;
     }
     if (len + 2 > cap) {
         cap *= 2;

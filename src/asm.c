@@ -80,7 +80,9 @@ typedef struct {
         int nparams;
         char **body; // owned copies of each raw body line
         int nbody;
-    } macros[16];
+    } macros[256]; // real kernel .S files (e.g. arch/x86/entry/entry.S, via
+    // its full #include chain of .macro-heavy headers) routinely register
+    // 50+ distinct macros in one translation unit; 256 leaves headroom.
     int nmacros;
 
     // Assembler-time integer variables (.set NAME, EXPR — GAS macro-time
@@ -4052,6 +4054,17 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                     for (int b = 0; b < mac->nbody; b++)
                         mac->body[b] = strdup(lines[i + 1 + b]);
                 }
+            } else {
+                // Silently dropping this definition (leaving every
+                // invocation to fall through as an "unknown instruction")
+                // is far worse than a noisy warning here: it desyncs every
+                // later byte offset in whatever section those invocations
+                // would have emitted into.
+                fprintf(stderr,
+                        "%s:%d: warning: too many .macro definitions (> %d); "
+                        "\"%s\" and its invocations will be ignored\n",
+                        as->filename ? as->filename : "?", as->lineno,
+                        (int)(sizeof(as->macros) / sizeof(as->macros[0])), name);
             }
             i = end;
             continue;
