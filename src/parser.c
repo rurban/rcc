@@ -4537,6 +4537,19 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                             int elem_size = cur_ty->base->size;
                             chain_base += (int)(idx * elem_size);
                             cur_ty = cur_ty->base;
+                            // Chain ends on an array index, e.g.
+                            // ".extent[0] = { ... }": consume "=" and parse
+                            // the value here too, the same way the
+                            // ".member" step below does — otherwise the
+                            // loop exits (tok is "=", not "." or "[")
+                            // without ever consuming the value, leaving
+                            // "= ..." to be misparsed as the next
+                            // designator/member.
+                            if (!equalc(tok, ".") && !equalc(tok, "[")) {
+                                tok = skip(tok, "=");
+                                tok = global_init_one(tok, var, cur_ty, chain_base);
+                                break;
+                            }
                             continue;
                         }
                         // .member designator
