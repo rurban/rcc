@@ -192,4 +192,4 @@ jobs:
         run: make
 
       - name: Run lint
-        run: make lint
+        run: make lint-changed

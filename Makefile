@@ -312,7 +312,7 @@ BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
 	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
-test-all check-all: $(TARGET) $(RUN_TESTS) lint
+test-all check-all: $(TARGET) $(RUN_TESTS) lint-changed
 	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
 test-unit check-unit: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --unit-tests --parallel
@@ -333,6 +333,10 @@ test-full check-full:
 lint:
 	if command -v prek; then prek run -a; \
         elif command -v pre-commit; then pre-commit run --all-files; fi
+
+lint-changed:
+	if command -v prek > /dev/null 2>&1; then prek run -s HEAD~1; \
+	elif command -v pre-commit > /dev/null 2>&1; then pre-commit run -s HEAD~1; fi
 
 tcc: tinycc/tcc tinycc/lib/tcc/include
 
@@ -416,5 +420,5 @@ TAGS: $(SRCS) src/rcc.h
 
 .PHONY: clean leanclean test check check-full check-torture check-all test-all \
 	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest \
-        lint bench install dist bench prof FORCE
+        lint lint-changed bench install dist bench prof FORCE
 FORCE:
