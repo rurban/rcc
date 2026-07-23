@@ -847,6 +847,10 @@ void x86_wbinvd(SecBuf *s) { emit2(s, 0x0f, 0x09); }
 void x86_sti(SecBuf *s) { emit1(s, 0xfb); }
 void x86_cli(SecBuf *s) { emit1(s, 0xfa); }
 void x86_hlt(SecBuf *s) { emit1(s, 0xf4); }
+// PUSHF/POPF have no 32-bit form in 64-bit mode; the "q" suffix is just
+// GAS's explicit spelling of the same single-byte opcode as the bare form.
+void x86_pushfq(SecBuf *s) { emit1(s, 0x9c); }
+void x86_popfq(SecBuf *s) { emit1(s, 0x9d); }
 
 void x86_outb_dx(SecBuf *s) { emit1(s, 0xee); }
 void x86_outw_dx(SecBuf *s) { emit2(s, 0x66, 0xef); }
@@ -897,6 +901,8 @@ void x86_lgdt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 2, m); }
 void x86_lidt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 3, m); }
 void x86_sgdt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 0, m); }
 void x86_sidt(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 1, m); }
+// INVLPG (0F 01 /7): invalidate the TLB entry for a memory operand's page.
+void x86_invlpg(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 7, m); }
 
 // LLDT/STR/LTR (0F 00 /digit): operate on a 16-bit selector, register or
 // memory — always implicitly 16-bit, no operand-size prefix needed.

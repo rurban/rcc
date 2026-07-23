@@ -112,6 +112,10 @@ char *pp_tokens_to_text(Token *tok); // like pp_print_tokens but into a heap buf
 char *dump_macros_text(void); // -dM
 Token *lex_one(char **pp, int *plineno);
 extern bool lex_pp_mode;
+// Set while preprocessing a ".S"/".s" input (assembler-with-cpp mode): a '#'
+// that isn't the first token on its line is GAS's end-of-line comment
+// marker, not preprocessor punctuation — see lex_one()'s use of it.
+extern bool lex_asm_cpp_mode;
 void register_source_buffer(char *start, char *end);
 void add_define(char *def);
 void add_undef(char *name);

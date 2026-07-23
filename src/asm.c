@@ -3098,6 +3098,20 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_hlt(buf);
         return true;
     }
+    // PUSHF/POPF and their explicit "q"-suffixed spellings assemble to the
+    // exact same single-byte opcode in 64-bit mode (no 32-bit form exists).
+    if (!strcmp(mnem, "pushfq") || !strcmp(mnem, "pushf")) {
+        x86_pushfq(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "popfq") || !strcmp(mnem, "popf")) {
+        x86_popfq(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "invlpg")) {
+        x86_invlpg(buf, M(0));
+        return true;
+    }
     // Port I/O: "outb %al, %dx" or "outb %al, $imm8" (imm-port form)
     if (!strcmp(mnem, "outb")) {
         if (is_imm(1)) x86_outb_imm(buf, (uint8_t)IMM(1));

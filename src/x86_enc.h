@@ -274,6 +274,8 @@ void x86_wbinvd(SecBuf *s);
 void x86_sti(SecBuf *s);
 void x86_cli(SecBuf *s);
 void x86_hlt(SecBuf *s);
+void x86_pushfq(SecBuf *s);
+void x86_popfq(SecBuf *s);
 // Port I/O: "outb %al, %dx" / "outb %al, $imm8", "inb %dx, %al" / "inb $imm8, %al"
 void x86_outb_dx(SecBuf *s);
 void x86_outw_dx(SecBuf *s);
@@ -307,6 +309,7 @@ void x86_lgdt(SecBuf *s, X86Mem m);
 void x86_lidt(SecBuf *s, X86Mem m);
 void x86_sgdt(SecBuf *s, X86Mem m);
 void x86_sidt(SecBuf *s, X86Mem m);
+void x86_invlpg(SecBuf *s, X86Mem m);
 void x86_lldt_r(SecBuf *s, X86Reg r);
 void x86_lldt_m(SecBuf *s, X86Mem m);
 void x86_ltr_r(SecBuf *s, X86Reg r);

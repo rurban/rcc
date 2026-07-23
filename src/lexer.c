@@ -65,6 +65,7 @@ int line_num = 1;
 // line, comments included as TK_CNL), '#' is an ordinary punctuator, and the
 // caller (the preprocessor) owns all line-number accounting.
 bool lex_pp_mode = false;
+bool lex_asm_cpp_mode = false;
 static int pp_pending_cnl; // comment newlines owed to the PP as TK_CNL
 
 // Registry of all lexed source buffers (main file + every include), so error
@@ -92,6 +93,23 @@ static char *source_buffer_base(char *loc) {
         if (b->start <= loc && loc < b->end)
             return b->start;
     return current_input;
+}
+
+// True if `p` (pointing at '#') is NOT the first non-whitespace character on
+// its source line — i.e. GAS's own end-of-line comment marker, not a
+// preprocessing directive. Deliberately a backward text scan rather than
+// trusting lex_at_line_start/lex_in_directive: those are maintained purely
+// as a side effect of lex_one()'s own forward call sequence, but the
+// preprocessor's directive/macro-body reading calls lex_one() out of that
+// strict order across a multi-line "/* ... */" comment (draining its
+// embedded-newline TK_CNL tokens), leaving them stale by the time the next
+// real line is reached.
+static bool hash_is_midline_comment(const char *p) {
+    const char *base = source_buffer_base((char *)p);
+    const char *q = p;
+    while (q > base && (q[-1] == ' ' || q[-1] == '\t'))
+        q--;
+    return !(q == base || q[-1] == '\n');
 }
 // Tracks the filename from #line directives for error/warning messages.
 // Updated unconditionally (not gated on opt_g) so warnings in included
@@ -520,6 +538,24 @@ Token *lex_one(char **pp, int *plineno) {
                 cur_lineno++;
             }
             p++;
+            continue;
+        }
+
+        // In assembler-with-cpp mode (.S/.s), a '#' that is NOT the first
+        // token on its line is GAS's own end-of-line comment marker, not
+        // preprocessor punctuation — UNLESS this line is itself an active
+        // preprocessing directive (lex_in_directive), where a mid-line '#'
+        // or '##' is the real stringify/token-paste operator (e.g.
+        // kconfig.h's "#define ___and(x, y) ____and(__ARG_PLACEHOLDER_##x,
+        // y)" or a "#define STR(x) #x" body) and must NOT be swallowed as a
+        // comment. Consume the comment text only — not the newline itself,
+        // which the whitespace handling above still needs to see and turn
+        // into a TK_NL — so a stray "'" in comment prose (e.g. "# don't
+        // loop") never gets scanned as the start of a character literal.
+        if (*p == '#' && lex_pp_mode && lex_asm_cpp_mode && !lex_in_directive &&
+            hash_is_midline_comment(p)) {
+            while (*p && *p != '\n')
+                p++;
             continue;
         }
 

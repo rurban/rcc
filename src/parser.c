@@ -4443,8 +4443,14 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // row, correctly handled by the generic "array with braces" per-
     // element recursion below (which hands "ab" to *that* inner array,
     // where these same checks apply again).
+    // TY_PTR is also excluded: a single-element "{ "str" }" initializer for
+    // an array of pointers (e.g. "const char *strs[] = { "a" };") assigns
+    // the string's address to strs[0] — a completely different, valid case
+    // from a char/wide-char array being initialized BY a string literal,
+    // not one array-element-type/string-width mismatch.
     bool scalarish_base = ty->kind == TY_ARRAY && ty->base->kind != TY_ARRAY &&
-        ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION;
+        ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION &&
+        ty->base->kind != TY_PTR;
     Token *brace_close = NULL;
     if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
         Token *after = tok->next->next;

@@ -564,7 +564,11 @@ int main(int argc, char **argv) {
         char *dot_ext = strrchr(cur_path, '.');
         bool is_asm_input = dot_ext && (strcmp(dot_ext, ".S") == 0 || strcmp(dot_ext, ".s") == 0);
         if (is_asm_input) add_define("__ASSEMBLER__=1");
+        // GAS's own "#" end-of-line comment is not preprocessor punctuation;
+        // see lex_asm_cpp_mode's declaration in rcc.h.
+        if (is_asm_input) lex_asm_cpp_mode = true;
         Token *tok = preprocess(cur_path, contents);
+        lex_asm_cpp_mode = false;
         if (is_asm_input) remove_cmdline_define("__ASSEMBLER__");
         if (opt_time)
             fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
