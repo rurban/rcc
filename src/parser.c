@@ -1765,8 +1765,38 @@ bool eval_const_expr(Node *node, long long *val) {
         // (see linux/log2.h bits_per()/ilog2()); once __builtin_constant_p
         // has already folded the condition to a literal 1, this branch must
         // itself fold to a constant for the enclosing static_assert to hold.
-        if (!node->funcname || !node->args || node->args->next)
+        if (!node->args || node->args->next)
             return false;
+        // node->funcname is only set for a call resolved as an
+        // as-yet-undeclared "plain identifier" (the usual path for these
+        // builtins). If the callee happens to already have a real
+        // prototype in scope (e.g. <linux/string.h> declaring
+        // "extern size_t strlen(const char *)" — __builtin_strlen itself
+        // is preprocessor-macro'd to plain "strlen", see preprocess.c's
+        // define_pre("__builtin_strlen", "strlen")), the call instead
+        // resolves through node->lhs referencing that declared LVar, and
+        // funcname is never populated. Fall back to the declared symbol's
+        // own name so both paths reach the same fold below.
+        char *fn = node->funcname;
+        if (!fn && node->lhs && node->lhs->kind == ND_LVAR && node->lhs->var)
+            fn = node->lhs->var->name;
+        if (!fn)
+            return false;
+        // strlen(STR_LITERAL) is GCC/Clang's other well-known
+        // constant-foldable-call extension, relied on throughout the
+        // kernel for "_Static_assert(sizeof(lit) - 1 == strlen(lit), \"no
+        // embedded NUL\")" (MODULE_INFO() et al. via linux/stringify.h).
+        // Its argument is a string, not an integer, so it must be checked
+        // before the integer-only eval_const_expr() call below rejects it.
+        if (fn == bi_strlen || fn == bi_s_strlen) {
+            Node *a = node->args;
+            while (a && a->kind == ND_CAST) a = a->lhs;
+            if (a && a->kind == ND_STR) {
+                *val = (long long)strlen(a->str);
+                return true;
+            }
+            return false;
+        }
         long long arg;
         if (!eval_const_expr(node->args, &arg))
             return false;
@@ -1774,7 +1804,6 @@ bool eval_const_expr(Node *node, long long *val) {
         // lexer already str_intern's — compare against the pre-interned
         // bi_* pointers (init_builtin_names(), cg_builtins.c) instead of
         // strcmp, same convention used everywhere else these are checked.
-        char *fn = node->funcname;
         unsigned uv32 = (unsigned)arg;
         unsigned long long uv64 = (unsigned long long)arg;
         if (fn == bi_clz) {
@@ -4084,6 +4113,14 @@ static bool looks_like_address_expr(Node *node) {
     case ND_ADDR:
     case ND_STR:
         return true;
+    case ND_LVAR:
+        // A bare function name (no explicit '&') always implicitly decays
+        // to its address — there's no other valid meaning for it in a
+        // scalar initializer — unlike a bare *data* variable reference,
+        // which extract_reloc()'s ND_LVAR case would otherwise also treat
+        // as "the address of", too permissively (see the c11-thread-local-2
+        // regression this function was written to guard against).
+        return node->var && node->var->is_function;
     case ND_ADD:
     case ND_SUB:
         return looks_like_address_expr(node->lhs) || looks_like_address_expr(node->rhs);
