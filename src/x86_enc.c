@@ -1013,7 +1013,151 @@ void x86_lsl_rm(SecBuf *s, X86Mem src, X86Reg dst) {
     emit2(s, 0x0f, 0x03);
     emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
 }
+
+void x86_cmc(SecBuf *s) { emit1(s, 0xf5); }
+void x86_clts(SecBuf *s) { emit2(s, 0x0f, 0x06); }
+void x86_invd(SecBuf *s) { emit2(s, 0x0f, 0x08); }
+void x86_wbnoinvd(SecBuf *s) { emit3(s, 0xf3, 0x0f, 0x09); }
+void x86_wait(SecBuf *s) { emit1(s, 0x9b); }
+void x86_xgetbv(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xd0); }
+void x86_xsetbv(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xd1); }
+void x86_serialize(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xe8); }
+// VERR r/m16 (0F 00 /4) — memory form only, mirrors the existing VERW_m.
+void x86_verr_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 4, m); }
+// LAR r32/r64, r/m16 (0F 02 /r): AT&T "lar src, dst" — dst is the reg field.
+void x86_lar_rr(SecBuf *s, X86Reg src, X86Reg dst) {
+    maybe_rex(s, 0, dst, X86_NOREG, src);
+    emit2(s, 0x0f, 0x02);
+    emit1(s, modrm(3, dst, src));
+}
+void x86_lar_rm(SecBuf *s, X86Mem src, X86Reg dst) {
+    bool needrex = dst > X86_RDI || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
+    emit2(s, 0x0f, 0x02);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+}
+// SMSW/LMSW (0F 01 /4, /6) and SLDT (0F 00 /0): a 16-bit selector/status
+// word, register or memory, same shape as LLDT/STR/LTR above.
+void x86_smsw_r(SecBuf *s, X86Reg r) { seldesc_r(s, 4, r); }
+void x86_smsw_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 4, m); }
+void x86_lmsw_r(SecBuf *s, X86Reg r) { seldesc_r(s, 6, r); }
+void x86_lmsw_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x01, 6, m); }
+void x86_sldt_r(SecBuf *s, X86Reg r) { seldesc_r(s, 0, r); }
+void x86_sldt_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x00, 0, m); }
+// UD0/UD1 r32, r/m32 (0F FF /r, 0F B9 /r): deliberate #UD-raising forms
+// that (unlike UD2) still decode a ModRM byte, register-register only.
+void x86_ud0(SecBuf *s, X86Reg dst, X86Reg src) {
+    maybe_rex(s, 0, dst, X86_NOREG, src);
+    emit2(s, 0x0f, 0xff);
+    emit1(s, modrm(3, dst, src));
+}
+void x86_ud1(SecBuf *s, X86Reg dst, X86Reg src) {
+    maybe_rex(s, 0, dst, X86_NOREG, src);
+    emit2(s, 0x0f, 0xb9);
+    emit1(s, modrm(3, dst, src));
+}
+
+// FXSAVE/FXRSTOR/XSAVE-family: 0F AE or 0F C7 with a /digit sub-opcode and
+// a single memory operand (never a register — mod==11 encodes a totally
+// different, unrelated instruction on this same opcode byte, e.g. LFENCE/
+// MFENCE/SFENCE live at 0F AE /5,/6,/7 mod==11). The "64" name variants
+// (fxsave64, xsave64, ...) are the identical opcode with REX.W forced —
+// not a separate opcode — matching how the kernel's fpu/internal.h picks
+// between the two at compile time via inline-asm alternatives.
+static void fpstate_m(SecBuf *s, uint8_t op2, int digit, int w, X86Mem m) {
+    bool needrex = w || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(w, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit2(s, 0x0f, op2);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+}
+void x86_fxsave(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 0, w, m); }
+void x86_fxrstor(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 1, w, m); }
+void x86_xsave(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 4, w, m); }
+void x86_xrstor(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 5, w, m); }
+void x86_xsaveopt(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 6, w, m); }
+void x86_xsavec(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xc7, 4, w, m); }
+void x86_xsaves(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xc7, 5, w, m); }
+void x86_xrstors(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xc7, 3, w, m); }
 void x86_ud2(SecBuf *s) { emit2(s, 0x0f, 0x0b); }
+
+// x87 control/status instructions: single-byte opcode (D8-DF range, NOT
+// 0F-prefixed like the rest of this file), no REX.W meaning. Each waiting
+// ("fXXX") form is its non-waiting ("fnXXX") twin with a leading FWAIT
+// (0x9B) — real hardware, real GAS, two genuinely different opcode
+// sequences sharing one mnemonic root.
+static void x87_m(SecBuf *s, uint8_t op, int digit, X86Mem m) {
+    bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, op);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+}
+void x86_fninit(SecBuf *s) { emit2(s, 0xdb, 0xe3); }
+void x86_finit(SecBuf *s) {
+    emit1(s, 0x9b);
+    x86_fninit(s);
+}
+void x86_fnclex(SecBuf *s) { emit2(s, 0xdb, 0xe2); }
+void x86_fclex(SecBuf *s) {
+    emit1(s, 0x9b);
+    x86_fnclex(s);
+}
+void x86_fnop(SecBuf *s) { emit2(s, 0xd9, 0xd0); }
+void x86_fldcw_m(SecBuf *s, X86Mem m) { x87_m(s, 0xd9, 5, m); }
+void x86_fnstcw_m(SecBuf *s, X86Mem m) { x87_m(s, 0xd9, 7, m); }
+void x86_fstcw_m(SecBuf *s, X86Mem m) {
+    emit1(s, 0x9b);
+    x86_fnstcw_m(s, m);
+}
+void x86_fnstsw_m(SecBuf *s, X86Mem m) { x87_m(s, 0xdd, 7, m); }
+void x86_fnstsw_ax(SecBuf *s) { emit2(s, 0xdf, 0xe0); }
+void x86_fstsw_m(SecBuf *s, X86Mem m) {
+    emit1(s, 0x9b);
+    x86_fnstsw_m(s, m);
+}
+void x86_fstsw_ax(SecBuf *s) {
+    emit1(s, 0x9b);
+    x86_fnstsw_ax(s);
+}
+
+// Far return (0xCB, or 0xCA iw to also pop imm16 bytes off the stack) —
+// AT&T's "lret"/"lretq" are just alternate spellings of the same opcodes.
+void x86_retf(SecBuf *s) { emit1(s, 0xcb); }
+void x86_retf_imm(SecBuf *s, uint16_t imm16) {
+    emit1(s, 0xca);
+    secbuf_emit16le(s, imm16);
+}
+// ENTER imm16, imm8 (0xC8 iw ib): allocate a stack frame of frame_size
+// bytes, nesting is almost always 0 in practice (real-mode/32-bit nested
+// Pascal-style display support is the only user of a nonzero value).
+void x86_enter(SecBuf *s, uint16_t frame_size, uint8_t nesting) {
+    emit1(s, 0xc8);
+    secbuf_emit16le(s, frame_size);
+    emit1(s, nesting);
+}
+void x86_prefetcht1(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 2, m); }
+void x86_prefetcht2(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 3, m); }
+void x86_prefetchwt1(SecBuf *s, X86Mem m) { prefetch_m(s, 0x0d, 2, m); }
+// MONITOR/MWAIT (0F 01 C8/C9): operands (address in rax, hints in
+// ecx/edx) are always implicit registers — real assembly (including the
+// kernel's mwait_idle()) writes them out only as documentation, they
+// don't affect the encoding.
+void x86_monitor(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xc8); }
+void x86_mwait(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xc9); }
+void x86_rsm(SecBuf *s) { emit2(s, 0x0f, 0xaa); }
+void x86_xtest(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xd6); }
+void x86_xend(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xd5); }
+// CLZERO (0F 01 FC): zeroes the cache line at the implicit address in RAX.
+void x86_clzero(SecBuf *s) { emit3(s, 0x0f, 0x01, 0xfc); }
+// CLDEMOTE m8 (0F 1C /0): hint, memory operand only.
+void x86_cldemote_m(SecBuf *s, X86Mem m) { prefetch_m(s, 0x1c, 0, m); }
+// XABORT imm8 (C6 F8 ib), XBEGIN rel32 (C7 F8 rel32) — RTM transactional
+// memory. XBEGIN's rel32 branches to the abort handler on a hardware
+// abort, same fixup shape as a plain JMP.
+void x86_xabort(SecBuf *s, uint8_t imm8) { emit3(s, 0xc6, 0xf8, imm8); }
+void x86_xbegin_rel32(SecBuf *s, int32_t rel32) {
+    emit2(s, 0xc7, 0xf8);
+    emit_imm32(s, rel32);
+}
 
 // ---------------------------------------------------------------------------
 // SSE / FP helpers

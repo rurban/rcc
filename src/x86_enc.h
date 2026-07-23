@@ -346,6 +346,70 @@ void x86_verw_m(SecBuf *s, X86Mem m);
 void x86_rdpid(SecBuf *s, X86Reg dst);
 void x86_lsl_rr(SecBuf *s, X86Reg src, X86Reg dst);
 void x86_lsl_rm(SecBuf *s, X86Mem src, X86Reg dst);
+void x86_cmc(SecBuf *s);
+void x86_clts(SecBuf *s);
+void x86_invd(SecBuf *s);
+void x86_wbnoinvd(SecBuf *s);
+void x86_wait(SecBuf *s);
+void x86_xgetbv(SecBuf *s);
+void x86_xsetbv(SecBuf *s);
+void x86_serialize(SecBuf *s);
+void x86_verr_m(SecBuf *s, X86Mem m);
+void x86_lar_rr(SecBuf *s, X86Reg src, X86Reg dst);
+void x86_lar_rm(SecBuf *s, X86Mem src, X86Reg dst);
+void x86_smsw_r(SecBuf *s, X86Reg r);
+void x86_smsw_m(SecBuf *s, X86Mem m);
+void x86_lmsw_r(SecBuf *s, X86Reg r);
+void x86_lmsw_m(SecBuf *s, X86Mem m);
+void x86_sldt_r(SecBuf *s, X86Reg r);
+void x86_sldt_m(SecBuf *s, X86Mem m);
+void x86_ud0(SecBuf *s, X86Reg dst, X86Reg src);
+void x86_ud1(SecBuf *s, X86Reg dst, X86Reg src);
+// FXSAVE/FXRSTOR/XSAVE-family (0F AE and 0F C7 sub-opcodes): all take a
+// single memory operand — the "64" name variants are the same opcode with
+// REX.W forced, not a different opcode.
+void x86_fxsave(SecBuf *s, int w, X86Mem m);
+void x86_fxrstor(SecBuf *s, int w, X86Mem m);
+void x86_xsave(SecBuf *s, int w, X86Mem m);
+void x86_xrstor(SecBuf *s, int w, X86Mem m);
+void x86_xsaveopt(SecBuf *s, int w, X86Mem m);
+void x86_xsavec(SecBuf *s, int w, X86Mem m);
+void x86_xsaves(SecBuf *s, int w, X86Mem m);
+void x86_xrstors(SecBuf *s, int w, X86Mem m);
+
+// x87 FPU control/status (init/exception-handling subset only — the
+// arithmetic instruction family is deferred, the kernel avoids x87 math
+// outside very specific paths). Each "fXXX" waiting form is the "fnXXX"
+// non-waiting form with an implicit leading FWAIT (0x9B).
+void x86_fninit(SecBuf *s);
+void x86_finit(SecBuf *s);
+void x86_fnclex(SecBuf *s);
+void x86_fclex(SecBuf *s);
+void x86_fnop(SecBuf *s);
+void x86_fldcw_m(SecBuf *s, X86Mem m);
+void x86_fnstcw_m(SecBuf *s, X86Mem m);
+void x86_fstcw_m(SecBuf *s, X86Mem m);
+void x86_fnstsw_m(SecBuf *s, X86Mem m);
+void x86_fnstsw_ax(SecBuf *s);
+void x86_fstsw_m(SecBuf *s, X86Mem m);
+void x86_fstsw_ax(SecBuf *s);
+
+// Port I/O, far return, stack frame, misc system
+void x86_retf(SecBuf *s);
+void x86_retf_imm(SecBuf *s, uint16_t imm16);
+void x86_enter(SecBuf *s, uint16_t frame_size, uint8_t nesting);
+void x86_prefetcht1(SecBuf *s, X86Mem m);
+void x86_prefetcht2(SecBuf *s, X86Mem m);
+void x86_prefetchwt1(SecBuf *s, X86Mem m);
+void x86_monitor(SecBuf *s);
+void x86_mwait(SecBuf *s);
+void x86_rsm(SecBuf *s);
+void x86_xtest(SecBuf *s);
+void x86_xend(SecBuf *s);
+void x86_clzero(SecBuf *s);
+void x86_cldemote_m(SecBuf *s, X86Mem m);
+void x86_xabort(SecBuf *s, uint8_t imm8);
+void x86_xbegin_rel32(SecBuf *s, int32_t rel32); // fills 0; caller adds fixup
 
 // SSE / FP
 void x86_movsd_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src);

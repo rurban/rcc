@@ -3399,6 +3399,261 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_str_r(buf, R(0));
         return true;
     }
+    if (!strcmp(mnem, "cmc")) {
+        x86_cmc(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "clts")) {
+        x86_clts(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "invd")) {
+        x86_invd(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "wbnoinvd")) {
+        x86_wbnoinvd(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "wait") || !strcmp(mnem, "fwait")) {
+        x86_wait(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "xgetbv")) {
+        x86_xgetbv(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "xsetbv")) {
+        x86_xsetbv(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "serialize")) {
+        x86_serialize(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "verr")) {
+        x86_verr_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "lar")) {
+        if (is_mem(0))
+            x86_lar_rm(buf, M(0), R(1));
+        else
+            x86_lar_rr(buf, R(0), R(1));
+        return true;
+    }
+    if (!strcmp(mnem, "smsw")) {
+        if (is_mem(0)) x86_smsw_m(buf, M(0));
+        else
+            x86_smsw_r(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "lmsw")) {
+        if (is_mem(0)) x86_lmsw_m(buf, M(0));
+        else
+            x86_lmsw_r(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "sldt")) {
+        if (is_mem(0)) x86_sldt_m(buf, M(0));
+        else
+            x86_sldt_r(buf, R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "ud0")) {
+        x86_ud0(buf, R(1), R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "ud1")) {
+        x86_ud1(buf, R(1), R(0));
+        return true;
+    }
+    // FXSAVE/FXRSTOR/XSAVE-family: single memory operand, "64"-suffixed
+    // name selects REX.W (matching fpu/internal.h's inline-asm alternatives
+    // between e.g. "fxsave %0" and "fxsaveq %0"/"fxsave64 %0").
+    if (!strcmp(mnem, "fxsave") || !strcmp(mnem, "fxsave64") || !strcmp(mnem, "fxsaveq")) {
+        x86_fxsave(buf, mnem[strlen(mnem) - 1] != 'e', M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fxrstor") || !strcmp(mnem, "fxrstor64") || !strcmp(mnem, "fxrstorq")) {
+        x86_fxrstor(buf, mnem[strlen(mnem) - 1] != 'r', M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xsave") || !strcmp(mnem, "xsave64")) {
+        x86_xsave(buf, !strcmp(mnem, "xsave64"), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xrstor") || !strcmp(mnem, "xrstor64")) {
+        x86_xrstor(buf, !strcmp(mnem, "xrstor64"), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xsaveopt") || !strcmp(mnem, "xsaveopt64")) {
+        x86_xsaveopt(buf, !strcmp(mnem, "xsaveopt64"), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xsavec") || !strcmp(mnem, "xsavec64")) {
+        x86_xsavec(buf, !strcmp(mnem, "xsavec64"), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xsaves") || !strcmp(mnem, "xsaves64")) {
+        x86_xsaves(buf, !strcmp(mnem, "xsaves64"), M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xrstors") || !strcmp(mnem, "xrstors64")) {
+        x86_xrstors(buf, !strcmp(mnem, "xrstors64"), M(0));
+        return true;
+    }
+    // x87 FPU control/status (init/exception-handling subset)
+    if (!strcmp(mnem, "fninit")) {
+        x86_fninit(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "finit")) {
+        x86_finit(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "fnclex")) {
+        x86_fnclex(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "fclex")) {
+        x86_fclex(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "fnop")) {
+        x86_fnop(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "fldcw")) {
+        x86_fldcw_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fnstcw")) {
+        x86_fnstcw_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fstcw")) {
+        x86_fstcw_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fnstsw")) {
+        if (nops > 0 && is_reg(0)) x86_fnstsw_ax(buf);
+        else
+            x86_fnstsw_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fstsw")) {
+        if (nops > 0 && is_reg(0)) x86_fstsw_ax(buf);
+        else
+            x86_fstsw_m(buf, M(0));
+        return true;
+    }
+    // Bare "in"/"out" (no b/w/l suffix): AT&T infers the port-transfer
+    // size from the AL/AX/EAX operand, same idea as the generic bare "mov".
+    if (!strcmp(mnem, "in")) {
+        int rsz = is_reg(1) ? reg_size_x86(ops[1]) : 4;
+        if (rsz == 1) {
+            if (is_imm(0)) x86_inb_imm(buf, (uint8_t)IMM(0));
+            else
+                x86_inb_dx(buf);
+        } else if (rsz == 2) {
+            if (is_imm(0)) x86_inw_imm(buf, (uint8_t)IMM(0));
+            else
+                x86_inw_dx(buf);
+        } else {
+            if (is_imm(0)) x86_inl_imm(buf, (uint8_t)IMM(0));
+            else
+                x86_inl_dx(buf);
+        }
+        return true;
+    }
+    if (!strcmp(mnem, "out")) {
+        int rsz = is_reg(0) ? reg_size_x86(ops[0]) : 4;
+        if (rsz == 1) {
+            if (is_imm(1)) x86_outb_imm(buf, (uint8_t)IMM(1));
+            else
+                x86_outb_dx(buf);
+        } else if (rsz == 2) {
+            if (is_imm(1)) x86_outw_imm(buf, (uint8_t)IMM(1));
+            else
+                x86_outw_dx(buf);
+        } else {
+            if (is_imm(1)) x86_outl_imm(buf, (uint8_t)IMM(1));
+            else
+                x86_outl_dx(buf);
+        }
+        return true;
+    }
+    if (!strcmp(mnem, "retf") || !strcmp(mnem, "lret") || !strcmp(mnem, "lretq")) {
+        if (nops > 0 && is_imm(0)) x86_retf_imm(buf, (uint16_t)IMM(0));
+        else
+            x86_retf(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "enter")) {
+        uint16_t fsz = nops > 0 ? (uint16_t)IMM(0) : 0;
+        uint8_t nest = nops > 1 ? (uint8_t)IMM(1) : 0;
+        x86_enter(buf, fsz, nest);
+        return true;
+    }
+    if (!strcmp(mnem, "prefetcht1")) {
+        x86_prefetcht1(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "prefetcht2")) {
+        x86_prefetcht2(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "prefetchwt1")) {
+        x86_prefetchwt1(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "monitor")) {
+        x86_monitor(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "mwait")) {
+        x86_mwait(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "rsm")) {
+        x86_rsm(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "xtest")) {
+        x86_xtest(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "xend")) {
+        x86_xend(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "clzero")) {
+        x86_clzero(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "cldemote")) {
+        x86_cldemote_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xabort")) {
+        x86_xabort(buf, (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "xbegin")) {
+        char *lbl = ops[0];
+        size_t off = buf->len;
+        x86_xbegin_rel32(buf, 0); // placeholder
+        int sec = 0;
+        int64_t toff = lookup_local(as, lbl, &sec);
+        if (toff >= 0 && sec == as->cur_sec) {
+            int32_t delta = (int32_t)(toff - (int64_t)(off + 6));
+            secbuf_patch32le(buf, off + 2, (uint32_t)delta);
+        } else {
+            add_fixup(as, off + 2, as->cur_sec, lbl, FIXUP_REL32, 0);
+        }
+        return true;
+    }
 
     // Unknown
     fprintf(stderr, "warning: unknown x86 instruction: %s\n", mnem);
