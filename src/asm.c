@@ -2164,7 +2164,17 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Unknown — emit NOP as fallback (silent; validator already handles this)
+    // Unknown — emit NOP as fallback (silent; validator already handles this).
+    //
+    // A version of this that warned to stderr was tried and reverted: GNU
+    // inline-asm error-diagnostics test 139_arm64_errors (test/tinycc-
+    // 139_arm64_errors.expect, a real rcc test that CLAUDE.md says never to
+    // edit) has a case that deliberately feeds an unrecognized mnemonic and
+    // asserts on the exact (currently empty) stderr output for it — adding
+    // a warning here is a real regression against that tracked baseline,
+    // not a false positive. Measuring ARM64 instruction-coverage gaps
+    // empirically (the way the x86-64 audit did this session) needs a
+    // different mechanism than grepping this fallback's stderr output.
     arm64_nop(buf);
     return true;
 
