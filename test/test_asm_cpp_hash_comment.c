@@ -94,7 +94,15 @@ static int compile_and_check_bytes(const char *rcc, const char *td, int pid,
         return 0;
     }
 
+    /* rcc's own logical SEC_DATA is written out under a platform-specific
+     * real section name: ".data" on ELF/COFF, but Mach-O splits it into
+     * segment "__DATA" + bare section name "__data" (no leading dot) —
+     * same section, different label. */
+#ifdef __APPLE__
+    snprintf(cmd, sizeof(cmd), "objdump -s -j __data %s " NULL_REDIRECT, objf);
+#else
     snprintf(cmd, sizeof(cmd), "objdump -s -j .data %s " NULL_REDIRECT, objf);
+#endif
     FILE *p = popen(cmd, "r");
     if (!p) { printf("FAIL: [%s] objdump failed\n", tag); remove(objf); return 0; }
     char out[4096];

@@ -72,6 +72,11 @@ typedef struct {
     struct AsmMacro {
         char name[64];
         char params[8][32];
+        // GAS "PARAM=DEFAULT" syntax (e.g. objtool.h's
+        // ".macro UNWIND_HINT type:req sp_reg=0 sp_offset=0 signal=0"): a
+        // caller that omits an optional parameter still needs its default
+        // substituted, not an empty/unresolved "\param" left in the body.
+        char defaults[8][64];
         int nparams;
         char **body; // owned copies of each raw body line
         int nbody;
@@ -978,13 +983,14 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         }
     } else if (!strcmp(dir, "byte") || !strcmp(dir, "2byte") ||
                !strcmp(dir, "4byte") || !strcmp(dir, "hword") ||
-               !strcmp(dir, "word") || !strcmp(dir, "long") ||
+               !strcmp(dir, "word") || !strcmp(dir, "short") ||
+               !strcmp(dir, "long") ||
                !strcmp(dir, "quad") || !strcmp(dir, "octa") ||
                !strcmp(dir, "8byte")) {
         // Data emission
-        int sz = (!strcmp(dir, "byte")) ? 1 : (!strcmp(dir, "2byte") || !strcmp(dir, "hword") || !strcmp(dir, "word")) ? 2
-            : (!strcmp(dir, "4byte") || !strcmp(dir, "long"))                                                          ? 4
-                                                                                                                       : 8;
+        int sz = (!strcmp(dir, "byte")) ? 1 : (!strcmp(dir, "2byte") || !strcmp(dir, "hword") || !strcmp(dir, "word") || !strcmp(dir, "short")) ? 2
+            : (!strcmp(dir, "4byte") || !strcmp(dir, "long"))                                                                                   ? 4
+                                                                                                                                                : 8;
 
         SecBuf *buf = cur_sec_buf(as);
         // May have multiple comma-separated values
@@ -3805,7 +3811,7 @@ static bool try_eval_full_expr(AsmState *as, const ParamMap *map, const char *te
 }
 
 static bool is_data_emit_dir(const char *word) {
-    static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word",
+    static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word", "short",
                                  "long", "quad", "octa", "8byte"};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
         if (!strcmp(word, dirs[i])) return true;
@@ -3845,6 +3851,71 @@ static int find_block_end(char **lines, int nlines, int start,
 static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                              const ParamMap *map, DynStr *out);
 
+// Split a macro invocation's argument list. GAS accepts commas between
+// arguments, but keyword ("NAME=VALUE") arguments don't require one — e.g.
+// objtool.h's ".macro UNWIND_HINT ..." is always invoked like "UNWIND_HINT
+// sp_reg=ORC_REG_SP sp_offset=8 type=UNWIND_HINT_TYPE_FUNC", three keyword
+// args with no commas at all. Splitting on comma alone would swallow the
+// whole rest of the line into sp_reg's value. An argument ends at a comma,
+// or at whitespace immediately followed by another "IDENT=" (a new keyword
+// arg starting with no comma), whichever comes first.
+static char *next_macro_arg(char **cursor) {
+    char *p = skip_ws(*cursor);
+    if (!*p) {
+        *cursor = p;
+        return NULL;
+    }
+    char *start = p;
+    for (; *p; p++) {
+        // A quoted string argument (e.g. ALTERNATIVE_2's "call write_ibpb")
+        // is one argument regardless of any ',' inside it.
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"') p++;
+            if (!*p) break;
+            continue;
+        }
+        if (*p == ',') {
+            *p = '\0';
+            *cursor = p + 1;
+            trim_end(start);
+            return start;
+        }
+        if (isspace((unsigned char)*p)) {
+            char *q = skip_ws(p);
+            if (isalpha((unsigned char)*q) || *q == '_') {
+                char *r = q;
+                while (isalnum((unsigned char)*r) || *r == '_') r++;
+                if (*r == '=') {
+                    *p = '\0';
+                    *cursor = q;
+                    return start;
+                }
+            }
+        }
+    }
+    *cursor = p; // at the terminating '\0'
+    trim_end(start);
+    return start;
+}
+
+// GAS strips one layer of quoting from a macro argument that's a bare
+// string constant when it's substituted into the macro body — the quotes
+// are just how the invocation *delimits* an argument that might otherwise
+// contain a comma/space, not part of the text meant to be assembled.
+// Without this, a body that expands "\newinstr" into a
+// ".pushsection .altinstr_replacement" block ends up trying to assemble the
+// literal text "call write_ibpb" (with the quote marks as real bytes)
+// instead of the instruction `call write_ibpb`.
+static char *strip_arg_quotes(char *v) {
+    size_t len = strlen(v);
+    if (len >= 2 && v[0] == '"' && v[len - 1] == '"') {
+        v[len - 1] = '\0';
+        return v + 1;
+    }
+    return v;
+}
+
 // Expand a single already-substituted line: if its first token names a
 // currently-defined macro, invoke it (building a new param scope from the
 // `key=value[, ...]` or positional arguments and recursing into the
@@ -3882,27 +3953,41 @@ static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, 
     args.parent = (ParamMap *)map;
     const char *rest = skip_ws((char *)s);
     int pos = 0;
+    bool supplied[8] = {0};
     char argbuf[400];
     strncpy(argbuf, rest, sizeof(argbuf) - 1);
     argbuf[sizeof(argbuf) - 1] = '\0';
     char *cursor = argbuf;
-    char *tok = next_tok(&cursor, ",");
+    char *tok = next_macro_arg(&cursor);
     while (tok) {
         char *t = skip_ws(tok);
         trim_end(t);
-        char *eq = strchr(t, '=');
+        // A quoted string argument always contains its own '=' search space
+        // (none of these macros' string args use '='), so check for the
+        // quote before the '=' split to avoid misreading one.
+        char *eq = (t[0] == '"') ? NULL : strchr(t, '=');
         if (eq) {
             *eq = '\0';
             char *name = t;
             trim_end(name);
-            char *val = skip_ws(eq + 1);
+            char *val = strip_arg_quotes(skip_ws(eq + 1));
             param_set(&args, name, val);
+            for (int i = 0; i < mac->nparams; i++)
+                if (!strcmp(mac->params[i], name)) supplied[i] = true;
         } else if (*t && pos < mac->nparams) {
-            param_set(&args, mac->params[pos], t);
+            param_set(&args, mac->params[pos], strip_arg_quotes(t));
+            supplied[pos] = true;
             pos++;
         }
-        tok = next_tok(&cursor, ",");
+        tok = next_macro_arg(&cursor);
     }
+    // A parameter the caller didn't supply (positionally or by name) still
+    // needs its "PARAM=DEFAULT" value substituted — objtool.h's UNWIND_HINT
+    // macro, for one, is always invoked with only some of its four
+    // parameters, relying on the others' defaults.
+    for (int i = 0; i < mac->nparams; i++)
+        if (!supplied[i])
+            param_set(&args, mac->params[i], mac->defaults[i]);
     // The macro body can itself contain control-flow (.irp/.ifc/.if/.set),
     // not just plain lines — route it through the full block-aware
     // processor, not the single-line one.
@@ -3954,6 +4039,9 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                     if (eqd) *eqd = '\0';
                     if (*ptok) {
                         strncpy(mac->params[mac->nparams], ptok, sizeof(mac->params[0]) - 1);
+                        if (eqd)
+                            strncpy(mac->defaults[mac->nparams], eqd + 1,
+                                    sizeof(mac->defaults[0]) - 1);
                         mac->nparams++;
                     }
                     ptok = next_tok(&pcursor, ", \t");

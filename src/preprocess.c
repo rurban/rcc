@@ -2201,6 +2201,25 @@ char *pp_tokens_to_text(Token *tok) {
             ln = cur_line;
         }
         if (!cur_file || strcmp(fn, cur_file) != 0) {
+            // A file boundary (returning from an #include, or moving into
+            // one) always starts a fresh logical line, even when the new
+            // file's line number isn't "greater" than the old one in any
+            // way this function can compare — sp/prev_sl adjacency is only
+            // meaningful within the same buffer. Without this, the last
+            // token emitted from the old file (e.g. a macro's ".endm") and
+            // the first token of the new one land on the same output line,
+            // silently merging two unrelated GAS statements into one (seen
+            // as ".endm .macro UNWIND_HINT ..." — the ".macro" line then
+            // never matches as a directive at all).
+            if (!first_on_line) {
+                if (len + 2 > cap) {
+                    cap *= 2;
+                    buf = realloc(buf, cap);
+                }
+                buf[len++] = '\n';
+                first_on_line = true;
+                prev_sp = NULL;
+            }
             cur_line = ln;
             cur_file = fn;
         }
