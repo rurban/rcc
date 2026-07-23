@@ -94,8 +94,15 @@ static int check_section_bytes_with_reloc(const char *rcc, const char *td, int p
     pclose(p);
     remove(objf);
 
-    if (!strstr(out, "R_X86_64_32") || !strstr(out, "bare_sym_target")) {
-        printf("FAIL: [%s] expected an R_X86_64_32 relocation against "
+    /* objdump names the same absolute 4-byte relocation differently per
+     * object format: ELF's R_X86_64_32 vs. COFF's IMAGE_REL_AMD64_ADDR32. */
+#ifdef _WIN32
+    const char *reloc_name = "IMAGE_REL_AMD64_ADDR32";
+#else
+    const char *reloc_name = "R_X86_64_32";
+#endif
+    if (!strstr(out, reloc_name) || !strstr(out, "bare_sym_target")) {
+        printf("FAIL: [%s] expected an absolute 32-bit relocation against "
                "bare_sym_target, got:\n%s\n", tag, out);
         return 0;
     }
@@ -125,8 +132,17 @@ int main(void)
         "    );\n"
         "}\n"
         "int main(void) { f(); return 0; }\n";
+    /* rcc's own logical SEC_RODATA (which ".pushsection .rodata" maps to
+     * regardless of target) is written out under a platform-specific real
+     * section name: ".rodata" on ELF, but COFF follows the MS/MinGW
+     * convention of ".rdata" instead — same section, different label. */
+#ifdef _WIN32
+    ok &= check_section_bytes_with_reloc(rcc, td, pid, "bare_4byte_sym", src,
+                                         ".rdata");
+#else
     ok &= check_section_bytes_with_reloc(rcc, td, pid, "bare_4byte_sym", src,
                                          ".rodata");
+#endif
 
     if (!ok) return 1;
     printf("OK bare symbol in .4byte data directive emits a real relocation\n");

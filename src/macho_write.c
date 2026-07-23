@@ -786,83 +786,18 @@ int macho_write(ObjFile *obj, const char *path) {
             ((uint32_t)mtype << 28);
         w32(f, pack);
     }
-    for (int i = 0; i < obj->data_reloc_count; i++) {
-        ObjReloc *r = &obj->data_relocs[i];
-        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
-        uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
-        uint32_t sym_num;
-        if (is_arm64) {
-            ext = true;
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
-        } else {
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        }
-        w32(f, (uint32_t)r->offset);
-        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
-            ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
-        w32(f, pack);
-    }
-    for (int i = 0; i < obj->rodata_reloc_count; i++) {
-        ObjReloc *r = &obj->rodata_relocs[i];
-        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
-        uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
-        uint32_t sym_num;
-        if (is_arm64) {
-            ext = true;
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
-        } else {
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        }
-        w32(f, (uint32_t)r->offset);
-        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
-            ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
-        w32(f, pack);
-    }
+    for (int i = 0; i < obj->data_reloc_count; i++)
+        write_macho_reloc(f, &obj->data_relocs[i], obj, sym_map, is_arm64, extra_ord);
+    for (int i = 0; i < obj->rodata_reloc_count; i++)
+        write_macho_reloc(f, &obj->rodata_relocs[i], obj, sym_map, is_arm64, extra_ord);
 
-    // Init array relocs
     // Thread vars relocs
-    for (int i = 0; i < obj->thread_vars_reloc_count; i++) {
-        ObjReloc *r = &obj->thread_vars_relocs[i];
-        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
-        uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
-        uint32_t sym_num;
-        if (is_arm64) {
-            ext = true;
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
-        } else {
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        }
-        w32(f, (uint32_t)r->offset);
-        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
-            ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
-        w32(f, pack);
-    }
+    for (int i = 0; i < obj->thread_vars_reloc_count; i++)
+        write_macho_reloc(f, &obj->thread_vars_relocs[i], obj, sym_map, is_arm64, extra_ord);
 
     // Init array relocs
-    for (int i = 0; i < obj->init_array_reloc_count; i++) {
-        ObjReloc *r = &obj->init_array_relocs[i];
-        bool ext = (bool)(r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF);
-        uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
-        uint32_t sym_num;
-        if (is_arm64) {
-            ext = true;
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
-        } else {
-            sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
-        }
-        w32(f, (uint32_t)r->offset);
-        uint32_t pack = (sym_num & 0xffffff) | (3 << 25) |
-            ((uint32_t)(ext ? 1 : 0) << 27) | ((uint32_t)mtype << 28);
-        w32(f, pack);
-    }
+    for (int i = 0; i < obj->init_array_reloc_count; i++)
+        write_macho_reloc(f, &obj->init_array_relocs[i], obj, sym_map, is_arm64, extra_ord);
 
     // DWARF address relocations. Each is a non-scattered, non-pcrel, non-extern
     // UNSIGNED reloc of length 3 (8 bytes) against the __text section (ordinal 1);

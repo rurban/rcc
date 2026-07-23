@@ -4942,7 +4942,17 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     // a few lines up; that branch only fires for pointer-typed members, so
     // an integer-typed member holding a cast address never tried
     // extract_reloc() at all.
-    {
+    //
+    // Only fires when the field is at least pointer-width: a real relocation
+    // needs the full 8-byte address to be representable, so on LLP64
+    // (Windows, "unsigned long" is 4 bytes) this must NOT fire for `unsigned
+    // long` the way it safely can on LP64 — GCC itself rejects "(unsigned
+    // long)&sym" as a global initializer on Windows ("initializer element is
+    // not constant"; confirmed against real x86_64-w64-mingw32-gcc), for
+    // exactly this reason: the address genuinely may not fit. Narrower
+    // fields fall through to the existing "unsupported"/"expected constant
+    // expression" error below, matching GCC.
+    if (ty->size >= 8) {
         char *label = NULL;
         int addend = 0;
         if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
@@ -9649,7 +9659,12 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         // either: the TY_PTR branch above already handles exactly this
         // shape via extract_reloc()/append_reloc() for pointer-typed
         // globals; scalars just never tried the same fallback.
-        {
+        //
+        // Only fires when the field is at least pointer-width — see the
+        // matching guard in global_init_one() for why: on LLP64 (Windows)
+        // "unsigned long" is 4 bytes, too narrow to guarantee a real address
+        // fits, and GCC itself rejects the cast there as non-constant.
+        if (var->ty->size >= 8) {
             char *label = NULL;
             int addend = 0;
             if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {

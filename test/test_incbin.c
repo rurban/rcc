@@ -38,13 +38,27 @@ int main(void)
     fwrite(payload, 1, sizeof(payload), df);
     fclose(df);
 
+    /* GAS quoted strings treat '\' as an escape prefix (this is not
+     * rcc-specific: real GNU as does the same and mangles an unescaped
+     * Windows path the identical way, dropping every backslash). td's
+     * native Windows separators would otherwise get silently eaten or, if a
+     * backslash happens to precede a hex/'u'/'U' digit run, rejected as a
+     * malformed \x/\u escape. Windows accepts '/' as a path separator just
+     * as well, so sidestep the whole escaping question for the embedded
+     * .incbin argument specifically (the real filesystem path used for
+     * fopen()/remove() below is untouched). */
+    char incbin_path[128];
+    snprintf(incbin_path, sizeof(incbin_path), "%s", datf);
+    for (char *p = incbin_path; *p; p++)
+        if (*p == '\\') *p = '/';
+
     char src[512];
     snprintf(src, sizeof(src),
              ".section .mydata,\"a\"\n"
              "blob_start:\n"
              ".incbin \"%s\"\n"
              "blob_end:\n",
-             datf);
+             incbin_path);
 
     FILE *f = fopen(srcf, "w");
     if (!f) { printf("FAIL: cannot write %s\n", srcf); remove(datf); return 2; }

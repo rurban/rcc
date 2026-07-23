@@ -17,7 +17,17 @@
  * "{ .sp = (unsigned long)&__top_init_kernel_stack }" — struct
  * thread_struct's sp field is a plain `unsigned long`, not a pointer —
  * used as init/init_task.c's init_task.thread field's initializer.
+ *
+ * "unsigned long" is deliberately part of the test: it's what the real
+ * kernel source uses, and it's pointer-width on every target the Linux
+ * kernel actually builds for. It is NOT pointer-width on LLP64 (Windows,
+ * where "unsigned long" is 4 bytes) — real GCC itself rejects this exact
+ * cast there as "initializer element is not constant" (confirmed against
+ * x86_64-w64-mingw32-gcc), since a 4-byte field can't be guaranteed to hold
+ * a real 64-bit address. This test is skipped on Windows for that reason,
+ * not because rcc can't handle it there.
  */
+#ifndef _WIN32
 #include <stddef.h>
 
 unsigned long backing_array[4];
@@ -52,3 +62,9 @@ int main(void)
     if (init_task.x != 1 || init_task.y != 2) return 3;
     return 0;
 }
+#else
+int main(void)
+{
+    return 0;
+}
+#endif

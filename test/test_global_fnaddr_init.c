@@ -16,7 +16,17 @@
  * blacklist registration) declares
  * "static unsigned long __used __section("_kprobe_blacklist")
  *  _kbl_addr_fname = (unsigned long)fname;" for a real function fname.
+ *
+ * "unsigned long" is deliberately part of the test: it's what the real
+ * kernel source uses, and it's pointer-width on every target the Linux
+ * kernel actually builds for. It is NOT pointer-width on LLP64 (Windows,
+ * where "unsigned long" is 4 bytes) — real GCC itself rejects this exact
+ * cast there as "initializer element is not constant" (confirmed against
+ * x86_64-w64-mingw32-gcc), since a 4-byte field can't be guaranteed to hold
+ * a real 64-bit address. This test is skipped on Windows for that reason,
+ * not because rcc can't handle it there.
  */
+#ifndef _WIN32
 void myfunc(void) {}
 static unsigned long addr_of_myfunc = (unsigned long)myfunc;
 
@@ -33,3 +43,9 @@ int main(void)
     if (h.tag != 7) return 3;
     return 0;
 }
+#else
+int main(void)
+{
+    return 0;
+}
+#endif
