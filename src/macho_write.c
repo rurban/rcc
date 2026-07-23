@@ -181,6 +181,108 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
     return 0;
 }
 // ---------------------------------------------------------------------------
+// Custom named sections from GAS `.section`/`.pushsection` with no built-in
+// Mach-O slot above (e.g. the kernel's .altinstructions, .altinstr_replacement,
+// __ex_table). elf_write.c/coff_write.c already handle these generically via
+// obj->extra_secs; macho_write.c didn't.
+// ---------------------------------------------------------------------------
+
+// Executable content goes in __TEXT, everything else in __DATA — the same
+// code/data split GAS's own section characteristics imply.
+static const char *macho_segname_from_flags(uint32_t sh_flags) {
+    return (sh_flags & SHF_EXECINSTR) ? "__TEXT" : "__DATA";
+}
+
+// Mach-O sectname is a fixed 16-byte field with no long-name escape (unlike
+// COFF's "/<stroff>"); truncate rather than fail on an overlong GAS section
+// name — real-world custom sections (.altinstructions, __ex_table, ...) fit.
+static void macho_section_name(char sectname[16], const char *name) {
+    memset(sectname, 0, 16);
+    size_t n = strlen(name);
+    if (n > 16) n = 16;
+    memcpy(sectname, name, n);
+}
+
+// Map an ObjSym/ObjReloc section id (built-in SEC_TEXT..SEC_THREAD_VARS or a
+// dynamic SEC_NUM+i custom section) to its 1-based Mach-O section ordinal.
+// extra_ord[i] holds the ordinal assigned to obj->extra_secs[i]; computed
+// once per macho_write() call since it depends on whether DWARF debug
+// sections (-g) preceded the custom sections.
+static uint8_t obj_section_ord(int section, const int *extra_ord) {
+    if (section < SEC_NUM) return obj_section_to_macho(section);
+    return (uint8_t)extra_ord[section - SEC_NUM];
+}
+
+// Write one Mach-O relocation_info (8 bytes) for a custom section's entry.
+// Mirrors the ext/pcrel/sym_num logic already inlined per built-in section
+// below, generalized with a type-driven pcrel/length so it also covers
+// FIXUP_PCREL_DATA's ".long/.quad (label) - ." relocations (used by e.g. GAS
+// .altinstructions-style idioms), which can be 4 or 8 bytes wide inside a
+// single custom section, unlike the built-in sections which are uniformly
+// one or the other.
+static void write_macho_reloc(FILE *f, ObjReloc *r, ObjFile *obj,
+                              const int *sym_map, bool is_arm64,
+                              const int *extra_ord) {
+    bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
+    uint8_t mtype = elf_reloc_to_macho(r->type, is_arm64);
+    bool pcrel;
+    uint32_t length;
+    if (is_arm64) {
+        switch (r->type) {
+        case R_AARCH64_CALL26:
+        case R_AARCH64_JUMP26:
+        case R_AARCH64_ADR_PREL_PG_HI21:
+        case R_AARCH64_ADR_GOT_PAGE:
+        case R_AARCH64_TLSLE_ADD_TPREL_HI12:
+            pcrel = true;
+            length = 2;
+            break;
+        default:
+            pcrel = false;
+            length = 3;
+            break;
+        }
+    } else {
+        switch (r->type) {
+        case R_X86_64_PC32:
+        case R_X86_64_PLT32:
+            pcrel = true;
+            length = 2;
+            break;
+        case R_X86_64_PC64:
+            pcrel = true;
+            length = 3;
+            break;
+        case R_X86_64_32:
+        case R_X86_64_32S:
+            pcrel = false;
+            length = 2;
+            break;
+        default: // R_X86_64_64 and anything else
+            pcrel = false;
+            length = 3;
+            break;
+        }
+    }
+    uint32_t sym_num;
+    if (is_arm64) {
+        ext = true;
+        sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+    } else if (!ext && r->sym_idx >= 0) {
+        sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
+    } else {
+        sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
+    }
+    w32(f, (uint32_t)r->offset);
+    uint32_t pack = (sym_num & 0xffffff) |
+        ((uint32_t)(pcrel ? 1 : 0) << 24) |
+        (length << 25) |
+        ((uint32_t)(ext ? 1 : 0) << 27) |
+        ((uint32_t)mtype << 28);
+    w32(f, pack);
+}
+
+// ---------------------------------------------------------------------------
 // Main Mach-O writer
 // ---------------------------------------------------------------------------
 int macho_write(ObjFile *obj, const char *path) {
@@ -193,6 +295,21 @@ int macho_write(ObjFile *obj, const char *path) {
     uint32_t cpu_type = CPU_TYPE_X86_64;
     uint32_t cpu_subtype = CPU_SUBTYPE_ALL;
 #endif
+
+    // Sections: 1=__text, 2=__data, 3=__bss, 4=__const (rodata), 5=__mod_init_func,
+    // 6=__thread_data, 7=__thread_vars. With -g, four __DWARF sections follow:
+    // 8=__debug_line, 9=__debug_info, 10=__debug_abbrev, 11=__debug_aranges.
+    // Custom obj->extra_secs[] sections (section id SEC_NUM+i) follow those.
+    // Computed up front since the symbol table below needs extra_ord to place
+    // symbols defined inside a custom section.
+    bool has_debug = objfile_has_debug(obj);
+    int extra_base_ord = 7 + (has_debug ? 4 : 0);
+    int *extra_ord = NULL;
+    if (obj->extra_sec_count > 0) {
+        extra_ord = malloc((size_t)obj->extra_sec_count * sizeof(int));
+        for (int i = 0; i < obj->extra_sec_count; i++)
+            extra_ord[i] = extra_base_ord + i + 1;
+    }
 
     // -----------------------------------------------------------------------
     // Build symbol table
@@ -222,13 +339,7 @@ int macho_write(ObjFile *obj, const char *path) {
         Nlist *n = &nlist[nsyms++];
         n->strx = mstrtab_add(&mst, os->name);
         n->type = (os->section == SEC_UNDEF) ? N_UNDF : N_SECT;
-        n->sect = (os->section == SEC_TEXT) ? 1 : (os->section == SEC_DATA) ? 2
-            : (os->section == SEC_BSS)                                      ? 3
-            : (os->section == SEC_RODATA)                                   ? 4
-            : (os->section == SEC_INIT_ARRAY)                               ? 5
-            : (os->section == SEC_TDATA)                                    ? 6
-            : (os->section == SEC_THREAD_VARS)                              ? 7
-                                                                            : NO_SECT;
+        n->sect = obj_section_ord(os->section, extra_ord);
         n->desc = 0;
         n->value = os->offset;
     }
@@ -244,13 +355,7 @@ int macho_write(ObjFile *obj, const char *path) {
         Nlist *n = &nlist[nsyms++];
         n->strx = mstrtab_add(&mst, os->name);
         n->type = N_SECT | N_EXT;
-        n->sect = (os->section == SEC_TEXT) ? 1 : (os->section == SEC_DATA) ? 2
-            : (os->section == SEC_BSS)                                      ? 3
-            : (os->section == SEC_RODATA)                                   ? 4
-            : (os->section == SEC_INIT_ARRAY)                               ? 5
-            : (os->section == SEC_TDATA)                                    ? 6
-            : (os->section == SEC_THREAD_VARS)                              ? 7
-                                                                            : NO_SECT;
+        n->sect = obj_section_ord(os->section, extra_ord);
         // A weak (coalesced) definition carries N_WEAK_DEF.
         n->desc = (os->bind == SB_WEAK) ? (uint16_t)N_WEAK_DEF : 0;
         n->value = os->offset;
@@ -284,11 +389,7 @@ int macho_write(ObjFile *obj, const char *path) {
     // Mach-O section indices are 1-based.
     // We always emit at least __TEXT,__text.
     // Mach-O .o has one segment "" (empty name) containing all sections.
-    // Sections: 1=__text, 2=__data, 3=__bss, 4=__const (rodata), 5=__mod_init_func, 6=__thread_data, 7=__thread_vars
-    // With -g, four __DWARF sections follow: 8=__debug_line, 9=__debug_info,
-    // 10=__debug_abbrev, 11=__debug_aranges.
-    bool has_debug = objfile_has_debug(obj);
-    int nsections = 7 + (has_debug ? 4 : 0);
+    int nsections = extra_base_ord + obj->extra_sec_count;
 
     // -----------------------------------------------------------------------
     // Compute sizes / offsets
@@ -330,8 +431,20 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t sections_end = has_debug ? dbgaranges_off + dbgaranges_size
                                       : tvars_off + tvars_size;
 
+    // Custom obj->extra_secs[] sections, 8-byte aligned and contiguous after
+    // the built-in/DWARF sections.
+    uint64_t *extra_off = NULL;
+    if (obj->extra_sec_count > 0)
+        extra_off = malloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
+    uint64_t extra_end = sections_end;
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        extra_end = align(extra_end, 8);
+        extra_off[i] = extra_end;
+        extra_end += obj->extra_secs[i].buf.len;
+    }
+
     // Relocations follow section data
-    uint64_t reloc_text_off = align(sections_end, 4);
+    uint64_t reloc_text_off = align(extra_end, 4);
     uint32_t reloc_text_cnt = (uint32_t)obj->text_reloc_count;
     uint64_t reloc_data_off = reloc_text_off + reloc_text_cnt * 8;
     uint32_t reloc_data_cnt = (uint32_t)obj->data_reloc_count;
@@ -351,14 +464,24 @@ int macho_write(ObjFile *obj, const char *path) {
     uint64_t reloc_dbgaranges_off = reloc_dbginfo_off + reloc_dbginfo_cnt * 8;
     uint32_t reloc_dbgaranges_cnt = has_debug && obj->debug_has_aranges_addr ? 1 : 0;
 
-    uint64_t symtab_off = align(reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8, 8);
+    // Custom sections' own relocations, one contiguous block per section.
+    uint64_t *reloc_extra_off = NULL;
+    if (obj->extra_sec_count > 0)
+        reloc_extra_off = malloc((size_t)obj->extra_sec_count * sizeof(uint64_t));
+    uint64_t reloc_extra_end = reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8;
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        reloc_extra_off[i] = reloc_extra_end;
+        reloc_extra_end += (uint64_t)obj->extra_secs[i].reloc_count * 8;
+    }
+
+    uint64_t symtab_off = align(reloc_extra_end, 8);
     uint32_t symtab_size = (uint32_t)nsyms * 16; // sizeof nlist_64 = 16
     uint64_t strtab_off = symtab_off + symtab_size;
     uint32_t strtab_size = (uint32_t)mst.len;
 
-    // segment vm size = from text_off to end of the last section (debug sections
-    // included, when present), plus BSS VM allocation
-    uint64_t seg_filesize = sections_end - text_off;
+    // segment vm size = from text_off to end of the last section (debug and
+    // custom sections included, when present), plus BSS VM allocation
+    uint64_t seg_filesize = extra_end - text_off;
 
     uint64_t seg_vmsize = seg_filesize + obj->bss_size;
 
@@ -371,6 +494,9 @@ int macho_write(ObjFile *obj, const char *path) {
         free(sym_map);
         free(nlist);
         free(mst.data);
+        free(extra_ord);
+        free(extra_off);
+        free(reloc_extra_off);
         return -1;
     }
 
@@ -552,6 +678,29 @@ int macho_write(ObjFile *obj, const char *path) {
         }
     }
 
+    // Custom obj->extra_secs[] sections (GAS .section/.pushsection names with
+    // no built-in slot above), one per registered section.
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        ExtraSection *es = &obj->extra_secs[i];
+        char sectname[16];
+        macho_section_name(sectname, es->name);
+        char segname[16] = {0};
+        const char *sg = macho_segname_from_flags(es->sh_flags);
+        memcpy(segname, sg, strlen(sg));
+        wbuf(f, sectname, 16);
+        wbuf(f, segname, 16);
+        w64(f, 0); // addr
+        w64(f, es->buf.len);
+        w32(f, (uint32_t)extra_off[i]);
+        w32(f, 3); // align (2^3=8)
+        w32(f, es->reloc_count ? (uint32_t)reloc_extra_off[i] : 0);
+        w32(f, (uint32_t)es->reloc_count);
+        w32(f, (es->sh_flags & SHF_EXECINSTR) ? (S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS | S_REGULAR) : S_REGULAR);
+        w32(f, 0);
+        w32(f, 0);
+        w32(f, 0);
+    }
+
     // LC_BUILD_VERSION
     w32(f, LC_BUILD_VERSION);
     w32(f, build_version_lc_size);
@@ -600,7 +749,17 @@ int macho_write(ObjFile *obj, const char *path) {
         if (dbgabbrev_size) wbuf(f, obj->debug_abbrev_section.data, dbgabbrev_size);
         if (dbgaranges_size) wbuf(f, obj->debug_aranges_section.data, dbgaranges_size);
     }
-    wzeros(f, reloc_text_off - sections_end);
+    // Custom obj->extra_secs[] section data (contiguous, 8-byte aligned)
+    {
+        uint64_t cursor = sections_end;
+        for (int i = 0; i < obj->extra_sec_count; i++) {
+            ExtraSection *es = &obj->extra_secs[i];
+            wzeros(f, extra_off[i] - cursor);
+            if (es->buf.len) wbuf(f, es->buf.data, es->buf.len);
+            cursor = extra_off[i] + es->buf.len;
+        }
+        wzeros(f, reloc_text_off - cursor);
+    }
     for (int i = 0; i < obj->text_reloc_count; i++) {
         ObjReloc *r = &obj->text_relocs[i];
         bool ext = r->sym_idx >= 0 && obj->syms[r->sym_idx].section == SEC_UNDEF;
@@ -615,7 +774,7 @@ int macho_write(ObjFile *obj, const char *path) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
@@ -636,7 +795,7 @@ int macho_write(ObjFile *obj, const char *path) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
@@ -654,7 +813,7 @@ int macho_write(ObjFile *obj, const char *path) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
@@ -675,7 +834,7 @@ int macho_write(ObjFile *obj, const char *path) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
@@ -695,7 +854,7 @@ int macho_write(ObjFile *obj, const char *path) {
             ext = true;
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         } else if (!ext && r->sym_idx >= 0) {
-            sym_num = obj_section_to_macho(obj->syms[r->sym_idx].section);
+            sym_num = obj_section_ord(obj->syms[r->sym_idx].section, extra_ord);
         } else {
             sym_num = (uint32_t)(r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0);
         }
@@ -727,8 +886,16 @@ int macho_write(ObjFile *obj, const char *path) {
         }
     }
 
+    // Custom obj->extra_secs[] sections' own relocations, one contiguous
+    // block per section (matches reloc_extra_off[] computed during layout).
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        ExtraSection *es = &obj->extra_secs[i];
+        for (int j = 0; j < es->reloc_count; j++)
+            write_macho_reloc(f, &es->relocs[j], obj, sym_map, is_arm64, extra_ord);
+    }
+
     // Symbol table (nlist_64, 16 bytes each)
-    wzeros(f, symtab_off - (reloc_dbgaranges_off + reloc_dbgaranges_cnt * 8));
+    wzeros(f, symtab_off - reloc_extra_end);
     for (int i = 0; i < nsyms; i++) {
         w32(f, nlist[i].strx);
         w8(f, nlist[i].type);
@@ -744,6 +911,9 @@ int macho_write(ObjFile *obj, const char *path) {
     free(sym_map);
     free(nlist);
     free(mst.data);
+    free(extra_ord);
+    free(extra_off);
+    free(reloc_extra_off);
     return 0;
 }
 #endif /* __APPLE__ */
