@@ -794,11 +794,23 @@ Token *lex_one(char **pp, int *plineno) {
             }
 
             // Remaining identifier characters form an invalid suffix
-            // (`0B0p0`, `123abc`); same '#' suppression as above.
-            if (!base_prefix_empty && !lex_in_directive &&
+            // (`0B0p0`, `123abc`) — OR a perfectly ordinary "pp-number"
+            // per the C grammar (digit followed by any run of digits/
+            // identifier-chars/'.', e.g. "10baseT_Half") that just isn't
+            // a valid *numeric* suffix. Either way it must stay part of
+            // THIS token: the diagnostic is what's directive-scoped (a
+            // directive/macro body may be feeding a still-to-be-##-pasted
+            // fragment, where "invalid suffix" doesn't yet apply), but the
+            // token-boundary consumption below is not — skipping it inside
+            // a directive splits e.g. a #define body's "10baseT_Half"
+            // macro argument into two tokens ("10", "baseT_Half") before
+            // ## pasting ever sees it, corrupting later token-paste-formed
+            // identifiers like ETHTOOL_LINK_MODE_10baseT_Half_BIT.
+            if (!base_prefix_empty &&
                 (is_ident1(*p) || isdigit((unsigned char)*p)) && *p != '#') {
-                if ((isdigit((unsigned char)*p) || has_base_prefix) && !base_prefix_empty) lex_error_at(p, "invalid suffix on %s constant",
-                                                                                                        is_float ? "floating" : "integer");
+                if (!lex_in_directive && (isdigit((unsigned char)*p) || has_base_prefix))
+                    lex_error_at(p, "invalid suffix on %s constant",
+                                 is_float ? "floating" : "integer");
                 while (is_ident2(*p))
                     p++; // consume the rest of the pp-number
             }
