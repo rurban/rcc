@@ -282,10 +282,26 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-E")) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
+            // Optimization-level flags aren't additive: like gcc/clang, the
+            // last "-On" on the command line wins outright, undoing any
+            // earlier one. kbuild routinely appends a per-file "-O0" after
+            // the whole-build "-O2" (e.g. crypto/jitterentropy.c's
+            // CFLAGS_jitterentropy.o = -O0) specifically to keep
+            // __OPTIMIZE__ from being defined; leaving opt_O1 (and the
+            // inlining/unrolling it implies) sticky from the earlier -O2
+            // wrongly kept __OPTIMIZE__ defined and tripped that file's own
+            // "#ifdef __OPTIMIZE__ #error ..." guard.
             opt_O0 = true;
+            opt_O1 = false;
+            opt_finline = false;
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-O1")) {
+            opt_O0 = false;
             opt_O1 = true;
+            opt_finline = false;
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
+            opt_O0 = false;
             opt_O1 = true;
             opt_finline = true; // -O2 and up enable inlining
             opt_funroll = true; // -O2 and up enable unrolling
