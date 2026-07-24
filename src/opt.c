@@ -324,13 +324,22 @@ static Node *clone_expr(Node *n) {
     c->els = clone_expr(n->els);
     c->init = clone_expr(n->init);
     c->inc = clone_expr(n->inc);
-    c->stmt_expr_result = clone_expr(n->stmt_expr_result);
     Node bhead = {0}, *bt = &bhead;
+    Node *stmt_result_clone = NULL;
     for (Node *b = n->body; b; b = b->next) {
         bt->next = clone_expr(b);
         bt = bt->next;
+        // stmt_expr_result aliases the lhs of the last ND_EXPR_STMT in body
+        // (see parser.c's `(...)`/inline-pack ND_STMT_EXPR construction),
+        // and codegen locates the value-producing statement via pointer
+        // equality against that alias. Preserve the aliasing in the clone
+        // instead of cloning stmt_expr_result independently below, which
+        // would produce a distinct object that never compares equal.
+        if (b->kind == ND_EXPR_STMT && b->lhs == n->stmt_expr_result)
+            stmt_result_clone = bt->lhs;
     }
     c->body = bhead.next;
+    c->stmt_expr_result = stmt_result_clone ? stmt_result_clone : clone_expr(n->stmt_expr_result);
     Node ahead = {0}, *at = &ahead;
     for (Node *a = n->args; a; a = a->next) {
         at->next = clone_expr(a);

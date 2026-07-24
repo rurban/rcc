@@ -749,9 +749,25 @@ static Node *clone_inline_node(Node *n, InlineCloneCtx *ctx) {
     c->els = clone_inline_node(n->els, ctx);
     c->init = clone_inline_node(n->init, ctx);
     c->inc = clone_inline_node(n->inc, ctx);
+    // stmt_expr_result aliases the lhs of the last ND_EXPR_STMT in body (see
+    // the ND_STMT_EXPR construction sites above); codegen locates the
+    // value-producing statement via pointer equality against that alias, so
+    // find the cloned equivalent instead of cloning stmt_expr_result
+    // independently, which would produce a distinct, non-`==` object.
+    Node *last_orig = n->body;
+    while (last_orig && last_orig->next)
+        last_orig = last_orig->next;
     c->body = clone_inline_stmts(n->body, ctx);
     c->args = clone_inline_args(n->args, ctx);
-    c->stmt_expr_result = clone_inline_node(n->stmt_expr_result, ctx);
+    if (last_orig && last_orig->kind == ND_EXPR_STMT && last_orig->lhs == n->stmt_expr_result) {
+        Node *last_clone = c->body;
+        while (last_clone && last_clone->next)
+            last_clone = last_clone->next;
+        c->stmt_expr_result = (last_clone && last_clone->kind == ND_EXPR_STMT) ? last_clone->lhs
+                                                                               : clone_inline_node(n->stmt_expr_result, ctx);
+    } else {
+        c->stmt_expr_result = clone_inline_node(n->stmt_expr_result, ctx);
+    }
     return c;
 }
 
