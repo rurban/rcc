@@ -884,7 +884,7 @@ static void detect_platform(const char *rcc_path) {
  * cross runners (wine, qemu) the overhead easily exceeds the normal 5 s
  * budget, so give them a longer leash. */
 static int unit_run_timeout(void) {
-    return (has_runner || is_wine) ? 60 : 5;
+    return (has_runner || is_wine || streq(platform, "arm64_cross")) ? 60 : 5;
 }
 
 /* Compilation timeout for torture tests: base 30 s, scaled by the

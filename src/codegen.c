@@ -1869,14 +1869,43 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             asm_mov_x8_reg(cg_sec, hidden_ret_reg); // mov x8, x{hidden_ret_reg}
     }
 
-    // Pre-pass: long double args.
-    // Pre-pass: long double args. Pass as 64-bit double in d register.
-    // rcc handles its own va_arg, so no quad conversion is needed.
+    // Pre-pass: long double args. rcc computes `long double` internally in
+    // double precision (a GP register holds the double's 64-bit pattern),
+    // but AAPCS64 requires the real IEEE-754 binary128 encoding in the full
+    // 128-bit Q register whenever the value crosses to ABI-conforming code
+    // (glibc printf/sprintf/... reading a "%Lf" va_arg). A bare `fmov d,x`
+    // only fills the low 64 bits and implicitly zeroes the upper 64 (per
+    // AArch64 scalar-FMOV-to-V semantics) — that upper half holds the quad's
+    // sign+exponent, so the callee decodes the value as zero. Widen through
+    // libgcc's __extenddftf2 (double -> binary128, arg in d0, result in v0),
+    // exactly like the existing __ashlti3/__divdc3 libgcc calls elsewhere in
+    // this file. Virtual GP regs live in x19-x28 (callee-saved), so other
+    // already-evaluated args survive the nested `bl` unharmed.
+    //
+    // Each converted quad is parked in its own fresh 16-byte stack slot
+    // rather than moved straight into arg_fp_idx[i]: with >=2 long-double
+    // args, an earlier arg's target register can be v0/q0 itself (fp_idx
+    // 0), and the next __extenddftf2 call clobbers v0 as its own scratch —
+    // a direct register-to-register placement would be destroyed before
+    // the call ever executes. Routing through memory decouples conversion
+    // from placement so ordering can't matter.
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
-            asm_fmov_gp_to_d(cg_sec, arg_fp_idx[i], arg_regs[i]); // fmov d{fp_idx}, x{arg_regs[i]}
+            asm_fmov_i2f(cg_sec, ASM_Q0, arg_regs[i], 1); // fmov d0, x{arg_regs[i]}
+            free_reg(arg_regs[i]);
+            emit_direct_call("__extenddftf2", false); // bl __extenddftf2 (d0 -> quad in v0)
+            VReg slot = alloc_int128_addr();
+            asm_str_q(cg_sec, ASM_Q0, slot); // str q0, [x{slot}]
+            arg_regs[i] = slot; // repurposed: holds the parked quad's address
+        }
+    }
+    for (int i = 0; i < nargs; i++) {
+        if (arg_stack_idx[i] >= 0)
+            continue;
+        if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
+            asm_ldr_q(cg_sec, arg_fp_idx[i], arg_regs[i]); // ldr q{fp_idx}, [x{arg_regs[i]}]
             free_reg(arg_regs[i]);
         }
     }
