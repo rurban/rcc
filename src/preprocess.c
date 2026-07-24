@@ -1379,15 +1379,18 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
     }
     return rhead;
 }
-// Actual-argument capacity for a function-like macro call. Separate from (and
-// larger than) the formal-parameter cap on #define itself: variadic wrapper
-// macros like the kernel's "#define PARAMS(args...) args" are invoked with
-// however many comma-separated tokens the caller's own expanded arguments
-// happen to contain (e.g. TRACE_EVENT's PARAMS(proto) after proto's own
-// TP_PROTO(...) has argument-prescan-expanded into a bare list), easily
-// exceeding a small fixed cap even though the macro itself takes "any number
-// of args".
-#define MAX_CALL_ARGS 128
+// Actual-argument capacity for a function-like macro call. Grows
+// dynamically (doubling) instead of using a small fixed cap: variadic
+// wrapper macros like the kernel's "#define PARAMS(args...) args" are
+// invoked with however many comma-separated tokens the caller's own
+// expanded arguments happen to contain (e.g. TRACE_EVENT's PARAMS(proto)
+// after proto's own TP_PROTO(...) has argument-prescan-expanded into a
+// bare list, or a __print_symbolic() table of "{ CODE, "name" }" entries
+// whose embedded commas each split into their own argument - the kernel's
+// show_nfs4_status() alone has ~150 such entries, ~300 arguments), easily
+// exceeding a fixed cap even though the macro itself takes "any number of
+// args".
+#define INITIAL_CALL_ARGS 64
 static void expand_token(Token *t) {
     if (!t || t->kind != TK_IDENT) {
         out_append(t);
@@ -1477,7 +1480,8 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    Token *args[MAX_CALL_ARGS] = {}, *tails[MAX_CALL_ARGS] = {};
+    int args_cap = INITIAL_CALL_ARGS;
+    Token **args = calloc(args_cap, sizeof(Token *)), **tails = calloc(args_cap, sizeof(Token *));
     int argc = 0, depth = 1;
     bool any = false;
     Token *rp = NULL;
@@ -1522,6 +1526,8 @@ static void expand_token(Token *t) {
             }
             xp_unget(lp);
             out_append(t);
+            free(args);
+            free(tails);
             return;
         }
         if (ptok(x, "(")) depth++;
@@ -1531,19 +1537,24 @@ static void expand_token(Token *t) {
                 break;
             }
         } else if (ptok(x, ",") && depth == 1) {
-            if (argc >= MAX_CALL_ARGS) error_tok(t, "too many macro arguments (in %s)", name);
             argc++;
+            if (argc >= args_cap) {
+                int new_cap = args_cap * 2;
+                args = realloc(args, sizeof(Token *) * new_cap);
+                tails = realloc(tails, sizeof(Token *) * new_cap);
+                memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+                memset(tails + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+                args_cap = new_cap;
+            }
             any = false;
             continue;
         }
-        if (argc < MAX_CALL_ARGS) {
-            x->next = NULL;
-            if (tails[argc]) tails[argc]->next = x;
-            else
-                args[argc] = x;
-            tails[argc] = x;
-            any = true;
-        }
+        x->next = NULL;
+        if (tails[argc]) tails[argc]->next = x;
+        else
+            args[argc] = x;
+        tails[argc] = x;
+        any = true;
     }
     if (any || argc > 0) argc++;
     if (!m->is_variadic && argc > m->param_len) {
@@ -1554,11 +1565,19 @@ static void expand_token(Token *t) {
             splice_tokens(&xout_head, &xout_tail, args[i]);
         }
         out_append(rp);
+        free(args);
+        free(tails);
         return;
     }
+    if (m->param_len > args_cap) {
+        int new_cap = m->param_len;
+        args = realloc(args, sizeof(Token *) * new_cap);
+        memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+        args_cap = new_cap;
+    }
     while (argc < m->param_len) args[argc++] = NULL;
-    Token *exp_args[MAX_CALL_ARGS] = {};
-    Token *args_copy[MAX_CALL_ARGS] = {};
+    int nargs = argc > 0 ? argc : 1;
+    Token **exp_args = calloc(nargs, sizeof(Token *)), **args_copy = calloc(nargs, sizeof(Token *));
     for (int i = 0; i < argc; i++) {
         Token *h = NULL, *t_ = NULL;
         splice_tokens(&h, &t_, args[i]);
@@ -1572,6 +1591,10 @@ static void expand_token(Token *t) {
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
     m->disabled = true;
     push_expansion(subst, m, t);
+    free(args);
+    free(tails);
+    free(exp_args);
+    free(args_copy);
 }
 
 // ============================================================
