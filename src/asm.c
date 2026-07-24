@@ -608,7 +608,7 @@ static int parse_arm64_mem(const char *s, int64_t *imm, bool *pre, bool *post,
     *post = false;
     if (rn2) *rn2 = -1;
 
-    // Detect post-index: "[base], #off"
+    // Detect post-index: "[base], #off"; pre-index: "[base, #off]!"
     char buf[256];
     strncpy(buf, s, 255);
     buf[255] = 0;
@@ -618,12 +618,15 @@ static int parse_arm64_mem(const char *s, int64_t *imm, bool *pre, bool *post,
         if (*after == ',') {
             *post = true;
             *imm = parse_imm(skip_ws(after + 1));
-        }
-        if (*(close - 1) == '!') {
+        } else if (*after == '!') {
+            // The '!' that marks pre-index writeback comes right AFTER the
+            // closing ']' ("[rn, #imm]!"), not before it — checking the
+            // character before ']' (as this used to) inspects the last
+            // digit of the immediate instead, so pre-index writeback was
+            // never actually detected.
             *pre = true;
-            *(close - 1) = 0;
-        } else
-            *close = 0;
+        }
+        *close = 0;
     }
     char *inner = buf;
     if (*inner == '[') inner++;
@@ -1382,6 +1385,16 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         arm64_nop(buf);
         return true;
     }
+    // BTI c: the branch-target-identification landing pad kernel builds
+    // with CONFIG_ARM64_BTI_KERNEL emit at every indirect-branch target —
+    // ARM64's analogue of x86's ENDBR64. Only the "c" (call-target) hint
+    // variant has an encoder; "bti j"/"bti jc"/bare "bti" fall through to
+    // the unknown-instruction warning rather than being mis-encoded as
+    // "c" since they're genuinely different opcodes.
+    if (!strcmp(mnem, "bti") && nops > 0 && !strcmp(ops[0], "c")) {
+        arm64_bti_c(buf);
+        return true;
+    }
     if (!strcmp(mnem, "ret")) {
         int rn = (nops > 0 && r0 >= 0) ? r0 : 30;
         arm64_ret(buf, rn);
@@ -1418,6 +1431,25 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         uint32_t base = 0x54000000u | cond;
         emit_arm64_branch(as, base, false, true, ops[0]);
         return true;
+    }
+    // GAS also accepts the condition suffix undotted ("beq"/"bne"/... next
+    // to "b.eq"/"b.ne"/...) — arguably the more common spelling in real
+    // code. Checked against an explicit condition-suffix list (not just
+    // "3 chars starting with b") so real 3-letter b-mnemonics that aren't
+    // conditional branches at all (brk, bti, bic already handled above/
+    // below) never get misrouted here.
+    if (mnem[0] == 'b' && strlen(mnem) == 3) {
+        static const char *conds[] = {
+            "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc",
+            "hi", "ls", "ge", "lt", "gt", "le", "al", NULL};
+        for (int i = 0; conds[i]; i++) {
+            if (!strcmp(mnem + 1, conds[i])) {
+                Arm64Cond cond = parse_arm64_cond(mnem + 1);
+                uint32_t base = 0x54000000u | cond;
+                emit_arm64_branch(as, base, false, true, ops[0]);
+                return true;
+            }
+        }
     }
 
     // CBZ / CBNZ
@@ -1526,6 +1558,18 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         arm64_movk(buf, sf, r0, (uint16_t)imm, shift);
         return true;
     }
+    if (!strcmp(mnem, "movn")) {
+        // movn reg, #imm [, lsl #shift] — rd = ~(imm16 << shift)
+        int64_t imm = IMM(1);
+        int shift = 0;
+        if (nops > 2) {
+            char *p = ops[2];
+            while (*p && !isdigit((unsigned char)*p)) p++;
+            shift = atoi(p);
+        }
+        arm64_movn(buf, sf, r0, (uint16_t)imm, shift);
+        return true;
+    }
     if (!strcmp(mnem, "mvn")) {
         arm64_mvn(buf, sf, r0, r1, ARM64_LSL, 0);
         return true;
@@ -1590,6 +1634,24 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
                 arm64_sub_reg(buf, sf, r0, r0, r1, ARM64_LSL, 0);
             else
                 arm64_add_reg(buf, sf, r0, r0, r1, ARM64_LSL, 0);
+        }
+        return true;
+    }
+
+    // ADC/ADCS/SBC/SBCS: register-only (no immediate form exists on ARM64),
+    // rd, rn, rm — carry-in is the current PSTATE.C, no operand for it.
+    if (!strcmp(mnem, "adc") || !strcmp(mnem, "adcs") ||
+        !strcmp(mnem, "sbc") || !strcmp(mnem, "sbcs")) {
+        bool is_sbc = (mnem[0] == 's');
+        bool set_flags = (mnem[3] == 's'); // "adc"/"sbc" are both 3 chars; "adcs"/"sbcs" add a 4th
+        if (is_sbc) {
+            if (set_flags) arm64_sbcs(buf, sf, r0, r1, r2);
+            else
+                arm64_sbc(buf, sf, r0, r1, r2);
+        } else {
+            if (set_flags) arm64_adcs(buf, sf, r0, r1, r2);
+            else
+                arm64_adc(buf, sf, r0, r1, r2);
         }
         return true;
     }
@@ -1769,7 +1831,16 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "ubfx")) {
-        arm64_ubfx(buf, sf, r0, r1, (int)IMM(2), (int)IMM(3) + 1);
+        // GAS syntax is "ubfx rd, rn, #lsb, #width" with a literal width
+        // (arm64_ubfx itself derives the hardware imms field as
+        // lsb+width-1) — a stray "+1" here double-counted that and
+        // extracted one bit more than requested (e.g. "ubfx w0,w1,#4,#8"
+        // encoded a 9-bit extract instead of 8).
+        arm64_ubfx(buf, sf, r0, r1, (int)IMM(2), (int)IMM(3));
+        return true;
+    }
+    if (!strcmp(mnem, "sbfx")) {
+        arm64_sbfx(buf, sf, r0, r1, (int)IMM(2), (int)IMM(3));
         return true;
     }
 
@@ -1836,16 +1907,39 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         bool is_byte = strstr(mnem, "b") != NULL && !strstr(mnem, "bl");
         bool is_half = strstr(mnem, "h") != NULL;
         bool is_sw = strstr(mnem, "sw") != NULL; // ldrsw
+        // LDRSB/LDRSH (sign-extending) vs LDRB/LDRH (zero-extending) are
+        // completely different opcodes despite is_byte/is_half both being
+        // true for either — without this, "ldrsb"/"ldrsh" silently fell
+        // through to the zero-extending LDRB/LDRH encoder instead.
+        bool is_signed_bh = mnem[0] == 'l' && !strncmp(mnem, "ldrs", 4) && !is_sw;
         bool is_exc = (mnem[0] == 'l' && mnem[1] == 'd' && mnem[2] == 'x') || (mnem[0] == 's' && mnem[1] == 't' && mnem[2] == 'x');
         bool is_acq = strstr(mnem, "lda") != NULL;
         bool is_rel = strstr(mnem, "stl") != NULL;
 
         if (is_pair) {
             // LDP/STP rt1, rt2, [rn, #imm]!  or  [rn], #imm
+            //
+            // The post-index form's "], #imm" has its comma OUTSIDE the
+            // brackets — split_operands() (correctly) treats that as a
+            // top-level operand separator, same as any other comma not
+            // nested inside "[...]", so "ldp x29, x30, [sp], #16" splits
+            // into 4 operands ("x29", "x30", "[sp]", "#16"), not 3.
+            // parse_arm64_mem() only ever saw ops[2] ("[sp]" alone, with
+            // nothing after ']') and could never detect the post-index
+            // continuation living in ops[3] — reconstruct it here instead
+            // of trying to make the text parser see across an operand
+            // boundary split_operands() already committed to.
             int rt1 = r0, rt2 = r1;
             int64_t imm = 0;
             bool pre = false, post = false;
-            int rn = parse_arm64_mem(ops[2], &imm, &pre, &post, NULL);
+            int rn;
+            if (nops > 3) {
+                rn = parse_arm64_mem(ops[2], &imm, &pre, &post, NULL);
+                post = true;
+                imm = parse_imm(ops[3]);
+            } else {
+                rn = parse_arm64_mem(ops[2], &imm, &pre, &post, NULL);
+            }
             int32_t imm7 = (int32_t)(imm / (sf ? 8 : 4));
             if (is_load) {
                 arm64_ldp(buf, sf, rt1, rt2, rn, imm7, pre, post);
@@ -1861,6 +1955,15 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         bool pre = false, post = false;
         int rn2 = -1;
         int rn = parse_arm64_mem(ops[memop_idx], &imm, &pre, &post, &rn2);
+        // Post-index "[rn], #imm" has its comma outside the brackets, so
+        // split_operands() splits the offset into its own trailing
+        // operand rather than leaving it for parse_arm64_mem() to see —
+        // same fix as the LDP/STP case above.
+        if (!post && !pre && nops > memop_idx + 1 &&
+            (ops[memop_idx + 1][0] == '#' || isdigit((unsigned char)ops[memop_idx + 1][0]))) {
+            post = true;
+            imm = parse_imm(ops[memop_idx + 1]);
+        }
 
         if (is_exc) {
             if (is_load) {
@@ -1920,10 +2023,24 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
         }
 
         if (is_ldur) {
+            // LDUR/STUR's b/h suffix (ldurb/ldurh/sturb/sturh) selects a
+            // completely different opcode, not just a size on the same
+            // one — falling through to plain arm64_ldur/arm64_stur here
+            // (as this used to do unconditionally) silently emitted a
+            // full-width load/store instead, corrupting whatever adjacent
+            // memory the extra bytes touched.
             if (is_load) {
-                arm64_ldur(buf, sf, rt, rn, (int32_t)imm);
+                if (is_byte) arm64_ldurb(buf, rt, rn, (int32_t)imm);
+                else if (is_half)
+                    arm64_ldurh(buf, rt, rn, (int32_t)imm);
+                else
+                    arm64_ldur(buf, sf, rt, rn, (int32_t)imm);
             } else {
-                arm64_stur(buf, sf, rt, rn, (int32_t)imm);
+                if (is_byte) arm64_sturb(buf, rt, rn, (int32_t)imm);
+                else if (is_half)
+                    arm64_sturh(buf, rt, rn, (int32_t)imm);
+                else
+                    arm64_stur(buf, sf, rt, rn, (int32_t)imm);
             }
             return true;
         }
@@ -1952,7 +2069,14 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 
         // Standard immediate offset
         int32_t simm = (int32_t)imm;
-        if (is_byte) {
+        if (is_signed_bh) {
+            // Only the unscaled imm9 encoding is available for LDRSB/
+            // LDRSH (no scaled-uoff variant implemented), which covers
+            // the common -256..255 range GAS itself accepts for this form.
+            if (is_byte) arm64_ldrsb(buf, sf, rt, rn, simm);
+            else
+                arm64_ldrsh(buf, sf, rt, rn, simm);
+        } else if (is_byte) {
             uint32_t uoff = simm >= 0 ? (uint32_t)simm : 0;
             if (is_load) {
                 if (simm >= 0)

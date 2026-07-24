@@ -104,6 +104,10 @@ static char *source_buffer_base(char *loc) {
 // strict order across a multi-line "/* ... */" comment (draining its
 // embedded-newline TK_CNL tokens), leaving them stale by the time the next
 // real line is reached.
+//
+// x86-only (see the ARCH_ARM64-gated call site below): on ARM64 '#' is the
+// immediate-value prefix, not a comment marker.
+#ifndef ARCH_ARM64
 static bool hash_is_midline_comment(const char *p) {
     const char *base = source_buffer_base((char *)p);
     const char *q = p;
@@ -111,6 +115,7 @@ static bool hash_is_midline_comment(const char *p) {
         q--;
     return !(q == base || q[-1] == '\n');
 }
+#endif
 // Tracks the filename from #line directives for error/warning messages.
 // Updated unconditionally (not gated on opt_g) so warnings in included
 char *current_debug_filename;
@@ -552,12 +557,23 @@ Token *lex_one(char **pp, int *plineno) {
         // which the whitespace handling above still needs to see and turn
         // into a TK_NL — so a stray "'" in comment prose (e.g. "# don't
         // loop") never gets scanned as the start of a character literal.
+        //
+        // This is x86 AT&T syntax's own convention (immediates use '$',
+        // never '#') — on ARM64, '#' is the immediate-value prefix itself
+        // ("movz x0, #1234", "add x0, x0, #10"), not a comment marker, so
+        // applying this heuristic there silently ate every literal operand
+        // down to end-of-line, turning e.g. "add x0, x0, #10" into "add
+        // x0, x0, " (empty operand). Gated on the same compile-time
+        // ARCH_ARM64 macro (from __aarch64__) that already distinguishes
+        // encode_arm64() from encode_x86() elsewhere in this codebase.
+#ifndef ARCH_ARM64
         if (*p == '#' && lex_pp_mode && lex_asm_cpp_mode && !lex_in_directive &&
             hash_is_midline_comment(p)) {
             while (*p && *p != '\n')
                 p++;
             continue;
         }
+#endif
 
         // Skip preprocessor directives naively
         if (*p == '#' && !lex_pp_mode) {
