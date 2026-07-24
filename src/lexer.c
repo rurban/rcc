@@ -739,18 +739,31 @@ Token *lex_one(char **pp, int *plineno) {
             // Numeric constant diagnostics (GH #34), reported per constant so
             // every offending line is diagnosed. Suppressed when '#' follows:
             // the single-scan lexer sees macro bodies before ## pasting, so
-            // `0x##x` must stay silent here.
+            // `0x##x` must stay silent here. Also suppressed for "0b"/"0B"
+            // specifically in assembly (.S) files: GAS's numeric local
+            // labels are referenced as "<N>b" (nearest prior) / "<N>f"
+            // (nearest next) — "0" is a perfectly ordinary label number,
+            // and "0b" not followed by more 0/1 digits (e.g. the kernel's
+            // ".fill 0b + IDT_ALIGN - ., 1, 0xcc") is *always* that
+            // backward reference in .S source, never a malformed empty
+            // binary-literal prefix — real GAS has no such literal syntax
+            // ambiguity to begin with. Falls through to the same "digit
+            // followed by identifier chars" pp-number path already used
+            // for non-zero local labels like "740b" below.
             bool has_base_prefix =
                 q[0] == '0' &&
                 (q[1] == 'x' || q[1] == 'X' || q[1] == 'b' || q[1] == 'B' ||
                  q[1] == 'o' || q[1] == 'O');
             bool base_prefix_empty = has_base_prefix && p == q + 2;
-            if (has_base_prefix && *p != '#' && !lex_in_directive) {
+            bool asm_local_label_ref = lex_asm_cpp_mode && base_prefix_empty &&
+                (q[1] == 'b' || q[1] == 'B');
+            if (has_base_prefix && *p != '#' && !lex_in_directive && !asm_local_label_ref) {
                 if (base_prefix_empty)
                     lex_error_at(q, "invalid suffix on integer constant");
                 else if (dsep && q[2] == '\'')
                     lex_error_at(q + 2, "digit separator after base indicator");
             }
+            if (asm_local_label_ref) base_prefix_empty = false;
             // Check for float/imaginary suffix: f/F (incl. _FloatN forms),
             // l/L, i/I/j/J in any order
             int fkind = 0; // 0=double, 1=float, 2=long double

@@ -35,8 +35,11 @@ typedef struct {
     int sec_stack[32];
     int sec_stack_depth;
 
-    // Backpatching: forward label references
-    // (max 512 pending fixups at once; sufficient for compiler output)
+    // Backpatching: forward label references. Dynamically grown (real
+    // kernel .S files — e.g. arch/x86/entry/entry_64.S's full #include
+    // chain of idtentry.h/nospec-branch.h/alternative.h macro expansions —
+    // routinely need several thousand simultaneously-pending fixups; a
+    // fixed cap silently truncated real files instead of just being slow).
     struct Fixup {
         size_t patch_off; // byte offset in section buffer
         int section;
@@ -49,8 +52,9 @@ typedef struct {
         int size; // FIXUP_LABELDIFF only: patch field width in bytes (1/2/4/8)
         int fill_byte; // FIXUP_SKIP_MAXDIFF only: byte value to pad with
         int64_t addend;
-    } fixups[512];
+    } *fixups;
     int nfixups;
+    int fixups_cap;
 
     // Local label map (for forward references: .Lxxx → offset)
     struct LocalSym {
@@ -76,7 +80,7 @@ typedef struct {
         // ".macro UNWIND_HINT type:req sp_reg=0 sp_offset=0 signal=0"): a
         // caller that omits an optional parameter still needs its default
         // substituted, not an empty/unresolved "\param" left in the body.
-        char defaults[8][64];
+        char defaults[8][160];
         int nparams;
         char **body; // owned copies of each raw body line
         int nbody;
@@ -178,7 +182,8 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         // first, which isn't the "cross-section jump target" case below at
         // all (and FIXUP_SKIP_MAXDIFF's `label` isn't even a branch target
         // to patch — it's just the first operand of a length expression).
-        if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF) continue;
+        if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF ||
+            fx->kind == FIXUP_ALIGN) continue;
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->kind == FIXUP_PCREL_DATA) {
             // Forward reference in a "(label) - ." data directive (e.g. the
@@ -256,14 +261,29 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
     }
 }
 
+// Grow as->fixups (doubling from a small initial capacity) if the next
+// slot doesn't already fit. Returns the slot to fill, or NULL on
+// allocation failure (reported once via asm_error; the caller must not
+// dereference a NULL return).
+static struct Fixup *fixups_next(AsmState *as) {
+    if (as->nfixups >= as->fixups_cap) {
+        int newcap = as->fixups_cap ? as->fixups_cap * 2 : 64;
+        struct Fixup *tmp = realloc(as->fixups, (size_t)newcap * sizeof(*tmp));
+        if (!tmp) {
+            asm_error(as, "out of memory growing fixups");
+            return NULL;
+        }
+        as->fixups = tmp;
+        as->fixups_cap = newcap;
+    }
+    return &as->fixups[as->nfixups++];
+}
+
 // Add a fixup for a forward-referenced label
 static void add_fixup(AsmState *as, size_t patch_off, int section,
                       const char *label, int kind, int64_t addend) {
-    if (as->nfixups >= 511) {
-        asm_error(as, "too many fixups");
-        return;
-    }
-    struct Fixup *fx = &as->fixups[as->nfixups++];
+    struct Fixup *fx = fixups_next(as);
+    if (!fx) return;
     fx->patch_off = patch_off;
     fx->section = section;
     strncpy(fx->label, label, sizeof(fx->label) - 1);
@@ -278,12 +298,10 @@ static void add_fixup(AsmState *as, size_t patch_off, int section,
 // well-formed input always happens by the end of this same assemble_inline
 // call even when one or both are still forward references right now.
 static void add_labeldiff_fixup(AsmState *as, size_t patch_off, int section,
-                                const char *label, const char *label2, int size) {
-    if (as->nfixups >= 511) {
-        asm_error(as, "too many fixups");
-        return;
-    }
-    struct Fixup *fx = &as->fixups[as->nfixups++];
+                                const char *label, const char *label2, int size,
+                                int locals_mark) {
+    struct Fixup *fx = fixups_next(as);
+    if (!fx) return;
     fx->patch_off = patch_off;
     fx->section = section;
     strncpy(fx->label, label, sizeof(fx->label) - 1);
@@ -292,7 +310,12 @@ static void add_labeldiff_fixup(AsmState *as, size_t patch_off, int section,
     fx->label2[sizeof(fx->label2) - 1] = '\0';
     fx->kind = FIXUP_LABELDIFF;
     fx->size = size;
-    fx->addend = 0;
+    // Reused (not a byte addend for this kind): an as->nlocals snapshot
+    // at creation time, so resolution can find *this* label-diff's own
+    // "740"/"744"-style occurrences via lookup_local_near() instead of
+    // colliding with every other ALTERNATIVE() invocation's same-named
+    // labels elsewhere in the file — see lookup_local_near()'s comment.
+    fx->addend = (int64_t)locals_mark;
 }
 
 // Add a deferred FIXUP_SKIP_MAXDIFF: at end-of-buffer resolution, once all
@@ -312,11 +335,8 @@ static void add_labeldiff_fixup(AsmState *as, size_t patch_off, int section,
 static void add_skip_maxdiff_fixup(AsmState *as, size_t patch_off, int section,
                                    const char *a, const char *b, const char *c,
                                    const char *d, int fill, int locals_mark) {
-    if (as->nfixups >= 511) {
-        asm_error(as, "too many fixups");
-        return;
-    }
-    struct Fixup *fx = &as->fixups[as->nfixups++];
+    struct Fixup *fx = fixups_next(as);
+    if (!fx) return;
     fx->patch_off = patch_off;
     fx->section = section;
     strncpy(fx->label, a, sizeof(fx->label) - 1);
@@ -330,6 +350,32 @@ static void add_skip_maxdiff_fixup(AsmState *as, size_t patch_off, int section,
     fx->kind = FIXUP_SKIP_MAXDIFF;
     fx->fill_byte = fill;
     fx->addend = (int64_t)locals_mark;
+}
+
+// Add a deferred FIXUP_ALIGN: at end-of-buffer resolution, pad `section`
+// to a multiple of `align` bytes (with `fill`) at patch_off, shifting
+// everything already recorded after it — same mechanism, and same reason,
+// as FIXUP_SKIP_MAXDIFF: `.balign`/`.align`/`.p2align` must see this
+// section's *final* byte offset, which may still move once an earlier,
+// not-yet-resolved ALTERNATIVE()-style FIXUP_SKIP_MAXDIFF in the same
+// section inserts its own padding. Immediately aligning against the
+// stale (pre-insertion) offset — what a naive single-pass assembler
+// does — pads to the wrong boundary and desyncs every symbol placed
+// after it (a following SYM_FUNC_START's own alignment+padding
+// prologue, in particular). `locals_mark` is the same kind of
+// as->nlocals snapshot FIXUP_SKIP_MAXDIFF's own locals_mark is, used
+// identically by skip_insert_shift() to decide which already-recorded
+// labels move.
+static void add_align_fixup(AsmState *as, size_t patch_off, int section,
+                            int align, int fill, int locals_mark) {
+    struct Fixup *fx = fixups_next(as);
+    if (!fx) return;
+    fx->patch_off = patch_off;
+    fx->section = section;
+    fx->kind = FIXUP_ALIGN;
+    fx->fill_byte = fill;
+    fx->size = locals_mark;
+    fx->addend = align;
 }
 
 // Look up a label offset (returns -1 if not found)
@@ -358,6 +404,49 @@ static int lookup_local_sym(AsmState *as, const char *name, int *sec_out) {
     return -1;
 }
 
+// GAS's real "Nb"/"Nf" numeric-local-label semantics: the nearest
+// definition of `name_sfx` (suffix 'b' = search backward — chronologically
+// before `anchor_idx` — 'f' = search forward — chronologically at-or-after
+// `anchor_idx`) in as->locals[]'s append-only, source-chronological order.
+// Needed wherever a label-difference or padding expression re-resolves
+// numeric labels like "740"-"744" at the very end of assembly (deferred
+// FIXUP_LABELDIFF/FIXUP_SKIP_MAXDIFF resolution): those four-digit names
+// are reused by *every* ALTERNATIVE()/ALTERNATIVE_2() macro invocation in
+// a file, so a plain "most recent definition anywhere" lookup (plain
+// lookup_local()) resolves to whichever unrelated, later invocation
+// happens to define that label last in the whole file — not the
+// occurrence this fixup's own oldinstr/newinstr span actually bounds.
+// `anchor_idx` is an as->nlocals snapshot taken at the moment the fixup
+// was created (i.e. "now" in GAS's own positional sense).
+static int64_t lookup_local_near(AsmState *as, const char *name_sfx, int anchor_idx, int *sec_out) {
+    size_t len = strlen(name_sfx);
+    if (len < 2 || (name_sfx[len - 1] != 'b' && name_sfx[len - 1] != 'f'))
+        // No direction suffix (a real, non-numeric label) — the ordinary
+        // most-recent-anywhere lookup is the only sensible resolution.
+        return lookup_local(as, name_sfx, sec_out);
+    bool forward = name_sfx[len - 1] == 'f';
+    char name[128];
+    size_t n = len - 1;
+    if (n >= sizeof(name)) n = sizeof(name) - 1;
+    memcpy(name, name_sfx, n);
+    name[n] = '\0';
+    if (anchor_idx > as->nlocals) anchor_idx = as->nlocals;
+    if (forward) {
+        for (int i = anchor_idx; i < as->nlocals; i++)
+            if (!strcmp(as->locals[i].name, name)) {
+                if (sec_out) *sec_out = as->locals[i].section;
+                return (int64_t)as->locals[i].offset;
+            }
+    } else {
+        for (int i = anchor_idx - 1; i >= 0; i--)
+            if (!strcmp(as->locals[i].name, name)) {
+                if (sec_out) *sec_out = as->locals[i].section;
+                return (int64_t)as->locals[i].offset;
+            }
+    }
+    return -1;
+}
+
 // If `tok` is a GAS numeric local label reference ("1b"/"1f" — one or more
 // digits plus a trailing b/f), strip the direction suffix in place so it
 // matches the bare name define_label() records ("1"). No-op otherwise.
@@ -367,6 +456,63 @@ static void strip_local_label_suffix(char *tok) {
     for (size_t i = 0; i < len - 1; i++)
         if (!isdigit((unsigned char)tok[i])) return;
     tok[len - 1] = '\0';
+}
+
+// Evaluate the small term-arithmetic expressions `.fill`'s repeat-count
+// argument uses in practice: integer literals, "." (the current output
+// position in the active section), and "Nb"/"Nf" GAS local-label
+// references — terms joined by '+'/'-'. This is exactly (and only) the
+// shape the kernel's own ".fill <slot padding>, 1, <fill byte>" idiom
+// produces (e.g. idtentry.h's ".fill 0b + IDT_ALIGN - ., 1, 0xcc" —
+// IDT_ALIGN is a #define, already a plain integer literal by the time
+// this text reaches the assembler), so a dedicated evaluator is simpler
+// and safer than routing through the .set/.if expression evaluator
+// (which knows assembler-time *variables*, not label offsets or "."). A
+// "Nb" reference resolves immediately via lookup_local() — the label it
+// names was, by construction, already defined earlier in the same
+// section; "Nf" forward references are not supported (no real .fill use
+// needs one) and resolve to 0, same as any other term this can't parse.
+static int64_t eval_fill_repeat(AsmState *as, const char *expr) {
+    int64_t total = 0;
+    int sign = 1;
+    const char *p = expr;
+    for (;;) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        int64_t term;
+        if (*p == '.') {
+            term = (int64_t)cur_off(as);
+            p++;
+        } else if (isdigit((unsigned char)*p)) {
+            char *end;
+            term = strtoll(p, &end, 0);
+            if (end > p && (*end == 'b' || *end == 'f')) {
+                char lbl[32];
+                size_t n = (size_t)(end - p);
+                if (n >= sizeof(lbl)) n = sizeof(lbl) - 1;
+                memcpy(lbl, p, n);
+                lbl[n] = '\0';
+                int sec = 0;
+                int64_t off = (*end == 'b') ? lookup_local(as, lbl, &sec) : -1;
+                term = (off >= 0 && sec == as->cur_sec) ? off : 0;
+                end++; // consume the 'b'/'f'
+            }
+            p = end;
+        } else {
+            break; // an unsupported term (named symbol, parens, ...) — stop
+        }
+        total += sign * term;
+        while (isspace((unsigned char)*p)) p++;
+        if (*p == '+') {
+            sign = 1;
+            p++;
+        } else if (*p == '-') {
+            sign = -1;
+            p++;
+        } else
+            break;
+    }
+    return total;
 }
 
 // Ensure a symbol is in the object's symbol table (for extern refs in relocs)
@@ -976,14 +1122,37 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         (void)aidx;
     } else if (!strcmp(dir, "balign") || !strcmp(dir, "align") ||
                !strcmp(dir, "p2align")) {
-        int a = atoi(args);
+        char alignbuf[64];
+        strncpy(alignbuf, args, sizeof(alignbuf) - 1);
+        alignbuf[sizeof(alignbuf) - 1] = '\0';
+        char *comma = strchr(alignbuf, ',');
+        int fill = 0;
+        if (comma) {
+            *comma = '\0';
+            char *fillstr = skip_ws(comma + 1);
+            trim_end(fillstr);
+            if (*fillstr) fill = (int)strtol(fillstr, NULL, 0);
+        }
+        int a = atoi(alignbuf);
         if (!strcmp(dir, "p2align")) a = 1 << a;
         if (a > 1) {
             if (as->cur_sec == SEC_BSS) {
                 size_t rem = as->obj->bss_size % (size_t)a;
                 if (rem) as->obj->bss_size += (size_t)a - rem;
             } else {
-                secbuf_align(cur_sec_buf(as), a);
+                // Deferred, not immediate: this section's *final* byte
+                // offset may still move once an earlier, not-yet-resolved
+                // ALTERNATIVE()-style FIXUP_SKIP_MAXDIFF in the same
+                // section inserts its own padding — aligning against the
+                // stale pre-insertion offset (what immediate
+                // secbuf_align() did) pads to the wrong boundary and
+                // desyncs every symbol placed after it, most visibly the
+                // next SYM_FUNC_START's own alignment+padding prologue.
+                // Also honors the explicit fill byte (e.g. ".balign
+                // 16,0x90" for code — NOP, not the zero secbuf_align()
+                // always used) so alignment gaps in executable sections
+                // decode as real no-ops instead of arbitrary opcodes.
+                add_align_fixup(as, cur_off(as), as->cur_sec, a, fill, as->nlocals);
             }
         }
     } else if (!strcmp(dir, "byte") || !strcmp(dir, "2byte") ||
@@ -1110,8 +1279,9 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 strncpy(valcopy, val, sizeof(valcopy) - 1);
                 valcopy[sizeof(valcopy) - 1] = '\0';
                 if (try_parse_label_diff(valcopy, &lbl_a, &lbl_b)) {
-                    strip_local_label_suffix(lbl_a);
-                    strip_local_label_suffix(lbl_b);
+                    // Keep the 'b'/'f' direction suffix intact — resolved
+                    // via lookup_local_near() below, not the ordinary
+                    // most-recent-anywhere lookup_local().
                     // Always defer, even though both labels are usually
                     // already-defined backward references at this point
                     // (the common case, e.g. "772b-771b" right after the
@@ -1129,7 +1299,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                     case 4: off = secbuf_emit32le(buf, 0); break;
                     case 8: off = secbuf_emit64le(buf, 0); break;
                     }
-                    add_labeldiff_fixup(as, off, as->cur_sec, lbl_a, lbl_b, sz);
+                    add_labeldiff_fixup(as, off, as->cur_sec, lbl_a, lbl_b, sz, as->nlocals);
                     val = strtok(NULL, ",");
                     continue;
                 }
@@ -1191,19 +1361,71 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         char mlbl[4][128];
         int mfill;
         if (!strcmp(dir, "skip") && try_parse_skip_maxdiff(args, mlbl, &mfill)) {
-            for (int i = 0; i < 4; i++) strip_local_label_suffix(mlbl[i]);
+            // Keep the 'b'/'f' direction suffix intact — resolved via
+            // lookup_local_near() below, not the ordinary
+            // most-recent-anywhere lookup_local().
             add_skip_maxdiff_fixup(as, cur_off(as), as->cur_sec, mlbl[0], mlbl[1],
                                    mlbl[2], mlbl[3], mfill, as->nlocals);
             return;
         }
-        int n = atoi(args);
+        char skipbuf[64];
+        strncpy(skipbuf, args, sizeof(skipbuf) - 1);
+        skipbuf[sizeof(skipbuf) - 1] = '\0';
+        char *skipcomma = strchr(skipbuf, ',');
+        int skipfill = 0;
+        if (skipcomma) {
+            *skipcomma = '\0';
+            char *fillstr = skip_ws(skipcomma + 1);
+            trim_end(fillstr);
+            if (*fillstr) skipfill = (int)strtol(fillstr, NULL, 0);
+        }
+        int n = atoi(skipbuf);
         if (as->cur_sec == SEC_BSS) {
             as->obj->bss_size += (size_t)n;
         } else {
             SecBuf *buf = cur_sec_buf(as);
             secbuf_reserve(buf, (size_t)n);
-            memset(buf->data + buf->len, 0, (size_t)n);
+            memset(buf->data + buf->len, skipfill, (size_t)n);
             buf->len += (size_t)n;
+        }
+    } else if (!strcmp(dir, "fill")) {
+        // .fill repeat, size, value — the kernel's own use is entirely
+        // "pad this code stub out to a fixed slot size" via label/current-
+        // position arithmetic (see eval_fill_repeat() for exactly what
+        // "repeat" expressions are supported), e.g. idtentry.h's
+        // ".fill 0b + IDT_ALIGN - ., 1, 0xcc".
+        char argbuf[300];
+        strncpy(argbuf, args, sizeof(argbuf) - 1);
+        argbuf[sizeof(argbuf) - 1] = '\0';
+        char *size_c = strchr(argbuf, ',');
+        char *repeat_expr = argbuf;
+        char *size_str = NULL, *value_str = NULL;
+        if (size_c) {
+            *size_c = '\0';
+            size_str = skip_ws(size_c + 1);
+            char *value_c = strchr(size_str, ',');
+            if (value_c) {
+                *value_c = '\0';
+                value_str = skip_ws(value_c + 1);
+                trim_end(value_str);
+            }
+            trim_end(size_str);
+        }
+        trim_end(repeat_expr);
+        int64_t repeat = eval_fill_repeat(as, repeat_expr);
+        int size = size_str && *size_str ? atoi(size_str) : 1;
+        if (size < 1) size = 1;
+        if (size > 8) size = 8;
+        uint64_t value = value_str ? (uint64_t)strtoll(value_str, NULL, 0) : 0;
+        if (repeat > 0) {
+            if (as->cur_sec == SEC_BSS) {
+                as->obj->bss_size += (size_t)(repeat * size);
+            } else {
+                SecBuf *buf = cur_sec_buf(as);
+                for (int64_t i = 0; i < repeat; i++)
+                    for (int b = 0; b < size; b++)
+                        secbuf_emit8(buf, (uint8_t)(value >> (8 * b)));
+            }
         }
     } else if (!strcmp(dir, "ascii") || !strcmp(dir, "asciz") || !strcmp(dir, "string")) {
         SecBuf *buf = cur_sec_buf(as);
@@ -2561,8 +2783,12 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_sysexit(buf);
         return true;
     }
-    if (!strcmp(mnem, "sysret")) {
+    if (!strcmp(mnem, "sysret") || !strcmp(mnem, "sysretl")) {
         x86_sysret(buf);
+        return true;
+    }
+    if (!strcmp(mnem, "sysretq")) {
+        x86_sysretq(buf);
         return true;
     }
     if (!strcmp(mnem, "rdrand")) {
@@ -3599,7 +3825,29 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "ud1")) {
-        x86_ud1(buf, R(1), R(0));
+        if (is_mem(0)) {
+            // ud1 (%reg), %dst — the kernel's __WARN_trap() intentionally
+            // encodes a 32-bit-addressed memory operand (see x86_ud1_m's
+            // comment). parse_x86_reg64/parse_x86_mem already collapse
+            // %edx and %rdx to the same X86Reg, losing the width that
+            // decides the address-size-override prefix, so re-derive it
+            // from the base register's *written* text here.
+            char basebuf[16] = "";
+            const char *op = strchr(ops[0], '(');
+            if (op) {
+                op++;
+                const char *end = strchr(op, ',');
+                if (!end) end = strchr(op, ')');
+                if (end && (size_t)(end - op) < sizeof(basebuf)) {
+                    memcpy(basebuf, op, (size_t)(end - op));
+                    basebuf[end - op] = '\0';
+                }
+            }
+            bool addr32 = *basebuf && reg_size_x86(basebuf) == 4;
+            x86_ud1_m(buf, addr32, R(1), M(0));
+        } else {
+            x86_ud1(buf, R(1), R(0));
+        }
         return true;
     }
     // FXSAVE/FXRSTOR/XSAVE-family: single memory operand, "64"-suffixed
@@ -4006,7 +4254,12 @@ static void dynstr_append(DynStr *d, const char *s) {
 typedef struct ParamMap {
     struct ParamMap *parent;
     char names[8][32];
-    char values[8][160];
+    // 1024, not a token-sized handful of bytes: real kernel headers pass
+    // whole __stringify()'d multi-instruction sequences as a single macro
+    // argument (e.g. FILL_RETURN_BUFFER's newinstr1: "mov $(nr/2),reg;
+    // 771: ...; jnz 771b; lfence; movq $-1,%gs:(...)(%rip);" — several
+    // hundred bytes on its own).
+    char values[8][1024];
     int n;
 } ParamMap;
 
@@ -4104,6 +4357,26 @@ static int64_t expr_primary(ExprCtx *c) {
     if (*c->p == '!') {
         c->p++;
         return !expr_primary(c);
+    }
+    if (*c->p == '%') {
+        // A bare "%reg" token — never used arithmetically, only compared
+        // for equality against another %reg (unwind_hints.h's ".if \base
+        // == %rsp .elseif \base == %rbp ..." chain, which every
+        // UNWIND_HINT_REGS/UNWIND_HINT_IRET_REGS invocation in the kernel
+        // goes through). Hash the register name into a stable pseudo-
+        // value: equal names hash equal, different names hash different
+        // (collision-free for the couple-dozen-name x86 register set),
+        // so plain integer `==`/`!=` in the expr grammar above just works
+        // without this evaluator needing a real register-name table.
+        c->p++;
+        const char *s = c->p;
+        while (isalnum((unsigned char)*c->p) || *c->p == '_') c->p++;
+        uint64_t h = 1469598103934665603ull; // FNV-1a offset basis
+        for (const char *q = s; q < c->p; q++) {
+            h ^= (unsigned char)*q;
+            h *= 1099511628211ull; // FNV-1a prime
+        }
+        return (int64_t)h;
     }
     if (isdigit((unsigned char)*c->p)) {
         char *end;
@@ -4354,6 +4627,55 @@ static int find_block_end(char **lines, int nlines, int start,
     return -1;
 }
 
+// Locate every ".elseif"/".else" marker belonging directly to the .if/.ifc
+// block opened at `start` (line index, exclusive) and closed at `end`
+// (line index, exclusive) — skipping over any nested .if/.ifc...endif
+// sub-block entirely, the same depth-tracking find_block_end() uses to
+// find `end` in the first place. GAS's ".if / .elseif* / .else? / .endif"
+// needs every branch tried in source order (unwind_hints.h's
+// UNWIND_HINT_REGS dispatches on the base register through a 4-way
+// ".elseif" chain — every UNWIND_HINT_REGS/UNWIND_HINT_IRET_REGS call in
+// the kernel goes through it), not just a single true/false split.
+// `out[i].line` is the marker's line index; `out[i].is_else` distinguishes
+// a trailing ".else" from a ".elseif COND" (whose condition text is
+// `out[i].cond`, pointing into `lines[]`, unsubstituted — the caller
+// still needs to run subst_params_into() on it, same as the opening
+// ".if"'s own condition).
+typedef struct {
+    int line;
+    bool is_else;
+    char *cond;
+} IfBranch;
+#define MAX_IF_BRANCHES 16
+static int find_if_branches(char **lines, int start, int end, IfBranch *out) {
+    int depth = 0;
+    int n = 0;
+    for (int i = start + 1; i < end; i++) {
+        char *p = skip_ws(lines[i]);
+        if (line_starts_with_dir(p, ".if") || line_starts_with_dir(p, ".ifc")) {
+            depth++;
+            continue;
+        }
+        if (line_starts_with_dir(p, ".endif")) {
+            depth--;
+            continue;
+        }
+        if (depth != 0 || n >= MAX_IF_BRANCHES) continue;
+        if (line_starts_with_dir(p, ".elseif")) {
+            out[n].line = i;
+            out[n].is_else = false;
+            out[n].cond = skip_ws(p + 7);
+            n++;
+        } else if (line_starts_with_dir(p, ".else")) {
+            out[n].line = i;
+            out[n].is_else = true;
+            out[n].cond = NULL;
+            n++;
+        }
+    }
+    return n;
+}
+
 static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                              const ParamMap *map, DynStr *out);
 
@@ -4405,6 +4727,77 @@ static char *next_macro_arg(char **cursor) {
     return start;
 }
 
+// Split a `.macro NAME param1[:req][=default] param2 ...` parameter-list
+// declaration into individual "param[:req][=default]" tokens. Real GAS
+// accepts bare-whitespace-separated declarations (no comma required —
+// e.g. altinstr_entry's own plain ".macro altinstr_entry orig alt
+// ft_flags orig_len alt_len", or nospec-branch.h's ".macro
+// FILL_RETURN_BUFFER reg:req nr:req ftr:req ftr2=(((1 << 0) << 16) |
+// ((3 * 32 + 21)))"), and a DEFAULT value can itself contain whitespace
+// wrapped in parens. Splitting on every whitespace (the plain-name case)
+// would shred a parenthesized default the moment it contains a space;
+// never splitting inside unbalanced parens (tracking depth) handles both
+// shapes uniformly — depth is 0 the entire time for bare space-separated
+// names, so every whitespace still splits there exactly as before, and
+// depth only returns to 0 at a parenthesized default's true end.
+// cpp -E routinely reconstructs a `.macro` parameter-list header with a
+// space on *both* sides of every token it emits, including ':' and '=' —
+// even when the original header had none (kernel headers are always
+// cpp-preprocessed before this ever runs). "reg : req" / "ftr2 = ( ( ("
+// then looks, to any split-on-whitespace scan, like three/four separate
+// bogus "parameters" ("reg", ":", "req" / "ftr2", "=", "(", "(", "(",
+// ...) instead of one "reg:req" / one "ftr2=(((...". Collapse
+// "<ws>*[:=]<ws>*" to a bare ':'/'=' in place first so next_macro_param()
+// sees the same shape it would from non-cpp-spaced input; every other
+// character (including the spaces *inside* a parenthesized default like
+// "( 1 << 0 )") is left untouched.
+static void normalize_macro_param_spacing(char *buf) {
+    char *w = buf;
+    for (char *r = buf; *r;) {
+        if (*r == ':' || *r == '=') {
+            while (w > buf && isspace((unsigned char)w[-1])) w--;
+            *w++ = *r++;
+            while (isspace((unsigned char)*r)) r++;
+        } else {
+            *w++ = *r++;
+        }
+    }
+    *w = '\0';
+}
+
+static char *next_macro_param(char **cursor) {
+    char *p = skip_ws(*cursor);
+    if (!*p) {
+        *cursor = p;
+        return NULL;
+    }
+    char *start = p;
+    int depth = 0;
+    for (; *p; p++) {
+        if (*p == '(') {
+            depth++;
+        } else if (*p == ')') {
+            if (depth > 0) depth--;
+        } else if (depth == 0 && *p == ',') {
+            *p = '\0';
+            *cursor = p + 1;
+            trim_end(start);
+            return start;
+        } else if (depth == 0 && isspace((unsigned char)*p)) {
+            char *q = skip_ws(p);
+            if (*q) {
+                *p = '\0';
+                *cursor = q;
+                trim_end(start);
+                return start;
+            }
+        }
+    }
+    *cursor = p; // at the terminating '\0'
+    trim_end(start);
+    return start;
+}
+
 // GAS strips one layer of quoting from a macro argument that's a bare
 // string constant when it's substituted into the macro body — the quotes
 // are just how the invocation *delimits* an argument that might otherwise
@@ -4447,7 +4840,7 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
     for (;;) {
         s = p;
         size_t fi = 0;
-        while (*s && !isspace((unsigned char)*s) && fi + 1 < sizeof(first)) first[fi++] = *s++;
+        while (*s && !isspace((unsigned char)*s) && *s != '(' && fi + 1 < sizeof(first)) first[fi++] = *s++;
         first[fi] = '\0';
         if (!(fi > 0 && first[fi - 1] == ':')) break;
         dynstr_append(out, first);
@@ -4473,7 +4866,11 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
     const char *rest = skip_ws((char *)s);
     int pos = 0;
     bool supplied[8] = {0};
-    char argbuf[400];
+    // 4096: a macro invocation's raw argument-list text can itself be
+    // long (e.g. FILL_RETURN_BUFFER invoking ALTERNATIVE_2 with a fully
+    // \param-substituted, several-hundred-byte quoted instruction
+    // sequence as one argument) — see asm_expand_line's subst[] comment.
+    char argbuf[4096];
     strncpy(argbuf, rest, sizeof(argbuf) - 1);
     argbuf[sizeof(argbuf) - 1] = '\0';
     char *cursor = argbuf;
@@ -4493,7 +4890,15 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
             param_set(&args, name, val);
             for (int i = 0; i < mac->nparams; i++)
                 if (!strcmp(mac->params[i], name)) supplied[i] = true;
-        } else if (*t && pos < mac->nparams) {
+        } else if (pos < mac->nparams) {
+            // A genuinely empty positional argument ("FOO a,,c") must
+            // still consume slot `pos` (set to "") — skipping it instead
+            // shifts every later argument one slot left, silently
+            // handing "c"'s value to the *previous* parameter and
+            // leaving the true last parameter unset. Real case: a macro
+            // invocation whose own \param substitutes to an empty string
+            // for one positional argument (e.g. an unsupplied default
+            // that itself resolves to "").
             param_set(&args, mac->params[pos], strip_arg_quotes(t));
             supplied[pos] = true;
             pos++;
@@ -4526,7 +4931,15 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
 // multi-statement blob is handed to the instruction encoder as if it were
 // one mnemonic ("nop;nop;...", not a real x86 instruction).
 static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, DynStr *out) {
-    char subst[512];
+    // 8192, not a token-sized handful of bytes: GAS macro bodies routinely
+    // pack an entire multi-statement expansion onto one ';'-joined
+    // physical line (e.g. alternative.h's ALTERNATIVE_2, whose nested
+    // __ALTERNATIVE(__ALTERNATIVE(...), ...) body is ~800 raw bytes
+    // *before* \newinstr1/\newinstr2 substitution can make it longer
+    // still) — a small buffer here silently truncated the tail of the
+    // expansion (the .altinstr_replacement pushsection/popsection pair)
+    // instead of erroring, corrupting the emitted object.
+    char subst[8192];
     subst_params_into(raw, map, subst, sizeof(subst));
 
     bool in_str = false;
@@ -4552,11 +4965,35 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                              const ParamMap *map, DynStr *out) {
     for (int i = lo; i < hi; i++) {
         char *raw = lines[i];
-        char subst[512];
+        char subst[8192]; // see asm_expand_line's subst[] comment
         subst_params_into(raw, map, subst, sizeof(subst));
         char *p = skip_ws(subst);
         trim_end(p);
         if (*p != '.') {
+            // GAS's "SYMBOL = EXPR" / "SYMBOL=EXPR" assignment shorthand is
+            // exactly equivalent to ".set SYMBOL, EXPR" (idtentry.h's IRQ
+            // vector-stub generator loop relies on this:
+            // "vector=FIRST_EXTERNAL_VECTOR" then, each .rept iteration,
+            // "vector = vector+1"). Recognized here, before macro
+            // dispatch, and consumed as a macro-time integer variable the
+            // same way an explicit ".set" is — a later bare reference to
+            // the name (e.g. ".byte 0x6a, vector") resolves through
+            // expr_primary's as->vars[] lookup.
+            if (isalpha((unsigned char)*p) || *p == '_' || *p == '.') {
+                const char *idp = p;
+                while (isalnum((unsigned char)*idp) || *idp == '_' || *idp == '.' || *idp == '$') idp++;
+                const char *after = skip_ws((char *)idp);
+                if (idp > p && *after == '=' && after[1] != '=') {
+                    char name[64];
+                    size_t nlen = (size_t)(idp - p);
+                    if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+                    memcpy(name, p, nlen);
+                    name[nlen] = '\0';
+                    int64_t v = eval_asm_expr(as, map, after + 1);
+                    asmvar_set(as, name, v);
+                    continue;
+                }
+            }
             asm_expand_line(as, raw, map, out);
             continue;
         }
@@ -4581,8 +5018,9 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                 char paramsbuf[300];
                 strncpy(paramsbuf, skip_ws((char *)s), sizeof(paramsbuf) - 1);
                 paramsbuf[sizeof(paramsbuf) - 1] = '\0';
+                normalize_macro_param_spacing(paramsbuf);
                 char *pcursor = paramsbuf;
-                char *ptok = next_tok(&pcursor, ", \t");
+                char *ptok = next_macro_param(&pcursor);
                 while (ptok && mac->nparams < (int)(sizeof(mac->params) / sizeof(mac->params[0]))) {
                     char *colon = strchr(ptok, ':');
                     if (colon) *colon = '\0';
@@ -4595,7 +5033,7 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                                     sizeof(mac->defaults[0]) - 1);
                         mac->nparams++;
                     }
-                    ptok = next_tok(&pcursor, ", \t");
+                    ptok = next_macro_param(&pcursor);
                 }
                 mac->nbody = end - (i + 1);
                 if (mac->nbody > 0) {
@@ -4631,8 +5069,8 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
             continue;
         }
         if (line_starts_with_dir(p, ".irp")) {
-            static const char *nested[] = {".irp"};
-            int end = find_block_end(lines, hi, i, nested, 1, ".endr");
+            static const char *nested[] = {".irp", ".rept"};
+            int end = find_block_end(lines, hi, i, nested, 2, ".endr");
             if (end < 0) {
                 asm_error(as, ".irp without .endr");
                 return;
@@ -4659,6 +5097,27 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
             i = end;
             continue;
         }
+        if (line_starts_with_dir(p, ".rept")) {
+            // Unlike .irp, .rept has no per-iteration loop variable — it
+            // just repeats its body a fixed, assembler-time-constant
+            // number of times verbatim. idtentry.h's IRQ vector-stub
+            // generator loop is the motivating case: each iteration
+            // re-reads the plain "vector" assembler variable (updated by
+            // a "vector = vector+1" assignment inside the body, handled
+            // by the bare-assignment check above) and a numeric local
+            // label ("0:") that's legitimately redefined every iteration.
+            static const char *nested[] = {".irp", ".rept"};
+            int end = find_block_end(lines, hi, i, nested, 2, ".endr");
+            if (end < 0) {
+                asm_error(as, ".rept without .endr");
+                return;
+            }
+            int64_t count = eval_asm_expr(as, map, skip_ws(p + 5));
+            for (int64_t r = 0; r < count; r++)
+                asm_expand_range(as, lines, i + 1, end, map, out);
+            i = end;
+            continue;
+        }
         if (line_starts_with_dir(p, ".ifc") || line_starts_with_dir(p, ".if")) {
             bool is_ifc = line_starts_with_dir(p, ".ifc");
             static const char *nested[] = {".ifc", ".if"};
@@ -4667,15 +5126,9 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                 asm_error(as, ".if/.ifc without .endif");
                 return;
             }
-            // A lone `.else` inside [i+1, end) splits the true/false arms.
-            int else_line = -1;
-            for (int k = i + 1; k < end; k++) {
-                char *q = skip_ws(lines[k]);
-                if (line_starts_with_dir(q, ".else")) {
-                    else_line = k;
-                    break;
-                }
-            }
+            IfBranch branches[MAX_IF_BRANCHES];
+            int nbranch = find_if_branches(lines, i, end, branches);
+
             bool cond;
             if (is_ifc) {
                 char argbuf[400];
@@ -4699,9 +5152,38 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
             } else {
                 cond = eval_asm_expr(as, map, skip_ws(p + 3)) != 0;
             }
-            int take_lo = cond ? i + 1 : (else_line >= 0 ? else_line + 1 : end);
-            int take_hi = cond ? (else_line >= 0 ? else_line : end) : end;
-            asm_expand_range(as, lines, take_lo, take_hi, map, out);
+
+            // Walk the branch chain in source order: the opening .if first
+            // (already evaluated above), then each .elseif (always a
+            // numeric condition, same as .if — real GAS has no string-
+            // compare ".elseifc"), stopping at the first true one or at a
+            // trailing .else. Matches nothing if every condition is false
+            // and there's no .else, same as GAS.
+            int take_lo = 0, take_hi = 0;
+            bool matched = false;
+            if (cond) {
+                matched = true;
+                take_lo = i + 1;
+                take_hi = (nbranch > 0) ? branches[0].line : end;
+            } else {
+                for (int b = 0; b < nbranch && !branches[b].is_else; b++) {
+                    char csub[400];
+                    subst_params_into(branches[b].cond, map, csub, sizeof(csub));
+                    if (eval_asm_expr(as, map, csub) != 0) {
+                        matched = true;
+                        take_lo = branches[b].line + 1;
+                        take_hi = (b + 1 < nbranch) ? branches[b + 1].line : end;
+                        break;
+                    }
+                }
+                if (!matched && nbranch > 0 && branches[nbranch - 1].is_else) {
+                    matched = true;
+                    take_lo = branches[nbranch - 1].line + 1;
+                    take_hi = end;
+                }
+            }
+            if (matched)
+                asm_expand_range(as, lines, take_lo, take_hi, map, out);
             i = end;
             continue;
         }
@@ -5035,39 +5517,54 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
 
     free(buf);
 
-    // Resolve FIXUP_SKIP_MAXDIFF entries first and in array order (== source
-    // order == ascending original patch_off): each insertion shifts every
-    // fixup recorded after it, including later not-yet-processed
-    // FIXUP_SKIP_MAXDIFF ones, so processing left to right lets nested
-    // ALTERNATIVE_2-style constructs (two of these in one buffer) chain
-    // correctly. Everything else — FIXUP_LABELDIFF in particular, e.g. the
-    // "773b-771b" total-length field that spans this padding — must wait
-    // until after this pass so it reads final, post-shift offsets.
+    // Resolve FIXUP_SKIP_MAXDIFF and FIXUP_ALIGN entries together, in
+    // array order (== source order == ascending original patch_off):
+    // each insertion shifts every fixup recorded after it, including
+    // later not-yet-processed entries of *either* kind, so processing
+    // left to right lets nested ALTERNATIVE_2-style constructs (two
+    // FIXUP_SKIP_MAXDIFF in one buffer) and any FIXUP_ALIGN that follows
+    // one (e.g. a function's SYM_FUNC_START alignment prologue, right
+    // after a previous function's own ALTERNATIVE()-padded body) chain
+    // correctly — a FIXUP_ALIGN resolved against a stale, pre-insertion
+    // offset pads to the wrong boundary and desyncs every symbol placed
+    // after it. Everything else — FIXUP_LABELDIFF in particular, e.g.
+    // the "773b-771b" total-length field that spans this padding — must
+    // wait until after this pass so it reads final, post-shift offsets.
     for (int i = 0; i < as.nfixups; i++) {
         struct Fixup *fx = &as.fixups[i];
-        if (fx->kind != FIXUP_SKIP_MAXDIFF) continue;
-        int sec_a = 0, sec_b = 0, sec_c = 0, sec_d = 0;
-        int64_t off_a = lookup_local(&as, fx->label, &sec_a);
-        int64_t off_b = lookup_local(&as, fx->label2, &sec_b);
-        int64_t off_c = lookup_local(&as, fx->label3, &sec_c);
-        int64_t off_d = lookup_local(&as, fx->label4, &sec_d);
-        if (off_a < 0 || off_b < 0 || off_c < 0 || off_d < 0) continue;
-        int64_t rlen = off_a - off_b;
-        int64_t slen = off_c - off_d;
-        int64_t pad = rlen - slen;
-        if (pad > 0)
-            skip_insert_shift(&as, fx->section, fx->patch_off, (size_t)pad,
-                              (uint8_t)fx->fill_byte, (int)fx->addend, i);
+        if (fx->kind == FIXUP_SKIP_MAXDIFF) {
+            int sec_a = 0, sec_b = 0, sec_c = 0, sec_d = 0;
+            int64_t off_a = lookup_local_near(&as, fx->label, (int)fx->addend, &sec_a);
+            int64_t off_b = lookup_local_near(&as, fx->label2, (int)fx->addend, &sec_b);
+            int64_t off_c = lookup_local_near(&as, fx->label3, (int)fx->addend, &sec_c);
+            int64_t off_d = lookup_local_near(&as, fx->label4, (int)fx->addend, &sec_d);
+            if (off_a < 0 || off_b < 0 || off_c < 0 || off_d < 0) continue;
+            int64_t rlen = off_a - off_b;
+            int64_t slen = off_c - off_d;
+            int64_t pad = rlen - slen;
+            if (pad > 0)
+                skip_insert_shift(&as, fx->section, fx->patch_off, (size_t)pad,
+                                  (uint8_t)fx->fill_byte, (int)fx->addend, i);
+        } else if (fx->kind == FIXUP_ALIGN) {
+            int align = (int)fx->addend;
+            if (align > 1) {
+                size_t rem = fx->patch_off % (size_t)align;
+                size_t pad = rem ? (size_t)align - rem : 0;
+                if (pad > 0)
+                    skip_insert_shift(&as, fx->section, fx->patch_off, pad,
+                                      (uint8_t)fx->fill_byte, fx->size, i);
+            }
+        }
     }
 
     // Resolve forward fixups against existing symbols
     for (int i = 0; i < as.nfixups; i++) {
         struct Fixup *fx = &as.fixups[i];
-        if (fx->kind == FIXUP_SKIP_MAXDIFF) continue;
+        if (fx->kind == FIXUP_SKIP_MAXDIFF || fx->kind == FIXUP_ALIGN) continue;
         if (fx->kind == FIXUP_LABELDIFF) {
             int sec_a = 0, sec_b = 0;
-            int64_t off_a = lookup_local(&as, fx->label, &sec_a);
-            int64_t off_b = lookup_local(&as, fx->label2, &sec_b);
+            int64_t off_a = lookup_local_near(&as, fx->label, (int)fx->addend, &sec_a);
+            int64_t off_b = lookup_local_near(&as, fx->label2, (int)fx->addend, &sec_b);
             if (off_a >= 0 && off_b >= 0) {
                 int64_t diff = off_a - off_b; // "A - B" = offset(A) - offset(B)
                 SecBuf *sb = objfile_section_buf(obj, fx->section);
@@ -5111,5 +5608,6 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
         }
     }
 
+    free(as.fixups);
     return 0;
 }

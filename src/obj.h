@@ -142,6 +142,11 @@ struct ObjReloc {
 #define FIXUP_LABELDIFF  5 // patch = offset(label2) - offset(label); width in `size`
 #define FIXUP_SKIP_MAXDIFF 6 // insert max(0,(A-B)-(C-D)) fill bytes at patch_off
 #define FIXUP_PCREL_DATA 7 // ".long/.quad (label) - ." forward reference; width in `size`
+#define FIXUP_ALIGN      8 // deferred .balign/.align/.p2align: real GAS
+// sees final section offsets (multi-pass); this assembler is single-pass
+// plus deferred-shift for FIXUP_SKIP_MAXDIFF, so alignment computed
+// against a stale, pre-shift offset would insert the wrong pad amount —
+// deferred and resolved in the same chronological pass as skip-maxdiff.
 
 // ---------------------------------------------------------------------------
 // Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by

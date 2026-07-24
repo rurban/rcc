@@ -801,6 +801,9 @@ void x86_syscall(SecBuf *s) { emit2(s, 0x0f, 0x05); }
 void x86_sysenter(SecBuf *s) { emit2(s, 0x0f, 0x34); }
 void x86_sysexit(SecBuf *s) { emit2(s, 0x0f, 0x35); }
 void x86_sysret(SecBuf *s) { emit2(s, 0x0f, 0x07); }
+// SYSRETQ (REX.W + 0F 07): returns to 64-bit mode, vs. plain SYSRET/
+// SYSRETL (0F 07 alone) returning to 32-bit compatibility mode.
+void x86_sysretq(SecBuf *s) { emit3(s, 0x48, 0x0f, 0x07); }
 // RDRAND/RDSEED r/m (0F C7 /6, /7): the register operand's REX.W bit
 // selects 64-bit, and a 66 prefix (like other GPR ops) selects 16-bit.
 void x86_rdrand(SecBuf *s, int sz, X86Reg r) {
@@ -1055,6 +1058,19 @@ void x86_ud1(SecBuf *s, X86Reg dst, X86Reg src) {
     maybe_rex(s, 0, dst, X86_NOREG, src);
     emit2(s, 0x0f, 0xb9);
     emit1(s, modrm(3, dst, src));
+}
+// UD1 reg, r/m memory form. The kernel's __WARN_trap() (arch/x86/entry/
+// entry.S) is the one real user: "ud1 (%edx), %_ASM_ARG1" deliberately
+// encodes a 32-bit-addressed memory operand (67 prefix) so decode_bug()
+// (arch/x86/kernel/traps.c) can tell this UD1 apart from every other UD1
+// site in the tree by R/M shape alone, always with REX.W set (the
+// register operand is the full 64-bit arg register) — exactly the fixed
+// "67 48 0f b9 /r" shape, not a generally width-selectable encoding.
+void x86_ud1_m(SecBuf *s, bool addr32, X86Reg reg, X86Mem m) {
+    if (addr32) emit1(s, 0x67);
+    maybe_rex(s, 1, reg, m.index, m.base);
+    emit2(s, 0x0f, 0xb9);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, reg);
 }
 
 // FXSAVE/FXRSTOR/XSAVE-family: 0F AE or 0F C7 with a /digit sub-opcode and

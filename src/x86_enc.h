@@ -267,6 +267,7 @@ void x86_syscall(SecBuf *s);
 void x86_sysenter(SecBuf *s);
 void x86_sysexit(SecBuf *s);
 void x86_sysret(SecBuf *s);
+void x86_sysretq(SecBuf *s);
 void x86_rdrand(SecBuf *s, int size, X86Reg r);
 void x86_rdseed(SecBuf *s, int size, X86Reg r);
 void x86_crc32(SecBuf *s, int dst_size, int src_size, X86Reg dst, X86Reg src);
@@ -365,6 +366,7 @@ void x86_sldt_r(SecBuf *s, X86Reg r);
 void x86_sldt_m(SecBuf *s, X86Mem m);
 void x86_ud0(SecBuf *s, X86Reg dst, X86Reg src);
 void x86_ud1(SecBuf *s, X86Reg dst, X86Reg src);
+void x86_ud1_m(SecBuf *s, bool addr32, X86Reg reg, X86Mem m);
 // FXSAVE/FXRSTOR/XSAVE-family (0F AE and 0F C7 sub-opcodes): all take a
 // single memory operand — the "64" name variants are the same opcode with
 // REX.W forced, not a different opcode.
