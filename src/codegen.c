@@ -9760,6 +9760,26 @@ static VReg gen(Node *node) {
             asm_ldr_x12_uoff(cg_sec, r, 2); // ldr x12, [x{r}, #16]
             asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
             asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
+            if (ty->kind == TY_LDOUBLE) {
+                // x12 now addresses the 16-byte VR-save-area slot holding a
+                // genuine binary128 value (the call-site pre-pass widens
+                // through __extenddftf2 before every variadic call - see
+                // above). rcc's internal `long double` is a plain 64-bit
+                // double everywhere else, so narrow the incoming quad back
+                // down via libgcc's __trunctfdf2 before handing the
+                // address back: reading the raw quad's low 64 bits as a
+                // double would reinterpret binary128's mantissa/exponent
+                // layout as binary64 and produce garbage (typically ~0.0).
+                // x12 must survive the `bl` (a caller-saved scratch reg
+                // isn't guaranteed to), so park it on the stack around it.
+                arm64_ldr_fp(cg_sec, 4, ASM_Q0, ARM64_X12, 0); // ldr q0, [x12]
+                arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 16, 0); // sub sp, sp, #16
+                arm64_str_uoff(cg_sec, 3, ARM64_X12, ARM64_SP, 0); // str x12, [sp]
+                emit_direct_call("__trunctfdf2", false); // bl __trunctfdf2 (quad in v0 -> d0)
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X12, ARM64_SP, 0); // ldr x12, [sp]
+                arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 16, 0); // add sp, sp, #16
+                arm64_str_fp(cg_sec, 3, ARM64_D0, ARM64_X12, 0); // str d0, [x12]
+            }
             {
                 size_t _jmp = asm_jmp_label(cg_sec);
                 asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
@@ -12419,8 +12439,24 @@ struct ObjFile *codegen(Program *prog) {
         // AAPCS64 (Linux): save all GP and FP arg regs for variadic functions
         if (fn->is_variadic) va_save_size = 192;
 #endif
+        // AAPCS64 passes `long double` (128-bit binary128) as a genuine
+        // quad in a V register, but rcc's internal `long double` is a
+        // plain 64-bit double everywhere else - incoming long double
+        // params must be narrowed via libgcc's __trunctfdf2. That `bl`
+        // clobbers every caller-saved register (x0-x17, v0-v7), so any
+        // other not-yet-saved param sharing those registers would be
+        // corrupted; reserve a small stash area to park each incoming
+        // long double's raw quad until every other param is safely saved,
+        // then narrow them one at a time from the stash (see below).
+        int n_ldouble_params = 0;
+        for (LVar *var = fn->params; var; var = var->param_next)
+            if (var->ty->kind == TY_LDOUBLE && var->ty->size > 8) n_ldouble_params++;
+        int ldouble_stash_size = n_ldouble_params * 16;
+        int ldouble_stash_off = va_save_size;
         if (va_save_size > 0)
             need += va_save_size;
+        if (ldouble_stash_size > 0)
+            need += ldouble_stash_size;
         int frame_size = need + 16 + n_callee_saved * 8;
         // Round up to 16-byte alignment
         frame_size = (frame_size + 15) & ~15;
@@ -12478,7 +12514,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Save callee-saved regs
-        int cs_off = (fn->is_variadic && va_save_size > 0) ? va_save_size + 16 : 16;
+        int cs_off = 16 + va_save_size + ldouble_stash_size;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 arm64_str_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // str x{cs}, [sp, #cs_off]
@@ -12509,6 +12545,13 @@ struct ObjFile *codegen(Program *prog) {
         int gp_param = 0;
         int fp_param = 0;
         int stack_param = 0;
+        // long double params (is_flonum, size>8) are deferred: narrowing
+        // them via __trunctfdf2 clobbers every caller-saved register, so
+        // all other params must be safely saved first (see the deferred
+        // pass after this loop).
+        LVar *ld_param_var[8];
+        int ld_param_fpidx[8];
+        int n_ld_deferred = 0;
         {
             for (LVar *var = fn->params; var; var = var->param_next) {
                 int hfa_elem_size = 0;
@@ -12572,7 +12615,14 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param += (sz + 7) / 8;
                 } else if (is_flonum(var->ty)) {
                     if (fp_param < 8) {
-                        if (var->ty->size == 4) {
+                        if (var->ty->kind == TY_LDOUBLE && var->ty->size > 8) {
+                            // Defer: narrowing needs a `bl`, which would
+                            // clobber every other not-yet-saved param's
+                            // register (see the deferred pass below).
+                            ld_param_var[n_ld_deferred] = var;
+                            ld_param_fpidx[n_ld_deferred] = fp_param;
+                            n_ld_deferred++;
+                        } else if (var->ty->size == 4) {
                             if (fn->ty->is_oldstyle) {
                                 asm_fcvt_s0_d(cg_sec, fp_param); // fcvt s0, d{fp_param}
                                 asm_str_s0_fp_neg(cg_sec, var->offset); // str s0, [x29, #-offset]
@@ -12679,6 +12729,25 @@ struct ObjFile *codegen(Program *prog) {
             }
         }
 
+        // Deferred long double params: stash every raw incoming quad first
+        // (plain register-to-memory stores, no calls - safe regardless of
+        // how many there are), then narrow each one via __trunctfdf2 from
+        // its stash slot and store the resulting double. By this point
+        // every other param has already been saved to its permanent slot
+        // above, so the `bl`s below are free to clobber any caller-saved
+        // register.
+        if (n_ld_deferred > 0) {
+            for (int k = 0; k < n_ld_deferred; k++)
+                arm64_str_fp(cg_sec, 4, (Arm64Reg)ld_param_fpidx[k], ARM64_SP,
+                             (uint32_t)(ldouble_stash_off + k * 16)); // str q{fpidx}, [sp, #stash+k*16]
+            for (int k = 0; k < n_ld_deferred; k++) {
+                arm64_ldr_fp(cg_sec, 4, ASM_Q0, ARM64_SP,
+                             (uint32_t)(ldouble_stash_off + k * 16)); // ldr q0, [sp, #stash+k*16]
+                emit_direct_call("__trunctfdf2", false); // bl __trunctfdf2 (quad in v0 -> d0)
+                asm_str_d_fp_neg(cg_sec, 0, ld_param_var[k]->offset); // str d0, [x29, #-offset]
+            }
+        }
+
 
         // Re-run gen() to emit binary body
         for (Node *n = fn->body; n; n = n->next) {
@@ -12723,7 +12792,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Restore callee-saved
-        cs_off = 16;
+        cs_off = 16 + va_save_size + ldouble_stash_size;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // ldr x{cs}, [sp, #cs_off]
