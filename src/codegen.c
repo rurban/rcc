@@ -120,13 +120,20 @@ static void cg_def_sym(const char *name, int sec, SymBind bind, SymType type) {
     }
 }
 
+// cg_def_label: internal branch-target / loop / switch-case labels (the
+// overwhelming majority of .L-prefixed symbols a function emits). These are
+// NOT function entry points — GAS never types a local branch label as
+// STT_FUNC either — so they get ST_NOTYPE. They still need a symbol table
+// entry (not just an internal fixup) because computed-goto (&&label) values
+// need something for the linker's ARM64_RELOC_UNSIGNED/R_X86_64_64 to point
+// at. See cg_def_fn_label below for the actual-function-symbol case.
 void cg_def_label(const char *name) {
     if (cg_dry_run) return;
     // .L. labels referenced by relocations (e.g. &&label values) must be in the
     // symbol table so the linker can resolve ARM64_RELOC_UNSIGNED relocations.
     // We use SB_LOCAL to avoid creating subsection boundaries that the linker
     // might dead-strip — local symbols are not subsection boundaries.
-    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
+    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_NOTYPE);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
 }
@@ -148,6 +155,32 @@ static void cg_global_label(const char *name) {
 static void cg_weak_label(const char *name) {
     if (cg_dry_run) return;
     objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_WEAK, ST_FUNC);
+}
+
+// cg_def_fn_label: the static/non-exported-function counterpart to
+// cg_global_label/cg_weak_label above — a REAL function entry point (unlike
+// cg_def_label's internal branch labels), so it keeps ST_FUNC. Pair with
+// cg_patch_fn_size once the function's epilogue is fully emitted so the
+// ELF/COFF symbol carries a correct size instead of the 0 every ST_FUNC
+// symbol here used to get (objtool: "%s() is missing an ELF size
+// annotation" for literally every function in the object file).
+static void cg_def_fn_label(const char *name) {
+    if (cg_dry_run) return;
+    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
+    cg_label_ht_add(name, cg_sec->len);
+    asm_fixup_resolve(cg_sec, name, cg_sec->len);
+}
+
+// Close the loop started by cg_global_label/cg_weak_label/cg_def_fn_label:
+// patch the function symbol's size now that its full extent is known. GAS
+// emits ".size name, .-name" for exactly this reason — the size can't be
+// known at the label-definition site, only once the epilogue's last
+// instruction has been emitted.
+static void cg_patch_fn_size(const char *name, size_t start_off) {
+    if (cg_dry_run) return;
+    int idx = objfile_find_sym(cg_obj, name);
+    if (idx >= 0)
+        cg_obj->syms[idx].size = cg_sec->len - start_off;
 }
 
 static void cg_weak_declare(const char *name) {
@@ -857,6 +890,7 @@ static void emit_vla_dealloc(LVar *begin, LVar *end) {
 /* Other platforms still have it. windows deprecated it.
    Use a unique name to avoid conflicts with CRT import stubs. */
 static void emit_alloca(void) {
+    size_t alloca_sym_start = cg_sec->len;
     cg_global_label("__rcc_alloca");
 #ifdef ARCH_ARM64
     // alloca(size): x0=size → round up, sub sp, return new sp
@@ -865,6 +899,7 @@ static void emit_alloca(void) {
     asm_sub_sp_sp_reg(cg_sec, ARM64_X0); // sub sp, sp, x0
     asm_mov_reg_sp(cg_sec, ARM64_X0); // mov x0, sp
     asm_ret(cg_sec); // ret
+    cg_patch_fn_size("__rcc_alloca", alloca_sym_start);
 #else
     // alloca via call: return addr was pushed; pop it, adjust rsp, push back
     asm_pop(cg_sec, X86_RDX); // popq %rdx  (save return addr)
@@ -898,6 +933,7 @@ static void emit_alloca(void) {
     x86_mov_rr(cg_sec, 8, X86_RAX, X86_RSP); // movq %rsp, %rax
     asm_push(cg_sec, X86_RDX); // pushq %rdx
     asm_ret(cg_sec); // ret
+    cg_patch_fn_size("__rcc_alloca", alloca_sym_start);
 #endif
 }
 
@@ -12406,12 +12442,14 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
+            cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported)
-            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
+            cg_global_label(fn_sym_name); // .globl %s
         else
-            cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
+            cg_def_fn_label(fn_sym_name); // .weak %s
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
@@ -12701,6 +12739,7 @@ struct ObjFile *codegen(Program *prog) {
         }
         asm_ldp_fp_lr(cg_sec); // ldp x29, x30, [sp], #16
         asm_ret(cg_sec); // ret
+        cg_patch_fn_size(fn_sym_name, fn_sym_start);
 
 #else
         // === x86_64 prologue ===
@@ -12753,12 +12792,14 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
+            cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported) {
-            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
+            cg_global_label(fn_sym_name); // .globl %s
         } else {
-            cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
+            cg_def_fn_label(fn_sym_name); // .weak %s
         }
 #ifdef _WIN32
         uw_begin(); // .seh_proc
@@ -13144,6 +13185,7 @@ struct ObjFile *codegen(Program *prog) {
         }
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
+        cg_patch_fn_size(fn_sym_name, fn_sym_start);
 #ifdef _WIN32
         uw_endproc(); // .seh_endproc
 #endif
