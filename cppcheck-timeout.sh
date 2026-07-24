@@ -16,8 +16,12 @@ set -eu
 TIMEOUT_SECS="${CPPCHECK_TIMEOUT_SECS:-180}"
 
 if command -v timeout >/dev/null 2>&1; then
-    timeout "$TIMEOUT_SECS" cppcheck "$@"
-    rc=$?
+    # `set -e` aborts the script the instant any unguarded command
+    # returns non-zero — including `timeout` itself reporting 124 — so
+    # capturing $? on the line *after* silently never runs. `|| rc=$?`
+    # keeps the non-zero status from tripping `set -e` at all.
+    timeout "$TIMEOUT_SECS" cppcheck "$@" || rc=$?
+    rc="${rc:-0}"
     if [ "$rc" -eq 124 ]; then
         echo "cppcheck-timeout.sh: cppcheck did not finish within ${TIMEOUT_SECS}s; skipping (not a lint failure)" >&2
         exit 0
