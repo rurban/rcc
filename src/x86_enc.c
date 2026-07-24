@@ -661,6 +661,16 @@ void x86_push(SecBuf *s, X86Reg r) {
     if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
     emit1(s, (uint8_t)(0x50 + (r & 7)));
 }
+// PUSH r/m64 (FF /6): "pushq DISP(%reg)" — e.g. the kernel's own IRET-frame
+// copy loops ("pushq 5*8(%rsp)") and syscall-entry pt_regs pushes
+// ("pushq 6*8(%rdi)" etc). No REX.W: like CALL/JMP's FF /2 and /4, PUSH's
+// default operand size in 64-bit mode is already 64-bit.
+void x86_push_m(SecBuf *s, X86Mem m) {
+    bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
+    if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
+    emit1(s, 0xff);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, 6);
+}
 void x86_pop(SecBuf *s, X86Reg r) {
     if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
     emit1(s, (uint8_t)(0x58 + (r & 7)));

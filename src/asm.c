@@ -464,62 +464,15 @@ static void strip_local_label_suffix(char *tok) {
     tok[len - 1] = '\0';
 }
 
-// Evaluate the small term-arithmetic expressions `.fill`'s repeat-count
-// argument uses in practice: integer literals, "." (the current output
-// position in the active section), and "Nb"/"Nf" GAS local-label
-// references — terms joined by '+'/'-'. This is exactly (and only) the
-// shape the kernel's own ".fill <slot padding>, 1, <fill byte>" idiom
-// produces (e.g. idtentry.h's ".fill 0b + IDT_ALIGN - ., 1, 0xcc" —
-// IDT_ALIGN is a #define, already a plain integer literal by the time
-// this text reaches the assembler), so a dedicated evaluator is simpler
-// and safer than routing through the .set/.if expression evaluator
-// (which knows assembler-time *variables*, not label offsets or "."). A
-// "Nb" reference resolves immediately via lookup_local() — the label it
-// names was, by construction, already defined earlier in the same
-// section; "Nf" forward references are not supported (no real .fill use
-// needs one) and resolve to 0, same as any other term this can't parse.
-static int64_t eval_fill_repeat(AsmState *as, const char *expr) {
-    int64_t total = 0;
-    int sign = 1;
-    const char *p = expr;
-    for (;;) {
-        while (isspace((unsigned char)*p)) p++;
-        if (!*p) break;
-        int64_t term;
-        if (*p == '.') {
-            term = (int64_t)cur_off(as);
-            p++;
-        } else if (isdigit((unsigned char)*p)) {
-            char *end;
-            term = strtoll(p, &end, 0);
-            if (end > p && (*end == 'b' || *end == 'f')) {
-                char lbl[32];
-                size_t n = (size_t)(end - p);
-                if (n >= sizeof(lbl)) n = sizeof(lbl) - 1;
-                memcpy(lbl, p, n);
-                lbl[n] = '\0';
-                int sec = 0;
-                int64_t off = (*end == 'b') ? lookup_local(as, lbl, &sec) : -1;
-                term = (off >= 0 && sec == as->cur_sec) ? off : 0;
-                end++; // consume the 'b'/'f'
-            }
-            p = end;
-        } else {
-            break; // an unsupported term (named symbol, parens, ...) — stop
-        }
-        total += sign * term;
-        while (isspace((unsigned char)*p)) p++;
-        if (*p == '+') {
-            sign = 1;
-            p++;
-        } else if (*p == '-') {
-            sign = -1;
-            p++;
-        } else
-            break;
-    }
-    return total;
-}
+// Full assembler-time integer expression evaluator (defined below, after
+// the ExprCtx/expr_* recursive-descent chain) with "." resolving to the
+// current section offset — used by .fill's repeat-count argument, e.g.
+// idtentry.h's ".fill 0b + IDT_ALIGN - ., 1, 0xcc" where IDT_ALIGN
+// expands to a full parenthesized "(8 * (1 + HAS_KERNEL_IBT))"
+// expression, not a bare literal. Forward-declared here since
+// handle_directive() (which needs it for .fill) is defined long before
+// the evaluator itself.
+static int64_t eval_asm_expr_here(AsmState *as, const char *expr);
 
 // Ensure a symbol is in the object's symbol table (for extern refs in relocs)
 static int ensure_sym(AsmState *as, const char *name) {
@@ -897,7 +850,7 @@ static int reg_size_x86(const char *s) {
 
 // Parse AT&T memory operand: disp(%base, %index, scale) or (%base)
 // Returns true on success
-static bool parse_x86_mem(const char *s, X86Mem *m) {
+static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
     m->base = X86_NOREG;
     m->index = X86_NOREG;
     m->scale = 1;
@@ -910,10 +863,16 @@ static bool parse_x86_mem(const char *s, X86Mem *m) {
     if (paren) {
         *paren = 0;
         if (buf[0]) {
-            // Parse displacement (may be a symbol or integer)
+            // Parse displacement: a plain integer, or a full assembler-
+            // time arithmetic expression (e.g. the kernel's IRET-frame
+            // copy loops: "pushq 5*8(%rsp)", syscall-entry pt_regs
+            // pushes: "pushq 6*8(%rdi)") — never just a bare literal.
+            // strtoll() alone silently stopped at the first non-digit
+            // byte ('*'), turning "5*8" into a displacement of 5 instead
+            // of 40 and desyncing every offset after it.
             char *disp_s = skip_ws(buf);
             if (disp_s[0] == '-' || isdigit((unsigned char)disp_s[0]))
-                m->disp = strtoll(disp_s, NULL, 0);
+                m->disp = eval_asm_expr_here(as, disp_s);
             // Symbol displacement handled separately
         }
         char *inner = paren + 1;
@@ -1158,7 +1117,16 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             trim_end(fillstr);
             if (*fillstr) fill = (int)strtol(fillstr, NULL, 0);
         }
-        int a = atoi(alignbuf);
+        // Real GAS accepts a full assembler-time integer expression here,
+        // not just a bare literal — e.g. idtentry.h's ".align IDT_ALIGN"
+        // where IDT_ALIGN expands to "(8 * (1 + HAS_KERNEL_IBT))". Plain
+        // atoi() stops at the first non-digit byte ('('), silently
+        // returning 0 - which the "a > 1" check below then treats as "no
+        // alignment requested at all", skipping add_align_fixup()
+        // entirely instead of erroring. That desyncs every later label in
+        // the section once this padding is retroactively supposed to
+        // exist but never does.
+        int a = (int)eval_asm_expr_here(as, alignbuf);
         if (!strcmp(dir, "p2align")) a = 1 << a;
         if (a > 1) {
             if (as->cur_sec == SEC_BSS) {
@@ -1416,9 +1384,11 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
     } else if (!strcmp(dir, "fill")) {
         // .fill repeat, size, value — the kernel's own use is entirely
         // "pad this code stub out to a fixed slot size" via label/current-
-        // position arithmetic (see eval_fill_repeat() for exactly what
-        // "repeat" expressions are supported), e.g. idtentry.h's
-        // ".fill 0b + IDT_ALIGN - ., 1, 0xcc".
+        // position arithmetic (see eval_asm_expr_here() for exactly what
+        // "repeat" expressions are supported — the full assembler-time
+        // integer grammar, with "." resolving eagerly instead of
+        // deferring), e.g. idtentry.h's ".fill 0b + IDT_ALIGN - ., 1,
+        // 0xcc" where IDT_ALIGN expands to "(8 * (1 + HAS_KERNEL_IBT))".
         char argbuf[300];
         strncpy(argbuf, args, sizeof(argbuf) - 1);
         argbuf[sizeof(argbuf) - 1] = '\0';
@@ -1437,7 +1407,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             trim_end(size_str);
         }
         trim_end(repeat_expr);
-        int64_t repeat = eval_fill_repeat(as, repeat_expr);
+        int64_t repeat = eval_asm_expr_here(as, repeat_expr);
         int size = size_str && *size_str ? atoi(size_str) : 1;
         if (size < 1) size = 1;
         if (size > 8) size = 8;
@@ -2603,12 +2573,12 @@ static int suffix_size(const char *mnem) {
 #define X86_ISMEM(i) ((i)<nops && strchr(ops[i],'(')!=NULL)
 #define X86_ISSYM(i) ((i)<nops && ops[i][0]!='%' && ops[i][0]!='$' && \
                       (isalpha((unsigned char)ops[i][0])||ops[i][0]=='_'||ops[i][0]=='.'||ops[i][0]=='-'))
-static X86Mem x86_get_mem(char **ops, int nops, int i) {
+static X86Mem x86_get_mem(AsmState *as, char **ops, int nops, int i) {
     X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
-    if (i < nops) parse_x86_mem(ops[i], &m);
+    if (i < nops) parse_x86_mem(as, ops[i], &m);
     return m;
 }
-#define X86_M(i)    x86_get_mem(ops, nops, (i))
+#define X86_M(i)    x86_get_mem(as, ops, nops, (i))
 
 static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     char ops_buf[512];
@@ -2845,6 +2815,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         !strcmp(mnem, "pushl") || !strcmp(mnem, "pushq")) {
         if (is_imm(0))
             x86_push_imm(buf, (int32_t)IMM(0));
+        else if (is_mem(0))
+            // "pushq DISP(%reg)" — e.g. the kernel's IRET-frame copy
+            // loops (".rept 6; pushq 5*8(%rsp); .endr") and syscall-
+            // entry pt_regs pushes ("pushq 6*8(%rdi)" etc). Previously
+            // unhandled: falling through to x86_push(R(0)) tried to
+            // parse "5*8(%rsp)" as a bare register, silently encoding
+            // garbage instead of a real memory-operand push.
+            x86_push_m(buf, M(0));
         else
             x86_push(buf, R(0));
         return true;
@@ -4138,6 +4116,11 @@ int assemble_file(const char *asm_path, const char *obj_path) {
         if (is_label) {
             *colon = 0;
             char *lbl = p;
+            trim_end(lbl); // "0 :" (space before the colon) would
+            // otherwise leave a trailing space baked into the label
+            // name define_label() registers, mismatching any "0b"/"0f"
+            // lookup querying the bare digit — see the identical fix
+            // in assemble_inline()'s own label-stripping loop.
             int idx = objfile_find_sym(&obj, lbl);
             bool is_global = (idx >= 0 && obj.syms[idx].bind != SB_LOCAL);
             bool is_weak = (idx >= 0 && obj.syms[idx].bind == SB_WEAK);
@@ -4365,6 +4348,10 @@ typedef struct {
     // position), so try_eval_full_expr must not silently treat
     // it as 0 and must instead defer to the real directive
     // handler's symbol/relocation logic.
+    bool resolve_dot; // true only for eval_asm_expr_here(): "." resolves
+    // eagerly to the current section offset instead of setting `err`,
+    // since .fill (the only caller) evaluates its repeat expression at
+    // the exact point it's processed, never speculatively pre-evaluated.
 } ExprCtx;
 
 static void expr_ws(ExprCtx *c) {
@@ -4412,6 +4399,41 @@ static int64_t expr_primary(ExprCtx *c) {
     if (isdigit((unsigned char)*c->p)) {
         char *end;
         int64_t v = strtoll(c->p, &end, 0);
+        // GAS numeric local-label reference ("0b"/"1f", not part of a
+        // longer identifier) — e.g. idtentry.h's ".fill 0b + ...".
+        // "Nb" (backward) resolves via the most-recently-defined
+        // same-name local label in the current section, *if* one is
+        // already known at this point; "Nf" forward references are
+        // never resolvable by a single-pass assembler here. Either way,
+        // when it can't be resolved, this sets `err` (like the bare-
+        // identifier and "." cases below) instead of silently folding
+        // in 0 - without this, try_eval_full_expr()'s early data-emit
+        // pre-compute pass (which runs *before* any labels are defined
+        // at all) wrongly treated GAS's "772b - 771b" label-difference
+        // idiom as a fully-resolvable "0 - 0" expression, hijacking it
+        // from handle_directive's own correct, deferred
+        // try_parse_label_diff/lookup_local_near resolution.
+        if (end > c->p && (*end == 'b' || *end == 'f') &&
+            !isalnum((unsigned char)end[1]) && end[1] != '_') {
+            char lbl[32];
+            size_t n = (size_t)(end - c->p);
+            if (n >= sizeof(lbl)) n = sizeof(lbl) - 1;
+            memcpy(lbl, c->p, n);
+            lbl[n] = '\0';
+            bool backward = *end == 'b';
+            c->p = end + 1;
+            if (!backward) {
+                c->err = true;
+                return 0;
+            }
+            int sec = 0;
+            int64_t off = lookup_local(c->as, lbl, &sec);
+            if (off < 0 || sec != c->as->cur_sec) {
+                c->err = true;
+                return 0;
+            }
+            return off;
+        }
         c->p = end;
         return v;
     }
@@ -4430,6 +4452,7 @@ static int64_t expr_primary(ExprCtx *c) {
             return val ? strtoll(val, NULL, 0) : 0;
         }
         if (!strcmp(name, ".")) {
+            if (c->resolve_dot) return (int64_t)cur_off(c->as);
             // Bare "." (current assembly position) — a runtime-only
             // concept, not knowable during this macro-time pre-evaluation
             // pass. Without this, "SYM - ." (a cross-section PC-relative
@@ -4601,7 +4624,18 @@ static int64_t expr_or(ExprCtx *c) {
 }
 
 static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text) {
-    ExprCtx c = {text, as, map, false};
+    ExprCtx c = {text, as, map, false, false};
+    return expr_or(&c);
+}
+
+// Same grammar as eval_asm_expr(), but "." resolves eagerly to the current
+// section offset instead of deferring (setting `err`) — see ExprCtx's
+// resolve_dot comment. The only caller is .fill's repeat-count argument,
+// which handle_directive() always evaluates at the exact point .fill is
+// processed, so "." is genuinely known here, unlike in a .set/.if
+// expression that might be pre-evaluated speculatively.
+static int64_t eval_asm_expr_here(AsmState *as, const char *text) {
+    ExprCtx c = {text, as, NULL, false, true};
     return expr_or(&c);
 }
 
@@ -4612,7 +4646,7 @@ static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text
 // reference (`(1b) - .`, a bare `label+addend`, ...), which must reach the
 // real directive handler's symbol/relocation logic untouched.
 static bool try_eval_full_expr(AsmState *as, const ParamMap *map, const char *text, int64_t *out) {
-    ExprCtx c = {text, as, map, false};
+    ExprCtx c = {text, as, map, false, false};
     int64_t v = expr_or(&c);
     expr_ws(&c);
     if (*c.p != '\0' || c.err) return false;
@@ -5492,7 +5526,12 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             char *after_tok = skip_ws(tok_end);
             if (!(tok_end > p && *after_tok == ':'))
                 break;
-            *after_tok = 0;
+            *tok_end = 0; // clean-terminate the label name here, not at
+            // after_tok (the colon) - "0 :" (a literal space before the
+            // colon, e.g. idtentry.h's numeric-label stubs) would
+            // otherwise capture "0 " with a trailing space baked into the
+            // name define_label() registers, silently mismatching every
+            // "0b"/"0f" lookup that (correctly) queries the bare digit.
             char *lbl = p;
             int idx = objfile_find_sym(obj, lbl);
             bool is_global = (idx >= 0 && obj->syms[idx].bind != SB_LOCAL);

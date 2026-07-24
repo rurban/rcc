@@ -210,6 +210,7 @@ void x86_cmpxchg_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 
 // Stack
 void x86_push(SecBuf *s, X86Reg r);
+void x86_push_m(SecBuf *s, X86Mem m);
 void x86_pop(SecBuf *s, X86Reg r);
 void x86_push_imm(SecBuf *s, int32_t imm);
 
