@@ -1045,53 +1045,119 @@ static bool str_needs_space(Token *a, Token *b) {
     tok_spelling(a, &al);
     return a->ptr + al != b->ptr;
 }
-static char *stringize_list(Token *list) {
-    int total = 1;
+// #-stringize per C99 6.10.3.2: concatenate argument token spellings (one
+// space where the source had whitespace between two tokens, none where
+// they were adjacent), then wrap in quotes. The standard's escaping rule
+// is narrow — "a \ character is inserted before each \" and \\ character
+// of a character constant or string literal (including the delimiting \"
+// characters)" — i.e. only backslash/quote bytes that are part of a
+// *nested* string or char literal among the argument tokens get doubled.
+// A bare '\' from an ordinary token must come through unescaped: GAS's
+// own "\param" macro-parameter syntax is exactly this case (e.g.
+// nospec-branch.h's __stringify(__FILL_RETURN_BUFFER(\reg,\nr)), used to
+// build a run of instruction text as a macro argument) — real cpp
+// stringifies it to "...\reg...\nr..." (single backslash), and the
+// assembler's own macro-argument dequoting (strip_arg_quotes() in asm.c)
+// only strips the surrounding quotes, it never undoes C-style escapes.
+// Blanket-escaping every backslash here would silently corrupt every
+// such GAS-macro-parameter reference into "\<value>" prefixed with a
+// stray literal backslash once substituted into the macro body.
+//
+// `*out_raw`/`*out_rawlen` receive the token's semantic *decoded* value —
+// the same content this function returned before this rule was applied —
+// for the synthesized token's ->str/->len; the return value is the fully
+// quoted *spelling* (starting with '"', ending with '"') for ->ptr/->val.
+static char *stringize_build(Token *list, char **out_raw, int *out_rawlen) {
+    int total = 3;
     for (Token *t = list; t && t->kind != TK_EOF; t = t->next) {
         int sl;
         tok_spelling(t, &sl);
-        total += sl + 1;
+        total += (t->kind == TK_STR) ? sl * 2 : sl;
+        total += 1;
     }
-    char *buf = arena_alloc(total);
-    int n = 0;
+    char *raw = arena_alloc(total);
+    char *sp_out = arena_alloc(total);
+    int rn = 0, sn = 0;
+    sp_out[sn++] = '"';
     Token *prev = NULL;
     for (Token *t = list; t && t->kind != TK_EOF; t = t->next) {
         int sl;
         char *sp = tok_spelling(t, &sl);
-        if (prev && str_needs_space(prev, t)) buf[n++] = ' ';
-        memcpy(buf + n, sp, sl);
-        n += sl;
+        if (prev && str_needs_space(prev, t)) {
+            raw[rn++] = ' ';
+            sp_out[sn++] = ' ';
+        }
+        memcpy(raw + rn, sp, sl);
+        rn += sl;
+        if (t->kind == TK_STR) {
+            for (int i = 0; i < sl; i++) {
+                if (sp[i] == '"' || sp[i] == '\\') sp_out[sn++] = '\\';
+                sp_out[sn++] = sp[i];
+            }
+        } else {
+            memcpy(sp_out + sn, sp, sl);
+            sn += sl;
+        }
         prev = t;
     }
-    buf[n] = '\0';
-    return buf;
+    raw[rn] = '\0';
+    sp_out[sn++] = '"';
+    sp_out[sn] = '\0';
+    *out_raw = raw;
+    *out_rawlen = rn;
+    return sp_out;
 }
-static char *stringize_va(Macro *m, Token **args, int argc) {
-    int start = va_slot(m), total = 1;
+static char *stringize_list(Token *list, char **out_raw, int *out_rawlen) {
+    return stringize_build(list, out_raw, out_rawlen);
+}
+static char *stringize_va(Macro *m, Token **args, int argc, char **out_raw, int *out_rawlen) {
+    int start = va_slot(m), total = 3;
     for (int i = start; i < argc; i++) {
         for (Token *t = args[i]; t && t->kind != TK_EOF; t = t->next) {
             int sl;
             tok_spelling(t, &sl);
-            total += sl + 1;
+            total += (t->kind == TK_STR) ? sl * 2 : sl;
+            total += 1;
         }
         total += 1;
     }
-    char *buf = arena_alloc(total);
-    int n = 0;
+    char *raw = arena_alloc(total);
+    char *sp_out = arena_alloc(total);
+    int rn = 0, sn = 0;
+    sp_out[sn++] = '"';
     for (int i = start; i < argc; i++) {
-        if (i > start) buf[n++] = ',';
+        if (i > start) {
+            raw[rn++] = ',';
+            sp_out[sn++] = ',';
+        }
         Token *prev = NULL;
         for (Token *t = args[i]; t && t->kind != TK_EOF; t = t->next) {
             int sl;
             char *sp = tok_spelling(t, &sl);
-            if (prev && str_needs_space(prev, t)) buf[n++] = ' ';
-            memcpy(buf + n, sp, sl);
-            n += sl;
+            if (prev && str_needs_space(prev, t)) {
+                raw[rn++] = ' ';
+                sp_out[sn++] = ' ';
+            }
+            memcpy(raw + rn, sp, sl);
+            rn += sl;
+            if (t->kind == TK_STR) {
+                for (int k = 0; k < sl; k++) {
+                    if (sp[k] == '"' || sp[k] == '\\') sp_out[sn++] = '\\';
+                    sp_out[sn++] = sp[k];
+                }
+            } else {
+                memcpy(sp_out + sn, sp, sl);
+                sn += sl;
+            }
             prev = t;
         }
     }
-    buf[n] = '\0';
-    return buf;
+    raw[rn] = '\0';
+    sp_out[sn++] = '"';
+    sp_out[sn] = '\0';
+    *out_raw = raw;
+    *out_rawlen = rn;
+    return sp_out;
 }
 static void splice_va(Token **head, Token **tail, Macro *m, Token **args, int argc, Token *site) {
     int start = va_slot(m);
@@ -1170,8 +1236,20 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             if (n && n != end && n->kind != TK_EOF && n->kind == TK_IDENT) {
                 int idx = param_or_va(m, n->name);
                 if (idx >= 0) {
-                    char *s = (m->is_variadic && idx == vs) ? stringize_va(m, args, argc) : (idx < argc ? stringize_list(raw_args[idx]) : "");
-                    Token *st = syn_str(s, strlen(s), b);
+                    char *raw;
+                    int rawlen;
+                    char *spelling = (m->is_variadic && idx == vs)
+                        ? stringize_va(m, args, argc, &raw, &rawlen)
+                        : (idx < argc ? stringize_list(raw_args[idx], &raw, &rawlen) : (raw = "", rawlen = 0, "\"\""));
+                    Token *st = arena_alloc(sizeof(Token));
+                    st->kind = TK_STR;
+                    st->kw = ID_NONE;
+                    st->str = str_intern(raw, rawlen);
+                    st->len = rawlen;
+                    st->ptr = spelling;
+                    st->val = (int)strlen(spelling);
+                    st->filename = b->filename;
+                    st->lineno = b->lineno;
                     st->next = NULL;
                     if (rtail) rtail->next = st;
                     else
@@ -2120,6 +2198,41 @@ static bool can_concat_strings(Token *a, Token *b) {
     // Like L"a" "b" -> L"ab": an unprefixed literal adopts the other's prefix.
     return pa == pb || pa == 0 || pb == 0;
 }
+// Rebuild a re-parseable quoted spelling from decoded string-literal bytes.
+// concat_strings() merges the *decoded* content of adjacent string tokens
+// (e.g. ".ascii ns \"\\0\"" with an empty ns decodes "\0" to one raw NUL
+// byte), and the merged token's ->ptr/->val become the only text that ever
+// reaches -E output or the assembler re-lex — tok_spelling() prefers ->ptr
+// verbatim once it's set (see below), it never falls back to re-encoding
+// ->str. Any decoded byte equal to the lexer's two loop-termination
+// sentinels (see the `while (*p && *p != '"' && *p != '\n')` string scan)
+// MUST come back out escaped, or the string looks unterminated the moment
+// this text is re-lexed: a raw NUL reads as "past end of buffer" and a raw
+// newline reads as "unterminated line". `"` and `\` still need their usual
+// escaping to stay inside the quotes as literal content.
+static char *build_quoted_spelling(const char *bytes, int len, int *out_len) {
+    char *sp = arena_alloc((size_t)len * 4 + 3);
+    int sn = 0;
+    sp[sn++] = '"';
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)bytes[i];
+        if (c == '"' || c == '\\') {
+            sp[sn++] = '\\';
+            sp[sn++] = (char)c;
+        } else if (c == '\0') {
+            sp[sn++] = '\\';
+            sp[sn++] = '0';
+        } else if (c == '\n') {
+            sp[sn++] = '\\';
+            sp[sn++] = 'n';
+        } else {
+            sp[sn++] = (char)c;
+        }
+    }
+    sp[sn++] = '"';
+    *out_len = sn;
+    return sp;
+}
 static Token *concat_strings(Token *tok) {
     Token head = {};
     Token *tail = &head;
@@ -2143,15 +2256,8 @@ static Token *concat_strings(Token *tok) {
             n->str = str_intern(merged, mlen);
             n->len = mlen;
             n->string_literal_prefix = pfx;
-            int sp_cap = mlen * 2 + 3;
-            char *sp = arena_alloc(sp_cap);
-            int sn = 0;
-            sp[sn++] = '"';
-            for (int i = 0; i < mlen; i++) {
-                if (merged[i] == '"' || merged[i] == '\\') sp[sn++] = '\\';
-                sp[sn++] = merged[i];
-            }
-            sp[sn++] = '"';
+            int sn;
+            char *sp = build_quoted_spelling(merged, mlen, &sn);
             n->ptr = sp;
             n->val = sn;
             tail = tail->next = n;
@@ -2168,16 +2274,8 @@ static Token *concat_strings(Token *tok) {
             tail->str = str_intern(merged, len1 + len2);
             tail->len = len1 + len2;
             if (!tail->string_literal_prefix) tail->string_literal_prefix = t->string_literal_prefix;
-            // Rebuild quoted spelling
-            int sp_cap = (len1 + len2) * 2 + 3;
-            char *sp = arena_alloc(sp_cap);
-            int sn = 0;
-            sp[sn++] = '"';
-            for (int i = 0; i < len1 + len2; i++) {
-                if (merged[i] == '"' || merged[i] == '\\') sp[sn++] = '\\';
-                sp[sn++] = merged[i];
-            }
-            sp[sn++] = '"';
+            int sn;
+            char *sp = build_quoted_spelling(merged, len1 + len2, &sn);
             tail->ptr = sp;
             tail->val = sn;
             t = t->next;

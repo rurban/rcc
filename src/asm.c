@@ -4431,21 +4431,36 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
     trim_end(p);
     if (!*p) return;
 
+    // Strip every leading "label:" prefix before checking whether the
+    // remainder is a macro invocation: GAS allows a label immediately
+    // followed by another statement on the same logical line, including
+    // one that invokes a macro — e.g. nospec-branch.h's
+    // __FILL_RETURN_SLOT: "771: ANNOTATE type=7; call 772f; ...". The old
+    // "a label is never a macro invocation, done" check treated the
+    // *entire* "771: ANNOTATE type=7" as an inert label line and silently
+    // dropped the ANNOTATE invocation instead of expanding it. Loop (not
+    // just once) for the same reason the main per-line assembler loop
+    // does: nested macro expansion can produce back-to-back labels with
+    // nothing between them.
     char first[64];
-    const char *s = p;
-    size_t fi = 0;
-    while (*s && !isspace((unsigned char)*s) && fi + 1 < sizeof(first)) first[fi++] = *s++;
-    first[fi] = '\0';
-    // A label ("name:") is never a macro invocation.
-    bool is_label = fi > 0 && first[fi - 1] == ':';
+    const char *s;
+    for (;;) {
+        s = p;
+        size_t fi = 0;
+        while (*s && !isspace((unsigned char)*s) && fi + 1 < sizeof(first)) first[fi++] = *s++;
+        first[fi] = '\0';
+        if (!(fi > 0 && first[fi - 1] == ':')) break;
+        dynstr_append(out, first);
+        p = skip_ws((char *)s);
+        if (!*p) return;
+    }
 
     int midx = -1;
-    if (!is_label)
-        for (int i = 0; i < as->nmacros; i++)
-            if (!strcmp(as->macros[i].name, first)) {
-                midx = i;
-                break;
-            }
+    for (int i = 0; i < as->nmacros; i++)
+        if (!strcmp(as->macros[i].name, first)) {
+            midx = i;
+            break;
+        }
 
     if (midx < 0) {
         dynstr_append(out, p);
@@ -4909,30 +4924,68 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             continue;
         }
 
-        // A label's colon ends the line's very first token — no whitespace
-        // before it — whether or not anything (whitespace, a comment, or
-        // straight into another statement like "1:jmp foo") follows on the
-        // same physical line. String-literal concatenation in kernel
-        // headers routinely glues "1: " onto a macro that starts mid-
-        // statement (e.g. ALTERNATIVE's OLDINSTR expands to "# ALT:
-        // oldinstr\n...", so "1: " + that becomes one physical line "1: #
-        // ALT: oldinstr"), so the old colon[1]-must-be-whitespace/EOL check
-        // missed both the label itself and left "# ALT: oldinstr" to fall
-        // through as if it were an instruction (mnem "#").
-        char *colon = strchr(p, ':');
-        bool is_label = false;
-        if (colon && colon > p) {
-            is_label = true;
-            for (char *c = p; c < colon; c++) {
-                if (isspace((unsigned char)*c) || *c == '%' || *c == ',' ||
-                    *c == '(' || *c == ')') {
-                    is_label = false;
-                    break;
-                }
+        // Strip every leading label from this statement in a loop: kernel
+        // headers can produce back-to-back label definitions with nothing
+        // between them (e.g. alternative.h's nested
+        // __ALTERNATIVE(__ALTERNATIVE(...), ...) reconstructs as
+        // "740 : 740 : ..." — two distinct label defs, not one), so a
+        // single label-then-fall-through-to-instruction pass mis-parses
+        // the second label's name as an instruction mnemonic.
+        //
+        // GAS itself tolerates whitespace between an identifier and its
+        // colon (real `as` accepts "740 :" same as "740:") — and rcc's own
+        // preprocessor reconstruction of macro-expanded text can introduce
+        // exactly that whitespace even when the original source had none.
+        // Each iteration finds the first token (stopping at whitespace,
+        // ':', or a character that can't be part of a bare label name),
+        // skips whitespace, and checks whether ':' immediately follows.
+        //
+        // This still rejects "straight into another statement" content
+        // like a comment glued onto a prior label — see the historical
+        // "1: # ALT: oldinstr" case below — because the token scan and
+        // the whitespace-skip both stop at the *first* delimiter: if that
+        // first token isn't immediately followed by ':' (whitespace or
+        // not), it's not a label and the loop stops.
+        //
+        // (String-literal concatenation in kernel headers routinely glues
+        // "1: " onto a macro that starts mid-statement — e.g.
+        // ALTERNATIVE's OLDINSTR expands to "# ALT: oldinstr\n...", so
+        // "1: " + that becomes one physical line "1: # ALT: oldinstr" —
+        // so the old colon[1]-must-be-whitespace/EOL check missed both
+        // the label itself and left "# ALT: oldinstr" to fall through as
+        // if it were an instruction (mnem "#").)
+        bool end_of_stmt = false;
+        for (;;) {
+            char *tok_end = p;
+            while (*tok_end && !isspace((unsigned char)*tok_end) && *tok_end != ':' &&
+                   *tok_end != '%' && *tok_end != ',' && *tok_end != '(' && *tok_end != ')')
+                tok_end++;
+            char *after_tok = skip_ws(tok_end);
+            if (!(tok_end > p && *after_tok == ':'))
+                break;
+            *after_tok = 0;
+            char *lbl = p;
+            int idx = objfile_find_sym(obj, lbl);
+            bool is_global = (idx >= 0 && obj->syms[idx].bind != SB_LOCAL);
+            bool is_weak = (idx >= 0 && obj->syms[idx].bind == SB_WEAK);
+            bool is_func = (idx >= 0 && obj->syms[idx].type == ST_FUNC);
+            define_label(&as, lbl, is_global, is_weak, is_func);
+            p = skip_ws(after_tok + 1);
+            if (!*p || *p == '#' || *p == ';' || (p[0] == '/' && p[1] == '/')) {
+                end_of_stmt = true;
+                break;
             }
         }
+        if (end_of_stmt) {
+            line = nl ? nl + 1 : line + strlen(line);
+            continue;
+        }
 
-        if (!is_label && *p == '.') {
+        // "label: .directive ..." (e.g. objtool annotation macros:
+        // `912: .pushsection .discard..., ...`) — the remainder after
+        // however many labels were stripped above is itself a directive,
+        // not an instruction.
+        if (*p == '.') {
             char *dir = p + 1;
             char *sp = dir;
             while (*sp && !isspace((unsigned char)*sp)) sp++;
@@ -4942,37 +4995,6 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             handle_directive(&as, dir, args);
             line = nl ? nl + 1 : line + strlen(line);
             continue;
-        }
-
-        if (is_label) {
-            *colon = 0;
-            char *lbl = p;
-            int idx = objfile_find_sym(obj, lbl);
-            bool is_global = (idx >= 0 && obj->syms[idx].bind != SB_LOCAL);
-            bool is_weak = (idx >= 0 && obj->syms[idx].bind == SB_WEAK);
-            bool is_func = (idx >= 0 && obj->syms[idx].type == ST_FUNC);
-            define_label(&as, lbl, is_global, is_weak, is_func);
-            p = skip_ws(colon + 1);
-            if (!*p || *p == '#' || *p == ';' || (p[0] == '/' && p[1] == '/')) {
-                line = nl ? nl + 1 : line + strlen(line);
-                continue;
-            }
-            // "label: .directive ..." on one physical line (e.g. objtool
-            // annotation macros: `912: .pushsection .discard..., ...`) —
-            // the remainder after the label is itself a directive, not an
-            // instruction; route it the same way the top-of-loop check
-            // would have if the label prefix weren't there.
-            if (*p == '.') {
-                char *dir = p + 1;
-                char *sp = dir;
-                while (*sp && !isspace((unsigned char)*sp)) sp++;
-                char *args = *sp ? sp + 1 : sp;
-                *sp = 0;
-                for (char *d = dir; *d; d++) *d = tolower((unsigned char)*d);
-                handle_directive(&as, dir, args);
-                line = nl ? nl + 1 : line + strlen(line);
-                continue;
-            }
         }
 
         // Instructions are allowed in any section, not just .text: the
