@@ -1719,6 +1719,18 @@ static int64_t eval_primary_tok(Token **pp) {
         *pp = t;
         return val;
     }
+    if (ptok(t, "~")) {
+        t = t->next;
+        int64_t val = ~eval_primary_tok(&t);
+        *pp = t;
+        return val;
+    }
+    if (ptok(t, "+")) {
+        t = t->next;
+        int64_t val = eval_primary_tok(&t);
+        *pp = t;
+        return val;
+    }
     *pp = t->next;
     return 0;
 }
