@@ -880,11 +880,16 @@ static void detect_platform(const char *rcc_path) {
 #endif
 }
 
-/* Unit tests such as test_peep spawn many compiler subprocesses; under
- * cross runners (wine, qemu) the overhead easily exceeds the normal 5 s
- * budget, so give them a longer leash. */
+/* Unit tests such as test_peep spawn ~24 nested compiler subprocesses
+ * (12 patterns x 2 optimization levels). That workload is tight even on
+ * bare native hardware under CI/parallel load, not just cross-runners
+ * (wine, qemu): a platform-keyed 5 s budget flaked intermittently on a
+ * native macOS CI runner with no emulation involved at all. Give every
+ * platform the same generous leash rather than trying to enumerate every
+ * environment that can momentarily starve a 24-subprocess test.
+ */
 static int unit_run_timeout(void) {
-    return (has_runner || is_wine || streq(platform, "arm64_cross")) ? 60 : 5;
+    return 60;
 }
 
 /* Compilation timeout for torture tests: base 30 s, scaled by the
