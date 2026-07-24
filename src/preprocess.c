@@ -885,6 +885,14 @@ struct Frame {
     bool stamp;
     char *exp_file;
     int exp_line;
+    // True when the object-like macro invocation this frame expands had no
+    // source whitespace before the token that follows it in the enclosing
+    // scan (see expand_token()'s object-like branch). frame_pull() stamps
+    // this onto the copy of the frame's *last* body token so a later
+    // #-stringize sees the expansion's result as tight against whatever
+    // comes next, matching the adjacency of the pre-expansion macro name -
+    // not the body token's own unrelated position in the #define line.
+    bool tight_after;
 };
 typedef struct TNode TNode;
 struct TNode {
@@ -926,6 +934,7 @@ static void push_expansion(Token *list, Macro *mac, Token *site) {
         frames->exp_line = site->lineno;
     }
 }
+static bool str_needs_space(Token *a, Token *b);
 static Token *frame_pull(void) {
     while (frames != frame_floor) {
         Frame *top = frames;
@@ -942,6 +951,19 @@ static Token *frame_pull(void) {
             c->filename = top->exp_file;
             c->lineno = top->exp_line;
         }
+        // Preserve "no source whitespace before the next sibling token"
+        // across this pull: if `t` is itself about to be macro-expanded
+        // (see expand_token()'s object-like branch), the expansion's own
+        // buffer-pointer adjacency to whatever follows is lost - a plain
+        // token comparison can no longer see it, so stash the fact here
+        // while `t->next` still points at the real sibling.
+        if (t->next && !str_needs_space(t, t->next))
+            c->no_space_after = true;
+        // If this is the frame's last body token and the frame itself was
+        // pushed while its invocation was tight against what follows it,
+        // that tightness carries onto this last token's own copy too.
+        if (top->tight_after && (!t->next || t->next->kind == TK_EOF))
+            c->no_space_after = true;
         return c;
     }
     return NULL;
@@ -1341,6 +1363,15 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         }
         Token *c = copy_token(b);
         c->next = NULL;
+        // A plain (non-parameter, non-#/## ) body token directly adjacent
+        // to the *next* body token (e.g. "/" before "system" in
+        // "TRACE_INCLUDE_PATH/system.h") needs this recorded explicitly:
+        // if that next token is itself a substituted parameter, its
+        // replacement's spelling lives in a different buffer, so the
+        // ordinary pointer-adjacency check in str_needs_space() can never
+        // see `c` as touching it.
+        c->no_space_after = b->next && b->next != end &&
+            b->next->kind != TK_EOF && !str_needs_space(b, b->next);
         if (rtail) rtail->next = c;
         else
             rhead = c;
@@ -1424,6 +1455,15 @@ static void expand_token(Token *t) {
         }
         m->disabled = true;
         push_expansion(m->body, m, t);
+        // The macro name `t` may have been immediately followed (no source
+        // whitespace) by the next token in the enclosing scan, e.g.
+        // "TRACE_INCLUDE_PATH/system.h" in the kernel's define_trace.h.
+        // Stringizing the expansion result must see that same tightness
+        // between the *replacement* and that following token, not fall
+        // back to "needs space" just because the replacement's tokens live
+        // in the #define line's own buffer (see frame_pull()).
+        if (t->no_space_after || (t->next && t->next->kind != TK_EOF && !str_needs_space(t, t->next)))
+            frames->tight_after = true;
         return;
     }
     Token *lp = xp_next();
@@ -1927,7 +1967,16 @@ static Token *collect_directive_tokens(char *p, int *pln, Token **name_out) {
     for (;;) {
         Token *t = lex_one(&p, pln);
         if (!t) break;
-        if (t->kind == TK_NL || t->kind == TK_CNL) {
+        if (t->kind == TK_CNL) {
+            // Newline embedded in a still-open /* */ comment: per the
+            // standard's phase ordering, comments (including any newlines
+            // inside them) are removed before directive lines are
+            // delimited, so this must NOT end the directive - only a real
+            // TK_NL does. Still advance the line counter for diagnostics.
+            advance_line();
+            continue;
+        }
+        if (t->kind == TK_NL) {
             advance_line();
             break;
         }

@@ -1103,6 +1103,16 @@ static bool is_typename(Token *tok) {
     tok = skip_attributes(tok);
     if (kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE))
         return true;
+    // A typedef name is an ordinary identifier (C11 6.2.3): a local
+    // variable or parameter of the same name declared in an enclosing
+    // scope shadows it, same as it would shadow another variable. Without
+    // this check, e.g. `typedef int (*initxattrs)(...); ... int f(const
+    // initxattrs initxattrs) { if (initxattrs) ... }` misparses the local
+    // use as a type name (linux/security/security.c) instead of the
+    // shadowing parameter.
+    LVar *shadow = find_var(tok);
+    if (shadow && shadow->is_local)
+        return false;
     return find_typedef(tok) != NULL;
 }
 
@@ -6801,6 +6811,59 @@ static Node *primary(Token **rest, Token *tok) {
                 else if (strcmp(attr_name, "unsequenced") == 0 && v->is_function && v->is_unsequenced)
                     result = 1;
             }
+            node = new_num(result, tok);
+            *rest = tok;
+            return node;
+        }
+        // __has_attribute(attr_name) — GNU/Clang extension, also usable
+        // (unlike __has_include/__has_c_attribute) as a genuine
+        // compile-time constant expression in ordinary code, not just
+        // inside #if (e.g. linux/kernel/trace/trace.c: "if (... &&
+        // __has_attribute(btf_type_tag)) return;"). Reports whether this
+        // compiler recognizes AND acts upon the named __attribute__,
+        // mirroring the set __attribute__((...)) parsing actually
+        // dispatches on above — every other syntactically-valid attribute
+        // name is silently accepted-but-ignored, so reporting 1 for those
+        // too would misrepresent them as semantically implemented.
+        if (equalc(tok, "__has_attribute")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            char *attr_name = NULL;
+            if (tok->kind == TK_IDENT)
+                attr_name = tok->name;
+            tok = tok->next;
+            tok = skip(tok, ")");
+            static const char *const known_attrs[] = {
+                "alias",
+                "aligned",
+                "cleanup",
+                "const",
+                "constructor",
+                "deprecated",
+                "destructor",
+                "diagnose_if",
+                "error",
+                "gcc_struct",
+                "gnu_inline",
+                "mode",
+                "ms_struct",
+                "noreturn",
+                "packed",
+                "pure",
+                "reproducible",
+                "unsequenced",
+                "vector_size",
+                "warning",
+                "weak",
+                NULL,
+            };
+            int result = 0;
+            if (attr_name)
+                for (int i = 0; known_attrs[i]; i++)
+                    if (!strcmp(attr_name, known_attrs[i])) {
+                        result = 1;
+                        break;
+                    }
             node = new_num(result, tok);
             *rest = tok;
             return node;
