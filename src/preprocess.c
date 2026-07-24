@@ -1314,11 +1314,26 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 // from a macro parameter). Recover that from the
                 // pre-substitution body tokens (b, b->next), same trick
                 // already used above for explicit "##" pastes.
+                // The spliced-in argument tokens may already carry a
+                // no_space_after flag set by a *different*, unrelated
+                // adjacency check from an earlier expansion layer (e.g.
+                // SYM_FUNC_END(name) substitutes name -> "write_ibpb" and
+                // correctly marks it "no space before the following comma"
+                // in SYM_END(name, SYM_T_FUNC); that same "write_ibpb"
+                // token is then reused, via copy_token(), as SYM_END's own
+                // *own* `name` argument in ".type name sym_type" - where a
+                // real space follows. Left alone, the stale flag from the
+                // first expansion survives into the second and makes
+                // pp_tokens_to_text() glue "write_ibpb" straight onto
+                // "sym_type"/"STT_FUNC" with no separator at all.
+                // Recompute it fresh from *this* body position every time,
+                // instead of only ever setting it true and never clearing
+                // a leftover true from the argument's own prior life.
                 Token *before = rtail;
                 splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
-                if (rtail && rtail != before && b->next && b->next != end &&
-                    b->next->kind != TK_EOF && !str_needs_space(b, b->next))
-                    rtail->no_space_after = true;
+                if (rtail && rtail != before)
+                    rtail->no_space_after = b->next && b->next != end &&
+                        b->next->kind != TK_EOF && !str_needs_space(b, b->next);
                 continue;
             }
             append_one(&rhead, &rtail, b);

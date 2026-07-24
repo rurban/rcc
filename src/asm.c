@@ -97,6 +97,12 @@ typedef struct {
         int64_t value;
     } vars[64];
     int nvars;
+    // GAS's "\@" — a decimal counter incremented on *every* .macro
+    // invocation (shared across all macros, matching real GAS), used to
+    // give a macro body's own local labels a name unique to *this*
+    // invocation (e.g. objtool.h's ANNOTATE macro: ".Lhere_\@:"). See
+    // asm_dispatch_substituted()'s param_set(&args, "@", ...).
+    int macro_invocation_seq;
 } AsmState;
 
 static void asm_error(AsmState *as, const char *msg) {
@@ -1081,13 +1087,32 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         else
             as->obj->syms[idx].bind = SB_WEAK;
     } else if (!strcmp(dir, "type")) {
-        // .type sym, @function / .type sym, %function
-        char *sym = strtok(args, ",");
-        if (!sym) return;
-        char *kind = strtok(NULL, "");
-        if (!kind) return;
+        // Real GAS's ".type sym, TYPE_DESC" accepts several spellings for
+        // TYPE_DESC — "@function"/"%function" (the common hand-written
+        // form) and also the bare "STT_FUNC" token (what the kernel's own
+        // SYM_END()/SYM_T_FUNC macros always emit: "#define SYM_T_FUNC
+        // STT_FUNC", with no "@"/leading punctuation at all). Matching
+        // only "function" as a substring missed "STT_FUNC" outright (no
+        // shared substring), leaving every SYM_FUNC_START/SYM_FUNC_END'd
+        // function type-less (ST_NOTYPE) instead of ST_FUNC — objtool's
+        // reachability analysis treats an ST_NOTYPE global as not a real
+        // function entry point, so every instruction inside reads back as
+        // "unreachable" even though the bytes are perfectly correct.
+        // The kernel's own SYM_END() macro emits this with NO comma at
+        // all — ".type name STT_FUNC" (plain whitespace between the two
+        // fields) — which real GAS accepts exactly like the comma form.
+        // strtok(args, ",") alone treated the whole "name STT_FUNC" as
+        // one un-splittable token when no comma was present, so `kind`
+        // came back NULL and the directive was silently a no-op.
+        char *sym = args;
+        char *kind = sym;
+        while (*kind && *kind != ',' && !isspace((unsigned char)*kind)) kind++;
+        if (*kind) *kind++ = '\0';
+        if (!*sym) return;
         kind = skip_ws(kind);
-        bool is_func = strstr(kind, "function") != NULL;
+        if (*kind == ',') kind = skip_ws(kind + 1);
+        if (!*kind) return;
+        bool is_func = strstr(kind, "function") != NULL || strstr(kind, "STT_FUNC") != NULL;
         int idx = objfile_find_sym(as->obj, sym);
         if (idx >= 0 && is_func) as->obj->syms[idx].type = ST_FUNC;
     } else if (!strcmp(dir, "size")) {
@@ -4289,9 +4314,15 @@ static void subst_params_into(const char *line, const ParamMap *map, char *out, 
             p += 2;
             continue;
         }
-        if (p[0] == '\\' && (isalpha((unsigned char)p[1]) || p[1] == '_' || p[1] == '.')) {
+        if (p[0] == '\\' && (isalpha((unsigned char)p[1]) || p[1] == '_' || p[1] == '.' || p[1] == '@')) {
             const char *s = p + 1, *e = s;
-            while (isalnum((unsigned char)*e) || *e == '_' || *e == '.') e++;
+            // "\@" (GAS's per-macro-invocation counter) is a complete
+            // one-character name on its own — never extend it via the
+            // ordinary identifier scan (which would swallow whatever
+            // real text follows, e.g. the ':' in ".Lhere_\@:").
+            if (*e == '@') e++;
+            else
+                while (isalnum((unsigned char)*e) || *e == '_' || *e == '.') e++;
             char name[32];
             size_t nlen = (size_t)(e - s);
             if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
@@ -4863,6 +4894,22 @@ static void asm_dispatch_substituted(AsmState *as, char *p, const ParamMap *map,
     struct AsmMacro *mac = &as->macros[midx];
     ParamMap args = {0};
     args.parent = (ParamMap *)map;
+    // GAS's "\@": increment the shared, file-wide counter once per macro
+    // invocation and bind it in *this* invocation's own scope (not the
+    // caller's), so every "\@" reference inside the body — including
+    // ones reached through a nested .irp/.rept, which inherit it via the
+    // parent chain rather than getting their own tick — resolves to the
+    // same value, but a *different* invocation of the same macro (or
+    // any other macro) gets a different one. Without this, e.g.
+    // objtool.h's ANNOTATE macro's ".Lhere_\@:" label carries the same
+    // literal name at every one of its hundreds of call sites in a real
+    // kernel file, so any reference to it resolves through
+    // lookup_local_sym()'s "most recent occurrence anywhere" fallback to
+    // whichever unrelated, later ANNOTATE happens to run last — not the
+    // occurrence the reference actually meant.
+    char at_buf[16];
+    snprintf(at_buf, sizeof(at_buf), "%d", as->macro_invocation_seq++);
+    param_set(&args, "@", at_buf);
     const char *rest = skip_ws((char *)s);
     int pos = 0;
     bool supplied[8] = {0};
@@ -5605,6 +5652,22 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
         } else if (fx->kind == FIXUP_REL32 && on_forward) {
             // Forward reference: delegate to caller
             on_forward(fx->patch_off, fx->section, fx->label, ctx);
+        } else if (fx->kind == FIXUP_REL32) {
+            // Truly external symbol — never defined anywhere in this
+            // translation unit (e.g. the kernel's "jmp __x86_return_thunk",
+            // RET's rethunk-mitigation expansion; __x86_return_thunk lives
+            // in a completely different .o) — and no forward-reference
+            // callback to delegate to. Same shape CALL's own immediate
+            // external-symbol path already handles (see the "call"
+            // dispatch above): a real PLT32 relocation against an
+            // (initially undefined) symbol, resolved by the linker.
+            // Previously this branch didn't exist, so an unresolvable
+            // jmp/jcc target silently kept its placeholder zero bytes
+            // with *no* relocation recorded either — a direct jump to
+            // nowhere the linker could never fix up.
+            int sidx = ensure_sym(&as, fx->label);
+            objfile_add_reloc(obj, fx->section, fx->patch_off, sidx,
+                              R_X86_64_PLT32, fx->addend - 4);
         }
     }
 
