@@ -82,6 +82,15 @@ RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+# LTO+-O3 miscompiles rcc.exe itself for this target: building c23-
+# complit-4.c's `(static thread_local int[]){1,2}` crashed rcc.exe with a
+# SIGSEGV inside/around cg_emit_emutls_data() (confirmed via wine +
+# addr2line — the crash disappeared with an otherwise-identical -flto-less
+# rebuild, and a debug dump showed the LVar's own fields, e.g. init_size,
+# were correct going in). rcc_mingw.c already opts out of LTO for the same
+# reason (see $(MINGW_O) rule below); apply it to the whole target instead
+# of chasing one GCC/LTO optimization-pass interaction.
+CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
 EXE_EXT = .exe
 SHARED_EXT = .dll
 RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
@@ -96,6 +105,8 @@ RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+# See the native-Windows block above for why LTO is excluded here too.
+CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
 EXE_EXT = .exe
 SHARED_EXT = .dll
 RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
