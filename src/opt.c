@@ -598,6 +598,50 @@ static bool has_break_or_continue(Node *n) {
     return false;
 }
 
+// True if `n` writes to `var` anywhere — a plain assignment, an
+// increment/decrement, or taking its address (which could mutate it
+// indirectly through the resulting pointer). Guards try_unroll(): its
+// subst_lvar() blindly replaces every ND_LVAR read *or write* of the
+// induction variable with a frozen ND_NUM constant, which corrupts any
+// write it hits — turning e.g. a nested `while (--i >= 0)` (a second,
+// unrelated mutation of the *same* variable, common in an unrolled-loop
+// body's own error-unwind path) into `--CONST`, not a valid lvalue, and
+// codegen has no register to give a non-lvalue decrement's target.
+// Real kernel case: block/kyber-iosched.c's kyber_queue_data_alloc(),
+// whose sbitmap_queue_init_node() failure path unwinds already-
+// initialized domains with exactly this `while (--i >= 0) ...` shape
+// inside the (KYBER_NUM_DOMAINS-bounded, otherwise unroll-eligible)
+// `for (i = 0; i < KYBER_NUM_DOMAINS; i++)` loop.
+static bool writes_to_var(Node *n, LVar *var) {
+    for (; n; n = n->next) {
+        switch (n->kind) {
+        case ND_ASSIGN:
+        case ND_PRE_INC:
+        case ND_PRE_DEC:
+        case ND_POST_INC:
+        case ND_POST_DEC:
+        case ND_ADDR:
+            if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var == var)
+                return true;
+            break;
+        default:
+            break;
+        }
+        if (writes_to_var(n->lhs, var)) return true;
+        if (writes_to_var(n->rhs, var)) return true;
+        if (writes_to_var(n->cond, var)) return true;
+        if (writes_to_var(n->then, var)) return true;
+        if (writes_to_var(n->els, var)) return true;
+        if (writes_to_var(n->init, var)) return true;
+        if (writes_to_var(n->inc, var)) return true;
+        for (Node *c = n->body; c; c = c->next)
+            if (writes_to_var(c, var)) return true;
+        for (Node *c = n->args; c; c = c->next)
+            if (writes_to_var(c, var)) return true;
+    }
+    return false;
+}
+
 // Substitute every ND_LVAR reference to `var` with ND_NUM `val`.
 static void subst_lvar(Node *n, LVar *var, long val) {
     if (!n) return;
@@ -673,6 +717,11 @@ static Node *try_unroll(Node *node) {
 
     long start_val = node->init->rhs->val;
     LVar *ivar = node->init->lhs->var;
+
+    // Safety: refuse to unroll if the body writes to the induction
+    // variable itself anywhere other than the loop's own `inc` clause —
+    // subst_lvar() below can't distinguish a read from a write.
+    if (writes_to_var(node->then, ivar)) return NULL;
 
     // tag the init so it isn't freed when node is replaced
     node->init->next = NULL;
