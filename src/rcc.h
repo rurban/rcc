@@ -401,6 +401,17 @@ struct LVar {
     char *diag_warning; // __attribute__((warning("msg")))
     char *diag_error; // __attribute__((error("msg")))
     DiagEntry *diag_entries; // __attribute__((diagnose_if(...)))
+    // Name of the function this global-storage-duration variable was
+    // *declared inside* (a block-scope `static` local — e.g. a compound
+    // literal's or a `static int counter;`'s backing storage), or NULL
+    // for a true file-scope global. See eliminate_unused_static_inline()
+    // in opt.c: a block-scope static that lexically lives inside a
+    // function whose body never gets emitted must not be emitted either
+    // — its initializer's relocations (e.g. a `DEFINE_STATIC_CALL`-style
+    // addressable-marker local pointing at a static-call key) are real
+    // undefined-symbol references otherwise, even though the enclosing
+    // function was correctly recognized as dead.
+    char *decl_fn_name;
 };
 
 void check_type(Node *node);

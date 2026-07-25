@@ -1115,18 +1115,51 @@ void eliminate_unused_static_inline(Program *prog) {
             dce_scan_node(f->body, fns, n, &wl, &wl_len, &wl_cap);
     }
 
-    // Splice out every candidate that never got marked live.
+    // Splice out every candidate that never got marked live, tracking
+    // their names — a block-scope `static` lexically inside one of
+    // these (see LVar.decl_fn_name) must be dropped too, in the pass
+    // below, or its own initializer relocations (e.g. a
+    // DEFINE_STATIC_CALL-style addressable-marker local pointing at a
+    // static-call key) leak into the object file as if the dead
+    // function's body had still been emitted.
+    const char **omitted = malloc(sizeof(char *) * (size_t)n);
+    int n_omitted = 0;
     TLItem **link = &prog->items;
     for (TLItem *item = prog->items; item;) {
         TLItem *next = item->next;
         if (item->kind == TL_FUNC && item->fn->body && item->fn->is_static &&
             !item->fn->dce_live) {
+            omitted[n_omitted++] = item->fn->name;
             *link = next;
         } else {
             link = &item->next;
         }
         item = next;
     }
+
+    // Second pass: drop any global whose decl_fn_name names an omitted
+    // function. O(globals * n_omitted) — n_omitted is bounded by this
+    // TU's own static-function count, never large enough to matter.
+    if (n_omitted > 0) {
+        LVar **glink = &prog->globals;
+        for (LVar *g = prog->globals; g;) {
+            LVar *gnext = g->next;
+            bool drop = false;
+            if (g->decl_fn_name) {
+                for (int k = 0; k < n_omitted; k++)
+                    if (!strcmp(g->decl_fn_name, omitted[k])) {
+                        drop = true;
+                        break;
+                    }
+            }
+            if (drop)
+                *glink = gnext;
+            else
+                glink = &g->next;
+            g = gnext;
+        }
+    }
+    free(omitted);
 
     free(fns);
     free(wl);

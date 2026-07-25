@@ -471,6 +471,11 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
         var->next = locals;
         locals = var;
     } else {
+        // A block-scope `static` (is_local=false, but declared while
+        // parser_current_fn is set) needs to be dropped alongside its
+        // enclosing function if that function is ever recognized as
+        // dead code — see decl_fn_name's declaration in rcc.h.
+        var->decl_fn_name = parser_current_fn;
         var->next = globals;
         globals = var;
         global_htab_add(var);
@@ -5519,6 +5524,7 @@ static Node *declaration(Token **rest, Token *tok) {
             gvar->name = asm_label;
             gvar->ty = ty;
             gvar->is_local = false;
+            gvar->decl_fn_name = parser_current_fn;
             gvar->is_static = true;
             gvar->next = globals;
             globals = gvar;
@@ -10577,6 +10583,7 @@ Program *parse(Token *tok) {
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;
+                    parser_current_fn = NULL;
                     break;
                 }
 
