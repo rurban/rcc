@@ -1090,6 +1090,50 @@ static bool sec_is_executable(AsmState *as, int section) {
     }
     return false;
 }
+// Parse a GAS ".octa" 128-bit integer literal (almost always hex, e.g. a
+// SIMD constant table's "0xA54FF53A3C6EF372BB67AE856A09E667") into its
+// low/high 64-bit halves. Decimal literals are accepted too but folded
+// into just the low half (sign-extended into hi) — real kernel .octa
+// operands are exclusively hex constants that don't fit in 64 bits, so a
+// full decimal bignum parser isn't needed.
+static void parse_u128_hex(const char *s, uint64_t *lo, uint64_t *hi) {
+    s = skip_ws((char *)s);
+    bool neg = false;
+    if (*s == '-') {
+        neg = true;
+        s++;
+    } else if (*s == '+')
+        s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+        size_t len = strlen(s);
+        while (len > 0 && s[len - 1] && isspace((unsigned char)s[len - 1])) len--;
+        size_t lo_start = len > 16 ? len - 16 : 0;
+        char lobuf[17] = {0}, hibuf[17] = {0};
+        memcpy(lobuf, s + lo_start, len - lo_start);
+        lobuf[len - lo_start] = '\0';
+        *lo = strtoull(lobuf, NULL, 16);
+        if (lo_start > 0) {
+            size_t hi_len = lo_start > 16 ? 16 : lo_start;
+            memcpy(hibuf, s + (lo_start - hi_len), hi_len);
+            hibuf[hi_len] = '\0';
+            *hi = strtoull(hibuf, NULL, 16);
+        } else {
+            *hi = 0;
+        }
+    } else {
+        int64_t v = strtoll(s, NULL, 0);
+        *lo = (uint64_t)v;
+        *hi = neg && v != 0 ? ~(uint64_t)0 : 0;
+        return;
+    }
+    if (neg) {
+        // Two's-complement negate the full 128-bit value: ~x + 1
+        *lo = ~*lo;
+        *hi = ~*hi;
+        if (++*lo == 0) ++*hi;
+    }
+}
 static void handle_directive(AsmState *as, const char *dir, char *args) {
     args = skip_ws(args);
     trim_end(args);
@@ -1293,8 +1337,15 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                !strcmp(dir, "quad") || !strcmp(dir, "octa") ||
                !strcmp(dir, "8byte")) {
         // Data emission
+        // .octa is a 128-bit (16-byte) integer — GAS's double-width
+        // .quad, used throughout SIMD crypto code for 128-bit constant
+        // table entries (e.g. lib/crypto/x86/*.S's AVX round constants).
+        // It was previously lumped in with .quad/.8byte's sz=8, silently
+        // truncating every .octa value's high 64 bits and halving the
+        // section's actual size vs. its declared entsize.
         int sz = (!strcmp(dir, "byte")) ? 1 : (!strcmp(dir, "2byte") || !strcmp(dir, "hword") || !strcmp(dir, "word") || !strcmp(dir, "short")) ? 2
             : (!strcmp(dir, "4byte") || !strcmp(dir, "long"))                                                                                   ? 4
+            : (!strcmp(dir, "octa"))                                                                                                            ? 16
                                                                                                                                                 : 8;
 
         SecBuf *buf = cur_sec_buf(as);
@@ -1438,7 +1489,17 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
 
             // Check if it's a symbol reference (for relocation)
             bool is_sym = val[0] == '.' || isalpha((unsigned char)val[0]) || val[0] == '_';
-            if (is_sym && (sz == 4 || sz == 8)) {
+            if (is_sym && sz == 16) {
+                // A symbolic (non-numeric) .octa operand has no real
+                // kernel usage (every .octa is a plain 128-bit hex
+                // constant) and there's no 128-bit relocation type to
+                // reference a symbol's address with anyway — emit 16
+                // zero bytes so the section's size/offsets stay in sync
+                // with its declared entsize instead of silently
+                // shrinking by 16 bytes.
+                secbuf_emit64le(buf, 0);
+                secbuf_emit64le(buf, 0);
+            } else if (is_sym && (sz == 4 || sz == 8)) {
                 // Emit an absolute 32/64-bit relocation. A bare symbol name
                 // reaching here (not "SYM - .", not a label-difference) is
                 // GAS's plain-absolute-reference case — e.g. the kernel's
@@ -1477,6 +1538,14 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 size_t off = (sz == 8) ? secbuf_emit64le(buf, (uint64_t)addend)
                                        : secbuf_emit32le(buf, (uint32_t)addend);
                 objfile_add_reloc(as->obj, as->cur_sec, off, sidx, reltype, addend);
+            } else if (!is_sym && sz == 16) {
+                // 128-bit literal: emit low half then high half (x86/ARM64
+                // are both little-endian, so the numerically-low 64 bits
+                // come first in memory — matches GAS's own .octa layout).
+                uint64_t lo = 0, hi = 0;
+                parse_u128_hex(val, &lo, &hi);
+                secbuf_emit64le(buf, lo);
+                secbuf_emit64le(buf, hi);
             } else if (!is_sym) {
                 int64_t v = strtoll(val, NULL, 0);
                 switch (sz) {
@@ -4832,8 +4901,17 @@ static bool try_eval_full_expr(AsmState *as, const ParamMap *map, const char *te
 }
 
 static bool is_data_emit_dir(const char *word) {
+    // "octa" deliberately excluded: its operands are always plain 128-bit
+    // hex literals (SIMD constant tables), never \param-based arithmetic —
+    // unlike .byte/.long/.quad's documented `\type + (.Lregnr << 8)` use.
+    // try_eval_full_expr()'s assembler-time evaluator is int64_t-only, so
+    // "succeeding" on a value that doesn't fit 64 bits silently overflows
+    // (e.g. strtoll clamping to LLONG_MAX) and rebuilds the line with that
+    // wrong 64-bit decimal value in place of the real 128-bit literal —
+    // let .octa's original text reach handle_directive's own 128-bit-aware
+    // parser (parse_u128_hex) untouched instead.
     static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word", "short",
-                                 "long", "quad", "octa", "8byte"};
+                                 "long", "quad", "8byte"};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
         if (!strcmp(word, dirs[i])) return true;
     return false;
