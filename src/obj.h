@@ -147,6 +147,16 @@ struct ObjReloc {
 // plus deferred-shift for FIXUP_SKIP_MAXDIFF, so alignment computed
 // against a stale, pre-shift offset would insert the wrong pad amount —
 // deferred and resolved in the same chronological pass as skip-maxdiff.
+#define FIXUP_REL32_DEFERRED 9 // same-section FIXUP_REL32 whose target label
+// was already found (disambiguated) at define_label() time, but whose
+// *byte patch* must wait until after every FIXUP_ALIGN/FIXUP_SKIP_MAXDIFF
+// in the file has resolved: any of those still-pending .balign/.skip
+// insertions between this call/jmp site and its target shifts one but not
+// the other, changing their relative distance — a patch baked in eagerly
+// (this assembler's usual behavior for a same-section branch) can never
+// see that later shift. `size` holds the as->locals[] index of the
+// disambiguated target occurrence (itself correctly shifted in step with
+// every insertion, same as any other label), not a byte width.
 
 // ---------------------------------------------------------------------------
 // Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by

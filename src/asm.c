@@ -189,7 +189,7 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         // all (and FIXUP_SKIP_MAXDIFF's `label` isn't even a branch target
         // to patch — it's just the first operand of a length expression).
         if (fx->kind == FIXUP_LABELDIFF || fx->kind == FIXUP_SKIP_MAXDIFF ||
-            fx->kind == FIXUP_ALIGN) continue;
+            fx->kind == FIXUP_ALIGN || fx->kind == FIXUP_REL32_DEFERRED) continue;
         if (strcmp(fx->label, name) != 0) continue;
         if (fx->kind == FIXUP_PCREL_DATA) {
             // Forward reference in a "(label) - ." data directive (e.g. the
@@ -256,7 +256,29 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
             break;
         }
         case FIXUP_REL32: {
-            // 32-bit PC-relative: target - (patch_off + 4)
+            // Defer the actual byte patch (see FIXUP_REL32_DEFERRED's
+            // comment in obj.h): the target label is disambiguated
+            // correctly right now (this is the exact occurrence being
+            // defined), but a still-pending FIXUP_ALIGN/FIXUP_SKIP_MAXDIFF
+            // elsewhere in the file may yet insert bytes between this
+            // call/jmp site and its target — changing their relative
+            // distance after this point would already-baked patch never
+            // sees. Point at this occurrence's own locals[] entry (index
+            // as->nlocals-1, just added above) so skip_insert_shift()'s
+            // ordinary label-shifting keeps it correct through every
+            // later insertion; the byte patch itself happens once, in the
+            // FIXUP_REL32_DEFERRED pass after all of those have resolved.
+            if (as->nlocals > 0 && as->locals[as->nlocals - 1].offset == (size_t)off &&
+                as->locals[as->nlocals - 1].section == sec) {
+                fx->kind = FIXUP_REL32_DEFERRED;
+                fx->size = as->nlocals - 1;
+                continue; // keep this fixup in the array — do not remove it below
+            }
+            // 2047-label cap hit (see define_label's own comment above):
+            // no locals[] entry exists for this occurrence to point at.
+            // Patch immediately — no worse than this function's prior
+            // unconditional behavior, just short of the fix for this rare
+            // case.
             int32_t delta = (int32_t)(target - (pc + 4));
             secbuf_patch32le(buf, fx->patch_off, (uint32_t)delta);
             break;
@@ -994,6 +1016,26 @@ static int parse_named_section(AsmState *as, const char *args) {
     return objfile_find_or_add_section(as->obj, name, flags, entsize);
 }
 
+// Is `section` executable (SHF_EXECINSTR)? SEC_TEXT and every extra
+// section registered with the "x" flag (e.g. the kernel's own
+// ".entry.text, \"ax\"") qualify; SEC_DATA/SEC_RODATA/SEC_BSS/etc. don't.
+// Needed so `.balign`/`.align`/`.p2align` with no explicit fill byte can
+// default correctly: real GAS fills alignment gaps in an executable
+// section with NOP-equivalent bytes (0x90, or optimized multi-byte NOPs),
+// never plain zero — zero bytes there decode as arbitrary, often
+// multi-byte, "real" instructions (e.g. x86 "00 00" is a valid 2-byte
+// "add %al,(%rax)"), desyncing objtool's (or any other) sequential
+// instruction-boundary scan through the gap. A data section's alignment
+// padding, which nothing ever executes, is correctly left as zero.
+static bool sec_is_executable(AsmState *as, int section) {
+    if (section == SEC_TEXT) return true;
+    if (section >= SEC_NUM) {
+        int idx = section - SEC_NUM;
+        if (idx >= 0 && idx < as->obj->extra_sec_count)
+            return (as->obj->extra_secs[idx].sh_flags & SHF_EXECINSTR) != 0;
+    }
+    return false;
+}
 static void handle_directive(AsmState *as, const char *dir, char *args) {
     args = skip_ws(args);
     trim_end(args);
@@ -1131,7 +1173,11 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         strncpy(alignbuf, args, sizeof(alignbuf) - 1);
         alignbuf[sizeof(alignbuf) - 1] = '\0';
         char *comma = strchr(alignbuf, ',');
-        int fill = 0;
+        // Real GAS defaults an omitted fill byte to NOP-equivalent bytes
+        // in an executable section (never plain zero there — see
+        // sec_is_executable()'s comment) and to zero everywhere else;
+        // an explicit fill argument always wins regardless of section.
+        int fill = sec_is_executable(as, as->cur_sec) ? 0x90 : 0;
         if (comma) {
             *comma = '\0';
             char *fillstr = skip_ws(comma + 1);
@@ -5664,10 +5710,32 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
         }
     }
 
+    // Resolve every FIXUP_REL32_DEFERRED (define_label()'s deferred
+    // same-section branch/call patches) now that every FIXUP_ALIGN/
+    // FIXUP_SKIP_MAXDIFF insertion above has finished shifting both
+    // fx->patch_off (the call/jmp site) and the target's own locals[]
+    // entry (the label it points at) — whichever of the two, if either,
+    // sat after some insertion's boundary. Must run as a fully separate
+    // pass, strictly after the align/skip loop above: resolving a
+    // deferred patch interleaved with still-pending insertions would see
+    // only some of the shifts and reproduce the same staleness this
+    // exists to avoid.
+    for (int i = 0; i < as.nfixups; i++) {
+        struct Fixup *fx = &as.fixups[i];
+        if (fx->kind != FIXUP_REL32_DEFERRED) continue;
+        if (fx->size < 0 || fx->size >= as.nlocals) continue;
+        struct LocalSym *tls = &as.locals[fx->size];
+        if (tls->section != fx->section) continue;
+        SecBuf *sb = objfile_section_buf(obj, fx->section);
+        if (!sb) continue;
+        int32_t delta = (int32_t)((int64_t)tls->offset - ((int64_t)fx->patch_off + 4));
+        memcpy(sb->data + fx->patch_off, &delta, 4);
+    }
+
     // Resolve forward fixups against existing symbols
     for (int i = 0; i < as.nfixups; i++) {
         struct Fixup *fx = &as.fixups[i];
-        if (fx->kind == FIXUP_SKIP_MAXDIFF || fx->kind == FIXUP_ALIGN) continue;
+        if (fx->kind == FIXUP_SKIP_MAXDIFF || fx->kind == FIXUP_ALIGN || fx->kind == FIXUP_REL32_DEFERRED) continue;
         if (fx->kind == FIXUP_LABELDIFF) {
             int sec_a = 0, sec_b = 0;
             int64_t off_a = lookup_local_near(&as, fx->label, (int)fx->addend, &sec_a);
