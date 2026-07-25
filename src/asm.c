@@ -26,6 +26,14 @@
 typedef struct {
     ObjFile *obj;
     int cur_sec; // current section: SEC_TEXT / SEC_DATA / SEC_BSS / SEC_RODATA / ...
+    // GAS's ".previous": swaps cur_sec with whichever section was active
+    // immediately before the *last* section-switching directive (.text/
+    // .data/.bss/.rodata/.section/.pushsection/.popsection/.previous
+    // itself) — a single-slot swap, not a stack (that's .pushsection/
+    // .popsection's job). Updated at the end of handle_directive()
+    // whenever cur_sec actually changed. Initialized to SEC_TEXT,
+    // matching cur_sec's own initial value in assemble_inline().
+    int prev_sec;
     int lineno;
     const char *filename;
 
@@ -129,35 +137,59 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
     int sec = as->cur_sec;
     size_t off = cur_off(as);
 
-    // Check if already in symbol table (global declaration first, then definition)
-    int idx = objfile_find_sym(as->obj, name);
-    if (idx < 0) {
-        SymBind bind = is_weak ? SB_WEAK : (is_global ? SB_GLOBAL : SB_LOCAL);
-        SymType type = is_func ? ST_FUNC : ST_OBJECT;
-        idx = objfile_add_sym(as->obj, name, sec, off, 0, bind, type);
-    } else {
-        as->obj->syms[idx].section = sec;
-        as->obj->syms[idx].offset = off;
-        if (is_global && as->obj->syms[idx].bind == SB_LOCAL)
-            as->obj->syms[idx].bind = is_weak ? SB_WEAK : SB_GLOBAL;
-        if (is_func) as->obj->syms[idx].type = ST_FUNC;
-    }
-
     // GAS numeric local labels ("1:") reuse the same name every time they
-    // recur, so the shared symbol-table slot above only ever holds the
-    // *latest* occurrence's value — fine for same-section jmp/jcc, which
-    // resolve by (name, position) via the locals[] scan below, but useless
-    // for a cross-section reference (e.g. `.long 1b - .` in the kernel's
-    // __ex_table, referencing a label back in .text), which needs a real
-    // relocation against a symbol that stays pinned to *this* occurrence.
-    // Give every numeric-label definition its own private, uniquely-named
-    // symbol for that purpose.
+    // recur and are purely an assembler-internal addressing mechanism —
+    // real GAS never emits them into the object file's own symbol table
+    // at all. Give every occurrence its own private, uniquely-named
+    // *.Lrcc_num** symbol below (needed for a cross-section reference,
+    // e.g. `.long 1b - .` in the kernel's __ex_table) instead of ever
+    // touching a shared "1"/"2"/... slot in as->obj->syms[].
+    //
+    // A shared slot literally named "1" used to be created/updated here
+    // like any other label — but skip_insert_shift() (which keeps every
+    // *other* symbol's offset correct as later .balign/.skip padding
+    // shifts bytes around it) only walks as->locals[], whose ->sym_idx
+    // always points at the private per-occurrence symbol, never at this
+    // shared one. So its offset went stale (frozen at whatever the
+    // *last* "1:" in the file happened to resolve to pre-shift) the
+    // moment any later insertion moved bytes past it — and since
+    // lookup_local()/lookup_local_sym()/lookup_local_near() all resolve
+    // purely through as->locals[] too (never objfile_find_sym() by
+    // name), this shared symbol was *never consulted for anything*,
+    // just left behind as real, misleadingly-named, wrong-offset ELF
+    // symbol-table pollution. objtool's decode_instructions() validates
+    // every STT_NOTYPE/STT_FUNC symbol in an executable section has a
+    // real instruction starting at its exact offset — a stale "1" landed
+    // mid-instruction after enough later .balign/ALTERNATIVE() padding
+    // in the same section shifted things around it, "1(): can't find
+    // starting instruction". Found via a real kernel build:
+    // arch/x86/entry/entry_64.S's error_entry (whose own body reuses the
+    // numeric label "1" once IBRS_ENTER's .ifnb-guarded rdmsr/wrmsr
+    // block is emitted).
     bool is_numeric_label = *name != '\0';
     for (const char *p = name; *p; p++)
         if (!isdigit((unsigned char)*p)) {
             is_numeric_label = false;
             break;
         }
+
+    int idx = -1;
+    if (!is_numeric_label) {
+        // Check if already in symbol table (global declaration first, then definition)
+        idx = objfile_find_sym(as->obj, name);
+        if (idx < 0) {
+            SymBind bind = is_weak ? SB_WEAK : (is_global ? SB_GLOBAL : SB_LOCAL);
+            SymType type = is_func ? ST_FUNC : ST_OBJECT;
+            idx = objfile_add_sym(as->obj, name, sec, off, 0, bind, type);
+        } else {
+            as->obj->syms[idx].section = sec;
+            as->obj->syms[idx].offset = off;
+            if (is_global && as->obj->syms[idx].bind == SB_LOCAL)
+                as->obj->syms[idx].bind = is_weak ? SB_WEAK : SB_GLOBAL;
+            if (is_func) as->obj->syms[idx].type = ST_FUNC;
+        }
+    }
+
     int occurrence_idx = idx;
     if (is_numeric_label) {
         static int numeric_label_seq;
@@ -437,6 +469,28 @@ static int64_t lookup_local(AsmState *as, const char *name, int *sec_out) {
     }
     return -1;
 }
+
+#ifndef ARCH_ARM64
+// Same lookup as lookup_local(), but returns the as->locals[] ARRAY INDEX
+// of the most recent same-name occurrence rather than its offset — needed
+// by encode_x86()'s jmp/jcc/call handling to register a
+// FIXUP_REL32_DEFERRED for an *already-defined* (backward) branch target,
+// exactly like define_label()'s own forward-reference conversion (see
+// FIXUP_REL32_DEFERRED's comment in obj.h): the resolution pass indexes
+// the target by as->locals[] slot, not by raw offset, so it keeps
+// tracking the right occurrence through any later skip_insert_shift().
+// x86-only: this only exists to feed encode_x86()'s FIXUP_REL32_DEFERRED
+// registration; the ARM64 encoder (emit_arm64_branch) doesn't use
+// FIXUP_REL32_DEFERRED at all, so ARM64 builds never call this. Whether
+// ARM64's own immediate backward-branch patching has an equivalent
+// staleness exposure is a separate, unverified question — out of scope
+// here (no ARM64 kernel .S source has exercised it in this investigation).
+static int lookup_local_idx(AsmState *as, const char *name) {
+    for (int i = as->nlocals - 1; i >= 0; i--)
+        if (!strcmp(as->locals[i].name, name)) return i;
+    return -1;
+}
+#endif
 
 // Nearest-prior ("Nb") resolution of a local label to its own private
 // symbol-table entry, for use in relocations that must survive a
@@ -1039,6 +1093,10 @@ static bool sec_is_executable(AsmState *as, int section) {
 static void handle_directive(AsmState *as, const char *dir, char *args) {
     args = skip_ws(args);
     trim_end(args);
+    // GAS's ".previous" (see AsmState::prev_sec's comment) needs to know
+    // whether *this* directive actually changed the current section;
+    // checked once at the very end of this function.
+    int old_sec = as->cur_sec;
 
     if (!strcmp(dir, "text") || !strcmp(dir, "section__TEXT,__text") ||
         (strncmp(dir, "text", 4) == 0)) {
@@ -1091,6 +1149,19 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             as->cur_sec = as->sec_stack[--as->sec_stack_depth];
         else
             asm_error(as, "popsection without pushsection");
+    } else if (!strcmp(dir, "previous")) {
+        // GAS: swap current and previous section (a single-slot swap, not
+        // a stack — see AsmState::prev_sec's comment). Used by e.g. the
+        // kernel's EXPORT_SYMBOL() macro: ".section \".export_symbol\",
+        // \"a\" ; ... ; .previous" to return to whatever section
+        // (.text/.entry.text/...) was active before the export-symbol
+        // block, without needing to know or name it explicitly. Left
+        // unhandled, every directive after such a block — e.g. the very
+        // next function's own ANNOTATE/label — silently stayed emitted
+        // into .export_symbol instead, corrupting the real code section.
+        int tmp = as->cur_sec;
+        as->cur_sec = as->prev_sec;
+        as->prev_sec = tmp;
     } else if (!strcmp(dir, "globl") || !strcmp(dir, "global")) {
         // Mark symbol as global (may not be defined yet)
         char *sym = args;
@@ -1556,6 +1627,11 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         // Ignore note sections
     }
     // Other directives (weak_reference, weak_definition, etc.) ignored
+    // Update GAS's ".previous" single-slot state (see AsmState::prev_sec's
+    // comment) if this directive actually changed the current section.
+    // Idempotent w.r.t. the "previous" branch itself, which already set
+    // both fields to the same values.
+    if (as->cur_sec != old_sec) as->prev_sec = old_sec;
 }
 
 
@@ -3278,8 +3354,27 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
         if (toff >= 0 && sec == as->cur_sec) {
-            int32_t delta = (int32_t)(toff - (int64_t)(off + 5));
-            secbuf_patch32le(buf, off + 1, (uint32_t)delta);
+            // Defer the byte patch — same rationale as define_label()'s
+            // own forward-reference FIXUP_REL32_DEFERRED conversion (see
+            // obj.h): a same-section .balign/.skip lying between this
+            // jump and its already-defined (backward) target, not yet
+            // resolved at this point in the single assembly pass, may
+            // still shift either side's final byte offset before the
+            // file is done. Baking the delta immediately here — as this
+            // used to do — used stale, pre-shift positions whenever such
+            // an insertion was still pending on either side. Real kernel
+            // case: arch/x86/entry/entry_64.S's asm_load_gs_index —
+            // "jmp 2b" back over an ALTERNATIVE()-generated .skip whose
+            // own padding hadn't been inserted yet when this jmp was
+            // encoded.
+            struct Fixup *fx = fixups_next(as);
+            if (fx) {
+                fx->patch_off = off + 1;
+                fx->section = as->cur_sec;
+                fx->kind = FIXUP_REL32_DEFERRED;
+                fx->size = lookup_local_idx(as, lbl);
+                fx->addend = 0;
+            }
         } else {
             add_fixup(as, off + 1, as->cur_sec, lbl, FIXUP_REL32, 0);
         }
@@ -3328,8 +3423,15 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
         if (toff >= 0 && sec == as->cur_sec) {
-            int32_t delta = (int32_t)(toff - (int64_t)(off + 6));
-            secbuf_patch32le(buf, off + 2, (uint32_t)delta);
+            // Same deferred-patch rationale as the plain JMP case above.
+            struct Fixup *fx = fixups_next(as);
+            if (fx) {
+                fx->patch_off = off + 2;
+                fx->section = as->cur_sec;
+                fx->kind = FIXUP_REL32_DEFERRED;
+                fx->size = lookup_local_idx(as, lbl);
+                fx->addend = 0;
+            }
         } else {
             add_fixup(as, off + 2, as->cur_sec, lbl, FIXUP_REL32, 0);
         }
@@ -3356,8 +3458,15 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
         if (toff >= 0 && sec == as->cur_sec) {
-            int32_t delta = (int32_t)(toff - (int64_t)(off + 5));
-            secbuf_patch32le(buf, off + 1, (uint32_t)delta);
+            // Same deferred-patch rationale as JMP/Jcc above.
+            struct Fixup *fx = fixups_next(as);
+            if (fx) {
+                fx->patch_off = off + 1;
+                fx->section = as->cur_sec;
+                fx->kind = FIXUP_REL32_DEFERRED;
+                fx->size = lookup_local_idx(as, lbl);
+                fx->addend = 0;
+            }
         } else {
             // External function → PLT32 reloc
             objfile_add_reloc(as->obj, as->cur_sec, off + 1, sidx,
@@ -4136,6 +4245,7 @@ int assemble_file(const char *asm_path, const char *obj_path) {
     AsmState as = {0};
     as.obj = &obj;
     as.cur_sec = SEC_TEXT;
+    as.prev_sec = SEC_TEXT;
     as.filename = asm_path;
 
 #ifdef ARCH_ARM64
@@ -4784,7 +4894,8 @@ static int find_if_branches(char **lines, int start, int end, IfBranch *out) {
     int n = 0;
     for (int i = start + 1; i < end; i++) {
         char *p = skip_ws(lines[i]);
-        if (line_starts_with_dir(p, ".if") || line_starts_with_dir(p, ".ifc")) {
+        if (line_starts_with_dir(p, ".if") || line_starts_with_dir(p, ".ifc") ||
+            line_starts_with_dir(p, ".ifb") || line_starts_with_dir(p, ".ifnb")) {
             depth++;
             continue;
         }
@@ -5266,12 +5377,31 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
             i = end;
             continue;
         }
-        if (line_starts_with_dir(p, ".ifc") || line_starts_with_dir(p, ".if")) {
+        if (line_starts_with_dir(p, ".ifc") || line_starts_with_dir(p, ".if") ||
+            line_starts_with_dir(p, ".ifb") || line_starts_with_dir(p, ".ifnb")) {
             bool is_ifc = line_starts_with_dir(p, ".ifc");
-            static const char *nested[] = {".ifc", ".if"};
-            int end = find_block_end(lines, hi, i, nested, 2, ".endif");
+            // GAS's ".ifb \arg" / ".ifnb \arg" — true iff the (already
+            // \param-substituted) single operand is empty/whitespace-only.
+            // Real GAS macro params with no explicit "=DEFAULT" default to
+            // blank when the caller omits them (see mac->defaults[i]'s
+            // init below), so an omitted optional argument like
+            // calling.h's "IBRS_ENTER save_reg" (no save_reg passed)
+            // must make ".ifnb \save_reg" false and ".ifb \save_reg"
+            // true. Previously neither was recognized at all — matching
+            // no branch here, the whole .ifnb/.endif pair fell through
+            // as two inert unknown-directive lines, and the guarded body
+            // between them (rdmsr/wrmsr MSR_IA32_SPEC_CTRL sequence,
+            // real IBRS_ENTER's optional-save_reg fast path) was always
+            // emitted unconditionally, corrupting the label/offset
+            // layout of every real GAS-conditional-only construct after
+            // it (e.g. arch/x86/entry/entry_64.S's error_entry, whose
+            // unconditional "IBRS_ENTER" call — no save_reg — hit this).
+            bool is_ifb = line_starts_with_dir(p, ".ifb");
+            bool is_ifnb = line_starts_with_dir(p, ".ifnb");
+            static const char *nested[] = {".ifc", ".if", ".ifb", ".ifnb"};
+            int end = find_block_end(lines, hi, i, nested, 4, ".endif");
             if (end < 0) {
-                asm_error(as, ".if/.ifc without .endif");
+                asm_error(as, ".if/.ifc/.ifb/.ifnb without .endif");
                 return;
             }
             IfBranch branches[MAX_IF_BRANCHES];
@@ -5297,6 +5427,18 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                     subst_params_into(b, map, bbuf, sizeof(bbuf));
                 }
                 cond = !strcmp(abuf, bbuf);
+            } else if (is_ifb || is_ifnb) {
+                char *arg = skip_ws(p + (is_ifnb ? 5 : 4));
+                char argraw[400];
+                strncpy(argraw, arg, sizeof(argraw) - 1);
+                argraw[sizeof(argraw) - 1] = '\0';
+                trim_end(argraw);
+                char subbuf[400] = "";
+                subst_params_into(argraw, map, subbuf, sizeof(subbuf));
+                char *s = skip_ws(subbuf);
+                trim_end(s);
+                bool blank = (*s == '\0');
+                cond = is_ifnb ? !blank : blank;
             } else {
                 cond = eval_asm_expr(as, map, skip_ws(p + 3)) != 0;
             }
@@ -5526,6 +5668,7 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
     AsmState as = {0};
     as.obj = obj;
     as.cur_sec = SEC_TEXT;
+    as.prev_sec = SEC_TEXT;
     as.filename = "<inline asm>";
 
     // Expand .macro/.irp/.ifc/.if/.set (e.g. the kernel's
