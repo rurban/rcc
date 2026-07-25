@@ -4125,7 +4125,35 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
         }
         return false;
     }
-    case ND_SUB:
+    case ND_SUB: {
+        // "label - const" (an address constant minus a byte offset) —
+        // the same address-arithmetic idiom ND_ADD already supports on
+        // either side, but subtraction isn't commutative: only the
+        // *left* side may hold the label. Tried first so a genuine
+        // address expression resolves via a real relocation instead of
+        // falling through to eval_const_expr(), which can't fold an
+        // address at all and always fails for it — the fallback below
+        // (unchanged from before) still covers every purely-constant
+        // subtraction this case previously handled. Real kernel case:
+        // arch/x86/kernel/cpu/common.c's cpu_current_top_of_stack percpu
+        // initializer: `(unsigned long)&init_stack + sizeof(init_stack)
+        // - TOP_OF_KERNEL_STACK_PADDING`.
+        if (extract_reloc(node->lhs, &lbl, &ladd)) {
+            long long rv;
+            if (eval_const_expr(node->rhs, &rv)) {
+                *label = lbl;
+                *addend = ladd - (int)rv;
+                return true;
+            }
+        }
+        long long v;
+        if (eval_const_expr(node, &v)) {
+            *label = NULL;
+            *addend = (int)v;
+            return true;
+        }
+        return false;
+    }
     case ND_SHL:
     case ND_SHR:
     case ND_BITAND:
