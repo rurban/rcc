@@ -32,6 +32,7 @@ struct VarAttr {
     char *deprecated_msg;
     bool is_reproducible;
     bool is_unsequenced;
+    bool is_transparent_union;
 };
 
 struct TagScope {
@@ -209,6 +210,12 @@ static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
+// Set by declarator() when it consumes a trailing __attribute__((transparent_union))
+// right after the identifier (declarator() is called with attr=NULL from most
+// sites, so it can't write directly into the caller's VarAttr) — the
+// top-level/typedef declaration loop reads and resets this right after
+// calling declarator(). Mirrors pending_alias_target/pending_cleanup_func.
+static bool pending_transparent_union;
 // VLA-containing struct: emit size-capture code before the next statement
 static Node *pending_vla_struct_capture;
 
@@ -1433,6 +1440,17 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "transparent_union") || equalc(tok, "__transparent_union__")) {
+                    if (attr)
+                        attr->is_transparent_union = true;
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "constructor") || equalc(tok, "__constructor__")) {
                     pending_constructor = true;
                     tok = tok->next;
@@ -2498,7 +2516,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     if (name)
         *name = decl_name;
     tok = tok->next;
-    tok = read_type_attrs(tok, &decl_align, NULL);
+    VarAttr trail_attr = {};
+    tok = read_type_attrs(tok, &decl_align, &trail_attr);
+    if (trail_attr.is_transparent_union)
+        pending_transparent_union = true;
     ty = type_suffix(rest, tok, ty, decl_name);
     if (pending_vector_size) {
         ty = make_vector_type(ty, pending_vector_size);
@@ -10137,6 +10158,7 @@ Program *parse(Token *tok) {
         pending_vla_struct_capture = NULL;
         pending_mode = 0;
         pending_vector_size = 0;
+        pending_transparent_union = false;
         typedef_scope_restore(rec_typedef_cp);
         tag_scope_restore(rec_tag_cp);
         enum_scope_restore(rec_enum_cp);
@@ -10324,6 +10346,18 @@ Program *parse(Token *tok) {
                     }
                 }
             }
+            // GCC __attribute__((__transparent_union__)) trails the
+            // declarator (typically a typedef name): `typedef union {...}
+            // name __attribute__((transparent_union));`. declarator()
+            // consumes that trailing attribute itself (it's called with
+            // attr=NULL from most sites, see pending_transparent_union's
+            // comment) and stashes it here rather than in the local `attr`.
+            // Mark the union Type itself so a function argument matching
+            // one of its members later skips the (bogus, boxing-implying)
+            // implicit cast to the union in check_type's ND_FUNCALL handling.
+            if (pending_transparent_union && ty->kind == TY_UNION)
+                ty->is_transparent_union = true;
+            pending_transparent_union = false;
 
             if (!name) {
                 tok = skip(tok, ";");

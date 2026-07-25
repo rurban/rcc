@@ -254,6 +254,10 @@ struct Type {
     bool is_signed_char; // signed char vs plain char (both have is_unsigned=false)
     bool is_vector; // GCC __attribute__((vector_size(N))): TY_STRUCT of N scalar
     // element-members, base = element type, align = total size
+    bool is_transparent_union; // GCC __attribute__((__transparent_union__)):
+    // TY_UNION whose members are all-mutually-assignment-compatible pointer
+    // types (or all the same size); a function argument matching any one
+    // member's type is passed exactly as that member, no boxing/copy needed.
     unsigned char qual; // TypeQual flags: const/volatile/restrict
     Type *base; // for pointer/array
     Member *members; // for struct

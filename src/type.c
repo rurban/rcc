@@ -918,8 +918,27 @@ static void add_type_internal(Node *node) {
         // Insert implicit casts for arguments when prototype is available
         for (Node **argp = &node->args; *argp && param_types;
              argp = &(*argp)->next, param_types = param_types->param_next) {
-            if (!same_type((*argp)->ty, param_types))
-                insert_arith_cast(argp, param_types);
+            if (same_type((*argp)->ty, param_types))
+                continue;
+            // GCC transparent_union (__attribute__((__transparent_union__))):
+            // the argument is passed using the calling convention of
+            // whichever member type it matches, not boxed into the union —
+            // there is nothing to actually convert. Casting it to TY_UNION
+            // here would make codegen treat a plain pointer argument as an
+            // aggregate needing its address, which it isn't (see
+            // include/crypto/aes.h's aes_encrypt_arg, passed a bare
+            // `struct aes_enckey *`/`struct aes_key *`).
+            if (param_types->kind == TY_UNION && param_types->is_transparent_union &&
+                (*argp)->ty && (*argp)->ty->kind == TY_PTR) {
+                bool matches_member = false;
+                for (Member *m = param_types->members; m; m = m->next)
+                    if (m->ty->kind == TY_PTR) {
+                        matches_member = true;
+                        break;
+                    }
+                if (matches_member) continue;
+            }
+            insert_arith_cast(argp, param_types);
         }
         return;
     case ND_STR:
