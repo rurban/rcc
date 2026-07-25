@@ -8595,7 +8595,22 @@ static Node *unary(Token **rest, Token *tok) {
                         t1->array_len == t2->array_len;
                 break;
             case TY_STRUCT:
-            case TY_UNION: compat = t1 == t2; break;
+            case TY_UNION:
+                // Not a plain `t1 == t2`: apply_type_align() intentionally
+                // clones a *complete* struct/union's Type to raise one
+                // particular declaration's alignment (e.g. a struct member
+                // with `__attribute__((aligned(N)))`) without mutating the
+                // shared original in place — see its own comment. That
+                // clone is still the same struct, just a different Type
+                // object, and shares the identical Member list (the clone
+                // is a shallow `*ret = *ty` copy that only overwrites
+                // ->align) — real GCC's container_of()-style
+                // static_assert(__same_type(...)) checks must not treat it
+                // as a mismatch. NULL ->members (still-incomplete types)
+                // never counts as a match, or two distinct incomplete
+                // structs would wrongly compare compatible.
+                compat = (t1 == t2) || (t1->members && t1->members == t2->members);
+                break;
             default: compat = t1->size == t2->size && t1->is_unsigned == t2->is_unsigned;
             }
         }
