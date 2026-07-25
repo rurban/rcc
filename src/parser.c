@@ -1745,6 +1745,19 @@ bool eval_const_expr(Node *node, long long *val) {
             return (*val = node->ty->size), true;
         }
         return false;
+    case ND_STR:
+        // A string literal used as a value in a constant-expression
+        // context (almost always a ternary/logical condition, e.g. the
+        // kernel's __SIP_HDR() macro: "(__cname) ? sizeof(__cname) - 1
+        // : 0" with __cname substituted by a real "f"/"t"/... literal) —
+        // its array-to-pointer-decayed address is never null, so it's
+        // always truthy. Not meaningful as an actual numeric *value*
+        // (two distinct string literals' addresses aren't a constant
+        // relative to each other), but every existing caller of this
+        // function only ever needs a literal's truth value here, never
+        // its address as a number.
+        *val = 1;
+        return true;
     case ND_ADDR:
         // &*x = x
         if (node->lhs->kind == ND_DEREF)
@@ -7554,19 +7567,48 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
     Member *sub = mem->ty->members;
     while (!equalc(tok, "}")) {
         Member *target = NULL;
+        Node *target_base = member_access;
         if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-            char *name = tok->next->name;
-            Member *m = find_member_by_name(mem->ty, name);
-            if (m) {
+            // Walk a chain of .name1.name2...nameN designators — needed
+            // for a macro-expanded multi-level field access, e.g. linux's
+            // icmp6_router expanding to ".icmp6_dataun.u_nd_advt.router"
+            // (net/ipv6/ndisc.c's "*msg = (struct nd_msg){ .icmph = {
+            // .icmp6_router = router, ... } }"). All but the last level
+            // fold into an accumulated ND_MEMBER chain (target_base); the
+            // last becomes `target`, resolved against that accumulated
+            // base exactly like a single-level designator already was.
+            Node *chain_lhs = member_access;
+            Type *chain_ty = mem->ty;
+            Member *first_dm = NULL, *dm = NULL;
+            bool chain_ok = true;
+            for (;;) {
+                char *name = tok->next->name;
+                dm = find_member_by_name(chain_ty, name);
+                if (!dm) {
+                    chain_ok = false;
+                    break;
+                }
                 tok = tok->next->next;
+                if (!first_dm) first_dm = dm;
+                // No further ".name" — this level is the final target.
+                if (!(equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))
+                    break;
+                Node *mem_node = new_unary(ND_MEMBER, chain_lhs, tok);
+                mem_node->member = dm;
+                check_type(mem_node);
+                chain_lhs = mem_node;
+                chain_ty = dm->ty;
+            }
+            if (chain_ok && dm) {
+                target_base = chain_lhs;
                 // A combined `.member[idx] = val` designator (C99 6.7.8p17)
                 // leaves `[idx]` unconsumed here for an array-typed member —
                 // the array-index branch below parses `[idx] = val`
                 // (including the `=`) itself.
-                if (!(m->ty->kind == TY_ARRAY && equalc(tok, "[")))
+                if (!(dm->ty->kind == TY_ARRAY && equalc(tok, "[")))
                     tok = skip(tok, "=");
-                target = m;
-                sub = m->next;
+                target = dm;
+                sub = first_dm->next;
             } else {
                 tok = skip_initializer(tok);
             }
@@ -7583,7 +7625,7 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                 // property_entry union's `.u32_data[0] = val`. Mirrors the
                 // array-designator loop used for top-level array members.
                 Node *inner_access = new_node(ND_MEMBER, start);
-                inner_access->lhs = member_access;
+                inner_access->lhs = target_base;
                 inner_access->member = target;
                 inner_access->ty = target->ty;
                 int len = array_len(target->ty);
@@ -7614,14 +7656,14 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                     }
                 }
             } else if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
-                result = assign_nested_struct_init(result, member_access, target, &tok, tok, start);
+                result = assign_nested_struct_init(result, target_base, target, &tok, tok, start);
             } else {
                 // A lone extra brace layer around a non-aggregate value is a
                 // legal GNU/C11 redundant-brace idiom, e.g. `{ { 0 } }`.
                 bool extra_brace = equalc(tok, "{");
                 if (extra_brace) tok = tok->next;
                 Node *inner_access = new_node(ND_MEMBER, start);
-                inner_access->lhs = member_access;
+                inner_access->lhs = target_base;
                 inner_access->member = target;
                 inner_access->ty = target->ty;
                 Node *val = (extra_brace && equalc(tok, "}")) ? new_num(0, start) : assign(&tok, tok);
