@@ -7462,7 +7462,12 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
             Member *m = find_member_by_name(mem->ty, name);
             if (m) {
                 tok = tok->next->next;
-                tok = skip(tok, "=");
+                // A combined `.member[idx] = val` designator (C99 6.7.8p17)
+                // leaves `[idx]` unconsumed here for an array-typed member —
+                // the array-index branch below parses `[idx] = val`
+                // (including the `=`) itself.
+                if (!(m->ty->kind == TY_ARRAY && equalc(tok, "[")))
+                    tok = skip(tok, "=");
                 target = m;
                 sub = m->next;
             } else {
@@ -7475,7 +7480,43 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
             tok = skip_initializer(tok);
         }
         if (target) {
-            if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
+            if (target->ty->kind == TY_ARRAY && equalc(tok, "[")) {
+                // Designated array element(s) directly on a member: `[N] =
+                // val` or `[N ... M] = val` (C99 6.7.8p17), e.g. the
+                // property_entry union's `.u32_data[0] = val`. Mirrors the
+                // array-designator loop used for top-level array members.
+                Node *inner_access = new_node(ND_MEMBER, start);
+                inner_access->lhs = member_access;
+                inner_access->member = target;
+                inner_access->ty = target->ty;
+                int len = array_len(target->ty);
+                tok = skip(tok, "[");
+                Node *idx_lo = assign(&tok, tok);
+                long long sv = 0;
+                eval_const_expr(idx_lo, &sv);
+                long long ev = sv;
+                if (equalc(tok, "...")) {
+                    tok = tok->next;
+                    Node *idx_hi = assign(&tok, tok);
+                    eval_const_expr(idx_hi, &ev);
+                }
+                tok = skip(tok, "]");
+                tok = skip(tok, "=");
+                Token *val_start = tok;
+                for (long long i = sv; i <= ev; i++) {
+                    tok = val_start;
+                    Node *offset = new_num(i, start);
+                    Node *elem_ptr = new_binary(ND_ADD, inner_access, offset, start);
+                    Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                    Node *val = assign(&tok, tok);
+                    check_type(val);
+                    if (len == 0 || i < len) {
+                        Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
+                        check_type(asgn);
+                        result = new_binary(ND_COMMA, result, asgn, start);
+                    }
+                }
+            } else if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
                 result = assign_nested_struct_init(result, member_access, target, &tok, tok, start);
             } else {
                 // A lone extra brace layer around a non-aggregate value is a
@@ -8942,7 +8983,15 @@ static Node *unary(Token **rest, Token *tok) {
                         }
                         if (found) {
                             mem = found;
-                            tok = skip(tok, "=");
+                            // A combined `.member[idx] = val` designator (C99
+                            // 6.7.8p17) leaves `[idx]` unconsumed here for an
+                            // array-typed member — the array-element loop
+                            // below (mem->ty->kind == TY_ARRAY) already knows
+                            // how to parse `[idx] = val` including the `=`.
+                            // Blindly skipping "=" here (as for a scalar/
+                            // struct member) would choke on the `[` instead.
+                            if (!(mem->ty->kind == TY_ARRAY && equalc(tok, "[")))
+                                tok = skip(tok, "=");
                         } else {
                             tok = save; // restore for error recovery
                         }
