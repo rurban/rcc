@@ -338,6 +338,65 @@ void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
     r->addend = addend;
 }
 
+// Shift every already-recorded relocation in `section` whose byte offset is
+// at or after `patch_off` forward by `n` bytes. Companion to asm.c's
+// skip_insert_shift(), which inserts `n` real padding bytes at `patch_off`
+// (a same-section .balign/.skip/ALTERNATIVE() fixup) and already keeps
+// as->locals[]/as->obj->syms[]/as->fixups[] in sync — but a CALL/JMP to a
+// symbol not yet known to be local commits its R_*_PLT32/PC32 relocation
+// immediately via objfile_add_reloc() (see asm.c's CALL/JMP handling)
+// instead of going through as->fixups[], so skip_insert_shift() never saw
+// it and it was left pointing at its stale, pre-insertion byte offset.
+// Real kernel case: arch/x86/entry/entry_64.S's rewind_stack_and_make_dead
+// — its "call make_task_dead" relocation drifted behind an earlier
+// FILL_RETURN_BUFFER ALTERNATIVE() padding insertion in __switch_to_asm,
+// leaving the call's displacement bytes at the placeholder zero and
+// decoding (at link/objtool time) as a call to the very next instruction:
+// objtool's "unannotated intra-function call".
+void objfile_shift_relocs(ObjFile *obj, int section, uint64_t patch_off, int64_t n) {
+    if (n == 0) return;
+    ObjReloc *relocs;
+    int count;
+    switch (section) {
+    case SEC_TEXT:
+        relocs = obj->text_relocs;
+        count = obj->text_reloc_count;
+        break;
+    case SEC_DATA:
+        relocs = obj->data_relocs;
+        count = obj->data_reloc_count;
+        break;
+    case SEC_RODATA:
+        relocs = obj->rodata_relocs;
+        count = obj->rodata_reloc_count;
+        break;
+    case SEC_INIT_ARRAY:
+        relocs = obj->init_array_relocs;
+        count = obj->init_array_reloc_count;
+        break;
+    case SEC_FINI_ARRAY:
+        relocs = obj->fini_array_relocs;
+        count = obj->fini_array_reloc_count;
+        break;
+    case SEC_TDATA:
+        relocs = obj->data_tls_relocs;
+        count = obj->data_tls_reloc_count;
+        break;
+    case SEC_THREAD_VARS:
+        relocs = obj->thread_vars_relocs;
+        count = obj->thread_vars_reloc_count;
+        break;
+    default:
+        if (section < SEC_NUM || section - SEC_NUM >= obj->extra_sec_count) return;
+        relocs = obj->extra_secs[section - SEC_NUM].relocs;
+        count = obj->extra_secs[section - SEC_NUM].reloc_count;
+        break;
+    }
+    for (int i = 0; i < count; i++)
+        if (relocs[i].offset >= patch_off)
+            relocs[i].offset = (uint64_t)((int64_t)relocs[i].offset + n);
+}
+
 int objfile_find_or_add_section(ObjFile *obj, const char *name,
                                 uint32_t sh_flags, uint32_t sh_entsize) {
     for (int i = 0; i < obj->extra_sec_count; i++)

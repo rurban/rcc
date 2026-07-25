@@ -13,6 +13,7 @@ struct VarAttr {
     bool is_inline;
     bool is_gnu_inline;
     bool is_weak;
+    bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
     bool has_type;
     bool is_packed;
@@ -1365,6 +1366,24 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
+                if (equalc(tok, "used") || equalc(tok, "__used__")) {
+                    // Forces emission even when otherwise provably dead —
+                    // most relevantly here, exempts a `static inline`
+                    // function from the omit-if-never-referenced rule (see
+                    // eliminate_unused_static_inline() in opt.c): real GCC
+                    // still emits a `static inline __attribute__((used))`
+                    // function's body even though nothing in the TU calls
+                    // it (confirmed against real gcc -O0/-O2 output).
+                    if (attr)
+                        attr->is_used = true;
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
                 if (equalc(tok, "gnu_inline") || equalc(tok, "__gnu_inline__")) {
                     if (attr)
                         attr->is_gnu_inline = true;
@@ -1729,15 +1748,28 @@ bool eval_const_expr(Node *node, long long *val) {
             Node *cur = node;
             int total_off = 0;
             LVar *root_var = NULL;
+            // memcpy-based extraction below reads whole bytes at
+            // `member->offset`; a bitfield's real value lives at
+            // `bit_offset` *within* that storage unit and needs a
+            // shift+mask this fold doesn't do, so any bitfield in the
+            // chain must disable the fold entirely rather than silently
+            // return the wrong (unshifted, unmasked) value. Real bug:
+            // struct-ini-2.c/bitfld-3.c's plain (non-const) global
+            // bitfield structs were "folded" to garbage the moment an
+            // `if` condition reading one became foldable (see the ND_IF
+            // caller in opt.c).
+            bool is_bitfield = false;
             while (cur && cur->kind == ND_MEMBER) {
-                if (cur->member)
+                if (cur->member) {
                     total_off += cur->member->offset;
+                    if (cur->member->bit_width > 0) is_bitfield = true;
+                }
                 cur = cur->lhs;
             }
             if (cur && cur->kind == ND_LVAR) {
                 root_var = cur->var;
             }
-            if (root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
+            if (!is_bitfield && root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
@@ -1754,7 +1786,7 @@ bool eval_const_expr(Node *node, long long *val) {
             }
             // Fallback: compound literal anon vars have is_local=true but is_constexpr=true
             // and init_data populated by global_initializer. Read member value from init_data.
-            if (is_integer(node->ty) && total_off >= 0) {
+            if (!is_bitfield && is_integer(node->ty) && total_off >= 0) {
                 if (!root_var && cur && cur->kind == ND_COMMA) {
                     // Find root LVar in the comma chain
                     Node *st[64];
@@ -10446,6 +10478,7 @@ Program *parse(Token *tok) {
                     // declaration seen (has_init flag).
                     fn->is_extern = attr.is_extern || (fn_sym2 && fn_sym2->has_init);
                     fn->is_weak = attr.is_weak || (fn_sym2 && fn_sym2->is_weak);
+                    fn->is_used = attr.is_used || (fn_sym2 && fn_sym2->is_used);
                     pending_constructor = false;
                     pending_destructor = false;
                     pending_asm_name = NULL;
@@ -10548,8 +10581,27 @@ Program *parse(Token *tok) {
                         var->is_static = attr.is_static;
                         var->is_tls = attr.is_tls;
                     }
-                    if (pending_asm_name)
+                    if (attr.is_register && pending_asm_name && !var->has_init &&
+                        ty->size > 0 && ty->size <= 8 &&
+                        ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_ARRAY) {
+                        // GCC "global register variable" extension: no storage, no
+                        // symbol — every reference reads the named hardware register
+                        // directly (see codegen.c's ND_LVAR/gen_addr handling for
+                        // is_global_reg). Do NOT also set var->asm_name: that field
+                        // renames a real linker symbol, and this variable has none —
+                        // every TU that includes the declaring header (e.g. asm/asm.h's
+                        // `register unsigned long current_stack_pointer asm("rsp");`)
+                        // would otherwise emit its own colliding non-static "rsp"
+                        // tentative definition in .bss, producing real link-time
+                        // "multiple definition of `rsp`" errors (seen building the
+                        // x86-64 vDSO, whose vclock_gettime.o/vgetcpu.o/vgetrandom.o
+                        // all include it).
+                        var->is_register = true;
+                        var->is_global_reg = true;
+                        var->global_reg_name = pending_asm_name;
+                    } else if (pending_asm_name) {
                         var->asm_name = pending_asm_name;
+                    }
                     if (pending_alias_target)
                         var->alias_target = pending_alias_target;
                     pending_asm_name = NULL;

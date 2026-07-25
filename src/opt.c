@@ -708,6 +708,45 @@ static Node *try_unroll(Node *node) {
     return head.next; // the first statement (init), with the rest chained
 }
 
+// True if `node`'s subtree contains a label or case statement that could
+// be a jump target reachable from OUTSIDE this subtree — a `goto`, or an
+// enclosing `switch`'s case label falling straight into a nested `if`'s
+// body (see the ND_IF fold below for the exact GCC-torture shape this
+// guards against). Dropping such a branch would delete a real jump
+// target the rest of the function still reaches, not genuinely dead code.
+static bool subtree_has_label(Node *node) {
+    for (; node; node = node->next) {
+        if (node->kind == ND_LABEL || node->kind == ND_CASE) return true;
+        if (subtree_has_label(node->lhs)) return true;
+        if (subtree_has_label(node->rhs)) return true;
+        if (subtree_has_label(node->cond)) return true;
+        if (subtree_has_label(node->then)) return true;
+        if (subtree_has_label(node->els)) return true;
+        if (subtree_has_label(node->init)) return true;
+        if (subtree_has_label(node->inc)) return true;
+        if (subtree_has_label(node->body)) return true;
+        if (subtree_has_label(node->stmt_expr_result)) return true;
+    }
+    return false;
+}
+
+// True if `node` (an EXPRESSION, not a statement — only lhs/rhs/cond
+// matter) is or contains a floating-point-typed value. eval_const_expr()
+// packs every result into a single int64_t and has no float support at
+// all (an FNUM literal truncates straight to (long long), an int-to-float
+// ND_CAST is a silent no-op leaving the raw integer bit pattern in
+// place) — harmless for its original callers (array sizes, static_assert,
+// enum values), which are never float-typed in valid C, but a `double`/
+// `float` comparison handed to it produces a real, silently wrong
+// answer. Real bug: GCC torture 920710-1.c's
+// `(double)18446744073709551615ULL < 1.84467440737095e+19` folded to a
+// bogus true/false and dropped the abort() the test depends on.
+static bool expr_has_float(Node *node) {
+    if (!node) return false;
+    if (node->ty && is_flonum(node->ty)) return true;
+    return expr_has_float(node->lhs) || expr_has_float(node->rhs) || expr_has_float(node->cond);
+}
+
 static Node *optimize_node(Program *prog, Node *node) {
     if (!node) return NULL;
     node->lhs = optimize_node(prog, node->lhs);
@@ -735,6 +774,45 @@ static Node *optimize_node(Program *prog, Node *node) {
         else
             node->args = o;
         prev_arg = o;
+    }
+
+    // Dead-branch elimination for `if` with a compile-time-constant
+    // condition: drop the untaken branch from the AST entirely (not just
+    // "never executed at runtime" — never emitted, never referenced). Real
+    // GCC's own equivalent (constant-condition + unreachable-code
+    // elimination) is exactly what the kernel's compiletime_assert /
+    // BUILD_BUG_ON idiom depends on:
+    //   do { extern void __compiletime_assert_N(void);
+    //        if (!(condition)) __compiletime_assert_N(); } while (0)
+    // __compiletime_assert_N is declared but deliberately never defined
+    // anywhere — satisfied conditions must never leave a reference to it
+    // in the object at all, or the link fails even though the assertion
+    // actually holds. Without this fold, rcc emitted the call as ordinary
+    // (if unreachable at runtime) code with a real relocation against
+    // that permanently-undefined symbol — the real failure seen building
+    // the x86-64 vDSO's vgetrandom.o (a dozen-plus distinct
+    // __compiletime_assert_N symbols, one per macro-expansion site).
+    if (node->kind == ND_IF && !expr_has_float(node->cond)) {
+        long long cv;
+        if (eval_const_expr(node->cond, &cv)) {
+            Node *taken = cv ? node->then : node->els;
+            Node *dropped = cv ? node->els : node->then;
+            // Never drop a branch containing a label/case a `goto` or an
+            // enclosing `switch` can still jump straight into, bypassing
+            // this `if`'s condition entirely (GCC torture medce-1.c:
+            // `switch(x) { case 0: if (0) { link_error(); case 1: bar();
+            // } }` — `foo(1)` jumps directly to "case 1:", skipping the
+            // `if(0)` check, so its body is very much alive even though
+            // the condition folds to false. Regressed a real torture test
+            // before this check existed).
+            if (!subtree_has_label(dropped)) {
+                if (taken) return taken;
+                Node *noop = arena_alloc(sizeof(Node));
+                noop->kind = ND_NULL;
+                noop->tok = node->tok;
+                return noop;
+            }
+        }
     }
 
     if (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV || node->kind == ND_MOD) {
@@ -857,4 +935,199 @@ void optimize(Program *prog) {
             prev = o;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Omit `static inline` functions nothing in this TU calls or references.
+// ---------------------------------------------------------------------------
+//
+// C11 6.7.4p7: an inline definition "does not provide an external
+// definition for the function"; real GCC/Clang exploit this for a function
+// that is BOTH `static` and `inline` by never emitting its body at all when
+// nothing in the translation unit ends up calling it or taking its address
+// — verified against real gcc: true at every -O level, including -O0 (an
+// ordinary `static` function without `inline` is NOT elided at -O0, only
+// from -O1 up). Emitting one unconditionally, as rcc used to, both wastes
+// code space and — critically — can pull in an otherwise-unreachable
+// construct that doesn't actually work standalone: the real kernel bug that
+// motivated this pass was arch/x86/entry/vdso/common/vclock_gettime.c
+// pulling in asm/segment.h's `vdso_read_cpunode()` (used only by
+// vgetcpu.c, a different translation unit) whose ALTINSTR_ENTRY() feature
+// field never becomes a resolvable constant in a plain C build (confirmed
+// byte-for-byte identical to real GCC's own -E output — a preprocessor
+// quirk, not a bug — see asm.c's ".4byte X86_FEATURE_RDPID" comment): with
+// dce this line of text is never assembled at all for vclock_gettime.o, so
+// the "relocation against undefined symbol" it produces there never
+// happens, matching a real GCC-built vDSO exactly.
+
+// Whole-identifier substring search: true if `name` appears in `text` as a
+// standalone token (not as part of a longer identifier). Used only to keep
+// a function alive when its name shows up in raw top-level/inline asm text
+// this pass can't otherwise parse as a call — a false positive here just
+// keeps something that could have been dropped; this pass must never drop
+// something actually reachable, so any doubt resolves to "keep".
+static bool text_mentions_ident(const char *text, const char *name) {
+    if (!text || !name || !*name) return false;
+    size_t nlen = strlen(name);
+    for (const char *p = text; (p = strstr(p, name)); p++) {
+        bool left_ok = (p == text) || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
+        char after = p[nlen];
+        bool right_ok = !(isalnum((unsigned char)after) || after == '_');
+        if (left_ok && right_ok) return true;
+    }
+    return false;
+}
+
+static Function *dce_lookup(Function **fns, int n, const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < n; i++)
+        if (!strcmp(fns[i]->name, name) || (fns[i]->asm_name && !strcmp(fns[i]->asm_name, name)))
+            return fns[i];
+    return NULL;
+}
+
+static void dce_mark(Function *fn, Function ***wl, int *wl_len, int *wl_cap) {
+    if (fn->dce_live) return;
+    fn->dce_live = true;
+    if (*wl_len == *wl_cap) {
+        *wl_cap = *wl_cap ? *wl_cap * 2 : 16;
+        *wl = realloc(*wl, sizeof(Function *) * (size_t)*wl_cap);
+    }
+    (*wl)[(*wl_len)++] = fn;
+}
+
+// Walk every node in `node`'s list and its children for calls to, or
+// value/address references to, any function in fns[0..n-1]; mark matches
+// live (and enqueue them for their own body to be scanned in turn).
+static void dce_scan_node(Node *node, Function **fns, int n, Function ***wl, int *wl_len, int *wl_cap) {
+    for (; node; node = node->next) {
+        if (node->kind == ND_FUNCALL) {
+            Function *f = dce_lookup(fns, n, node->funcname);
+            if (f) dce_mark(f, wl, wl_len, wl_cap);
+        } else if (node->kind == ND_LVAR && node->var && node->var->is_function) {
+            Function *f = dce_lookup(fns, n, node->var->name);
+            if (!f && node->var->asm_name)
+                f = dce_lookup(fns, n, node->var->asm_name);
+            if (f) dce_mark(f, wl, wl_len, wl_cap);
+        } else if (node->kind == ND_ASM && node->asm_template) {
+            for (int i = 0; i < n; i++)
+                if (!fns[i]->dce_live && text_mentions_ident(node->asm_template, fns[i]->name))
+                    dce_mark(fns[i], wl, wl_len, wl_cap);
+        }
+        dce_scan_node(node->lhs, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->rhs, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->cond, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->then, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->els, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->init, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->inc, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->body, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->args, fns, n, wl, wl_len, wl_cap);
+        dce_scan_node(node->stmt_expr_result, fns, n, wl, wl_len, wl_cap);
+        if (node->kind == ND_ASM)
+            for (int i = 0; i < node->asm_noperands; i++)
+                dce_scan_node(node->asm_ops[i].expr, fns, n, wl, wl_len, wl_cap);
+    }
+}
+
+void eliminate_unused_static_inline(Program *prog) {
+#ifdef _WIN32
+    // Disabled for the mingw/Windows target: omitting genuinely-unused
+    // `static inline` bodies (verified correct in isolation — e.g. mingw's
+    // pthread_time.h/pthread.h ship several `static __always_inline`
+    // helpers, such as clock_gettime()/pthread_cond_timedwait(), that a
+    // plain `pthread_create()`+`pthread_join()` translation unit never
+    // calls) shifts the resulting object file's layout enough to corrupt
+    // an otherwise-correct emulated-TLS access elsewhere in the same file
+    // — test/torture/c23-complit-4.c's `(static thread_local int[])
+    // {1,2}` compound literal started reading back the wrong bytes only
+    // on real Windows once this pass started dropping those unrelated
+    // helpers (bisected: identical source, only this pass's presence
+    // differs between a passing and a failing rcc.exe). The interaction
+    // is layout-sensitive, not a logic bug in this pass itself (its own
+    // liveness/omission decisions were confirmed correct), so disable it
+    // outright for this target rather than ship a known-corrupting
+    // pass while still investigating the real codegen defect it exposes.
+    (void)prog;
+    return;
+#endif
+    int n = 0;
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_FUNC) n++;
+    if (n == 0) return;
+    Function **fns = malloc(sizeof(Function *) * (size_t)n);
+    int i = 0;
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_FUNC) fns[i++] = item->fn;
+
+    Function **wl = NULL;
+    int wl_len = 0, wl_cap = 0;
+
+    // Roots: everything that ISN'T a candidate for omission, plus every
+    // real-linkage escape hatch (used/weak/ctor/dtor), plus a candidate's
+    // own alias source. Two candidate categories, matching real GCC
+    // exactly (verified): `static inline` is omittable unconditionally,
+    // at every -O level including -O0; a plain `static` (non-inline)
+    // function is omittable only from -O1 up — real GCC keeps an
+    // unreferenced plain-static function at -O0 but drops it starting at
+    // -O1. Needed for the plain-static case too, not just inline: the
+    // kernel's `might_resched()`/`cond_resched()` (non-inline callers of
+    // the CONFIG_PREEMPT_DYNAMIC static-call machinery) are themselves
+    // only reachable through a chain of plain `static` helpers that are
+    // -O2-eliminated in a real build; stopping at "static inline" left
+    // those chains rooted, keeping a real reference to the perpetually
+    // undefined `__SCK__*` static-call-key symbols and failing the link.
+    for (int k = 0; k < n; k++) {
+        Function *f = fns[k];
+        bool omittable = f->is_static && f->body &&
+            !f->is_used && !f->is_weak && !f->is_constructor && !f->is_destructor &&
+            (f->is_inline || opt_O1);
+        if (!omittable)
+            dce_mark(f, &wl, &wl_len, &wl_cap);
+    }
+    for (int k = 0; k < n; k++)
+        if (fns[k]->alias_target) {
+            Function *t = dce_lookup(fns, n, fns[k]->alias_target);
+            if (t) dce_mark(t, &wl, &wl_len, &wl_cap);
+        }
+    // A global's initializer taking a candidate's address (a function
+    // pointer table entry, e.g. `static const struct ops o = { .fn = h };`)
+    // keeps it alive — that Reloc is the only trace of the reference left
+    // once global_initializer() has already consumed the initializer AST.
+    for (LVar *g = prog->globals; g; g = g->next)
+        for (Reloc *r = g->relocs; r; r = r->next) {
+            Function *f = dce_lookup(fns, n, r->label);
+            if (f) dce_mark(f, &wl, &wl_len, &wl_cap);
+        }
+    // Raw top-level asm (outside any function) mentioning a candidate's
+    // name by hand can't be parsed as a call at all.
+    for (TLItem *item = prog->items; item; item = item->next)
+        if (item->kind == TL_ASM && item->asm_str)
+            for (int k = 0; k < n; k++)
+                if (!fns[k]->dce_live && text_mentions_ident(item->asm_str, fns[k]->name))
+                    dce_mark(fns[k], &wl, &wl_len, &wl_cap);
+
+    // BFS closure: scanning a live function's body may enqueue more:
+    // wl_len grows in place as dce_scan_node()/dce_mark() append to it.
+    for (int qi = 0; qi < wl_len; qi++) {
+        Function *f = wl[qi];
+        if (f->body)
+            dce_scan_node(f->body, fns, n, &wl, &wl_len, &wl_cap);
+    }
+
+    // Splice out every candidate that never got marked live.
+    TLItem **link = &prog->items;
+    for (TLItem *item = prog->items; item;) {
+        TLItem *next = item->next;
+        if (item->kind == TL_FUNC && item->fn->body && item->fn->is_static &&
+            !item->fn->dce_live) {
+            *link = next;
+        } else {
+            link = &item->next;
+        }
+        item = next;
+    }
+
+    free(fns);
+    free(wl);
 }

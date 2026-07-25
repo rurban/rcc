@@ -530,6 +530,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // -E writes preprocessed text to -o's target when one was given (real
+    // cpp/gcc behavior) — pp_print_tokens() used to always target stdout,
+    // silently discarding "-o some.lds" and leaving kbuild's cmd_cpp_lds_S
+    // (arch/x86/entry/vdso/*/vdso64.lds, built via `$(CPP) ... -o $@ $<`)
+    // with no output file at all.
+    FILE *pp_out = stdout;
+    if (opt_E && opt_o && !opt_stdout) {
+        pp_out = fopen(out_path, "w");
+        if (!pp_out) {
+            fprintf(stderr, "rcc: error: cannot open output file %s\n", out_path);
+            return 1;
+        }
+    }
+
     // Process each input file
     for (int fi = 0; fi < n_inputs; fi++) {
         char *cur_path = input_files[fi];
@@ -582,7 +596,7 @@ int main(int argc, char **argv) {
         }
 
         if (opt_E) {
-            pp_print_tokens(tok);
+            pp_print_tokens(tok, pp_out);
             continue;
         }
 
@@ -665,6 +679,11 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  opt         %s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
         }
+
+        // Not gated on -O1: omitting a never-referenced `static inline`
+        // function's body is standard-permitted (C11 6.7.4p7) and real
+        // GCC/Clang do it unconditionally, not just as an optimization.
+        eliminate_unused_static_inline(prog);
 
         if (!opt_dryrun) {
             t0 = opt_time ? now_us() : 0;
@@ -885,5 +904,6 @@ int main(int argc, char **argv) {
 
         return status ? 1 : 0;
     }
+    if (opt_E && pp_out != stdout) fclose(pp_out);
     return 0;
 }

@@ -107,7 +107,7 @@ char *path_basename(char *path);
 // preprocess() is the single scanner: it lexes each source file once and
 // runs macro expansion on the token stream, returning parser-ready tokens.
 Token *preprocess(char *filename, char *p);
-void pp_print_tokens(Token *tok); // -E: re-create the lines from the tokens
+void pp_print_tokens(Token *tok, FILE *out); // -E: re-create the lines from the tokens
 char *pp_tokens_to_text(Token *tok); // like pp_print_tokens but into a heap buffer
 char *dump_macros_text(void); // -dM
 Token *lex_one(char **pp, int *plineno);
@@ -371,6 +371,7 @@ struct LVar {
     bool is_static; // static local variable
     bool is_inline;
     bool is_weak;
+    bool is_used; // __attribute__((used)) — see Function.is_used
     bool has_init;
     bool is_constexpr; // C23 constexpr object
     int64_t init_val;
@@ -379,7 +380,18 @@ struct LVar {
     Reloc *relocs;
     char *cleanup_func; // __attribute__((__cleanup__(func)))
     bool is_tls; // __thread / _Thread_local
-    bool is_register; // register compound literal
+    bool is_register; // register compound literal, or a GCC global register variable
+    bool is_global_reg; // `register TYPE name asm("regname");` at file scope (GCC
+    // "Global Register Variables" extension, e.g. x86's
+    // `register unsigned long current_stack_pointer asm("rsp");`): the
+    // identifier names a hardware register directly, never memory — no
+    // symbol/storage is emitted, and every read materializes straight
+    // from `global_reg_name`'s physical register (see codegen.c's
+    // ND_LVAR handling). asm_name is left NULL for these (it's not a
+    // linker symbol rename); the decoded asm(...) string lives here
+    // instead, kept separate so ordinary asm-renamed globals are
+    // unaffected.
+    char *global_reg_name; // e.g. "rsp", "sp" — valid iff is_global_reg
     bool is_deprecated; // C23 [[deprecated]]
     char *deprecated_msg; // C23 [[deprecated("reason")]]
     bool is_nodiscard; // C23 [[nodiscard]]
@@ -569,6 +581,13 @@ struct Function {
     bool is_static;
     bool is_extern;
     bool is_weak;
+    bool is_used; // __attribute__((used)): exempts from
+    // eliminate_unused_static_inline()'s omission of a never-called
+    // `static inline` function, matching real GCC (verified: without
+    // `used`, GCC omits an uncalled `static inline` function's body at
+    // every -O level, even -O0; with it, GCC always emits one).
+    bool dce_live; // scratch flag for eliminate_unused_static_inline()'s
+    // reachability pass; meaningless outside that pass
     bool has_def;
     bool dealloc_vla; // restore RSP from VLA base on scope exit
 };
@@ -625,6 +644,13 @@ Type *vla_of(Type *base, Node *expr, int64_t arr_len);
 
 // Optimizer (CTFE)
 void optimize(Program *prog);
+// Drop TL_FUNC entries for `static inline` functions that nothing in this
+// translation unit calls or takes the address of (see opt.c for the full
+// rationale) — matches real GCC/Clang, which never emit such a function's
+// body at any optimization level. Called unconditionally (not gated on
+// -O1+): this is standard-permitted inline-definition omission, not an
+// optimization.
+void eliminate_unused_static_inline(Program *prog);
 bool eval_const_expr(Node *node, long long *val);
 
 // Unicode identifiers

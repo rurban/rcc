@@ -301,6 +301,11 @@ int objfile_find_sym(ObjFile *obj, const char *name);
 void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
                        int sym_idx, uint32_t type, int64_t addend);
 
+// Shift every relocation in `section` with offset >= patch_off forward by
+// n bytes — a same-section .balign/.skip/ALTERNATIVE() insertion physically
+// moved those bytes; see obj.c's definition for the full rationale.
+void objfile_shift_relocs(ObjFile *obj, int section, uint64_t patch_off, int64_t n);
+
 // Look up a dynamically-registered section by name, creating it (with the
 // given sh_flags/sh_entsize) if it doesn't exist yet. Returns its section
 // id (>= SEC_NUM). sh_flags/sh_entsize are only applied on creation.

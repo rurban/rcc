@@ -5617,18 +5617,26 @@ static char *asm_macro_pass(AsmState *as, const char *text) {
 // Insert `n` bytes of `fill` at `patch_off` within `section`'s buffer,
 // shifting everything already recorded after that point: the section's own
 // bytes, every local-label offset (and its mirror in obj->syms[]) at or
-// past patch_off, and every other pending fixup's patch_off at or past it
+// past patch_off, every other pending fixup's patch_off at or past it
 // (including not-yet-resolved FIXUP_SKIP_MAXDIFF entries, so nested
 // ALTERNATIVE_2-style constructs — two of these in the same buffer — chain
-// correctly when resolved left to right).
+// correctly when resolved left to right), and every already-committed
+// relocation (objfile_shift_relocs()) whose r_offset is at or past it.
 //
-// This is a real, if narrow, form of the "two-pass assembler" the
-// alt_rlen/alt_slen padding computation was originally deferred on: safe
-// here specifically because the ALTERNATIVE() macro never touches this
-// section again after the padding point within a single assemble_inline
-// call (it immediately .pushsection's away to .altinstructions /
-// .altinstr_replacement) — so no relocation already added against this
-// section can land past patch_off, and there's nothing broader to shift.
+// That last piece matters because FIXUP_ALIGN/FIXUP_SKIP_MAXDIFF
+// resolution is itself deferred to a single end-of-buffer pass (see
+// assemble_inline()'s final loop) — by the time an earlier ALTERNATIVE()'s
+// padding here actually gets inserted, a CALL/JMP to a symbol not yet
+// known to be local (further down in the same .pushsection .text, "ax" /
+// .popsection sequence — e.g. a later SYM_FUNC/SYM_CODE block reusing the
+// same section) may already have committed its R_*_PLT32/PC32 relocation
+// via objfile_add_reloc() at its own then-current, pre-padding offset.
+// Real kernel case: arch/x86/entry/entry_64.S's rewind_stack_and_make_dead
+// — its "call make_task_dead" relocation drifted stale behind
+// __switch_to_asm's earlier FILL_RETURN_BUFFER ALTERNATIVE() padding,
+// producing objtool's "unannotated intra-function call" (the untouched
+// relocation left the call's displacement at its placeholder zero,
+// decoding as a call to the very next instruction).
 static void skip_insert_shift(AsmState *as, int section, size_t patch_off,
                               size_t n, uint8_t fill, int locals_mark,
                               int fixup_idx) {
@@ -5656,6 +5664,11 @@ static void skip_insert_shift(AsmState *as, int section, size_t patch_off,
         if (fx2->section == section)
             fx2->patch_off += n;
     }
+    // Already-committed relocations don't have the labels' "exactly at
+    // patch_off" ambiguity (a relocation field never legitimately starts
+    // right at another construct's alignment boundary), so a plain
+    // offset-based ">=" is exact here — see objfile_shift_relocs().
+    objfile_shift_relocs(as->obj, section, patch_off, (int64_t)n);
 }
 
 int assemble_inline(ObjFile *obj, const char *tmpl,

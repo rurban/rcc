@@ -2494,9 +2494,24 @@ char *pp_tokens_to_text(Token *tok) {
     return buf;
 }
 
-void pp_print_tokens(Token *tok) {
+// -E output. Same source-adjacency logic as pp_tokens_to_text() (see its
+// comment): the C lexer splits assembly/linker-script dot-prefixed names
+// ("*.hash", ".text", "LINUX_2.6") into separate punctuation + identifier/
+// number tokens exactly as it would "a.b.c" in real C, so unconditionally
+// separating every token with a space — what this used to do — corrupts
+// any -E consumer that cares about exact spelling, not just whitespace-
+// insensitive C: a linker-script "cpp -P" pass (kbuild's cmd_cpp_lds_S)
+// turns ".hash" into ". hash", which GNU ld's script grammar reads as the
+// location-counter symbol "." followed by a bare "hash" — a parse error
+// (or, worse, an entirely different symbol table). Real cpp/cc1 preserve
+// byte-adjacency; so must this.
+void pp_print_tokens(Token *tok, FILE *out) {
     int cur_line = 1;
     const char *cur_file = NULL;
+    bool first_on_line = true;
+    char *prev_sp = NULL;
+    int prev_sl = 0;
+    Token *prev_tok = NULL;
     for (; tok && tok->kind != TK_EOF; tok = tok->next) {
         int ln = tok->lineno > 0 ? tok->lineno : cur_line;
         const char *fn = tok->filename;
@@ -2505,20 +2520,31 @@ void pp_print_tokens(Token *tok) {
             ln = cur_line;
         }
         if (!cur_file || strcmp(fn, cur_file) != 0) {
-            printf("# %d \"%s\"\n", ln, fn);
+            if (!first_on_line) fputc('\n', out);
+            fprintf(out, "# %d \"%s\"\n", ln, fn);
             cur_line = ln;
             cur_file = fn;
+            first_on_line = true;
+            prev_sp = NULL;
         }
         while (cur_line < ln) {
-            putchar('\n');
+            fputc('\n', out);
             cur_line++;
+            first_on_line = true;
+            prev_sp = NULL;
         }
         int sl;
         char *sp = tok_spelling(tok, &sl);
-        if (sp && sl > 0) fwrite(sp, 1, sl, stdout);
-        putchar(' ');
+        bool adjacent = (prev_sp && sp && prev_sp + prev_sl == sp) ||
+            (prev_tok && prev_tok->no_space_after);
+        if (!first_on_line && !adjacent) fputc(' ', out);
+        if (sp && sl > 0) fwrite(sp, 1, (size_t)sl, out);
+        first_on_line = false;
+        prev_sp = sp;
+        prev_sl = sl;
+        prev_tok = tok;
     }
-    putchar('\n');
+    fputc('\n', out);
 }
 char *dump_macros_text(void) {
     size_t total = 0;

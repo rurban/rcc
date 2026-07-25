@@ -3895,6 +3895,72 @@ static bool try_const_int(Node *n, int64_t *val) {
     }
     return false;
 }
+// Resolve a GCC "global register variable" asm(...) register name (e.g.
+// "rsp" on x86-64, "sp" on arm64) to the physical register it pins, or -1
+// if unrecognized. Only the names the kernel headers we build actually use
+// need to resolve (x86-64's `current_stack_pointer asm("rsp")`, arm64's
+// `asm("sp")`) — anything else returns -1 so the caller can fall back
+// instead of silently mis-decoding a register it doesn't understand.
+#ifdef ARCH_ARM64
+static int global_reg_lookup(const char *name) {
+    if (!strcmp(name, "sp")) return ARM64_SP;
+    if (!strcmp(name, "fp") || !strcmp(name, "x29")) return ARM64_X29;
+    if (!strcmp(name, "lr") || !strcmp(name, "x30")) return ARM64_X30;
+    if (name[0] == 'x' && name[1] >= '0' && name[1] <= '9') {
+        int n = atoi(name + 1);
+        if (n >= 0 && n <= 30) return n; // Arm64Reg Xn is numbered n
+    }
+    return -1;
+}
+#else
+static int global_reg_lookup(const char *name) {
+    static const struct {
+        const char *name;
+        X86Reg reg;
+    } tab[] = {
+        {"rax", X86_RAX},
+        {"rbx", X86_RBX},
+        {"rcx", X86_RCX},
+        {"rdx", X86_RDX},
+        {"rsp", X86_RSP},
+        {"rbp", X86_RBP},
+        {"rsi", X86_RSI},
+        {"rdi", X86_RDI},
+        {"r8", X86_R8},
+        {"r9", X86_R9},
+        {"r10", X86_R10},
+        {"r11", X86_R11},
+        {"r12", X86_R12},
+        {"r13", X86_R13},
+        {"r14", X86_R14},
+        {"r15", X86_R15},
+    };
+    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+        if (!strcmp(name, tab[i].name)) return tab[i].reg;
+    return -1;
+}
+#endif
+
+// Materialize `r = <hardware register named by var->global_reg_name>` for a
+// read of a GCC global register variable (LVar.is_global_reg — see rcc.h).
+// Such a variable has no address and no backing memory at all in
+// conforming GCC/Clang; taking one is already rejected elsewhere (the same
+// `is_register` check that rejects `&register int x`). Returns false
+// (emits nothing) on an unrecognized register name so the caller can fall
+// back to its ordinary global-variable path rather than miscompile it.
+static bool gen_global_reg_read(VReg r, LVar *var) {
+    int reg = global_reg_lookup(var->global_reg_name);
+    if (reg < 0) return false;
+#ifdef ARCH_ARM64
+    if (reg == ARM64_SP)
+        arm64_add_imm(cg_sec, 1, REG(r), ARM64_SP, 0, 0); // mov r, sp  (add r, sp, #0)
+    else
+        arm64_orr_reg(cg_sec, 1, REG(r), ARM64_XZR, (Arm64Reg)reg, ARM64_LSL, 0); // mov r, xN
+#else
+    x86_mov_rr(cg_sec, 8, REG(r), (X86Reg)reg);
+#endif
+    return true;
+}
 static VReg gen_addr(Node *node) {
     // A vector arithmetic/compare/unary result is materialized into a 16-byte
     // slot; its "address" is that slot (used when a vector value is returned by
@@ -6216,7 +6282,9 @@ static VReg gen(Node *node) {
 #else
                 emit_load(node->ty, r, X86_BASE_RBP, node->var->offset);
 #endif
-            else {
+            else if (node->var->is_global_reg && gen_global_reg_read(r, node->var)) {
+                // Handled: r now holds the pinned hardware register's value.
+            } else {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
                 int ta = alloc_reg();
@@ -11687,6 +11755,15 @@ struct ObjFile *codegen(Program *prog) {
         char **emitted_syms = NULL;
         int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
+            // GCC global register variable (`register T x asm("reg");`): no
+            // storage, no symbol — see LVar.is_global_reg in rcc.h and
+            // gen_global_reg_read() above. Emitting it as an ordinary
+            // uninitialized global here is exactly the bug that produced
+            // "multiple definition of `rsp`" linking the x86-64 vDSO: every
+            // TU that includes the declaring header got its own colliding
+            // non-static .bss tentative definition of the register's name.
+            if (var->is_global_reg)
+                continue;
             if (var->is_extern && !var->alias_target && !var->asm_name)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
