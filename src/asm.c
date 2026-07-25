@@ -4458,8 +4458,8 @@ static const char *param_lookup(const ParamMap *m, const char *name) {
 
 static void param_set(ParamMap *m, const char *name, const char *value) {
     if (m->n >= (int)(sizeof(m->names) / sizeof(m->names[0]))) return;
-    strncpy(m->names[m->n], name, sizeof(m->names[0]) - 1);
-    strncpy(m->values[m->n], value, sizeof(m->values[0]) - 1);
+    snprintf(m->names[m->n], sizeof(m->names[0]), "%s", name);
+    snprintf(m->values[m->n], sizeof(m->values[0]), "%s", value);
     m->n++;
 }
 
@@ -4507,7 +4507,7 @@ static void asmvar_set(AsmState *as, const char *name, int64_t val) {
             return;
         }
     if (as->nvars < (int)(sizeof(as->vars) / sizeof(as->vars[0]))) {
-        strncpy(as->vars[as->nvars].name, name, sizeof(as->vars[0].name) - 1);
+        snprintf(as->vars[as->nvars].name, sizeof(as->vars[0].name), "%s", name);
         as->vars[as->nvars].value = val;
         as->nvars++;
     }
@@ -5273,7 +5273,7 @@ static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
             if (as->nmacros < (int)(sizeof(as->macros) / sizeof(as->macros[0]))) {
                 struct AsmMacro *mac = &as->macros[as->nmacros++];
                 memset(mac, 0, sizeof(*mac));
-                strncpy(mac->name, name, sizeof(mac->name) - 1);
+                snprintf(mac->name, sizeof(mac->name), "%s", name);
                 char paramsbuf[300];
                 strncpy(paramsbuf, skip_ws((char *)s), sizeof(paramsbuf) - 1);
                 paramsbuf[sizeof(paramsbuf) - 1] = '\0';
