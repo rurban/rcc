@@ -492,6 +492,13 @@ int main(int argc, char **argv) {
             opt_pedantic = true;
         } else if (!strcmp(argv[i], "-pedantic") || !strcmp(argv[i], "-Wpedantic")) {
             opt_pedantic = true;
+        } else if (!strcmp(argv[i], "-m32") || !strcmp(argv[i], "-mx32") ||
+                   !strcmp(argv[i], "-m16")) {
+            // Native-only: one binary is one word width/ABI (AGENTS.md).
+            fprintf(stderr, "rcc: fatal error: %s not supported — rcc is native-only, "
+                            "no cross-compilation to a different word width in one binary\n",
+                    argv[i]);
+            return 1;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             if (opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
