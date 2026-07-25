@@ -4178,13 +4178,18 @@ static bool looks_like_address_expr(Node *node) {
     case ND_STR:
         return true;
     case ND_LVAR:
-        // A bare function name (no explicit '&') always implicitly decays
-        // to its address — there's no other valid meaning for it in a
-        // scalar initializer — unlike a bare *data* variable reference,
-        // which extract_reloc()'s ND_LVAR case would otherwise also treat
-        // as "the address of", too permissively (see the c11-thread-local-2
-        // regression this function was written to guard against).
-        return node->var && node->var->is_function;
+        // A bare function name, or a bare *array*-typed variable name (no
+        // explicit '&' on either), always implicitly decays to its
+        // address — there's no other valid meaning for either in a
+        // scalar initializer, per C's function/array-to-pointer decay
+        // rules — unlike a bare *scalar* data variable reference, which
+        // extract_reloc()'s ND_LVAR case would otherwise also treat as
+        // "the address of", too permissively (see the c11-thread-local-2
+        // regression this function was written to guard against). Real
+        // kernel case: arch/x86/kernel/idt.c's
+        // `.address = (unsigned long) idt_table` (idt_table is a plain
+        // array, no '&') — array decay, not a value read.
+        return node->var && (node->var->is_function || (node->var->ty && node->var->ty->kind == TY_ARRAY));
     case ND_ADD:
     case ND_SUB:
         return looks_like_address_expr(node->lhs) || looks_like_address_expr(node->rhs);
@@ -7454,6 +7459,75 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
     return result;
 }
 
+// Synthesize a nested (ElemType){...} compound-literal value for a
+// braced struct/union initializer used as an ARRAY ELEMENT's value —
+// e.g. a designated array index `[N] = { .field = val, ... }` where the
+// array's element type is itself a struct/union. assign() alone can't
+// parse a bare "{...}" as an expression, so any caller handing it a
+// braced value must go through this instead. Shared by the top-level
+// array-compound-literal path and a struct compound literal's own
+// array-typed *member* (below) — the latter used to call assign()
+// unconditionally on a designated array index's value, so a nested
+// struct/union element (arch/x86/mm/init.c's execmem_info: `.ranges = {
+// [EXECMEM_MODULE_TEXT] = { .flags = ..., .start = ..., ... }, ... }`)
+// hit "expected an expression" on the inner brace.
+static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
+                                       Token *start, int *anon_count) {
+    Token *fake_start = tok; // tok == '{'
+    tok = tok->next; // skip '{'
+    char *ename = format(".Lanon.%d", (*anon_count)++);
+    LVar *evar = new_var(ename, elem_ty, true);
+    Node *ezinit = new_node(ND_ZERO_INIT, start);
+    ezinit->lhs = new_var_node(evar, start);
+    Node *eres = new_binary(ND_COMMA, ezinit, new_var_node(evar, start), start);
+    Member *emem = elem_ty->members;
+    while (!equalc(tok, "}")) {
+        if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+            char *mname = tok->next->name;
+            tok = tok->next->next;
+            tok = skip(tok, "=");
+            Member *m = find_member_by_name(elem_ty, mname);
+            if (m) {
+                Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+                ma->member = m;
+                check_type(ma);
+                Node *v2 = assign(&tok, tok);
+                check_type(v2);
+                Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+                check_type(a2);
+                eres = new_binary(ND_COMMA, eres, a2, start);
+                emem = m->next;
+            } else {
+                assign(&tok, tok);
+            }
+        } else if (emem) {
+            Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+            ma->member = emem;
+            check_type(ma);
+            Node *v2 = assign(&tok, tok);
+            check_type(v2);
+            Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+            check_type(a2);
+            eres = new_binary(ND_COMMA, eres, a2, start);
+            emem = emem->next;
+        } else {
+            assign(&tok, tok);
+        }
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (equalc(tok, "}")) break;
+            continue;
+        }
+        break;
+    }
+    tok = skip(tok, "}");
+    Node *efinal = new_var_node(evar, start);
+    Node *val = new_binary(ND_COMMA, eres, efinal, start);
+    check_type(val);
+    *rest = tok;
+    return val;
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -8757,58 +8831,7 @@ static Node *unary(Token **rest, Token *tok) {
                     Node *val;
                     // {.member=val,...} as nested struct/union initializer for element
                     if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
-                        // Synthesize (ElemType){...} compound literal for the element
-                        Token *fake_start = tok; // tok = '{', the brace
-                        tok = tok->next; // skip '{'
-                        char *ename = format(".Lanon.%d", anon_count++);
-                        LVar *evar = new_var(ename, ty->base, true);
-                        Node *ezinit = new_node(ND_ZERO_INIT, start);
-                        ezinit->lhs = new_var_node(evar, start);
-                        Node *eres = new_binary(ND_COMMA, ezinit, new_var_node(evar, start), start);
-                        Member *emem = ty->base->members;
-                        while (!equalc(tok, "}")) {
-                            if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-                                char *mname = tok->next->name;
-                                tok = tok->next->next;
-                                tok = skip(tok, "=");
-                                Member *m = find_member_by_name(ty->base, mname);
-                                if (m) {
-                                    Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
-                                    ma->member = m;
-                                    check_type(ma);
-                                    Node *v2 = assign(&tok, tok);
-                                    check_type(v2);
-                                    Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
-                                    check_type(a2);
-                                    eres = new_binary(ND_COMMA, eres, a2, start);
-                                    emem = m->next;
-                                } else {
-                                    assign(&tok, tok);
-                                }
-                            } else if (emem) {
-                                Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
-                                ma->member = emem;
-                                check_type(ma);
-                                Node *v2 = assign(&tok, tok);
-                                check_type(v2);
-                                Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
-                                check_type(a2);
-                                eres = new_binary(ND_COMMA, eres, a2, start);
-                                emem = emem->next;
-                            } else {
-                                assign(&tok, tok);
-                            }
-                            if (equalc(tok, ",")) {
-                                tok = tok->next;
-                                if (equalc(tok, "}")) break;
-                                continue;
-                            }
-                            break;
-                        }
-                        tok = skip(tok, "}");
-                        Node *efinal = new_var_node(evar, start);
-                        val = new_binary(ND_COMMA, eres, efinal, start);
-                        check_type(val);
+                        val = synth_struct_elem_literal(ty->base, &tok, tok, start, &anon_count);
                     } else {
                         val = assign(&tok, tok);
                     }
@@ -8915,7 +8938,9 @@ static Node *unary(Token **rest, Token *tok) {
                                     Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
                                     Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
                                     Token *val_start = tok;
-                                    Node *val = assign(&tok, tok);
+                                    Node *val = (equalc(tok, "{") && (mem->ty->base->kind == TY_STRUCT || mem->ty->base->kind == TY_UNION))
+                                        ? synth_struct_elem_literal(mem->ty->base, &tok, tok, start, &anon_count)
+                                        : assign(&tok, tok);
                                     check_type(val);
                                     Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
                                     check_type(asgn);
