@@ -1254,7 +1254,23 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             // next body token (e.g. "__export_symbol_##sym:"). Recover that
             // from the pre-substitution body tokens (n, n->next) so a later
             // #-stringize of this expansion keeps them adjacent too.
-            if (!xhead->next && n->next && !str_needs_space(n, n->next))
+            //
+            // When xhead (the ## rhs operand, post-argument-prescan)
+            // expanded to *more than one* token — e.g. CONCATENATE(defs_,
+            // _PT_FMT_H) where _PT_FMT_H is itself "PT_FMT.h" and PT_FMT
+            // further expands to a single token, leaving xhead as
+            // [x86_64, ., h] — the tightness that matters isn't `n`'s
+            // (the pre-expansion "_PT_FMT_H" placeholder)'s own body
+            // adjacency, it's whether xhead's *first* token was tight
+            // against xhead->next in its own expansion. That's exactly
+            // what xhead->no_space_after already records (set when PT_FMT
+            // itself was expanded, via frame_pull()'s tight_after
+            // propagation) — inherit it onto the pasted token instead of
+            // defaulting to "needs a space" and splicing e.g. "defs_x86_64"
+            // + " " + ".h" back together as a __stringify()'d filename.
+            if (xhead->next)
+                pt->no_space_after = xhead->no_space_after;
+            else if (n->next && !str_needs_space(n, n->next))
                 pt->no_space_after = true;
             splice_tokens(&rhead, &rtail, pt);
             splice_tokens(&rhead, &rtail, xhead->next);
