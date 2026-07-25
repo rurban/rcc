@@ -4056,6 +4056,22 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
             }
         }
 
+        // Handle "identifier[...].member... + const" / "- const" — the
+        // same address-plus-offset idiom already supported for a string
+        // literal a few lines up, but for a plain symbol reference (with
+        // or without a preceding [index]/.member chain). Real kernel
+        // case: arch/x86/kernel/alternative.c's
+        // `x86nops + 1 + 2 + ...` computing sub-array start addresses.
+        if (equalc(*rest, "+") || equalc(*rest, "-")) {
+            bool is_sub = equalc(*rest, "-");
+            Token *op_next = (*rest)->next;
+            Node *n = assign(&op_next, op_next);
+            long long v;
+            if (eval_const_expr(n, &v)) {
+                if (addend) *addend += is_sub ? -(int)v : (int)v;
+                *rest = op_next;
+            }
+        }
         return true;
     }
 
