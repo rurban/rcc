@@ -2283,7 +2283,23 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             if (pname) {
                 LVar *plvar = arena_alloc(sizeof(LVar));
                 plvar->name = pname;
-                plvar->ty = pt;
+                // Use pty (the original, identity-preserving type), not pt
+                // (the shallow-copied param_types list node): pt's `*pt =
+                // *pty` clone breaks type_equal()'s pointer-identity check
+                // for struct/union types, e.g. i915_reg_t/i915_mcr_reg_t
+                // (drivers/gpu/drm/i915/i915_reg_defs.h) — two distinct
+                // anonymous single-u32-member structs distinguished only
+                // by tag identity, selected via
+                // `_Generic((r), i915_reg_t: ..., i915_mcr_reg_t: ...)`.
+                // With plvar->ty pointing at the clone instead of the
+                // typedef table's own i915_reg_t Type*, neither
+                // association's re-resolved "i915_reg_t"/"i915_mcr_reg_t"
+                // type_name() result was ever pointer-equal to it, so
+                // _Generic always fell through to "no matching
+                // association" for every struct-typed parameter reference.
+                // pt and pty have identical size/align/members regardless,
+                // so this doesn't affect offset/alignment computation.
+                plvar->ty = pty;
                 plvar->is_local = true;
                 plvar->offset = 0; // placeholder; updated by definition handler
                 plvar->next = locals;
@@ -10461,7 +10477,19 @@ Program *parse(Token *tok) {
                             // Reuse placeholder LVar from declarator_params; update offset
                             // so VLA dim expressions (e.g. a++) reference the correct slot.
                             lvar = (LVar *)pt->vla_len_val;
-                            lvar->ty = pt;
+                            // Struct/union types must keep pointer identity
+                            // with the typedef table's own Type* for
+                            // type_equal() (_Generic, __builtin_types_
+                            // compatible_p) — pt is a shallow `*pt = *pty`
+                            // clone (see declarator_params) and would break
+                            // that; lvar->ty already correctly holds the
+                            // original (set in declarator_params, preserved
+                            // through this reuse). Every other kind (VLA
+                            // params decay to a pointer before reaching
+                            // here, so this is never struct/union for them)
+                            // still re-syncs to pt as before.
+                            if (pt->kind != TY_STRUCT && pt->kind != TY_UNION)
+                                lvar->ty = pt;
                             int sz = pt->size < 4 ? 4 : pt->size;
                             int al = pt->align < 4 ? 4 : pt->align;
                             stack_offset = align_to(stack_offset + sz, al);
