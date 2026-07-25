@@ -209,7 +209,8 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
             else
                 objfile_add_reloc(as->obj, fx->section, fx->patch_off,
                                   occurrence_idx, R_X86_64_PC32, fx->addend);
-            as->fixups[i] = as->fixups[--as->nfixups];
+            memmove(&as->fixups[i], &as->fixups[i + 1], (size_t)(as->nfixups - i - 1) * sizeof(*as->fixups));
+            as->nfixups--;
             i--;
             continue;
         }
@@ -229,7 +230,8 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
             } else
 #endif
                 asm_error(as, "cross-section fixup");
-            as->fixups[i] = as->fixups[--as->nfixups];
+            memmove(&as->fixups[i], &as->fixups[i + 1], (size_t)(as->nfixups - i - 1) * sizeof(*as->fixups));
+            as->nfixups--;
             i--;
             continue;
         }
@@ -261,8 +263,27 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
         }
         default: break;
         }
-        // Remove this fixup
-        as->fixups[i] = as->fixups[--as->nfixups];
+        // Remove this fixup — order-preserving (memmove, not swap-with-last):
+        // FIXUP_LABELDIFF/FIXUP_SKIP_MAXDIFF/FIXUP_ALIGN entries elsewhere in
+        // this same array are never touched here (skipped above), but their
+        // *relative array order* is load-bearing — skip_insert_shift() and
+        // the deferred-resolution loop in assemble_inline() both assume
+        // array index == chronological creation order to decide which
+        // labels/fixups a given insertion must shift. A swap-with-last
+        // remove splices whatever fixup (of *any* kind) currently sits last
+        // — possibly a much-later-created FIXUP_ALIGN/SKIP_MAXDIFF/
+        // LABELDIFF — into this earlier slot, corrupting that ordering: a
+        // .balign padding computation elsewhere in the file would then see
+        // an unrelated, out-of-place fixup as "chronologically between" two
+        // constructs it has nothing to do with, shifting labels it should
+        // never touch (or missing ones it should). Found via a real kernel
+        // build: arch/x86/entry/entry_64.S's xen_error_entry, whose own
+        // .balign padding target silently drifted by bytes that belonged to
+        // an unrelated, far-later .balign fixup relocated into an earlier
+        // array slot by exactly this swap, corrupting every instruction
+        // after it (objtool: "can't find starting instruction").
+        memmove(&as->fixups[i], &as->fixups[i + 1], (size_t)(as->nfixups - i - 1) * sizeof(*as->fixups));
+        as->nfixups--;
         i--;
     }
 }
@@ -811,7 +832,7 @@ static X86Reg parse_x86_reg64(const char *s) {
     if (!strcmp(s, "r12") || !strcmp(s, "r12d") || !strcmp(s, "r12w") || !strcmp(s, "r12b")) return X86_R12;
     if (!strcmp(s, "r13") || !strcmp(s, "r13d") || !strcmp(s, "r13w") || !strcmp(s, "r13b")) return X86_R13;
     if (!strcmp(s, "r14") || !strcmp(s, "r14d") || !strcmp(s, "r14w") || !strcmp(s, "r14b")) return X86_R14;
-    if (!strcmp(s, "r15") || !strcmp(s, "r15w") || !strcmp(s, "r15b") || !strcmp(s, "r15")) return X86_R15;
+    if (!strcmp(s, "r15") || !strcmp(s, "r15d") || !strcmp(s, "r15w") || !strcmp(s, "r15b")) return X86_R15;
     return X86_NOREG;
 }
 
