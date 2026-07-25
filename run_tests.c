@@ -775,7 +775,7 @@ static const char *platform = "linux";
  * that case (NULL for rcc's own binaries). */
 static const char *platform_suffix = "linux";
 static const char *compiler_name;
-static bool is_arm64, is_darwin_cross, is_mingw_native, is_wine;
+static bool is_arm64, is_darwin_cross, is_mingw_native;
 static char runner_cmd[512];
 static bool has_runner;
 static int g_num_workers = 0;
@@ -842,8 +842,7 @@ static void detect_platform(const char *rcc_path) {
     /* We are a Windows PE binary.  mingw_cross if under wine. */
     else if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
         platform = "mingw_cross";
-        is_mingw_native = true;
-        is_wine = true;
+        has_runner = true;
     } else {
         platform = "mingw";
         is_mingw_native = true;
@@ -1753,6 +1752,10 @@ static void emit_backtrace(const char *exe_path, const char *args,
                            const char *src_file, const char *rcc, const char *cflags,
                            const char *const extra[],
                            char **ob, size_t *ol, size_t *oc) {
+    /* Debugger backtraces are only useful for diagnosing rcc's own
+     * codegen; a failure with an external reference compiler (gcc,
+     * tcc, clang, ...) used for cross-checking is not an rcc bug. */
+    if (compiler_name) return;
     static bool lldb_failed, gdb_failed;
     char dbg[512];
     snprintf(dbg, sizeof(dbg), "%s.dbg", exe_path);
@@ -3280,7 +3283,7 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         if (r->compile_out && r->compile_out[0])
             fprintf(stderr, "%s", r->compile_out);
         /* Re-run compile for diagnostics */
-        if (r->compile_cmdline) {
+        if (r->compile_cmdline && !compiler_name) {
             ProcResult vr = run_exe_with_cmdline(NULL, r->compile_cmdline, 30, NULL);
             fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                     base, vr.exit_code,
@@ -3328,25 +3331,27 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         /* print captured stdout/stderr from the failing test */
         if (r->exec_out && r->exec_out[0])
             fprintf(stderr, "--- %s ---\n%s", base, r->exec_out);
-        /* Re-run with VERBOSE env to get internal diagnostics */
-        setenv("VERBOSE", "1", 1);
-        {
-            ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
-            fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
-                    base, vr.exit_code,
-                    vr.timed_out ? ", timed out" : "",
-                    vr.spawn_failed ? ", spawn failed" : "");
-            if (vr.out && vr.out[0])
-                fprintf(stderr, "%s", vr.out);
-            else
-                fprintf(stderr, "(no output)\n");
-            proc_free(&vr);
-        }
+        if (!compiler_name) {
+            /* Re-run with VERBOSE env to get internal diagnostics */
+            setenv("VERBOSE", "1", 1);
+            {
+                ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
+                fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                        base, vr.exit_code,
+                        vr.timed_out ? ", timed out" : "",
+                        vr.spawn_failed ? ", spawn failed" : "");
+                if (vr.out && vr.out[0])
+                    fprintf(stderr, "%s", vr.out);
+                else
+                    fprintf(stderr, "(no output)\n");
+                proc_free(&vr);
+            }
 #ifdef _WIN32
-        SetEnvironmentVariableA("VERBOSE", NULL);
+            SetEnvironmentVariableA("VERBOSE", NULL);
 #else
-        unsetenv("VERBOSE");
+            unsetenv("VERBOSE");
 #endif
+        }
     } else {
         print_result(base, COL_GREEN, "PASS");
         passed++;
@@ -3546,7 +3551,7 @@ static int run_unit_tests(void) {
                         fprintf(stderr, "%s", cr.out);
                     vlog_test_details(base, compile_cmdline, cr.out, NULL, NULL);
                     /* Re-run compile for diagnostics */
-                    {
+                    if (!compiler_name) {
                         ProcResult vr = run_exe_with_cmdline(NULL, compile_cmdline, 30, NULL);
                         fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                                 base, vr.exit_code,
@@ -3597,25 +3602,27 @@ static int run_unit_tests(void) {
                 snprintf(msg, sizeof(msg), "exit=%d", ae);
                 report_rows[nrows - 1].message = strdup(msg);
                 print_change(base, is_todo_test(base) ? "TODO" : "EXEC_FAIL");
-                /* Re-run with VERBOSE env to get internal diagnostics */
-                setenv("VERBOSE", "1", 1);
-                {
-                    ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
-                    fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
-                            base, vr.exit_code,
-                            vr.timed_out ? ", timed out" : "",
-                            vr.spawn_failed ? ", spawn failed" : "");
-                    if (vr.out && vr.out[0])
-                        fprintf(stderr, "%s", vr.out);
-                    else
-                        fprintf(stderr, "(no output)\n");
-                    proc_free(&vr);
-                }
+                if (!compiler_name) {
+                    /* Re-run with VERBOSE env to get internal diagnostics */
+                    setenv("VERBOSE", "1", 1);
+                    {
+                        ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
+                        fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                                base, vr.exit_code,
+                                vr.timed_out ? ", timed out" : "",
+                                vr.spawn_failed ? ", spawn failed" : "");
+                        if (vr.out && vr.out[0])
+                            fprintf(stderr, "%s", vr.out);
+                        else
+                            fprintf(stderr, "(no output)\n");
+                        proc_free(&vr);
+                    }
 #ifdef _WIN32
-                SetEnvironmentVariableA("VERBOSE", NULL);
+                    SetEnvironmentVariableA("VERBOSE", NULL);
 #else
-                unsetenv("VERBOSE");
+                    unsetenv("VERBOSE");
 #endif
+                }
                 /* Emit debugger backtrace */
                 if (!has_runner)
                     emit_backtrace(tmp, "", src_path, rcc, rccflags, NULL, NULL, NULL, NULL);
@@ -6020,6 +6027,7 @@ int main(int argc, char **argv) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
         rcc = buf;
+        compiler_name = NULL;
     }
 #endif
 
@@ -6027,6 +6035,7 @@ int main(int argc, char **argv) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/darwin-cross.sh", SCRIPT_DIR);
         rcc = buf;
+        compiler_name = NULL;
     }
 
     detect_platform(rcc);
@@ -6054,8 +6063,11 @@ int main(int argc, char **argv) {
 
     /* wine's console mangles ANSI SGI sequences (the ESC byte of e.g.
      * "\033[0;36m" gets eaten, leaving literal "[0;36m" in the output) */
-    if (streq(platform, "mingw_cross") || (has_runner && contains(runner_cmd, "wine")))
+    if (streq(platform, "mingw_cross") ||
+        (has_runner && contains(runner_cmd, "wine"))) {
         g_no_color = true;
+        compiler_name = NULL;
+    }
 #ifdef _WIN32
     if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version"))
         g_no_color = true;
