@@ -4984,9 +4984,16 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             append_reloc(var, offset, label, addend);
             return next;
         }
-        // &(compound literal) for pointer types
-        if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
-            tok = tok->next;
+        // &(compound literal) for pointer types. GCC-style macros commonly
+        // wrap the whole thing in one extra redundant paren —
+        // "(&(type){...})", e.g. linux/hwmon.h's HWMON_CHANNEL_INFO() —
+        // which a bare equalc(tok, "&") check misses entirely (tok is "("
+        // here, not "&"); peel off that one layer first if present.
+        bool wrapped_amp = equalc(tok, "(") && equalc(tok->next, "&") &&
+            find_compound_literal_start(tok->next->next);
+        Token *amp_tok = wrapped_amp ? tok->next : tok;
+        if (equalc(amp_tok, "&") && find_compound_literal_start(amp_tok->next)) {
+            tok = amp_tok->next;
             Token *compound_start = find_compound_literal_start(tok);
             // C23: file-scope compound literals may not specify register/thread_local
             Token *t = tok;
@@ -5005,8 +5012,46 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             Token *rest_inner = NULL;
             global_initializer(&rest_inner, compound_start, anon_var);
             tok = rest_inner;
+            if (wrapped_amp) tok = skip(tok, ")");
             append_reloc(var, offset, name, 0);
             return tok;
+        }
+        // Bare (no leading &) array-typed compound literal assigned to a
+        // pointer field: array-to-pointer decay, e.g. linux/hwmon.h's
+        // HWMON_CHANNEL_INFO(): ".config = (const u32 []) { A, B, 0 }"
+        // where .config's declared type is "const u32 *". Materializes
+        // the array as its own anonymous static object (recursing through
+        // global_initializer exactly like the "&(compound literal)" case
+        // above) and points this pointer field at its first element —
+        // same reloc mechanism, just without an explicit "&" and with the
+        // compound literal's type being the array itself rather than the
+        // struct/scalar the pointer's target type would suggest. Any
+        // redundant wrapping paren is already handled by
+        // find_compound_literal_start()'s own leading-"(" skip loop —
+        // no separate unwrap step needed here (unlike the "&(...)" case
+        // above, which checks for a literal leading "&" itself).
+        if (find_compound_literal_start(tok)) {
+            Token *compound_start = find_compound_literal_start(tok);
+            Token *t = tok;
+            while (equalc(t, "(")) t = t->next;
+            for (Token *u = t; u && !equalc(u, ")"); u = u->next)
+                if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
+                    error_tok(u, "file-scope compound literal specifies storage class");
+            bool saved_icl = in_compound_literal;
+            in_compound_literal = true;
+            Type *compound_ty = type_name(&t, t);
+            in_compound_literal = saved_icl;
+            while (equalc(t, ")")) t = t->next;
+            if (compound_ty->kind == TY_ARRAY) {
+                static int anon_arr_count;
+                char *name = format(".Lanonarr.%d", anon_arr_count++);
+                LVar *anon_var = new_var(name, compound_ty, false);
+                Token *rest_inner = NULL;
+                global_initializer(&rest_inner, compound_start, anon_var);
+                tok = rest_inner;
+                append_reloc(var, offset, name, 0);
+                return tok;
+            }
         }
     }
 
