@@ -42,6 +42,7 @@ static Macro *macro_htab[MACRO_HT_SIZE];
 
 static char *kw_line;
 static char *kw_file;
+static char *kw_base_file;
 static char *kw_counter;
 static char *kw_function;
 static char *kw_func;
@@ -144,6 +145,12 @@ static OnceFile *once_files;
 static int pp_counter;
 static int pp_cur_line;
 static char *pp_cur_file;
+// __BASE_FILE__: the main input file's name, unlike __FILE__/pp_cur_file
+// which tracks whichever file is *currently* being read (changes across
+// #include). Set once per preprocess() call, from the top-level source,
+// never touched again — including while inside a pre-include file pushed
+// on top of it (see preprocess()'s push_level() call order).
+static char *pp_base_file;
 static Macro *cmdline_macros;
 static Macro *saved_macros;
 static MacroStack *macro_stack;
@@ -1407,6 +1414,13 @@ static void expand_token(Token *t) {
     }
     if (name == kw_file) {
         char *fn = pp_cur_file ? pp_cur_file : (t->filename ? t->filename : "");
+        out_append(syn_str(fn, strlen(fn), t));
+        return;
+    }
+    if (name == kw_base_file) {
+        // Always the top-level main input file, unlike __FILE__ which
+        // tracks whatever file is currently being read (see pp_base_file).
+        char *fn = pp_base_file ? pp_base_file : (t->filename ? t->filename : "");
         out_append(syn_str(fn, strlen(fn), t));
         return;
     }
@@ -2757,6 +2771,7 @@ Token *preprocess(char *filename, char *p) {
 #undef define_pre
         kw_line = str_intern("__LINE__", 8);
         kw_file = str_intern("__FILE__", 8);
+        kw_base_file = str_intern("__BASE_FILE__", 13);
         kw_counter = str_intern("__COUNTER__", 11);
         kw_function = str_intern("__FUNCTION__", 12);
         kw_func = str_intern("__func__", 8);
@@ -2796,6 +2811,7 @@ Token *preprocess(char *filename, char *p) {
     xp_in_cond = false;
 
     char *resolved_name = (filename && strcmp(filename, "-") == 0) ? "<stdin>" : canonical_path(filename);
+    pp_base_file = resolved_name;
     lvl = NULL;
     // push_level() splices line continuations itself; passing raw input avoids a
     // double splice that would discard the physical-line counts (breaks __LINE__).
