@@ -4263,6 +4263,21 @@ static bool looks_like_address_expr(Node *node) {
     case ND_ADD:
     case ND_SUB:
         return looks_like_address_expr(node->lhs) || looks_like_address_expr(node->rhs);
+    case ND_COND: {
+        // A compile-time-constant condition selecting between "0" and a
+        // real address — e.g. linux/pci.h-style driver tables' common
+        // "IS_ENABLED(CONFIG_X) ? 0 : (kernel_ulong_t)&"literal"" idiom
+        // for optionally embedding a diagnostic string address in an
+        // otherwise-plain integer field. Only the *selected* branch needs
+        // to look like an address — the other is never evaluated, exactly
+        // like extract_reloc()'s own ND_COND case just below, which this
+        // gate must agree with or a selected address branch never even
+        // reaches it.
+        long long cv;
+        if (!eval_const_expr(node->cond, &cv))
+            return false;
+        return looks_like_address_expr(cv ? node->then : node->els);
+    }
     default:
         return false;
     }
