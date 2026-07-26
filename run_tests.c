@@ -3688,9 +3688,14 @@ static void generate_tcc_report(void) {
     if (!rf) return;
 
     time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
+    struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &now);
+#else
+    localtime_r(&now, &tm_buf);
+#endif
     char date_buf[64];
-    strftime(date_buf, sizeof(date_buf), "%B %Y", tm);
+    strftime(date_buf, sizeof(date_buf), "%B %Y", &tm_buf);
     int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
@@ -5823,8 +5828,14 @@ static void generate_report(void) {
     }
 
     time_t t = time(NULL);
+    struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
     char datebuf[64];
-    strftime(datebuf, sizeof(datebuf), "%B %d %Y %H:%M", localtime(&t));
+    strftime(datebuf, sizeof(datebuf), "%B %d %Y %H:%M", &tm_buf);
 
     fprintf(rf, "# RCC Test Suite Report\n\n");
     fprintf(rf, "**Platform**: %s\n\n", desc);

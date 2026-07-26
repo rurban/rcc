@@ -2599,7 +2599,7 @@ char *dump_macros_text(void) {
     char *buf = arena_alloc(total + 1);
     int n = 0;
     for (Macro *m = macros; m; m = m->next) {
-        n += sprintf(buf + n, "#define %s", m->name);
+        n += snprintf(buf + n, total - n + 1, "#define %s", m->name);
         if (m->is_function) {
             buf[n++] = '(';
             for (int i = 0; i < m->param_len; i++) {
