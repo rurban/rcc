@@ -4494,6 +4494,45 @@ static Token *find_compound_literal_start(Token *tok) {
     return NULL;
 }
 
+// After "&(compound literal)" is folded into a reference to a materialized
+// static object, a trailing chain of constant array subscripts and/or
+// member accesses may still follow before the enclosing initializer
+// context resumes — e.g. drivers/gpu/drm/i915/i915_pmu.c's
+// I915_PMU_FORMAT_ATTR(): "&((struct i915_str_attribute[]){...})[0].attr.attr".
+// Fold the whole chain into one constant byte addend on the relocation
+// here, rather than leaving it for the caller to (mis)parse as a separate
+// initializer element. `ty` is the compound literal's own type (array or
+// struct/union); a bare "&(compound literal)" with nothing trailing simply
+// falls straight through the loop with addend 0, unchanged from before.
+static int parse_const_addend_chain(Token **rest, Token *tok, Type *ty) {
+    int addend = 0;
+    for (;;) {
+        if (equalc(tok, "[") && ty && ty->kind == TY_ARRAY) {
+            tok = tok->next;
+            Node *n = assign(&tok, tok);
+            long long idx = 0;
+            eval_const_expr(n, &idx);
+            tok = skip(tok, "]");
+            addend += (int)idx * (int)(ty->base ? ty->base->size : 0);
+            ty = ty->base;
+            continue;
+        }
+        if (equalc(tok, ".") && ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION)) {
+            tok = tok->next;
+            Member *mem = find_member(ty, tok);
+            if (!mem)
+                error_tok(tok, "no such member");
+            addend += mem->offset;
+            ty = mem->ty;
+            tok = tok->next;
+            continue;
+        }
+        break;
+    }
+    *rest = tok;
+    return addend;
+}
+
 static void remove_reloc(LVar *var, int offset) {
     if (!var->relocs) return;
     if (var->relocs->offset == offset) {
@@ -5039,9 +5078,12 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         if (equalc(amp_tok, "&") && find_compound_literal_start(amp_tok->next)) {
             tok = amp_tok->next;
             Token *compound_start = find_compound_literal_start(tok);
-            // C23: file-scope compound literals may not specify register/thread_local
             Token *t = tok;
-            while (equalc(t, "(")) t = t->next;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
             for (Token *u = t; u && !equalc(u, ")"); u = u->next)
                 if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
                     error_tok(u, "file-scope compound literal specifies storage class");
@@ -5049,15 +5091,29 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
             in_compound_literal = saved_icl;
-            while (equalc(t, ")")) t = t->next;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
             Token *rest_inner = NULL;
             global_initializer(&rest_inner, compound_start, anon_var);
             tok = rest_inner;
+            // Any extra redundant parens wrapped directly around the
+            // compound literal itself (open_count counts both those and
+            // the type-cast's own required paren, already closed above)
+            // close here, immediately after the literal's initializer body.
+            for (int i = 0; i < open_count - close_count; i++)
+                tok = skip(tok, ")");
+            // A trailing chain of constant subscripts/member accesses may
+            // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
+            // relocation's addend instead of leaving it unparsed.
+            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
             if (wrapped_amp) tok = skip(tok, ")");
-            append_reloc(var, offset, name, 0);
+            append_reloc(var, offset, name, addend);
             return tok;
         }
         // Bare (no leading &) array-typed compound literal assigned to a
@@ -7721,7 +7777,14 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
                 Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
                 ma->member = m;
                 check_type(ma);
-                Node *v2 = assign(&tok, tok);
+                // A nested struct/union member's own value may itself be a
+                // braced sub-initializer (e.g. i915_pmu.c's device_attribute
+                // "{ .attr = {.name = _name, .mode = _mode}, ... }") — bare
+                // assign() can't parse a leading "{", so recurse the same
+                // way the outer element dispatch does.
+                Node *v2 = (equalc(tok, "{") && (m->ty->kind == TY_STRUCT || m->ty->kind == TY_UNION))
+                    ? synth_struct_elem_literal(m->ty, &tok, tok, start, anon_count)
+                    : assign(&tok, tok);
                 check_type(v2);
                 Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
                 check_type(a2);
@@ -7734,7 +7797,9 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
             Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
             ma->member = emem;
             check_type(ma);
-            Node *v2 = assign(&tok, tok);
+            Node *v2 = (equalc(tok, "{") && (emem->ty->kind == TY_STRUCT || emem->ty->kind == TY_UNION))
+                ? synth_struct_elem_literal(emem->ty, &tok, tok, start, anon_count)
+                : assign(&tok, tok);
             check_type(v2);
             Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
             check_type(a2);
@@ -9834,25 +9899,39 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
 
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
-            while (equalc(t, "(")) t = t->next;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
             bool saved_icl = in_compound_literal;
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
             in_compound_literal = saved_icl;
-            while (equalc(t, ")")) t = t->next;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
-            if (equalc(tok, "}"))
-                tok = tok->next;
+            // Redundant parens wrapped directly around the compound
+            // literal itself close here, immediately after its body.
+            for (int i = 0; i < open_count - close_count; i++)
+                tok = skip(tok, ")");
+            // A trailing chain of constant subscripts/member accesses may
+            // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
+            // relocation's addend instead of leaving it unparsed.
+            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
             while (equalc(tok, ")"))
                 tok = tok->next;
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
             var->has_init = true;
-            append_reloc(var, 0, name, 0);
+            append_reloc(var, 0, name, addend);
             *rest = tok;
             return;
         }

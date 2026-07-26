@@ -212,7 +212,19 @@ static bool is_null_pointer_constant(Node *n) {
             (n->ty->kind == TY_PTR && n->ty->base &&
              n->ty->base->kind == TY_VOID && n->ty->base->qual == 0)))
         n = n->lhs;
-    return n && n->kind == ND_NUM && n->ty && is_integer(n->ty) && n->val == 0;
+    if (!n || !n->ty || !is_integer(n->ty))
+        return false;
+    if (n->kind == ND_NUM)
+        return n->val == 0;
+    // General case: any integer constant expression (not just a bare literal
+    // after casts) evaluating to 0 also qualifies (C11 6.6p6). Needed for
+    // e.g. linux/compiler.h's __is_constexpr(x) trick, which tests
+    // "(void *)((long)(x) * 0l)" — an arithmetic ND_MUL, not a literal — for
+    // being a null pointer constant precisely when x itself is compile-time
+    // constant; eval_const_expr() correctly fails (non-constant) when x is
+    // a runtime value, so the trick still resolves to "not a constant" then.
+    long long v;
+    return eval_const_expr(n, &v) && v == 0;
 }
 
 // Some __builtin_* functions are recognized by name in codegen and emit
