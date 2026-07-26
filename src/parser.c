@@ -1367,7 +1367,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
-                if (equalc(tok, "weak")) {
+                if (equalc(tok, "weak") || equalc(tok, "__weak__")) {
                     if (attr)
                         attr->is_weak = true;
                     tok = tok->next;
