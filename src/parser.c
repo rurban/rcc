@@ -216,6 +216,11 @@ static char *pending_alias_target;
 // top-level/typedef declaration loop reads and resets this right after
 // calling declarator(). Mirrors pending_alias_target/pending_cleanup_func.
 static bool pending_transparent_union;
+// Same as pending_transparent_union, but for __attribute__((weak))/__weak__
+// that appears between the pointer star(s) and the function name in a
+// declarator — kprobe_opcode_t * __attribute__((__weak__)) fn(...).
+// Set by declarator(), consumed by the function definition handler.
+static bool pending_weak;
 // VLA-containing struct: emit size-capture code before the next statement
 static Node *pending_vla_struct_capture;
 
@@ -2468,7 +2473,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         ty = pointer_to(ty);
         tok = tok->next;
         Token *attr_start = tok;
-        tok = read_type_attrs(tok, &decl_align, NULL);
+        VarAttr ptr_attr = {};
+        tok = read_type_attrs(tok, &decl_align, &ptr_attr);
+        if (ptr_attr.is_weak)
+            pending_weak = true;
         if (tok != attr_start &&
             (attr_start->kw == ID__ALIGNAS ||
              (attr_start->kw == ID_ALIGNAS && opt_std_version &&
@@ -10487,6 +10495,7 @@ Program *parse(Token *tok) {
         pending_mode = 0;
         pending_vector_size = 0;
         pending_transparent_union = false;
+        pending_weak = false;
         typedef_scope_restore(rec_typedef_cp);
         tag_scope_restore(rec_tag_cp);
         enum_scope_restore(rec_enum_cp);
@@ -10996,10 +11005,11 @@ Program *parse(Token *tok) {
                     // is_extern: explicit extern on this def, OR any non-inline extern
                     // declaration seen (has_init flag).
                     fn->is_extern = attr.is_extern || (fn_sym2 && fn_sym2->has_init);
-                    fn->is_weak = attr.is_weak || (fn_sym2 && fn_sym2->is_weak);
+                    fn->is_weak = attr.is_weak || pending_weak || (fn_sym2 && fn_sym2->is_weak);
                     fn->is_used = attr.is_used || (fn_sym2 && fn_sym2->is_used);
                     pending_constructor = false;
                     pending_destructor = false;
+                    pending_weak = false;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
                     // "extern inline __attribute__((always_inline, gnu_inline))"
