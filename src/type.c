@@ -274,6 +274,14 @@ static Type *implicit_return_type(const char *name) {
         "malloc",
         "calloc",
         "realloc",
+        // Compiler intrinsics: always called without a declared prototype
+        // (there is none to declare), so the implicit-int default is wrong
+        // for these two the same way it's wrong for the libc allocators
+        // above. Real kernel case: drivers/firmware/efi/runtime-wrappers.c's
+        // "caller ?: __builtin_return_address(0)" — caller is a pointer,
+        // and the ternary's branches must agree in type.
+        "__builtin_return_address",
+        "__builtin_frame_address",
         NULL,
     };
     for (int i = 0; ptr_funcs[i]; i++)

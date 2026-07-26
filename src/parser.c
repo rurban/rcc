@@ -5181,7 +5181,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         if (find_compound_literal_start(tok)) {
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
-            while (equalc(t, "(")) t = t->next;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
             for (Token *u = t; u && !equalc(u, ")"); u = u->next)
                 if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
                     error_tok(u, "file-scope compound literal specifies storage class");
@@ -5189,7 +5193,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
             in_compound_literal = saved_icl;
-            while (equalc(t, ")")) t = t->next;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
             if (compound_ty->kind == TY_ARRAY) {
                 static int anon_arr_count;
                 char *name = format(".Lanonarr.%d", anon_arr_count++);
@@ -5197,7 +5205,17 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                 Token *rest_inner = NULL;
                 global_initializer(&rest_inner, compound_start, anon_var);
                 tok = rest_inner;
-                append_reloc(var, offset, name, 0);
+                // Redundant parens wrapped directly around the compound
+                // literal itself close here, immediately after its body —
+                // e.g. drivers/gpu/drm/i915/display/intel_display_power_map.c's
+                // "((const struct instance[]) { ... })" nested inside a
+                // wider designated initializer.
+                for (int i = 0; i < open_count - close_count; i++)
+                    tok = skip(tok, ")");
+                // A trailing chain of constant subscripts/member accesses
+                // may still follow — fold it into the relocation's addend.
+                int addend = parse_const_addend_chain(&tok, tok, compound_ty);
+                append_reloc(var, offset, name, addend);
                 return tok;
             }
         }
@@ -7830,14 +7848,34 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
     Member *emem = elem_ty->members;
     while (!equalc(tok, "}")) {
         if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-            char *mname = tok->next->name;
-            tok = tok->next->next;
-            tok = skip(tok, "=");
-            Member *m = find_member_by_name(elem_ty, mname);
-            if (m) {
-                Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+            // Walk a chain of .name1.name2...nameN designators — needed
+            // for a macro-expanded multi-level field access, e.g.
+            // drivers/gpu/drm/i915/display/intel_display_power_map.c's
+            // I915_PW() macro: ".hsw.idx = HSW_PW_CTL_IDX_GLOBAL" (hsw is
+            // a named member of an anonymous union; idx is a member of
+            // hsw's own inner struct type). All but the last level fold
+            // into an accumulated ND_MEMBER chain (base); the last is the
+            // actual assignment target, exactly like a single-level
+            // designator already was.
+            Type *cur_ty = elem_ty;
+            Node *base = new_var_node(evar, start);
+            Member *first = NULL, *m = NULL;
+            for (;;) {
+                char *mname = tok->next->name;
+                m = find_member_by_name(cur_ty, mname);
+                if (!m) break;
+                if (!first) first = m;
+                tok = tok->next->next;
+                Node *ma = new_unary(ND_MEMBER, base, fake_start);
                 ma->member = m;
                 check_type(ma);
+                base = ma;
+                cur_ty = m->ty;
+                if (!(equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))
+                    break;
+            }
+            if (m) {
+                tok = skip(tok, "=");
                 // A nested struct/union member's own value may itself be a
                 // braced sub-initializer (e.g. i915_pmu.c's device_attribute
                 // "{ .attr = {.name = _name, .mode = _mode}, ... }") — bare
@@ -7847,10 +7885,10 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
                     ? synth_struct_elem_literal(m->ty, &tok, tok, start, anon_count)
                     : assign(&tok, tok);
                 check_type(v2);
-                Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+                Node *a2 = new_binary(ND_ASSIGN, base, v2, start);
                 check_type(a2);
                 eres = new_binary(ND_COMMA, eres, a2, start);
-                emem = m->next;
+                emem = first->next;
             } else {
                 assign(&tok, tok);
             }
@@ -9104,53 +9142,19 @@ static Node *unary(Token **rest, Token *tok) {
         // Compound literal: (type){init_list}
         if (equalc(tok, "{")) {
             Token *init_brace_tok = tok;
-            (void)init_brace_tok;
             tok = tok->next;
 
-            // For incomplete arrays, count elements first
+            // For incomplete arrays, count elements first. Delegate to
+            // count_array_initializer() (used elsewhere for the same
+            // purpose) rather than a naive top-level-comma count: a naive
+            // count silently mis-sizes the array whenever a designator is
+            // present, since "[0 ... 2] = 7, [3] = 9" is one comma-
+            // separated item covering three indices, not one slot — e.g.
+            // drm/intel/pick.h's _PICK() macro relies on exactly this
+            // range-designator shape to build a lookup table.
             if (ty->kind == TY_ARRAY && ty->size == 0 && ty->base) {
-                Token *tmp = tok;
-                int count = 0;
-                int depth = 0;
-                while (true) {
-                    if (equalc(tmp, "{")) depth++;
-                    else if (equalc(tmp, "}")) {
-                        if (depth == 0) break;
-                        depth--;
-                    }
-                    if (depth == 0 && (equalc(tmp, ",") || equalc(tmp, "}")))
-                        ;
-                    else
-                        count++;
-                    // Advance past comma-separated items
-                    if (depth == 0 && equalc(tmp->next, ",")) {
-                        tmp = tmp->next->next;
-                        continue;
-                    }
-                    if (depth == 0 && equalc(tmp->next, "}")) {
-                        tmp = tmp->next;
-                        continue;
-                    }
-                    tmp = tmp->next;
-                }
-                // Simple count: count commas + 1
-                tmp = tok;
-                count = 1;
-                depth = 0;
-                while (!(depth == 0 && equalc(tmp, "}"))) {
-                    if (equalc(tmp, "{")) depth++;
-                    else if (equalc(tmp, "}"))
-                        depth--;
-                    else if (depth == 0 && equalc(tmp, ","))
-                        count++;
-                    tmp = tmp->next;
-                }
-                // Handle trailing comma
-                Token *before_end = tok;
-                for (Token *t = tok; !equalc(t, "}"); t = t->next)
-                    before_end = t;
-                if (equalc(before_end, ","))
-                    count--;
+                Token *tmp = init_brace_tok;
+                int count = count_array_initializer(&tmp, tmp, ty->base);
                 ty = array_of(ty->base, count);
             }
 
@@ -9210,22 +9214,50 @@ static Node *unary(Token **rest, Token *tok) {
                 // Array compound literal: assign each element
                 int i = 0;
                 while (!equalc(tok, "}")) {
-                    Node *idx = new_num(i, start);
-                    Node *elem_ptr = new_binary(ND_ADD, new_var_node(var, start), idx, start);
-                    Node *deref = new_unary(ND_DEREF, elem_ptr, start);
-                    Node *val;
-                    // {.member=val,...} as nested struct/union initializer for element
-                    if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
-                        val = synth_struct_elem_literal(ty->base, &tok, tok, start, &anon_count);
-                    } else {
-                        val = assign(&tok, tok);
+                    int sidx = i, eidx = i;
+                    // Designated initializer: [N] = val or [N ... M] = val
+                    // (C99 6.7.8p17) — e.g. drm/intel/pick.h's _PICK()
+                    // macro: "(const u32[]){ [TRANSCODER_EDP] = ...,
+                    // [TRANSCODER_A] = ..., ... }".
+                    if (equalc(tok, "[")) {
+                        tok = tok->next;
+                        Node *n = assign(&tok, tok);
+                        long long sv = 0;
+                        eval_const_expr(n, &sv);
+                        sidx = (int)sv;
+                        eidx = sidx;
+                        if (equalc(tok, "...")) {
+                            tok = tok->next;
+                            Node *n2 = assign(&tok, tok);
+                            long long ev = sidx;
+                            eval_const_expr(n2, &ev);
+                            eidx = (int)ev;
+                        }
+                        tok = skip(tok, "]");
+                        tok = skip(tok, "=");
                     }
-                    check_type(val);
-                    Node *asgn = new_binary(ND_ASSIGN, deref, val, start);
-                    check_type(asgn);
-                    result = new_binary(ND_COMMA, result, asgn, start);
-                    check_type(result);
-                    i++;
+                    Token *val_start = tok;
+                    for (int j = sidx; j <= eidx; j++) {
+                        Node *idx = new_num(j, start);
+                        Node *elem_ptr = new_binary(ND_ADD, new_var_node(var, start), idx, start);
+                        Node *deref = new_unary(ND_DEREF, elem_ptr, start);
+                        Node *val;
+                        // {.member=val,...} as nested struct/union initializer for element
+                        if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
+                            val = synth_struct_elem_literal(ty->base, &tok, tok, start, &anon_count);
+                        } else {
+                            val = assign(&tok, tok);
+                        }
+                        check_type(val);
+                        Node *asgn = new_binary(ND_ASSIGN, deref, val, start);
+                        check_type(asgn);
+                        result = new_binary(ND_COMMA, result, asgn, start);
+                        check_type(result);
+                        // Reset tok for ranged initializer re-evaluation
+                        if (j < eidx)
+                            tok = val_start;
+                    }
+                    i = eidx + 1;
                     if (!equalc(tok, "}"))
                         tok = skip(tok, ",");
                 }
