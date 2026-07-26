@@ -2,6 +2,7 @@
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
 #include "asm.h"
+#include "codegen_asm.h"
 #include <stdarg.h>
 #ifdef _WIN32
 #include <process.h>
@@ -123,6 +124,10 @@ void help(void) {
            "-I path             add include path\n"
            "-Dname[=val]        define a macro\n"
            "-Uname              undefine a macro\n"
+           "-include file       pre-include file before main source\n"
+           "-nostdinc           do not search system include directories\n"
+           "-Wp,-MMD,file       write Make dependency rules\n"
+           "-fmacro-prefix-map=old=new  remap paths in diagnostics\n"
            "-E                  preprocessor-only\n"
            "-S                  assemble-only\n"
            "-c                  compile-only\n"
@@ -147,6 +152,7 @@ void help(void) {
            "-pthread            link with pthreads library\n"
            "-shared             create shared library\n"
            "-static             link statically\n"
+           "-nodefaultlibs      do not link default libraries (libc, libgcc, ...)\n"
            "-rpath path         => -Wl,-rpath,path\n"
            "-soname name        => -Wl,-soname,name\n"
            "-Wl,<opt>           pass option to linker\n"
@@ -161,7 +167,7 @@ void help(void) {
            "-###                dry-run (print commands, don't execute)\n"
            "-dM                 dump all macro definitions (use with -E)\n"
            "-fdump-ast          dump AST for debugging\n"
-           "-fexec-charset=cs   set execution character set (default UTF-8)"
+           "-fexec-charset=cs   set execution character set (default UTF-8)\n"
            "-print-search-dirs  print install, include and library paths\n"
            "-dumpmachine        print target version\n"
            "-dumpversion        print gcc compatibility version\n"
@@ -174,6 +180,7 @@ bool opt_O1 = false;
 bool opt_finline = false; // -finline / enabled at -O2+
 bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
+bool opt_gnu_mode = false; // -std=gnu* enables GNU extensions like typeof, ({})
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
 bool opt_Werror = false;
@@ -195,6 +202,14 @@ bool opt_ms_bitfields =
     false;
 #endif
 ;
+
+// -nostdinc: skip system include paths
+bool opt_nostdinc = false;
+// -Wp,-MMD,<file>: write Make dependency rules
+const char *opt_depfile = NULL;
+// -fmacro-prefix-map=old=new
+const char *opt_prefix_map_old = NULL;
+const char *opt_prefix_map_new = NULL;
 
 bool sse42_available = false;
 
@@ -221,6 +236,9 @@ int main(int argc, char **argv) {
         ;
     char *input_files[64];
     int n_inputs = 0;
+    // -include <file>: pre-include files before main source
+    const char *preinclude_files[64];
+    int nb_preinclude_files = 0;
     bool opt_S = false;
     bool opt_c = false;
     bool opt_E = false;
@@ -264,10 +282,26 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-E")) {
             opt_E = true;
         } else if (!strcmp(argv[i], "-O0")) {
+            // Optimization-level flags aren't additive: like gcc/clang, the
+            // last "-On" on the command line wins outright, undoing any
+            // earlier one. kbuild routinely appends a per-file "-O0" after
+            // the whole-build "-O2" (e.g. crypto/jitterentropy.c's
+            // CFLAGS_jitterentropy.o = -O0) specifically to keep
+            // __OPTIMIZE__ from being defined; leaving opt_O1 (and the
+            // inlining/unrolling it implies) sticky from the earlier -O2
+            // wrongly kept __OPTIMIZE__ defined and tripped that file's own
+            // "#ifdef __OPTIMIZE__ #error ..." guard.
             opt_O0 = true;
+            opt_O1 = false;
+            opt_finline = false;
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-O1")) {
+            opt_O0 = false;
             opt_O1 = true;
+            opt_finline = false;
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-O2") || !strcmp(argv[i], "-O3")) {
+            opt_O0 = false;
             opt_O1 = true;
             opt_finline = true; // -O2 and up enable inlining
             opt_funroll = true; // -O2 and up enable unrolling
@@ -350,7 +384,11 @@ int main(int argc, char **argv) {
             xappendf(&libs, &libs_len, &libs_cap, " -Wl,-rpath,%s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
                    !strcmp(argv[i], "-shared") || !strcmp(argv[i], "-static") ||
+                   !strcmp(argv[i], "-nodefaultlibs") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
+            // -nodefaultlibs: link-stage-only flag (unlike -nostdlib, still
+            // links the standard startup files) — forward it to the
+            // backend linker invocation, which already understands it.
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
@@ -400,17 +438,23 @@ int main(int argc, char **argv) {
             /* rcc always compiles the C23 language, but reflects the requested
              * standard in the __STDC_VERSION__ predefined macro so that library
              * headers expose the right version-gated content. */
-            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023"))
+            if (!strcmp(std, "c23") || !strcmp(std, "gnu23") || !strcmp(std, "iso9899:2023")) {
                 opt_std_version = "202311L";
-            else if (!strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017"))
+                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+            } else if (!strcmp(std, "c17") || !strcmp(std, "gnu17") || !strcmp(std, "iso9899:2017")) {
                 opt_std_version = "201710L";
-            else if (!strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011"))
+                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+            } else if (!strcmp(std, "c11") || !strcmp(std, "gnu11") || !strcmp(std, "iso9899:2011")) {
                 opt_std_version = "201112L";
-            else if (!strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999"))
+                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+            } else if (!strcmp(std, "c99") || !strcmp(std, "gnu99") || !strcmp(std, "iso9899:1999")) {
                 opt_std_version = "199901L";
-            else if (!strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") ||
-                     !strcmp(std, "gnu89") || !strcmp(std, "iso9899:1990"))
-                opt_std_version = NULL; /* C90 has no __STDC_VERSION__ */
+                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+            } else if (!strcmp(std, "c90") || !strcmp(std, "c89") || !strcmp(std, "gnu90") ||
+                       !strcmp(std, "gnu89") || !strcmp(std, "iso9899:1990")) {
+                opt_std_version = NULL;
+                if (!strncmp(std, "gnu", 3)) opt_gnu_mode = true;
+            } /* C90 has no __STDC_VERSION__ */
             else
                 fprintf(stderr, "rcc: warning: unsupported -std=%s, using C23\n", std);
             // GCC-compatible warning-flag handling:
@@ -418,6 +462,26 @@ int main(int argc, char **argv) {
             //   -Werror=* = silently ignored (error variant for warnings we don't have)
             //   others  = warn, but only error with -Werror=unknown-warning-option
             // Build systems probe supported warnings via -Werror=unknown-warning-option.
+        } else if (!strcmp(argv[i], "-nostdinc")) {
+            opt_nostdinc = true;
+        } else if (!strncmp(argv[i], "-include", 8) && (argv[i][8] == '=' || argv[i][8] == '\0')) {
+            char *path = argv[i][8] == '=' ? argv[i] + 9 : (++i < argc ? argv[i] : NULL);
+            if (!path) {
+                fprintf(stderr, "error: missing argument for -include\n");
+                return 1;
+            }
+            if (nb_preinclude_files < 64)
+                preinclude_files[nb_preinclude_files++] = path;
+        } else if (!strncmp(argv[i], "-fmacro-prefix-map=", 19)) {
+            char *val = argv[i] + 19;
+            char *eq = strchr(val, '=');
+            if (eq) {
+                *eq = '\0';
+                opt_prefix_map_old = val;
+                opt_prefix_map_new = eq + 1;
+            }
+        } else if (!strncmp(argv[i], "-Wp,-MMD,", 9)) {
+            opt_depfile = argv[i] + 9;
         } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
             opt_exec_charset = argv[i] + 15;
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
@@ -428,6 +492,13 @@ int main(int argc, char **argv) {
             opt_pedantic = true;
         } else if (!strcmp(argv[i], "-pedantic") || !strcmp(argv[i], "-Wpedantic")) {
             opt_pedantic = true;
+        } else if (!strcmp(argv[i], "-m32") || !strcmp(argv[i], "-mx32") ||
+                   !strcmp(argv[i], "-m16")) {
+            // Native-only: one binary is one word width/ABI (AGENTS.md).
+            fprintf(stderr, "rcc: fatal error: %s not supported — rcc is native-only, "
+                            "no cross-compilation to a different word width in one binary\n",
+                    argv[i]);
+            return 1;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
             if (opt_Werror_unknown) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
@@ -466,6 +537,20 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // -E writes preprocessed text to -o's target when one was given (real
+    // cpp/gcc behavior) — pp_print_tokens() used to always target stdout,
+    // silently discarding "-o some.lds" and leaving kbuild's cmd_cpp_lds_S
+    // (arch/x86/entry/vdso/*/vdso64.lds, built via `$(CPP) ... -o $@ $<`)
+    // with no output file at all.
+    FILE *pp_out = stdout;
+    if (opt_E && opt_o && !opt_stdout) {
+        pp_out = fopen(out_path, "w");
+        if (!pp_out) {
+            fprintf(stderr, "rcc: error: cannot open output file %s\n", out_path);
+            return 1;
+        }
+    }
+
     // Process each input file
     for (int fi = 0; fi < n_inputs; fi++) {
         char *cur_path = input_files[fi];
@@ -486,10 +571,31 @@ int main(int argc, char **argv) {
         // Single-scan: preprocess() returns the token stream directly;
         // no separate tokenize() pass needed.
         uint64_t t0 = opt_time ? now_us() : 0;
+        // Wire pre-include files (-include <file>)
+        for (int pi = 0; pi < nb_preinclude_files; pi++)
+            add_preinclude(preinclude_files[pi]);
+        // Every other C preprocessor automatically predefines __ASSEMBLER__
+        // when processing a ".S"/".s" input (assembler-with-cpp mode) —
+        // headers rely on it to gate C-only content (struct/enum
+        // definitions, ...) away from what an assembler will ever see,
+        // separately from the kernel's own, Makefile-provided
+        // -D__ASSEMBLY__. Scoped to just this one file via
+        // remove_cmdline_define() below, not left set for any later input
+        // in a multi-file compile.
+        char *dot_ext = strrchr(cur_path, '.');
+        bool is_asm_input = dot_ext && (strcmp(dot_ext, ".S") == 0 || strcmp(dot_ext, ".s") == 0);
+        if (is_asm_input) add_define("__ASSEMBLER__=1");
+        // GAS's own "#" end-of-line comment is not preprocessor punctuation;
+        // see lex_asm_cpp_mode's declaration in rcc.h.
+        if (is_asm_input) lex_asm_cpp_mode = true;
         Token *tok = preprocess(cur_path, contents);
+        lex_asm_cpp_mode = false;
+        if (is_asm_input) remove_cmdline_define("__ASSEMBLER__");
         if (opt_time)
             fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
+        // Write Make dependency file (-Wp,-MMD,<file>)
+        write_dep_file(out_path, cur_path);
 
         if (opt_dM) {
             printf("%s", dump_macros_text());
@@ -497,8 +603,50 @@ int main(int argc, char **argv) {
         }
 
         if (opt_E) {
-            pp_print_tokens(tok);
+            pp_print_tokens(tok, pp_out);
             continue;
+        }
+
+        // Standalone assembly file, not C source: ".S" (preprocessed, like
+        // the kernel's usr/initramfs_data.S — #ifdef/#include/macros
+        // already resolved above via the same preprocess() every input
+        // goes through) or ".s" (raw, no preprocessing — GAS's own "#" is
+        // a comment character, not a directive, so running it through the
+        // C preprocessor would be wrong). Either way this is plain
+        // assembly text, not C: skip parse()/typecheck/codegen entirely
+        // and hand it straight to the same assembler used for inline asm.
+        {
+            bool is_dot_cap_s = dot_ext && strcmp(dot_ext, ".S") == 0;
+            if (is_asm_input) {
+                if (opt_dryrun) continue;
+                char *asm_text = is_dot_cap_s ? pp_tokens_to_text(tok) : contents;
+                ObjFile obj;
+                objfile_init(&obj);
+                if (assemble_inline(&obj, asm_text, NULL, NULL) != 0) {
+                    fprintf(stderr, "rcc: error: failed to assemble %s\n", cur_path);
+                    return 1;
+                }
+                int wr;
+#ifdef _WIN32
+                wr = coff_write(&obj, asm_path);
+#elif __APPLE__
+                wr = macho_write(&obj, asm_path);
+#else
+                wr = elf_write(&obj, asm_path);
+#endif
+                if (wr != 0) {
+                    fprintf(stderr, "rcc: error: cannot write object file %s\n", asm_path);
+                    return 1;
+                }
+                objfile_free(&obj);
+                if (!opt_S) {
+                    OutPath *p = arena_alloc(sizeof(OutPath));
+                    p->path = asm_path;
+                    p->next = out_paths;
+                    out_paths = p;
+                }
+                continue;
+            }
         }
 
         t0 = opt_time ? now_us() : 0;
@@ -538,6 +686,11 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  opt         %s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
         }
+
+        // Not gated on -O1: omitting a never-referenced `static inline`
+        // function's body is standard-permitted (C11 6.7.4p7) and real
+        // GCC/Clang do it unconditionally, not just as an optimization.
+        eliminate_unused_static_inline(prog);
 
         if (!opt_dryrun) {
             t0 = opt_time ? now_us() : 0;
@@ -596,10 +749,19 @@ int main(int argc, char **argv) {
                 // The data/rodata/bss dump is best-effort: PE objdump exits
                 // non-zero when one of the -j sections is absent (e.g. a
                 // .o with no data at all), which is a normal, not an error.
-                snprintf(cmd, sizeof(cmd), "%s -s -j .data -j .rodata -j .bss \"%s\" >> \"%s\"",
+                snprintf(cmd, sizeof(cmd), "%s -s -j .text -j .data -j .rodata -j .bss \"%s\" >> \"%s\"",
                          objdump, tmp_obj_path, asm_path);
                 if (system(cmd) != 0)
                     fprintf(stderr, "rcc: error: objdump failed for -S output\n");
+                // Emit collected .ascii strings for kernel offsets
+                for (CgAsciiStr *a = cg_ascii_strings; a; a = a->next) {
+                    FILE *sf = fopen(asm_path, "a");
+                    if (sf) {
+                        fprintf(sf, "  .ascii \"%s\"\n", a->str);
+                        fclose(sf);
+                    }
+                }
+                cg_ascii_strings = NULL;
                 remove(tmp_obj_path);
                 if (!ok) {
                     fprintf(stderr, "rcc: error: objdump failed for -S output\n");
@@ -749,5 +911,6 @@ int main(int argc, char **argv) {
 
         return status ? 1 : 0;
     }
+    if (opt_E && pp_out != stdout) fclose(pp_out);
     return 0;
 }

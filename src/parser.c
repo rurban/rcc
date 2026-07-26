@@ -13,6 +13,7 @@ struct VarAttr {
     bool is_inline;
     bool is_gnu_inline;
     bool is_weak;
+    bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
     bool has_type;
     bool is_packed;
@@ -31,6 +32,7 @@ struct VarAttr {
     char *deprecated_msg;
     bool is_reproducible;
     bool is_unsequenced;
+    bool is_transparent_union;
 };
 
 struct TagScope {
@@ -208,6 +210,12 @@ static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
+// Set by declarator() when it consumes a trailing __attribute__((transparent_union))
+// right after the identifier (declarator() is called with attr=NULL from most
+// sites, so it can't write directly into the caller's VarAttr) — the
+// top-level/typedef declaration loop reads and resets this right after
+// calling declarator(). Mirrors pending_alias_target/pending_cleanup_func.
+static bool pending_transparent_union;
 // VLA-containing struct: emit size-capture code before the next statement
 static Node *pending_vla_struct_capture;
 
@@ -410,9 +418,32 @@ static Type *type_unqual(Type *ty) {
 }
 
 static Type *apply_type_align(Type *ty, int align) {
+    // NB: this only raises the alignment *requirement* for this particular
+    // declaration (e.g. `_Alignas(16) unsigned short in[N];`), and must
+    // NOT pad ty->size — a scalar/array element's sizeof is fixed by the
+    // ABI regardless of an over-alignment request on one declared object.
+    // A struct/union whose *own* trailing attribute widens its alignment
+    // (`struct S { ... } __attribute__((aligned(N)));`, changing the type
+    // itself, not just one declaration of it) pads its size separately in
+    // struct_or_union_specifier, where that distinction is still visible.
     if (align <= 0 || align <= ty->align)
         return ty;
-    Type *ret = copy_type(ty);
+    // Deliberately not copy_type(): for a *complete* struct/union it
+    // intentionally returns the same Type object (so an incomplete
+    // forward-declared type can still be completed later through every
+    // existing pointer to it) — reusing that here would mutate the shared
+    // type's own alignment in place instead of raising just this one
+    // declaration's requirement, corrupting every other use of the same
+    // struct/union (typedef'd or not, e.g. atomic_long_t) for the rest of
+    // the translation unit. Only fall back to sharing identity for a
+    // still-incomplete type, where a real clone would freeze size/members
+    // at 0 forever and never see the later completion.
+    bool incomplete_aggregate = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+        ty->size == 0 && !ty->members;
+    if (incomplete_aggregate)
+        return ty;
+    Type *ret = arena_alloc(sizeof(Type));
+    *ret = *ty;
     ret->align = align;
     return ret;
 }
@@ -447,6 +478,11 @@ static LVar *new_var(char *name, Type *ty, bool is_local) {
         var->next = locals;
         locals = var;
     } else {
+        // A block-scope `static` (is_local=false, but declared while
+        // parser_current_fn is set) needs to be dropped alongside its
+        // enclosing function if that function is ever recognized as
+        // dead code — see decl_fn_name's declaration in rcc.h.
+        var->decl_fn_name = parser_current_fn;
         var->next = globals;
         globals = var;
         global_htab_add(var);
@@ -726,9 +762,25 @@ static Node *clone_inline_node(Node *n, InlineCloneCtx *ctx) {
     c->els = clone_inline_node(n->els, ctx);
     c->init = clone_inline_node(n->init, ctx);
     c->inc = clone_inline_node(n->inc, ctx);
+    // stmt_expr_result aliases the lhs of the last ND_EXPR_STMT in body (see
+    // the ND_STMT_EXPR construction sites above); codegen locates the
+    // value-producing statement via pointer equality against that alias, so
+    // find the cloned equivalent instead of cloning stmt_expr_result
+    // independently, which would produce a distinct, non-`==` object.
+    Node *last_orig = n->body;
+    while (last_orig && last_orig->next)
+        last_orig = last_orig->next;
     c->body = clone_inline_stmts(n->body, ctx);
     c->args = clone_inline_args(n->args, ctx);
-    c->stmt_expr_result = clone_inline_node(n->stmt_expr_result, ctx);
+    if (last_orig && last_orig->kind == ND_EXPR_STMT && last_orig->lhs == n->stmt_expr_result) {
+        Node *last_clone = c->body;
+        while (last_clone && last_clone->next)
+            last_clone = last_clone->next;
+        c->stmt_expr_result = (last_clone && last_clone->kind == ND_EXPR_STMT) ? last_clone->lhs
+                                                                               : clone_inline_node(n->stmt_expr_result, ctx);
+    } else {
+        c->stmt_expr_result = clone_inline_node(n->stmt_expr_result, ctx);
+    }
     return c;
 }
 
@@ -1064,6 +1116,16 @@ static bool is_typename(Token *tok) {
     tok = skip_attributes(tok);
     if (kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE))
         return true;
+    // A typedef name is an ordinary identifier (C11 6.2.3): a local
+    // variable or parameter of the same name declared in an enclosing
+    // scope shadows it, same as it would shadow another variable. Without
+    // this check, e.g. `typedef int (*initxattrs)(...); ... int f(const
+    // initxattrs initxattrs) { if (initxattrs) ... }` misparses the local
+    // use as a type name (linux/security/security.c) instead of the
+    // shadowing parameter.
+    LVar *shadow = find_var(tok);
+    if (shadow && shadow->is_local)
+        return false;
     return find_typedef(tok) != NULL;
 }
 
@@ -1305,9 +1367,27 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     continue;
                 }
 
-                if (equalc(tok, "weak")) {
+                if (equalc(tok, "weak") || equalc(tok, "__weak__")) {
                     if (attr)
                         attr->is_weak = true;
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "used") || equalc(tok, "__used__")) {
+                    // Forces emission even when otherwise provably dead —
+                    // most relevantly here, exempts a `static inline`
+                    // function from the omit-if-never-referenced rule (see
+                    // eliminate_unused_static_inline() in opt.c): real GCC
+                    // still emits a `static inline __attribute__((used))`
+                    // function's body even though nothing in the TU calls
+                    // it (confirmed against real gcc -O0/-O2 output).
+                    if (attr)
+                        attr->is_used = true;
                     tok = tok->next;
                     if (equalc(tok, "("))
                         tok = skip_balanced(tok);
@@ -1352,6 +1432,17 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         attr->is_packed = true;
                     // Also set align=1 so member-level packed attr takes effect
                     maybe_update_align(align, 1);
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "transparent_union") || equalc(tok, "__transparent_union__")) {
+                    if (attr)
+                        attr->is_transparent_union = true;
                     tok = tok->next;
                     if (equalc(tok, "("))
                         tok = skip_balanced(tok);
@@ -1654,6 +1745,19 @@ bool eval_const_expr(Node *node, long long *val) {
             return (*val = node->ty->size), true;
         }
         return false;
+    case ND_STR:
+        // A string literal used as a value in a constant-expression
+        // context (almost always a ternary/logical condition, e.g. the
+        // kernel's __SIP_HDR() macro: "(__cname) ? sizeof(__cname) - 1
+        // : 0" with __cname substituted by a real "f"/"t"/... literal) —
+        // its array-to-pointer-decayed address is never null, so it's
+        // always truthy. Not meaningful as an actual numeric *value*
+        // (two distinct string literals' addresses aren't a constant
+        // relative to each other), but every existing caller of this
+        // function only ever needs a literal's truth value here, never
+        // its address as a number.
+        *val = 1;
+        return true;
     case ND_ADDR:
         // &*x = x
         if (node->lhs->kind == ND_DEREF)
@@ -1680,15 +1784,28 @@ bool eval_const_expr(Node *node, long long *val) {
             Node *cur = node;
             int total_off = 0;
             LVar *root_var = NULL;
+            // memcpy-based extraction below reads whole bytes at
+            // `member->offset`; a bitfield's real value lives at
+            // `bit_offset` *within* that storage unit and needs a
+            // shift+mask this fold doesn't do, so any bitfield in the
+            // chain must disable the fold entirely rather than silently
+            // return the wrong (unshifted, unmasked) value. Real bug:
+            // struct-ini-2.c/bitfld-3.c's plain (non-const) global
+            // bitfield structs were "folded" to garbage the moment an
+            // `if` condition reading one became foldable (see the ND_IF
+            // caller in opt.c).
+            bool is_bitfield = false;
             while (cur && cur->kind == ND_MEMBER) {
-                if (cur->member)
+                if (cur->member) {
                     total_off += cur->member->offset;
+                    if (cur->member->bit_width > 0) is_bitfield = true;
+                }
                 cur = cur->lhs;
             }
             if (cur && cur->kind == ND_LVAR) {
                 root_var = cur->var;
             }
-            if (root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
+            if (!is_bitfield && root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
@@ -1705,7 +1822,7 @@ bool eval_const_expr(Node *node, long long *val) {
             }
             // Fallback: compound literal anon vars have is_local=true but is_constexpr=true
             // and init_data populated by global_initializer. Read member value from init_data.
-            if (is_integer(node->ty) && total_off >= 0) {
+            if (!is_bitfield && is_integer(node->ty) && total_off >= 0) {
                 if (!root_var && cur && cur->kind == ND_COMMA) {
                     // Find root LVar in the comma chain
                     Node *st[64];
@@ -1735,6 +1852,182 @@ bool eval_const_expr(Node *node, long long *val) {
             }
             return false;
         }
+    case ND_FUNCALL: {
+        // Fold constant-argument calls to bit-counting builtins. Kernel
+        // (and other) code computes compile-time bit widths via
+        // __builtin_constant_p(n) ? ... clz/ctz/popcount(n) ... : runtime_fn(n)
+        // (see linux/log2.h bits_per()/ilog2()); once __builtin_constant_p
+        // has already folded the condition to a literal 1, this branch must
+        // itself fold to a constant for the enclosing static_assert to hold.
+        if (!node->args || node->args->next)
+            return false;
+        // node->funcname is only set for a call resolved as an
+        // as-yet-undeclared "plain identifier" (the usual path for these
+        // builtins). If the callee happens to already have a real
+        // prototype in scope (e.g. <linux/string.h> declaring
+        // "extern size_t strlen(const char *)" — __builtin_strlen itself
+        // is preprocessor-macro'd to plain "strlen", see preprocess.c's
+        // define_pre("__builtin_strlen", "strlen")), the call instead
+        // resolves through node->lhs referencing that declared LVar, and
+        // funcname is never populated. Fall back to the declared symbol's
+        // own name so both paths reach the same fold below.
+        char *fn = node->funcname;
+        if (!fn && node->lhs && node->lhs->kind == ND_LVAR && node->lhs->var)
+            fn = node->lhs->var->name;
+        if (!fn)
+            return false;
+        // strlen(STR_LITERAL) is GCC/Clang's other well-known
+        // constant-foldable-call extension, relied on throughout the
+        // kernel for "_Static_assert(sizeof(lit) - 1 == strlen(lit), \"no
+        // embedded NUL\")" (MODULE_INFO() et al. via linux/stringify.h).
+        // Its argument is a string, not an integer, so it must be checked
+        // before the integer-only eval_const_expr() call below rejects it.
+        if (fn == bi_strlen || fn == bi_s_strlen) {
+            Node *a = node->args;
+            while (a && a->kind == ND_CAST) a = a->lhs;
+            if (a && a->kind == ND_STR) {
+                *val = (long long)strlen(a->str);
+                return true;
+            }
+            return false;
+        }
+        long long arg;
+        if (!eval_const_expr(node->args, &arg))
+            return false;
+        // node->funcname is tok->name for a plain identifier call, which the
+        // lexer already str_intern's — compare against the pre-interned
+        // bi_* pointers (init_builtin_names(), cg_builtins.c) instead of
+        // strcmp, same convention used everywhere else these are checked.
+        unsigned uv32 = (unsigned)arg;
+        unsigned long long uv64 = (unsigned long long)arg;
+        if (fn == bi_clz) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 0x80000000u)) {
+                uv32 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_clzl && ty_long->size == 4) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 0x80000000u)) {
+                uv32 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_clzl || fn == bi_clzll) {
+            if (uv64 == 0) return false;
+            int n = 0;
+            while (!(uv64 & (1ULL << 63))) {
+                uv64 <<= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_ctz) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_ctzl && ty_long->size == 4) {
+            if (uv32 == 0) return false;
+            int n = 0;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_ctzl || fn == bi_ctzll) {
+            if (uv64 == 0) return false;
+            int n = 0;
+            while (!(uv64 & 1)) {
+                uv64 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_popcount) {
+            int n = 0;
+            while (uv32) {
+                n += (int)(uv32 & 1);
+                uv32 >>= 1;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_popcountl || fn == bi_popcountll) {
+            int n = 0;
+            while (uv64) {
+                n += (int)(uv64 & 1);
+                uv64 >>= 1;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_ffs) {
+            if (uv32 == 0) {
+                *val = 0;
+                return true;
+            }
+            int n = 1;
+            while (!(uv32 & 1)) {
+                uv32 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        if (fn == bi_ffsl || fn == bi_ffsll) {
+            if (uv64 == 0) {
+                *val = 0;
+                return true;
+            }
+            int n = 1;
+            while (!(uv64 & 1)) {
+                uv64 >>= 1;
+                n++;
+            }
+            *val = n;
+            return true;
+        }
+        // __builtin_bswap16/32/64 must constant-fold too: the kernel's
+        // __swab16/32/64 (linux/swab.h) expand to these when
+        // __HAVE_BUILTIN_BSWAP*__ is set, and are used as case labels /
+        // in static_assert throughout networking headers (netdevice.h).
+        if (fn == bi_bswap16) {
+            *val = (uint16_t)(((uv32 & 0xff) << 8) | ((uv32 >> 8) & 0xff));
+            return true;
+        }
+        if (fn == bi_bswap32) {
+            uint32_t v = (uint32_t)uv32;
+            *val = (uint32_t)(((v & 0x000000ffu) << 24) | ((v & 0x0000ff00u) << 8) |
+                              ((v & 0x00ff0000u) >> 8) | ((v & 0xff000000u) >> 24));
+            return true;
+        }
+        if (fn == bi_bswap64) {
+            uint64_t v = uv64;
+            *val = (int64_t)(uint64_t)(((v & 0x00000000000000ffULL) << 56) | ((v & 0x000000000000ff00ULL) << 40) |
+                                       ((v & 0x0000000000ff0000ULL) << 24) | ((v & 0x00000000ff000000ULL) << 8) |
+                                       ((v & 0x000000ff00000000ULL) >> 8) | ((v & 0x0000ff0000000000ULL) >> 24) |
+                                       ((v & 0x00ff000000000000ULL) >> 40) | ((v & 0xff00000000000000ULL) >> 56));
+            return true;
+        }
+        return false;
+    }
     default:
         return false;
     }
@@ -1947,7 +2240,12 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     LVar *saved_locals = locals;
 
     if (equalc(tok, "void") && equalc(tok->next, ")")) {
-        tok = tok->next->next;
+        *rest = tok->next->next;
+        locals = saved_locals;
+        ty = func_type(ty);
+        ty->param_types = NULL;
+        ty->is_variadic = false;
+        return ty;
     } else {
         while (!equalc(tok, ")")) {
             if (pcur != &param_head)
@@ -1998,7 +2296,23 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             if (pname) {
                 LVar *plvar = arena_alloc(sizeof(LVar));
                 plvar->name = pname;
-                plvar->ty = pt;
+                // Use pty (the original, identity-preserving type), not pt
+                // (the shallow-copied param_types list node): pt's `*pt =
+                // *pty` clone breaks type_equal()'s pointer-identity check
+                // for struct/union types, e.g. i915_reg_t/i915_mcr_reg_t
+                // (drivers/gpu/drm/i915/i915_reg_defs.h) — two distinct
+                // anonymous single-u32-member structs distinguished only
+                // by tag identity, selected via
+                // `_Generic((r), i915_reg_t: ..., i915_mcr_reg_t: ...)`.
+                // With plvar->ty pointing at the clone instead of the
+                // typedef table's own i915_reg_t Type*, neither
+                // association's re-resolved "i915_reg_t"/"i915_mcr_reg_t"
+                // type_name() result was ever pointer-equal to it, so
+                // _Generic always fell through to "no matching
+                // association" for every struct-typed parameter reference.
+                // pt and pty have identical size/align/members regardless,
+                // so this doesn't affect offset/alignment computation.
+                plvar->ty = pty;
                 plvar->is_local = true;
                 plvar->offset = 0; // placeholder; updated by definition handler
                 plvar->next = locals;
@@ -2231,7 +2545,10 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     if (name)
         *name = decl_name;
     tok = tok->next;
-    tok = read_type_attrs(tok, &decl_align, NULL);
+    VarAttr trail_attr = {};
+    tok = read_type_attrs(tok, &decl_align, &trail_attr);
+    if (trail_attr.is_transparent_union)
+        pending_transparent_union = true;
     ty = type_suffix(rest, tok, ty, decl_name);
     if (pending_vector_size) {
         ty = make_vector_type(ty, pending_vector_size);
@@ -2388,20 +2705,35 @@ static Type *enum_specifier(Token **rest, Token *tok) {
             tok = skip(tok, ",");
     }
 
-    *rest = tok->next;
+    // GNU extension: enum { ... } __attribute__((packed)) narrows the
+    // underlying type to the smallest integer type that fits the range,
+    // instead of the C-standard "at least int". Peek past '}' for it.
+    VarAttr trailing_attr = {0};
+    Token *after_attrs = read_type_attrs(tok->next, NULL, &trailing_attr);
+    bool is_packed = trailing_attr.is_packed;
+    *rest = after_attrs;
     // C23: with a fixed underlying type, the enum uses exactly that type;
-    // otherwise choose the narrowest integer type >= int that fits all values.
+    // otherwise choose the narrowest integer type >= int that fits all values
+    // (or the narrowest type period, when __packed forces a tight layout).
     Type *ety;
     if (fixed_underlying) {
         ety = fixed_underlying;
     } else if (min_val >= 0) {
         uint64_t umax = (uint64_t)max_val;
-        if (umax <= 0xFFFFFFFFULL)
+        if (is_packed && umax <= 0xFFULL)
+            ety = ty_uchar;
+        else if (is_packed && umax <= 0xFFFFULL)
+            ety = ty_ushort;
+        else if (umax <= 0xFFFFFFFFULL)
             ety = ty_uint;
         else
             ety = ty_ullong;
     } else {
-        if (min_val >= -2147483648LL && max_val <= 2147483647LL)
+        if (is_packed && min_val >= -128 && max_val <= 127)
+            ety = ty_char;
+        else if (is_packed && min_val >= -32768 && max_val <= 32767)
+            ety = ty_short;
+        else if (min_val >= -2147483648LL && max_val <= 2147483647LL)
             ety = ty_int;
         else
             ety = ty_llong;
@@ -2661,6 +2993,33 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int bit_pos = 0; // current bit position within the struct (for bitfield packing)
     int struct_pack = pack_align; // capture #pragma pack value at struct start
     if (struct_attr.is_packed && struct_pack == 0) struct_pack = 1;
+    // A packed attribute can also trail the whole declaration —
+    // `struct S { members... } __attribute__((packed));` — rather than
+    // lead it (`struct __attribute__((packed)) S {...}`, already handled
+    // via struct_attr above). GCC packs the *entire* type this way,
+    // including every member's offset, but that decision has to be made
+    // before laying out a single member below, while the attribute
+    // itself is only visible after all of them. Cheaply look ahead past
+    // this body's matching closing brace (plain brace-depth counting,
+    // not real parsing) so struct_pack already reflects it once the
+    // member loop starts; the same tokens get parsed again for real once
+    // control actually reaches that closing brace.
+    if (struct_pack == 0) {
+        int depth = 1;
+        Token *scan = tok;
+        while (scan->kind != TK_EOF && depth > 0) {
+            if (equalc(scan, "{")) depth++;
+            else if (equalc(scan, "}"))
+                depth--;
+            if (depth > 0) scan = scan->next;
+        }
+        if (depth == 0) {
+            int la_align = 0;
+            VarAttr la_attr = {0};
+            read_type_attrs(scan->next, &la_align, &la_attr);
+            if (la_attr.is_packed) struct_pack = 1;
+        }
+    }
     bool use_ms_bitfields = false;
     if (!is_union) {
         if (ty->bitfield_mode == BF_MODE_MS)
@@ -2711,6 +3070,12 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (!v) error_tok(st, "%s", msg);
             continue;
         }
+        // C11 6.7.2.1p2: empty declaration (bare semicolon) is valid.
+        // Kernels commonly produce these from empty __VA_ARGS__ in macros.
+        if (equalc(tok, ";")) {
+            tok = tok->next;
+            continue;
+        }
         Token *mdecl_start = tok;
         Type *base = declspec(&tok, tok, &attr);
         if (attr.is_typedef || attr.is_extern || attr.is_static)
@@ -2720,11 +3085,38 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         if (!base)
             error_tok(tok, "expected member type");
         if (equalc(tok, ";")) {
-            // C11 6.7.2.1p13: only an untagged struct/union specifier forms
-            // an anonymous member; a tagged one (or a typedef name, or a
-            // non-aggregate type) declares nothing.
-            if (!((equalc(mdecl_start, "struct") || equalc(mdecl_start, "union")) &&
-                  equalc(mdecl_start->next, "{")))
+            // C11 6.7.2.1p13: an untagged struct/union specifier forms an
+            // anonymous member. GNU extensions (rejected under -pedantic,
+            // same as GCC), both also accepted as an unnamed field whose
+            // members get promoted into the enclosing struct:
+            // - A *tagged* struct/union with its own fresh body and no
+            //   declarator, so it's still usable by name elsewhere — e.g.
+            //   the kernel's socket_lock_t's
+            //   `union { struct slock_owned { ... }; long combined; };`.
+            // - A bare reference to a *previously completed* tagged
+            //   struct/union, with no declarator and no fresh body of its
+            //   own — e.g. `struct filename { struct __filename_head; ... };`.
+            // A typedef name or a non-aggregate type still declares nothing.
+            // Qualifiers (const/volatile/...) may precede or follow the
+            // struct/union keyword (`const struct { ... };`), so locate it
+            // by scanning rather than assuming it's the first token.
+            Token *su_tok = NULL;
+            for (Token *t = mdecl_start; t && t != tok; t = t->next)
+                if (equalc(t, "struct") || equalc(t, "union")) {
+                    su_tok = t;
+                    break;
+                }
+            bool untagged_inline = su_tok && equalc(su_tok->next, "{");
+            bool tag_has_fresh_body = su_tok && su_tok->next && su_tok->next->kind == TK_IDENT &&
+                equalc(su_tok->next->next, "{");
+            bool tagged_aggregate = !opt_pedantic && su_tok && !untagged_inline && !tag_has_fresh_body &&
+                (base->kind == TY_STRUCT || base->kind == TY_UNION) && (base->members || base->size > 0);
+            // Like tagged_aggregate, GCC only accepts a tagged-with-fresh-body
+            // member as a GNU extension: rejected under -pedantic (torture's
+            // c11-anon-struct-2.c relies on this — struct s4's `struct s {
+            // int i; };` member must still error under -std=c11 -pedantic-errors).
+            bool tag_fresh_body_ok = !opt_pedantic && tag_has_fresh_body;
+            if (!untagged_inline && !tagged_aggregate && !tag_fresh_body_ok)
                 error_tok(tok, "declaration does not declare anything");
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {
@@ -2737,6 +3129,9 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                 if (is_union) {
                     mem->offset = 0;
                     if (max_size < base->size) max_size = base->size;
+                    int a = base->align;
+                    if (struct_pack > 0 && (struct_pack < a || a == 0)) a = struct_pack;
+                    if (max_align < a) max_align = a;
                 } else {
                     int a = base->align;
                     if (struct_pack > 0 && (struct_pack < a || a == 0)) a = struct_pack;
@@ -2788,6 +3183,9 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                 if (is_union) {
                     mem->offset = 0;
                     if (max_size < mem_ty->size) max_size = mem_ty->size;
+                    int a = mem_ty->align;
+                    if (struct_pack > 0 && (struct_pack < a || a == 0)) a = struct_pack;
+                    if (max_align < a) max_align = a;
                 } else {
                     int a = mem_ty->align;
                     if (struct_pack > 0 && (struct_pack < a || a == 0)) a = struct_pack;
@@ -3044,6 +3442,20 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             if (name)
                 cur = cur->next = mem;
 
+            // Consume GCC function specifiers like __cond_acquires(true, lock)
+            while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                tok = tok->next;
+                tok = skip(tok, "(");
+                int pdepth = 1;
+                while (pdepth > 0 && tok->kind != TK_EOF) {
+                    if (equalc(tok, "(")) pdepth++;
+                    else if (equalc(tok, ")"))
+                        pdepth--;
+                    tok = tok->next;
+                }
+                if (equalc(tok, ","))
+                    tok = tok->next;
+            }
             if (!equalc(tok, ","))
                 break;
             tok = tok->next;
@@ -3061,6 +3473,19 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         final_align = struct_pack;
     if (struct_attr_align > final_align)
         final_align = struct_attr_align;
+    // A trailing __attribute__((aligned(N))) on the struct/union's own
+    // specifier (`struct S { ... } __attribute__((aligned(N)));`, no
+    // declarator) widens the *type itself* — every array of this type
+    // must keep each element aligned, so unlike a declaration-level
+    // alignas on one object (see apply_type_align), the type's own size
+    // must pad up to N too. Peek here, before this specifier's tokens are
+    // handed back to declspec's generic (non-size-padding) attribute loop.
+    int trailing_align = 0;
+    VarAttr trailing_attr = {0};
+    Token *after_trailing_attrs = read_type_attrs(tok, &trailing_align, &trailing_attr);
+    if (trailing_align > final_align)
+        final_align = trailing_align;
+    tok = after_trailing_attrs;
     ty->align = final_align;
     if (vla_off_acc) {
         // VLA-containing struct: the real runtime size lives in vla_len_expr
@@ -3328,7 +3753,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
         if (equalc(tok, "typeof")) {
             // typeof is only a keyword in C23+ or GNU mode; in C11 it's an identifier
-            if (!opt_std_version || strcmp(opt_std_version, "202311L") < 0)
+            if (!opt_gnu_mode && (!opt_std_version || strcmp(opt_std_version, "202311L") < 0))
                 break;
             tok = tok->next;
             tok = skip(tok, "(");
@@ -3626,8 +4051,20 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
     if (tok->kind == TK_IDENT) {
         // Not a symbol reference: enum constants and the true/false/NULL/
         // nullptr keywords fold to integer constants via the expression path.
+        // _Generic is tokenized as a plain identifier too (no dedicated
+        // token kind), but "_Generic(...)" starts a full selection
+        // expression, not a bare symbol name — without this check it fell
+        // into the plain-identifier branch below, which treated the
+        // literal text "_Generic" itself as the label to reference and
+        // stopped right there (leaving the caller staring at the
+        // following "(" and reporting a confusing "expected ';' or ','"
+        // several tokens later). Found via a real Linux kernel build:
+        // init/version-timestamp.c's init_uts_ns initializer selects its
+        // .ops field's proc_ns_operations pointer via
+        // _Generic((&init_uts_ns), struct foo *: &foo_operations, ...).
         if (find_enum_const(tok) || equalc(tok, "true") || equalc(tok, "false") ||
-            equalc(tok, "NULL") || equalc(tok, "nullptr"))
+            equalc(tok, "NULL") || equalc(tok, "nullptr") || equalc(tok, "_Generic") ||
+            (tok->len > 10 && !memcmp(tok->ptr, "__builtin_", 10)))
             return false;
         // Use asm_name for static local variables (mangled labels)
         LVar *lv = find_global_name(tok->name);
@@ -3675,6 +4112,22 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
             }
         }
 
+        // Handle "identifier[...].member... + const" / "- const" — the
+        // same address-plus-offset idiom already supported for a string
+        // literal a few lines up, but for a plain symbol reference (with
+        // or without a preceding [index]/.member chain). Real kernel
+        // case: arch/x86/kernel/alternative.c's
+        // `x86nops + 1 + 2 + ...` computing sub-array start addresses.
+        if (equalc(*rest, "+") || equalc(*rest, "-")) {
+            bool is_sub = equalc(*rest, "-");
+            Token *op_next = (*rest)->next;
+            Node *n = assign(&op_next, op_next);
+            long long v;
+            if (eval_const_expr(n, &v)) {
+                if (addend) *addend += is_sub ? -(int)v : (int)v;
+                *rest = op_next;
+            }
+        }
         return true;
     }
 
@@ -3728,7 +4181,35 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
         }
         return false;
     }
-    case ND_SUB:
+    case ND_SUB: {
+        // "label - const" (an address constant minus a byte offset) —
+        // the same address-arithmetic idiom ND_ADD already supports on
+        // either side, but subtraction isn't commutative: only the
+        // *left* side may hold the label. Tried first so a genuine
+        // address expression resolves via a real relocation instead of
+        // falling through to eval_const_expr(), which can't fold an
+        // address at all and always fails for it — the fallback below
+        // (unchanged from before) still covers every purely-constant
+        // subtraction this case previously handled. Real kernel case:
+        // arch/x86/kernel/cpu/common.c's cpu_current_top_of_stack percpu
+        // initializer: `(unsigned long)&init_stack + sizeof(init_stack)
+        // - TOP_OF_KERNEL_STACK_PADDING`.
+        if (extract_reloc(node->lhs, &lbl, &ladd)) {
+            long long rv;
+            if (eval_const_expr(node->rhs, &rv)) {
+                *label = lbl;
+                *addend = ladd - (int)rv;
+                return true;
+            }
+        }
+        long long v;
+        if (eval_const_expr(node, &v)) {
+            *label = NULL;
+            *addend = (int)v;
+            return true;
+        }
+        return false;
+    }
     case ND_SHL:
     case ND_SHR:
     case ND_BITAND:
@@ -3772,6 +4253,61 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
     }
     case ND_COMMA:
         return extract_reloc(node->rhs, label, addend);
+    default:
+        return false;
+    }
+}
+
+// Does `node` (after stripping casts) look like a genuine address
+// computation (&sym, &sym +/- N, a string literal, ...) rather than a
+// plain value read? Guards the integer-scalar extract_reloc() fallback
+// below it: extract_reloc()'s ND_LVAR case treats *any* reference to a
+// global as "the address of that global" once it's reached as a leaf —
+// correct only when the expression as a whole is already known to
+// represent an address, which every existing (pointer-typed) call site
+// guarantees by construction. A bare non-constant read like
+// "static int vi = some_other_global;" must remain a hard "not a
+// constant expression" error, not silently become "the address of
+// some_other_global" (c11-thread-local-2.c's "static _Thread_local int
+// vi = vv;" — a torture dg-error case — caught this exact overreach).
+static bool looks_like_address_expr(Node *node) {
+    while (node && node->kind == ND_CAST) node = node->lhs;
+    if (!node) return false;
+    switch (node->kind) {
+    case ND_ADDR:
+    case ND_STR:
+        return true;
+    case ND_LVAR:
+        // A bare function name, or a bare *array*-typed variable name (no
+        // explicit '&' on either), always implicitly decays to its
+        // address — there's no other valid meaning for either in a
+        // scalar initializer, per C's function/array-to-pointer decay
+        // rules — unlike a bare *scalar* data variable reference, which
+        // extract_reloc()'s ND_LVAR case would otherwise also treat as
+        // "the address of", too permissively (see the c11-thread-local-2
+        // regression this function was written to guard against). Real
+        // kernel case: arch/x86/kernel/idt.c's
+        // `.address = (unsigned long) idt_table` (idt_table is a plain
+        // array, no '&') — array decay, not a value read.
+        return node->var && (node->var->is_function || (node->var->ty && node->var->ty->kind == TY_ARRAY));
+    case ND_ADD:
+    case ND_SUB:
+        return looks_like_address_expr(node->lhs) || looks_like_address_expr(node->rhs);
+    case ND_COND: {
+        // A compile-time-constant condition selecting between "0" and a
+        // real address — e.g. linux/pci.h-style driver tables' common
+        // "IS_ENABLED(CONFIG_X) ? 0 : (kernel_ulong_t)&"literal"" idiom
+        // for optionally embedding a diagnostic string address in an
+        // otherwise-plain integer field. Only the *selected* branch needs
+        // to look like an address — the other is never evaluated, exactly
+        // like extract_reloc()'s own ND_COND case just below, which this
+        // gate must agree with or a selected address branch never even
+        // reaches it.
+        long long cv;
+        if (!eval_const_expr(node->cond, &cv))
+            return false;
+        return looks_like_address_expr(cv ? node->then : node->els);
+    }
     default:
         return false;
     }
@@ -3869,6 +4405,7 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
     tok = skip(tok, "{");
     while (!equalc(tok, "}")) {
         int eidx = idx;
+        bool member_designator = false;
         if (equalc(tok, "[")) {
             tok = tok->next; // skip [
             long long aidx = peek_const_expr(tok);
@@ -3882,9 +4419,20 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
             }
             if (eidx > max_idx) max_idx = eidx;
             tok = skip(tok, "]");
+            // Combined designator [N].member[.sub]*=val (C99 6.7.8p17):
+            // skip any ".member" chain before the "=". Its value belongs
+            // to just that member, not the whole (possibly struct/union)
+            // element, so it must NOT fall into the elem_ty-based
+            // struct/union heuristic below — that would wrongly try to
+            // flat-initialize the entire element from what's really a
+            // single member's value.
+            while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                tok = tok->next->next;
+                member_designator = true;
+            }
             tok = skip(tok, "=");
         }
-        if (elem_ty && (elem_ty->kind == TY_STRUCT || elem_ty->kind == TY_UNION) && !equalc(tok, "{")) {
+        if (!member_designator && elem_ty && (elem_ty->kind == TY_STRUCT || elem_ty->kind == TY_UNION) && !equalc(tok, "{")) {
             // Heuristic: if the first token is an identifier of struct/union type,
             // or a compound literal, treat it as a single element expression.
             // Otherwise use flat aggregate initialization.
@@ -3957,6 +4505,45 @@ static Token *find_compound_literal_start(Token *tok) {
     if (equalc(t, "{"))
         return t;
     return NULL;
+}
+
+// After "&(compound literal)" is folded into a reference to a materialized
+// static object, a trailing chain of constant array subscripts and/or
+// member accesses may still follow before the enclosing initializer
+// context resumes — e.g. drivers/gpu/drm/i915/i915_pmu.c's
+// I915_PMU_FORMAT_ATTR(): "&((struct i915_str_attribute[]){...})[0].attr.attr".
+// Fold the whole chain into one constant byte addend on the relocation
+// here, rather than leaving it for the caller to (mis)parse as a separate
+// initializer element. `ty` is the compound literal's own type (array or
+// struct/union); a bare "&(compound literal)" with nothing trailing simply
+// falls straight through the loop with addend 0, unchanged from before.
+static int parse_const_addend_chain(Token **rest, Token *tok, Type *ty) {
+    int addend = 0;
+    for (;;) {
+        if (equalc(tok, "[") && ty && ty->kind == TY_ARRAY) {
+            tok = tok->next;
+            Node *n = assign(&tok, tok);
+            long long idx = 0;
+            eval_const_expr(n, &idx);
+            tok = skip(tok, "]");
+            addend += (int)idx * (int)(ty->base ? ty->base->size : 0);
+            ty = ty->base;
+            continue;
+        }
+        if (equalc(tok, ".") && ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION)) {
+            tok = tok->next;
+            Member *mem = find_member(ty, tok);
+            if (!mem)
+                error_tok(tok, "no such member");
+            addend += mem->offset;
+            ty = mem->ty;
+            tok = tok->next;
+            continue;
+        }
+        break;
+    }
+    *rest = tok;
+    return addend;
 }
 
 static void remove_reloc(LVar *var, int offset) {
@@ -4075,13 +4662,47 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
 // Initialize one object of type `ty` at `base + offset` in global init data.
 // Handles scalars, arrays, structs, compound literals, and flattened init.
 static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
-    // String literal for char array
-    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR && tok->string_literal_prefix == 0) {
+    // "{ STRLIT }" / "{ STRLIT, }" for a char/wide-char array target is a
+    // superfluous-but-legal single-element brace, exactly equivalent to
+    // the bare "STRLIT" form the two checks just below look for. Unwrap
+    // it here so they see it either way — otherwise it falls into the
+    // generic "array with braces" per-element handler further down,
+    // which parses the string as one scalar element of ty->base and
+    // silently produces garbage for whatever element type it doesn't
+    // happen to fit (no diagnostic for e.g. a mismatched-width wide
+    // string, and wrong bytes even for a same-width match).
+    // Only applies to an array whose element is itself scalar (char-like
+    // or wide-char-like) — a multi-dimensional array's element is another
+    // array (e.g. char[2][3]'s element is char[3]), and "{ "ab" }" there
+    // is the standard brace-elision idiom for initializing just the first
+    // row, correctly handled by the generic "array with braces" per-
+    // element recursion below (which hands "ab" to *that* inner array,
+    // where these same checks apply again).
+    // TY_PTR is also excluded: a single-element "{ "str" }" initializer for
+    // an array of pointers (e.g. "const char *strs[] = { "a" };") assigns
+    // the string's address to strs[0] — a completely different, valid case
+    // from a char/wide-char array being initialized BY a string literal,
+    // not one array-element-type/string-width mismatch.
+    bool scalarish_base = ty->kind == TY_ARRAY && ty->base->kind != TY_ARRAY &&
+        ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION &&
+        ty->base->kind != TY_PTR;
+    Token *brace_close = NULL;
+    if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
+        Token *after = tok->next->next;
+        if (equalc(after, ",")) after = after->next;
+        if (equalc(after, "}")) {
+            brace_close = after->next;
+            tok = tok->next; // unwrap: point straight at the string literal
+        }
+    }
+    // String literal for char/char8_t array
+    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR &&
+        (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         int len = tok->len + 1; // include embedded NULs and the terminator
         if (ty->size > 0 && len > ty->size) len = ty->size;
         ensure_init_size(var, offset, len);
         memcpy(var->init_data + offset, tok->str, len);
-        return tok->next;
+        return brace_close ? brace_close : tok->next;
     }
 
     // Wide string literal L"..."/u"..."/U"..." for wchar_t[]/char16_t[]/
@@ -4118,7 +4739,23 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         // If array size is 0 (incomplete), set it
         if (ty->size == 0)
             ty->size = (int64_t)(i + 1) * wchar_size;
-        return tok->next;
+        return brace_close ? brace_close : tok->next;
+    }
+
+    // A string literal directly at an array target (bare, or just
+    // unwrapped from "{ ... }" above) whose prefix is incompatible with
+    // the target's element type/width — e.g. u8"..." (itself an array
+    // of unsigned char per the standard) assigned to a char16_t/
+    // char32_t/wchar_t array, or an L/u/U-prefixed literal assigned to
+    // a plain char/char8_t array — matched neither branch above. This is
+    // a real constraint violation; without this check it fell through to
+    // the generic per-element "array with braces" handling (for the
+    // unwrapped case) or the address-only extract_reloc() fallback much
+    // further below, neither of which validates element-type/width
+    // compatibility at all.
+    if (scalarish_base && tok->kind == TK_STR) {
+        error_tok(tok, "initializing an array of incompatible element type "
+                       "with a string literal");
     }
 
     // Array with braces: { elem1, elem2, ... } with optional [N]=val or [N...M]=val designators
@@ -4157,11 +4794,52 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     tok = skip(tok, "=");
                     /* Apply value to a[sidx][sidx2] */
                     if (len == 0 || sidx < len)
-                        tok = global_init_one(tok, var, ty->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
+                        tok = global_init_one(tok, var, ty->base->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
                     else
                         tok = skip_initializer(tok);
                     idx = sidx + 1;
-                    continue;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
+                }
+                // Combined designator: [N].member[.sub]* = val (C99 6.7.8p17)
+                // for an array of struct/union elements, e.g.
+                // drivers/gpu/drm/i915/gt/intel_engine_cs.c's
+                // "[RENDER_CLASS].reg = GEN8_RTCR" — a member-name
+                // designator directly on one array element instead of a
+                // full brace-enclosed "{ .reg = ... }" value.
+                if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT &&
+                    ty->base && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
+                    int chain_base = offset + sidx * elem_size;
+                    Type *cur_ty = ty->base;
+                    while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                        char *sname = tok->next->name;
+                        tok = tok->next->next;
+                        Member *sm = find_member_by_name(cur_ty, sname);
+                        if (!sm) {
+                            tok = skip_initializer(tok);
+                            break;
+                        }
+                        if (!equalc(tok, ".")) {
+                            tok = skip(tok, "=");
+                            tok = global_init_member(tok, var, sm, chain_base);
+                            break;
+                        }
+                        chain_base += sm->offset;
+                        cur_ty = sm->ty;
+                    }
+                    idx = sidx + 1;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
                 }
                 tok = skip(tok, "=");
             }
@@ -4216,6 +4894,19 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                             int elem_size = cur_ty->base->size;
                             chain_base += (int)(idx * elem_size);
                             cur_ty = cur_ty->base;
+                            // Chain ends on an array index, e.g.
+                            // ".extent[0] = { ... }": consume "=" and parse
+                            // the value here too, the same way the
+                            // ".member" step below does — otherwise the
+                            // loop exits (tok is "=", not "." or "[")
+                            // without ever consuming the value, leaving
+                            // "= ..." to be misparsed as the next
+                            // designator/member.
+                            if (!equalc(tok, ".") && !equalc(tok, "[")) {
+                                tok = skip(tok, "=");
+                                tok = global_init_one(tok, var, cur_ty, chain_base);
+                                break;
+                            }
                             continue;
                         }
                         // .member designator
@@ -4424,13 +5115,23 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             append_reloc(var, offset, label, addend);
             return next;
         }
-        // &(compound literal) for pointer types
-        if (equalc(tok, "&") && find_compound_literal_start(tok->next)) {
-            tok = tok->next;
+        // &(compound literal) for pointer types. GCC-style macros commonly
+        // wrap the whole thing in one extra redundant paren —
+        // "(&(type){...})", e.g. linux/hwmon.h's HWMON_CHANNEL_INFO() —
+        // which a bare equalc(tok, "&") check misses entirely (tok is "("
+        // here, not "&"); peel off that one layer first if present.
+        bool wrapped_amp = equalc(tok, "(") && equalc(tok->next, "&") &&
+            find_compound_literal_start(tok->next->next);
+        Token *amp_tok = wrapped_amp ? tok->next : tok;
+        if (equalc(amp_tok, "&") && find_compound_literal_start(amp_tok->next)) {
+            tok = amp_tok->next;
             Token *compound_start = find_compound_literal_start(tok);
-            // C23: file-scope compound literals may not specify register/thread_local
             Token *t = tok;
-            while (equalc(t, "(")) t = t->next;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
             for (Token *u = t; u && !equalc(u, ")"); u = u->next)
                 if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
                     error_tok(u, "file-scope compound literal specifies storage class");
@@ -4438,15 +5139,92 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
             in_compound_literal = saved_icl;
-            while (equalc(t, ")")) t = t->next;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            // Compiler-synthesized, invisible-outside-this-file temporary:
+            // must be a LOCAL (not GLOBAL) ELF symbol, or two separate
+            // translation units each independently counting from
+            // ".Lanon.0" collide at link time ("multiple definition of
+            // '.Lanon.0'") — every compilation unit resets anon_count to 0.
+            anon_var->is_static = true;
             Token *rest_inner = NULL;
             global_initializer(&rest_inner, compound_start, anon_var);
             tok = rest_inner;
-            append_reloc(var, offset, name, 0);
+            // Any extra redundant parens wrapped directly around the
+            // compound literal itself (open_count counts both those and
+            // the type-cast's own required paren, already closed above)
+            // close here, immediately after the literal's initializer body.
+            for (int i = 0; i < open_count - close_count; i++)
+                tok = skip(tok, ")");
+            // A trailing chain of constant subscripts/member accesses may
+            // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
+            // relocation's addend instead of leaving it unparsed.
+            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
+            if (wrapped_amp) tok = skip(tok, ")");
+            append_reloc(var, offset, name, addend);
             return tok;
+        }
+        // Bare (no leading &) array-typed compound literal assigned to a
+        // pointer field: array-to-pointer decay, e.g. linux/hwmon.h's
+        // HWMON_CHANNEL_INFO(): ".config = (const u32 []) { A, B, 0 }"
+        // where .config's declared type is "const u32 *". Materializes
+        // the array as its own anonymous static object (recursing through
+        // global_initializer exactly like the "&(compound literal)" case
+        // above) and points this pointer field at its first element —
+        // same reloc mechanism, just without an explicit "&" and with the
+        // compound literal's type being the array itself rather than the
+        // struct/scalar the pointer's target type would suggest. Any
+        // redundant wrapping paren is already handled by
+        // find_compound_literal_start()'s own leading-"(" skip loop —
+        // no separate unwrap step needed here (unlike the "&(...)" case
+        // above, which checks for a literal leading "&" itself).
+        if (find_compound_literal_start(tok)) {
+            Token *compound_start = find_compound_literal_start(tok);
+            Token *t = tok;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
+            for (Token *u = t; u && !equalc(u, ")"); u = u->next)
+                if (equalc(u, "register") || equalc(u, "thread_local") || equalc(u, "_Thread_local"))
+                    error_tok(u, "file-scope compound literal specifies storage class");
+            bool saved_icl = in_compound_literal;
+            in_compound_literal = true;
+            Type *compound_ty = type_name(&t, t);
+            in_compound_literal = saved_icl;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
+            if (compound_ty->kind == TY_ARRAY) {
+                static int anon_arr_count;
+                char *name = format(".Lanonarr.%d", anon_arr_count++);
+                LVar *anon_var = new_var(name, compound_ty, false);
+                anon_var->is_static = true; // see the identical comment above
+                Token *rest_inner = NULL;
+                global_initializer(&rest_inner, compound_start, anon_var);
+                tok = rest_inner;
+                // Redundant parens wrapped directly around the compound
+                // literal itself close here, immediately after its body —
+                // e.g. drivers/gpu/drm/i915/display/intel_display_power_map.c's
+                // "((const struct instance[]) { ... })" nested inside a
+                // wider designated initializer.
+                for (int i = 0; i < open_count - close_count; i++)
+                    tok = skip(tok, ")");
+                // A trailing chain of constant subscripts/member accesses
+                // may still follow — fold it into the relocation's addend.
+                int addend = parse_const_addend_chain(&tok, tok, compound_ty);
+                append_reloc(var, offset, name, addend);
+                return tok;
+            }
         }
     }
 
@@ -4490,7 +5268,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local)
+            if (!var->is_local)
+                if (!var->is_local)
+                    if (!var->is_local)
+                        error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     if (is_flonum(ty)) {
@@ -4504,7 +5286,11 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             }
             return tok;
         }
-        error_tok(tok, "expected constant expression in initializer");
+        if (!var->is_local)
+            if (!var->is_local)
+                if (!var->is_local)
+                    if (!var->is_local)
+                        error_tok(tok, "expected constant expression in initializer");
         return tok;
     }
     long long val = 0;
@@ -4512,7 +5298,36 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         write_scalar_bytes(var, offset, ty->size, (int64_t)val);
         return tok;
     }
-    error_tok(tok, "expected constant expression in initializer");
+    // A relocatable address stored in an integer-typed (not pointer-typed)
+    // struct member — e.g. arch/x86/include/asm/processor.h's INIT_THREAD:
+    // "{ .sp = (unsigned long)&__top_init_kernel_stack }", where .sp is a
+    // plain `unsigned long` field. Mirrors the ty->kind == TY_PTR handling
+    // a few lines up; that branch only fires for pointer-typed members, so
+    // an integer-typed member holding a cast address never tried
+    // extract_reloc() at all.
+    //
+    // Only fires when the field is at least pointer-width: a real relocation
+    // needs the full 8-byte address to be representable, so on LLP64
+    // (Windows, "unsigned long" is 4 bytes) this must NOT fire for `unsigned
+    // long` the way it safely can on LP64 — GCC itself rejects "(unsigned
+    // long)&sym" as a global initializer on Windows ("initializer element is
+    // not constant"; confirmed against real x86_64-w64-mingw32-gcc), for
+    // exactly this reason: the address genuinely may not fit. Narrower
+    // fields fall through to the existing "unsupported"/"expected constant
+    // expression" error below, matching GCC.
+    if (ty->size >= 8) {
+        char *label = NULL;
+        int addend = 0;
+        if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
+            append_reloc(var, offset, label, addend);
+            return tok;
+        }
+    }
+    if (!var->is_local)
+        if (!var->is_local)
+            if (!var->is_local)
+                if (!var->is_local)
+                    error_tok(tok, "expected constant expression in initializer");
     return tok;
 }
 
@@ -4601,7 +5416,13 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     Node *elem_lhs = new_array_elem_lvalue_node(inner, sidx2, tok);
                     tok = local_init_one(tok, elem_lhs, ty->base->base, cur);
                     idx = sidx + 1;
-                    continue;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
                 }
                 tok = skip(tok, "=");
             }
@@ -4897,6 +5718,20 @@ static Node *declaration(Token **rest, Token *tok) {
             locals = lvar;
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
+            // Consume GCC function specifiers like __cond_acquires(true, lock)
+            while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                tok = tok->next;
+                tok = skip(tok, "(");
+                int pdepth = 1;
+                while (pdepth > 0 && tok->kind != TK_EOF) {
+                    if (equalc(tok, "(")) pdepth++;
+                    else if (equalc(tok, ")"))
+                        pdepth--;
+                    tok = tok->next;
+                }
+                if (equalc(tok, ","))
+                    tok = tok->next;
+            }
             if (!equalc(tok, ","))
                 break;
             tok = tok->next;
@@ -4928,6 +5763,7 @@ static Node *declaration(Token **rest, Token *tok) {
             gvar->name = asm_label;
             gvar->ty = ty;
             gvar->is_local = false;
+            gvar->decl_fn_name = parser_current_fn;
             gvar->is_static = true;
             gvar->next = globals;
             globals = gvar;
@@ -6161,6 +6997,8 @@ static bool type_equal(Type *a, Type *b) {
     }
 }
 
+static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok);
+
 static Node *primary(Token **rest, Token *tok) {
     Node *node = NULL;
 
@@ -6307,6 +7145,59 @@ static Node *primary(Token **rest, Token *tok) {
                 else if (strcmp(attr_name, "unsequenced") == 0 && v->is_function && v->is_unsequenced)
                     result = 1;
             }
+            node = new_num(result, tok);
+            *rest = tok;
+            return node;
+        }
+        // __has_attribute(attr_name) — GNU/Clang extension, also usable
+        // (unlike __has_include/__has_c_attribute) as a genuine
+        // compile-time constant expression in ordinary code, not just
+        // inside #if (e.g. linux/kernel/trace/trace.c: "if (... &&
+        // __has_attribute(btf_type_tag)) return;"). Reports whether this
+        // compiler recognizes AND acts upon the named __attribute__,
+        // mirroring the set __attribute__((...)) parsing actually
+        // dispatches on above — every other syntactically-valid attribute
+        // name is silently accepted-but-ignored, so reporting 1 for those
+        // too would misrepresent them as semantically implemented.
+        if (equalc(tok, "__has_attribute")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            char *attr_name = NULL;
+            if (tok->kind == TK_IDENT)
+                attr_name = tok->name;
+            tok = tok->next;
+            tok = skip(tok, ")");
+            static const char *const known_attrs[] = {
+                "alias",
+                "aligned",
+                "cleanup",
+                "const",
+                "constructor",
+                "deprecated",
+                "destructor",
+                "diagnose_if",
+                "error",
+                "gcc_struct",
+                "gnu_inline",
+                "mode",
+                "ms_struct",
+                "noreturn",
+                "packed",
+                "pure",
+                "reproducible",
+                "unsequenced",
+                "vector_size",
+                "warning",
+                "weak",
+                NULL,
+            };
+            int result = 0;
+            if (attr_name)
+                for (int i = 0; known_attrs[i]; i++)
+                    if (!strcmp(attr_name, known_attrs[i])) {
+                        result = 1;
+                        break;
+                    }
             node = new_num(result, tok);
             *rest = tok;
             return node;
@@ -6509,8 +7400,19 @@ static Node *primary(Token **rest, Token *tok) {
         error_tok(tok, "expected an expression");
     }
 
-    check_type(node);
+    return apply_postfix_ops(node, rest, tok);
+}
 
+// Apply postfix operators (call, subscript, member access, post-inc/dec) to
+// an already-parsed primary expression. Extracted from primary()'s own
+// trailing chain so other constructs whose result is itself a primary
+// expression — e.g. unary()'s __builtin_choose_expr — can run the very same
+// chain instead of returning bare and leaving any "->"/"."/"[...]" that
+// follows unparsed. Real-world need: drivers/gpu/drm/i915/gt/intel_gtt.h's
+// px_pt()/px_used() macros expand to "&__builtin_choose_expr(...)->used" —
+// a postfix "->" directly on the choose_expr's result.
+static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok) {
+    check_type(node);
     while (true) {
         if (equalc(tok, "(")) {
             Node *call = new_node(ND_FUNCALL, tok);
@@ -6791,6 +7693,242 @@ static Node *vector_lower(Node *node) {
     return chain;
 }
 
+// Assign a brace-enclosed initializer into the struct/union member `mem` of
+// lvalue `base` (i.e. `base.mem = { ... }`), appending ND_ASSIGN nodes onto
+// `result`. Recurses when a sub-member is itself a struct/union with its own
+// brace-enclosed value, so arbitrarily deep wrapper structs — very common in
+// the kernel (atomic_t -> arch_spinlock_t -> raw_spinlock_t -> spinlock_t,
+// e.g. `{ { .val = { 0 } } }`) — parse instead of only one level deep.
+static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
+                                       Token **rest, Token *tok, Token *start) {
+    tok = skip(tok, "{");
+    Node *member_access = new_node(ND_MEMBER, start);
+    member_access->lhs = base;
+    member_access->member = mem;
+    member_access->ty = mem->ty;
+    Member *sub = mem->ty->members;
+    while (!equalc(tok, "}")) {
+        Member *target = NULL;
+        Node *target_base = member_access;
+        if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+            // Walk a chain of .name1.name2...nameN designators — needed
+            // for a macro-expanded multi-level field access, e.g. linux's
+            // icmp6_router expanding to ".icmp6_dataun.u_nd_advt.router"
+            // (net/ipv6/ndisc.c's "*msg = (struct nd_msg){ .icmph = {
+            // .icmp6_router = router, ... } }"). All but the last level
+            // fold into an accumulated ND_MEMBER chain (target_base); the
+            // last becomes `target`, resolved against that accumulated
+            // base exactly like a single-level designator already was.
+            Node *chain_lhs = member_access;
+            Type *chain_ty = mem->ty;
+            Member *first_dm = NULL, *dm = NULL;
+            bool chain_ok = true;
+            for (;;) {
+                char *name = tok->next->name;
+                dm = find_member_by_name(chain_ty, name);
+                if (!dm) {
+                    chain_ok = false;
+                    break;
+                }
+                tok = tok->next->next;
+                if (!first_dm) first_dm = dm;
+                // No further ".name" — this level is the final target.
+                if (!(equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))
+                    break;
+                Node *mem_node = new_unary(ND_MEMBER, chain_lhs, tok);
+                mem_node->member = dm;
+                check_type(mem_node);
+                chain_lhs = mem_node;
+                chain_ty = dm->ty;
+            }
+            if (chain_ok && dm) {
+                target_base = chain_lhs;
+                // A combined `.member[idx] = val` designator (C99 6.7.8p17)
+                // leaves `[idx]` unconsumed here for an array-typed member —
+                // the array-index branch below parses `[idx] = val`
+                // (including the `=`) itself.
+                if (!(dm->ty->kind == TY_ARRAY && equalc(tok, "[")))
+                    tok = skip(tok, "=");
+                target = dm;
+                sub = first_dm->next;
+            } else {
+                tok = skip_initializer(tok);
+            }
+        } else if (sub) {
+            target = sub;
+            sub = sub->next;
+        } else {
+            tok = skip_initializer(tok);
+        }
+        if (target) {
+            if (target->ty->kind == TY_ARRAY && equalc(tok, "[")) {
+                // Designated array element(s) directly on a member: `[N] =
+                // val` or `[N ... M] = val` (C99 6.7.8p17), e.g. the
+                // property_entry union's `.u32_data[0] = val`. Mirrors the
+                // array-designator loop used for top-level array members.
+                Node *inner_access = new_node(ND_MEMBER, start);
+                inner_access->lhs = target_base;
+                inner_access->member = target;
+                inner_access->ty = target->ty;
+                int len = array_len(target->ty);
+                tok = skip(tok, "[");
+                Node *idx_lo = assign(&tok, tok);
+                long long sv = 0;
+                eval_const_expr(idx_lo, &sv);
+                long long ev = sv;
+                if (equalc(tok, "...")) {
+                    tok = tok->next;
+                    Node *idx_hi = assign(&tok, tok);
+                    eval_const_expr(idx_hi, &ev);
+                }
+                tok = skip(tok, "]");
+                tok = skip(tok, "=");
+                Token *val_start = tok;
+                for (long long i = sv; i <= ev; i++) {
+                    tok = val_start;
+                    Node *offset = new_num(i, start);
+                    Node *elem_ptr = new_binary(ND_ADD, inner_access, offset, start);
+                    Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                    Node *val = assign(&tok, tok);
+                    check_type(val);
+                    if (len == 0 || i < len) {
+                        Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
+                        check_type(asgn);
+                        result = new_binary(ND_COMMA, result, asgn, start);
+                    }
+                }
+            } else if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
+                result = assign_nested_struct_init(result, target_base, target, &tok, tok, start);
+            } else {
+                // A lone extra brace layer around a non-aggregate value is a
+                // legal GNU/C11 redundant-brace idiom, e.g. `{ { 0 } }`.
+                bool extra_brace = equalc(tok, "{");
+                if (extra_brace) tok = tok->next;
+                Node *inner_access = new_node(ND_MEMBER, start);
+                inner_access->lhs = target_base;
+                inner_access->member = target;
+                inner_access->ty = target->ty;
+                Node *val = (extra_brace && equalc(tok, "}")) ? new_num(0, start) : assign(&tok, tok);
+                check_type(val);
+                if (extra_brace) {
+                    if (equalc(tok, ",")) tok = tok->next;
+                    tok = skip(tok, "}");
+                }
+                Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
+                asgn->ty = target->ty;
+                result = new_binary(ND_COMMA, result, asgn, start);
+            }
+        }
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (equalc(tok, "}")) break;
+            continue;
+        }
+        break;
+    }
+    tok = skip(tok, "}");
+    *rest = tok;
+    return result;
+}
+
+// Synthesize a nested (ElemType){...} compound-literal value for a
+// braced struct/union initializer used as an ARRAY ELEMENT's value —
+// e.g. a designated array index `[N] = { .field = val, ... }` where the
+// array's element type is itself a struct/union. assign() alone can't
+// parse a bare "{...}" as an expression, so any caller handing it a
+// braced value must go through this instead. Shared by the top-level
+// array-compound-literal path and a struct compound literal's own
+// array-typed *member* (below) — the latter used to call assign()
+// unconditionally on a designated array index's value, so a nested
+// struct/union element (arch/x86/mm/init.c's execmem_info: `.ranges = {
+// [EXECMEM_MODULE_TEXT] = { .flags = ..., .start = ..., ... }, ... }`)
+// hit "expected an expression" on the inner brace.
+static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
+                                       Token *start, int *anon_count) {
+    Token *fake_start = tok; // tok == '{'
+    tok = tok->next; // skip '{'
+    char *ename = format(".Lanon.%d", (*anon_count)++);
+    LVar *evar = new_var(ename, elem_ty, true);
+    Node *ezinit = new_node(ND_ZERO_INIT, start);
+    ezinit->lhs = new_var_node(evar, start);
+    Node *eres = new_binary(ND_COMMA, ezinit, new_var_node(evar, start), start);
+    Member *emem = elem_ty->members;
+    while (!equalc(tok, "}")) {
+        if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+            // Walk a chain of .name1.name2...nameN designators — needed
+            // for a macro-expanded multi-level field access, e.g.
+            // drivers/gpu/drm/i915/display/intel_display_power_map.c's
+            // I915_PW() macro: ".hsw.idx = HSW_PW_CTL_IDX_GLOBAL" (hsw is
+            // a named member of an anonymous union; idx is a member of
+            // hsw's own inner struct type). All but the last level fold
+            // into an accumulated ND_MEMBER chain (base); the last is the
+            // actual assignment target, exactly like a single-level
+            // designator already was.
+            Type *cur_ty = elem_ty;
+            Node *base = new_var_node(evar, start);
+            Member *first = NULL, *m = NULL;
+            for (;;) {
+                char *mname = tok->next->name;
+                m = find_member_by_name(cur_ty, mname);
+                if (!m) break;
+                if (!first) first = m;
+                tok = tok->next->next;
+                Node *ma = new_unary(ND_MEMBER, base, fake_start);
+                ma->member = m;
+                check_type(ma);
+                base = ma;
+                cur_ty = m->ty;
+                if (!(equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))
+                    break;
+            }
+            if (m) {
+                tok = skip(tok, "=");
+                // A nested struct/union member's own value may itself be a
+                // braced sub-initializer (e.g. i915_pmu.c's device_attribute
+                // "{ .attr = {.name = _name, .mode = _mode}, ... }") — bare
+                // assign() can't parse a leading "{", so recurse the same
+                // way the outer element dispatch does.
+                Node *v2 = (equalc(tok, "{") && (m->ty->kind == TY_STRUCT || m->ty->kind == TY_UNION))
+                    ? synth_struct_elem_literal(m->ty, &tok, tok, start, anon_count)
+                    : assign(&tok, tok);
+                check_type(v2);
+                Node *a2 = new_binary(ND_ASSIGN, base, v2, start);
+                check_type(a2);
+                eres = new_binary(ND_COMMA, eres, a2, start);
+                emem = first->next;
+            } else {
+                assign(&tok, tok);
+            }
+        } else if (emem) {
+            Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
+            ma->member = emem;
+            check_type(ma);
+            Node *v2 = (equalc(tok, "{") && (emem->ty->kind == TY_STRUCT || emem->ty->kind == TY_UNION))
+                ? synth_struct_elem_literal(emem->ty, &tok, tok, start, anon_count)
+                : assign(&tok, tok);
+            check_type(v2);
+            Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
+            check_type(a2);
+            eres = new_binary(ND_COMMA, eres, a2, start);
+            emem = emem->next;
+        } else {
+            assign(&tok, tok);
+        }
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            if (equalc(tok, "}")) break;
+            continue;
+        }
+        break;
+    }
+    tok = skip(tok, "}");
+    Node *efinal = new_var_node(evar, start);
+    Node *val = new_binary(ND_COMMA, eres, efinal, start);
+    check_type(val);
+    *rest = tok;
+    return val;
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -6816,16 +7954,23 @@ static Node *unary(Token **rest, Token *tok) {
                 if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
                     error_tok(tok, "unsupported offsetof designator");
 
+                // Always parse the full subscript expression first — a
+                // leading TK_NUM (e.g. the "1" in "1ul << bits") is not
+                // necessarily the *whole* index; it may only be the start
+                // of a larger constant (or non-constant) expression, which
+                // a bare tok->kind == TK_NUM check on just the first token
+                // wrongly assumed (leaving "<< bits]" unconsumed and
+                // desyncing the parser). Decide constant vs. runtime only
+                // after eval_const_expr() has actually evaluated it.
+                Node *idx = assign(&tok, tok);
+                tok = skip(tok, "]");
+                check_type(idx);
                 long long idx_val;
-                if (!rt_expr && ty->kind == TY_ARRAY && tok->kind == TK_NUM) {
+                if (!rt_expr && ty->kind == TY_ARRAY && eval_const_expr(idx, &idx_val)) {
                     // Constant subscript on constant-size array
-                    idx_val = tok->val;
                     const_offset += (int)(idx_val * ty->base->size);
-                    tok = skip(tok->next, "]");
                 } else {
                     // Variable subscript or VLA: build runtime expression
-                    Node *idx = assign(&tok, tok);
-                    tok = skip(tok, "]");
                     Node *elem_sz = type_size_node(ty->base, tok);
                     Node *mul = new_binary(ND_MUL, idx, elem_sz, tok);
                     check_type(mul);
@@ -7758,17 +8903,24 @@ static Node *unary(Token **rest, Token *tok) {
         Node *expr1 = assign(&tok, tok);
         tok = skip(tok, ",");
         Node *expr2 = assign(&tok, tok);
-        *rest = skip(tok, ")");
+        tok = skip(tok, ")");
         // If condition is a compile-time constant, return the appropriate branch
         long long cv = 0;
-        if (eval_const_expr(cond, &cv))
-            return cv ? expr1 : expr2;
-        // Non-constant: generate as runtime ternary
-        Node *node = new_node(ND_COND, start);
-        node->cond = cond;
-        node->then = expr1;
-        node->els = expr2;
-        return node;
+        Node *result;
+        if (eval_const_expr(cond, &cv)) {
+            result = cv ? expr1 : expr2;
+        } else {
+            // Non-constant: generate as runtime ternary
+            result = new_node(ND_COND, start);
+            result->cond = cond;
+            result->then = expr1;
+            result->els = expr2;
+        }
+        // A postfix chain may directly follow, e.g.
+        // drivers/gpu/drm/i915/gt/intel_gtt.h's px_used(px) macro expands to
+        // "&__builtin_choose_expr(...)->used" — the "->used" must still be
+        // parsed here, exactly as primary() would for any other expression.
+        return apply_postfix_ops(result, rest, tok);
     }
     if (equalc(tok, "__builtin_types_compatible_p")) {
         Token *start = tok;
@@ -7808,7 +8960,22 @@ static Node *unary(Token **rest, Token *tok) {
                         t1->array_len == t2->array_len;
                 break;
             case TY_STRUCT:
-            case TY_UNION: compat = t1 == t2; break;
+            case TY_UNION:
+                // Not a plain `t1 == t2`: apply_type_align() intentionally
+                // clones a *complete* struct/union's Type to raise one
+                // particular declaration's alignment (e.g. a struct member
+                // with `__attribute__((aligned(N)))`) without mutating the
+                // shared original in place — see its own comment. That
+                // clone is still the same struct, just a different Type
+                // object, and shares the identical Member list (the clone
+                // is a shallow `*ret = *ty` copy that only overwrites
+                // ->align) — real GCC's container_of()-style
+                // static_assert(__same_type(...)) checks must not treat it
+                // as a mismatch. NULL ->members (still-incomplete types)
+                // never counts as a match, or two distinct incomplete
+                // structs would wrongly compare compatible.
+                compat = (t1 == t2) || (t1->members && t1->members == t2->members);
+                break;
             default: compat = t1->size == t2->size && t1->is_unsigned == t2->is_unsigned;
             }
         }
@@ -7982,53 +9149,19 @@ static Node *unary(Token **rest, Token *tok) {
         // Compound literal: (type){init_list}
         if (equalc(tok, "{")) {
             Token *init_brace_tok = tok;
-            (void)init_brace_tok;
             tok = tok->next;
 
-            // For incomplete arrays, count elements first
+            // For incomplete arrays, count elements first. Delegate to
+            // count_array_initializer() (used elsewhere for the same
+            // purpose) rather than a naive top-level-comma count: a naive
+            // count silently mis-sizes the array whenever a designator is
+            // present, since "[0 ... 2] = 7, [3] = 9" is one comma-
+            // separated item covering three indices, not one slot — e.g.
+            // drm/intel/pick.h's _PICK() macro relies on exactly this
+            // range-designator shape to build a lookup table.
             if (ty->kind == TY_ARRAY && ty->size == 0 && ty->base) {
-                Token *tmp = tok;
-                int count = 0;
-                int depth = 0;
-                while (true) {
-                    if (equalc(tmp, "{")) depth++;
-                    else if (equalc(tmp, "}")) {
-                        if (depth == 0) break;
-                        depth--;
-                    }
-                    if (depth == 0 && (equalc(tmp, ",") || equalc(tmp, "}")))
-                        ;
-                    else
-                        count++;
-                    // Advance past comma-separated items
-                    if (depth == 0 && equalc(tmp->next, ",")) {
-                        tmp = tmp->next->next;
-                        continue;
-                    }
-                    if (depth == 0 && equalc(tmp->next, "}")) {
-                        tmp = tmp->next;
-                        continue;
-                    }
-                    tmp = tmp->next;
-                }
-                // Simple count: count commas + 1
-                tmp = tok;
-                count = 1;
-                depth = 0;
-                while (!(depth == 0 && equalc(tmp, "}"))) {
-                    if (equalc(tmp, "{")) depth++;
-                    else if (equalc(tmp, "}"))
-                        depth--;
-                    else if (depth == 0 && equalc(tmp, ","))
-                        count++;
-                    tmp = tmp->next;
-                }
-                // Handle trailing comma
-                Token *before_end = tok;
-                for (Token *t = tok; !equalc(t, "}"); t = t->next)
-                    before_end = t;
-                if (equalc(before_end, ","))
-                    count--;
+                Token *tmp = init_brace_tok;
+                int count = count_array_initializer(&tmp, tmp, ty->base);
                 ty = array_of(ty->base, count);
             }
 
@@ -8088,73 +9221,50 @@ static Node *unary(Token **rest, Token *tok) {
                 // Array compound literal: assign each element
                 int i = 0;
                 while (!equalc(tok, "}")) {
-                    Node *idx = new_num(i, start);
-                    Node *elem_ptr = new_binary(ND_ADD, new_var_node(var, start), idx, start);
-                    Node *deref = new_unary(ND_DEREF, elem_ptr, start);
-                    Node *val;
-                    // {.member=val,...} as nested struct/union initializer for element
-                    if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
-                        // Synthesize (ElemType){...} compound literal for the element
-                        Token *fake_start = tok; // tok = '{', the brace
-                        tok = tok->next; // skip '{'
-                        char *ename = format(".Lanon.%d", anon_count++);
-                        LVar *evar = new_var(ename, ty->base, true);
-                        Node *ezinit = new_node(ND_ZERO_INIT, start);
-                        ezinit->lhs = new_var_node(evar, start);
-                        Node *eres = new_binary(ND_COMMA, ezinit, new_var_node(evar, start), start);
-                        Member *emem = ty->base->members;
-                        while (!equalc(tok, "}")) {
-                            if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-                                char *mname = tok->next->name;
-                                tok = tok->next->next;
-                                tok = skip(tok, "=");
-                                Member *m = find_member_by_name(ty->base, mname);
-                                if (m) {
-                                    Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
-                                    ma->member = m;
-                                    check_type(ma);
-                                    Node *v2 = assign(&tok, tok);
-                                    check_type(v2);
-                                    Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
-                                    check_type(a2);
-                                    eres = new_binary(ND_COMMA, eres, a2, start);
-                                    emem = m->next;
-                                } else {
-                                    assign(&tok, tok);
-                                }
-                            } else if (emem) {
-                                Node *ma = new_unary(ND_MEMBER, new_var_node(evar, start), fake_start);
-                                ma->member = emem;
-                                check_type(ma);
-                                Node *v2 = assign(&tok, tok);
-                                check_type(v2);
-                                Node *a2 = new_binary(ND_ASSIGN, ma, v2, start);
-                                check_type(a2);
-                                eres = new_binary(ND_COMMA, eres, a2, start);
-                                emem = emem->next;
-                            } else {
-                                assign(&tok, tok);
-                            }
-                            if (equalc(tok, ",")) {
-                                tok = tok->next;
-                                if (equalc(tok, "}")) break;
-                                continue;
-                            }
-                            break;
+                    int sidx = i, eidx = i;
+                    // Designated initializer: [N] = val or [N ... M] = val
+                    // (C99 6.7.8p17) — e.g. drm/intel/pick.h's _PICK()
+                    // macro: "(const u32[]){ [TRANSCODER_EDP] = ...,
+                    // [TRANSCODER_A] = ..., ... }".
+                    if (equalc(tok, "[")) {
+                        tok = tok->next;
+                        Node *n = assign(&tok, tok);
+                        long long sv = 0;
+                        eval_const_expr(n, &sv);
+                        sidx = (int)sv;
+                        eidx = sidx;
+                        if (equalc(tok, "...")) {
+                            tok = tok->next;
+                            Node *n2 = assign(&tok, tok);
+                            long long ev = sidx;
+                            eval_const_expr(n2, &ev);
+                            eidx = (int)ev;
                         }
-                        tok = skip(tok, "}");
-                        Node *efinal = new_var_node(evar, start);
-                        val = new_binary(ND_COMMA, eres, efinal, start);
-                        check_type(val);
-                    } else {
-                        val = assign(&tok, tok);
+                        tok = skip(tok, "]");
+                        tok = skip(tok, "=");
                     }
-                    check_type(val);
-                    Node *asgn = new_binary(ND_ASSIGN, deref, val, start);
-                    check_type(asgn);
-                    result = new_binary(ND_COMMA, result, asgn, start);
-                    check_type(result);
-                    i++;
+                    Token *val_start = tok;
+                    for (int j = sidx; j <= eidx; j++) {
+                        Node *idx = new_num(j, start);
+                        Node *elem_ptr = new_binary(ND_ADD, new_var_node(var, start), idx, start);
+                        Node *deref = new_unary(ND_DEREF, elem_ptr, start);
+                        Node *val;
+                        // {.member=val,...} as nested struct/union initializer for element
+                        if (equalc(tok, "{") && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
+                            val = synth_struct_elem_literal(ty->base, &tok, tok, start, &anon_count);
+                        } else {
+                            val = assign(&tok, tok);
+                        }
+                        check_type(val);
+                        Node *asgn = new_binary(ND_ASSIGN, deref, val, start);
+                        check_type(asgn);
+                        result = new_binary(ND_COMMA, result, asgn, start);
+                        check_type(result);
+                        // Reset tok for ranged initializer re-evaluation
+                        if (j < eidx)
+                            tok = val_start;
+                    }
+                    i = eidx + 1;
                     if (!equalc(tok, "}"))
                         tok = skip(tok, ",");
                 }
@@ -8179,13 +9289,11 @@ static Node *unary(Token **rest, Token *tok) {
                         Token *save = tok;
                         while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                             char *mname = tok->next->name;
-                            Member *m = NULL;
-                            for (Member *mm = cur_ty->members; mm; mm = mm->next) {
-                                if (mm->name == mname) {
-                                    m = mm;
-                                    break;
-                                }
-                            }
+                            // find_member_by_name recurses through anonymous
+                            // struct/union members (e.g. `.ubuf` reachable
+                            // only via an unnamed union), returning a
+                            // synthetic member with the combined offset.
+                            Member *m = find_member_by_name(cur_ty, mname);
                             if (!m) break;
                             found = m;
                             cur_ty = m->ty;
@@ -8193,7 +9301,15 @@ static Node *unary(Token **rest, Token *tok) {
                         }
                         if (found) {
                             mem = found;
-                            tok = skip(tok, "=");
+                            // A combined `.member[idx] = val` designator (C99
+                            // 6.7.8p17) leaves `[idx]` unconsumed here for an
+                            // array-typed member — the array-element loop
+                            // below (mem->ty->kind == TY_ARRAY) already knows
+                            // how to parse `[idx] = val` including the `=`.
+                            // Blindly skipping "=" here (as for a scalar/
+                            // struct member) would choke on the `[` instead.
+                            if (!(mem->ty->kind == TY_ARRAY && equalc(tok, "[")))
+                                tok = skip(tok, "=");
                         } else {
                             tok = save; // restore for error recovery
                         }
@@ -8254,7 +9370,9 @@ static Node *unary(Token **rest, Token *tok) {
                                     Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
                                     Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
                                     Token *val_start = tok;
-                                    Node *val = assign(&tok, tok);
+                                    Node *val = (equalc(tok, "{") && (mem->ty->base->kind == TY_STRUCT || mem->ty->base->kind == TY_UNION))
+                                        ? synth_struct_elem_literal(mem->ty->base, &tok, tok, start, &anon_count)
+                                        : assign(&tok, tok);
                                     check_type(val);
                                     Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
                                     check_type(asgn);
@@ -8267,6 +9385,21 @@ static Node *unary(Token **rest, Token *tok) {
                             }
                             idx = eidx + 1;
                             if (equalc(tok, ",")) {
+                                // A fresh top-level ".member" designator
+                                // after the comma (rather than a bare
+                                // "[idx]=val" continuation of this same
+                                // array) restarts member dispatch — e.g.
+                                // drivers/scsi/virtio_scsi.c's ".lun[0] =
+                                // 1, .lun[1] = ..., .lun[2] = ..., .lun[3]
+                                // = ...", which repeats ".lun" per index
+                                // instead of chaining bare "[N]=val"
+                                // entries after one ".lun". Leave the
+                                // comma itself unconsumed so the outer
+                                // member loop's own trailing
+                                // skip(tok, ",") still applies exactly once.
+                                if (equalc(tok->next, ".") && tok->next->next &&
+                                    tok->next->next->kind == TK_IDENT)
+                                    break;
                                 tok = tok->next;
                                 if (equalc(tok, "}"))
                                     break;
@@ -8277,58 +9410,10 @@ static Node *unary(Token **rest, Token *tok) {
                         if (arr_brace) tok = skip(tok, "}");
                     } else if ((mem->ty->kind == TY_STRUCT || mem->ty->kind == TY_UNION) && equalc(tok, "{")) {
                         // Struct/union member with brace-enclosed initializer
-                        tok = skip(tok, "{");
-                        Member *sub = mem->ty->members;
-                        while (!equalc(tok, "}")) {
-                            Node *var_node = new_var_node(var, start);
-                            Node *member_access = new_node(ND_MEMBER, start);
-                            member_access->lhs = var_node;
-                            member_access->member = mem;
-                            member_access->ty = mem->ty;
-                            // Designated initializer: .name = value
-                            if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
-                                char *name = tok->next->name;
-                                tok = tok->next->next;
-                                tok = skip(tok, "=");
-                                Member *m = find_member_by_name(mem->ty, name);
-                                if (m) {
-                                    Node *inner_access = new_node(ND_MEMBER, start);
-                                    inner_access->lhs = member_access;
-                                    inner_access->member = m;
-                                    inner_access->ty = m->ty;
-                                    Node *val = assign(&tok, tok);
-                                    check_type(val);
-                                    Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
-                                    asgn->ty = m->ty;
-                                    result = new_binary(ND_COMMA, result, asgn, start);
-                                    result->ty = ty;
-                                } else {
-                                    tok = skip_initializer(tok);
-                                }
-                            } else if (sub) {
-                                Node *inner_access = new_node(ND_MEMBER, start);
-                                inner_access->lhs = member_access;
-                                inner_access->member = sub;
-                                inner_access->ty = sub->ty;
-                                Node *val = assign(&tok, tok);
-                                check_type(val);
-                                Node *asgn = new_binary(ND_ASSIGN, inner_access, val, start);
-                                asgn->ty = sub->ty;
-                                result = new_binary(ND_COMMA, result, asgn, start);
-                                result->ty = ty;
-                                sub = sub->next;
-                            } else {
-                                tok = skip_initializer(tok);
-                            }
-                            if (equalc(tok, ",")) {
-                                tok = tok->next;
-                                if (equalc(tok, "}"))
-                                    break;
-                                continue;
-                            }
-                            break;
-                        }
-                        tok = skip(tok, "}");
+                        // (recurses for further nested struct/union members).
+                        Node *var_node = new_var_node(var, start);
+                        result = assign_nested_struct_init(result, var_node, mem, &tok, tok, start);
+                        result->ty = ty;
                     } else if (equalc(tok, "{")) {
                         // Extra braces around a scalar initializer (e.g. { { } } for int*)
                         tok = skip(tok, "{");
@@ -8903,6 +9988,23 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         return;
     }
 
+    // A string literal reaching here (array target, neither the narrow
+    // char/char8_t branch above nor the wide 2/4-byte-element branch
+    // matched) has a prefix that's incompatible with the target array's
+    // element type — e.g. u8"..." (itself an array of unsigned char, per
+    // the standard) assigned to a char16_t/char32_t/wchar_t array, or an
+    // L/u/U-prefixed literal assigned to a plain char/char8_t array. This
+    // is a real constraint violation in C; without this check it silently
+    // fell through to the generic (address-only) initializer fallback
+    // below, which never validates element-type/width compatibility at
+    // all — no diagnostic, wrong bytes.
+    if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR &&
+        var->ty->base->kind != TY_ARRAY && var->ty->base->kind != TY_STRUCT &&
+        var->ty->base->kind != TY_UNION) {
+        error_tok(tok, "initializing an array of incompatible element type "
+                       "with a string literal");
+    }
+
     if (var->ty->kind == TY_PTR) {
         char *label = NULL;
         int addend = 0;
@@ -8926,25 +10028,40 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
 
             Token *compound_start = find_compound_literal_start(tok);
             Token *t = tok;
-            while (equalc(t, "(")) t = t->next;
+            int open_count = 0;
+            while (equalc(t, "(")) {
+                t = t->next;
+                open_count++;
+            }
             bool saved_icl = in_compound_literal;
             in_compound_literal = true;
             Type *compound_ty = type_name(&t, t);
             in_compound_literal = saved_icl;
-            while (equalc(t, ")")) t = t->next;
+            int close_count = 0;
+            while (equalc(t, ")")) {
+                t = t->next;
+                close_count++;
+            }
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            anon_var->is_static = true; // see the identical comment above
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
-            if (equalc(tok, "}"))
-                tok = tok->next;
+            // Redundant parens wrapped directly around the compound
+            // literal itself close here, immediately after its body.
+            for (int i = 0; i < open_count - close_count; i++)
+                tok = skip(tok, ")");
+            // A trailing chain of constant subscripts/member accesses may
+            // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
+            // relocation's addend instead of leaving it unparsed.
+            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
             while (equalc(tok, ")"))
                 tok = tok->next;
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
             var->has_init = true;
-            append_reloc(var, 0, name, 0);
+            append_reloc(var, 0, name, addend);
             *rest = tok;
             return;
         }
@@ -8961,6 +10078,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             static int anon_count2;
             char *name = format(".Lanon.%d", anon_count2++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            anon_var->is_static = true; // see the identical comment above
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
             if (equalc(tok, "}"))
@@ -9138,6 +10256,33 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             if (eval_double_const_expr(node, &fv)) {
                 var->has_init = true;
                 var->init_val = (int64_t)fv;
+                *rest = tok;
+                return;
+            }
+        }
+
+        // A relocatable address stored in an integer-typed (not pointer-
+        // typed) scalar — e.g. arch/x86/include/asm/processor.h's
+        // INIT_THREAD: "{ .sp = (unsigned long)&__top_init_kernel_stack }",
+        // where .sp is a plain `unsigned long`, not a pointer. Not a
+        // foldable constant (eval_const_expr above correctly rejects it —
+        // the address isn't known until link time) but not an error
+        // either: the TY_PTR branch above already handles exactly this
+        // shape via extract_reloc()/append_reloc() for pointer-typed
+        // globals; scalars just never tried the same fallback.
+        //
+        // Only fires when the field is at least pointer-width — see the
+        // matching guard in global_init_one() for why: on LLP64 (Windows)
+        // "unsigned long" is 4 bytes, too narrow to guarantee a real address
+        // fits, and GCC itself rejects the cast there as non-constant.
+        if (var->ty->size >= 8) {
+            char *label = NULL;
+            int addend = 0;
+            if (looks_like_address_expr(node) && extract_reloc(node, &label, &addend) && label) {
+                var->has_init = true;
+                var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
+                var->init_size = var->ty->size;
+                append_reloc(var, 0, label, addend);
                 *rest = tok;
                 return;
             }
@@ -9341,6 +10486,7 @@ Program *parse(Token *tok) {
         pending_vla_struct_capture = NULL;
         pending_mode = 0;
         pending_vector_size = 0;
+        pending_transparent_union = false;
         typedef_scope_restore(rec_typedef_cp);
         tag_scope_restore(rec_tag_cp);
         enum_scope_restore(rec_enum_cp);
@@ -9528,6 +10674,18 @@ Program *parse(Token *tok) {
                     }
                 }
             }
+            // GCC __attribute__((__transparent_union__)) trails the
+            // declarator (typically a typedef name): `typedef union {...}
+            // name __attribute__((transparent_union));`. declarator()
+            // consumes that trailing attribute itself (it's called with
+            // attr=NULL from most sites, see pending_transparent_union's
+            // comment) and stashes it here rather than in the local `attr`.
+            // Mark the union Type itself so a function argument matching
+            // one of its members later skips the (bogus, boxing-implying)
+            // implicit cast to the union in check_type's ND_FUNCALL handling.
+            if (pending_transparent_union && ty->kind == TY_UNION)
+                ty->is_transparent_union = true;
+            pending_transparent_union = false;
 
             if (!name) {
                 tok = skip(tok, ";");
@@ -9571,7 +10729,19 @@ Program *parse(Token *tok) {
                             // Reuse placeholder LVar from declarator_params; update offset
                             // so VLA dim expressions (e.g. a++) reference the correct slot.
                             lvar = (LVar *)pt->vla_len_val;
-                            lvar->ty = pt;
+                            // Struct/union types must keep pointer identity
+                            // with the typedef table's own Type* for
+                            // type_equal() (_Generic, __builtin_types_
+                            // compatible_p) — pt is a shallow `*pt = *pty`
+                            // clone (see declarator_params) and would break
+                            // that; lvar->ty already correctly holds the
+                            // original (set in declarator_params, preserved
+                            // through this reuse). Every other kind (VLA
+                            // params decay to a pointer before reaching
+                            // here, so this is never struct/union for them)
+                            // still re-syncs to pt as before.
+                            if (pt->kind != TY_STRUCT && pt->kind != TY_UNION)
+                                lvar->ty = pt;
                             int sz = pt->size < 4 ? 4 : pt->size;
                             int al = pt->align < 4 ? 4 : pt->align;
                             stack_offset = align_to(stack_offset + sz, al);
@@ -9827,6 +10997,7 @@ Program *parse(Token *tok) {
                     // declaration seen (has_init flag).
                     fn->is_extern = attr.is_extern || (fn_sym2 && fn_sym2->has_init);
                     fn->is_weak = attr.is_weak || (fn_sym2 && fn_sym2->is_weak);
+                    fn->is_used = attr.is_used || (fn_sym2 && fn_sym2->is_used);
                     pending_constructor = false;
                     pending_destructor = false;
                     pending_asm_name = NULL;
@@ -9850,6 +11021,7 @@ Program *parse(Token *tok) {
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;
+                    parser_current_fn = NULL;
                     break;
                 }
 
@@ -9863,6 +11035,22 @@ Program *parse(Token *tok) {
                     tok = tok->next;
                     continue;
                 }
+                // Consume GCC function specifiers like __cond_acquires(true, lock)
+                while (tok->kind == TK_IDENT && tok->next && equalc(tok->next, "(")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    int pdepth = 1;
+                    while (pdepth > 0 && tok->kind != TK_EOF) {
+                        if (equalc(tok, "(")) pdepth++;
+                        else if (equalc(tok, ")"))
+                            pdepth--;
+                        tok = tok->next;
+                    }
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                }
+                if (equalc(tok, ";") || equalc(tok, "{") || equalc(tok, ","))
+                    break;
                 error_tok(tok, "expected ';', ',', or '{'");
             } else {
                 // C11 6.7.4p2: _Noreturn only on function declarations
@@ -9913,8 +11101,27 @@ Program *parse(Token *tok) {
                         var->is_static = attr.is_static;
                         var->is_tls = attr.is_tls;
                     }
-                    if (pending_asm_name)
+                    if (attr.is_register && pending_asm_name && !var->has_init &&
+                        ty->size > 0 && ty->size <= 8 &&
+                        ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_ARRAY) {
+                        // GCC "global register variable" extension: no storage, no
+                        // symbol — every reference reads the named hardware register
+                        // directly (see codegen.c's ND_LVAR/gen_addr handling for
+                        // is_global_reg). Do NOT also set var->asm_name: that field
+                        // renames a real linker symbol, and this variable has none —
+                        // every TU that includes the declaring header (e.g. asm/asm.h's
+                        // `register unsigned long current_stack_pointer asm("rsp");`)
+                        // would otherwise emit its own colliding non-static "rsp"
+                        // tentative definition in .bss, producing real link-time
+                        // "multiple definition of `rsp`" errors (seen building the
+                        // x86-64 vDSO, whose vclock_gettime.o/vgetcpu.o/vgetrandom.o
+                        // all include it).
+                        var->is_register = true;
+                        var->is_global_reg = true;
+                        var->global_reg_name = pending_asm_name;
+                    } else if (pending_asm_name) {
                         var->asm_name = pending_asm_name;
+                    }
                     if (pending_alias_target)
                         var->alias_target = pending_alias_target;
                     pending_asm_name = NULL;

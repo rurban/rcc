@@ -11,9 +11,11 @@
 int assemble_file(const char *asm_path, const char *obj_path);
 
 // Called by assemble_inline for each forward-reference fixup it cannot
-// resolve itself.  `patch_off` is the byte offset within obj->text of the
-// 4-byte relative displacement placeholder; `label` is the target label name.
-typedef void (*inline_fixup_fn)(size_t patch_off, const char *label, void *ctx);
+// resolve itself. `patch_off` is the byte offset within section `section`
+// (an ObjFile section index — SEC_TEXT/SEC_DATA/... or SEC_NUM+N for a
+// dynamically-registered .pushsection'd section) of the 4-byte relative
+// displacement placeholder; `label` is the target label name.
+typedef void (*inline_fixup_fn)(size_t patch_off, int section, const char *label, void *ctx);
 
 // Assemble `tmpl` (newline-separated AT&T instructions) directly into
 // `obj`'s text section. Resolved fixups are patched immediately; unresolved

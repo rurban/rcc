@@ -212,7 +212,19 @@ static bool is_null_pointer_constant(Node *n) {
             (n->ty->kind == TY_PTR && n->ty->base &&
              n->ty->base->kind == TY_VOID && n->ty->base->qual == 0)))
         n = n->lhs;
-    return n && n->kind == ND_NUM && n->ty && is_integer(n->ty) && n->val == 0;
+    if (!n || !n->ty || !is_integer(n->ty))
+        return false;
+    if (n->kind == ND_NUM)
+        return n->val == 0;
+    // General case: any integer constant expression (not just a bare literal
+    // after casts) evaluating to 0 also qualifies (C11 6.6p6). Needed for
+    // e.g. linux/compiler.h's __is_constexpr(x) trick, which tests
+    // "(void *)((long)(x) * 0l)" — an arithmetic ND_MUL, not a literal — for
+    // being a null pointer constant precisely when x itself is compile-time
+    // constant; eval_const_expr() correctly fails (non-constant) when x is
+    // a runtime value, so the trick still resolves to "not a constant" then.
+    long long v;
+    return eval_const_expr(n, &v) && v == 0;
 }
 
 // Some __builtin_* functions are recognized by name in codegen and emit
@@ -262,6 +274,14 @@ static Type *implicit_return_type(const char *name) {
         "malloc",
         "calloc",
         "realloc",
+        // Compiler intrinsics: always called without a declared prototype
+        // (there is none to declare), so the implicit-int default is wrong
+        // for these two the same way it's wrong for the libc allocators
+        // above. Real kernel case: drivers/firmware/efi/runtime-wrappers.c's
+        // "caller ?: __builtin_return_address(0)" — caller is a pointer,
+        // and the ternary's branches must agree in type.
+        "__builtin_return_address",
+        "__builtin_frame_address",
         NULL,
     };
     for (int i = 0; ptr_funcs[i]; i++)
@@ -918,8 +938,27 @@ static void add_type_internal(Node *node) {
         // Insert implicit casts for arguments when prototype is available
         for (Node **argp = &node->args; *argp && param_types;
              argp = &(*argp)->next, param_types = param_types->param_next) {
-            if (!same_type((*argp)->ty, param_types))
-                insert_arith_cast(argp, param_types);
+            if (same_type((*argp)->ty, param_types))
+                continue;
+            // GCC transparent_union (__attribute__((__transparent_union__))):
+            // the argument is passed using the calling convention of
+            // whichever member type it matches, not boxed into the union —
+            // there is nothing to actually convert. Casting it to TY_UNION
+            // here would make codegen treat a plain pointer argument as an
+            // aggregate needing its address, which it isn't (see
+            // include/crypto/aes.h's aes_encrypt_arg, passed a bare
+            // `struct aes_enckey *`/`struct aes_key *`).
+            if (param_types->kind == TY_UNION && param_types->is_transparent_union &&
+                (*argp)->ty && (*argp)->ty->kind == TY_PTR) {
+                bool matches_member = false;
+                for (Member *m = param_types->members; m; m = m->next)
+                    if (m->ty->kind == TY_PTR) {
+                        matches_member = true;
+                        break;
+                    }
+                if (matches_member) continue;
+            }
+            insert_arith_cast(argp, param_types);
         }
         return;
     case ND_STR:

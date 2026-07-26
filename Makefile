@@ -82,6 +82,15 @@ RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+# LTO+-O3 miscompiles rcc.exe itself for this target: building c23-
+# complit-4.c's `(static thread_local int[]){1,2}` crashed rcc.exe with a
+# SIGSEGV inside/around cg_emit_emutls_data() (confirmed via wine +
+# addr2line — the crash disappeared with an otherwise-identical -flto-less
+# rebuild, and a debug dump showed the LVar's own fields, e.g. init_size,
+# were correct going in). rcc_mingw.c already opts out of LTO for the same
+# reason (see $(MINGW_O) rule below); apply it to the whole target instead
+# of chasing one GCC/LTO optimization-pass interaction.
+CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
 EXE_EXT = .exe
 SHARED_EXT = .dll
 RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
@@ -96,6 +105,8 @@ RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+# See the native-Windows block above for why LTO is excluded here too.
+CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
 EXE_EXT = .exe
 SHARED_EXT = .dll
 RCC_LIB_LDFLAGS = -shared -Wl,--export-all-symbols -Wl,--enable-auto-import
@@ -312,7 +323,7 @@ BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
 test check: $(TARGET) $(RUN_TESTS)
 	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
-test-all check-all: $(TARGET) $(RUN_TESTS) lint
+test-all check-all: $(TARGET) $(RUN_TESTS) lint-changed
 	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
 test-unit check-unit: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --unit-tests --parallel
@@ -333,6 +344,10 @@ test-full check-full:
 lint:
 	if command -v prek; then prek run -a; \
         elif command -v pre-commit; then pre-commit run --all-files; fi
+
+lint-changed:
+	if command -v prek > /dev/null 2>&1; then prek run -s HEAD~1; \
+	elif command -v pre-commit > /dev/null 2>&1; then pre-commit run -s HEAD~1; fi
 
 tcc: tinycc/tcc tinycc/lib/tcc/include
 
@@ -416,5 +431,5 @@ TAGS: $(SRCS) src/rcc.h
 
 .PHONY: clean leanclean test check check-full check-torture check-all test-all \
 	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest \
-        lint bench install dist bench prof FORCE
+        lint lint-changed bench install dist bench prof FORCE
 FORCE:

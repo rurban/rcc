@@ -293,6 +293,29 @@ static int addend_byte_width(uint32_t elf_type) {
 }
 
 // ---------------------------------------------------------------------------
+// Translate a GAS `.section`/`.pushsection` flag string (already decoded to
+// the ELF SHF_* bits by asm.c's parse_named_section) into COFF section
+// characteristics, for custom-named sections with no built-in COFF slot
+// (e.g. the kernel's .altinstr_replacement, .initcall4.init, .altinstructions).
+// ---------------------------------------------------------------------------
+static uint32_t coff_characteristics_from_flags(uint32_t sh_flags) {
+    uint32_t c = (sh_flags & SHF_EXECINSTR)
+        ? (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ)
+        : (IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ);
+    if (sh_flags & SHF_WRITE) c |= IMAGE_SCN_MEM_WRITE;
+    return c | IMAGE_SCN_ALIGN_4BYTES;
+}
+
+// Map an ObjSym/ObjReloc section id (SEC_TEXT..SEC_THREAD_VARS, SEC_UNDEF, or
+// a dynamic SEC_NUM+i custom section) to its 1-based COFF section number.
+static int16_t coff_section_number(int section, const int *coff_sec_idx,
+                                   const int *coff_extra_idx) {
+    if (section == SEC_UNDEF) return 0;
+    if (section < SEC_NUM) return (int16_t)coff_sec_idx[section];
+    return (int16_t)coff_extra_idx[section - SEC_NUM];
+}
+
+// ---------------------------------------------------------------------------
 // Patch relocation addends into a copy of the section data.
 // COFF uses REL format (addend stored in-place), unlike ELF RELA.
 // ---------------------------------------------------------------------------
@@ -358,7 +381,9 @@ int coff_write(ObjFile *obj, const char *path) {
     // Enumerate sections
     // -------------------------------------------------------------------
     // base 6 (.text/.data/.rdata/.bss/.ctors/.dtors) + 2 unwind + 4 DWARF debug
-    CoffSec sections[12];
+    // + one slot per dynamic `.section`/`.pushsection`-created section.
+    int sections_cap = 12 + obj->extra_sec_count;
+    CoffSec *sections = malloc((size_t)sections_cap * sizeof(CoffSec));
     int num_sec = 0;
 
     // String table is built up-front: DWARF debug section names exceed the
@@ -366,7 +391,7 @@ int coff_write(ObjFile *obj, const char *path) {
     CStrtab strtab;
     cstrtab_init(&strtab);
     // Zero the long-name fields for every slot; most sections use short names.
-    for (int i = 0; i < (int)(sizeof(sections) / sizeof(sections[0])); i++) {
+    for (int i = 0; i < sections_cap; i++) {
         sections[i].long_name = false;
         sections[i].name_stroff = 0;
     }
@@ -578,6 +603,38 @@ int coff_write(ObjFile *obj, const char *path) {
         }
     }
 
+    // -------------------------------------------------------------------
+    // Custom named sections from GAS `.section`/`.pushsection` with no
+    // built-in COFF slot above (e.g. the kernel's .altinstr_replacement,
+    // .initcall4.init, .altinstructions, .discard.initcall). ELF's writer
+    // already handles these generically via obj->extra_secs; COFF didn't.
+    // -------------------------------------------------------------------
+    int *coff_extra_idx = NULL;
+    if (obj->extra_sec_count > 0)
+        coff_extra_idx = calloc((size_t)obj->extra_sec_count, sizeof(int));
+    for (int i = 0; i < obj->extra_sec_count; i++) {
+        ExtraSection *es = &obj->extra_secs[i];
+        CoffSec *s = &sections[num_sec];
+        size_t nlen = strlen(es->name);
+        memset(s->short_name, 0, 8);
+        if (nlen <= 8) {
+            memcpy(s->short_name, es->name, nlen);
+            s->long_name = false;
+            s->name_stroff = 0;
+        } else {
+            s->long_name = true;
+            s->name_stroff = cstrtab_add(&strtab, es->name);
+        }
+        s->sec_id = SEC_NUM + i;
+        s->characteristics = coff_characteristics_from_flags(es->sh_flags);
+        s->raw_size = es->buf.len;
+        s->virt_size = es->buf.len;
+        s->relocs = es->relocs;
+        s->reloc_count = es->reloc_count;
+        coff_extra_idx[i] = num_sec + 1; // 1-based COFF section number
+        num_sec++;
+    }
+
     // Build SEC_* → COFF section index (1-based) map
     int coff_sec_idx[SEC_NUM];
     memset(coff_sec_idx, 0, sizeof(coff_sec_idx));
@@ -624,8 +681,7 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number =
-            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
+        es.section_number = coff_section_number(os->section, coff_sec_idx, coff_extra_idx);
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = IMAGE_SYM_CLASS_STATIC;
         symarr_push(&syms, es);
@@ -640,8 +696,7 @@ int coff_write(ObjFile *obj, const char *path) {
         fill_short_name(es.short_name, os->name, &strtab,
                         &es.long_name, &es.strtab_off);
         es.value = (uint32_t)os->offset;
-        es.section_number =
-            (os->section == SEC_UNDEF) ? 0 : (int16_t)coff_sec_idx[os->section];
+        es.section_number = coff_section_number(os->section, coff_sec_idx, coff_extra_idx);
         es.type = (os->type == ST_FUNC) ? IMAGE_SYM_TYPE_FUNC : 0;
         es.storage_class = (os->bind == SB_WEAK) ? IMAGE_SYM_CLASS_WEAK_EXTERNAL
                                                  : IMAGE_SYM_CLASS_EXTERNAL;
@@ -763,6 +818,17 @@ int coff_write(ObjFile *obj, const char *path) {
         patch_addends(fini_array_copy, obj->fini_array.len, obj->fini_array_relocs,
                       obj->fini_array_reloc_count);
     }
+    uint8_t **extra_copy = NULL;
+    if (obj->extra_sec_count > 0) {
+        extra_copy = calloc((size_t)obj->extra_sec_count, sizeof(uint8_t *));
+        for (int i = 0; i < obj->extra_sec_count; i++) {
+            ExtraSection *es = &obj->extra_secs[i];
+            if (es->buf.len == 0) continue;
+            extra_copy[i] = malloc(es->buf.len);
+            memcpy(extra_copy[i], es->buf.data, es->buf.len);
+            patch_addends(extra_copy[i], es->buf.len, es->relocs, es->reloc_count);
+        }
+    }
 
     // -------------------------------------------------------------------
     // Write file
@@ -781,6 +847,12 @@ int coff_write(ObjFile *obj, const char *path) {
         free(fini_array_copy);
         free(xdata_buf);
         free(pdata_buf);
+        if (extra_copy) {
+            for (int i = 0; i < obj->extra_sec_count; i++) free(extra_copy[i]);
+            free(extra_copy);
+        }
+        free(coff_extra_idx);
+        free(sections);
         return -1;
     }
 
@@ -842,6 +914,9 @@ int coff_write(ObjFile *obj, const char *path) {
             wbuf(f, obj->debug_abbrev_section.data, sz);
         else if (sections[i].sec_id == SEC_DEBUG_ARANGES)
             wbuf(f, obj->debug_aranges_section.data, sz);
+        else if (sections[i].sec_id >= SEC_NUM &&
+                 sections[i].sec_id < SEC_NUM + obj->extra_sec_count)
+            wbuf(f, extra_copy[sections[i].sec_id - SEC_NUM], sz);
         // .bss has raw_size 0, handled above
     }
 
@@ -938,6 +1013,12 @@ int coff_write(ObjFile *obj, const char *path) {
     free(fini_array_copy);
     free(xdata_buf);
     free(pdata_buf);
+    if (extra_copy) {
+        for (int i = 0; i < obj->extra_sec_count; i++) free(extra_copy[i]);
+        free(extra_copy);
+    }
+    free(coff_extra_idx);
+    free(sections);
     return 0;
 }
 #endif /* _WIN32 */

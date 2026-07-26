@@ -65,6 +65,7 @@ int line_num = 1;
 // line, comments included as TK_CNL), '#' is an ordinary punctuator, and the
 // caller (the preprocessor) owns all line-number accounting.
 bool lex_pp_mode = false;
+bool lex_asm_cpp_mode = false;
 static int pp_pending_cnl; // comment newlines owed to the PP as TK_CNL
 
 // Registry of all lexed source buffers (main file + every include), so error
@@ -93,6 +94,28 @@ static char *source_buffer_base(char *loc) {
             return b->start;
     return current_input;
 }
+
+// True if `p` (pointing at '#') is NOT the first non-whitespace character on
+// its source line — i.e. GAS's own end-of-line comment marker, not a
+// preprocessing directive. Deliberately a backward text scan rather than
+// trusting lex_at_line_start/lex_in_directive: those are maintained purely
+// as a side effect of lex_one()'s own forward call sequence, but the
+// preprocessor's directive/macro-body reading calls lex_one() out of that
+// strict order across a multi-line "/* ... */" comment (draining its
+// embedded-newline TK_CNL tokens), leaving them stale by the time the next
+// real line is reached.
+//
+// x86-only (see the ARCH_ARM64-gated call site below): on ARM64 '#' is the
+// immediate-value prefix, not a comment marker.
+#ifndef ARCH_ARM64
+static bool hash_is_midline_comment(const char *p) {
+    const char *base = source_buffer_base((char *)p);
+    const char *q = p;
+    while (q > base && (q[-1] == ' ' || q[-1] == '\t'))
+        q--;
+    return !(q == base || q[-1] == '\n');
+}
+#endif
 // Tracks the filename from #line directives for error/warning messages.
 // Updated unconditionally (not gated on opt_g) so warnings in included
 char *current_debug_filename;
@@ -523,6 +546,35 @@ Token *lex_one(char **pp, int *plineno) {
             continue;
         }
 
+        // In assembler-with-cpp mode (.S/.s), a '#' that is NOT the first
+        // token on its line is GAS's own end-of-line comment marker, not
+        // preprocessor punctuation — UNLESS this line is itself an active
+        // preprocessing directive (lex_in_directive), where a mid-line '#'
+        // or '##' is the real stringify/token-paste operator (e.g.
+        // kconfig.h's "#define ___and(x, y) ____and(__ARG_PLACEHOLDER_##x,
+        // y)" or a "#define STR(x) #x" body) and must NOT be swallowed as a
+        // comment. Consume the comment text only — not the newline itself,
+        // which the whitespace handling above still needs to see and turn
+        // into a TK_NL — so a stray "'" in comment prose (e.g. "# don't
+        // loop") never gets scanned as the start of a character literal.
+        //
+        // This is x86 AT&T syntax's own convention (immediates use '$',
+        // never '#') — on ARM64, '#' is the immediate-value prefix itself
+        // ("movz x0, #1234", "add x0, x0, #10"), not a comment marker, so
+        // applying this heuristic there silently ate every literal operand
+        // down to end-of-line, turning e.g. "add x0, x0, #10" into "add
+        // x0, x0, " (empty operand). Gated on the same compile-time
+        // ARCH_ARM64 macro (from __aarch64__) that already distinguishes
+        // encode_arm64() from encode_x86() elsewhere in this codebase.
+#ifndef ARCH_ARM64
+        if (*p == '#' && lex_pp_mode && lex_asm_cpp_mode && !lex_in_directive &&
+            hash_is_midline_comment(p)) {
+            while (*p && *p != '\n')
+                p++;
+            continue;
+        }
+#endif
+
         // Skip preprocessor directives naively
         if (*p == '#' && !lex_pp_mode) {
             // Check for #line directive: # line_number "filename"
@@ -667,6 +719,8 @@ Token *lex_one(char **pp, int *plineno) {
                 p += 2;
                 while (*p == '0' || *p == '1' ||
                        (dsep && *p == '\'' && (p[1] == '0' || p[1] == '1'))) p++;
+                if (p > q + 2 && isdigit((unsigned char)*p))
+                    lex_error_at(p, "invalid digit \"\%c\" in binary constant", *p);
             } else {
                 while (isdigit(*p) || (dsep && *p == '\'' && isdigit(p[1]))) p++;
                 if (*p == '.' && p[1] != '.') {
@@ -685,18 +739,31 @@ Token *lex_one(char **pp, int *plineno) {
             // Numeric constant diagnostics (GH #34), reported per constant so
             // every offending line is diagnosed. Suppressed when '#' follows:
             // the single-scan lexer sees macro bodies before ## pasting, so
-            // `0x##x` must stay silent here.
+            // `0x##x` must stay silent here. Also suppressed for "0b"/"0B"
+            // specifically in assembly (.S) files: GAS's numeric local
+            // labels are referenced as "<N>b" (nearest prior) / "<N>f"
+            // (nearest next) — "0" is a perfectly ordinary label number,
+            // and "0b" not followed by more 0/1 digits (e.g. the kernel's
+            // ".fill 0b + IDT_ALIGN - ., 1, 0xcc") is *always* that
+            // backward reference in .S source, never a malformed empty
+            // binary-literal prefix — real GAS has no such literal syntax
+            // ambiguity to begin with. Falls through to the same "digit
+            // followed by identifier chars" pp-number path already used
+            // for non-zero local labels like "740b" below.
             bool has_base_prefix =
                 q[0] == '0' &&
                 (q[1] == 'x' || q[1] == 'X' || q[1] == 'b' || q[1] == 'B' ||
                  q[1] == 'o' || q[1] == 'O');
             bool base_prefix_empty = has_base_prefix && p == q + 2;
-            if (has_base_prefix && *p != '#' && !lex_in_directive) {
+            bool asm_local_label_ref = lex_asm_cpp_mode && base_prefix_empty &&
+                (q[1] == 'b' || q[1] == 'B');
+            if (has_base_prefix && *p != '#' && !lex_in_directive && !asm_local_label_ref) {
                 if (base_prefix_empty)
                     lex_error_at(q, "invalid suffix on integer constant");
                 else if (dsep && q[2] == '\'')
                     lex_error_at(q + 2, "digit separator after base indicator");
             }
+            if (asm_local_label_ref) base_prefix_empty = false;
             // Check for float/imaginary suffix: f/F (incl. _FloatN forms),
             // l/L, i/I/j/J in any order
             int fkind = 0; // 0=double, 1=float, 2=long double
@@ -792,11 +859,23 @@ Token *lex_one(char **pp, int *plineno) {
             }
 
             // Remaining identifier characters form an invalid suffix
-            // (`0B0p0`, `123abc`); same '#' suppression as above.
-            if (!base_prefix_empty && !lex_in_directive &&
+            // (`0B0p0`, `123abc`) — OR a perfectly ordinary "pp-number"
+            // per the C grammar (digit followed by any run of digits/
+            // identifier-chars/'.', e.g. "10baseT_Half") that just isn't
+            // a valid *numeric* suffix. Either way it must stay part of
+            // THIS token: the diagnostic is what's directive-scoped (a
+            // directive/macro body may be feeding a still-to-be-##-pasted
+            // fragment, where "invalid suffix" doesn't yet apply), but the
+            // token-boundary consumption below is not — skipping it inside
+            // a directive splits e.g. a #define body's "10baseT_Half"
+            // macro argument into two tokens ("10", "baseT_Half") before
+            // ## pasting ever sees it, corrupting later token-paste-formed
+            // identifiers like ETHTOOL_LINK_MODE_10baseT_Half_BIT.
+            if (!base_prefix_empty &&
                 (is_ident1(*p) || isdigit((unsigned char)*p)) && *p != '#') {
-                lex_error_at(p, "invalid suffix on %s constant",
-                             is_float ? "floating" : "integer");
+                if (!lex_in_directive && (isdigit((unsigned char)*p) || has_base_prefix))
+                    lex_error_at(p, "invalid suffix on %s constant",
+                                 is_float ? "floating" : "integer");
                 while (is_ident2(*p))
                     p++; // consume the rest of the pp-number
             }

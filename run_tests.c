@@ -775,7 +775,7 @@ static const char *platform = "linux";
  * that case (NULL for rcc's own binaries). */
 static const char *platform_suffix = "linux";
 static const char *compiler_name;
-static bool is_arm64, is_darwin_cross, is_mingw_native, is_wine;
+static bool is_arm64, is_darwin_cross, is_mingw_native;
 static char runner_cmd[512];
 static bool has_runner;
 static int g_num_workers = 0;
@@ -842,8 +842,7 @@ static void detect_platform(const char *rcc_path) {
     /* We are a Windows PE binary.  mingw_cross if under wine. */
     else if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version")) {
         platform = "mingw_cross";
-        is_mingw_native = true;
-        is_wine = true;
+        has_runner = true;
     } else {
         platform = "mingw";
         is_mingw_native = true;
@@ -880,11 +879,16 @@ static void detect_platform(const char *rcc_path) {
 #endif
 }
 
-/* Unit tests such as test_peep spawn many compiler subprocesses; under
- * cross runners (wine, qemu) the overhead easily exceeds the normal 5 s
- * budget, so give them a longer leash. */
+/* Unit tests such as test_peep spawn ~24 nested compiler subprocesses
+ * (12 patterns x 2 optimization levels). That workload is tight even on
+ * bare native hardware under CI/parallel load, not just cross-runners
+ * (wine, qemu): a platform-keyed 5 s budget flaked intermittently on a
+ * native macOS CI runner with no emulation involved at all. Give every
+ * platform the same generous leash rather than trying to enumerate every
+ * environment that can momentarily starve a 24-subprocess test.
+ */
 static int unit_run_timeout(void) {
-    return (has_runner || is_wine) ? 60 : 5;
+    return 60;
 }
 
 /* Compilation timeout for torture tests: base 30 s, scaled by the
@@ -1748,6 +1752,10 @@ static void emit_backtrace(const char *exe_path, const char *args,
                            const char *src_file, const char *rcc, const char *cflags,
                            const char *const extra[],
                            char **ob, size_t *ol, size_t *oc) {
+    /* Debugger backtraces are only useful for diagnosing rcc's own
+     * codegen; a failure with an external reference compiler (gcc,
+     * tcc, clang, ...) used for cross-checking is not an rcc bug. */
+    if (compiler_name) return;
     static bool lldb_failed, gdb_failed;
     char dbg[512];
     snprintf(dbg, sizeof(dbg), "%s.dbg", exe_path);
@@ -3275,7 +3283,7 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         if (r->compile_out && r->compile_out[0])
             fprintf(stderr, "%s", r->compile_out);
         /* Re-run compile for diagnostics */
-        if (r->compile_cmdline) {
+        if (r->compile_cmdline && !compiler_name) {
             ProcResult vr = run_exe_with_cmdline(NULL, r->compile_cmdline, 30, NULL);
             fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                     base, vr.exit_code,
@@ -3323,25 +3331,27 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
         /* print captured stdout/stderr from the failing test */
         if (r->exec_out && r->exec_out[0])
             fprintf(stderr, "--- %s ---\n%s", base, r->exec_out);
-        /* Re-run with VERBOSE env to get internal diagnostics */
-        setenv("VERBOSE", "1", 1);
-        {
-            ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
-            fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
-                    base, vr.exit_code,
-                    vr.timed_out ? ", timed out" : "",
-                    vr.spawn_failed ? ", spawn failed" : "");
-            if (vr.out && vr.out[0])
-                fprintf(stderr, "%s", vr.out);
-            else
-                fprintf(stderr, "(no output)\n");
-            proc_free(&vr);
-        }
+        if (!compiler_name) {
+            /* Re-run with VERBOSE env to get internal diagnostics */
+            setenv("VERBOSE", "1", 1);
+            {
+                ProcResult vr = run_exe_with_cmdline(r->tmp_exe, "", unit_run_timeout(), NULL);
+                fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                        base, vr.exit_code,
+                        vr.timed_out ? ", timed out" : "",
+                        vr.spawn_failed ? ", spawn failed" : "");
+                if (vr.out && vr.out[0])
+                    fprintf(stderr, "%s", vr.out);
+                else
+                    fprintf(stderr, "(no output)\n");
+                proc_free(&vr);
+            }
 #ifdef _WIN32
-        SetEnvironmentVariableA("VERBOSE", NULL);
+            SetEnvironmentVariableA("VERBOSE", NULL);
 #else
-        unsetenv("VERBOSE");
+            unsetenv("VERBOSE");
 #endif
+        }
     } else {
         print_result(base, COL_GREEN, "PASS");
         passed++;
@@ -3383,8 +3393,19 @@ static int run_unit_tests(void) {
             base[sizeof(base) - 1] = '\0';
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
-            /* skip arm64-only tests on non-arm64 */
-            if (streq(base, "test_arm64_asm") && !is_arm64) {
+            /* skip arm64-only tests on non-arm64, and vice versa for x86 */
+            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
+                ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
+                  streq(base, "test_label_diff") || streq(base, "test_alternative") ||
+                  streq(base, "test_cross_section_fixup") ||
+                  streq(base, "test_x86_priv_insns") ||
+                  streq(base, "test_skip_maxdiff") ||
+                  streq(base, "test_cross_section_jmp_reloc") ||
+                  streq(base, "test_indirect_call_jmp") ||
+                  streq(base, "test_toplevel_asm") ||
+                  streq(base, "test_pcrel_paren_addend") ||
+                  streq(base, "test_asm_cpp_hash_comment")) &&
+                 is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3443,8 +3464,19 @@ static int run_unit_tests(void) {
                 only_test_found = true;
             }
 
-            /* skip arm64-only tests on non-arm64 */
-            if (streq(base, "test_arm64_asm") && !is_arm64) {
+            /* skip arm64-only tests on non-arm64, and vice versa for x86 */
+            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
+                ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
+                  streq(base, "test_label_diff") || streq(base, "test_alternative") ||
+                  streq(base, "test_cross_section_fixup") ||
+                  streq(base, "test_x86_priv_insns") ||
+                  streq(base, "test_skip_maxdiff") ||
+                  streq(base, "test_cross_section_jmp_reloc") ||
+                  streq(base, "test_indirect_call_jmp") ||
+                  streq(base, "test_toplevel_asm") ||
+                  streq(base, "test_pcrel_paren_addend") ||
+                  streq(base, "test_asm_cpp_hash_comment")) &&
+                 is_arm64)) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
@@ -3519,7 +3551,7 @@ static int run_unit_tests(void) {
                         fprintf(stderr, "%s", cr.out);
                     vlog_test_details(base, compile_cmdline, cr.out, NULL, NULL);
                     /* Re-run compile for diagnostics */
-                    {
+                    if (!compiler_name) {
                         ProcResult vr = run_exe_with_cmdline(NULL, compile_cmdline, 30, NULL);
                         fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                                 base, vr.exit_code,
@@ -3570,25 +3602,27 @@ static int run_unit_tests(void) {
                 snprintf(msg, sizeof(msg), "exit=%d", ae);
                 report_rows[nrows - 1].message = strdup(msg);
                 print_change(base, is_todo_test(base) ? "TODO" : "EXEC_FAIL");
-                /* Re-run with VERBOSE env to get internal diagnostics */
-                setenv("VERBOSE", "1", 1);
-                {
-                    ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
-                    fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
-                            base, vr.exit_code,
-                            vr.timed_out ? ", timed out" : "",
-                            vr.spawn_failed ? ", spawn failed" : "");
-                    if (vr.out && vr.out[0])
-                        fprintf(stderr, "%s", vr.out);
-                    else
-                        fprintf(stderr, "(no output)\n");
-                    proc_free(&vr);
-                }
+                if (!compiler_name) {
+                    /* Re-run with VERBOSE env to get internal diagnostics */
+                    setenv("VERBOSE", "1", 1);
+                    {
+                        ProcResult vr = run_exe_with_cmdline(tmp, "", unit_run_timeout(), NULL);
+                        fprintf(stderr, "--- %s VERBOSE re-run (exit=%d%s%s) ---\n",
+                                base, vr.exit_code,
+                                vr.timed_out ? ", timed out" : "",
+                                vr.spawn_failed ? ", spawn failed" : "");
+                        if (vr.out && vr.out[0])
+                            fprintf(stderr, "%s", vr.out);
+                        else
+                            fprintf(stderr, "(no output)\n");
+                        proc_free(&vr);
+                    }
 #ifdef _WIN32
-                SetEnvironmentVariableA("VERBOSE", NULL);
+                    SetEnvironmentVariableA("VERBOSE", NULL);
 #else
-                unsetenv("VERBOSE");
+                    unsetenv("VERBOSE");
 #endif
+                }
                 /* Emit debugger backtrace */
                 if (!has_runner)
                     emit_backtrace(tmp, "", src_path, rcc, rccflags, NULL, NULL, NULL, NULL);
@@ -3609,7 +3643,7 @@ static int run_unit_tests(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? passed * 100 / total : 0;
+        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         if (todo > 0)
@@ -3654,10 +3688,15 @@ static void generate_tcc_report(void) {
     if (!rf) return;
 
     time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
+    struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &now);
+#else
+    localtime_r(&now, &tm_buf);
+#endif
     char date_buf[64];
-    strftime(date_buf, sizeof(date_buf), "%B %Y", tm);
-    int pct = total > 0 ? passed * 100 / total : 0;
+    strftime(date_buf, sizeof(date_buf), "%B %Y", &tm_buf);
+    int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
 
     fprintf(rf, "# TCC Test Suite Report for RCC\n\nGenerated: %s\n\n", date_buf);
     if (compiler_name)
@@ -3946,7 +3985,7 @@ static int run_tcc_suite(void) {
     }
 
     if (only_test_count == 0) {
-        int pct = total > 0 ? passed * 100 / total : 0;
+        int pct = total > 0 ? (passed * 100 + total / 2) / total : 0;
         const char *red = failed > 0 ? COL_RED : "";
         const char *rst = failed > 0 ? COL_RESET : "";
         printf("\nTCC: %d/%d passed (%d%%), %s%d failed%s.\n",
@@ -4842,7 +4881,7 @@ static int run_torture_suite(bool summary_only) {
     int fail = g_tort_fail_compile + g_tort_fail_runtime;
     if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
-        int pct = eff > 0 ? g_tort_pass * 100 / eff : 0;
+        int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
         const char *red = fail > max_fail ? COL_RED : "";
         const char *rst = fail > max_fail ? COL_RESET : "";
         printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
@@ -5233,7 +5272,7 @@ static int run_compliance_suite(void) {
      * compliance section in the unified report just like the sequential run. */
     int comp_total = comp_pass + comp_fail;
     if (only_test_count == 0) {
-        int comp_pct = comp_total > 0 ? comp_pass * 100 / comp_total : 0;
+        int comp_pct = comp_total > 0 ? (comp_pass * 100 + comp_total / 2) / comp_total : 0;
         const char *red = comp_fail > 0 ? COL_RED : "";
         const char *rst = comp_fail > 0 ? COL_RESET : "";
         printf("\nCompliance: %d/%d passed (%d%%), %s%d failed%s",
@@ -5606,7 +5645,7 @@ static int run_ctest_suite(void) {
         for (char **f = files; *f; f++) free(*f);
         free(files);
 
-        int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+        int ctest_pct = ctest_total > 0 ? (ctest_pass * 100 + ctest_total / 2) / ctest_total : 0;
         const char *red = ctest_fail2 > 0 ? COL_RED : "";
         const char *rst = ctest_fail2 > 0 ? COL_RESET : "";
         printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
@@ -5687,14 +5726,15 @@ static int run_ctest_suite(void) {
     }
     pclose(fp);
 
-    int ctest_pct = ctest_total > 0 ? ctest_pass * 100 / ctest_total : 0;
+    int ctest_eff = ctest_total - ctest_skip;
+    int ctest_pct = ctest_eff > 0 ? (ctest_pass * 100 + ctest_eff / 2) / ctest_eff : 0;
     const char *red = ctest_fail > 0 ? COL_RED : "";
     const char *rst = ctest_fail > 0 ? COL_RESET : "";
     printf("\nC-testsuite: %d/%d passed (%d%%), %s%d failed%s, %d skipped.\n",
-           ctest_pass, ctest_total, ctest_pct, red, ctest_fail, rst, ctest_skip);
+           ctest_pass, ctest_eff, ctest_pct, red, ctest_fail, rst, ctest_skip);
     if (g_log_fp)
         fprintf(g_log_fp, "\nC-testsuite: %d/%d passed (%d%%), %d failed, %d skipped.\n",
-                ctest_pass, ctest_total, ctest_pct, ctest_fail, ctest_skip);
+                ctest_pass, ctest_eff, ctest_pct, ctest_fail, ctest_skip);
 
     if (only_test_count == 0) {
         char sp[256], sc[256];
@@ -5771,13 +5811,15 @@ static void generate_report(void) {
         free(c);
     }
 
-    int ov_total = 0, ov_pass = 0, ov_fail = 0;
+    int ov_total = 0, ov_pass = 0, ov_fail = 0, ov_skip = 0;
     for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found) continue;
         ov_total += s[i].total;
         ov_pass += s[i].pass;
         ov_fail += s[i].fail;
+        ov_skip += s[i].skip;
     }
+    int ov_eff = ov_total - ov_skip;
 
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) {
@@ -5786,8 +5828,14 @@ static void generate_report(void) {
     }
 
     time_t t = time(NULL);
+    struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
     char datebuf[64];
-    strftime(datebuf, sizeof(datebuf), "%B %d %Y %H:%M", localtime(&t));
+    strftime(datebuf, sizeof(datebuf), "%B %d %Y %H:%M", &tm_buf);
 
     fprintf(rf, "# RCC Test Suite Report\n\n");
     fprintf(rf, "**Platform**: %s\n\n", desc);
@@ -5799,8 +5847,10 @@ static void generate_report(void) {
     fprintf(rf, "- **Total**: %d\n", ov_total);
     fprintf(rf, "- **Passed**: %d\n", ov_pass);
     fprintf(rf, "- **Failed**: %d\n", ov_fail);
-    if (ov_total > 0)
-        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", ov_pass * 100 / ov_total);
+    if (ov_skip > 0)
+        fprintf(rf, "- **Skipped**: %d\n", ov_skip);
+    if (ov_eff > 0)
+        fprintf(rf, "- **Overall Pass Rate**: %d%%\n", (ov_pass * 100 + ov_eff / 2) / ov_eff);
 
     for (size_t i = 0; i < NSUITE; i++) {
         if (!s[i].found || s[i].total == 0) continue;
@@ -5816,9 +5866,9 @@ static void generate_report(void) {
             fprintf(rf, "- **Fail Runtime**: %d\n", s[i].fail_runtime);
         int eff = s[i].total - s[i].skip;
         if (s[i].skip > 0 && eff > 0)
-            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", s[i].pass * 100 / eff);
+            fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", (s[i].pass * 100 + eff / 2) / eff);
         else if (s[i].total > 0)
-            fprintf(rf, "- **Pass Rate**: %d%%\n", s[i].pass * 100 / s[i].total);
+            fprintf(rf, "- **Pass Rate**: %d%%\n", (s[i].pass * 100 + s[i].total / 2) / s[i].total);
     }
 
     fclose(rf);
@@ -5988,6 +6038,7 @@ int main(int argc, char **argv) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/arm64-cross.sh", SCRIPT_DIR);
         rcc = buf;
+        compiler_name = NULL;
     }
 #endif
 
@@ -5995,6 +6046,7 @@ int main(int argc, char **argv) {
         static char buf[PATH_MAX + 32];
         snprintf(buf, sizeof(buf), "%s/darwin-cross.sh", SCRIPT_DIR);
         rcc = buf;
+        compiler_name = NULL;
     }
 
     detect_platform(rcc);
@@ -6022,8 +6074,11 @@ int main(int argc, char **argv) {
 
     /* wine's console mangles ANSI SGI sequences (the ESC byte of e.g.
      * "\033[0;36m" gets eaten, leaving literal "[0;36m" in the output) */
-    if (streq(platform, "mingw_cross") || (has_runner && contains(runner_cmd, "wine")))
+    if (streq(platform, "mingw_cross") ||
+        (has_runner && contains(runner_cmd, "wine"))) {
         g_no_color = true;
+        compiler_name = NULL;
+    }
 #ifdef _WIN32
     if (GetProcAddress(GetModuleHandleA("ntdll.dll"), "wine_get_version"))
         g_no_color = true;

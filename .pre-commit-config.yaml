@@ -53,7 +53,7 @@ repos:
     hooks:
       - id: cppcheck
         name: cppcheck
-        entry: cppcheck
+        entry: ./cppcheck-timeout.sh
         language: system
         args:
           [

@@ -12,10 +12,11 @@ int asm_fixup_count = 0;
 #include <stdarg.h>
 #include <time.h>
 
-static ObjFile *cg_obj;
 SecBuf *cg_sec;
+ObjFile *cg_obj;
 static bool cg_discard_result;
 bool cg_dry_run; // pass 1: track regs only (extern for codegen_asm.h)
+CgAsciiStr *cg_ascii_strings;
 
 static void cg_set_section(int sec) {
     if (!cg_obj) return;
@@ -119,13 +120,20 @@ static void cg_def_sym(const char *name, int sec, SymBind bind, SymType type) {
     }
 }
 
+// cg_def_label: internal branch-target / loop / switch-case labels (the
+// overwhelming majority of .L-prefixed symbols a function emits). These are
+// NOT function entry points — GAS never types a local branch label as
+// STT_FUNC either — so they get ST_NOTYPE. They still need a symbol table
+// entry (not just an internal fixup) because computed-goto (&&label) values
+// need something for the linker's ARM64_RELOC_UNSIGNED/R_X86_64_64 to point
+// at. See cg_def_fn_label below for the actual-function-symbol case.
 void cg_def_label(const char *name) {
     if (cg_dry_run) return;
     // .L. labels referenced by relocations (e.g. &&label values) must be in the
     // symbol table so the linker can resolve ARM64_RELOC_UNSIGNED relocations.
     // We use SB_LOCAL to avoid creating subsection boundaries that the linker
     // might dead-strip — local symbols are not subsection boundaries.
-    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
+    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_NOTYPE);
     cg_label_ht_add(name, cg_sec->len);
     asm_fixup_resolve(cg_sec, name, cg_sec->len);
 }
@@ -147,6 +155,32 @@ static void cg_global_label(const char *name) {
 static void cg_weak_label(const char *name) {
     if (cg_dry_run) return;
     objfile_add_sym(cg_obj, name, SEC_TEXT, cg_sec->len, 0, SB_WEAK, ST_FUNC);
+}
+
+// cg_def_fn_label: the static/non-exported-function counterpart to
+// cg_global_label/cg_weak_label above — a REAL function entry point (unlike
+// cg_def_label's internal branch labels), so it keeps ST_FUNC. Pair with
+// cg_patch_fn_size once the function's epilogue is fully emitted so the
+// ELF/COFF symbol carries a correct size instead of the 0 every ST_FUNC
+// symbol here used to get (objtool: "%s() is missing an ELF size
+// annotation" for literally every function in the object file).
+static void cg_def_fn_label(const char *name) {
+    if (cg_dry_run) return;
+    cg_def_sym(name, SEC_TEXT, SB_LOCAL, ST_FUNC);
+    cg_label_ht_add(name, cg_sec->len);
+    asm_fixup_resolve(cg_sec, name, cg_sec->len);
+}
+
+// Close the loop started by cg_global_label/cg_weak_label/cg_def_fn_label:
+// patch the function symbol's size now that its full extent is known. GAS
+// emits ".size name, .-name" for exactly this reason — the size can't be
+// known at the label-definition site, only once the epilogue's last
+// instruction has been emitted.
+static void cg_patch_fn_size(const char *name, size_t start_off) {
+    if (cg_dry_run) return;
+    int idx = objfile_find_sym(cg_obj, name);
+    if (idx >= 0)
+        cg_obj->syms[idx].size = cg_sec->len - start_off;
 }
 
 static void cg_weak_declare(const char *name) {
@@ -343,13 +377,21 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
 
 // Forward-fixup callback for assemble_inline: registers unresolved labels
 // into the codegen fixup table so cg_def_label can patch them later.
-// patch_off is the offset of the 4-byte REL32 operand in cg_obj->text.
-static void cg_inline_fixup_cb(size_t patch_off, const char *label, void *ctx) {
+// patch_off is the offset of the 4-byte REL32 operand within section
+// `section` — not always cg_obj->text: a %l[label] branch inside a
+// .pushsection'd non-.text region (e.g. the kernel's ALTERNATIVE() macro's
+// .altinstr_replacement) can forward-reference a C label that's defined
+// elsewhere (always in .text, via cg_def_label), so the pending fixup must
+// remember which buffer to patch once that label shows up — cg_def_label
+// itself always resolves against cg_sec, which is the *label's* section,
+// not necessarily the branch's.
+static void cg_inline_fixup_cb(size_t patch_off, int section, const char *label, void *ctx) {
     (void)ctx;
     char *dup = arena_alloc(strlen(label) + 1);
     strcpy(dup, label);
+    SecBuf *sbuf = objfile_section_buf(cg_obj, section);
     // instr_off = patch_off - 1 (type=0 patches at instr_off+1); delta formula is identical.
-    asm_fixup_ht_add(patch_off - 1, dup, 0);
+    asm_fixup_ht_add_sec2(patch_off - 1, dup, 0, sbuf, section);
 }
 
 // Bridge for the remaining printf("  <asm line>\n", ...)-based codegen (x86 only):
@@ -848,6 +890,7 @@ static void emit_vla_dealloc(LVar *begin, LVar *end) {
 /* Other platforms still have it. windows deprecated it.
    Use a unique name to avoid conflicts with CRT import stubs. */
 static void emit_alloca(void) {
+    size_t alloca_sym_start = cg_sec->len;
     cg_global_label("__rcc_alloca");
 #ifdef ARCH_ARM64
     // alloca(size): x0=size → round up, sub sp, return new sp
@@ -856,6 +899,7 @@ static void emit_alloca(void) {
     asm_sub_sp_sp_reg(cg_sec, ARM64_X0); // sub sp, sp, x0
     asm_mov_reg_sp(cg_sec, ARM64_X0); // mov x0, sp
     asm_ret(cg_sec); // ret
+    cg_patch_fn_size("__rcc_alloca", alloca_sym_start);
 #else
     // alloca via call: return addr was pushed; pop it, adjust rsp, push back
     asm_pop(cg_sec, X86_RDX); // popq %rdx  (save return addr)
@@ -889,6 +933,7 @@ static void emit_alloca(void) {
     x86_mov_rr(cg_sec, 8, X86_RAX, X86_RSP); // movq %rsp, %rax
     asm_push(cg_sec, X86_RDX); // pushq %rdx
     asm_ret(cg_sec); // ret
+    cg_patch_fn_size("__rcc_alloca", alloca_sym_start);
 #endif
 }
 
@@ -1860,14 +1905,43 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             asm_mov_x8_reg(cg_sec, hidden_ret_reg); // mov x8, x{hidden_ret_reg}
     }
 
-    // Pre-pass: long double args.
-    // Pre-pass: long double args. Pass as 64-bit double in d register.
-    // rcc handles its own va_arg, so no quad conversion is needed.
+    // Pre-pass: long double args. rcc computes `long double` internally in
+    // double precision (a GP register holds the double's 64-bit pattern),
+    // but AAPCS64 requires the real IEEE-754 binary128 encoding in the full
+    // 128-bit Q register whenever the value crosses to ABI-conforming code
+    // (glibc printf/sprintf/... reading a "%Lf" va_arg). A bare `fmov d,x`
+    // only fills the low 64 bits and implicitly zeroes the upper 64 (per
+    // AArch64 scalar-FMOV-to-V semantics) — that upper half holds the quad's
+    // sign+exponent, so the callee decodes the value as zero. Widen through
+    // libgcc's __extenddftf2 (double -> binary128, arg in d0, result in v0),
+    // exactly like the existing __ashlti3/__divdc3 libgcc calls elsewhere in
+    // this file. Virtual GP regs live in x19-x28 (callee-saved), so other
+    // already-evaluated args survive the nested `bl` unharmed.
+    //
+    // Each converted quad is parked in its own fresh 16-byte stack slot
+    // rather than moved straight into arg_fp_idx[i]: with >=2 long-double
+    // args, an earlier arg's target register can be v0/q0 itself (fp_idx
+    // 0), and the next __extenddftf2 call clobbers v0 as its own scratch —
+    // a direct register-to-register placement would be destroyed before
+    // the call ever executes. Routing through memory decouples conversion
+    // from placement so ordering can't matter.
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
-            asm_fmov_gp_to_d(cg_sec, arg_fp_idx[i], arg_regs[i]); // fmov d{fp_idx}, x{arg_regs[i]}
+            asm_fmov_i2f(cg_sec, ASM_Q0, arg_regs[i], 1); // fmov d0, x{arg_regs[i]}
+            free_reg(arg_regs[i]);
+            emit_direct_call("__extenddftf2", false); // bl __extenddftf2 (d0 -> quad in v0)
+            VReg slot = alloc_int128_addr();
+            asm_str_q(cg_sec, ASM_Q0, slot); // str q0, [x{slot}]
+            arg_regs[i] = slot; // repurposed: holds the parked quad's address
+        }
+    }
+    for (int i = 0; i < nargs; i++) {
+        if (arg_stack_idx[i] >= 0)
+            continue;
+        if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
+            asm_ldr_q(cg_sec, arg_fp_idx[i], arg_regs[i]); // ldr q{fp_idx}, [x{arg_regs[i]}]
             free_reg(arg_regs[i]);
         }
     }
@@ -3261,6 +3335,43 @@ static const char *x86_subreg(const char *reg32, int sz) {
             return map[i + 1];
     return reg32;
 }
+
+// GCC extended-asm operand size-override modifiers (%b0/%w0/%k0/%q0/%h0):
+// given a GP register operand string in *any* size class (e.g. "%rax",
+// "%eax", "%al" — whatever the operand's natural width produced) and a
+// requested size class, return the same physical register's name in that
+// class. size_class: 0=64-bit, 1=32-bit, 2=16-bit, 3=8-bit low, 4=8-bit
+// high (legacy A/B/C/D only). Returns NULL for a non-register operand
+// (memory/immediate) or a class that register doesn't have (e.g. %h9),
+// in which case the caller should fall back to the unmodified operand
+// text, matching plain GCC's behavior of leaving it alone.
+static const char *x86_reg_resize(const char *reg, int size_class) {
+    static const char *const family[16][5] = {
+        // 64,     32,      16,     8lo,    8hi
+        {"%rax", "%eax", "%ax", "%al", "%ah"},
+        {"%rcx", "%ecx", "%cx", "%cl", "%ch"},
+        {"%rdx", "%edx", "%dx", "%dl", "%dh"},
+        {"%rbx", "%ebx", "%bx", "%bl", "%bh"},
+        {"%rsp", "%esp", "%sp", "%spl", NULL},
+        {"%rbp", "%ebp", "%bp", "%bpl", NULL},
+        {"%rsi", "%esi", "%si", "%sil", NULL},
+        {"%rdi", "%edi", "%di", "%dil", NULL},
+        {"%r8", "%r8d", "%r8w", "%r8b", NULL},
+        {"%r9", "%r9d", "%r9w", "%r9b", NULL},
+        {"%r10", "%r10d", "%r10w", "%r10b", NULL},
+        {"%r11", "%r11d", "%r11w", "%r11b", NULL},
+        {"%r12", "%r12d", "%r12w", "%r12b", NULL},
+        {"%r13", "%r13d", "%r13w", "%r13b", NULL},
+        {"%r14", "%r14d", "%r14w", "%r14b", NULL},
+        {"%r15", "%r15d", "%r15w", "%r15b", NULL},
+    };
+    if (!reg || reg[0] != '%') return NULL;
+    for (int i = 0; i < 16; i++)
+        for (int c = 0; c < 5; c++)
+            if (family[i][c] && !strcmp(reg, family[i][c]))
+                return family[i][size_class];
+    return NULL;
+}
 #endif
 
 #ifdef ARCH_ARM64
@@ -3758,7 +3869,21 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
 }
 #endif // ARCH_ARM64
 
-#ifdef ARCH_ARM64
+// Try to extract the symbol name of an address-of-global expression
+// (traversing casts), e.g. "i" (key) where an arch_static_branch() caller
+// passed &some_static_key — GCC accepts this as an "i" (immediate) operand
+// since the address is a link-time constant, emitted as "$symbol" (an
+// immediate holding the symbol's address) the same way a numeric
+// immediate is emitted as "$N".
+static bool try_const_addr_sym(Node *n, const char **sym_out) {
+    while (n && n->kind == ND_CAST)
+        n = n->lhs;
+    if (n && n->kind == ND_ADDR && n->lhs && n->lhs->kind == ND_LVAR && !n->lhs->var->is_local) {
+        *sym_out = asm_sym_name(var_sym_label(n->lhs->var));
+        return true;
+    }
+    return false;
+}
 // Try to extract an integer constant from a node (traversing casts).
 // Returns true and sets *val if the node reduces to a compile-time constant.
 static bool try_const_int(Node *n, int64_t *val) {
@@ -3770,9 +3895,72 @@ static bool try_const_int(Node *n, int64_t *val) {
     }
     return false;
 }
-#endif // ARCH_ARM64
+// Resolve a GCC "global register variable" asm(...) register name (e.g.
+// "rsp" on x86-64, "sp" on arm64) to the physical register it pins, or -1
+// if unrecognized. Only the names the kernel headers we build actually use
+// need to resolve (x86-64's `current_stack_pointer asm("rsp")`, arm64's
+// `asm("sp")`) — anything else returns -1 so the caller can fall back
+// instead of silently mis-decoding a register it doesn't understand.
+#ifdef ARCH_ARM64
+static int global_reg_lookup(const char *name) {
+    if (!strcmp(name, "sp")) return ARM64_SP;
+    if (!strcmp(name, "fp") || !strcmp(name, "x29")) return ARM64_X29;
+    if (!strcmp(name, "lr") || !strcmp(name, "x30")) return ARM64_X30;
+    if (name[0] == 'x' && name[1] >= '0' && name[1] <= '9') {
+        int n = atoi(name + 1);
+        if (n >= 0 && n <= 30) return n; // Arm64Reg Xn is numbered n
+    }
+    return -1;
+}
+#else
+static int global_reg_lookup(const char *name) {
+    static const struct {
+        const char *name;
+        X86Reg reg;
+    } tab[] = {
+        {"rax", X86_RAX},
+        {"rbx", X86_RBX},
+        {"rcx", X86_RCX},
+        {"rdx", X86_RDX},
+        {"rsp", X86_RSP},
+        {"rbp", X86_RBP},
+        {"rsi", X86_RSI},
+        {"rdi", X86_RDI},
+        {"r8", X86_R8},
+        {"r9", X86_R9},
+        {"r10", X86_R10},
+        {"r11", X86_R11},
+        {"r12", X86_R12},
+        {"r13", X86_R13},
+        {"r14", X86_R14},
+        {"r15", X86_R15},
+    };
+    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+        if (!strcmp(name, tab[i].name)) return tab[i].reg;
+    return -1;
+}
+#endif
 
-// Generate code to compute the absolute address of an lvalue.
+// Materialize `r = <hardware register named by var->global_reg_name>` for a
+// read of a GCC global register variable (LVar.is_global_reg — see rcc.h).
+// Such a variable has no address and no backing memory at all in
+// conforming GCC/Clang; taking one is already rejected elsewhere (the same
+// `is_register` check that rejects `&register int x`). Returns false
+// (emits nothing) on an unrecognized register name so the caller can fall
+// back to its ordinary global-variable path rather than miscompile it.
+static bool gen_global_reg_read(VReg r, LVar *var) {
+    int reg = global_reg_lookup(var->global_reg_name);
+    if (reg < 0) return false;
+#ifdef ARCH_ARM64
+    if (reg == ARM64_SP)
+        arm64_add_imm(cg_sec, 1, REG(r), ARM64_SP, 0, 0); // mov r, sp  (add r, sp, #0)
+    else
+        arm64_orr_reg(cg_sec, 1, REG(r), ARM64_XZR, (Arm64Reg)reg, ARM64_LSL, 0); // mov r, xN
+#else
+    x86_mov_rr(cg_sec, 8, REG(r), (X86Reg)reg);
+#endif
+    return true;
+}
 static VReg gen_addr(Node *node) {
     // A vector arithmetic/compare/unary result is materialized into a 16-byte
     // slot; its "address" is that slot (used when a vector value is returned by
@@ -5381,6 +5569,24 @@ static VReg gen_int128(Node *node) {
         free_reg(lhs_a);
         return old_addr;
     }
+    case ND_STMT_EXPR: {
+        // GNU statement expression `({ ...; last_expr; })` in int128
+        // context (e.g. the kernel's typeof()/min()/max() macros applied
+        // to a __int128/unsigned __int128 operand): run the body for side
+        // effects and materialize the trailing expression as the result.
+        VReg result = R_NONE;
+        for (Node *n = node->body; n; n = n->next) {
+            if (node->stmt_expr_result && n->kind == ND_EXPR_STMT && n->lhs == node->stmt_expr_result) {
+                result = gen_to_int128(node->stmt_expr_result);
+            } else {
+                VReg r = gen(n);
+                if (r != -1) free_reg(r);
+            }
+        }
+        if (result == R_NONE)
+            result = alloc_int128_addr();
+        return result;
+    }
     default:
         error("int128: unsupported node kind %d", node->kind);
         return R_NONE;
@@ -6076,7 +6282,9 @@ static VReg gen(Node *node) {
 #else
                 emit_load(node->ty, r, X86_BASE_RBP, node->var->offset);
 #endif
-            else {
+            else if (node->var->is_global_reg && gen_global_reg_read(r, node->var)) {
+                // Handled: r now holds the pinned hardware register's value.
+            } else {
 #ifdef ARCH_ARM64
                 // Global variable: load address via ADRP+ADD, then deref
                 int ta = alloc_reg();
@@ -8982,6 +9190,20 @@ static VReg gen(Node *node) {
                     }
                 }
                 while (*sub && olen < (int)sizeof(out) - 1) out[olen++] = *sub++;
+            } else if (mod == 'l' && *p >= '0' && *p <= '9') {
+                // %lN: positional "asm goto" label reference, numbered
+                // continuing right after the in/out operand indices (see
+                // the matching x86 branch below for the full rationale).
+                int n = *p - '0';
+                p++;
+                int li = n - node->asm_noperands;
+                if (li >= 0 && li < node->asm_ngoto) {
+                    const char *prefix = ".L.label.";
+                    for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
+                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                }
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
                 p++;
@@ -9151,6 +9373,25 @@ static VReg gen(Node *node) {
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
                 emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+            } else if (*c == 'i' || *c == 'n') {
+                // Immediate constraint: emit numeric value, or (for an
+                // address-of-global, e.g. jump_label.h's arch_static_branch
+                // passing "i" (key) where key = &some_static_key) the
+                // symbol name as an immediate address, in the template.
+                int64_t cval = 0;
+                const char *sym = NULL;
+                if (try_const_int(op->expr, &cval)) {
+                    snprintf(op->asm_str, sizeof(op->asm_str), "$%lld", (long long)cval);
+                    op_regs[i] = -1; // no register needed
+                } else if (try_const_addr_sym(op->expr, &sym)) {
+                    snprintf(op->asm_str, sizeof(op->asm_str), "$%s", sym);
+                    op_regs[i] = -1;
+                } else {
+                    VReg r = gen(op->expr);
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg64[r]);
+                }
             } else if (*c >= '0' && *c <= '9') {
                 // Matching constraint: defer to second pass
                 op_regs[i] = -2; // sentinel
@@ -9245,9 +9486,17 @@ static VReg gen(Node *node) {
                 p++;
                 continue;
             }
-            // check for modifier 'l'
+            // check for modifier: 'l' (label operand), 'c' (bare constant,
+            // no leading '$' — used in data-directive expressions like
+            // jump_label.h's ".quad %c0 + %c1 - ." inside its __jump_table
+            // entry), or an x86 operand size override (b/w/k/q =
+            // 8/16/32/64-bit, h = legacy high byte) — GCC extended-asm
+            // syntax used constantly in kernel uaccess/atomic templates to
+            // force a specific sub-register name regardless of the
+            // operand's natural width, e.g. %k1 to get the 32-bit name of
+            // a 64-bit pointer operand.
             char mod = 0;
-            if (*p == 'l') { mod = *p++; }
+            if (*p == 'l' || *p == 'c' || *p == 'b' || *p == 'w' || *p == 'k' || *p == 'q' || *p == 'h') { mod = *p++; }
             if (mod == 'l' && *p == '[') {
                 // %l[name] -> goto label
                 p++;
@@ -9265,11 +9514,89 @@ static VReg gen(Node *node) {
                 if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
                 for (const char *s = p; s < end && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
                 p = end + 1;
+            } else if (*p == '[') {
+                // %[name] / %mod[name] -> named operand reference (GCC
+                // extended-asm symbolic names, e.g. `[errout] "+r" (err)`
+                // declared in the constraint list) — used pervasively in
+                // modern kernel templates instead of positional %0/%1 so
+                // adding/reordering operands doesn't require renumbering
+                // every reference. parse_asm_stmt already records each
+                // operand's bracketed name in AsmOperand.name; look it up
+                // here the same way a plain %N looks up by position.
+                p++;
+                const char *end = strchr(p, ']');
+                if (!end) {
+                    out[olen++] = '%';
+                    if (mod) out[olen++] = mod;
+                    out[olen++] = '[';
+                    continue;
+                }
+                char namebuf[64];
+                size_t nlen = (size_t)(end - p);
+                if (nlen >= sizeof(namebuf)) nlen = sizeof(namebuf) - 1;
+                memcpy(namebuf, p, nlen);
+                namebuf[nlen] = '\0';
+                p = end + 1;
+                int found = -1;
+                for (int oi = 0; oi < node->asm_noperands; oi++)
+                    if (node->asm_ops[oi].name[0] && !strcmp(node->asm_ops[oi].name, namebuf)) {
+                        found = oi;
+                        break;
+                    }
+                if (found >= 0) {
+                    const char *s = node->asm_ops[found].asm_str;
+                    if (mod == 'c' && *s == '$') s++; // bare constant, drop '$'
+#ifndef ARCH_ARM64
+                    else if (mod && mod != 'l') {
+                        int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
+                            : mod == 'w'                             ? 2
+                            : mod == 'h'                             ? 4
+                                                                     : 3;
+                        const char *resized = x86_reg_resize(s, size_class);
+                        if (resized) s = resized;
+                    }
+#endif
+                    while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
+                }
+                // else: unresolved name — drop it, matching the existing
+                // %N-out-of-range behavior below rather than corrupting
+                // the rest of the template.
+            } else if (mod == 'l' && *p >= '0' && *p <= '9') {
+                // %lN: positional "asm goto" label reference. GCC numbers
+                // goto labels continuing right after the in/out operand
+                // indices (not a separate zero-based space), e.g. with 2
+                // operands the first goto label is %l2 — see
+                // arch/x86/include/asm/uaccess.h's __put_user_goto()
+                // ("mov %0,%1" then "_ASM_EXTABLE_UA(1b, %l2)"). Falling
+                // through to the plain %N operand path below silently
+                // dropped this (out of range for asm_noperands), leaving a
+                // fault-handler extable entry with no relocation at all.
+                int n = *p - '0';
+                p++;
+                int li = n - node->asm_noperands;
+                if (li >= 0 && li < node->asm_ngoto) {
+                    const char *prefix = ".L.label.";
+                    for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
+                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                }
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
                 p++;
                 if (n < node->asm_noperands) {
                     const char *s = node->asm_ops[n].asm_str;
+                    if (mod == 'c' && *s == '$') s++; // bare constant, drop '$'
+#ifndef ARCH_ARM64
+                    else if (mod && mod != 'l') {
+                        int size_class = mod == 'q' ? 0 : mod == 'k' ? 1
+                            : mod == 'w'                             ? 2
+                            : mod == 'h'                             ? 4
+                                                                     : 3;
+                        const char *resized = x86_reg_resize(s, size_class);
+                        if (resized) s = resized;
+                    }
+#endif
                     while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
                 }
             } else {
@@ -9280,6 +9607,22 @@ static VReg gen(Node *node) {
         }
         out[olen] = '\0';
         if (olen > 0 && !cg_dry_run) {
+            const char *a = strstr(out, ".ascii");
+            if (a) {
+                a += 6;
+                while (*a == ' ') a++;
+                if (*a == '"') {
+                    a++;
+                    const char *end = strchr(a, '"');
+                    if (end) {
+                        size_t n = (size_t)(end - a);
+                        char *s = arena_alloc(n + 1);
+                        memcpy(s, a, n);
+                        s[n] = '\0';
+                        cg_ascii_add(s);
+                    }
+                }
+            }
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
@@ -9485,6 +9828,26 @@ static VReg gen(Node *node) {
             asm_ldr_x12_uoff(cg_sec, r, 2); // ldr x12, [x{r}, #16]
             asm_sxtw(cg_sec, ARM64_X17, ARM64_X16); // sxtw x17, w16
             asm_add_x12_x12_x17(cg_sec); // add x12, x12, x17
+            if (ty->kind == TY_LDOUBLE) {
+                // x12 now addresses the 16-byte VR-save-area slot holding a
+                // genuine binary128 value (the call-site pre-pass widens
+                // through __extenddftf2 before every variadic call - see
+                // above). rcc's internal `long double` is a plain 64-bit
+                // double everywhere else, so narrow the incoming quad back
+                // down via libgcc's __trunctfdf2 before handing the
+                // address back: reading the raw quad's low 64 bits as a
+                // double would reinterpret binary128's mantissa/exponent
+                // layout as binary64 and produce garbage (typically ~0.0).
+                // x12 must survive the `bl` (a caller-saved scratch reg
+                // isn't guaranteed to), so park it on the stack around it.
+                arm64_ldr_fp(cg_sec, 4, ASM_Q0, ARM64_X12, 0); // ldr q0, [x12]
+                arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 16, 0); // sub sp, sp, #16
+                arm64_str_uoff(cg_sec, 3, ARM64_X12, ARM64_SP, 0); // str x12, [sp]
+                emit_direct_call("__trunctfdf2", false); // bl __trunctfdf2 (quad in v0 -> d0)
+                arm64_ldr_uoff(cg_sec, 3, ARM64_X12, ARM64_SP, 0); // ldr x12, [sp]
+                arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, 16, 0); // add sp, sp, #16
+                arm64_str_fp(cg_sec, 3, ARM64_D0, ARM64_X12, 0); // str d0, [x12]
+            }
             {
                 size_t _jmp = asm_jmp_label(cg_sec);
                 asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
@@ -11392,6 +11755,15 @@ struct ObjFile *codegen(Program *prog) {
         char **emitted_syms = NULL;
         int emitted_count = 0;
         for (LVar *var = prog->globals; var; var = var->next) {
+            // GCC global register variable (`register T x asm("reg");`): no
+            // storage, no symbol — see LVar.is_global_reg in rcc.h and
+            // gen_global_reg_read() above. Emitting it as an ordinary
+            // uninitialized global here is exactly the bug that produced
+            // "multiple definition of `rsp`" linking the x86-64 vDSO: every
+            // TU that includes the declaring header got its own colliding
+            // non-static .bss tentative definition of the register's name.
+            if (var->is_global_reg)
+                continue;
             if (var->is_extern && !var->alias_target && !var->asm_name)
                 continue;
             char *label = var->asm_name ? var->asm_name : var->name;
@@ -11659,65 +12031,19 @@ struct ObjFile *codegen(Program *prog) {
 
     for (TLItem *item = prog->items; item; item = item->next) {
         if (item->kind == TL_ASM) {
-            // Emit global-scope asm through the assembler
-            // Parse label: "vide: ret" → label "vide", instruction "ret"
-            const char *tp = item->asm_str;
-            char label_buf[256];
-            const char *label_end = strchr(tp, ':');
-            if (label_end && label_end > tp) {
-                size_t lbl_len = (size_t)(label_end - tp);
-                if (lbl_len < sizeof(label_buf)) {
-                    memcpy(label_buf, tp, lbl_len);
-                    label_buf[lbl_len] = '\0';
-                    // Skip whitespace between label and possible insn
-                    const char *insn = label_end + 1;
-                    insn += strspn(insn, " \t");
-                    // Define label at current text position
-                    objfile_add_sym(cg_obj, asm_sym_name(label_buf), SEC_TEXT,
-                                    cg_sec->len, 0, SB_GLOBAL, ST_FUNC);
-                    // If there's an instruction after the label, assemble it
-                    if (*insn) {
-                        // Simple instruction dispatch through the assembler
-                        char mnem[64], ops[256];
-                        int n = 0;
-                        sscanf(insn, "%63s", mnem);
-                        // Handle TCC-specific {$} → immediate $N
-                        const char *rest = insn + strlen(mnem);
-                        while (*rest == ' ' || *rest == '\t') rest++;
-                        for (const char *s = rest; *s && n < (int)sizeof(ops) - 1; s++) {
-                            if (s[0] == '{' && s[1] == '$' && s[2] == '}') {
-                                ops[n++] = '$';
-                                s += 3;
-                                while (*s >= '0' && *s <= '9' && n < (int)sizeof(ops) - 1)
-                                    ops[n++] = *s++;
-                                if (*s && n < (int)sizeof(ops) - 1)
-                                    ops[n++] = *s;
-                                s--;
-                            } else {
-                                ops[n++] = *s;
-                            }
-                        }
-                        ops[n] = '\0';
-                        // Encode known instructions directly
-#ifdef ARCH_ARM64
-                        if (strcmp(mnem, "ret") == 0)
-                            arm64_ret(cg_sec, ARM64_X30);
-                        else if (strcmp(mnem, "nop") == 0)
-                            arm64_nop(cg_sec);
-                        else if (strcmp(mnem, "brk") == 0)
-                            secbuf_emit32le(cg_sec, 0xd4200000u); // brk #0
-#else
-                        if (strcmp(mnem, "ret") == 0)
-                            x86_ret(cg_sec);
-                        else if (strcmp(mnem, "nop") == 0)
-                            x86_nop(cg_sec);
-                        else if (strcmp(mnem, "int3") == 0)
-                            secbuf_emit8(cg_sec, 0xcc);
-#endif
-                        // For other instructions, fall through to nothing (assembler needed)
-                    }
-                }
-            }
+            // File-scope asm(...) — no enclosing function, so there's no
+            // later C-level goto label it could ever forward-reference
+            // (on_forward is only relevant inside a function body).
+            // Previously this had its own tiny hand-rolled parser that
+            // only understood a single "label: insn" line with a
+            // hardcoded handful of instructions (ret/nop/int3), silently
+            // doing nothing for anything else — real uses like the
+            // kernel's raw __define_initcall asm() (.section/label/
+            // .long .../.previous, no C-callable single instruction in
+            // sight) fell straight through that "for other instructions,
+            // assembler needed" gap. Route through the same full
+            // assembler function bodies already use instead.
+            assemble_inline(cg_obj, item->asm_str, NULL, NULL);
             continue;
         }
         Function *fn = item->fn;
@@ -12190,8 +12516,24 @@ struct ObjFile *codegen(Program *prog) {
         // AAPCS64 (Linux): save all GP and FP arg regs for variadic functions
         if (fn->is_variadic) va_save_size = 192;
 #endif
+        // AAPCS64 passes `long double` (128-bit binary128) as a genuine
+        // quad in a V register, but rcc's internal `long double` is a
+        // plain 64-bit double everywhere else - incoming long double
+        // params must be narrowed via libgcc's __trunctfdf2. That `bl`
+        // clobbers every caller-saved register (x0-x17, v0-v7), so any
+        // other not-yet-saved param sharing those registers would be
+        // corrupted; reserve a small stash area to park each incoming
+        // long double's raw quad until every other param is safely saved,
+        // then narrow them one at a time from the stash (see below).
+        int n_ldouble_params = 0;
+        for (LVar *var = fn->params; var; var = var->param_next)
+            if (var->ty->kind == TY_LDOUBLE && var->ty->size > 8) n_ldouble_params++;
+        int ldouble_stash_size = n_ldouble_params * 16;
+        int ldouble_stash_off = va_save_size;
         if (va_save_size > 0)
             need += va_save_size;
+        if (ldouble_stash_size > 0)
+            need += ldouble_stash_size;
         int frame_size = need + 16 + n_callee_saved * 8;
         // Round up to 16-byte alignment
         frame_size = (frame_size + 15) & ~15;
@@ -12213,12 +12555,14 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
+            cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported)
-            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
+            cg_global_label(fn_sym_name); // .globl %s
         else
-            cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
+            cg_def_fn_label(fn_sym_name); // .weak %s
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
@@ -12247,7 +12591,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Save callee-saved regs
-        int cs_off = (fn->is_variadic && va_save_size > 0) ? va_save_size + 16 : 16;
+        int cs_off = 16 + va_save_size + ldouble_stash_size;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 arm64_str_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // str x{cs}, [sp, #cs_off]
@@ -12278,6 +12622,13 @@ struct ObjFile *codegen(Program *prog) {
         int gp_param = 0;
         int fp_param = 0;
         int stack_param = 0;
+        // long double params (is_flonum, size>8) are deferred: narrowing
+        // them via __trunctfdf2 clobbers every caller-saved register, so
+        // all other params must be safely saved first (see the deferred
+        // pass after this loop).
+        LVar *ld_param_var[8];
+        int ld_param_fpidx[8];
+        int n_ld_deferred = 0;
         {
             for (LVar *var = fn->params; var; var = var->param_next) {
                 int hfa_elem_size = 0;
@@ -12341,7 +12692,14 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param += (sz + 7) / 8;
                 } else if (is_flonum(var->ty)) {
                     if (fp_param < 8) {
-                        if (var->ty->size == 4) {
+                        if (var->ty->kind == TY_LDOUBLE && var->ty->size > 8) {
+                            // Defer: narrowing needs a `bl`, which would
+                            // clobber every other not-yet-saved param's
+                            // register (see the deferred pass below).
+                            ld_param_var[n_ld_deferred] = var;
+                            ld_param_fpidx[n_ld_deferred] = fp_param;
+                            n_ld_deferred++;
+                        } else if (var->ty->size == 4) {
                             if (fn->ty->is_oldstyle) {
                                 asm_fcvt_s0_d(cg_sec, fp_param); // fcvt s0, d{fp_param}
                                 asm_str_s0_fp_neg(cg_sec, var->offset); // str s0, [x29, #-offset]
@@ -12448,6 +12806,25 @@ struct ObjFile *codegen(Program *prog) {
             }
         }
 
+        // Deferred long double params: stash every raw incoming quad first
+        // (plain register-to-memory stores, no calls - safe regardless of
+        // how many there are), then narrow each one via __trunctfdf2 from
+        // its stash slot and store the resulting double. By this point
+        // every other param has already been saved to its permanent slot
+        // above, so the `bl`s below are free to clobber any caller-saved
+        // register.
+        if (n_ld_deferred > 0) {
+            for (int k = 0; k < n_ld_deferred; k++)
+                arm64_str_fp(cg_sec, 4, (Arm64Reg)ld_param_fpidx[k], ARM64_SP,
+                             (uint32_t)(ldouble_stash_off + k * 16)); // str q{fpidx}, [sp, #stash+k*16]
+            for (int k = 0; k < n_ld_deferred; k++) {
+                arm64_ldr_fp(cg_sec, 4, ASM_Q0, ARM64_SP,
+                             (uint32_t)(ldouble_stash_off + k * 16)); // ldr q0, [sp, #stash+k*16]
+                emit_direct_call("__trunctfdf2", false); // bl __trunctfdf2 (quad in v0 -> d0)
+                asm_str_d_fp_neg(cg_sec, 0, ld_param_var[k]->offset); // str d0, [x29, #-offset]
+            }
+        }
+
 
         // Re-run gen() to emit binary body
         for (Node *n = fn->body; n; n = n->next) {
@@ -12492,7 +12869,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Restore callee-saved
-        cs_off = 16;
+        cs_off = 16 + va_save_size + ldouble_stash_size;
         for (int j = 0; j < 6; j++) {
             if (callee_mask & (1 << j)) {
                 arm64_ldr_uoff(cg_sec, 3, (Arm64Reg)(ARM64_X19 + j), ARM64_SP, cs_off / 8); // ldr x{cs}, [sp, #cs_off]
@@ -12508,6 +12885,7 @@ struct ObjFile *codegen(Program *prog) {
         }
         asm_ldp_fp_lr(cg_sec); // ldp x29, x30, [sp], #16
         asm_ret(cg_sec); // ret
+        cg_patch_fn_size(fn_sym_name, fn_sym_start);
 
 #else
         // === x86_64 prologue ===
@@ -12560,12 +12938,14 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
-            cg_weak_label(asm_sym_name(sym_name(fn_label))); // .weak_definition %s
+            cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported) {
-            cg_global_label(asm_sym_name(sym_name(fn_label))); // .globl %s
+            cg_global_label(fn_sym_name); // .globl %s
         } else {
-            cg_def_label(asm_sym_name(sym_name(fn_label))); // .weak %s
+            cg_def_fn_label(fn_sym_name); // .weak %s
         }
 #ifdef _WIN32
         uw_begin(); // .seh_proc
@@ -12951,6 +13331,7 @@ struct ObjFile *codegen(Program *prog) {
         }
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
+        cg_patch_fn_size(fn_sym_name, fn_sym_start);
 #ifdef _WIN32
         uw_endproc(); // .seh_endproc
 #endif

@@ -107,6 +107,8 @@ void x86_or_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_cmp_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_add_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_sub_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
+void x86_and_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
+void x86_xor_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm);
 void x86_movabs(SecBuf *s, X86Reg dst, uint64_t imm64); // 64-bit immediate
 void x86_movsx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src);
 void x86_movzx(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Reg src);
@@ -119,9 +121,11 @@ void x86_lea(SecBuf *s, int size, X86Reg dst, X86Mem src);
 void x86_add_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_add_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_add_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_add_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_sub_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_sub_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_sub_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_sub_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_imul_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_imul_rri(SecBuf *s, int size, X86Reg dst, X86Reg src, int32_t imm);
 void x86_imul_r(SecBuf *s, int size, X86Reg src); // RDX:RAX = RAX*src
@@ -135,19 +139,26 @@ void x86_inc_m(SecBuf *s, int size, X86Mem m);
 void x86_dec_m(SecBuf *s, int size, X86Mem m);
 void x86_neg_m(SecBuf *s, int size, X86Mem m);
 void x86_not_m(SecBuf *s, int size, X86Mem m);
-void x86_cdq(SecBuf *s); // sign-extend EAX to EDX:EAX
-void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX
+void x86_cdq(SecBuf *s); // sign-extend EAX to EDX:EAX (AT&T alias: cltd)
+void x86_cqo(SecBuf *s); // sign-extend RAX to RDX:RAX (AT&T alias: cqto)
+void x86_cbw(SecBuf *s); // sign-extend AL to AX (AT&T alias: cbtw)
+void x86_cwde(SecBuf *s); // sign-extend AX to EAX (AT&T alias: cwtl)
+void x86_cdqe(SecBuf *s); // sign-extend EAX to RAX (AT&T alias: cltq)
+void x86_cwd(SecBuf *s); // sign-extend AX to DX:AX (AT&T alias: cwtd)
 
 // Logical
 void x86_and_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_and_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_and_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_and_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_or_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_or_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_or_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_or_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 void x86_xor_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_xor_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
 void x86_xor_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm);
+void x86_xor_mr(SecBuf *s, int size, X86Mem dstm, X86Reg src);
 
 // Shifts
 void x86_shl_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
@@ -179,17 +190,38 @@ void x86_lzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_tzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_bswap(SecBuf *s, int size, X86Reg r); // size=4 or 8
 
+// BT/BTS/BTR/BTC r/m, r (memory or register bit-index destination)
+void x86_bt_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_bts_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_btr_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_btc_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_bt_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_bts_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_btr_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_btc_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+
+// XADD r/m, r: adds src to dst, stores dst's original value into src
+void x86_xadd_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_xadd_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+
+// CMPXCHG r/m, r: compares r/m with %al/%eax/%rax; if equal, r/m = src
+void x86_cmpxchg_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_cmpxchg_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+
 // Stack
 void x86_push(SecBuf *s, X86Reg r);
+void x86_push_m(SecBuf *s, X86Mem m);
 void x86_pop(SecBuf *s, X86Reg r);
 void x86_push_imm(SecBuf *s, int32_t imm);
 
 // Control flow
 void x86_call_rel32(SecBuf *s, int32_t rel32); // fills 0; caller adds reloc
 void x86_call_r(SecBuf *s, X86Reg r);
+void x86_call_m(SecBuf *s, X86Mem m);
 void x86_jmp_rel32(SecBuf *s, int32_t rel32);
 void x86_jmp_rel8(SecBuf *s, int8_t rel8);
 void x86_jmp_r(SecBuf *s, X86Reg r);
+void x86_jmp_m(SecBuf *s, X86Mem m);
 void x86_jcc_rel32(SecBuf *s, X86Cond cc, int32_t rel32);
 void x86_jcc_rel8(SecBuf *s, X86Cond cc, int8_t rel8);
 void x86_ret(SecBuf *s);
@@ -202,13 +234,185 @@ void x86_xchg_rr(SecBuf *s, int size, X86Reg a, X86Reg b);
 void x86_lock_prefix(SecBuf *s);
 void x86_rep_prefix(SecBuf *s);
 void x86_repne_prefix(SecBuf *s);
+void x86_seg_prefix(SecBuf *s, uint8_t byte);
 void x86_cld(SecBuf *s);
 void x86_stosb(SecBuf *s);
 void x86_movsb(SecBuf *s);
 void x86_cmpsb(SecBuf *s);
 void x86_scasb(SecBuf *s);
+void x86_movs(SecBuf *s, int size);
+void x86_stos(SecBuf *s, int size);
+void x86_cmps(SecBuf *s, int size);
+void x86_scas(SecBuf *s, int size);
+void x86_lods(SecBuf *s, int size);
 void x86_mfence(SecBuf *s);
+void x86_lfence(SecBuf *s);
+void x86_sfence(SecBuf *s);
 void x86_cpuid(SecBuf *s);
+void x86_ud2(SecBuf *s);
+void x86_rdtsc(SecBuf *s);
+void x86_rdtscp(SecBuf *s);
+void x86_clac(SecBuf *s);
+void x86_stac(SecBuf *s);
+void x86_iretq(SecBuf *s);
+void x86_lahf(SecBuf *s);
+void x86_sahf(SecBuf *s);
+void x86_clc(SecBuf *s);
+void x86_stc(SecBuf *s);
+void x86_std(SecBuf *s);
+void x86_endbr32(SecBuf *s);
+void x86_endbr64(SecBuf *s);
+void x86_int3(SecBuf *s);
+void x86_int1(SecBuf *s);
+void x86_syscall(SecBuf *s);
+void x86_sysenter(SecBuf *s);
+void x86_sysexit(SecBuf *s);
+void x86_sysret(SecBuf *s);
+void x86_sysretq(SecBuf *s);
+void x86_rdrand(SecBuf *s, int size, X86Reg r);
+void x86_rdseed(SecBuf *s, int size, X86Reg r);
+void x86_crc32(SecBuf *s, int dst_size, int src_size, X86Reg dst, X86Reg src);
+void x86_invpcid(SecBuf *s, X86Reg type_reg, X86Mem desc);
+void x86_rdfsbase(SecBuf *s, int size, X86Reg r);
+void x86_rdgsbase(SecBuf *s, int size, X86Reg r);
+void x86_wrfsbase(SecBuf *s, int size, X86Reg r);
+void x86_wrgsbase(SecBuf *s, int size, X86Reg r);
+void x86_mul_r(SecBuf *s, int size, X86Reg src);
+void x86_mul_m(SecBuf *s, int size, X86Mem src);
+void x86_adc_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_adc_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
+void x86_adc_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
+void x86_adc_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_adc_mi(SecBuf *s, int size, X86Mem dst, int32_t imm);
+void x86_sbb_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_sbb_ri(SecBuf *s, int size, X86Reg dst, int32_t imm);
+void x86_sbb_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
+void x86_sbb_mr(SecBuf *s, int size, X86Mem dst, X86Reg src);
+void x86_sbb_mi(SecBuf *s, int size, X86Mem dst, int32_t imm);
+void x86_rdmsr(SecBuf *s);
+void x86_wrmsr(SecBuf *s);
+void x86_cmpxchg8b_m(SecBuf *s, X86Mem m);
+void x86_cmpxchg16b_m(SecBuf *s, X86Mem m);
+void x86_wbinvd(SecBuf *s);
+void x86_sti(SecBuf *s);
+void x86_cli(SecBuf *s);
+void x86_hlt(SecBuf *s);
+void x86_pushfq(SecBuf *s);
+void x86_popfq(SecBuf *s);
+// Port I/O: "outb %al, %dx" / "outb %al, $imm8", "inb %dx, %al" / "inb $imm8, %al"
+void x86_outb_dx(SecBuf *s);
+void x86_outw_dx(SecBuf *s);
+void x86_outl_dx(SecBuf *s);
+void x86_outb_imm(SecBuf *s, uint8_t imm8);
+void x86_outw_imm(SecBuf *s, uint8_t imm8);
+void x86_outl_imm(SecBuf *s, uint8_t imm8);
+void x86_inb_dx(SecBuf *s);
+void x86_inw_dx(SecBuf *s);
+void x86_inl_dx(SecBuf *s);
+void x86_inb_imm(SecBuf *s, uint8_t imm8);
+void x86_inw_imm(SecBuf *s, uint8_t imm8);
+void x86_inl_imm(SecBuf *s, uint8_t imm8);
+// String port I/O: "insb"/"insw"/"insl", "outsb"/"outsw"/"outsl" (implicit
+// %dx port, (%rsi)/(%rdi) memory operand — no explicit operands in GAS)
+void x86_insb(SecBuf *s);
+void x86_insw(SecBuf *s);
+void x86_insl(SecBuf *s);
+void x86_outsb(SecBuf *s);
+void x86_outsw(SecBuf *s);
+void x86_outsl(SecBuf *s);
+void x86_vmcall(SecBuf *s);
+void x86_vmmcall(SecBuf *s);
+void x86_prefetcht0(SecBuf *s, X86Mem m);
+void x86_prefetchnta(SecBuf *s, X86Mem m);
+void x86_prefetchw(SecBuf *s, X86Mem m);
+void x86_clflush(SecBuf *s, X86Mem m);
+void x86_clflushopt(SecBuf *s, X86Mem m);
+void x86_clwb(SecBuf *s, X86Mem m);
+void x86_lgdt(SecBuf *s, X86Mem m);
+void x86_lidt(SecBuf *s, X86Mem m);
+void x86_sgdt(SecBuf *s, X86Mem m);
+void x86_sidt(SecBuf *s, X86Mem m);
+void x86_invlpg(SecBuf *s, X86Mem m);
+void x86_lldt_r(SecBuf *s, X86Reg r);
+void x86_lldt_m(SecBuf *s, X86Mem m);
+void x86_ltr_r(SecBuf *s, X86Reg r);
+void x86_ltr_m(SecBuf *s, X86Mem m);
+void x86_str_r(SecBuf *s, X86Reg r);
+void x86_str_m(SecBuf *s, X86Mem m);
+void x86_pause(SecBuf *s);
+void x86_swapgs(SecBuf *s);
+void x86_rdpmc(SecBuf *s);
+void x86_rdpkru(SecBuf *s);
+void x86_wrpkru(SecBuf *s);
+void x86_verw_m(SecBuf *s, X86Mem m);
+void x86_rdpid(SecBuf *s, X86Reg dst);
+void x86_lsl_rr(SecBuf *s, X86Reg src, X86Reg dst);
+void x86_lsl_rm(SecBuf *s, X86Mem src, X86Reg dst);
+void x86_cmc(SecBuf *s);
+void x86_clts(SecBuf *s);
+void x86_invd(SecBuf *s);
+void x86_wbnoinvd(SecBuf *s);
+void x86_wait(SecBuf *s);
+void x86_xgetbv(SecBuf *s);
+void x86_xsetbv(SecBuf *s);
+void x86_serialize(SecBuf *s);
+void x86_verr_m(SecBuf *s, X86Mem m);
+void x86_lar_rr(SecBuf *s, X86Reg src, X86Reg dst);
+void x86_lar_rm(SecBuf *s, X86Mem src, X86Reg dst);
+void x86_smsw_r(SecBuf *s, X86Reg r);
+void x86_smsw_m(SecBuf *s, X86Mem m);
+void x86_lmsw_r(SecBuf *s, X86Reg r);
+void x86_lmsw_m(SecBuf *s, X86Mem m);
+void x86_sldt_r(SecBuf *s, X86Reg r);
+void x86_sldt_m(SecBuf *s, X86Mem m);
+void x86_ud0(SecBuf *s, X86Reg dst, X86Reg src);
+void x86_ud1(SecBuf *s, X86Reg dst, X86Reg src);
+void x86_ud1_m(SecBuf *s, bool addr32, X86Reg reg, X86Mem m);
+// FXSAVE/FXRSTOR/XSAVE-family (0F AE and 0F C7 sub-opcodes): all take a
+// single memory operand — the "64" name variants are the same opcode with
+// REX.W forced, not a different opcode.
+void x86_fxsave(SecBuf *s, int w, X86Mem m);
+void x86_fxrstor(SecBuf *s, int w, X86Mem m);
+void x86_xsave(SecBuf *s, int w, X86Mem m);
+void x86_xrstor(SecBuf *s, int w, X86Mem m);
+void x86_xsaveopt(SecBuf *s, int w, X86Mem m);
+void x86_xsavec(SecBuf *s, int w, X86Mem m);
+void x86_xsaves(SecBuf *s, int w, X86Mem m);
+void x86_xrstors(SecBuf *s, int w, X86Mem m);
+
+// x87 FPU control/status (init/exception-handling subset only — the
+// arithmetic instruction family is deferred, the kernel avoids x87 math
+// outside very specific paths). Each "fXXX" waiting form is the "fnXXX"
+// non-waiting form with an implicit leading FWAIT (0x9B).
+void x86_fninit(SecBuf *s);
+void x86_finit(SecBuf *s);
+void x86_fnclex(SecBuf *s);
+void x86_fclex(SecBuf *s);
+void x86_fnop(SecBuf *s);
+void x86_fldcw_m(SecBuf *s, X86Mem m);
+void x86_fnstcw_m(SecBuf *s, X86Mem m);
+void x86_fstcw_m(SecBuf *s, X86Mem m);
+void x86_fnstsw_m(SecBuf *s, X86Mem m);
+void x86_fnstsw_ax(SecBuf *s);
+void x86_fstsw_m(SecBuf *s, X86Mem m);
+void x86_fstsw_ax(SecBuf *s);
+
+// Port I/O, far return, stack frame, misc system
+void x86_retf(SecBuf *s);
+void x86_retf_imm(SecBuf *s, uint16_t imm16);
+void x86_enter(SecBuf *s, uint16_t frame_size, uint8_t nesting);
+void x86_prefetcht1(SecBuf *s, X86Mem m);
+void x86_prefetcht2(SecBuf *s, X86Mem m);
+void x86_prefetchwt1(SecBuf *s, X86Mem m);
+void x86_monitor(SecBuf *s);
+void x86_mwait(SecBuf *s);
+void x86_rsm(SecBuf *s);
+void x86_xtest(SecBuf *s);
+void x86_xend(SecBuf *s);
+void x86_clzero(SecBuf *s);
+void x86_cldemote_m(SecBuf *s, X86Mem m);
+void x86_xabort(SecBuf *s, uint8_t imm8);
+void x86_xbegin_rel32(SecBuf *s, int32_t rel32); // fills 0; caller adds fixup
 
 // SSE / FP
 void x86_movsd_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src);

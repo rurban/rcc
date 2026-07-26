@@ -43,7 +43,32 @@ void secbuf_patch64le(SecBuf *s, size_t off, uint64_t v);
 #define SEC_FINI_ARRAY  5
 #define SEC_TDATA       6
 #define SEC_THREAD_VARS  7
-#define SEC_NUM         8 // number of sections
+#define SEC_NUM         8 // number of built-in sections; dynamic ones start here
+
+// ELF sh_flags bits needed to describe a dynamically-registered section
+// (shared with elf_write.c, which used to define its own private copies).
+#define SHF_WRITE     0x1
+#define SHF_ALLOC     0x2
+#define SHF_EXECINSTR 0x4
+#define SHF_MERGE     0x10
+#define SHF_STRINGS   0x20
+#define SHF_INFO_LINK 0x40
+#define SHF_TLS       0x400
+
+// A section registered at runtime by name (GAS `.section`/`.pushsection`
+// with a name rcc has no built-in slot for, e.g. the kernel's __ex_table,
+// .fixup, .altinstructions, ...). Indexed starting at SEC_NUM: section id
+// `SEC_NUM + i` is `obj->extra_secs[i]`.
+typedef struct ObjReloc ObjReloc; // full definition below
+typedef struct ExtraSection ExtraSection;
+struct ExtraSection {
+    char *name;
+    SecBuf buf;
+    ObjReloc *relocs;
+    int reloc_count, reloc_cap;
+    uint32_t sh_flags;
+    uint32_t sh_entsize; // 0 if none (GAS ".pushsection NAME, FLAGS, @TYPE, ENTSIZE")
+};
 
 // ---------------------------------------------------------------------------
 // Symbol table
@@ -114,6 +139,24 @@ struct ObjReloc {
 #define FIXUP_ABS64      2
 #define FIXUP_ARM64_B26  3
 #define FIXUP_ARM64_B19  4
+#define FIXUP_LABELDIFF  5 // patch = offset(label2) - offset(label); width in `size`
+#define FIXUP_SKIP_MAXDIFF 6 // insert max(0,(A-B)-(C-D)) fill bytes at patch_off
+#define FIXUP_PCREL_DATA 7 // ".long/.quad (label) - ." forward reference; width in `size`
+#define FIXUP_ALIGN      8 // deferred .balign/.align/.p2align: real GAS
+// sees final section offsets (multi-pass); this assembler is single-pass
+// plus deferred-shift for FIXUP_SKIP_MAXDIFF, so alignment computed
+// against a stale, pre-shift offset would insert the wrong pad amount —
+// deferred and resolved in the same chronological pass as skip-maxdiff.
+#define FIXUP_REL32_DEFERRED 9 // same-section FIXUP_REL32 whose target label
+// was already found (disambiguated) at define_label() time, but whose
+// *byte patch* must wait until after every FIXUP_ALIGN/FIXUP_SKIP_MAXDIFF
+// in the file has resolved: any of those still-pending .balign/.skip
+// insertions between this call/jmp site and its target shifts one but not
+// the other, changing their relative distance — a patch baked in eagerly
+// (this assembler's usual behavior for a same-section branch) can never
+// see that later shift. `size` holds the as->locals[] index of the
+// disambiguated target occurrence (itself correctly shifted in step with
+// every insertion, same as any other label), not a byte width.
 
 // ---------------------------------------------------------------------------
 // Win64 SEH unwind info (x86-64 only). Captured during codegen, emitted by
@@ -166,6 +209,13 @@ struct ObjFile {
     SecBuf data_tls; // .tdata — initialized TLS data
     size_t bss_size; // .bss is zero-initialized; just track its size
     SecBuf thread_vars; // __thread_vars — TLV descriptors
+
+    // Dynamically-registered sections (GAS .section/.pushsection with a
+    // name outside the built-in set above). Section id SEC_NUM+i.
+    ExtraSection *extra_secs;
+    int extra_sec_count;
+    int extra_sec_cap;
+
     ObjSym *syms;
     int sym_count;
     int sym_cap;
@@ -250,6 +300,22 @@ int objfile_find_sym(ObjFile *obj, const char *name);
 
 void objfile_add_reloc(ObjFile *obj, int section, uint64_t offset,
                        int sym_idx, uint32_t type, int64_t addend);
+
+// Shift every relocation in `section` with offset >= patch_off forward by
+// n bytes — a same-section .balign/.skip/ALTERNATIVE() insertion physically
+// moved those bytes; see obj.c's definition for the full rationale.
+void objfile_shift_relocs(ObjFile *obj, int section, uint64_t patch_off, int64_t n);
+
+// Look up a dynamically-registered section by name, creating it (with the
+// given sh_flags/sh_entsize) if it doesn't exist yet. Returns its section
+// id (>= SEC_NUM). sh_flags/sh_entsize are only applied on creation.
+int objfile_find_or_add_section(ObjFile *obj, const char *name,
+                                uint32_t sh_flags, uint32_t sh_entsize);
+
+// The growable byte buffer for any section id, built-in or dynamic.
+// Returns NULL for SEC_BSS (zero-initialized; track via obj->bss_size) and
+// SEC_UNDEF.
+SecBuf *objfile_section_buf(ObjFile *obj, int section);
 
 // Append a fresh zeroed Win64 unwind entry and return a pointer to it.
 UnwindEntry *objfile_add_unwind(ObjFile *obj);

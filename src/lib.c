@@ -256,6 +256,9 @@ int rcc_lib_compile_file_ex2(RCCLib *lib, const char *path,
     // CTFE optimization (default: on)
     optimize(prog);
 
+    // Not gated on optimization level: see main.c's identical call.
+    eliminate_unused_static_inline(prog);
+
     // Redirect stdout to assembly file (restored by caller)
     if (!freopen(lib->asm_path, "w", stdout)) {
         fprintf(stderr, "rcc_lib: cannot open %s\n", lib->asm_path);

@@ -315,6 +315,15 @@ void arm64_adc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
 void arm64_sbc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
     secbuf_emit32le(s, SF(sf) | 0x5a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
 }
+// ADCS/SBCS: same opcode as ADC/SBC with the S (flag-setting) bit — bit 29
+// — additionally set (0x1a000000|0x20000000 = 0x3a000000, 0x5a000000|
+// 0x20000000 = 0x7a000000).
+void arm64_adcs(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x3a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
+}
+void arm64_sbcs(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm) {
+    secbuf_emit32le(s, SF(sf) | 0x7a000000u | BITS(20, 16, rm) | BITS(9, 5, rn) | BITS(4, 0, rd));
+}
 
 // ---------------------------------------------------------------------------
 // PC-relative addressing
@@ -361,22 +370,34 @@ static uint32_t ldr_imm9(uint32_t opc, Arm64Reg rt, Arm64Reg rn, int32_t imm9, b
 void arm64_ldr_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bool pre) {
     secbuf_emit32le(s, ldr_imm9(sf ? 0xf8400000u : 0xb8400000u, rt, rn, imm9, pre));
 }
+// Plain "[rn, #imm9]" offset, no writeback (mode bits[11:10] = 00) — NOT
+// built through ldr_imm9(), whose bool "pre" parameter is overloaded: its
+// other callers (arm64_ldr_imm/arm64_str_imm, used only when the caller
+// has already established a genuinely pre- or post-indexed access) treat
+// "false" as meaning "post-indexed" (0x400), which every one of these
+// plain-offset functions was silently colliding with — "ldrb w0, [x1,
+// #-4]" (the negative-offset fallback the byte/half load/store dispatch
+// uses) came out encoded as "ldrb w0, [x1], #-4" instead: a real
+// writeback, silently corrupting x1 on every such access.
+static uint32_t ldr_imm9_plain(uint32_t opc, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
+    return opc | BITS(20, 12, (uint32_t)imm9 & 0x1ff) | BITS(9, 5, rn) | BITS(4, 0, rt);
+}
 void arm64_ldrb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    secbuf_emit32le(s, ldr_imm9(0x38400000u, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(0x38400000u, rt, rn, imm9));
 }
 void arm64_ldrh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    secbuf_emit32le(s, ldr_imm9(0x78400000u, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(0x78400000u, rt, rn, imm9));
 }
 void arm64_ldrsb(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
     uint32_t opc = sf ? 0x38800000u : 0x38c00000u;
-    secbuf_emit32le(s, ldr_imm9(opc, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(opc, rt, rn, imm9));
 }
 void arm64_ldrsh(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
     uint32_t opc = sf ? 0x78800000u : 0x78c00000u;
-    secbuf_emit32le(s, ldr_imm9(opc, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(opc, rt, rn, imm9));
 }
 void arm64_ldrsw_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    secbuf_emit32le(s, ldr_imm9(0xb8800000u, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(0xb8800000u, rt, rn, imm9));
 }
 void arm64_ldrsw_uoff(SecBuf *s, Arm64Reg rt, Arm64Reg rn, uint32_t uimm) {
     secbuf_emit32le(s, 0xb9800000u | BITS(21, 10, uimm) | BITS(9, 5, rn) | BITS(4, 0, rt));
@@ -385,10 +406,10 @@ void arm64_str_imm(SecBuf *s, int sf, Arm64Reg rt, Arm64Reg rn, int32_t imm9, bo
     secbuf_emit32le(s, ldr_imm9(sf ? 0xf8000000u : 0xb8000000u, rt, rn, imm9, pre));
 }
 void arm64_strb_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    secbuf_emit32le(s, ldr_imm9(0x38000000u, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(0x38000000u, rt, rn, imm9));
 }
 void arm64_strh_imm(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int32_t imm9) {
-    secbuf_emit32le(s, ldr_imm9(0x78000000u, rt, rn, imm9, false));
+    secbuf_emit32le(s, ldr_imm9_plain(0x78000000u, rt, rn, imm9));
 }
 
 // Unscaled (LDUR/STUR)

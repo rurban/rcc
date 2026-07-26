@@ -188,11 +188,27 @@ __attribute__((unused)) static void asm_fwd_patch_all(SecBuf *s, CgFwdList *head
     }
 }
 
+// Defined in codegen.c; needed here so asm_fixup_resolve() can emit a real
+// cross-section relocation for a %l[label] branch that turns out to
+// target a different section than the label itself.
+extern ObjFile *cg_obj;
+
 // Fixup hashtable: bucketed by label hash
 typedef struct AsmFixupNode {
     size_t instr_off;
     const char *label;
     int type; // 0=jmp rel32, 1=jcc rel32
+    SecBuf *sbuf; // target buffer if not the resolving label's own section
+    // (e.g. a %l[label] branch inside a .pushsection'd
+    // .altinstr_replacement, forward-referencing a C label
+    // that lives in .text) — NULL means "use whatever SecBuf
+    // the caller passes to asm_fixup_resolve", the common
+    // case where both the branch and the label are in .text.
+    int sec; // section index matching sbuf (only meaningful when sbuf is
+    // set) — a same-buffer byte patch can't express "target is in
+    // a different section", which needs a real ELF relocation
+    // instead; this is what lets asm_fixup_resolve tell the two
+    // cases apart (C-level labels are always defined in .text).
     struct AsmFixupNode *next;
 } AsmFixupNode;
 
@@ -204,15 +220,22 @@ static inline void asm_fixup_ht_reset(void) {
     asm_fixup_count = 0;
 }
 
-static inline void asm_fixup_ht_add(size_t instr_off, const char *label, int type) {
+static inline void asm_fixup_ht_add_sec2(size_t instr_off, const char *label, int type,
+                                         SecBuf *sbuf, int sec) {
     uint32_t h = cg_ht_hash(label);
     AsmFixupNode *n = arena_alloc(sizeof(AsmFixupNode));
     n->instr_off = instr_off;
     n->label = label;
     n->type = type;
+    n->sbuf = sbuf;
+    n->sec = sec;
     n->next = asm_fixup_htab[h];
     asm_fixup_htab[h] = n;
     asm_fixup_count++;
+}
+
+static inline void asm_fixup_ht_add(size_t instr_off, const char *label, int type) {
+    asm_fixup_ht_add_sec2(instr_off, label, type, NULL, SEC_TEXT);
 }
 
 // Record a pending branch fixup (forward reference)
@@ -259,8 +282,15 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
     while (*pp) {
         AsmFixupNode *n = *pp;
         if (strcmp(n->label, label) == 0) {
+            // The branch instruction being patched may live in a different
+            // section than the label just defined (e.g. a %l[label] branch
+            // inside a .pushsection'd .altinstr_replacement, forward-
+            // referencing a C label back in .text) — patch into n->sbuf
+            // when the fixup recorded one, not blindly into the caller's
+            // SecBuf (which always matches the *label's* section).
+            SecBuf *ts = n->sbuf ? n->sbuf : s;
 #ifdef ARCH_ARM64
-            uint32_t insn = *(uint32_t *)(s->data + n->instr_off);
+            uint32_t insn = *(uint32_t *)(ts->data + n->instr_off);
             int64_t delta = (int64_t)((int64_t)target_off - (int64_t)n->instr_off);
             if (n->type == 0) {
                 // B: 26-bit signed word offset in bits [25:0]
@@ -276,14 +306,32 @@ static inline void asm_fixup_resolve(SecBuf *s, const char *label, size_t target
                 int64_t imm = delta / 4;
                 insn = (insn & ~0x00FFFFE0U) | (uint32_t)((imm & 0x7FFFF) << 5);
             }
-            secbuf_patch32le(s, n->instr_off, insn);
+            secbuf_patch32le(ts, n->instr_off, insn);
 #else
-            int32_t disp;
-            if (n->type == 0)
-                disp = (int32_t)(target_off - (n->instr_off + 5));
-            else
-                disp = (int32_t)(target_off - (n->instr_off + 6));
-            secbuf_patch32le(s, n->type == 0 ? n->instr_off + 1 : n->instr_off + 2, (uint32_t)disp);
+            size_t field_off = n->type == 0 ? n->instr_off + 1 : n->instr_off + 2;
+            if (n->sbuf && n->sbuf != s) {
+                // Cross-section: the branch lives in a different section
+                // than the label just defined (e.g. a %l[label] jmp inside
+                // a .pushsection'd .altinstr_replacement, targeting a C
+                // label back in .text). target_off - instr_off would
+                // silently subtract two independent sections' offsets —
+                // meaningless, and previously baked in exactly that
+                // garbage value. Needs a real relocation instead, same
+                // convention as assemble_inline's own cross-section case
+                // (addend -4: the PC32 reference point is always 4 bytes
+                // past the start of the 4-byte displacement field itself,
+                // regardless of the opcode's own length before it).
+                int sidx = objfile_find_sym(cg_obj, label);
+                if (sidx >= 0)
+                    objfile_add_reloc(cg_obj, n->sec, field_off, sidx, R_X86_64_PC32, -4);
+            } else {
+                int32_t disp;
+                if (n->type == 0)
+                    disp = (int32_t)(target_off - (n->instr_off + 5));
+                else
+                    disp = (int32_t)(target_off - (n->instr_off + 6));
+                secbuf_patch32le(ts, field_off, (uint32_t)disp);
+            }
 #endif
             *pp = n->next;
             asm_fixup_count--;
@@ -559,11 +607,20 @@ static inline void asm_peep_try(void) {
     if (asm_last_count >= 3) {
         int h0 = (asm_last_idx - 3 + ASM_HISTORY) % ASM_HISTORY;
         AsmInsn *a0 = &asm_last[h0], *a1 = prv, *a2 = cur;
+        // Require byte-adjacency (a0,a1,a2 contiguous, same as Pattern 1's
+        // safety rule) AND that a2 is exactly the buffer's current tail —
+        // i.e. nothing was emitted after a2 that this fold would need to
+        // preserve. Without these checks a stale/non-adjacent a0 could put
+        // `tail` past cg_sec->len, underflowing the (unsigned) byte count
+        // below into a huge value and reading/moving far past the buffer.
         if ((a0->op == ASM_MOV_LOAD || a0->op == ASM_MOV_RRBP) &&
             (a1->op >= ASM_ADD_RR && a1->op <= ASM_XOR_RR) &&
             a2->op == ASM_MOV_RR &&
             a1->rs == a2->rs && a0->rd == a1->rd && a0->rd == a2->rs &&
-            a2->rd != a0->rd) {
+            a2->rd != a0->rd &&
+            a1->offset == a0->offset + a0->count &&
+            a2->offset == a1->offset + a1->count &&
+            a2->offset + a2->count == cg_sec->len) {
             cg_sec->len = a0->offset;
             if (a0->op == ASM_MOV_LOAD)
                 x86_mov_rm(cg_sec, a0->size, a2->rd, x86_mem(a0->rs, a0->off));
@@ -577,10 +634,9 @@ static inline void asm_peep_try(void) {
             case ASM_XOR_RR: x86_xor_rr(cg_sec, a1->size, a2->rd, a1->rs); break;
             default: break;
             }
-            size_t tail = a2->offset + a2->count;
-            memmove(cg_sec->data + cg_sec->len, cg_sec->data + tail,
-                    cg_sec->len - tail + a0->offset);
-            cg_sec->len -= (tail - cg_sec->len);
+            // a2 was confirmed to be the buffer's tail above, so the
+            // freshly emitted (shorter) replacement is already the new
+            // tail — no trailing bytes to shift down.
             peep_pend_op = ASM_NONE;
             return;
         }
@@ -3603,67 +3659,6 @@ static inline void asm_negq_mem8(SecBuf *s, VReg rd) {
     X86Mem m = {REG(rd), X86_NOREG, 1, 8};
     x86_neg_m(s, 8, m); // negq 8(rd)
 }
-// ============================================================================
-// x86_64: adc / sbb from memory  (these don't exist in x86_enc.h yet)
-// ============================================================================
-__attribute__((unused)) static void x86_adc_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
-    // ADC r/m, r: opcode 13 /r
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
-    secbuf_emit8(s, 0x13);
-    uint8_t modrm;
-    if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {
-        modrm = ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (srcm.disp >= -128 && srcm.disp < 128) {
-        modrm = 0x40 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)srcm.disp);
-    } else {
-        modrm = 0x80 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)srcm.disp);
-    }
-}
-__attribute__((unused)) static void x86_sbb_rm(SecBuf *s, int size, X86Reg dst, X86Mem srcm) {
-    // SBB r/m, r: opcode 1B /r
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dst & 8) ? 0x04 : 0) | ((srcm.base & 8) ? 0x01 : 0) | ((srcm.index >= 0 && (srcm.index & 8)) ? 0x02 : 0));
-    secbuf_emit8(s, 0x1B);
-    uint8_t modrm;
-    if (srcm.disp == 0 && (srcm.base & 7) != X86_RBP) {
-        modrm = ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (srcm.disp >= -128 && srcm.disp < 128) {
-        modrm = 0x40 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)srcm.disp);
-    } else {
-        modrm = 0x80 | ((dst & 7) << 3) | (srcm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)srcm.disp);
-    }
-}
-__attribute__((unused)) static void x86_adc_mi(SecBuf *s, int size, X86Mem dstm, int32_t imm) {
-    // ADC r/m, imm: opcode 83 /2 ib (for 8-bit sign-extended imm)
-    uint8_t rex = (size == 8) ? 0x48 : 0x00;
-    secbuf_emit8(s, rex | ((dstm.base & 8) ? 0x01 : 0) | ((dstm.index & 8) ? 0x02 : 0));
-    secbuf_emit8(s, 0x83);
-    uint8_t modrm = 0x10; // /2 = reg=2 (010)
-    if (dstm.disp == 0 && (dstm.base & 7) != X86_RBP) {
-        modrm |= (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-    } else if (dstm.disp >= -128 && dstm.disp < 128) {
-        modrm |= 0x40 | (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit8(s, (uint8_t)(int8_t)dstm.disp);
-    } else {
-        modrm |= 0x80 | (dstm.base & 7);
-        secbuf_emit8(s, modrm);
-        secbuf_emit32le(s, (uint32_t)dstm.disp);
-    }
-    secbuf_emit8(s, (uint8_t)imm);
-}
 __attribute__((unused)) static void asm_mov_base_off_rdx(SecBuf *s, VReg base, int64_t disp) {
     X86Mem m = {REG(base), X86_NOREG, 1, disp};
     x86_mov_rm(s, 8, X86_RDX, m); // movq disp(base), %rdx
@@ -4031,6 +4026,21 @@ __attribute__((unused)) static void asm_umov_s_lane(SecBuf *s, Arm64Reg wd, Arm6
 #endif // ARCH_ARM64
 #endif
 
+
+// .ascii string collector for -S mode (kernel offsets parsing)
+typedef struct CgAsciiStr CgAsciiStr;
+struct CgAsciiStr {
+    CgAsciiStr *next;
+    char *str;
+};
+extern CgAsciiStr *cg_ascii_strings;
+static inline void cg_ascii_add(const char *s) {
+    CgAsciiStr *a = arena_alloc(sizeof(CgAsciiStr));
+    a->str = arena_alloc(strlen(s) + 1);
+    strcpy(a->str, s);
+    a->next = cg_ascii_strings;
+    cg_ascii_strings = a;
+}
 
 // codegen exports (used by cg_builtins.c)
 extern VReg alloc_reg(void);

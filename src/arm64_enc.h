@@ -174,6 +174,8 @@ void arm64_cset(SecBuf *s, int sf, Arm64Reg rd, Arm64Cond cond);
 void arm64_cneg(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Cond cond);
 void arm64_adc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 void arm64_sbc(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_adcs(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
+void arm64_sbcs(SecBuf *s, int sf, Arm64Reg rd, Arm64Reg rn, Arm64Reg rm);
 
 // ---------------------------------------------------------------------------
 // PC-relative addressing

@@ -42,6 +42,7 @@ static Macro *macro_htab[MACRO_HT_SIZE];
 
 static char *kw_line;
 static char *kw_file;
+static char *kw_base_file;
 static char *kw_counter;
 static char *kw_function;
 static char *kw_func;
@@ -58,6 +59,13 @@ static char *kw_false;
 static char *dn_define, *dn_undef, *dn_include, *dn_line, *dn_error, *dn_warning;
 static char *dn_if, *dn_ifdef, *dn_ifndef, *dn_elif, *dn_elifdef, *dn_elifndef;
 static char *dn_else, *dn_endif, *dn_pragma;
+
+// Forward declaration: a conditional-compilation directive (#ifdef/#else/
+// #endif/...) is a GNU extension when it appears in the middle of a
+// function-like macro's argument list (e.g. the kernel's struct_group()
+// wrapping members behind #ifdef CONFIG_FOO). The macro-argument collector
+// needs to process it in place rather than giving up on the whole call.
+static void do_directive(void);
 
 static uint32_t macro_hash(const char *name) {
     uint64_t v = (uint64_t)(uintptr_t)name;
@@ -91,6 +99,36 @@ struct CondIncl {
     bool parent_active, active, branch_taken;
 };
 
+// Dependency file tracking (for -Wp,-MMD)
+typedef struct DepEntry DepEntry;
+struct DepEntry {
+    DepEntry *next;
+    char *path;
+};
+static DepEntry *dep_files;
+static void dep_add(const char *path) {
+    for (DepEntry *d = dep_files; d; d = d->next)
+        if (!strcmp(d->path, path)) return;
+    DepEntry *d = arena_alloc(sizeof(DepEntry));
+    d->path = (char *)path;
+    d->next = dep_files;
+    dep_files = d;
+}
+
+// Pre-include files (-include <file>)
+static const char *preinclude_list[64];
+static int nb_preinclude = 0;
+void add_preinclude(const char *path) {
+    if (nb_preinclude < 64)
+        preinclude_list[nb_preinclude++] = path;
+}
+
+// Macro prefix map for diagnostics
+void add_prefix_map(const char *old, const char *new_str) {
+    opt_prefix_map_old = old;
+    opt_prefix_map_new = new_str;
+}
+
 typedef struct MacroStack MacroStack;
 struct MacroStack {
     MacroStack *next;
@@ -107,6 +145,12 @@ static OnceFile *once_files;
 static int pp_counter;
 static int pp_cur_line;
 static char *pp_cur_file;
+// __BASE_FILE__: the main input file's name, unlike __FILE__/pp_cur_file
+// which tracks whichever file is *currently* being read (changes across
+// #include). Set once per preprocess() call, from the top-level source,
+// never touched again — including while inside a pre-include file pushed
+// on top of it (see preprocess()'s push_level() call order).
+static char *pp_base_file;
 static Macro *cmdline_macros;
 static Macro *saved_macros;
 static MacroStack *macro_stack;
@@ -484,6 +528,25 @@ void add_undef(char *name) {
             return;
         }
 }
+
+// Remove a single #define previously added via add_define(), by name, from
+// the persistent cmdline_macros seed list itself (add_undef() only touches
+// the transient per-file `macros` table preprocess() rebuilds from that
+// seed at the start of each call, so it can't undo a cmdline_macros entry
+// for files processed *afterward*). Used to scope a synthetic compiler-
+// internal macro (__ASSEMBLER__, predefined only while processing one
+// particular .S/.s input, mirroring what every other C preprocessor does
+// automatically for assembly-with-cpp mode) to just that one file in a
+// multi-file compile, without touching any real -D the user passed.
+void remove_cmdline_define(const char *name) {
+    char *iname = str_intern(name, strlen(name));
+    Macro **prev = &cmdline_macros;
+    for (Macro *m = cmdline_macros; m; prev = &m->next, m = m->next)
+        if (m->name == iname) {
+            *prev = m->next;
+            return;
+        }
+}
 static bool is_once_file(char *path) {
     for (OnceFile *f = once_files; f; f = f->next)
         if (f->path == path) return true;
@@ -525,9 +588,11 @@ static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
         path = path_join(user_include_paths[i], spec);
         if (file_exists(path)) return canonical_path(path);
     }
-    for (int i = 0; sys_include_paths[i]; i++) {
-        path = path_join(sys_include_paths[i], spec);
-        if (file_exists(path)) return canonical_path(path);
+    if (!opt_nostdinc) {
+        for (int i = 0; sys_include_paths[i]; i++) {
+            path = path_join(sys_include_paths[i], spec);
+            if (file_exists(path)) return canonical_path(path);
+        }
     }
     if (file_exists(spec)) return canonical_path(spec);
     return NULL;
@@ -827,6 +892,14 @@ struct Frame {
     bool stamp;
     char *exp_file;
     int exp_line;
+    // True when the object-like macro invocation this frame expands had no
+    // source whitespace before the token that follows it in the enclosing
+    // scan (see expand_token()'s object-like branch). frame_pull() stamps
+    // this onto the copy of the frame's *last* body token so a later
+    // #-stringize sees the expansion's result as tight against whatever
+    // comes next, matching the adjacency of the pre-expansion macro name -
+    // not the body token's own unrelated position in the #define line.
+    bool tight_after;
 };
 typedef struct TNode TNode;
 struct TNode {
@@ -868,6 +941,7 @@ static void push_expansion(Token *list, Macro *mac, Token *site) {
         frames->exp_line = site->lineno;
     }
 }
+static bool str_needs_space(Token *a, Token *b);
 static Token *frame_pull(void) {
     while (frames != frame_floor) {
         Frame *top = frames;
@@ -884,6 +958,19 @@ static Token *frame_pull(void) {
             c->filename = top->exp_file;
             c->lineno = top->exp_line;
         }
+        // Preserve "no source whitespace before the next sibling token"
+        // across this pull: if `t` is itself about to be macro-expanded
+        // (see expand_token()'s object-like branch), the expansion's own
+        // buffer-pointer adjacency to whatever follows is lost - a plain
+        // token comparison can no longer see it, so stash the fact here
+        // while `t->next` still points at the real sibling.
+        if (t->next && !str_needs_space(t, t->next))
+            c->no_space_after = true;
+        // If this is the frame's last body token and the frame itself was
+        // pushed while its invocation was tight against what follows it,
+        // that tightness carries onto this last token's own copy too.
+        if (top->tight_after && (!t->next || t->next->kind == TK_EOF))
+            c->no_space_after = true;
         return c;
     }
     return NULL;
@@ -981,58 +1068,125 @@ static Token *pop_tail(Token **head, Token **tail) {
 // buffer; otherwise (synthesized tokens) default to a separating space.
 static bool str_needs_space(Token *a, Token *b) {
     if (!a || !b) return false;
+    if (a->no_space_after) return false;
     if (!a->ptr || !b->ptr) return true;
     int al; // spelling length is the source span (t->val for strings, not t->len)
     tok_spelling(a, &al);
     return a->ptr + al != b->ptr;
 }
-static char *stringize_list(Token *list) {
-    int total = 1;
+// #-stringize per C99 6.10.3.2: concatenate argument token spellings (one
+// space where the source had whitespace between two tokens, none where
+// they were adjacent), then wrap in quotes. The standard's escaping rule
+// is narrow — "a \ character is inserted before each \" and \\ character
+// of a character constant or string literal (including the delimiting \"
+// characters)" — i.e. only backslash/quote bytes that are part of a
+// *nested* string or char literal among the argument tokens get doubled.
+// A bare '\' from an ordinary token must come through unescaped: GAS's
+// own "\param" macro-parameter syntax is exactly this case (e.g.
+// nospec-branch.h's __stringify(__FILL_RETURN_BUFFER(\reg,\nr)), used to
+// build a run of instruction text as a macro argument) — real cpp
+// stringifies it to "...\reg...\nr..." (single backslash), and the
+// assembler's own macro-argument dequoting (strip_arg_quotes() in asm.c)
+// only strips the surrounding quotes, it never undoes C-style escapes.
+// Blanket-escaping every backslash here would silently corrupt every
+// such GAS-macro-parameter reference into "\<value>" prefixed with a
+// stray literal backslash once substituted into the macro body.
+//
+// `*out_raw`/`*out_rawlen` receive the token's semantic *decoded* value —
+// the same content this function returned before this rule was applied —
+// for the synthesized token's ->str/->len; the return value is the fully
+// quoted *spelling* (starting with '"', ending with '"') for ->ptr/->val.
+static char *stringize_build(Token *list, char **out_raw, int *out_rawlen) {
+    int total = 3;
     for (Token *t = list; t && t->kind != TK_EOF; t = t->next) {
         int sl;
         tok_spelling(t, &sl);
-        total += sl + 1;
+        total += (t->kind == TK_STR) ? sl * 2 : sl;
+        total += 1;
     }
-    char *buf = arena_alloc(total);
-    int n = 0;
+    char *raw = arena_alloc(total);
+    char *sp_out = arena_alloc(total);
+    int rn = 0, sn = 0;
+    sp_out[sn++] = '"';
     Token *prev = NULL;
     for (Token *t = list; t && t->kind != TK_EOF; t = t->next) {
         int sl;
         char *sp = tok_spelling(t, &sl);
-        if (prev && str_needs_space(prev, t)) buf[n++] = ' ';
-        memcpy(buf + n, sp, sl);
-        n += sl;
+        if (prev && str_needs_space(prev, t)) {
+            raw[rn++] = ' ';
+            sp_out[sn++] = ' ';
+        }
+        memcpy(raw + rn, sp, sl);
+        rn += sl;
+        if (t->kind == TK_STR) {
+            for (int i = 0; i < sl; i++) {
+                if (sp[i] == '"' || sp[i] == '\\') sp_out[sn++] = '\\';
+                sp_out[sn++] = sp[i];
+            }
+        } else {
+            memcpy(sp_out + sn, sp, sl);
+            sn += sl;
+        }
         prev = t;
     }
-    buf[n] = '\0';
-    return buf;
+    raw[rn] = '\0';
+    sp_out[sn++] = '"';
+    sp_out[sn] = '\0';
+    *out_raw = raw;
+    *out_rawlen = rn;
+    return sp_out;
 }
-static char *stringize_va(Macro *m, Token **args, int argc) {
-    int start = va_slot(m), total = 1;
+static char *stringize_list(Token *list, char **out_raw, int *out_rawlen) {
+    return stringize_build(list, out_raw, out_rawlen);
+}
+static char *stringize_va(Macro *m, Token **args, int argc, char **out_raw, int *out_rawlen) {
+    int start = va_slot(m), total = 3;
     for (int i = start; i < argc; i++) {
         for (Token *t = args[i]; t && t->kind != TK_EOF; t = t->next) {
             int sl;
             tok_spelling(t, &sl);
-            total += sl + 1;
+            total += (t->kind == TK_STR) ? sl * 2 : sl;
+            total += 1;
         }
         total += 1;
     }
-    char *buf = arena_alloc(total);
-    int n = 0;
+    char *raw = arena_alloc(total);
+    char *sp_out = arena_alloc(total);
+    int rn = 0, sn = 0;
+    sp_out[sn++] = '"';
     for (int i = start; i < argc; i++) {
-        if (i > start) buf[n++] = ',';
+        if (i > start) {
+            raw[rn++] = ',';
+            sp_out[sn++] = ',';
+        }
         Token *prev = NULL;
         for (Token *t = args[i]; t && t->kind != TK_EOF; t = t->next) {
             int sl;
             char *sp = tok_spelling(t, &sl);
-            if (prev && str_needs_space(prev, t)) buf[n++] = ' ';
-            memcpy(buf + n, sp, sl);
-            n += sl;
+            if (prev && str_needs_space(prev, t)) {
+                raw[rn++] = ' ';
+                sp_out[sn++] = ' ';
+            }
+            memcpy(raw + rn, sp, sl);
+            rn += sl;
+            if (t->kind == TK_STR) {
+                for (int k = 0; k < sl; k++) {
+                    if (sp[k] == '"' || sp[k] == '\\') sp_out[sn++] = '\\';
+                    sp_out[sn++] = sp[k];
+                }
+            } else {
+                memcpy(sp_out + sn, sp, sl);
+                sn += sl;
+            }
             prev = t;
         }
     }
-    buf[n] = '\0';
-    return buf;
+    raw[rn] = '\0';
+    sp_out[sn++] = '"';
+    sp_out[sn] = '\0';
+    *out_raw = raw;
+    *out_rawlen = rn;
+    return sp_out;
 }
 static void splice_va(Token **head, Token **tail, Macro *m, Token **args, int argc, Token *site) {
     int start = va_slot(m);
@@ -1056,7 +1210,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         int is_hashhash = b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#';
         if (is_hashhash && b->next && b->next != end && b->next->kind != TK_EOF) {
             Token *n = b->next;
-            if (m->is_variadic && n && n != end && n->kind == TK_IDENT && n->name == kw_va_args &&
+            if (m->is_variadic && n && n != end && n->kind == TK_IDENT && param_or_va(m, n->name) == vs &&
                 va_empty && rtail && ptok(rtail, ",")) {
                 pop_tail(&rhead, &rtail);
                 b = n;
@@ -1065,10 +1219,13 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             Token *xhead = NULL, *xtail = NULL;
             if (n && n != end && n->kind != TK_EOF && n->kind == TK_IDENT) {
                 int idx = param_or_va(m, n->name);
-                if (idx >= 0 && idx < argc) {
-                    if (m->is_variadic && idx == vs) splice_va(&xhead, &xtail, m, raw_args, argc, n);
-                    else
-                        splice_tokens(&xhead, &xtail, raw_args[idx]);
+                if (m->is_variadic && idx == vs) {
+                    // Variadic slot: splice_va handles argc <= vs (no
+                    // trailing args supplied at all) by producing nothing,
+                    // same as an explicitly empty variadic argument.
+                    splice_va(&xhead, &xtail, m, raw_args, argc, n);
+                } else if (idx >= 0 && idx < argc) {
+                    splice_tokens(&xhead, &xtail, raw_args[idx]);
                 } else
                     append_one(&xhead, &xtail, n);
                 b = n;
@@ -1090,6 +1247,31 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             memcpy(pasted + l1, s2, l2);
             pasted[l1 + l2] = '\0';
             Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
+            // pt's spelling lives in a freshly lexed buffer, so the normal
+            // pointer-adjacency check in str_needs_space() can never see it
+            // as touching whatever follows — even when the macro body had
+            // zero whitespace between the ## operator's rhs operand and the
+            // next body token (e.g. "__export_symbol_##sym:"). Recover that
+            // from the pre-substitution body tokens (n, n->next) so a later
+            // #-stringize of this expansion keeps them adjacent too.
+            //
+            // When xhead (the ## rhs operand, post-argument-prescan)
+            // expanded to *more than one* token — e.g. CONCATENATE(defs_,
+            // _PT_FMT_H) where _PT_FMT_H is itself "PT_FMT.h" and PT_FMT
+            // further expands to a single token, leaving xhead as
+            // [x86_64, ., h] — the tightness that matters isn't `n`'s
+            // (the pre-expansion "_PT_FMT_H" placeholder)'s own body
+            // adjacency, it's whether xhead's *first* token was tight
+            // against xhead->next in its own expansion. That's exactly
+            // what xhead->no_space_after already records (set when PT_FMT
+            // itself was expanded, via frame_pull()'s tight_after
+            // propagation) — inherit it onto the pasted token instead of
+            // defaulting to "needs a space" and splicing e.g. "defs_x86_64"
+            // + " " + ".h" back together as a __stringify()'d filename.
+            if (xhead->next)
+                pt->no_space_after = xhead->no_space_after;
+            else if (n->next && !str_needs_space(n, n->next))
+                pt->no_space_after = true;
             splice_tokens(&rhead, &rtail, pt);
             splice_tokens(&rhead, &rtail, xhead->next);
             continue;
@@ -1099,8 +1281,20 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             if (n && n != end && n->kind != TK_EOF && n->kind == TK_IDENT) {
                 int idx = param_or_va(m, n->name);
                 if (idx >= 0) {
-                    char *s = (m->is_variadic && idx == vs) ? stringize_va(m, args, argc) : (idx < argc ? stringize_list(raw_args[idx]) : "");
-                    Token *st = syn_str(s, strlen(s), b);
+                    char *raw;
+                    int rawlen;
+                    char *spelling = (m->is_variadic && idx == vs)
+                        ? stringize_va(m, args, argc, &raw, &rawlen)
+                        : (idx < argc ? stringize_list(raw_args[idx], &raw, &rawlen) : (raw = "", rawlen = 0, "\"\""));
+                    Token *st = arena_alloc(sizeof(Token));
+                    st->kind = TK_STR;
+                    st->kw = ID_NONE;
+                    st->str = str_intern(raw, rawlen);
+                    st->len = rawlen;
+                    st->ptr = spelling;
+                    st->val = (int)strlen(spelling);
+                    st->filename = b->filename;
+                    st->lineno = b->lineno;
                     st->next = NULL;
                     if (rtail) rtail->next = st;
                     else
@@ -1146,11 +1340,45 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 continue;
             }
             int idx = find_param_index(m, bn);
+            if (m->is_variadic && idx == vs) {
+                // Named GNU variadic param (`args...`) with no trailing
+                // arguments supplied: splice_va yields nothing, same as
+                // literal __VA_ARGS__ above.
+                splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << idx)) ? raw_args : args, argc, b);
+                continue;
+            }
             if (idx >= 0 && idx < argc) {
-                if (m->is_variadic && idx == vs)
-                    splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << idx)) ? raw_args : args, argc, b);
-                else
-                    splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
+                // The substituted argument's spelling lives in whatever
+                // buffer the call site's actual argument came from, so the
+                // normal pointer-adjacency check (str_needs_space(), and
+                // pp_tokens_to_text()'s own copy of the same idea) can never
+                // see it as touching whatever body token follows — even
+                // when the macro body itself had zero whitespace between
+                // the parameter and the next token (e.g. linkage.h's
+                // "name:" in "SYM_ENTRY(name, ...) ... name:", a label built
+                // from a macro parameter). Recover that from the
+                // pre-substitution body tokens (b, b->next), same trick
+                // already used above for explicit "##" pastes.
+                // The spliced-in argument tokens may already carry a
+                // no_space_after flag set by a *different*, unrelated
+                // adjacency check from an earlier expansion layer (e.g.
+                // SYM_FUNC_END(name) substitutes name -> "write_ibpb" and
+                // correctly marks it "no space before the following comma"
+                // in SYM_END(name, SYM_T_FUNC); that same "write_ibpb"
+                // token is then reused, via copy_token(), as SYM_END's own
+                // *own* `name` argument in ".type name sym_type" - where a
+                // real space follows. Left alone, the stale flag from the
+                // first expansion survives into the second and makes
+                // pp_tokens_to_text() glue "write_ibpb" straight onto
+                // "sym_type"/"STT_FUNC" with no separator at all.
+                // Recompute it fresh from *this* body position every time,
+                // instead of only ever setting it true and never clearing
+                // a leftover true from the argument's own prior life.
+                Token *before = rtail;
+                splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
+                if (rtail && rtail != before)
+                    rtail->no_space_after = b->next && b->next != end &&
+                        b->next->kind != TK_EOF && !str_needs_space(b, b->next);
                 continue;
             }
             append_one(&rhead, &rtail, b);
@@ -1158,6 +1386,15 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         }
         Token *c = copy_token(b);
         c->next = NULL;
+        // A plain (non-parameter, non-#/## ) body token directly adjacent
+        // to the *next* body token (e.g. "/" before "system" in
+        // "TRACE_INCLUDE_PATH/system.h") needs this recorded explicitly:
+        // if that next token is itself a substituted parameter, its
+        // replacement's spelling lives in a different buffer, so the
+        // ordinary pointer-adjacency check in str_needs_space() can never
+        // see `c` as touching it.
+        c->no_space_after = b->next && b->next != end &&
+            b->next->kind != TK_EOF && !str_needs_space(b, b->next);
         if (rtail) rtail->next = c;
         else
             rhead = c;
@@ -1165,6 +1402,18 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
     }
     return rhead;
 }
+// Actual-argument capacity for a function-like macro call. Grows
+// dynamically (doubling) instead of using a small fixed cap: variadic
+// wrapper macros like the kernel's "#define PARAMS(args...) args" are
+// invoked with however many comma-separated tokens the caller's own
+// expanded arguments happen to contain (e.g. TRACE_EVENT's PARAMS(proto)
+// after proto's own TP_PROTO(...) has argument-prescan-expanded into a
+// bare list, or a __print_symbolic() table of "{ CODE, "name" }" entries
+// whose embedded commas each split into their own argument - the kernel's
+// show_nfs4_status() alone has ~150 such entries, ~300 arguments), easily
+// exceeding a fixed cap even though the macro itself takes "any number of
+// args".
+#define INITIAL_CALL_ARGS 64
 static void expand_token(Token *t) {
     if (!t || t->kind != TK_IDENT) {
         out_append(t);
@@ -1181,6 +1430,13 @@ static void expand_token(Token *t) {
     }
     if (name == kw_file) {
         char *fn = pp_cur_file ? pp_cur_file : (t->filename ? t->filename : "");
+        out_append(syn_str(fn, strlen(fn), t));
+        return;
+    }
+    if (name == kw_base_file) {
+        // Always the top-level main input file, unlike __FILE__ which
+        // tracks whatever file is currently being read (see pp_base_file).
+        char *fn = pp_base_file ? pp_base_file : (t->filename ? t->filename : "");
         out_append(syn_str(fn, strlen(fn), t));
         return;
     }
@@ -1232,6 +1488,15 @@ static void expand_token(Token *t) {
         }
         m->disabled = true;
         push_expansion(m->body, m, t);
+        // The macro name `t` may have been immediately followed (no source
+        // whitespace) by the next token in the enclosing scan, e.g.
+        // "TRACE_INCLUDE_PATH/system.h" in the kernel's define_trace.h.
+        // Stringizing the expansion result must see that same tightness
+        // between the *replacement* and that following token, not fall
+        // back to "needs space" just because the replacement's tokens live
+        // in the #define line's own buffer (see frame_pull()).
+        if (t->no_space_after || (t->next && t->next->kind != TK_EOF && !str_needs_space(t, t->next)))
+            frames->tight_after = true;
         return;
     }
     Token *lp = xp_next();
@@ -1245,13 +1510,24 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    Token *args[32] = {}, *tails[32] = {};
+    int args_cap = INITIAL_CALL_ARGS;
+    Token **args = calloc(args_cap, sizeof(Token *)), **tails = calloc(args_cap, sizeof(Token *));
     int argc = 0, depth = 1;
     bool any = false;
     Token *rp = NULL;
     for (;;) {
         Token *x = xp_next();
-        if (x == &mark_eof || x == &mark_directive) {
+        if (x == &mark_directive) {
+            // GNU extension: a conditional-compilation directive is allowed
+            // in the middle of a function-like macro call's argument list
+            // (e.g. the kernel's struct_group(NAME, ...#ifdef CONFIG_X...)).
+            // Process it in place — it only flips pp_active()/lvl->conds
+            // state — then keep collecting arguments across it, instead of
+            // giving up on the whole invocation as if it were never called.
+            do_directive();
+            continue;
+        }
+        if (x == &mark_eof) {
             xp_unget(x);
             int filled = argc + (any ? 1 : 0);
             Token *replay = NULL, *reptail = NULL;
@@ -1280,6 +1556,8 @@ static void expand_token(Token *t) {
             }
             xp_unget(lp);
             out_append(t);
+            free(args);
+            free(tails);
             return;
         }
         if (ptok(x, "(")) depth++;
@@ -1289,19 +1567,24 @@ static void expand_token(Token *t) {
                 break;
             }
         } else if (ptok(x, ",") && depth == 1) {
-            if (argc >= 32) error("too many macro arguments");
             argc++;
+            if (argc >= args_cap) {
+                int new_cap = args_cap * 2;
+                args = realloc(args, sizeof(Token *) * new_cap);
+                tails = realloc(tails, sizeof(Token *) * new_cap);
+                memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+                memset(tails + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+                args_cap = new_cap;
+            }
             any = false;
             continue;
         }
-        if (argc < 32) {
-            x->next = NULL;
-            if (tails[argc]) tails[argc]->next = x;
-            else
-                args[argc] = x;
-            tails[argc] = x;
-            any = true;
-        }
+        x->next = NULL;
+        if (tails[argc]) tails[argc]->next = x;
+        else
+            args[argc] = x;
+        tails[argc] = x;
+        any = true;
     }
     if (any || argc > 0) argc++;
     if (!m->is_variadic && argc > m->param_len) {
@@ -1312,20 +1595,36 @@ static void expand_token(Token *t) {
             splice_tokens(&xout_head, &xout_tail, args[i]);
         }
         out_append(rp);
+        free(args);
+        free(tails);
         return;
     }
+    if (m->param_len > args_cap) {
+        int new_cap = m->param_len;
+        args = realloc(args, sizeof(Token *) * new_cap);
+        memset(args + args_cap, 0, sizeof(Token *) * (new_cap - args_cap));
+        args_cap = new_cap;
+    }
     while (argc < m->param_len) args[argc++] = NULL;
-    Token *exp_args[32] = {};
-    Token *args_copy[32] = {};
+    int nargs = argc > 0 ? argc : 1;
+    Token **exp_args = calloc(nargs, sizeof(Token *)), **args_copy = calloc(nargs, sizeof(Token *));
     for (int i = 0; i < argc; i++) {
         Token *h = NULL, *t_ = NULL;
         splice_tokens(&h, &t_, args[i]);
         args_copy[i] = h;
     }
-    for (int i = 0; i < argc; i++) exp_args[i] = (m->hh_mask & (1u << i)) ? args_copy[i] : expand_list(args_copy[i]);
+    // hh_mask bits only correspond to formal (#define-side) parameter
+    // positions, which are capped at 32; guard i < 32 so an actual argument
+    // index beyond that (only possible for a variadic call) can't alias
+    // into a low bit via an out-of-range shift.
+    for (int i = 0; i < argc; i++) exp_args[i] = (i < 32 && (m->hh_mask & (1u << i))) ? args_copy[i] : expand_list(args_copy[i]);
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
     m->disabled = true;
     push_expansion(subst, m, t);
+    free(args);
+    free(tails);
+    free(exp_args);
+    free(args_copy);
 }
 
 // ============================================================
@@ -1510,6 +1809,18 @@ static int64_t eval_primary_tok(Token **pp) {
     if (ptok(t, "-")) {
         t = t->next;
         int64_t val = -eval_primary_tok(&t);
+        *pp = t;
+        return val;
+    }
+    if (ptok(t, "~")) {
+        t = t->next;
+        int64_t val = ~eval_primary_tok(&t);
+        *pp = t;
+        return val;
+    }
+    if (ptok(t, "+")) {
+        t = t->next;
+        int64_t val = eval_primary_tok(&t);
         *pp = t;
         return val;
     }
@@ -1709,7 +2020,16 @@ static Token *collect_directive_tokens(char *p, int *pln, Token **name_out) {
     for (;;) {
         Token *t = lex_one(&p, pln);
         if (!t) break;
-        if (t->kind == TK_NL || t->kind == TK_CNL) {
+        if (t->kind == TK_CNL) {
+            // Newline embedded in a still-open /* */ comment: per the
+            // standard's phase ordering, comments (including any newlines
+            // inside them) are removed before directive lines are
+            // delimited, so this must NOT end the directive - only a real
+            // TK_NL does. Still advance the line counter for diagnostics.
+            advance_line();
+            continue;
+        }
+        if (t->kind == TK_NL) {
             advance_line();
             break;
         }
@@ -1866,6 +2186,7 @@ static void do_directive(void) {
             exit(1);
         }
         push_level(inc_fpath, inc_fpath, contents);
+        dep_add(inc_fpath);
         return;
     }
     if (dn == dn_line) {
@@ -1956,6 +2277,16 @@ static void do_directive(void) {
             } else if (p && p->kind == TK_NUM && p->ptr[0] >= '1' && p->ptr[0] <= '9') {
                 pack_align = p->ptr[0] - '0';
                 emit_pragma_marker("pack", pack_align, true, p);
+            } else {
+                // Bare `#pragma pack()` (no push/pop/number, e.g. every
+                // ACPI table header's pack(1) ... pack() pair) or an
+                // explicit `#pragma pack(0)`: both reset to the compiler's
+                // default alignment. Falling through here silently (the
+                // previous behavior) never reset pack_align, leaking the
+                // most recent pack(N) into every struct declared for the
+                // rest of the translation unit.
+                pack_align = 0;
+                emit_pragma_marker("pack", pack_align, true, p);
             }
             return;
         }
@@ -1996,6 +2327,41 @@ static bool can_concat_strings(Token *a, Token *b) {
     // Like L"a" "b" -> L"ab": an unprefixed literal adopts the other's prefix.
     return pa == pb || pa == 0 || pb == 0;
 }
+// Rebuild a re-parseable quoted spelling from decoded string-literal bytes.
+// concat_strings() merges the *decoded* content of adjacent string tokens
+// (e.g. ".ascii ns \"\\0\"" with an empty ns decodes "\0" to one raw NUL
+// byte), and the merged token's ->ptr/->val become the only text that ever
+// reaches -E output or the assembler re-lex — tok_spelling() prefers ->ptr
+// verbatim once it's set (see below), it never falls back to re-encoding
+// ->str. Any decoded byte equal to the lexer's two loop-termination
+// sentinels (see the `while (*p && *p != '"' && *p != '\n')` string scan)
+// MUST come back out escaped, or the string looks unterminated the moment
+// this text is re-lexed: a raw NUL reads as "past end of buffer" and a raw
+// newline reads as "unterminated line". `"` and `\` still need their usual
+// escaping to stay inside the quotes as literal content.
+static char *build_quoted_spelling(const char *bytes, int len, int *out_len) {
+    char *sp = arena_alloc((size_t)len * 4 + 3);
+    int sn = 0;
+    sp[sn++] = '"';
+    for (int i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)bytes[i];
+        if (c == '"' || c == '\\') {
+            sp[sn++] = '\\';
+            sp[sn++] = (char)c;
+        } else if (c == '\0') {
+            sp[sn++] = '\\';
+            sp[sn++] = '0';
+        } else if (c == '\n') {
+            sp[sn++] = '\\';
+            sp[sn++] = 'n';
+        } else {
+            sp[sn++] = (char)c;
+        }
+    }
+    sp[sn++] = '"';
+    *out_len = sn;
+    return sp;
+}
 static Token *concat_strings(Token *tok) {
     Token head = {};
     Token *tail = &head;
@@ -2019,15 +2385,8 @@ static Token *concat_strings(Token *tok) {
             n->str = str_intern(merged, mlen);
             n->len = mlen;
             n->string_literal_prefix = pfx;
-            int sp_cap = mlen * 2 + 3;
-            char *sp = arena_alloc(sp_cap);
-            int sn = 0;
-            sp[sn++] = '"';
-            for (int i = 0; i < mlen; i++) {
-                if (merged[i] == '"' || merged[i] == '\\') sp[sn++] = '\\';
-                sp[sn++] = merged[i];
-            }
-            sp[sn++] = '"';
+            int sn;
+            char *sp = build_quoted_spelling(merged, mlen, &sn);
             n->ptr = sp;
             n->val = sn;
             tail = tail->next = n;
@@ -2044,16 +2403,8 @@ static Token *concat_strings(Token *tok) {
             tail->str = str_intern(merged, len1 + len2);
             tail->len = len1 + len2;
             if (!tail->string_literal_prefix) tail->string_literal_prefix = t->string_literal_prefix;
-            // Rebuild quoted spelling
-            int sp_cap = (len1 + len2) * 2 + 3;
-            char *sp = arena_alloc(sp_cap);
-            int sn = 0;
-            sp[sn++] = '"';
-            for (int i = 0; i < len1 + len2; i++) {
-                if (merged[i] == '"' || merged[i] == '\\') sp[sn++] = '\\';
-                sp[sn++] = merged[i];
-            }
-            sp[sn++] = '"';
+            int sn;
+            char *sp = build_quoted_spelling(merged, len1 + len2, &sn);
             tail->ptr = sp;
             tail->val = sn;
             t = t->next;
@@ -2071,9 +2422,20 @@ static Token *concat_strings(Token *tok) {
     tail->next = NULL;
     return head.next;
 }
-void pp_print_tokens(Token *tok) {
+// Re-render a preprocessed token stream back to flat text, the same way
+// pp_print_tokens() does for -E output, but into a heap buffer instead of
+// stdout — used to feed a standalone .S file's preprocessed content
+// (macros expanded, #ifdef/#include resolved) into the assembler, which
+// only ever consumes plain assembly text.
+char *pp_tokens_to_text(Token *tok) {
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
     int cur_line = 1;
     const char *cur_file = NULL;
+    bool first_on_line = true;
+    char *prev_sp = NULL;
+    int prev_sl = 0;
+    Token *prev_tok = NULL;
     for (; tok && tok->kind != TK_EOF; tok = tok->next) {
         int ln = tok->lineno > 0 ? tok->lineno : cur_line;
         const char *fn = tok->filename;
@@ -2082,20 +2444,137 @@ void pp_print_tokens(Token *tok) {
             ln = cur_line;
         }
         if (!cur_file || strcmp(fn, cur_file) != 0) {
-            printf("# %d \"%s\"\n", ln, fn);
+            // A file boundary (returning from an #include, or moving into
+            // one) always starts a fresh logical line, even when the new
+            // file's line number isn't "greater" than the old one in any
+            // way this function can compare — sp/prev_sl adjacency is only
+            // meaningful within the same buffer. Without this, the last
+            // token emitted from the old file (e.g. a macro's ".endm") and
+            // the first token of the new one land on the same output line,
+            // silently merging two unrelated GAS statements into one (seen
+            // as ".endm .macro UNWIND_HINT ..." — the ".macro" line then
+            // never matches as a directive at all).
+            if (!first_on_line) {
+                if (len + 2 > cap) {
+                    cap *= 2;
+                    buf = realloc(buf, cap);
+                }
+                buf[len++] = '\n';
+                first_on_line = true;
+                prev_sp = NULL;
+            }
             cur_line = ln;
             cur_file = fn;
         }
         while (cur_line < ln) {
-            putchar('\n');
+            if (len + 2 > cap) {
+                cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            buf[len++] = '\n';
             cur_line++;
+            first_on_line = true;
+            prev_sp = NULL; // a newline always breaks adjacency
         }
         int sl;
         char *sp = tok_spelling(tok, &sl);
-        if (sp && sl > 0) fwrite(sp, 1, sl, stdout);
-        putchar(' ');
+        // The C lexer splits assembly's dot-containing directive/section
+        // names (".section", ".init.ramfs", "label:") into separate
+        // punctuation + identifier tokens, same as it would "a.b.c" in
+        // real C. Re-glue tokens with no separating space whenever they
+        // were byte-adjacent (no whitespace at all) in whatever buffer
+        // they were lexed from — true both for un-expanded source text
+        // and for a macro body's own internal spacing — so ".", "section"
+        // comes back as ".section" but "section", ".init" (genuinely
+        // space-separated in the source) keeps its space. A macro-expanded
+        // token's spelling can live in a completely different buffer than
+        // whatever body token follows it (the substituted argument text vs.
+        // the macro's own stored definition), so pointer adjacency alone
+        // can't see those as touching even when the macro body had none —
+        // no_space_after (set by subst_range() for exactly this case, e.g.
+        // linkage.h's "name:" built from a macro parameter) overrides that.
+        bool adjacent = (prev_sp && sp && prev_sp + prev_sl == sp) ||
+            (prev_tok && prev_tok->no_space_after);
+        if (!first_on_line && !adjacent) {
+            if (len + 2 > cap) {
+                cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            buf[len++] = ' ';
+        }
+        if (sp && sl > 0) {
+            if (len + (size_t)sl + 2 > cap) {
+                while (len + (size_t)sl + 2 > cap) cap *= 2;
+                buf = realloc(buf, cap);
+            }
+            memcpy(buf + len, sp, (size_t)sl);
+            len += (size_t)sl;
+        }
+        first_on_line = false;
+        prev_sp = sp;
+        prev_sl = sl;
+        prev_tok = tok;
     }
-    putchar('\n');
+    if (len + 2 > cap) {
+        cap *= 2;
+        buf = realloc(buf, cap);
+    }
+    buf[len++] = '\n';
+    buf[len] = '\0';
+    return buf;
+}
+
+// -E output. Same source-adjacency logic as pp_tokens_to_text() (see its
+// comment): the C lexer splits assembly/linker-script dot-prefixed names
+// ("*.hash", ".text", "LINUX_2.6") into separate punctuation + identifier/
+// number tokens exactly as it would "a.b.c" in real C, so unconditionally
+// separating every token with a space — what this used to do — corrupts
+// any -E consumer that cares about exact spelling, not just whitespace-
+// insensitive C: a linker-script "cpp -P" pass (kbuild's cmd_cpp_lds_S)
+// turns ".hash" into ". hash", which GNU ld's script grammar reads as the
+// location-counter symbol "." followed by a bare "hash" — a parse error
+// (or, worse, an entirely different symbol table). Real cpp/cc1 preserve
+// byte-adjacency; so must this.
+void pp_print_tokens(Token *tok, FILE *out) {
+    int cur_line = 1;
+    const char *cur_file = NULL;
+    bool first_on_line = true;
+    char *prev_sp = NULL;
+    int prev_sl = 0;
+    Token *prev_tok = NULL;
+    for (; tok && tok->kind != TK_EOF; tok = tok->next) {
+        int ln = tok->lineno > 0 ? tok->lineno : cur_line;
+        const char *fn = tok->filename;
+        if (!fn || *fn == '<') {
+            fn = cur_file ? cur_file : "<stdin>";
+            ln = cur_line;
+        }
+        if (!cur_file || strcmp(fn, cur_file) != 0) {
+            if (!first_on_line) fputc('\n', out);
+            fprintf(out, "# %d \"%s\"\n", ln, fn);
+            cur_line = ln;
+            cur_file = fn;
+            first_on_line = true;
+            prev_sp = NULL;
+        }
+        while (cur_line < ln) {
+            fputc('\n', out);
+            cur_line++;
+            first_on_line = true;
+            prev_sp = NULL;
+        }
+        int sl;
+        char *sp = tok_spelling(tok, &sl);
+        bool adjacent = (prev_sp && sp && prev_sp + prev_sl == sp) ||
+            (prev_tok && prev_tok->no_space_after);
+        if (!first_on_line && !adjacent) fputc(' ', out);
+        if (sp && sl > 0) fwrite(sp, 1, (size_t)sl, out);
+        first_on_line = false;
+        prev_sp = sp;
+        prev_sl = sl;
+        prev_tok = tok;
+    }
+    fputc('\n', out);
 }
 char *dump_macros_text(void) {
     size_t total = 0;
@@ -2120,7 +2599,7 @@ char *dump_macros_text(void) {
     char *buf = arena_alloc(total + 1);
     int n = 0;
     for (Macro *m = macros; m; m = m->next) {
-        n += sprintf(buf + n, "#define %s", m->name);
+        n += snprintf(buf + n, total - n + 1, "#define %s", m->name);
         if (m->is_function) {
             buf[n++] = '(';
             for (int i = 0; i < m->param_len; i++) {
@@ -2308,6 +2787,7 @@ Token *preprocess(char *filename, char *p) {
 #undef define_pre
         kw_line = str_intern("__LINE__", 8);
         kw_file = str_intern("__FILE__", 8);
+        kw_base_file = str_intern("__BASE_FILE__", 13);
         kw_counter = str_intern("__COUNTER__", 11);
         kw_function = str_intern("__FUNCTION__", 12);
         kw_func = str_intern("__func__", 8);
@@ -2347,10 +2827,21 @@ Token *preprocess(char *filename, char *p) {
     xp_in_cond = false;
 
     char *resolved_name = (filename && strcmp(filename, "-") == 0) ? "<stdin>" : canonical_path(filename);
+    pp_base_file = resolved_name;
     lvl = NULL;
     // push_level() splices line continuations itself; passing raw input avoids a
     // double splice that would discard the physical-line counts (breaks __LINE__).
+    // Push main source first, then pre-include files on top (LIFO).
+    // Pre-includes must process first so their macros are visible.
     push_level(resolved_name, full_path(resolved_name), p);
+    for (int i = nb_preinclude - 1; i >= 0; i--) {
+        char *inc_path = full_path((char *)preinclude_list[i]);
+        char *inc_contents = read_pp_file((char *)preinclude_list[i]);
+        if (inc_contents) {
+            push_level(inc_path, inc_path, inc_contents);
+            dep_add(inc_path);
+        }
+    }
     lex_pp_mode = true;
     xout_head = xout_tail = NULL;
 
@@ -2379,4 +2870,27 @@ Token *preprocess(char *filename, char *p) {
     Token *result = concat_strings(xout_head);
     if (opt_dM) return NULL;
     return result;
+}
+
+// Write Make dependency rules (-Wp,-MMD,<file>)
+void write_dep_file(const char *out_path, const char *main_fpath) {
+    if (!opt_depfile || !main_fpath) return;
+    FILE *f = fopen(opt_depfile, "w");
+    if (!f) {
+        fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", opt_depfile);
+        return;
+    }
+    // Target: output file depends on main source + all included files.
+    // Input read from stdin ("-") isn't a real path on disk — GCC omits it
+    // from the dependency list rather than emitting an unopenable "-"
+    // entry (which trips up kbuild's fixdep, e.g. scripts/checksyscalls.sh
+    // piping a generated source through `$(CC) ... -x c -`).
+    fprintf(f, "%s:", out_path ? out_path : "a.out");
+    if (strcmp(main_fpath, "-") != 0)
+        fprintf(f, " %s", main_fpath);
+    for (DepEntry *d = dep_files; d; d = d->next) {
+        if (d->path) fprintf(f, " %s", d->path);
+    }
+    fprintf(f, "\n");
+    fclose(f);
 }

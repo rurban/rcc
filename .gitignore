@@ -24,6 +24,7 @@ rcc
 rcc-arm64
 rcc-darwin
 rcc_prof
+/linux.sh
 actual.txt
 fred.txt
 err.log
