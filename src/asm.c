@@ -3543,29 +3543,40 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         size_t off = buf->len;
         x86_call_rel32(buf, 0);
         int sidx = ensure_sym(as, lbl);
-        // Real GAS always emits a real R_X86_64_PLT32 relocation for a
-        // symbolic call target — including a *named* local label already
-        // defined earlier in the same section (confirmed against GCC's own
-        // assembler output for arch/x86/lib/retpoline.S's "call
-        // srso_safe_ret": SYM_INNER_LABEL() deliberately types it
-        // STT_NOTYPE, not STT_FUNC, since it's a label in the middle of
-        // srso_untrain_ret's body, not a function of its own). Previously
-        // this case (already-defined, same-section, so resolvable without
-        // a relocation at all) took the same locally-patched
-        // FIXUP_REL32_DEFERRED path as JMP/Jcc — correct bytes, but with
-        // no relocation entry at all, objtool's add_call_destinations()
-        // requires the call's *destination symbol* to be STT_FUNC before
-        // accepting it (its is_func_sym() check only runs on the no-reloc
-        // path); a real STT_NOTYPE inner label like this one then fails
-        // as "unsupported call to non-function". A named local symbol
-        // reference already works exactly this way for a *forward*
-        // reference (not-yet-defined, so lookup_local() below can't find
-        // it and this always fell to the PLT32-reloc else branch) —
-        // dropping the "toff>=0" local-resolve special case just makes
-        // backward references go through that identical, already-proven
-        // mechanism instead of a second, objtool-incompatible one.
-        objfile_add_reloc(as->obj, as->cur_sec, off + 1, sidx,
-                          R_X86_64_PLT32, -4);
+        // Real GAS resolves a call to an already-defined LOCAL (i.e. not
+        // .globl) label in the same section directly, with no relocation
+        // at all (confirmed empirically: "call local_label" backward
+        // reference assembles to a bare baked-in rel32, zero relocations
+        // in the object file). A label declared .globl always gets a
+        // real R_X86_64_PLT32 relocation instead, even though it's still
+        // defined earlier in the very same file/section — global symbols
+        // are preemptable at link time, so GAS can never fold the
+        // displacement locally for them. arch/x86/lib/retpoline.S's
+        // "call srso_safe_ret" is exactly this latter case:
+        // SYM_INNER_LABEL(srso_safe_ret, SYM_L_GLOBAL) makes it .globl
+        // (deliberately STT_NOTYPE, not STT_FUNC, since it's a label in
+        // the middle of srso_untrain_ret's body) — so it must take the
+        // PLT32-reloc path despite being an already-defined backward
+        // same-section reference, exactly like a forward reference to
+        // any named symbol already does (lookup_local() can't find a
+        // not-yet-defined label, so it always fell to this same branch).
+        int sec = 0;
+        int64_t toff = lookup_local(as, lbl, &sec);
+        bool is_local_sym = sidx >= 0 && as->obj->syms[sidx].bind == SB_LOCAL;
+        if (toff >= 0 && sec == as->cur_sec && is_local_sym) {
+            // Same deferred-patch rationale as JMP/Jcc above.
+            struct Fixup *fx = fixups_next(as);
+            if (fx) {
+                fx->patch_off = off + 1;
+                fx->section = as->cur_sec;
+                fx->kind = FIXUP_REL32_DEFERRED;
+                fx->size = lookup_local_idx(as, lbl);
+                fx->addend = 0;
+            }
+        } else {
+            objfile_add_reloc(as->obj, as->cur_sec, off + 1, sidx,
+                              R_X86_64_PLT32, -4);
+        }
         return true;
     }
 
