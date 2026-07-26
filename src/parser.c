@@ -9345,6 +9345,21 @@ static Node *unary(Token **rest, Token *tok) {
                             }
                             idx = eidx + 1;
                             if (equalc(tok, ",")) {
+                                // A fresh top-level ".member" designator
+                                // after the comma (rather than a bare
+                                // "[idx]=val" continuation of this same
+                                // array) restarts member dispatch — e.g.
+                                // drivers/scsi/virtio_scsi.c's ".lun[0] =
+                                // 1, .lun[1] = ..., .lun[2] = ..., .lun[3]
+                                // = ...", which repeats ".lun" per index
+                                // instead of chaining bare "[N]=val"
+                                // entries after one ".lun". Leave the
+                                // comma itself unconsumed so the outer
+                                // member loop's own trailing
+                                // skip(tok, ",") still applies exactly once.
+                                if (equalc(tok->next, ".") && tok->next->next &&
+                                    tok->next->next->kind == TK_IDENT)
+                                    break;
                                 tok = tok->next;
                                 if (equalc(tok, "}"))
                                     break;
