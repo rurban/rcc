@@ -5147,6 +5147,12 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            // Compiler-synthesized, invisible-outside-this-file temporary:
+            // must be a LOCAL (not GLOBAL) ELF symbol, or two separate
+            // translation units each independently counting from
+            // ".Lanon.0" collide at link time ("multiple definition of
+            // '.Lanon.0'") — every compilation unit resets anon_count to 0.
+            anon_var->is_static = true;
             Token *rest_inner = NULL;
             global_initializer(&rest_inner, compound_start, anon_var);
             tok = rest_inner;
@@ -5202,6 +5208,7 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                 static int anon_arr_count;
                 char *name = format(".Lanonarr.%d", anon_arr_count++);
                 LVar *anon_var = new_var(name, compound_ty, false);
+                anon_var->is_static = true; // see the identical comment above
                 Token *rest_inner = NULL;
                 global_initializer(&rest_inner, compound_start, anon_var);
                 tok = rest_inner;
@@ -10038,6 +10045,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            anon_var->is_static = true; // see the identical comment above
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
             // Redundant parens wrapped directly around the compound
@@ -10070,6 +10078,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             static int anon_count2;
             char *name = format(".Lanon.%d", anon_count2++);
             LVar *anon_var = new_var(name, compound_ty, false);
+            anon_var->is_static = true; // see the identical comment above
             global_initializer(rest, compound_start, anon_var);
             tok = *rest;
             if (equalc(tok, "}"))
