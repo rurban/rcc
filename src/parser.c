@@ -4063,7 +4063,8 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         // .ops field's proc_ns_operations pointer via
         // _Generic((&init_uts_ns), struct foo *: &foo_operations, ...).
         if (find_enum_const(tok) || equalc(tok, "true") || equalc(tok, "false") ||
-            equalc(tok, "NULL") || equalc(tok, "nullptr") || equalc(tok, "_Generic"))
+            equalc(tok, "NULL") || equalc(tok, "nullptr") || equalc(tok, "_Generic") ||
+            (tok->len > 10 && !memcmp(tok->ptr, "__builtin_", 10)))
             return false;
         // Use asm_name for static local variables (mangled labels)
         LVar *lv = find_global_name(tok->name);
