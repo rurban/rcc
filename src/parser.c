@@ -4404,6 +4404,7 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
     tok = skip(tok, "{");
     while (!equalc(tok, "}")) {
         int eidx = idx;
+        bool member_designator = false;
         if (equalc(tok, "[")) {
             tok = tok->next; // skip [
             long long aidx = peek_const_expr(tok);
@@ -4417,9 +4418,20 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
             }
             if (eidx > max_idx) max_idx = eidx;
             tok = skip(tok, "]");
+            // Combined designator [N].member[.sub]*=val (C99 6.7.8p17):
+            // skip any ".member" chain before the "=". Its value belongs
+            // to just that member, not the whole (possibly struct/union)
+            // element, so it must NOT fall into the elem_ty-based
+            // struct/union heuristic below — that would wrongly try to
+            // flat-initialize the entire element from what's really a
+            // single member's value.
+            while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                tok = tok->next->next;
+                member_designator = true;
+            }
             tok = skip(tok, "=");
         }
-        if (elem_ty && (elem_ty->kind == TY_STRUCT || elem_ty->kind == TY_UNION) && !equalc(tok, "{")) {
+        if (!member_designator && elem_ty && (elem_ty->kind == TY_STRUCT || elem_ty->kind == TY_UNION) && !equalc(tok, "{")) {
             // Heuristic: if the first token is an identifier of struct/union type,
             // or a compound literal, treat it as a single element expression.
             // Otherwise use flat aggregate initialization.
@@ -4784,6 +4796,41 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                         tok = global_init_one(tok, var, ty->base->base, offset + sidx * elem_size + sidx2 * ty->base->base->size);
                     else
                         tok = skip_initializer(tok);
+                    idx = sidx + 1;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}"))
+                            break;
+                        continue;
+                    }
+                    break;
+                }
+                // Combined designator: [N].member[.sub]* = val (C99 6.7.8p17)
+                // for an array of struct/union elements, e.g.
+                // drivers/gpu/drm/i915/gt/intel_engine_cs.c's
+                // "[RENDER_CLASS].reg = GEN8_RTCR" — a member-name
+                // designator directly on one array element instead of a
+                // full brace-enclosed "{ .reg = ... }" value.
+                if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT &&
+                    ty->base && (ty->base->kind == TY_STRUCT || ty->base->kind == TY_UNION)) {
+                    int chain_base = offset + sidx * elem_size;
+                    Type *cur_ty = ty->base;
+                    while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                        char *sname = tok->next->name;
+                        tok = tok->next->next;
+                        Member *sm = find_member_by_name(cur_ty, sname);
+                        if (!sm) {
+                            tok = skip_initializer(tok);
+                            break;
+                        }
+                        if (!equalc(tok, ".")) {
+                            tok = skip(tok, "=");
+                            tok = global_init_member(tok, var, sm, chain_base);
+                            break;
+                        }
+                        chain_base += sm->offset;
+                        cur_ty = sm->ty;
+                    }
                     idx = sidx + 1;
                     if (equalc(tok, ",")) {
                         tok = tok->next;
@@ -6924,6 +6971,8 @@ static bool type_equal(Type *a, Type *b) {
     }
 }
 
+static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok);
+
 static Node *primary(Token **rest, Token *tok) {
     Node *node = NULL;
 
@@ -7325,8 +7374,19 @@ static Node *primary(Token **rest, Token *tok) {
         error_tok(tok, "expected an expression");
     }
 
-    check_type(node);
+    return apply_postfix_ops(node, rest, tok);
+}
 
+// Apply postfix operators (call, subscript, member access, post-inc/dec) to
+// an already-parsed primary expression. Extracted from primary()'s own
+// trailing chain so other constructs whose result is itself a primary
+// expression — e.g. unary()'s __builtin_choose_expr — can run the very same
+// chain instead of returning bare and leaving any "->"/"."/"[...]" that
+// follows unparsed. Real-world need: drivers/gpu/drm/i915/gt/intel_gtt.h's
+// px_pt()/px_used() macros expand to "&__builtin_choose_expr(...)->used" —
+// a postfix "->" directly on the choose_expr's result.
+static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok) {
+    check_type(node);
     while (true) {
         if (equalc(tok, "(")) {
             Node *call = new_node(ND_FUNCALL, tok);
@@ -7848,16 +7908,23 @@ static Node *unary(Token **rest, Token *tok) {
                 if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
                     error_tok(tok, "unsupported offsetof designator");
 
+                // Always parse the full subscript expression first — a
+                // leading TK_NUM (e.g. the "1" in "1ul << bits") is not
+                // necessarily the *whole* index; it may only be the start
+                // of a larger constant (or non-constant) expression, which
+                // a bare tok->kind == TK_NUM check on just the first token
+                // wrongly assumed (leaving "<< bits]" unconsumed and
+                // desyncing the parser). Decide constant vs. runtime only
+                // after eval_const_expr() has actually evaluated it.
+                Node *idx = assign(&tok, tok);
+                tok = skip(tok, "]");
+                check_type(idx);
                 long long idx_val;
-                if (!rt_expr && ty->kind == TY_ARRAY && tok->kind == TK_NUM) {
+                if (!rt_expr && ty->kind == TY_ARRAY && eval_const_expr(idx, &idx_val)) {
                     // Constant subscript on constant-size array
-                    idx_val = tok->val;
                     const_offset += (int)(idx_val * ty->base->size);
-                    tok = skip(tok->next, "]");
                 } else {
                     // Variable subscript or VLA: build runtime expression
-                    Node *idx = assign(&tok, tok);
-                    tok = skip(tok, "]");
                     Node *elem_sz = type_size_node(ty->base, tok);
                     Node *mul = new_binary(ND_MUL, idx, elem_sz, tok);
                     check_type(mul);
@@ -8790,17 +8857,24 @@ static Node *unary(Token **rest, Token *tok) {
         Node *expr1 = assign(&tok, tok);
         tok = skip(tok, ",");
         Node *expr2 = assign(&tok, tok);
-        *rest = skip(tok, ")");
+        tok = skip(tok, ")");
         // If condition is a compile-time constant, return the appropriate branch
         long long cv = 0;
-        if (eval_const_expr(cond, &cv))
-            return cv ? expr1 : expr2;
-        // Non-constant: generate as runtime ternary
-        Node *node = new_node(ND_COND, start);
-        node->cond = cond;
-        node->then = expr1;
-        node->els = expr2;
-        return node;
+        Node *result;
+        if (eval_const_expr(cond, &cv)) {
+            result = cv ? expr1 : expr2;
+        } else {
+            // Non-constant: generate as runtime ternary
+            result = new_node(ND_COND, start);
+            result->cond = cond;
+            result->then = expr1;
+            result->els = expr2;
+        }
+        // A postfix chain may directly follow, e.g.
+        // drivers/gpu/drm/i915/gt/intel_gtt.h's px_used(px) macro expands to
+        // "&__builtin_choose_expr(...)->used" — the "->used" must still be
+        // parsed here, exactly as primary() would for any other expression.
+        return apply_postfix_ops(result, rest, tok);
     }
     if (equalc(tok, "__builtin_types_compatible_p")) {
         Token *start = tok;
