@@ -432,15 +432,30 @@ struct LVar {
 // needing per-function layout metadata at the point of use.
 #define CHAIN_SLOT_OFFSET 88
 // Nonlocal goto (a nested function's `goto` targeting a label declared via
-// __label__ in an ancestor function) must restore that ancestor's rsp
-// exactly, not just its rbp: every function's epilogue is `add rsp,
-// frame_size; pop rbp; ret`, and frame_size is a per-function, codegen-time
-// value the nonlocal-goto site (compiled independently, often *before* the
-// ancestor - see parser.c's nested-function-definition path) cannot know.
-// So the caller's rsp, like its rbp, is captured once (while still valid,
-// at the call site) and forwarded alongside the rbp chain pointer, in the
-// next slot.
+// __label__ in an ancestor function) must restore that ancestor's rsp/sp
+// exactly, not just its rbp/x29: every function's epilogue is `add
+// sp,#frame_size; pop/ldp; ret`, and frame_size is a per-function,
+// codegen-time value the nonlocal-goto site (compiled independently,
+// often *before* the target ancestor - see parser.c's
+// nested-function-definition path) cannot know, nor can it rely on a
+// caller-propagated live sp (call-site-local register/argument staging
+// transiently perturbs it around the very call that would capture it).
+// So a goto *target* function - one whose __label__ is actually reached
+// by a nested descendant (see is_goto_target_fn below) - self-records
+// its own just-established, stable sp here, once, at its own prologue;
+// the goto site chain-walks to the target's rbp/x29 (CHAIN_SLOT_OFFSET)
+// and reads this slot back directly.
 #define CHAIN_RSP_OFFSET 96
+
+// GNU nested function used as a *value* (not a direct call) - passed as
+// a function pointer, stored, returned - needs a runtime trampoline: a
+// small per-activation stub, allocated in the enclosing function's own
+// frame, that loads the static-chain pointer and jumps to the nested
+// function's real code (see codegen.c's ND_LVAR function-value branch).
+// 32 bytes covers the largest template (ARM64: 4 fixed instruction
+// words + 8-byte target address + 8-byte chain value); x86-64 only
+// needs 22 but shares the same size/alignment for a uniform allocator.
+#define TRAMPOLINE_SIZE 32
 
 void check_type(Node *node);
 LVar *find_global_name(char *name);

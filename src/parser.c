@@ -2714,7 +2714,15 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
            equalc(inner, "__thiscall") || equalc(inner, "__vectorcall"))
         inner = inner->next;
     inner = skip_attributes(inner);
-    if (equalc(tok, "(")) {
+    // C11 6.7.6p3 disambiguation: `(` immediately followed by `)` or a
+    // type-specifier (e.g. abstract `void()` as a parameter type, or a
+    // plain `int foo(void)` declarator) is a function-declarator suffix,
+    // not a grouped/nested inner declarator - only `(*`, `(ident`, or
+    // another `(` genuinely nests. Without this, `void (*f)(void())`
+    // mis-parsed f's own inner parameter `void()` as bare `void` (the
+    // `()` silently discarded instead of building a TY_FUNC), corrupting
+    // call-argument classification against it (GH: torture test 921215-1).
+    if (equalc(tok, "(") && !equalc(inner, ")") && !is_typename(inner)) {
         Token *start = tok->next;
         // Find the matching ) for the initial (
         Token *after_paren = start;

@@ -633,7 +633,7 @@ int elf_write(ObjFile *obj, const char *path) {
                rodata_off, rodata_size, 0, 0, 1, 0);
     if (has_tdata)
         write_shdr(f, shn_tdata, SHT_PROGBITS, SHF_TLS | SHF_WRITE | SHF_ALLOC, tdata_off, tdata_size, 0, 0, 1, 0);
-    write_shdr(f, shn_note, SHT_PROGBITS, 0, note_off, 0, 0, 0, 1, 0);
+    write_shdr(f, shn_note, SHT_PROGBITS, obj->uses_trampoline ? SHF_EXECINSTR : 0, note_off, 0, 0, 0, 1, 0);
 
     if (has_debug) {
         write_shdr(f, shn_debug_line, SHT_PROGBITS, 0,

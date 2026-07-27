@@ -282,6 +282,17 @@ struct ObjFile {
     bool debug_has_aranges_addr; // true if .debug_aranges address needs reloc
     size_t debug_line_addr_off; // offset of DW_LNE_set_address value in .debug_line
     bool debug_has_line_addr; // true if DW_LNE_set_address needs reloc
+    // True if this compilation unit created at least one GNU
+    // nested-function trampoline (codegen.c's ND_LVAR function-value
+    // branch) - the ONLY thing that makes a stack-resident code stub
+    // work on modern hardened kernels: __enable_execute_stack's runtime
+    // mprotect is unreliable/blocked in several real environments (e.g.
+    // this project's own CI sandbox), so instead the .note.GNU-stack
+    // section is marked executable (SHF_EXECINSTR), which the linker
+    // turns into an RWE PT_GNU_STACK program header - the kernel then
+    // maps the *entire* process stack executable at load time, exactly
+    // matching what GCC emits for a TU using its own nested functions.
+    bool uses_trampoline;
 };
 
 // Debug info helpers (for -g)

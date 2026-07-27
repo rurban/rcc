@@ -473,6 +473,12 @@ static void emit_loc(Node *node) {
 }
 static int fn_struct_ret_off = 0; // next free offset within the struct-ret-buf area
 static int fn_struct_ret_total = 0; // high-water mark of struct-ret-buf space used
+// Same two-pass-stable allocation scheme as fn_struct_ret_off/total, for
+// GNU nested-function trampoline slots (see rcc.h's TRAMPOLINE_SIZE);
+// this region starts right after fn_struct_ret_total's (see the `off`
+// computation at each allocation site and `need`'s frame-size folding).
+static int fn_trampoline_off = 0;
+static int fn_trampoline_total = 0;
 int rcc_label_count = 0;
 static int va_gp_start;
 static int va_fp_start;
@@ -1512,7 +1518,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
-        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
+        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) ? 8 : argv[i]->ty->size;
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
@@ -1643,7 +1649,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             named_count++;
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
-        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
+        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) ? 8 : argv[i]->ty->size;
         if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
             arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
@@ -2232,7 +2238,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             x86_mov_rm(cg_sec, 8, REG(arg_regs[i]), x86_mem(REG(arg_regs[i]), 0)); // movq (%reg), %reg
         }
 #endif
-        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY) ? 8 : argv[i]->ty->size;
+        arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) ? 8 : argv[i]->ty->size;
         if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
             arg_sizes[i] = 8; // old-style float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
@@ -6251,6 +6257,90 @@ static VReg gen(Node *node) {
             }
         } else if (!node->var->is_local && node->var->is_function) {
             //fprintf(stderr, "DEBUG ND_LVAR func: %s is_weak=%d\n", node->var->name, node->var->is_weak);
+            if (node->var->is_nested_fn) {
+                // GNU nested function used as a *value* (not a direct
+                // call) - e.g. passed as a function pointer, stored,
+                // returned. Needs a runtime trampoline: allocate a fresh
+                // TRAMPOLINE_SIZE scratch slot in THIS (enclosing)
+                // function's own frame (see fn_trampoline_off/total in
+                // rcc.h/above - same two-pass-stable scheme as
+                // fn_struct_ret_off/total) and write the stub bytes into
+                // it (fixed template bytes as compile-time immediates,
+                // plus the two runtime-computed fields: static-chain
+                // value and the nested function's real code address).
+                // For the resulting stack-resident code to be
+                // executable, cg_obj->uses_trampoline (checked below)
+                // marks .note.GNU-stack executable, which the linker
+                // turns into an RWE PT_GNU_STACK header - the kernel then
+                // maps the *entire* stack executable at load time. This
+                // is deliberately NOT done via libgcc's
+                // __enable_execute_stack (a runtime mprotect on just this
+                // page): that call is unreliable across real
+                // environments (verified: it's a silent no-op under this
+                // project's own sandbox, confirmed independently of rcc
+                // by an __enable_execute_stack call from plain gcc-built
+                // code) - the load-time GNU_STACK marking, which is what
+                // GCC itself relies on for its own nested functions, has
+                // no such runtime dependency.
+                cg_obj->uses_trampoline = true;
+                fn_trampoline_off += TRAMPOLINE_SIZE;
+                if (fn_trampoline_off > fn_trampoline_total)
+                    fn_trampoline_total = fn_trampoline_off;
+                int off = current_fn_stack_size + fn_struct_ret_total + fn_trampoline_off;
+#ifdef ARCH_ARM64
+                // Template (verified via `as`/objdump against this exact
+                // instruction sequence - see the trampoline design note):
+                //   ldr x17, #16   ; 58000091  (loads from offset+16 = func addr)
+                //   ldr x18, #16   ; 580000b2  (loads from offset+20 rel. to itself = offset+24 = chain)
+                //   br  x17        ; d61f0220
+                //   nop            ; d503201f  (padding, keeps data 8-byte aligned)
+                //   <8 bytes: nested function's code address>
+                //   <8 bytes: static-chain value>
+                VReg base = alloc_reg();
+                asm_sub_reg_fp_imm(cg_sec, base, off); // base = x29 - off
+                VReg tmp = alloc_reg();
+                emit_mov_imm64(REG(tmp), 0x58000091u);
+                arm64_str_uoff(cg_sec, 2, REG(tmp), REG(base), 0);
+                emit_mov_imm64(REG(tmp), 0x580000b2u);
+                arm64_str_uoff(cg_sec, 2, REG(tmp), REG(base), 1);
+                emit_mov_imm64(REG(tmp), 0xd61f0220u);
+                arm64_str_uoff(cg_sec, 2, REG(tmp), REG(base), 2);
+                emit_mov_imm64(REG(tmp), 0xd503201fu);
+                arm64_str_uoff(cg_sec, 2, REG(tmp), REG(base), 3);
+                emit_adrp_add(tmp, asm_sym_name(var_sym_label(node->var)));
+                arm64_str_uoff(cg_sec, 3, REG(tmp), REG(base), 2); // func addr @ +16
+                if (node->chain_depth == 0)
+                    arm64_orr_reg(cg_sec, 1, REG(tmp), ARM64_XZR, ARM64_X29, ARM64_LSL, 0);
+                else
+                    gen_chain_walk_into(tmp, node->chain_depth);
+                arm64_str_uoff(cg_sec, 3, REG(tmp), REG(base), 3); // chain value @ +24
+                free_reg(tmp);
+                free_reg(base);
+                asm_sub_reg_fp_imm(cg_sec, r, off); // r = trampoline address
+#else
+                // x86-64 SysV/Win64 trampoline (classic GCC layout, 22 of
+                // TRAMPOLINE_SIZE's 32 bytes used):
+                //   49 ba <8-byte chain value>   ; mov r10, imm64
+                //   48 b8 <8-byte func address>  ; mov rax, imm64
+                //   ff e0                        ; jmp rax
+                VReg chain_reg = alloc_reg();
+                if (node->chain_depth == 0)
+                    x86_mov_rr(cg_sec, 8, REG(chain_reg), X86_RBP);
+                else
+                    gen_chain_walk_into(chain_reg, node->chain_depth);
+                VReg func_reg = alloc_reg();
+                asm_lea_rip_reg(cg_sec, func_reg, var_sym_label(node->var));
+                x86_mov_mi(cg_sec, 2, x86_mem(X86_RBP, -off), 0xba49);
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -off + 2), REG(chain_reg));
+                x86_mov_mi(cg_sec, 2, x86_mem(X86_RBP, -off + 10), 0xb848);
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -off + 12), REG(func_reg));
+                x86_mov_mi(cg_sec, 2, x86_mem(X86_RBP, -off + 20), 0xe0ff);
+                free_reg(chain_reg);
+                free_reg(func_reg);
+                asm_lea_rbp_reg(cg_sec, r, 8, off); // r = trampoline address
+#endif
+                return r;
+            }
             if (node->var->is_weak)
                 cg_weak_declare(asm_sym_name(var_sym_label(node->var)));
 #ifdef ARCH_ARM64
@@ -12227,6 +12317,8 @@ struct ObjFile *codegen(Program *prog) {
 #endif
         fn_struct_ret_off = 0;
         fn_struct_ret_total = 0;
+        fn_trampoline_off = 0;
+        fn_trampoline_total = 0;
 
         // Pass 1: Generate dummy function body to discover register usage
         SecBuf _dummy;
@@ -12647,6 +12739,7 @@ struct ObjFile *codegen(Program *prog) {
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
         fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
+        fn_trampoline_off = 0; // reset for Pass 2 (fn_trampoline_total already computed)
         cg_label_ht_reset();
         asm_fixup_ht_reset();
 
@@ -12671,7 +12764,7 @@ struct ObjFile *codegen(Program *prog) {
         for (int j = 0; j < 6; j++)
             if (callee_mask & (1 << j)) n_callee_saved++;
 
-        int need = fn->stack_size + fn_struct_ret_total + 32;
+        int need = fn->stack_size + fn_struct_ret_total + fn_trampoline_total + 32;
         // Include register spill slots in frame (discovered during dry run)
         if (need < next_spill_slot)
             need = next_spill_slot;
@@ -13093,7 +13186,7 @@ struct ObjFile *codegen(Program *prog) {
 
         // Calculate stack frame size
         // Total space below rbp must cover: locals + spills + shadow (32)
-        int need = fn->stack_size + fn_struct_ret_total + 32;
+        int need = fn->stack_size + fn_struct_ret_total + fn_trampoline_total + 32;
         if (fn->is_variadic)
             need = va_reg_save_ofs;
         // Reserve space for register spill slots

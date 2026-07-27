@@ -4112,7 +4112,16 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
         return SKIP_TMPNAM;
     //if (contains(content, "__complex__") || contains(content, "Complex"))
     //    return SKIP_COMPLEX;
-    if (contains(content, "dg-require-effective-target trampolines"))
+    // GNU nested-function trampolines (stack-resident stub + static-chain
+    // load): implemented and verified on both Linux targets (x86-64
+    // "linux" and aarch64 "arm64_cross") via the ELF .note.GNU-stack
+    // executable-stack mechanism (matches what GCC itself emits for its
+    // own nested functions - see codegen.c's ND_LVAR function-value
+    // branch and elf_write.c's uses_trampoline handling). Darwin
+    // (Mach-O) and Windows (PE) have no equivalent wiring yet, so keep
+    // those skipped.
+    if (contains(content, "dg-require-effective-target trampolines") &&
+        !streq(platform, "linux") && !streq(platform, "arm64_cross"))
         return SKIP_TRAMPOLINES;
     if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
     /* rcc does not implement FP exception (fenv) semantics or signaling NaNs,
