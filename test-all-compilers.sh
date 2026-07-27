@@ -1,8 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Run the full test suite against rcc and every reference compiler, then
-# regenerate the "## Test Results" torture-suite table in README.md from
-# the resulting test-torture-linux_<compiler>.summary / torture_report logs.
+# Run the full test suite (tcc, units, compliance, ctest, torture) against
+# rcc and every reference compiler, then regenerate the "## Test Results"
+# table in README.md from the resulting test-<suite>-linux_<compiler>.summary
+# files that run_tests writes for each suite.
 #
 # Usage: ./test-all-compilers.sh [compiler...]
 #   With no args: rcc gcc ccc clang tcc kefir slimcc (whichever are found).
@@ -99,32 +100,55 @@ for name in $ROW_NAMES; do
 	tail -3 "/tmp/test-all-$name.log"
 done
 
-# ---- Regenerate the torture-suite table from the .summary/.log files ----
+# ---- Regenerate the Test Results table from all suites' .summary files ----
+# Aggregates test-<suite>-<suffix>.summary for suite in $SUITES; the
+# compile/error/runtime breakdown in Notes comes from torture alone, since
+# it's the only suite that tracks that granularity (dg-error/dg-warning
+# tests count as their own "e" bucket, separate from "c" plain compile
+# failures — catching an expected error wrong is not the same bug class).
+SUITES="tcc units compliance ctest torture"
 TABLE=$(
 	printf '| Compiler | Passed | Failed | Skipped | Notes                  |\n'
 	printf '| -------- | ------ | ------ | ------- | ---------------------- |\n'
 	for name in $ROW_NAMES; do
 		suffix="$(suffix_for "$name")"
-		summary="test-torture-${suffix}.summary"
-		log="test/torture_report_${suffix}.log"
-		if [ ! -f "$summary" ]; then
+		AGG_TOTAL=0 AGG_PASS=0 AGG_FAIL=0 AGG_SKIP=0
+		FAIL_COMPILE=0 FAIL_RUNTIME=0 ERROR_FAIL=0
+		found=0
+		for suite in $SUITES; do
+			summary="test-${suite}-${suffix}.summary"
+			[ -f "$summary" ] || continue
+			found=1
+			TOTAL=0 PASS=0 FAIL=0 SKIP=0
+			# shellcheck disable=SC1090
+			. "./$summary"
+			AGG_TOTAL=$((AGG_TOTAL + TOTAL))
+			AGG_PASS=$((AGG_PASS + PASS))
+			AGG_FAIL=$((AGG_FAIL + FAIL))
+			AGG_SKIP=$((AGG_SKIP + SKIP))
+		done
+		if [ "$found" -eq 0 ]; then
 			printf '| %-8s | %-6s | %-6s | %-7s | %-22s |\n' "$name" "?" "?" "?" "not run"
 			continue
 		fi
-		TOTAL=0 PASS=0 FAIL=0 FAIL_COMPILE=0 FAIL_RUNTIME=0 SKIP=0
-		# shellcheck disable=SC1090
-		. "./$summary"
-		if [ "$FAIL" -eq 0 ]; then
+		if [ "$AGG_FAIL" -eq 0 ]; then
 			notes="100% pass rate"
-		elif [ "$FAIL" -le 5 ] && [ -f "$log" ]; then
-			notes="$(grep 'FAIL' "$log" | awk '{print $1}' | tr '\n' '+' | sed 's/+$//; s/+/ + /g')"
 		else
-			denom=$((TOTAL - SKIP))
+			denom=$((AGG_TOTAL - AGG_SKIP))
 			pct=0
-			[ "$denom" -gt 0 ] && pct=$((PASS * 100 / denom))
-			notes="${pct}%, ${FAIL_COMPILE}c/${FAIL_RUNTIME}r failures"
+			[ "$denom" -gt 0 ] && pct=$((AGG_PASS * 100 / denom))
+			parts=""
+			[ "$FAIL_COMPILE" -gt 0 ] && parts="${parts}${FAIL_COMPILE}c/"
+			[ "$ERROR_FAIL" -gt 0 ] && parts="${parts}${ERROR_FAIL}e/"
+			[ "$FAIL_RUNTIME" -gt 0 ] && parts="${parts}${FAIL_RUNTIME}r/"
+			parts="${parts%/}"
+			if [ -n "$parts" ]; then
+				notes="${pct}%, ${parts} failures"
+			else
+				notes="${pct}% pass rate"
+			fi
 		fi
-		printf '| %-8s | %-6s | %-6s | %-7s | %-22s |\n' "$name" "$PASS" "$FAIL" "$SKIP" "$notes"
+		printf '| %-8s | %-6s | %-6s | %-7s | %-22s |\n' "$name" "$AGG_PASS" "$AGG_FAIL" "$AGG_SKIP" "$notes"
 	done
 )
 

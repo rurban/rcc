@@ -2,7 +2,7 @@
 
 **Platform**: Windows x86_64 (native)
 
-Generated: July 27 2026 14:44
+Generated: July 27 2026 17:24
 
 ## Overall Summary
 
@@ -46,5 +46,5 @@ Generated: July 27 2026 14:44
 - **Passed**: 3569
 - **Failed**: 4
 - **Skipped**: 390
-- **Fail Compile**: 4
+- **Dg-error Tests**: 34/38 passed, 4 failed
 - **Pass Rate (excl. skip)**: 100%

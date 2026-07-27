@@ -21,6 +21,7 @@
  *   --no-color    Disable ANSI color output
  *   --parallel    Run tests in parallel (auto-detect worker count)
  *   --jobs N      Run tests with N worker threads (--jobs 1 = sequential)
+ *   --timeout N   Override every per-test compile/exec timeout with N seconds
  *
  */
 
@@ -202,6 +203,16 @@ static bool g_no_color = false;
 #define COL_CYAN   (g_no_color ? "" : "\033[0;36m")
 #define COL_RESET  (g_no_color ? "" : "\033[0m")
 
+/* set via --timeout N: when >0, overrides every per-test compile/exec
+ * timeout (and the hard per-test ceiling in proc_run_once below) with a
+ * single uniform value. Lets the caller dial timeouts up for a
+ * legitimately slow-but-working compiler, or down to fail fast on one
+ * that hangs/loops instead of burning the default ceiling on every test. */
+static int g_timeout_override = 0;
+static int tmo(int default_sec) {
+    return g_timeout_override > 0 ? g_timeout_override : default_sec;
+}
+
 static FILE *g_log_fp = NULL;
 static char g_log_final_path[PATH_MAX]; /* final destination after atomic rename */
 static char g_log_tmp_path[PATH_MAX]; /* tmp path currently being written      */
@@ -330,10 +341,12 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
 
     int read_fd = capture == 1 ? err_pipe[0] : out_pipe[0];
 
-    // Hard per-test ceiling: never let a single test run longer than 2 minutes,
-    // even if the caller passed a larger (or zero/unbounded) timeout.
-    if (timeout_sec <= 0 || timeout_sec > 120)
-        timeout_sec = 120;
+    // Hard per-test ceiling: never let a single test run longer than 2
+    // minutes, even if the caller passed a larger (or zero/unbounded)
+    // timeout — unless --timeout explicitly raised that ceiling.
+    int ceiling = g_timeout_override > 120 ? g_timeout_override : 120;
+    if (timeout_sec <= 0 || timeout_sec > ceiling)
+        timeout_sec = ceiling;
 
     // Read the child's output under an overall deadline.  select() must guard
     // EVERY read, not just the first: a test that prints some output and then
@@ -496,9 +509,11 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     ProcResult r = {0};
     r.exit_code = -1;
 
-    // Hard per-test ceiling: never let a single test run longer than 2 minutes.
-    if (timeout_sec <= 0 || timeout_sec > 120)
-        timeout_sec = 120;
+    // Hard per-test ceiling: never let a single test run longer than 2
+    // minutes — unless --timeout explicitly raised that ceiling.
+    int ceiling = g_timeout_override > 120 ? g_timeout_override : 120;
+    if (timeout_sec <= 0 || timeout_sec > ceiling)
+        timeout_sec = ceiling;
 
     SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
     HANDLE read_h, write_h;
@@ -879,6 +894,15 @@ static void detect_platform(const char *rcc_path) {
 #endif
 }
 
+/* Scale a native-default timeout 4x under a cross-runner (qemu-aarch64 or
+ * wine): emulation overhead hits both compiling via the target compiler
+ * and executing its output. Used by the tcc/units/compliance/ctest
+ * suites' compile and exec timeouts, mirroring what torture_compile_timeout()
+ * and the exec timeout below already do. --timeout (tmo()) always wins. */
+static int scaled(int native_sec) {
+    return tmo(has_runner ? native_sec * 4 : native_sec);
+}
+
 /* Unit tests such as test_peep spawn ~24 nested compiler subprocesses
  * (12 patterns x 2 optimization levels). That workload is tight even on
  * bare native hardware under CI/parallel load, not just cross-runners
@@ -888,7 +912,7 @@ static void detect_platform(const char *rcc_path) {
  * environment that can momentarily starve a 24-subprocess test.
  */
 static int unit_run_timeout(void) {
-    return 60;
+    return tmo(60);
 }
 
 /* Compilation timeout for torture tests: base 30 s, scaled by the
@@ -907,7 +931,7 @@ static int torture_compile_timeout(const char *content) {
         }
     }
     if (base > 300) base = 300;
-    return base;
+    return tmo(base);
 }
 
 /* ── rcc library API (dynamically loaded from rcc_lib.{dll,so,dylib}) ──
@@ -1775,7 +1799,7 @@ static void emit_backtrace(const char *exe_path, const char *args,
         a[ai++] = dbg;
         a[ai++] = (char *)src_file;
         a[ai] = NULL;
-        ProcResult cr = proc_run(a, 30, 1);
+        ProcResult cr = proc_run(a, tmo(30), 1);
         if (cr.exit_code == 0)
             have_dbg = true;
         proc_free(&cr);
@@ -2354,7 +2378,7 @@ static void run_one_test(const char *src_path, const char *base,
                 }
                 ca[ai] = NULL;
                 if (!vlog_compile_cmd) vlog_compile_cmd = cmdline_from_argv(ca);
-                ProcResult cr = proc_run(ca, 30, 0);
+                ProcResult cr = proc_run(ca, scaled(30), 0);
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[%s]\n", *tn);
                 if (cr.exit_code == 0) {
                     if (cr.out_len > 0) {
@@ -2362,7 +2386,7 @@ static void run_one_test(const char *src_path, const char *base,
                         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", cr.out);
                     }
                     if (!is_darwin_cross) {
-                        ProcResult rr = run_exe_with_cmdline(tmp_exe, "", 20,
+                        ProcResult rr = run_exe_with_cmdline(tmp_exe, "", scaled(20),
                                                              vlog_run_cmd ? NULL : &vlog_run_cmd);
                         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
                         proc_free(&rr);
@@ -2450,7 +2474,7 @@ static void run_one_test(const char *src_path, const char *base,
             ca[ai++] = (char *)src_path;
             ca[ai] = NULL;
             if (!vlog_compile_cmd) vlog_compile_cmd = cmdline_from_argv(ca);
-            ProcResult cr = proc_run(ca, 30, 0);
+            ProcResult cr = proc_run(ca, scaled(30), 0);
             out_buf = strappend(out_buf, &out_len, &out_cap, "[%s]\n", tests[t]);
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
@@ -2530,7 +2554,7 @@ static void run_one_test(const char *src_path, const char *base,
         }
         ca[ai] = NULL;
         vlog_compile_cmd = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 0);
+        ProcResult cr = proc_run(ca, scaled(30), 0);
         if (cr.exit_code != 0) {
             print_result(base, COL_RED, "COMPILE FAIL");
             failed++;
@@ -2604,14 +2628,14 @@ static void run_one_test(const char *src_path, const char *base,
         ga[gai++] = "46_grep.c";
         ga[gai] = NULL;
         vlog_run_cmd = cmdline_from_argv(ga);
-        ProcResult rr = proc_run(ga, 20, 2);
+        ProcResult rr = proc_run(ga, scaled(20), 2);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         actual_exit = rr.exit_code;
         exec_timed_out = rr.timed_out;
         proc_free(&rr);
         if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
     } else {
-        ProcResult rr = run_exe_with_cmdline(tmp_exe, args, args && *args ? 20 : 5,
+        ProcResult rr = run_exe_with_cmdline(tmp_exe, args, args && *args ? scaled(20) : scaled(5),
                                              &vlog_run_cmd);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         actual_exit = rr.exit_code;
@@ -2807,7 +2831,7 @@ static void compile_and_exec(const char *src_path, const char *base,
                         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", cr.out);
                     }
                     if (!is_darwin_cross) {
-                        ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", 20,
+                        ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", scaled(20),
                                                              r->run_cmdline ? NULL : &r->run_cmdline);
                         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
                         proc_free(&rr);
@@ -2848,7 +2872,7 @@ static void compile_and_exec(const char *src_path, const char *base,
             ca[ai++] = (char *)src_path;
             ca[ai] = NULL;
             if (!r->compile_cmdline) r->compile_cmdline = cmdline_from_argv(ca);
-            ProcResult cr = proc_run(ca, 30, 0);
+            ProcResult cr = proc_run(ca, scaled(30), 0);
             out_buf = strappend(out_buf, &out_len, &out_cap, "[%s]\n", tests[t]);
             if (is_darwin_cross) {
                 out_buf = strappend(out_buf, &out_len, &out_cap, "[linked]\n");
@@ -2965,7 +2989,7 @@ static void compile_and_exec(const char *src_path, const char *base,
         r->exec_timed_out = rr.timed_out;
         proc_free(&rr);
     } else {
-        ProcResult rr = run_exe_with_cmdline(r->tmp_exe, args, args && *args ? 20 : 5,
+        ProcResult rr = run_exe_with_cmdline(r->tmp_exe, args, args && *args ? scaled(20) : scaled(5),
                                              &r->run_cmdline);
         out_buf = strappend(out_buf, &out_len, &out_cap, "%s", rr.out);
         r->exec_exit = rr.exit_code;
@@ -3181,7 +3205,7 @@ static void unit_compile_exec(const char *src_path, const char *base,
     if (is_err_test(base)) {
         char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 1);
+        ProcResult cr = proc_run(ca, scaled(30), 1);
         r->exit_code = cr.exit_code;
         r->compile_out = cr.out;
         cr.out = NULL;
@@ -3193,7 +3217,7 @@ static void unit_compile_exec(const char *src_path, const char *base,
     {
         char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 1);
+        ProcResult cr = proc_run(ca, scaled(30), 1);
         if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
             r->exit_code = cr.exit_code != 0 ? cr.exit_code : -1;
             r->compile_out = cr.out;
@@ -3284,7 +3308,7 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
             fprintf(stderr, "%s", r->compile_out);
         /* Re-run compile for diagnostics */
         if (r->compile_cmdline && !compiler_name) {
-            ProcResult vr = run_exe_with_cmdline(NULL, r->compile_cmdline, 30, NULL);
+            ProcResult vr = run_exe_with_cmdline(NULL, r->compile_cmdline, scaled(30), NULL);
             fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                     base, vr.exit_code,
                     vr.timed_out ? ", timed out" : "",
@@ -3499,7 +3523,7 @@ static int run_unit_tests(void) {
                     strcat(tmp, ".exe");
                 char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
                 compile_cmdline = cmdline_from_argv(ca);
-                ProcResult cr = proc_run(ca, 30, 1);
+                ProcResult cr = proc_run(ca, scaled(30), 1);
                 if (cr.exit_code == 0) {
                     if (is_todo_test(base)) {
                         print_result(base, COL_YELLOW, "TODO (should fail)");
@@ -3534,7 +3558,7 @@ static int run_unit_tests(void) {
             {
                 char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
                 compile_cmdline = cmdline_from_argv(ca);
-                ProcResult cr = proc_run(ca, 30, 1);
+                ProcResult cr = proc_run(ca, scaled(30), 1);
                 if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
                     if (is_todo_test(base)) {
                         print_result(base, COL_YELLOW, "TODO (compile)");
@@ -3552,7 +3576,7 @@ static int run_unit_tests(void) {
                     vlog_test_details(base, compile_cmdline, cr.out, NULL, NULL);
                     /* Re-run compile for diagnostics */
                     if (!compiler_name) {
-                        ProcResult vr = run_exe_with_cmdline(NULL, compile_cmdline, 30, NULL);
+                        ProcResult vr = run_exe_with_cmdline(NULL, compile_cmdline, scaled(30), NULL);
                         fprintf(stderr, "--- %s COMPILE re-run (exit=%d%s%s) ---\n",
                                 base, vr.exit_code,
                                 vr.timed_out ? ", timed out" : "",
@@ -4197,6 +4221,7 @@ static DgDoAction dgdo_parse(const char *content) {
 }
 
 static int g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip, g_tort_total;
+static int g_tort_error_pass, g_tort_error_fail;
 static char *g_tort_compile_errors, *g_tort_runtime_errors;
 
 static void tort_add_error(char **list, const char *name) {
@@ -4440,7 +4465,7 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
         ra[ri++] = r->tmp_exe;
         ra[ri] = NULL;
         r->run_cmdline = cmdline_from_argv(ra);
-        ProcResult rr = proc_run(ra, has_runner ? 20 : 5, 0);
+        ProcResult rr = proc_run(ra, scaled(5), 0);
         r->exec_exit = rr.exit_code;
         r->exec_timed_out = rr.timed_out;
         if (rr.exit_code != 0 && !has_runner) {
@@ -4492,12 +4517,24 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
             // dg-error/dg-warning: expected compile failure with an error
             // reported on every dg-error line is success
             g_tort_pass++;
+            g_tort_error_pass++;
             if (!summary_only) print_result(name, COL_GREEN, "PASS (expected error)");
+        } else if (r->expect_compile_error) {
+            // dg-error/dg-warning: compiler failed but didn't report every
+            // expected error line — a distinct failure mode from a plain
+            // unexpected compile failure, tracked separately
+            g_tort_error_fail++;
+            tort_add_error(&g_tort_compile_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (dg-error lines)");
+                if (r->compile_out && r->compile_out[0])
+                    fprintf(stderr, "%s", r->compile_out);
+            }
         } else {
             g_tort_fail_compile++;
             tort_add_error(&g_tort_compile_errors, name);
             if (!summary_only) {
-                print_result(name, COL_RED, r->expect_compile_error ? "FAIL (dg-error lines)" : "FAIL (compile)");
+                print_result(name, COL_RED, "FAIL (compile)");
                 if (r->compile_out && r->compile_out[0])
                     fprintf(stderr, "%s", r->compile_out);
             }
@@ -4645,16 +4682,23 @@ static void run_torture_test(const char *src, bool summary_only) {
     ProcResult cr = proc_run(ca, torture_compile_timeout(content), 0);
 
     if (cr.exit_code != 0) {
-        bool expect_error =
-            (contains(content, "dg-error") || contains(content, "dg-warning")) &&
-            dg_error_lines_reported(content, cr.out);
+        bool is_dg_test = contains(content, "dg-error") || contains(content, "dg-warning");
+        bool expect_error = is_dg_test && dg_error_lines_reported(content, cr.out);
         if (contains(cr.out, "No such file") || contains(cr.out, "cannot open") ||
             contains(cr.out, "include file") || contains(cr.out, "not found")) {
             g_tort_skip++;
             if (!summary_only) print_result(name, COL_YELLOW, "SKIP (missing include)");
         } else if (expect_error) {
             g_tort_pass++;
+            g_tort_error_pass++;
             if (!summary_only) print_result(name, COL_GREEN, "PASS (expected error)");
+        } else if (is_dg_test) {
+            g_tort_error_fail++;
+            tort_add_error(&g_tort_compile_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (dg-error lines)");
+                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+            }
         } else {
             g_tort_fail_compile++;
             tort_add_error(&g_tort_compile_errors, name);
@@ -4705,7 +4749,7 @@ static void run_torture_test(const char *src, bool summary_only) {
     ra[ri++] = exe_path;
     ra[ri] = NULL;
     char *run_cmdline = cmdline_from_argv(ra);
-    ProcResult rr = proc_run(ra, has_runner ? 20 : 5, 0);
+    ProcResult rr = proc_run(ra, scaled(5), 0);
     if (rr.exit_code != 0) {
         g_tort_fail_runtime++;
         tort_add_error(&g_tort_runtime_errors, name);
@@ -4731,6 +4775,7 @@ static void run_torture_test(const char *src, bool summary_only) {
 
 static int run_torture_suite(bool summary_only) {
     g_tort_pass = g_tort_fail_compile = g_tort_fail_runtime = g_tort_skip = g_tort_total = 0;
+    g_tort_error_pass = g_tort_error_fail = 0;
     free(g_tort_compile_errors);
     g_tort_compile_errors = NULL;
     free(g_tort_runtime_errors);
@@ -4878,7 +4923,7 @@ static int run_torture_suite(bool summary_only) {
         */
         max_fail = 4;
 
-    int fail = g_tort_fail_compile + g_tort_fail_runtime;
+    int fail = g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime;
     if (only_test_count == 0) {
         int eff = g_tort_total - g_tort_skip;
         int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
@@ -4886,15 +4931,15 @@ static int run_torture_suite(bool summary_only) {
         const char *rst = fail > max_fail ? COL_RESET : "";
         printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
         if (fail)
-            printf("%s%d fail (%d compile/%d runtime)%s, %d skipped.\n",
-                   red, fail, g_tort_fail_compile, g_tort_fail_runtime, rst, g_tort_skip);
+            printf("%s%d fail (%d compile/%d error/%d runtime)%s, %d skipped.\n",
+                   red, fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, rst, g_tort_skip);
         else
             printf("0 failed, %d skipped.\n", g_tort_skip);
         if (g_log_fp) {
             fprintf(g_log_fp, "\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
             if (fail)
-                fprintf(g_log_fp, "%d failed (%d compile/%d runtime), %d skipped.\n",
-                        fail, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
+                fprintf(g_log_fp, "%d failed (%d compile/%d error/%d runtime), %d skipped.\n",
+                        fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, g_tort_skip);
             else
                 fprintf(g_log_fp, "0 failed, %d skipped.\n", g_tort_skip);
         }
@@ -4902,14 +4947,20 @@ static int run_torture_suite(bool summary_only) {
             logprintf("\nCompile failures: %s\n", g_tort_compile_errors);
         if (g_tort_runtime_errors && *g_tort_runtime_errors)
             logprintf("\nRuntime failures: %s\n", g_tort_runtime_errors);
+        if (g_tort_error_pass + g_tort_error_fail > 0)
+            logprintf("\nDg-error tests: %d/%d passed (caught expected error), %d failed.\n",
+                      g_tort_error_pass, g_tort_error_pass + g_tort_error_fail,
+                      g_tort_error_fail);
 
         char sp[256];
         char sc[512];
         snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc),
-                 "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n",
-                 g_tort_total, g_tort_pass, g_tort_fail_compile + g_tort_fail_runtime,
-                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip);
+                 "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n"
+                 "ERROR_PASS=%d\nERROR_FAIL=%d\n",
+                 g_tort_total, g_tort_pass, fail,
+                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip,
+                 g_tort_error_pass, g_tort_error_fail);
         write_summary(sp, sc);
     }
 
@@ -4932,7 +4983,7 @@ static void comp_compile_exec(const char *src_path, const char *base,
     /* compile with gcc */
     {
         char *ca[] = {(char *)gcc_path, "-o", r->gcc_exe_path, (char *)src_path, NULL};
-        ProcResult cr = proc_run(ca, 30, 1);
+        ProcResult cr = proc_run(ca, scaled(30), 1);
         if (cr.exit_code != 0) {
             r->exit_code = cr.exit_code;
             proc_free(&cr);
@@ -4944,7 +4995,7 @@ static void comp_compile_exec(const char *src_path, const char *base,
     {
         char *ca[] = {(char *)rcc, "-o", r->tmp_exe, (char *)src_path, NULL};
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run(ca, 30, 1);
+        ProcResult cr = proc_run(ca, scaled(30), 1);
         if (cr.exit_code != 0) {
             r->exit_code = -1;
             r->compile_out = cr.out;
@@ -4959,7 +5010,7 @@ static void comp_compile_exec(const char *src_path, const char *base,
     /* run gcc */
     {
         char *ga[] = {r->gcc_exe_path, NULL};
-        ProcResult gr = proc_run(ga, 5, 0);
+        ProcResult gr = proc_run(ga, scaled(5), 0);
         r->gcc_exec_exit = gr.exit_code;
         r->gcc_exec_out = gr.out;
         gr.out = NULL;
@@ -4969,7 +5020,7 @@ static void comp_compile_exec(const char *src_path, const char *base,
     {
         char *ra[] = {r->tmp_exe, NULL};
         r->run_cmdline = cmdline_from_argv(ra);
-        ProcResult rr = proc_run(ra, 5, 0);
+        ProcResult rr = proc_run(ra, scaled(5), 0);
         r->exec_exit = rr.exit_code;
         r->exec_timed_out = rr.timed_out;
         r->exec_out = rr.out;
@@ -5208,7 +5259,7 @@ static int run_compliance_suite(void) {
 
             { /* compile with gcc */
                 char *ca[] = {(char *)gcc_path, "-o", gcc_exe, src_path, NULL};
-                ProcResult cr = proc_run(ca, 30, 1);
+                ProcResult cr = proc_run(ca, scaled(30), 1);
                 if (cr.exit_code != 0) {
                     print_result(base, COL_YELLOW, "SKIP (gcc fail)");
                     comp_skip++;
@@ -5221,7 +5272,7 @@ static int run_compliance_suite(void) {
             { /* compile with rcc */
                 char *ca[] = {(char *)rcc, "-o", rcc_exe, src_path, NULL};
                 rcc_compile_cmdline = cmdline_from_argv(ca);
-                ProcResult cr = proc_run(ca, 30, 1);
+                ProcResult cr = proc_run(ca, scaled(30), 1);
                 if (cr.exit_code != 0) {
                     print_result(base, COL_RED, "FAIL (rcc compile)");
                     if (cr.out && cr.out[0]) fprintf(stderr, "    %s\n", cr.out);
@@ -5237,10 +5288,10 @@ static int run_compliance_suite(void) {
             }
 
             char *ga[] = {gcc_exe, NULL};
-            ProcResult gr = proc_run(ga, 5, 0);
+            ProcResult gr = proc_run(ga, scaled(5), 0);
             char *ra[] = {rcc_exe, NULL};
             rcc_run_cmdline = cmdline_from_argv(ra);
-            ProcResult rr = proc_run(ra, 5, 0);
+            ProcResult rr = proc_run(ra, scaled(5), 0);
             rcc_run_out = rr.out;
 
             bool ok = (gr.exit_code == rr.exit_code) &&
@@ -5330,7 +5381,7 @@ static int run_ctest_one(const char *ctest_dir, const char *test_name) {
 
     char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, src_path, NULL};
     char *compile_cmdline = cmdline_from_argv(ca);
-    ProcResult cr = proc_run(ca, 30, 1);
+    ProcResult cr = proc_run(ca, scaled(30), 1);
     int fail = 0;
     char *run_cmdline = NULL;
     ProcResult rr = {0};
@@ -5338,7 +5389,7 @@ static int run_ctest_one(const char *ctest_dir, const char *test_name) {
         print_result(num, COL_RED, "COMPILE FAIL");
         fail = 1;
     } else {
-        rr = run_exe_with_cmdline(bin_path, "", 30, &run_cmdline);
+        rr = run_exe_with_cmdline(bin_path, "", scaled(30), &run_cmdline);
         if (rr.exit_code != 0) {
             print_result(num, COL_RED, "FAIL (non-zero exit)");
             fail = 1;
@@ -5392,7 +5443,7 @@ static void ctest_compile_exec(const char *src_path, const char *name,
 #endif
     char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", r->tmp_exe, (char *)src_path, NULL};
     r->compile_cmdline = cmdline_from_argv(ca);
-    ProcResult cr = proc_run(ca, 30, 1);
+    ProcResult cr = proc_run(ca, scaled(30), 1);
     if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
         r->exit_code = cr.exit_code != 0 ? cr.exit_code : -1;
         r->compile_out = cr.out;
@@ -5403,7 +5454,7 @@ static void ctest_compile_exec(const char *src_path, const char *name,
     proc_free(&cr);
     r->did_compile = true;
 
-    ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", 30, &r->run_cmdline);
+    ProcResult rr = run_exe_with_cmdline(r->tmp_exe, "", scaled(30), &r->run_cmdline);
     r->exec_exit = rr.exit_code;
     r->exec_timed_out = rr.timed_out;
     r->exec_out = rr.out;
@@ -5609,13 +5660,13 @@ static int run_ctest_suite(void) {
                     strcat(bin_path, ".exe");
 
                 char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, (char *)*f, NULL};
-                ProcResult cr = proc_run(ca, 30, 1);
+                ProcResult cr = proc_run(ca, scaled(30), 1);
                 bool test_pass = false;
                 if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
                     print_result(name, COL_RED, "COMPILE FAIL");
                     ctest_fail2++;
                 } else {
-                    ProcResult rr = run_exe(bin_path, "", 30);
+                    ProcResult rr = run_exe(bin_path, "", scaled(30));
                     if (rr.exit_code != 0) {
                         print_result(name, COL_RED, "FAIL (non-zero exit)");
                         ctest_fail2++;
@@ -5780,6 +5831,7 @@ static void generate_report(void) {
 
     struct {
         int total, pass, fail, skip, fail_compile, fail_runtime;
+        int error_pass, error_fail;
         bool found;
     } s[NSUITE] = {0};
 
@@ -5805,6 +5857,10 @@ static void generate_report(void) {
                 s[i].fail_compile = v;
             else if (sscanf(p, "FAIL_RUNTIME=%d", &v) == 1)
                 s[i].fail_runtime = v;
+            else if (sscanf(p, "ERROR_PASS=%d", &v) == 1)
+                s[i].error_pass = v;
+            else if (sscanf(p, "ERROR_FAIL=%d", &v) == 1)
+                s[i].error_fail = v;
             if (!nl) break;
             p = nl + 1;
         }
@@ -5864,6 +5920,9 @@ static void generate_report(void) {
             fprintf(rf, "- **Fail Compile**: %d\n", s[i].fail_compile);
         if (s[i].fail_runtime > 0)
             fprintf(rf, "- **Fail Runtime**: %d\n", s[i].fail_runtime);
+        if (s[i].error_pass + s[i].error_fail > 0)
+            fprintf(rf, "- **Dg-error Tests**: %d/%d passed, %d failed\n",
+                    s[i].error_pass, s[i].error_pass + s[i].error_fail, s[i].error_fail);
         int eff = s[i].total - s[i].skip;
         if (s[i].skip > 0 && eff > 0)
             fprintf(rf, "- **Pass Rate (excl. skip)**: %d%%\n", (s[i].pass * 100 + eff / 2) / eff);
@@ -5947,6 +6006,9 @@ int main(int argc, char **argv) {
         } else if (streq(a, "--jobs") && i + 1 < argc) {
             g_num_workers = atoi(argv[++i]);
             if (g_num_workers < 1) g_num_workers = 1;
+        } else if (streq(a, "--timeout") && i + 1 < argc) {
+            g_timeout_override = atoi(argv[++i]);
+            if (g_timeout_override < 1) g_timeout_override = 0;
         } else if (streq(a, "--help") || streq(a, "-h")) {
             printf("Usage: ./run_tests [rcc-binary] [options] [test-names...]\n\n");
             printf("Options (default: --tcc --unit-tests --compliance --ctest):\n");
@@ -5960,7 +6022,11 @@ int main(int argc, char **argv) {
             printf("  --summary     Torture summary-only (no per-test output)\n");
             printf("  --no-color    Disable ANSI color output\n");
             printf("  --parallel    Run tests in parallel (auto-detect worker count)\n");
-            printf("  --jobs N      Run tests with N worker threads (--jobs 1 = sequential)\n\n");
+            printf("  --jobs N      Run tests with N worker threads (--jobs 1 = sequential)\n");
+            printf("  --timeout N   Override every per-test compile/exec timeout with N\n");
+            printf("                seconds (also raises the 120s hard ceiling if N>120).\n");
+            printf("                Use a larger N for a slow-but-working compiler, or a\n");
+            printf("                smaller N to fail fast against one that hangs/loops.\n\n");
             printf("rcc-binary      cc, with optional options (in-proc or auto if not given)\n");
             printf("test-names...   Run only these tests\n");
             return 0;

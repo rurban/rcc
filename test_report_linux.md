@@ -46,5 +46,5 @@ Generated: July 27 2026 17:21
 - **Passed**: 3586
 - **Failed**: 4
 - **Skipped**: 373
-- **Fail Compile**: 4
+- **Dg-error Tests**: 34/38 passed, 4 failed
 - **Pass Rate (excl. skip)**: 100%

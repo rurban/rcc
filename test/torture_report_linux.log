@@ -3964,6 +3964,8 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3586/3590 passed (100%), 4 failed (4 compile/0 runtime), 373 skipped.
+Torture: 3586/3590 passed (100%), 4 failed (0 compile/4 error/0 runtime), 373 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
+
+Dg-error tests: 34/38 passed (caught expected error), 4 failed.
