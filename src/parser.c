@@ -256,6 +256,91 @@ struct PendingGoto {
 };
 
 static PendingGoto *pending_gotos;
+
+// GNU nested functions: per-enclosing-function parser state, pushed before
+// parsing a nested function's own params/body (which gets a fresh, empty
+// locals/label_scopes/etc of its own — exactly the reset parse()'s
+// toplevel loop already does for every top-level function) and popped
+// immediately after. The saved `locals`/`label_scopes` lists are frozen
+// snapshots (arena-allocated, never mutated after the snapshot) that
+// find_var()/goto resolution walk outward through when a name isn't found
+// in the current (innermost) scope — this is what lets a nested function
+// reference an enclosing function's locals and __label__ labels.
+typedef struct FnCtx FnCtx;
+struct FnCtx {
+    FnCtx *next;
+    char *fn_name; // enclosing function's name, for asm-name mangling
+    LVar *locals;
+    int stack_offset;
+    LVar *current_fn_scope_locals;
+    char *parser_current_fn;
+    int current_block_depth;
+    LabelScope *label_scopes;
+    PendingGoto *pending_gotos;
+    Node *current_switch;
+    Node *current_loop;
+    bool fn_uses_vla;
+    bool current_fn_is_inline;
+};
+static FnCtx *fn_ctx_stack;
+static int fn_ctx_depth;
+static int nested_fn_counter; // disambiguates same-named nested fns file-wide
+// Tentative declaration: the defining declaration (with tl_item_head)
+// lives much later in this file, alongside parse()'s toplevel loop that
+// initializes it; parse_nested_function_def() (defined earlier in the
+// file, right after compound_stmt()) also appends to this same list.
+static TLItem *tl_item_cur;
+
+// Push the current per-function parser state and reset to a fresh, empty
+// state for parsing a nested function's own params/body.
+static void push_fn_ctx(void) {
+    FnCtx *c = arena_alloc(sizeof(FnCtx));
+    c->fn_name = parser_current_fn;
+    c->locals = locals;
+    c->stack_offset = stack_offset;
+    c->current_fn_scope_locals = current_fn_scope_locals;
+    c->parser_current_fn = parser_current_fn;
+    c->current_block_depth = current_block_depth;
+    c->label_scopes = label_scopes;
+    c->pending_gotos = pending_gotos;
+    c->current_switch = current_switch;
+    c->current_loop = current_loop;
+    c->fn_uses_vla = fn_uses_vla;
+    c->current_fn_is_inline = current_fn_is_inline;
+    c->next = fn_ctx_stack;
+    fn_ctx_stack = c;
+    fn_ctx_depth++;
+
+    locals = NULL;
+    stack_offset = CHAIN_RSP_OFFSET; // reserve [80,96) for the static-chain rbp+rsp slots
+    current_fn_scope_locals = NULL;
+    current_block_depth = 0;
+    label_scopes = NULL;
+    pending_gotos = NULL;
+    current_switch = NULL;
+    current_loop = NULL;
+    fn_uses_vla = false;
+    current_fn_is_inline = false;
+}
+
+// Restore the enclosing function's parser state after a nested function's
+// params/body have been fully parsed.
+static void pop_fn_ctx(void) {
+    FnCtx *c = fn_ctx_stack;
+    locals = c->locals;
+    stack_offset = c->stack_offset;
+    current_fn_scope_locals = c->current_fn_scope_locals;
+    parser_current_fn = c->parser_current_fn;
+    current_block_depth = c->current_block_depth;
+    label_scopes = c->label_scopes;
+    pending_gotos = c->pending_gotos;
+    current_switch = c->current_switch;
+    current_loop = c->current_loop;
+    fn_uses_vla = c->fn_uses_vla;
+    current_fn_is_inline = c->current_fn_is_inline;
+    fn_ctx_stack = c->next;
+    fn_ctx_depth--;
+}
 static Node *conditional(Token **rest, Token *tok);
 
 // Fast token/string-literal comparison (avoids strlen at runtime, op is constant)
@@ -520,10 +605,31 @@ static Node *new_complex_val(Node *real_part, Node *imag_part, Type *cty, Token 
     return result;
 }
 
+// Set by find_var() as a side effect on every successful lookup: 0 when
+// found in the current function's own `locals` or the global table
+// (ordinary access, unchanged from before nested functions existed); N>0
+// when found N enclosing-function levels up via the FnCtx stack (see
+// Node.chain_depth). Callers that build an ND_LVAR node from a find_var()
+// result read this immediately afterward and stash it on the node.
+static int last_find_var_chain_depth;
+
 static LVar *find_var(Token *tok) {
+    last_find_var_chain_depth = 0;
     for (LVar *var = locals; var; var = var->next)
         if (var->name == tok->name)
             return var;
+    // Nested function: walk outward through enclosing functions' frozen
+    // locals snapshots (FnCtx.locals) before falling back to globals, so a
+    // nested function body can reference an enclosing function's locals
+    // and parameters (GNU nested-function variable capture).
+    int depth = 1;
+    for (FnCtx *c = fn_ctx_stack; c; c = c->next, depth++) {
+        for (LVar *var = c->locals; var; var = var->next)
+            if (var->name == tok->name) {
+                last_find_var_chain_depth = depth;
+                return var;
+            }
+    }
     return find_global_name(tok->name);
 }
 
@@ -865,6 +971,65 @@ static LabelScope *find_label_scope(char *name) {
         if (ls->name == name)
             return ls;
     return NULL;
+}
+
+// Nested-function &&label / nonlocal-goto support: find which enclosing
+// function (by name) declares `name` as a label, walking outward through
+// the FnCtx stack's frozen label_scopes snapshots after a miss in the
+// current function's own label_scopes. Returns NULL (and leaves
+// *owner_fn_depth at 0) when the label belongs to the CURRENT function
+// (ordinary case, unchanged from before nested functions existed) or
+// isn't found anywhere; otherwise returns the owning function's name and
+// sets *owner_fn_depth to how many FnCtx levels up it was found (mirrors
+// find_var()'s chain_depth, though label references don't need the value
+// at codegen time the way variable chain-walks do — a label's address is
+// a compile-time-constant local symbol regardless of which function
+// defines it).
+static char *find_label_scope_owner(char *name, int *owner_fn_depth) {
+    *owner_fn_depth = 0;
+    if (find_label_scope(name))
+        return NULL; // declared in the current function: ordinary case
+    int depth = 1;
+    for (FnCtx *c = fn_ctx_stack; c; c = c->next, depth++) {
+        for (LabelScope *ls = c->label_scopes; ls; ls = ls->next)
+            if (ls->name == name) {
+                *owner_fn_depth = depth;
+                return c->fn_name;
+            }
+    }
+    return NULL;
+}
+
+// Set of function names (interned pointers) that are the target of an
+// actual nonlocal goto from a nested descendant - i.e. functions whose
+// codegen prologue must record its own stable rsp/sp (CHAIN_RSP_OFFSET
+// in rcc.h) for that descendant's ND_GOTO to read back. Populated during
+// parsing (see the goto-statement handler below); parsing completes
+// fully before codegen runs (see lib.c/main.c: parse() then codegen()),
+// so by the time codegen's prologue-emission code queries this via
+// is_goto_target_fn(), the set is final. Taking a label's *address*
+// (&&label / ND_LABEL_VAL) does NOT need this - only an actual jump
+// restores stack state.
+typedef struct GotoTargetFn GotoTargetFn;
+struct GotoTargetFn {
+    char *name;
+    GotoTargetFn *next;
+};
+static GotoTargetFn *goto_target_fns;
+
+static void mark_goto_target_fn(char *name) {
+    for (GotoTargetFn *g = goto_target_fns; g; g = g->next)
+        if (g->name == name) return;
+    GotoTargetFn *g = arena_alloc(sizeof(GotoTargetFn));
+    g->name = name;
+    g->next = goto_target_fns;
+    goto_target_fns = g;
+}
+
+bool is_goto_target_fn(const char *name) {
+    for (GotoTargetFn *g = goto_target_fns; g; g = g->next)
+        if (g->name == name) return true;
+    return false;
 }
 
 static void record_label_scope(char *name, LVar *locals_at_label) {
@@ -5680,6 +5845,9 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
     return tok;
 }
 
+static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
+                                        char *decl_name, char *mangled_name);
+
 static Node *declaration(Token **rest, Token *tok) {
     // C23 static_assert / C11 _Static_assert
     if (equalc(tok, "static_assert") || equalc(tok, "_Static_assert")) {
@@ -5800,6 +5968,24 @@ static Node *declaration(Token **rest, Token *tok) {
                 }
                 if (equalc(tok, ","))
                     tok = tok->next;
+            }
+            // GNU nested function: `int foo(params) { body }` appearing as
+            // a statement inside another function's body (this branch is
+            // block-scope-only; the file-scope function-definition path in
+            // parse() has its own '{' handling and never reaches here).
+            if (equalc(tok, "{")) {
+                for (Type *pt = fty->param_types; pt; pt = pt->param_next)
+                    if (pt->vla_len_expr || (pt->kind == TY_PTR && pt->base && pt->base->vla_len_expr))
+                        error_tok(tok, "nested function '%s' with a VLA-typed "
+                                       "parameter is not yet supported",
+                                  name);
+                char *mangled = format(".L.nest.%s.%s.%d", parser_current_fn ? parser_current_fn : "",
+                                       name, nested_fn_counter++);
+                lvar->asm_name = mangled;
+                lvar->is_nested_fn = true;
+                tok = parse_nested_function_def(&tok, tok, fty, name, mangled);
+                *rest = tok;
+                return head.next;
             }
             if (!equalc(tok, ","))
                 break;
@@ -6408,6 +6594,75 @@ static Node *compound_stmt(Token **rest, Token *tok) {
     return compound_stmt_ex(rest, tok, NULL);
 }
 
+// GNU nested function: `int foo(params) { body }` appearing as a statement
+// inside another function's body. `tok` points at the opening '{'; `fty`
+// is the already-parsed TY_FUNC type from declarator() (its param_types
+// list is reused verbatim via the same placeholder-LVar mechanism the
+// top-level function-definition handler in parse() uses — see the
+// `pt->vla_len_val` branch below, mirrored from there). K&R-style nested
+// definitions never reach here (declarator() only returns TY_FUNC for
+// modern-style declarators; K&R falls through a different path in
+// parse()'s own toplevel handler, which nested functions don't share).
+static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
+                                        char *decl_name, char *mangled_name) {
+    push_fn_ctx();
+
+    LVar head = {0};
+    LVar *cur = &head;
+    int param_index = 0;
+    for (Type *pt = fty->param_types; pt; pt = pt->param_next) {
+        char *pname = pt->name ? pt->name : format("__param%d", param_index++);
+        LVar *lvar;
+        if (pt->vla_len_val) {
+            lvar = (LVar *)pt->vla_len_val;
+            if (pt->kind != TY_STRUCT && pt->kind != TY_UNION)
+                lvar->ty = pt;
+            int sz = pt->size < 4 ? 4 : pt->size;
+            int al = pt->align < 4 ? 4 : pt->align;
+            stack_offset = align_to(stack_offset + sz, al);
+            lvar->offset = stack_offset;
+            lvar->next = locals;
+            locals = lvar;
+            lvar->param_next = NULL;
+        } else {
+            lvar = new_var(pname, pt, true);
+        }
+        cur = cur->param_next = lvar;
+    }
+    LVar *params = head.param_next;
+    current_fn_scope_locals = params;
+    parser_current_fn = decl_name;
+
+    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
+        LVar *retbuf = new_var("__retbuf", pointer_to(fty->return_ty), true);
+        retbuf->cleanup_func = NULL;
+    }
+
+    LVar *fn_locals = NULL;
+    Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
+
+    Function *fn = arena_alloc(sizeof(Function));
+    fn->name = decl_name;
+    fn->asm_name = mangled_name;
+    fn->ty = fty;
+    fn->params = params;
+    fn->locals = fn_locals;
+    fn->body = body->body;
+    fn->stack_size = align_to(stack_offset, 16);
+    fn->is_variadic = fty->is_variadic;
+    fn->is_nested = true;
+    fn->is_static = true; // never externally visible; only reachable via its mangled name
+
+    TLItem *item = arena_alloc(sizeof(TLItem));
+    item->kind = TL_FUNC;
+    item->fn = fn;
+    tl_item_cur = tl_item_cur->next = item;
+
+    pop_fn_ctx();
+    *rest = tok;
+    return tok;
+}
+
 static bool is_asm_keyword(Token *tok) {
     return tok->kw == ID_ASM || tok->kw == ID___ASM__ || tok->kw == ID___ASM;
 }
@@ -6945,8 +7200,22 @@ static Node *stmt(Token **rest, Token *tok) {
         node->cleanup_begin = locals;
         LabelScope *label = find_label_scope(node->label_name);
         node->cleanup_end = label ? label->locals : current_fn_scope_locals;
-        if (!label)
-            add_pending_goto(node->label_name, node);
+        if (!label) {
+            int owner_depth;
+            char *owner_fn = find_label_scope_owner(node->label_name, &owner_depth);
+            if (owner_fn) {
+                // Nonlocal goto: the label is declared (via __label__) in an
+                // enclosing function, not this one. Codegen restores that
+                // ancestor frame's rbp/rsp (chain-walking chain_depth
+                // levels, mirroring variable capture) before jumping —
+                // see codegen.c's ND_GOTO case.
+                node->funcname = owner_fn;
+                node->chain_depth = owner_depth;
+                mark_goto_target_fn(owner_fn);
+            } else {
+                add_pending_goto(node->label_name, node);
+            }
+        }
         *rest = skip(tok->next, ";");
         return node;
     }
@@ -7306,9 +7575,10 @@ static Node *primary(Token **rest, Token *tok) {
             Token *fn_tok = tok;
             node = new_node(ND_FUNCALL, tok);
             LVar *var = find_var(tok);
-            if (var)
+            if (var) {
                 node->lhs = new_var_node(var, tok);
-            else {
+                node->lhs->chain_depth = last_find_var_chain_depth;
+            } else {
                 node->funcname = tok->name;
                 LVar *gvar = find_global_name(tok->name);
                 if (gvar && gvar->is_function)
@@ -7368,6 +7638,7 @@ static Node *primary(Token **rest, Token *tok) {
                     error_tok(tok, "'%s' is static but used in inline function '%s'",
                               tok->name, parser_current_fn ? parser_current_fn : "?");
                 node = new_var_node(var, tok);
+                node->chain_depth = last_find_var_chain_depth;
                 tok = tok->next;
             }
         }
@@ -7376,6 +7647,10 @@ static Node *primary(Token **rest, Token *tok) {
         node = new_node(ND_LABEL_VAL, tok);
         node->label_name = tok->next->name;
         node->ty = pointer_to(ty_void);
+        {
+            int owner_depth;
+            node->funcname = find_label_scope_owner(node->label_name, &owner_depth);
+        }
         tok = tok->next->next;
     } else if (tok->kind == TK_NUM) {
         node = new_num(tok->val, tok);
@@ -10794,7 +11069,7 @@ Program *parse(Token *tok) {
                     fty = ty;
                     is_variadic = ty->is_variadic;
                     locals = NULL;
-                    stack_offset = 80;
+                    stack_offset = CHAIN_RSP_OFFSET; // reserve [80,96) uniformly: any top-level function's __label__s may be a nonlocal-goto target - see codegen.c's prologue, which unconditionally records its own stable sp there
                     LVar head = {};
                     LVar *cur = &head;
                     int param_index = 0;
@@ -10835,7 +11110,7 @@ Program *parse(Token *tok) {
                     fty = func_type(ty);
                     bool is_oldstyle = false;
                     locals = NULL;
-                    stack_offset = 80;
+                    stack_offset = CHAIN_RSP_OFFSET; // reserve [80,96) uniformly - see codegen.c's prologue
                     label_scopes = NULL;
                     pending_gotos = NULL;
                     current_switch = NULL;

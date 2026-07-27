@@ -2062,6 +2062,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
     if (call_target) {
+        if (node->lhs && node->lhs->var && node->lhs->var->is_nested_fn) {
+            // GNU nested function, direct call: load the static-chain
+            // pointer into the physical chain register (x18) right before
+            // the call — mirrors the x86-64 path's identical r10 handling.
+            if (node->lhs->chain_depth == 0)
+                arm64_orr_reg(cg_sec, 1, ARM64_X18, ARM64_XZR, ARM64_X29, ARM64_LSL, 0); // mov x18, x29
+            else
+                arm64_ldur(cg_sec, 1, ARM64_X18, ARM64_X29, -CHAIN_SLOT_OFFSET); // ldur x18, [x29, #-CHAIN_SLOT_OFFSET]
+        }
         if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
@@ -2549,6 +2558,24 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     x86_mov_ri(cg_sec, 4, X86_RAX, xmm_args); // movl $xmm_args, %eax
     if (call_target) {
+        if (node->lhs && node->lhs->var && node->lhs->var->is_nested_fn) {
+            // GNU nested function, direct call: load the static-chain
+            // pointer into the physical chain register (%r10) right
+            // before the call, bypassing the VReg allocator — exactly
+            // like argument registers above. depth==0: the callee is
+            // declared directly in the function currently being
+            // compiled, so the chain value is simply this frame's own
+            // rbp. depth>0: the callee shares (or is) an ancestor's
+            // scope one level up from here, so forward this function's
+            // OWN incoming chain slot unchanged (covers self-recursion
+            // and sibling nested functions calling each other).
+            if (node->lhs->chain_depth == 0) {
+                x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
+            } else {
+                X86Mem chain_m = {CG_X86_FP, X86_NOREG, 1, -CHAIN_SLOT_OFFSET};
+                x86_mov_rm(cg_sec, 8, X86_R10, chain_m); // mov -CHAIN_SLOT_OFFSET(rbp), r10
+            }
+        }
         if (call_target == bi_s_alloca) {
             alloca_needed = true;
             fn_uses_alloca = true;
@@ -3961,6 +3988,31 @@ static bool gen_global_reg_read(VReg r, LVar *var) {
 #endif
     return true;
 }
+// GNU nested functions: walk `depth` levels up through saved static-chain
+// pointers, leaving the ancestor frame's own frame-pointer value in `r`.
+// depth==1 is a single load of the CURRENT function's own chain slot (its
+// incoming static chain, spilled at prologue entry — see the
+// `fn->is_nested` prologue block below); depth>1 repeats the load through
+// each intermediate ancestor's own chain slot, which lives at the same
+// CHAIN_SLOT_OFFSET in every nested function's frame by construction (see
+// parser.c's push_fn_ctx). Caller combines the result with the variable's
+// own `->offset` in that ancestor's frame. Static-chain register is %r10
+// (x86-64 SysV convention, also used unmodified on the MS x64 ABI since
+// r10 is scratch/volatile there too) or x18 (AArch64: GCC's
+// STATIC_CHAIN_REGNUM, already excluded from this file's ARM64 register
+// pool — see the "x16-x18: reserved" comment above).
+static void gen_chain_walk_into(VReg r, int depth) {
+#ifdef ARCH_ARM64
+    arm64_ldur(cg_sec, 1, REG(r), ARM64_X29, -CHAIN_SLOT_OFFSET); // ldur r, [x29, #-CHAIN_SLOT_OFFSET]
+    for (int i = 1; i < depth; i++)
+        arm64_ldur(cg_sec, 1, REG(r), REG(r), -CHAIN_SLOT_OFFSET); // ldur r, [r, #-CHAIN_SLOT_OFFSET]
+#else
+    asm_mov_rbp_reg(cg_sec, r, 8, CHAIN_SLOT_OFFSET); // r = [rbp - CHAIN_SLOT_OFFSET]
+    for (int i = 1; i < depth; i++)
+        x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), -CHAIN_SLOT_OFFSET)); // r = [r - CHAIN_SLOT_OFFSET]
+#endif
+}
+
 static VReg gen_addr(Node *node) {
     // A vector arithmetic/compare/unary result is materialized into a 16-byte
     // slot; its "address" is that slot (used when a vector value is returned by
@@ -3993,7 +4045,13 @@ static VReg gen_addr(Node *node) {
         VReg r = alloc_reg();
         if (opt_W) reg_owner[r] = node->var->name;
         if (node->var->is_local) {
-            if (node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr)) {
+#ifndef ARCH_ARM64
+            if (node->chain_depth > 0) {
+                gen_chain_walk_into(r, node->chain_depth);
+                x86_lea(cg_sec, 8, REG(r), x86_mem(REG(r), -node->var->offset)); // lea -offset(%rN), r
+            } else
+#endif
+                if (node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr)) {
 #ifdef ARCH_ARM64
                 arm64_load_from_fp_minus(node->var->offset - 8, REG(r));
 #else
@@ -4001,7 +4059,17 @@ static VReg gen_addr(Node *node) {
 #endif
             } else {
 #ifdef ARCH_ARM64
-                if (node->var->offset <= 4095)
+                if (node->chain_depth > 0) {
+                    VReg base = alloc_reg();
+                    gen_chain_walk_into(base, node->chain_depth);
+                    if (node->var->offset <= 4095)
+                        arm64_sub_imm(cg_sec, 1, REG(r), REG(base), node->var->offset, 0); // sub r, base, #offset
+                    else {
+                        emit_mov_imm64(REG(r), (uint64_t)node->var->offset); // mov r, #offset
+                        arm64_sub_reg(cg_sec, 1, REG(r), REG(base), REG(r), ARM64_LSL, 0); // sub r, base, r
+                    }
+                    free_reg(base);
+                } else if (node->var->offset <= 4095)
                     asm_sub_reg_fp_imm(cg_sec, r, node->var->offset); // sub r, x29, #node->var->offset
                 else {
                     int v = node->var->offset;
@@ -6278,9 +6346,21 @@ static VReg gen(Node *node) {
         } else {
             if (node->var->is_local)
 #ifdef ARCH_ARM64
-                emit_load(node->ty, r, ARM64_BASE_FP, -node->var->offset);
+                if (node->chain_depth > 0) {
+                    VReg base = alloc_reg();
+                    gen_chain_walk_into(base, node->chain_depth);
+                    emit_load(node->ty, r, base, -node->var->offset);
+                    free_reg(base);
+                } else
+                    emit_load(node->ty, r, ARM64_BASE_FP, -node->var->offset);
 #else
-                emit_load(node->ty, r, X86_BASE_RBP, node->var->offset);
+                if (node->chain_depth > 0) {
+                    VReg base = alloc_reg();
+                    gen_chain_walk_into(base, node->chain_depth);
+                    emit_load(node->ty, r, base, -node->var->offset);
+                    free_reg(base);
+                } else
+                    emit_load(node->ty, r, X86_BASE_RBP, node->var->offset);
 #endif
             else if (node->var->is_global_reg && gen_global_reg_read(r, node->var)) {
                 // Handled: r now holds the pinned hardware register's value.
@@ -6679,9 +6759,21 @@ static VReg gen(Node *node) {
         if (node->lhs->kind == ND_LVAR && node->lhs->var->is_local && node->lhs->var->ty->kind != TY_ARRAY) {
             VReg r2 = gen(node->rhs);
 #ifdef ARCH_ARM64
-            emit_store_offset(node->lhs->ty, r2, FRAME_PTR, -node->lhs->var->offset);
+            if (node->lhs->chain_depth > 0) {
+                VReg base = alloc_reg();
+                gen_chain_walk_into(base, node->lhs->chain_depth);
+                emit_store_offset(node->lhs->ty, r2, REG(base), -node->lhs->var->offset);
+                free_reg(base);
+            } else
+                emit_store_offset(node->lhs->ty, r2, FRAME_PTR, -node->lhs->var->offset);
 #else
-            asm_mov_reg_rbp(cg_sec, r2, node->lhs->ty->size, node->lhs->var->offset); // mov rr2, [rbp-node->lhs->ty->size]
+            if (node->lhs->chain_depth > 0) {
+                VReg base = alloc_reg();
+                gen_chain_walk_into(base, node->lhs->chain_depth);
+                x86_mov_mr(cg_sec, node->lhs->ty->size, x86_mem(REG(base), -node->lhs->var->offset), REG(r2));
+                free_reg(base);
+            } else
+                asm_mov_reg_rbp(cg_sec, r2, node->lhs->ty->size, node->lhs->var->offset); // mov rr2, [rbp-node->lhs->ty->size]
 #endif
             // Truncate result to match the variable's type width for unsigned narrow types
             if (node->lhs->ty->is_unsigned && node->lhs->ty->size < 4) {
@@ -8924,10 +9016,77 @@ static VReg gen(Node *node) {
     case ND_GOTO:
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
         emit_vla_dealloc(node->cleanup_begin, node->cleanup_end);
-        {
+#ifdef ARCH_ARM64
+        if (node->funcname) {
+            // Nonlocal goto (GNU __label__ + goto crossing a nested
+            // function's frame boundary back into an enclosing function):
+            // restore that ancestor frame's x29 AND sp exactly. x29 comes
+            // from the usual chain-walk (gen_chain_walk_into); sp is read
+            // straight from the SAME target frame's own CHAIN_RSP_OFFSET
+            // slot - which that ancestor recorded about ITSELF, once, at
+            // its own prologue (see the unconditional stur right after
+            // the `sub sp,sp,#frame_size` above). A generous fixed sp
+            // margin does NOT work: every function's epilogue is `add
+            // sp, sp, #frame_size; ldp fp,lr; ret`, and frame_size is a
+            // per-function, codegen-time value this site (compiled
+            // independently, often *before* the target ancestor - see
+            // parser.c's nested-function-definition path) cannot know.
+            // Nor can the CALLER propagate its own live sp at the call
+            // site: call-site-local register/argument staging transiently
+            // perturbs sp around the very call that would capture it.
+            //
+            // The jump itself goes indirect through a computed address
+            // (adrp+add, exactly ND_LABEL_VAL's mechanism below) rather
+            // than a direct branch+fixup: nested functions are appended
+            // to the TLItem list — and therefore codegen'd — BEFORE their
+            // enclosing function (see parser.c's declaration()), so a
+            // direct branch's symbolic fixup to the enclosing function's
+            // not-yet-emitted label never resolves; adrp+add's ELF
+            // relocation is order-independent and already proven correct
+            // for this exact cross-function case (a nested function's
+            // `&&label` referring to an enclosing label already relies on
+            // it — see ND_LABEL_VAL immediately below).
+            VReg base = alloc_reg();
+            gen_chain_walk_into(base, node->chain_depth); // base = target's x29
+            VReg tmp = alloc_reg();
+            arm64_ldur(cg_sec, 1, REG(tmp), REG(base), -CHAIN_RSP_OFFSET); // tmp = [base, #-CHAIN_RSP_OFFSET] (target's own recorded sp)
+            arm64_orr_reg(cg_sec, 1, ARM64_X29, ARM64_XZR, REG(base), ARM64_LSL, 0); // mov x29, base
+            asm_mov_sp_reg(cg_sec, REG(tmp)); // mov sp, tmp
+            free_reg(tmp);
+            free_reg(base);
+            VReg tgt = alloc_reg();
+            emit_adrp_add(tgt, format(".L.label.%s.%s", node->funcname, node->label_name));
+            asm_jmp_reg(cg_sec, tgt); // br tgt
+            free_reg(tgt);
+        } else {
             size_t goto_off = asm_jmp_label(cg_sec); // b .L.label.%s.%s
             asm_fixup_add(cg_sec, goto_off, format(".L.label.%s.%s", current_fn, node->label_name), 0); // fixup label
         }
+#else
+        if (node->funcname) {
+            // Nonlocal goto: see the ARM64 branch above for the full
+            // rationale on why rsp must be read from the target's own
+            // self-recorded CHAIN_RSP_OFFSET slot (not a guessed margin,
+            // not caller-propagated), and why the jump must be indirect
+            // through a computed (lea-resolved) address rather than a
+            // direct jmp+fixup.
+            VReg base = alloc_reg();
+            gen_chain_walk_into(base, node->chain_depth); // base = target's rbp
+            VReg tmp = alloc_reg();
+            x86_mov_rm(cg_sec, 8, REG(tmp), x86_mem(REG(base), -CHAIN_RSP_OFFSET)); // tmp = [base - CHAIN_RSP_OFFSET] (target's own recorded rsp)
+            x86_mov_rr(cg_sec, 8, X86_RBP, REG(base)); // rbp = base
+            x86_mov_rr(cg_sec, 8, X86_RSP, REG(tmp)); // rsp = tmp
+            free_reg(tmp);
+            free_reg(base);
+            VReg tgt = alloc_reg();
+            asm_lea_rip_reg(cg_sec, tgt, format(".L.label.%s.%s", node->funcname, node->label_name));
+            asm_jmp_reg(cg_sec, tgt); // jmp *tgt
+            free_reg(tgt);
+        } else {
+            size_t goto_off = asm_jmp_label(cg_sec); // b .L.label.%s.%s
+            asm_fixup_add(cg_sec, goto_off, format(".L.label.%s.%s", current_fn, node->label_name), 0); // fixup label
+        }
+#endif
         return -1;
     case ND_GOTO_IND: {
         VReg r = gen(node->lhs);
@@ -8945,10 +9104,15 @@ static VReg gen(Node *node) {
     }
     case ND_LABEL_VAL: {
         VReg r = alloc_reg();
+        // For a nested function's &&label referring to an ENCLOSING
+        // function's label, node->funcname (set by find_label_scope_owner
+        // in parser.c) names the owning function; current_fn only applies
+        // when the label belongs to the function being codegen'd here.
+        const char *label_fn = node->funcname ? node->funcname : current_fn;
 #ifdef ARCH_ARM64
-        emit_adrp_add(r, format(".L.label.%s.%s", current_fn, node->label_name));
+        emit_adrp_add(r, format(".L.label.%s.%s", label_fn, node->label_name));
 #else
-        asm_lea_rip_reg(cg_sec, r, format(".L.label.%s.%s", current_fn, node->label_name)); // lea label(%rip), r
+        asm_lea_rip_reg(cg_sec, r, format(".L.label.%s.%s", label_fn, node->label_name)); // lea label(%rip), r
 #endif
         return r;
     }
@@ -12555,7 +12719,12 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
-        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        // A mangled asm_name (GNU nested function, or __asm__("name")
+        // renaming) is already the exact final symbol text — used as-is,
+        // matching how call sites resolve it (gen_funcall, codegen.c
+        // ~line 1054) and how sym_name_for()/asm_sym_name_for() (above)
+        // already treat asm_name for other purposes.
+        const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
         size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
@@ -12572,6 +12741,26 @@ struct ObjFile *codegen(Program *prog) {
         else {
             emit_mov_imm64(ARM64_X16, (uint64_t)frame_size); // mov x16, #frame_size
             arm64_sub_extreg(cg_sec, 1, ARM64_SP, ARM64_SP, ARM64_X16, ARM64_UXTX, 0); // sub sp, sp, x16
+        }
+
+        // GNU nested function: spill the incoming static-chain pointer
+        // (physical x18, GCC's AArch64 STATIC_CHAIN_REGNUM) to its fixed
+        // frame slot immediately, before any other codegen can clobber
+        // x18 — mirrors the x86-64 prologue's identical block.
+        if (fn->is_nested)
+            arm64_stur(cg_sec, 1, ARM64_X18, ARM64_X29, -CHAIN_SLOT_OFFSET);
+
+        // Nonlocal goto target support: a function whose __label__ is
+        // actually reached by a nested descendant's nonlocal goto (see
+        // is_goto_target_fn, set during parsing) records ITS OWN
+        // just-established, stable sp into its own CHAIN_RSP_OFFSET slot
+        // - see that comment in rcc.h for why this must be self-recorded
+        // rather than propagated by the caller at each call site. Gated
+        // (not unconditional) to avoid growing every function's
+        // prologue by one instruction for no reason.
+        if (is_goto_target_fn(fn->name)) {
+            asm_mov_reg_sp(cg_sec, ARM64_X16); // mov x16, sp
+            arm64_stur(cg_sec, 1, ARM64_X16, ARM64_X29, -CHAIN_RSP_OFFSET);
         }
 
         // Save variadic argument registers at the bottom of the frame (sp)
@@ -12938,7 +13127,7 @@ struct ObjFile *codegen(Program *prog) {
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
         bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
-        const char *fn_sym_name = asm_sym_name(sym_name(fn_label));
+        const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
         size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
@@ -12984,6 +13173,31 @@ struct ObjFile *codegen(Program *prog) {
         uw_stackalloc(sub_amount); // .seh_stackalloc sub_amount
         uw_endprologue(); // .seh_endprologue
 #endif
+
+        // GNU nested function: spill the incoming static-chain pointer
+        // (physical %r10, the SysV convention this codebase reuses) to its
+        // fixed frame slot immediately, before any other codegen can
+        // clobber r10. This is a raw physical-register store, not an
+        // alloc_reg()'d VReg, so it has zero effect on Pass 1's
+        // register-usage discovery — both passes emit it identically.
+        if (fn->is_nested)
+            asm_mov_phyreg_rbp(cg_sec, X86_R10, 8, CHAIN_SLOT_OFFSET);
+
+        // Nonlocal goto target support: a function whose __label__ is
+        // actually reached by a nested descendant's nonlocal goto (see
+        // is_goto_target_fn, set during parsing) records ITS OWN
+        // just-established, stable rsp into its own CHAIN_RSP_OFFSET
+        // slot. A descendant's nonlocal goto (ND_GOTO in codegen.c)
+        // chain-walks to this function's rbp, then reads this exact
+        // value back - see CHAIN_RSP_OFFSET's comment in rcc.h for why
+        // this must be self-recorded rather than propagated by the
+        // caller at each call site (call-site-local register/argument
+        // staging can transiently perturb rsp around the very call that
+        // would otherwise capture it, corrupting the propagated value).
+        // Gated (not unconditional) to avoid growing every function's
+        // prologue by one instruction for no reason.
+        if (is_goto_target_fn(fn->name))
+            asm_mov_phyreg_rbp(cg_sec, X86_RSP, 8, CHAIN_RSP_OFFSET);
 
         // Save variadic argument registers to the reg_save_area
         // (must happen before param saves, which may clobber xmm0 via cvtsd2ss)

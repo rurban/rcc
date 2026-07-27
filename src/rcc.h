@@ -372,6 +372,10 @@ struct LVar {
     bool is_local;
     bool is_extern;
     bool is_function;
+    bool is_nested_fn; // this LVar's is_function target is a GNU nested
+    // function (Function.is_nested); a direct call through it needs a
+    // static-chain value (see Node.chain_depth) loaded into the chain
+    // register before the call — see codegen.c's call-site handling.
     bool is_static; // static local variable
     bool is_inline;
     bool is_weak;
@@ -418,8 +422,33 @@ struct LVar {
     char *decl_fn_name;
 };
 
+// GNU nested functions: fixed frame offset (from rbp/x29) where every
+// nested Function spills its incoming static-chain pointer at prologue
+// entry, reserved on top of the ordinary stack_offset=80 base (see
+// parser.c's nested-function-definition path and codegen.c's prologue).
+// A single well-known offset, uniform across every nested function's own
+// frame, is what lets chain-walking (Node.chain_depth indirections)
+// dereference through an arbitrary number of ancestor frames without
+// needing per-function layout metadata at the point of use.
+#define CHAIN_SLOT_OFFSET 88
+// Nonlocal goto (a nested function's `goto` targeting a label declared via
+// __label__ in an ancestor function) must restore that ancestor's rsp
+// exactly, not just its rbp: every function's epilogue is `add rsp,
+// frame_size; pop rbp; ret`, and frame_size is a per-function, codegen-time
+// value the nonlocal-goto site (compiled independently, often *before* the
+// ancestor - see parser.c's nested-function-definition path) cannot know.
+// So the caller's rsp, like its rbp, is captured once (while still valid,
+// at the call site) and forwarded alongside the rbp chain pointer, in the
+// next slot.
+#define CHAIN_RSP_OFFSET 96
+
 void check_type(Node *node);
 LVar *find_global_name(char *name);
+// True if `name` (an interned function-name pointer) is the target of an
+// actual nonlocal goto from a nested descendant - see parser.c. Valid to
+// call only after parse() has fully returned (codegen() runs as a
+// separate, later pass - see lib.c/main.c).
+bool is_goto_target_fn(const char *name);
 
 #define MAX_ASM_OPERANDS 30
 
@@ -539,6 +568,13 @@ struct Node {
 
     // Local variable
     LVar *var;
+    // Nested-function static-chain access: 0 = var belongs to the function
+    // currently being codegen'd (ordinary rbp/x29-relative access); N>0 =
+    // var was resolved N enclosing-function levels up (see parser.c's
+    // FnCtx stack) and must be reached via N indirections through each
+    // ancestor's saved static-chain pointer (CHAIN_SLOT_OFFSET) before
+    // applying var->offset in that ancestor's own frame.
+    int chain_depth;
 
     // Cleanup range for control-flow that exits scopes
     LVar *cleanup_begin;
@@ -580,6 +616,16 @@ struct Node {
 typedef struct Function Function;
 struct Function {
     Function *next;
+    // True for a GNU nested function (function definition syntactically
+    // inside another function's body); false for an ordinary top-level
+    // function. Nested functions are otherwise ordinary top-level
+    // Functions (own TLItem, own prologue/epilogue, own mangled
+    // asm_name) — this flag only marks the static-chain relationship
+    // codegen needs: at prologue entry, a nested function spills its
+    // incoming static-chain pointer (physical %r10) to CHAIN_SLOT_OFFSET
+    // in its own frame, so nested-body chain_depth>0 accesses (see
+    // Node.chain_depth) and any doubly-nested descendant can walk it.
+    bool is_nested;
     char *name;
     char *asm_name;
     char *alias_target;

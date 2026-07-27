@@ -4149,8 +4149,7 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
             return SKIP_ERROR;
     }
     if (contains(content, "dg-require-effective-target nested") ||
-        streq(name, "20061220-1") || streq(name, "nest-align-1") || streq(name, "920415-1") ||
-        streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447") || streq(name, "pr71494"))
+        streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447"))
         return SKIP_NESTED;
     if (streq(name, "pr70460") || streq(name, "pr41935"))
         return SKIP_NOT_IMPL;

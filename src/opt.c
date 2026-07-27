@@ -1054,9 +1054,17 @@ static void dce_scan_node(Node *node, Function **fns, int n, Function ***wl, int
             Function *f = dce_lookup(fns, n, node->funcname);
             if (f) dce_mark(f, wl, wl_len, wl_cap);
         } else if (node->kind == ND_LVAR && node->var && node->var->is_function) {
-            Function *f = dce_lookup(fns, n, node->var->name);
-            if (!f && node->var->asm_name)
-                f = dce_lookup(fns, n, node->var->asm_name);
+            // asm_name (when set) is always a unique, unambiguous symbol —
+            // unlike node->var->name, which two different GNU nested
+            // functions in different enclosing scopes can share (e.g. two
+            // separate functions each locally defining their own `nested`)
+            // and dce_lookup only returns the FIRST fns[] entry matching a
+            // name, silently marking the wrong one live. Try asm_name
+            // first; name is the fallback for ordinary (non-mangled)
+            // functions.
+            Function *f = node->var->asm_name ? dce_lookup(fns, n, node->var->asm_name) : NULL;
+            if (!f)
+                f = dce_lookup(fns, n, node->var->name);
             if (f) dce_mark(f, wl, wl_len, wl_cap);
         } else if (node->kind == ND_ASM && node->asm_template) {
             for (int i = 0; i < n; i++)
