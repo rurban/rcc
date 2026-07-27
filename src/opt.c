@@ -1139,6 +1139,16 @@ void eliminate_unused_static_inline(Program *prog) {
             Function *t = dce_lookup(fns, n, fns[k]->alias_target);
             if (t) dce_mark(t, &wl, &wl_len, &wl_cap);
         }
+    // A global declaration's alias_target (e.g. `int init_module(void)
+    // __attribute__((alias("nf_log_syslog_init")));`) also keeps the
+    // aliased function alive — the alias itself is not a TL_FUNC item
+    // (it's a declaration, not a definition), so the fns[] loop above
+    // didn't see it.
+    for (LVar *g = prog->globals; g; g = g->next)
+        if (g->alias_target) {
+            Function *t = dce_lookup(fns, n, g->alias_target);
+            if (t) dce_mark(t, &wl, &wl_len, &wl_cap);
+        }
     // A global's initializer taking a candidate's address (a function
     // pointer table entry, e.g. `static const struct ops o = { .fn = h };`)
     // keeps it alive — that Reloc is the only trace of the reference left
