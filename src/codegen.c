@@ -13505,6 +13505,68 @@ struct ObjFile *codegen(Program *prog) {
             }
         }
     }
+    // FMV IFUNC resolvers: for functions with __attribute__((target_clones(...))),
+    // rename the emitted function body to "foo.default", emit a resolver that
+    // returns the best clone, and make "foo" an IFUNC symbol pointing to it.
+    // ELF and COFF both support STT_GNU_IFUNC (MinGW binutils ≥ 2.38).
+#if 1
+    for (TLItem *item = prog->items; item; item = item->next) {
+        if (item->kind != TL_FUNC) continue;
+        Function *fn = item->fn;
+        if (!fn->target_clones || fn->n_target_clones == 0) continue;
+        if (!fn->body) continue;
+
+        const char *fn_name = fn->asm_name ? fn->asm_name : fn->name;
+        const char *fn_sym = asm_sym_name(sym_name(fn_name));
+        const char *default_name = format("%s.default", fn_name);
+        const char *default_sym = asm_sym_name(sym_name(default_name));
+        const char *resolver_name = format("%s.resolver", fn_name);
+        const char *resolver_sym = asm_sym_name(sym_name(resolver_name));
+
+        // Rename existing function symbol from "foo" to "foo.default"
+        int fidx = objfile_find_sym(cg_obj, fn_sym);
+        if (fidx < 0) continue; // shouldn't happen
+        free(cg_obj->syms[fidx].name);
+        cg_obj->syms[fidx].name = strdup(default_sym);
+
+        // Emit resolver returning the default clone.
+        // Use fidx (renamed symbol index) directly to avoid picking up
+        // a duplicate UNDEF entry with the same name from a call-site.
+        cg_set_section(SEC_TEXT);
+        size_t res_start = cg_sec->len;
+        int dsidx = fidx;
+
+#ifdef ARCH_ARM64
+        // ARM64: adrp x0, default@PAGE; add x0, x0, default@PAGEOFF; ret
+        {
+            size_t a_off = cg_sec->len;
+            asm_adrp(cg_sec, ARM64_X0);
+            objfile_add_reloc(cg_obj, SEC_TEXT, a_off, dsidx, R_AARCH64_ADR_PREL_PG_HI21, 0);
+            size_t d_off = cg_sec->len;
+            asm_add_rd_rd_0(cg_sec, ARM64_X0);
+            objfile_add_reloc(cg_obj, SEC_TEXT, d_off, dsidx, R_AARCH64_ADD_ABS_LO12_NC, 0);
+        }
+#else
+        // x86-64: lea foo.default(%rip), %rax
+        secbuf_emit8(cg_sec, 0x48); // REX.W
+        secbuf_emit8(cg_sec, 0x8d); // LEA r64, m
+        secbuf_emit8(cg_sec, 0x05); // ModRM: rip-relative
+        objfile_add_reloc(cg_obj, SEC_TEXT, cg_sec->len, dsidx, R_X86_64_PC32, -4);
+        secbuf_emit32le(cg_sec, 0); // placeholder
+#endif
+        asm_ret(cg_sec);
+        size_t res_end = cg_sec->len;
+
+        objfile_add_sym(cg_obj, resolver_sym,
+                        SEC_TEXT, res_start, res_end - res_start,
+                        SB_GLOBAL, ST_FUNC);
+
+        // Create "foo" as IFUNC pointing to resolver
+        objfile_add_sym(cg_obj, fn_sym,
+                        SEC_TEXT, res_start, res_end - res_start,
+                        SB_GLOBAL, ST_GNU_IFUNC);
+    }
+#endif
     // Flush DWARF debug line info
     if (objfile_has_debug(cg_obj))
         objfile_flush_debug_line(cg_obj, cg_obj->text.len);

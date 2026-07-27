@@ -210,6 +210,9 @@ static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
+static char *pending_target_attr; // __attribute__((target("...")))
+static char **pending_target_clones; // __attribute__((target_clones(...)))
+static int pending_target_clones_n;
 // Set by declarator() when it consumes a trailing __attribute__((transparent_union))
 // right after the identifier (declarator() is called with attr=NULL from most
 // sites, so it can't write directly into the caller's VarAttr) — the
@@ -1494,6 +1497,58 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     }
                     tok = tok->next;
                     tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "target_clones")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    // Parse comma-separated string list: "default","avx2",...
+                    int cap = 4;
+                    pending_target_clones = calloc((size_t)cap, sizeof(char *));
+                    pending_target_clones_n = 0;
+                    while (tok->kind == TK_STR) {
+                        char *s = tok->str;
+                        int len = tok->len;
+                        // strip quotes
+                        if (len >= 2 && (s[0] == '"' || s[0] == '\'')) {
+                            s++;
+                            len -= 2;
+                        }
+                        if (pending_target_clones_n + 1 >= cap) {
+                            cap *= 2;
+                            pending_target_clones = realloc(pending_target_clones, (size_t)cap * sizeof(char *));
+                        }
+                        pending_target_clones[pending_target_clones_n++] = str_intern(s, len);
+                        tok = tok->next;
+                        if (equalc(tok, ","))
+                            tok = tok->next;
+                    }
+                    pending_target_clones[pending_target_clones_n] = NULL; // terminator
+                    tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "target")) {
+                    tok = tok->next;
+                    if (equalc(tok, "(")) {
+                        tok = tok->next;
+                        if (tok->kind == TK_STR) {
+                            char *s = tok->str;
+                            int len = tok->len;
+                            if (len >= 2 && (s[0] == '"' || s[0] == '\'')) {
+                                s++;
+                                len -= 2;
+                            }
+                            pending_target_attr = str_intern(s, len);
+                        }
+                        tok = tok->next;
+                        tok = skip(tok, ")");
+                    }
                     if (equalc(tok, ","))
                         tok = tok->next;
                     continue;
@@ -5666,6 +5721,12 @@ static Node *declaration(Token **rest, Token *tok) {
     pending_destructor = false;
     pending_asm_name = NULL;
     pending_alias_target = NULL;
+    if (pending_target_clones) {
+        free(pending_target_clones);
+        pending_target_clones = NULL;
+    }
+    pending_target_clones_n = 0;
+    pending_target_attr = NULL;
     Type *base = declspec(&tok, tok, &attr);
     char *type_level_cleanup = pending_cleanup_func;
     Node head = {};
@@ -10496,6 +10557,12 @@ Program *parse(Token *tok) {
         pending_vector_size = 0;
         pending_transparent_union = false;
         pending_weak = false;
+        pending_target_attr = NULL;
+        if (pending_target_clones) {
+            free(pending_target_clones);
+            pending_target_clones = NULL;
+        }
+        pending_target_clones_n = 0;
         typedef_scope_restore(rec_typedef_cp);
         tag_scope_restore(rec_tag_cp);
         enum_scope_restore(rec_enum_cp);
@@ -11012,6 +11079,12 @@ Program *parse(Token *tok) {
                     pending_weak = false;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
+                    fn->target_clones = pending_target_clones;
+                    fn->n_target_clones = pending_target_clones_n;
+                    fn->target_attr = pending_target_attr;
+                    pending_target_clones = NULL;
+                    pending_target_clones_n = 0;
+                    pending_target_attr = NULL;
                     // "extern inline __attribute__((always_inline, gnu_inline))"
                     // variadic functions using __builtin_va_arg_pack() are never
                     // emitted; each call site is expanded inline instead (see

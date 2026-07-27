@@ -42,6 +42,7 @@
 #define STT_FUNC    2
 #define STT_SECTION 3
 #define STT_TLS     6
+#define STT_IFUNC   10
 #define STV_DEFAULT 0
 #define SHN_UNDEF   0
 
@@ -355,6 +356,7 @@ int elf_write(ObjFile *obj, const char *path) {
         es.info = ELF64_ST_INFO(STB_LOCAL,
                                 os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
                                     : os->type == ST_TLS                               ? STT_TLS
+                                    : os->type == ST_GNU_IFUNC                         ? STT_IFUNC
                                                                                        : STT_NOTYPE);
         es.shndx = USER_SYM_SHNDX(os);
         es.value = os->offset;
@@ -374,6 +376,7 @@ int elf_write(ObjFile *obj, const char *path) {
         es.info = ELF64_ST_INFO(bind,
                                 os->type == ST_FUNC ? STT_FUNC : os->type == ST_OBJECT ? STT_OBJECT
                                     : os->type == ST_TLS                               ? STT_TLS
+                                    : os->type == ST_GNU_IFUNC                         ? STT_IFUNC
                                                                                        : STT_NOTYPE);
         es.shndx = USER_SYM_SHNDX(os);
         es.value = os->offset;

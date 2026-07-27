@@ -80,7 +80,8 @@ typedef enum { ST_NOTYPE = 0,
                ST_OBJECT = 1,
                ST_FUNC = 2,
                ST_SECTION = 3,
-               ST_TLS = 6 } SymType;
+               ST_TLS = 6,
+               ST_GNU_IFUNC = 10 } SymType;
 
 typedef struct ObjSym ObjSym;
 struct ObjSym {

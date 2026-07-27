@@ -605,6 +605,10 @@ struct Function {
     // reachability pass; meaningless outside that pass
     bool has_def;
     bool dealloc_vla; // restore RSP from VLA base on scope exit
+    // FMV (Function Multi-Versioning): __attribute__((target_clones(...)))
+    char **target_clones; // NULL-terminated array of clone target strings
+    int n_target_clones; // count of target_clones entries (excluding terminator)
+    char *target_attr; // __attribute__((target("..."))) string
 };
 
 typedef struct StrLit StrLit;
