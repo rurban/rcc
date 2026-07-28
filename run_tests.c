@@ -3574,7 +3574,15 @@ static int run_unit_tests(void) {
                 char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
-                if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
+                // Wine: rcc.exe may exit 1 spuriously, and the output
+                // file may have .exe appended even when tmp does not.
+                int file_ok = access(tmp, X_OK) == 0;
+                if (!file_ok) {
+                    char tmp_exe[2 * PATH_MAX];
+                    snprintf(tmp_exe, sizeof(tmp_exe), "%s.exe", tmp);
+                    file_ok = access(tmp_exe, X_OK) == 0;
+                }
+                if (cr.exit_code != 0 && !file_ok) {
                     if (is_todo_test(base)) {
                         print_result(base, COL_YELLOW, "TODO (compile)");
                         todo++;
