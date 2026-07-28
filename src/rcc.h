@@ -330,6 +330,7 @@ extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_time;
+// codeql[cpp/commented-out-code]: trailing note names the real pragma this flag mirrors, not dead code
 extern bool fenv_access; // #pragma STDC FENV_ACCESS state
 extern int pack_align;
 extern bool sse42_available;

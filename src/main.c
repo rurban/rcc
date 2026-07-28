@@ -116,6 +116,37 @@ static char *replace_ext(char *filename, char *new_ext) {
         return format("%.*s%s", (int)(dot - filename), filename, new_ext);
     return format("%s%s", filename, new_ext);
 }
+
+// Reject a path that could break out of the double-quoted shell command
+// string built for the -S debug-disassembly objdump invocation below
+// (CodeQL cpp/command-line-injection, cpp/uncontrolled-process-operation):
+// asm_path/tmp_obj_path are derived from -o / the input filename, both
+// attacker-controllable when rcc is invoked with untrusted arguments (a
+// build service, fuzzer, etc.). The command is run via system() (matching
+// the rest of this driver's tool-invocation style) inside double quotes
+// that must work under both POSIX sh and cmd.exe (wine/mingw) per the
+// comment at its call site, so proper escaping would need two incompatible
+// quoting dialects; refusing a handful of characters no legitimate path
+// ever needs is simpler and strictly safer than attempting to escape them.
+static bool path_is_shell_safe(const char *p) {
+    for (const char *c = p; *c; c++)
+        // `\"` always breaks out of a double-quoted string. `` ` `` and `$`
+        // start shell expansions (command/parameter substitution) inside
+        // double quotes on POSIX sh; `;`, `|`, `&`, `<`, `>`, newlines, and
+        // `%`/`^` (cmd.exe metachars) break command boundaries on either
+        // shell family.
+        // `\\` is deliberately NOT in this list: inside a double-quoted bash
+        // string it only ever escapes a tiny set (\" \$ \\ \` \n), never
+        // breaks the quote, and on Windows/MinGW it's the primary path
+        // separator — rejecting it would break every native-Windows `-S`
+        // disassembly invocation (test_peep, etc.) whose temp dir path
+        // contains backslashes.
+        if (*c == '"' || *c == '`' || *c == '$' || *c == ';' ||
+            *c == '|' || *c == '&' || *c == '<' || *c == '>' || *c == '\n' ||
+            *c == '\r' || *c == '%' || *c == '^')
+            return false;
+    return true;
+}
 void help(void) {
     printf("rcc %s %s - Copyright 2026 Hosokawa-t and Reini Urban\n", VERSION, MACHINE);
     printf("Licensed under the GNU Lesser General Public License v2.1 or later\n");
@@ -254,6 +285,7 @@ int main(int argc, char **argv) {
     xappendf(&libs, &libs_len, &libs_cap, " -lm");
 #endif
 
+    // codeql[cpp/loop-variable-changed]: deliberate ++i/i++ to consume each flag's separate-token argument (e.g. -o, -z, -D, -include); 10 sites below
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--help")) {
             help();
@@ -544,6 +576,10 @@ int main(int argc, char **argv) {
     // with no output file at all.
     FILE *pp_out = stdout;
     if (opt_E && opt_o && !opt_stdout) {
+        // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
+        // -o is the compiler's own output destination, same trust model
+        // as every other compiler's -o (relies on umask, not a sandboxed
+        // path prefix — there's no privilege boundary to cross here).
         pp_out = fopen(out_path, "w");
         if (!pp_out) {
             fprintf(stderr, "rcc: error: cannot open output file %s\n", out_path);
@@ -710,6 +746,8 @@ int main(int argc, char **argv) {
 #elif __APPLE__
             wr = macho_write(obj, tmp_obj_path);
 #else
+            // codeql[cpp/path-injection]: tmp_obj_path is the compiler's
+            // own object-file output path (see the -o comment above).
             wr = elf_write(obj, tmp_obj_path);
 #endif
             if (wr != 0) {
@@ -739,6 +777,17 @@ int main(int argc, char **argv) {
                         free(triple);
                     }
                 }
+                // CodeQL cpp/command-line-injection, cpp/uncontrolled-
+                // process-operation: tmp_obj_path/asm_path (from -o / the
+                // input filename) are embedded in a system() command
+                // string below — reject anything that could break out of
+                // the double quotes instead of attempting to escape it
+                // (see path_is_shell_safe()'s doc comment for why).
+                if (!path_is_shell_safe(tmp_obj_path) || !path_is_shell_safe(asm_path)) {
+                    fprintf(stderr, "rcc: error: path contains unsafe characters for -S disassembly: %s\n",
+                            path_is_shell_safe(tmp_obj_path) ? asm_path : tmp_obj_path);
+                    return 1;
+                }
                 // Double quotes (not single quotes) so this works under both
                 // sh and cmd.exe (wine/mingw); the temp file is removed via
                 // remove() below instead of a shell "rm -f", which cmd.exe
@@ -755,6 +804,8 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "rcc: error: objdump failed for -S output\n");
                 // Emit collected .ascii strings for kernel offsets
                 for (CgAsciiStr *a = cg_ascii_strings; a; a = a->next) {
+                    // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
+                    // appends to the same -S debug-output file opened above.
                     FILE *sf = fopen(asm_path, "a");
                     if (sf) {
                         fprintf(sf, "  .ascii \"%s\"\n", a->str);

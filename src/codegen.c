@@ -185,7 +185,6 @@ static void cg_patch_fn_size(const char *name, size_t start_off) {
 
 static void cg_weak_declare(const char *name) {
     if (cg_dry_run) return;
-    //fprintf(stderr, "DEBUG cg_weak_declare: %s\n", name);
     int sidx = objfile_find_sym(cg_obj, name);
     if (sidx < 0)
         objfile_add_sym(cg_obj, name, SEC_UNDEF, 0, 0, SB_WEAK, ST_NOTYPE);
@@ -514,6 +513,7 @@ static char *reg32[] = {"w10", "w11", "w12", "w13", "w14", "w15", "w19", "w20", 
 #define reg8  reg32
 #define NUM_REGS 12
 #define FRAME_PTR CG_ARM_FP
+// codeql[cpp/commented-out-code]: names the AAPCS64 link-reg/sp roles for reference; unused since FRAME_PTR is the only one needed
 //#define LINK_REG  "x30"
 //#define STACK_REG "sp"
 
@@ -525,6 +525,7 @@ static char *reg16[] = {"%r10w", "%r11w", "%bx", "%r12w", "%r13w", "%r14w", "%r1
 static char *reg8[] = {"%r10b", "%r11b", "%bl", "%r12b", "%r13b", "%r14b", "%r15b", "%sil"};
 #define NUM_REGS 8
 #define FRAME_PTR CG_X86_FP
+// codeql[cpp/commented-out-code]: names the x86-64 stack-pointer register for reference; unused since FRAME_PTR is the only one needed
 //#define STACK_REG "rsp"
 #endif
 
@@ -1206,25 +1207,31 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
 
 #ifdef _WIN32
+    // codeql[cpp/commented-out-code]: AT&T mnemonic legend for cg_x86_argreg below, kept for reference
     //char *argreg32[] = {"%ecx", "%edx", "%r8d", "%r9d"};
     //char *argreg64[] = {"%rcx", "%rdx", "%r8", "%r9"};
     X86Reg cg_x86_argreg[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+    // codeql[cpp/commented-out-code]: legend for the Win64 XMM arg registers, kept for reference
     //char *argxmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3"};
     int shadow_space = 32;
     int max_gp_args = 4;
 #elif defined(ARCH_ARM64)
     // AAPCS64: 8 GP arg regs (x0-x7), 8 SIMD/FP arg regs (v0-v7)
     // x8 is the indirect result register for struct returns
+    // codeql[cpp/commented-out-code]: AAPCS64 register-name legend for the arg-passing scheme described above
     //char *argreg32[] = {"w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"};
     //char *argreg64[] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
     //char *argxmm[] = {"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"};
     int max_gp_args = 8;
     int max_fp_args = 8;
+    // codeql[cpp/commented-out-code]: documents that AAPCS64 needs no shadow space, unlike Win64 above
     //int shadow_space = 0;
 #else
+    // codeql[cpp/commented-out-code]: AT&T mnemonic legend for cg_x86_argreg below, kept for reference
     //char *argreg32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
     //char *argreg64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
     X86Reg cg_x86_argreg[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8, X86_R9};
+    // codeql[cpp/commented-out-code]: legend for the SysV XMM arg registers, kept for reference
     //char *argxmm[] = {"%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"};
     int max_gp_args = 6;
     int max_fp_args = 8;
@@ -1651,8 +1658,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         else
             arg_stack_idx[i] = stack_args++;
     }
-    //int stack_pad = (stack_args & 1) ? 8 : 0;
-    //int stack_reserve = stack_args > 0 ? stack_args * 8 + stack_pad : 0;
 #else
     int gp_reg_args = has_hidden_retbuf ? 1 : 0;
     int fp_reg_args = 0;
@@ -3374,7 +3379,7 @@ static void emit_complex_convert_int(int src, int dst, Type *from, Type *to) {
 // Given a 32-bit x86_64 register name (e.g. "%eax", "%r9d"), return the
 // 8-bit ("%al", "%r9b") or 16-bit ("%ax", "%r9w") sub-register name, used
 // to store a truncated _Complex char/short integer component.
-static const char *x86_subreg(const char *reg32, int sz) {
+static const char *x86_subreg(const char *reg32_name, int sz) {
     static const char *map8[] = {
         "%eax", "%al", "%ecx", "%cl", "%edx", "%dl", "%edi", "%dil",
         "%r8d", "%r8b", "%r9d", "%r9b", "%r10d", "%r10b", "%r11d", "%r11b", NULL};
@@ -3383,9 +3388,9 @@ static const char *x86_subreg(const char *reg32, int sz) {
         "%r8d", "%r8w", "%r9d", "%r9w", "%r10d", "%r10w", "%r11d", "%r11w", NULL};
     const char **map = sz == 1 ? map8 : map16;
     for (int i = 0; map[i]; i += 2)
-        if (!strcmp(reg32, map[i]))
+        if (!strcmp(reg32_name, map[i]))
             return map[i + 1];
-    return reg32;
+    return reg32_name;
 }
 
 // GCC extended-asm operand size-override modifiers (%b0/%w0/%k0/%q0/%h0):
@@ -4063,6 +4068,7 @@ static VReg gen_addr(Node *node) {
             break;
         }
     }
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_LVAR: {
         //fprintf(stderr, "DEBUG ND_LVAR: %s is_local=%d is_function=%d is_weak=%d\n",
@@ -4809,6 +4815,7 @@ static VReg gen_int128(Node *node) {
     if (!node) return R_NONE;
     if (opt_g) emit_loc(node);
 
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
 
     case ND_NUM: {
@@ -6155,6 +6162,7 @@ static VReg gen(Node *node) {
     }
 
 
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_NUM: {
         VReg r = alloc_reg();
@@ -6301,7 +6309,6 @@ static VReg gen(Node *node) {
 #endif
             }
         } else if (!node->var->is_local && node->var->is_function) {
-            //fprintf(stderr, "DEBUG ND_LVAR func: %s is_weak=%d\n", node->var->name, node->var->is_weak);
             if (node->var->is_nested_fn) {
                 // GNU nested function used as a *value* (not a direct
                 // call) - e.g. passed as a function pointer, stored,
@@ -8369,13 +8376,13 @@ static VReg gen(Node *node) {
                 // Complex expression returned as scalar: extract real part
                 int addr = gen_addr(node->lhs);
                 if (addr < 0) addr = gen(node->lhs);
-                Type *ret_ty = current_fn_def->ty->return_ty;
+                Type *cplx_ret_ty = current_fn_def->ty->return_ty;
 #ifdef ARCH_ARM64
                 arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(addr), 0); // ldr w0, [addr]
 #else
                 x86_mov_rm(cg_sec, 4, X86_RAX, x86_mem(REG(addr), 0)); // movl (addr), %eax
 #endif
-                if (ret_ty && ret_ty->size == 1) {
+                if (cplx_ret_ty && cplx_ret_ty->size == 1) {
 #ifdef ARCH_ARM64
                     arm64_uxtb(cg_sec, ARM64_X0, ARM64_X0); // uxtb w0, w0
 #else
@@ -8385,19 +8392,19 @@ static VReg gen(Node *node) {
                 free_reg(addr);
             } else {
                 VReg r = gen(node->lhs);
-                Type *ret_ty = current_fn_def->ty->return_ty;
-                if (ret_ty && is_flonum(ret_ty)) {
+                Type *scalar_ret_ty = current_fn_def->ty->return_ty;
+                if (scalar_ret_ty && is_flonum(scalar_ret_ty)) {
                     if (node->lhs->ty && is_flonum(node->lhs->ty)) {
 #ifdef ARCH_ARM64
                         asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                        if (ret_ty->kind == TY_FLOAT)
+                        if (scalar_ret_ty->kind == TY_FLOAT)
                             asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest)
 #else
                         asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-                        if (ret_ty->kind == TY_FLOAT)
+                        if (scalar_ret_ty->kind == TY_FLOAT)
                             asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0
 #endif
-                    } else if (ret_ty->size == 4) {
+                    } else if (scalar_ret_ty->size == 4) {
 #ifdef ARCH_ARM64
                         {
                             int src_sf = (node->lhs->ty && node->lhs->ty->size >= 8) ? 1 : 0;
@@ -8483,10 +8490,10 @@ static VReg gen(Node *node) {
                     }
                 } else if (node->lhs->ty && is_flonum(node->lhs->ty)) {
                     // Float expression returned as integer: convert from xmm0/d0
-                    int sz = ret_ty ? ret_ty->size : 8;
+                    int sz = scalar_ret_ty ? scalar_ret_ty->size : 8;
 #ifdef ARCH_ARM64
                     {
-                        bool ret_unsigned = ret_ty && ret_ty->is_unsigned;
+                        bool ret_unsigned = scalar_ret_ty && scalar_ret_ty->is_unsigned;
                         if (ret_unsigned)
                             asm_fcvtzu(cg_sec, r, sz); // fcvtzu w/x{r}, d0
                         else
@@ -8494,7 +8501,7 @@ static VReg gen(Node *node) {
                     }
                     if (sz >= 8)
                         asm_mov_x0_reg(cg_sec, REG(r)); // mov x0, reg64[r]
-                    else if (ret_ty && ret_ty->is_unsigned)
+                    else if (scalar_ret_ty && scalar_ret_ty->is_unsigned)
                         asm_mov_w0_reg32(cg_sec, REG(r)); // mov w0, reg32[r]
                     else
                         asm_sxtw(cg_sec, ARM64_X0, REG(r)); // sxtw x0, reg32[r]
@@ -8505,10 +8512,10 @@ static VReg gen(Node *node) {
                 } else {
 #ifdef ARCH_ARM64
                     // Truncate return value to match function return type width
-                    if (ret_ty && ret_ty->size < 4) {
-                        if (ret_ty->is_unsigned)
-                            asm_and_imm(cg_sec, r, 4, (1 << (ret_ty->size * 8)) - 1);
-                        else if (ret_ty->size == 1)
+                    if (scalar_ret_ty && scalar_ret_ty->size < 4) {
+                        if (scalar_ret_ty->is_unsigned)
+                            asm_and_imm(cg_sec, r, 4, (1 << (scalar_ret_ty->size * 8)) - 1);
+                        else if (scalar_ret_ty->size == 1)
                             asm_movsx(cg_sec, r, r, 4, 1); // movsx4->r rr, rr
                         else
                             asm_movsx(cg_sec, r, r, 4, 2); // movsx4->r rr, rr
@@ -8516,8 +8523,8 @@ static VReg gen(Node *node) {
                     asm_mov_x0_reg(cg_sec, REG(r)); // mov x0, x{r}
 #else
                     // Truncate BEFORE moving to %rax so return register has correct value
-                    if (ret_ty && ret_ty->size < 4 && ret_ty->is_unsigned)
-                        asm_and_imm(cg_sec, r, 4, (1 << (ret_ty->size * 8)) - 1); // and mask, rr
+                    if (scalar_ret_ty && scalar_ret_ty->size < 4 && scalar_ret_ty->is_unsigned)
+                        asm_and_imm(cg_sec, r, 4, (1 << (scalar_ret_ty->size * 8)) - 1); // and mask, rr
                     asm_mov_reg_to_retval(cg_sec, r, 8); // movq rr, %rax
 #endif
                 }
@@ -12424,6 +12431,10 @@ struct ObjFile *codegen(Program *prog) {
         SecBuf _dummy;
         secbuf_init(&_dummy);
         SecBuf *saved_sec = cg_sec;
+        // codeql[cpp/stack-address-escape]: restored to saved_sec (line
+        // ~12445 below) before this loop iteration ends, well before
+        // _dummy (a local of codegen() itself, not this loop body) goes
+        // out of scope.
         cg_sec = &_dummy;
         cg_dry_run = true;
         used_regs = 0;
@@ -12686,7 +12697,6 @@ struct ObjFile *codegen(Program *prog) {
                     }
                 }
             } else if (param_index < max_param_regs) {
-                // X86Reg preg = lin_gp_regs[param_index];
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
@@ -12748,6 +12758,7 @@ struct ObjFile *codegen(Program *prog) {
             va_gp_start = gp_count * 8;
             va_fp_start = va_fp * 16 + 32;
             va_st_start = 48 + stack_param_index * 8;
+            // codeql[cpp/commented-out-code]: first-pass formula, superseded by the stack_param_index fix noted near pass 2 below
             // va_st_start = 48 + (gp_count > 4 ? (gp_count - 4) : 0) * 8;
             switch (gp_count) {
             case 0: asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, va_reg_save_ofs); /* fallthrough */ /* movq %rcx, -%d(%rbp) */
@@ -13448,7 +13459,7 @@ struct ObjFile *codegen(Program *prog) {
                 ? 1
                 : 0;
             int xfp = 0;
-            int stack_param_index = 0;
+            int stack_param_index2 = 0;
             for (LVar *var = fn->params; var; var = var->param_next) {
 #ifndef _WIN32
                 // Linux SysV: _Complex float/double are passed in SSE regs,
@@ -13465,10 +13476,10 @@ struct ObjFile *codegen(Program *prog) {
                                 x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xfp);
                                 xfp++;
                             } else {
-                                int stack_off2 = 16 + stack_param_index * 8;
+                                int stack_off2 = 16 + stack_param_index2 * 8;
                                 x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2));
                                 x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0);
-                                stack_param_index++;
+                                stack_param_index2++;
                             }
                         } else {
                             // _Complex double: real in xmm{xfp}, imag in xmm{xfp+1}
@@ -13477,14 +13488,14 @@ struct ObjFile *codegen(Program *prog) {
                                 x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -(var->offset - base_sz)), (X86XmmReg)(xfp + 1));
                                 xfp += 2;
                             } else {
-                                int stack_off2 = 16 + stack_param_index * 8;
-                                if (stack_param_index & 1) stack_param_index++;
-                                stack_off2 = 16 + stack_param_index * 8;
+                                int stack_off2 = 16 + stack_param_index2 * 8;
+                                if (stack_param_index2 & 1) stack_param_index2++;
+                                stack_off2 = 16 + stack_param_index2 * 8;
                                 x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2));
                                 x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0);
                                 x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2 + base_sz));
                                 x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -(var->offset - base_sz)), X86_XMM0);
-                                stack_param_index += 2;
+                                stack_param_index2 += 2;
                             }
                         }
                     } else {
@@ -13494,10 +13505,10 @@ struct ObjFile *codegen(Program *prog) {
                                 x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]);
                                 gp++;
                             } else {
-                                int stack_off2 = 16 + stack_param_index * 8;
+                                int stack_off2 = 16 + stack_param_index2 * 8;
                                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
                                 x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
-                                stack_param_index++;
+                                stack_param_index2++;
                             }
                         } else {
                             if (gp + 1 < max_gp) {
@@ -13506,14 +13517,14 @@ struct ObjFile *codegen(Program *prog) {
                                 x86_mov_mr(cg_sec, base_sz <= 4 ? 4 : 8, x86_mem(X86_RBP, -(var->offset - base_sz)), greg[gp + 1]);
                                 gp += 2;
                             } else {
-                                int stack_off2 = 16 + stack_param_index * 8;
-                                if (stack_param_index & 1) stack_param_index++;
-                                stack_off2 = 16 + stack_param_index * 8;
+                                int stack_off2 = 16 + stack_param_index2 * 8;
+                                if (stack_param_index2 & 1) stack_param_index2++;
+                                stack_off2 = 16 + stack_param_index2 * 8;
                                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
                                 x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
                                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2 + 8));
                                 x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX);
-                                stack_param_index += 2;
+                                stack_param_index2 += 2;
                             }
                         }
                     }
@@ -13526,13 +13537,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), greg[gp + 1]); // movq greg[gp+1], -(off-8)(%rbp)
                         gp += 2;
                     } else {
-                        if (stack_param_index & 1) stack_param_index++;
-                        int stack_off2 = 16 + stack_param_index * 8;
+                        if (stack_param_index2 & 1) stack_param_index2++;
+                        int stack_off2 = 16 + stack_param_index2 * 8;
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2 + 8)); // movq stack_off+8(%rbp), %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
-                        stack_param_index += 2;
+                        stack_param_index2 += 2;
                     }
                     continue;
                 }
@@ -13547,13 +13558,13 @@ struct ObjFile *codegen(Program *prog) {
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
                         gp++;
                     } else {
-                        int stack_off2 = 48 + stack_param_index * 8;
+                        int stack_off2 = 48 + stack_param_index2 * 8;
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2)); // movq stack_off(%rbp), %rax
                         x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx (lo)
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RCX); // movq %rcx, -off(%rbp)
                         x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx (hi)
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RCX); // movq %rcx, -(off-8)(%rbp)
-                        stack_param_index++;
+                        stack_param_index2++;
                     }
                     continue;
                 }
@@ -13627,9 +13638,9 @@ struct ObjFile *codegen(Program *prog) {
                 } else {
                     // Stack argument — passed above return address
 #ifdef _WIN32
-                    int stack_off2 = 48 + stack_param_index * 8;
+                    int stack_off2 = 48 + stack_param_index2 * 8;
 #else
-                    int stack_off2 = 16 + stack_param_index * 8;
+                    int stack_off2 = 16 + stack_param_index2 * 8;
 #endif
                     if (is_flonum(var->ty)) {
                         if (var->ty->size <= 4) {
@@ -13664,12 +13675,12 @@ struct ObjFile *codegen(Program *prog) {
                         x86_mov_rm(cg_sec, psz, X86_RAX, x86_mem(X86_RBP, stack_off2)); // mov stack_off2(%rbp), %rax
                         x86_mov_mr(cg_sec, psz, x86_mem(X86_RBP, -var->offset), X86_RAX); // mov %rax, -var->offset(%rbp)
                     }
-                    stack_param_index++;
+                    stack_param_index2++;
                 }
             }
 #ifdef _WIN32
-            // Fix va_st_start using correct stack_param_index from pass 2
-            va_st_start = 48 + stack_param_index * 8;
+            // Fix va_st_start using correct stack_param_index2 from pass 2
+            va_st_start = 48 + stack_param_index2 * 8;
 #endif
         }
 

@@ -209,6 +209,7 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
     }
 
     // Resolve any pending fixups for this label
+    // codeql[cpp/loop-variable-changed]: deliberate i-- after memmove-compacting a removed fixup so the next i++ revisits the shifted-down element
     for (int i = 0; i < as->nfixups; i++) {
         struct Fixup *fx = &as->fixups[i];
         // FIXUP_LABELDIFF (GAS "A - B" label-difference, e.g. ALTERNATIVE()'s
@@ -741,7 +742,10 @@ static int split_operands(char *line, char **ops, int max_ops) {
             else if (*p == ',' && depth == 0) {
                 *p++ = '\0';
                 break;
-            } else if (*p == '#' || *p == '$') { /* skip */
+                // codeql[cpp/empty-if]: intentional no-op — # and $ (ARM64
+                // immediate/register-list prefixes) aren't comma splits,
+                // don't need special handling, just fall through to p++.
+            } else if (*p == '#' || *p == '$') {
             }
             p++;
         }
@@ -1105,7 +1109,7 @@ static bool sec_is_executable(AsmState *as, int section) {
     if (section == SEC_TEXT) return true;
     if (section >= SEC_NUM) {
         int idx = section - SEC_NUM;
-        if (idx >= 0 && idx < as->obj->extra_sec_count)
+        if (idx < as->obj->extra_sec_count) // idx >= 0 always holds: section >= SEC_NUM was just checked above
             return (as->obj->extra_secs[idx].sh_flags & SHF_EXECINSTR) != 0;
     }
     return false;
@@ -1692,6 +1696,8 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         size_t pi = 0;
         while (*p && *p != '"' && pi + 1 < sizeof(path)) path[pi++] = *p++;
         path[pi] = '\0';
+        // codeql[cpp/path-injection]: .incbin's path comes from the
+        // assembly source being compiled, same trust model as #include.
         FILE *bf = fopen(path, "rb");
         if (!bf) {
             char msg[600];
@@ -1709,6 +1715,9 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             free(data);
         }
         fclose(bf);
+        // codeql[cpp/empty-if]: both branches below are intentional no-ops —
+        // debug-info and note-section directives are explicitly ignored in
+        // binary output, not accidentally-empty code.
     } else if (!strcmp(dir, "file") || !strcmp(dir, "loc") ||
                !strcmp(dir, "ident")) {
         // Debug info — ignore in binary output
@@ -5051,6 +5060,7 @@ static char *next_macro_arg(char **cursor) {
         return NULL;
     }
     char *start = p;
+    // codeql[cpp/loop-variable-changed]: deliberate p advance past a quoted-string argument's contents so the outer p++ doesn't re-scan them
     for (; *p; p++) {
         // A quoted string argument (e.g. ALTERNATIVE_2's "call write_ibpb")
         // is one argument regardless of any ',' inside it.
@@ -5336,6 +5346,7 @@ static void asm_expand_line(AsmState *as, const char *raw, const ParamMap *map, 
 // appending the flattened, fully-substituted result to *out.
 static void asm_expand_range(AsmState *as, char **lines, int lo, int hi,
                              const ParamMap *map, DynStr *out) {
+    // codeql[cpp/loop-variable-changed]: deliberate i = end skip-ahead past a fully-consumed .macro/.irp/.rept/.if block (4 branches below)
     for (int i = lo; i < hi; i++) {
         char *raw = lines[i];
         char subst[8192]; // see asm_expand_line's subst[] comment

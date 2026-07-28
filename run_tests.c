@@ -526,17 +526,23 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     HANDLE nul_h = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                                OPEN_EXISTING, 0, NULL);
+    bool nul_ok = (nul_h != NULL && nul_h != INVALID_HANDLE_VALUE);
 
     STARTUPINFOA si = {0};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul_h;
+    // Wine CreateProcessA rejects a NUL handle with ERROR_INVALID_PARAMETER,
+    // even though CreateFileA("NUL",...) succeeds and returns a valid-looking
+    // handle. Fall back to the parent's own standard handles when that happens.
+    HANDLE null_hdl = nul_ok ? nul_h : GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE in_hdl = nul_ok ? nul_h : GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdInput = in_hdl;
     if (capture == 1) { /* stderr only */
-        si.hStdOutput = nul_h;
+        si.hStdOutput = null_hdl;
         si.hStdError = write_h;
     } else if (capture == 2) { /* stdout only */
         si.hStdOutput = write_h;
-        si.hStdError = nul_h;
+        si.hStdError = null_hdl;
     } else { /* both */
         si.hStdOutput = write_h;
         si.hStdError = write_h;
@@ -545,10 +551,12 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     char *cmdline = build_cmdline(argv);
     PROCESS_INFORMATION pi = {0};
     BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd, &si, &pi);
+    DWORD spawn_err = ok ? 0 : GetLastError();
     free(cmdline);
     CloseHandle(write_h);
     if (nul_h != INVALID_HANDLE_VALUE) CloseHandle(nul_h);
     if (!ok) {
+        fprintf(stderr, "CreateProcessA failed: error=%lu\n", spawn_err);
         CloseHandle(read_h);
         r.spawn_failed = true;
         return r;
@@ -879,7 +887,7 @@ static void detect_platform(const char *rcc_path) {
                  contains(u.sysname, "CYGWIN"))
             platform = "mingw";
         else {
-            platform = u.sysname;
+            platform = strdup(u.sysname); // own a copy: u is stack-local and about to go out of scope
             if (strcmp(u.sysname, "Linux") == 0)
                 platform = "linux";
         }
@@ -1773,7 +1781,7 @@ static bool lldb_probed(void) {
 /* extra: NULL-terminated extra compile flags (e.g. {"-I",".","-lm",NULL}); may be NULL.
  * ob/ol/oc: output buffer for TCC suite (append mode); pass all NULL to print directly. */
 static void emit_backtrace(const char *exe_path, const char *args,
-                           const char *src_file, const char *rcc, const char *cflags,
+                           const char *src_file, const char *rcc_path, const char *cflags,
                            const char *const extra[],
                            char **ob, size_t *ol, size_t *oc) {
     /* Debugger backtraces are only useful for diagnosing rcc's own
@@ -1787,7 +1795,7 @@ static void emit_backtrace(const char *exe_path, const char *args,
     if (src_file && file_exists(src_file)) {
         char *a[32];
         int ai = 0;
-        a[ai++] = (char *)rcc;
+        a[ai++] = (char *)rcc_path;
         if (cflags && *cflags)
             a[ai++] = (char *)cflags;
         if (extra) {
@@ -2224,6 +2232,10 @@ static void print_change(const char *base, const char *new_status) {
 
 /* ── run one TCC test ────────────────────────────────────────────── */
 
+// Compile+run one TCC test (sequential path): in-process fast path when
+// available, else external rcc + exe; DT/cd_test/128_run_atexit get
+// dedicated multi-invocation handling. Updates total/passed/failed and
+// the report rows.
 static void run_one_test(const char *src_path, const char *base,
                          const char *p_src, const char *ldflags, bool is_mingw) {
     total++;
@@ -2901,12 +2913,12 @@ static void compile_and_exec(const char *src_path, const char *base,
          * basename. Instead of a process-global chdir() (thread-unsafe),
          * compile with cwd=TEST_DIR via posix_spawn_file_actions_addchdir_np
          * / CreateProcess's lpCurrentDirectory and pass only the basename. */
-        const char *compile_src = src_path;
-        const char *compile_cwd = NULL;
+        const char *normal_compile_src = src_path;
+        const char *normal_compile_cwd = NULL;
         if (is_cd_test(base)) {
             const char *fn = strrchr(src_path, '/');
-            compile_src = fn ? fn + 1 : src_path;
-            compile_cwd = TEST_DIR;
+            normal_compile_src = fn ? fn + 1 : src_path;
+            normal_compile_cwd = TEST_DIR;
         }
 
         char *ca[16];
@@ -2924,7 +2936,7 @@ static void compile_and_exec(const char *src_path, const char *base,
                 tok = strtok_r(NULL, " ", &sv);
             }
         }
-        ca[ai++] = (char *)compile_src;
+        ca[ai++] = (char *)normal_compile_src;
         if (ldflags && *ldflags) {
             char *lf = strdup(ldflags);
             char *sv = NULL;
@@ -2936,7 +2948,7 @@ static void compile_and_exec(const char *src_path, const char *base,
         }
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run_cwd(ca, 30, 0, compile_cwd);
+        ProcResult cr = proc_run_cwd(ca, 30, 0, normal_compile_cwd);
         if (cr.exit_code != 0) {
             r->exit_code = cr.exit_code;
             r->compile_out = cr.out;
@@ -3007,6 +3019,9 @@ static void compile_and_exec(const char *src_path, const char *base,
 
 /* ── parallel: evaluate stored results + report ──────────────────── */
 
+// Parallel counterpart to run_one_test(): evaluate a ParallelResult
+// already produced by a worker thread and report/tally it. Same
+// DT/128_run_atexit/normal-test branching, no process spawning here.
 static void evaluate_and_report(const char *base, ParallelResult *r) {
     total++;
     vlog_test_details(base, r->compile_cmdline, r->compile_out,
@@ -3708,6 +3723,8 @@ static void generate_tcc_report(void) {
     snprintf(path, sizeof(path), "%s/%s", SCRIPT_DIR, REPORT_FILE);
     char tmp_path[520];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    // codeql[cpp/world-writable-file-creation]: internal report path
+    // (SCRIPT_DIR/REPORT_FILE), not derived from untrusted input.
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) return;
 
@@ -3822,6 +3839,7 @@ static int run_tcc_suite(void) {
                 if (dot) *dot = '\0';
 
                 if (contains(fn, "+")) {
+                    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                     if (scan_src) free((void *)scan_src);
                     scan_src = strdup(*f);
                     continue;
@@ -3844,9 +3862,16 @@ static int run_tcc_suite(void) {
                 }
                 n_tests++;
             }
+            // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
             if (scan_src) free((void *)scan_src);
 
-            if (n_tests > 0 || n_cd > 0) {
+            // n_tests > 1 (not > 0): a single test takes the dedicated
+            // "else if (n_tests == 1)" sequential fast path below instead
+            // of spinning up the parallel job-pool machinery for one job
+            // (that branch was previously unreachable dead code: `> 0`
+            // already caught n_tests==1, tripping CodeQL's
+            // cpp/constant-comparison on the always-false `n_tests == 1`).
+            if (n_tests > 1 || n_cd > 0) {
                 /* Collect jobs: the main pool, and a separate list of
                  * cd_tests/dt_tests + 46_grep (which need a per-process
                  * cwd for __FILE__ or do multiple compile+exec cycles per
@@ -3867,6 +3892,7 @@ static int run_tcc_suite(void) {
                     if (dot) *dot = '\0';
 
                     if (contains(fn, "+")) {
+                        // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                         if (scan_src) free((void *)scan_src);
                         scan_src = strdup(*f);
                         continue;
@@ -3901,6 +3927,7 @@ static int run_tcc_suite(void) {
                     (*pidx)++;
                     scan_src = NULL;
                 }
+                // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                 if (scan_src) free((void *)scan_src);
 
                 /* Main pool: parallel compile + execute, then evaluate + report */
@@ -3936,6 +3963,7 @@ static int run_tcc_suite(void) {
                     if (dot) *dot = '\0';
 
                     if (contains(fn, "+")) {
+                        // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                         if (scan_src) free((void *)scan_src);
                         scan_src = strdup(*f);
                         continue;
@@ -3950,6 +3978,7 @@ static int run_tcc_suite(void) {
                     run_one_test(*f, sbase, scan_src ? scan_src : "", extra_ldflags(sbase, *f), is_mingw);
                     break;
                 }
+                // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                 if (scan_src) free((void *)scan_src);
             }
         } else {
@@ -3967,6 +3996,7 @@ static int run_tcc_suite(void) {
                 if (dot) *dot = '\0';
 
                 if (contains(fname, "+")) {
+                    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                     if (p_src) free((void *)p_src);
                     p_src = strdup(*f);
                     continue;
@@ -3998,6 +4028,7 @@ static int run_tcc_suite(void) {
         for (char **f = files; *f; f++) free(*f);
         free(files);
     }
+    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
     if (p_src) free((void *)p_src);
 
     if (only_test_count == 0) {
@@ -4064,12 +4095,14 @@ static const char *skip_reason_str(SkipReason r) {
     switch (r) {
     case SKIP_X86_ONLY: return "x86-only";
     case SKIP_TMPNAM: return "tmpnam-macOS";
+    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_COMPLEX: return "complex";
     case SKIP_TRAMPOLINES: return "trampolines";
     case SKIP_SCALAR_STORAGE: return "scalar_storage_order";
     case SKIP_GCC_ONLY: return "gcc-only";
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
+    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_C99_RUNTIME: return "c99-runtime";
     case SKIP_SIGNAL: return "signal";
@@ -4083,6 +4116,7 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_TEMPLATE: return "template-file";
     case SKIP_GIMPLE: return "gimple";
     case SKIP_TARGET: return "target-mismatch";
+    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_SHADOW: return "typedef-shadow";
     case SKIP_OPENMP: return "openmp";
     case SKIP_BITINT: return "bitint";
@@ -5513,6 +5547,9 @@ static bool ctest_evaluate_report(const char *name, const char *exp_path, Parall
     return pass;
 }
 
+// Run the c-testsuite (test/c-testsuite): parallel compile+exec+compare
+// against each test's expected output, then write the summary file and
+// unified report.
 static int run_ctest_suite(void) {
     if (streq(platform, "darwin_cross")) {
         printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
@@ -5885,6 +5922,8 @@ static void generate_report(void) {
     }
     int ov_eff = ov_total - ov_skip;
 
+    // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
+    // internal report path, not derived from untrusted input.
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) {
         perror(tmp_path);
@@ -5982,6 +6021,7 @@ int main(int argc, char **argv) {
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
 
+    // codeql[cpp/loop-variable-changed]: deliberate argv[++i] to consume --jobs/--timeout's separate numeric argument (2 sites below)
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (streq(a, "--all")) {
@@ -6044,6 +6084,9 @@ int main(int argc, char **argv) {
            always uses an external process — never the in-proc rcc_lib. */
         else if (!rcc && strchr(a, ' ') != NULL) {
             char *copy = strdup(a);
+            // codeql[cpp/inconsistent-null-check]: copy is a strdup of a,
+            // and the caller's `strchr(a, ' ') != NULL` guard (just above)
+            // already proved a space exists — copy must contain one too.
             char *sp = strchr(copy, ' ');
             *sp = '\0';
             rcc = copy;

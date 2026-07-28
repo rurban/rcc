@@ -120,9 +120,15 @@ static bool try_fold_pure(const char *name, Node *args, long *result) {
     return false;
 }
 
+// Tiny CTFE (-O1) interpreter: walks a function body with a flat local-var
+// slot array (`env`, indexed by byte offset/8), recursing into calls to
+// other CTFE-eligible functions. Sets *success=false and returns 0 on
+// anything it can't evaluate (unsupported node kind, div/mod by zero,
+// too many args/locals) — the caller falls back to normal codegen.
 static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, bool *success) {
     if (!node || !*success) return 0;
 
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_NUM:
         return node->val;

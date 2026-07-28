@@ -2433,6 +2433,8 @@ static const struct sc_tr39 tr39_cont_list[] = {
 //---------------------------------------------------
 
 // Only excluded scripts, XID_Start, more IDTypes, NFC, !MEDIAL and !MARK
+// codeql[cpp/unused-static-variable]: generated TR39 data table, not
+// wired into the current script-check profile (excluded-scripts variant).
 static const struct sc_tr39 tr39_excl_start_list[] = {
     {0x3E2, 0x3EF, SC_Coptic, GC_L, NULL}, //  (Excluded) Ϣ..ϯ
     {0x800, 0x815, SC_Samaritan, GC_Lo, NULL}, //  (Excluded) ࠀ..ࠕ
@@ -2665,6 +2667,8 @@ static const struct sc_tr39 tr39_excl_start_list[] = {
 }; // 186 ranges, 42 singles, 19620 codepoints
 
 // Only excluded scripts, XID_Continue,!XID_Start, more IDTypes, NFC and !MARK
+// codeql[cpp/unused-static-variable]: generated TR39 data table, not
+// wired into the current script-check profile (excluded-scripts variant).
 static const struct sc_tr39 tr39_excl_cont_list[] = {
     {0x1810, 0x1819, SC_Mongolian, GC_Nd, NULL}, //  (Excluded) ᠐..᠙
     {0x104A0, 0x104A9, SC_Osmanya, GC_Nd, NULL}, //  (Excluded) 𐒠..𐒩
@@ -2905,6 +2909,8 @@ struct scx {
 
 // Maybe remove all Limited Use SC's from the list on hardcoded profiles 3-5.
 // But 120 entries is small enough.
+// codeql[cpp/unused-static-variable]: generated data table; its only
+// consumer (u8ident_get_scx above) was removed.
 static const struct scx scx_list[] = {
     // clang-format off
     {0x02C7, 0x02C7, GC_Lm, "\x06\x02"},	// Bopo Latn

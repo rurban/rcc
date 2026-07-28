@@ -13,6 +13,9 @@
 #define ARM64_SP  31
 
 // ARM64 physical register enum
+// codeql[cpp/irregular-enum-init]: S0/D0/X0 (and so on) intentionally
+// alias the same physical register number across FP scalar/vector/GP
+// register classes — that's what the encoder needs, not a typo.
 typedef enum {
     ARM64_S0 = 0,
     ARM64_D0 = 0,

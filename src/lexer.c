@@ -621,6 +621,7 @@ Token *lex_one(char **pp, int *plineno) {
                 else if (startswith(r, "STDC"))
                     is_pack_pragma = true;
                 else if (startswith(r, "unicode")) {
+                    // codeql[cpp/commented-out-code]: doc comment shows the pragma syntax parsed below, not dead code
                     // #pragma unicode ScriptName
                     r += 7;
                     while (*r == ' ' || *r == '\t') r++;

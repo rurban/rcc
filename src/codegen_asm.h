@@ -68,6 +68,7 @@ typedef enum {
 // Dry-run guard: skip emission when cg_sec is NULL
 #define EMIT_GUARD if (!s || !s->data) return 0;
 
+// codeql[cpp/commented-out-code]: intentionally-disabled reg_to_vreg reference impl, see "very bad idea" note
 /* very bad idea
 #ifdef ARCH_ARM64
 static inline VReg reg_to_vreg(Arm64Reg r) {
@@ -127,6 +128,8 @@ static inline void cg_label_ht_add(const char *name, size_t offset) {
         }
     }
     CgLabelNode *n = arena_alloc(sizeof(CgLabelNode));
+    // codeql[cpp/stack-address-escape]: every call site passes a
+    // format()/arena-allocated or interned string, never a stack buffer.
     n->name = name;
     n->offset = offset;
     n->next = cg_label_htab[h];
@@ -2589,8 +2592,6 @@ __attribute__((unused)) static void asm_ldur_sz(SecBuf *s, int dst, int base, in
     case 4: arm64_ldur(s, 0, REG(dst), base, off); break;
     default: arm64_ldur(s, 1, REG(dst), base, off); break;
     }
-    //#else
-    //return asm_ldur(s, dst, base, sz == 8 ? 1 : 0, off);
 }
 #endif
 

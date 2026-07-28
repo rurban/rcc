@@ -1903,6 +1903,10 @@ static bool eval_const_addr_expr(Node *node, long long *val) {
     }
 }
 
+// Fold `node` to a compile-time-constant integer if possible; returns
+// false (val untouched) for anything not statically foldable (e.g. a
+// runtime variable read). Used throughout for array sizes, enum values,
+// case labels, static-storage initializers, and _Static_assert.
 bool eval_const_expr(Node *node, long long *val) {
     long long lhs;
     long long rhs;
@@ -1910,6 +1914,7 @@ bool eval_const_expr(Node *node, long long *val) {
     if (!node)
         return false;
 
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_NUM:
         *val = node->val;
@@ -1964,7 +1969,9 @@ bool eval_const_expr(Node *node, long long *val) {
         if (sz <= 0 || sz >= 8)
             return true;
         int bits = sz * 8;
-        unsigned long long mask = (bits == 64) ? ~0ULL : ((1ULL << bits) - 1);
+        // sz is in (0,8) here (line 1964 already returned for sz<=0||sz>=8),
+        // so bits=sz*8 is in [8,56] and 1ULL<<bits never overflows.
+        unsigned long long mask = (1ULL << bits) - 1;
         if (node->ty->is_unsigned) {
             *val &= mask;
         } else {
@@ -2278,6 +2285,7 @@ static bool eval_double_const_expr(Node *node, double *val) {
     double lhs, rhs;
     if (!node)
         return false;
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_FNUM:
         *val = node->fval;
@@ -2319,8 +2327,13 @@ static bool eval_double_const_expr(Node *node, double *val) {
         if (node->ty && node->ty->kind == TY_FLOAT) *val = (float)*val;
         if (node->ty && is_integer(node->ty)) *val = (double)(int64_t)*val;
         return true;
+    // codeql[cpp/equality-on-floats]: this implements C's own ==/!=
+    // operators for float constant-folding — must be bit-exact IEEE754
+    // comparison to match what the same expression evaluates to at
+    // runtime, not a fuzzy/epsilon comparison.
     case ND_EQ:
         return eval_double_const_expr(node->lhs, &lhs) && eval_double_const_expr(node->rhs, &rhs) && ((*val = lhs == rhs), true);
+    // codeql[cpp/equality-on-floats]: same as ND_EQ above.
     case ND_NE:
         return eval_double_const_expr(node->lhs, &lhs) && eval_double_const_expr(node->rhs, &rhs) && ((*val = lhs != rhs), true);
     case ND_LT:
@@ -2382,6 +2395,7 @@ static bool eval_double_const_expr(Node *node, double *val) {
 static bool eval_complex_const_expr(Node *node, double *real_out, double *imag_out) {
     double rl, il, rr, ir;
     if (!node) return false;
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_FNUM:
         *real_out = node->fval;
@@ -3370,9 +3384,9 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             bool tag_fresh_body_ok = !opt_pedantic && tag_has_fresh_body;
             if (!untagged_inline && !tagged_aggregate && !tag_fresh_body_ok)
                 error_tok(tok, "declaration does not declare anything");
+            // codeql[cpp/commented-out-code]: prose summary using struct{...} shorthand, not actual code
             // Anonymous struct/union member: struct { ... }; or union { ... };
             if (base->kind == TY_STRUCT || base->kind == TY_UNION) {
-                // bf_unit_size = 0;
                 Member *mem = arena_alloc(sizeof(Member));
                 mem->name = NULL;
                 mem->bit_offset = 0;
@@ -3426,7 +3440,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             // Anonymous struct/union member (no name, no bitfield width, aggregate type)
             // e.g. "struct { u8 a, b; };" inside another struct/union
             if (!name && bit_width == 0 && (mem_ty->kind == TY_STRUCT || mem_ty->kind == TY_UNION)) {
-                // bf_unit_size = 0;
                 Member *mem = arena_alloc(sizeof(Member));
                 mem->name = NULL;
                 mem->bit_offset = 0;
@@ -3466,6 +3479,15 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                         align = struct_pack;
                     if (use_ms_bitfields) {
                         TypeKind kind = mem_ty->kind;
+                        // codeql[cpp/constant-comparison]: `bit_width > 0`
+                        // is not provably constant here — this branch runs
+                        // for both a named/anonymous `:N` field and an
+                        // anonymous `:0` field once use_ms_bitfields is set
+                        // (unlike the non-MS `:0` path below, which is a
+                        // separate `else if`). Kept identical to the
+                        // named-bitfield copy below rather than
+                        // special-cased, to avoid diverging MS bitfield
+                        // layout logic between the two call sites.
                         bool new_run = bit_pos + bit_width > unit_bits ||
                             ((bit_width > 0) == (kind != ms_prev_kind));
                         if (new_run) {
@@ -3488,7 +3510,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                             unit_base += unit;
                         if (unit_base > offset) offset = unit_base;
                         bit_pos = unit_base * 8;
-                        // bf_unit_size = unit;
                     } else {
                         // :N — advance bit_pos by N bits within layout
                         if (struct_pack > 0) {
@@ -3540,8 +3561,10 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     if (max_size < unit) max_size = unit;
                 } else if (use_ms_bitfields) {
                     TypeKind kind = mem_ty->kind;
-                    bool new_run = bit_pos + bit_width > unit_bits ||
-                        ((bit_width > 0) == (kind != ms_prev_kind));
+                    // bit_width > 0 always holds here (line 3539's outer
+                    // guard), unlike the anonymous-bitfield copy of this
+                    // check above which also covers `:0`.
+                    bool new_run = bit_pos + bit_width > unit_bits || (kind != ms_prev_kind);
                     if (new_run) {
                         offset = align_to(offset, align);
                         ms_run_base = offset;
@@ -3605,8 +3628,6 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     }
                     mem->offset = unit_base;
                     mem->bit_offset = bit_off;
-                    // bf_unit_size = unit;
-                    // bf_unit_offset = unit_base;
                     if (unit_base > offset) offset = unit_base;
                     bit_pos = unit_base * 8 + bit_off + bit_width;
                     int end_byte = (bit_pos + 7) / 8;
@@ -5464,9 +5485,9 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
             // A trailing chain of constant subscripts/member accesses may
             // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
             // relocation's addend instead of leaving it unparsed.
-            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
+            int chain_addend = parse_const_addend_chain(&tok, tok, compound_ty);
             if (wrapped_amp) tok = skip(tok, ")");
-            append_reloc(var, offset, name, addend);
+            append_reloc(var, offset, name, chain_addend);
             return tok;
         }
         // Bare (no leading &) array-typed compound literal assigned to a
@@ -5520,8 +5541,8 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     tok = skip(tok, ")");
                 // A trailing chain of constant subscripts/member accesses
                 // may still follow — fold it into the relocation's addend.
-                int addend = parse_const_addend_chain(&tok, tok, compound_ty);
-                append_reloc(var, offset, name, addend);
+                int chain_addend = parse_const_addend_chain(&tok, tok, compound_ty);
+                append_reloc(var, offset, name, chain_addend);
                 return tok;
             }
         }
@@ -7405,6 +7426,7 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equalc(tok, "goto")) {
         tok = tok->next;
         if (equalc(tok, "*")) {
+            // codeql[cpp/commented-out-code]: doc comment showing the GNU computed-goto syntax parsed below, not dead code
             // Computed goto: goto *expr;
             Node *node = new_node(ND_GOTO_IND, tok);
             tok = tok->next;
@@ -8958,14 +8980,15 @@ static Node *unary(Token **rest, Token *tok) {
                 if (ty_const(base))
                     warn_tok(start, "assignment of read-only location");
                 if (equalc(start, "__atomic_store_n")) {
-                    if (!val->ty) {
-                    } else if (is_integer(base) && (val->ty->kind == TY_PTR || val->ty->kind == TY_ARRAY))
-                        warn_tok(start, "assignment makes integer from pointer without a cast");
-                    else if (base->kind == TY_PTR && (val->ty->kind == TY_PTR || val->ty->kind == TY_ARRAY)) {
-                        Type *bbase = base->base, *vbase = val->ty->base;
-                        if (bbase && vbase && bbase->kind != TY_VOID && vbase->kind != TY_VOID &&
-                            (bbase->kind != vbase->kind || bbase->size != vbase->size))
-                            warn_tok(start, "assignment from incompatible pointer type");
+                    if (val->ty) {
+                        if (is_integer(base) && (val->ty->kind == TY_PTR || val->ty->kind == TY_ARRAY))
+                            warn_tok(start, "assignment makes integer from pointer without a cast");
+                        else if (base->kind == TY_PTR && (val->ty->kind == TY_PTR || val->ty->kind == TY_ARRAY)) {
+                            Type *bbase = base->base, *vbase = val->ty->base;
+                            if (bbase && vbase && bbase->kind != TY_VOID && vbase->kind != TY_VOID &&
+                                (bbase->kind != vbase->kind || bbase->size != vbase->size))
+                                warn_tok(start, "assignment from incompatible pointer type");
+                        }
                     }
                 }
             }
@@ -9709,6 +9732,7 @@ static Node *unary(Token **rest, Token *tok) {
         Token *start = tok;
         Type *ty = parse_cast_type(&tok, tok);
 
+        // codeql[cpp/commented-out-code]: doc comment showing the compound-literal syntax parsed below, not dead code
         // Compound literal: (type){init_list}
         if (equalc(tok, "{")) {
             Token *init_brace_tok = tok;
@@ -10098,6 +10122,7 @@ static Node *unary(Token **rest, Token *tok) {
             if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
                 bool all_const = true;
                 int brace_depth = 0;
+                // codeql[cpp/loop-variable-changed]: deliberate t = t->next skip-ahead past a designated-init member name / parenthesized compound-literal cast (2 sites below)
                 for (Token *t = init_brace_tok; t; t = t->next) {
                     if (equalc(t, "{")) {
                         brace_depth++;
@@ -10525,6 +10550,7 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         return;
     }
 
+    // codeql[cpp/commented-out-code]: doc comment naming the wide-string prefixes handled below, not dead code
     // Wide string literal L"..."/u"..."/U"..." for wchar_t/char16_t/char32_t array
     if (var->ty->kind == TY_ARRAY && tok->kind == TK_STR &&
         (tok->string_literal_prefix == 'L' || tok->string_literal_prefix == 'u' ||
@@ -10618,13 +10644,13 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             // A trailing chain of constant subscripts/member accesses may
             // still follow — e.g. "&(...)[0].attr.attr" — fold it into the
             // relocation's addend instead of leaving it unparsed.
-            int addend = parse_const_addend_chain(&tok, tok, compound_ty);
+            int chain_addend = parse_const_addend_chain(&tok, tok, compound_ty);
             while (equalc(tok, ")"))
                 tok = tok->next;
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
             var->has_init = true;
-            append_reloc(var, 0, name, addend);
+            append_reloc(var, 0, name, chain_addend);
             *rest = tok;
             return;
         }
@@ -11289,8 +11315,8 @@ Program *parse(Token *tok) {
                     is_variadic = ty->is_variadic;
                     locals = NULL;
                     stack_offset = CHAIN_RSP_OFFSET; // reserve [80,96) uniformly: any top-level function's __label__s may be a nonlocal-goto target - see codegen.c's prologue, which unconditionally records its own stable sp there
-                    LVar head = {};
-                    LVar *cur = &head;
+                    LVar param_head = {};
+                    LVar *cur = &param_head;
                     int param_index = 0;
                     for (Type *pt = ty->param_types; pt; pt = pt->param_next) {
                         char *pname = pt->name ? pt->name : format("__param%d", param_index++);
@@ -11324,7 +11350,7 @@ Program *parse(Token *tok) {
                         }
                         cur = cur->param_next = lvar;
                     }
-                    params = head.param_next;
+                    params = param_head.param_next;
                 } else {
                     fty = func_type(ty);
                     bool is_oldstyle = false;
@@ -11342,15 +11368,15 @@ Program *parse(Token *tok) {
                         is_oldstyle = true;
                         KRParam *kr_list = parse_kr_param_list(&tok, tok);
                         // Second pass: create LVars with correct types and offsets
-                        LVar head = {};
-                        LVar *cur = &head;
+                        LVar param_head = {};
+                        LVar *cur = &param_head;
                         for (KRParam *krp = kr_list; krp; krp = krp->next) {
                             if (!krp->ty)
                                 krp->ty = ty_int;
                             LVar *var = new_var(krp->name, krp->ty, true);
                             cur = cur->param_next = var;
                         }
-                        params = head.param_next;
+                        params = param_head.param_next;
                         current_fn_scope_locals = params;
                     } else {
                         params = parse_params(&tok, tok, &is_variadic);

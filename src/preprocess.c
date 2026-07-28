@@ -607,6 +607,7 @@ static SplicedInput splice_lines_with_counts(char *input) {
     char *buf = arena_alloc(len + 1);
     int *counts = arena_alloc(sizeof(int) * (len + 1));
     int j = 0, line_idx = 0, count = 1;
+    // codeql[cpp/loop-variable-changed]: deliberate i++ to also consume the '\\n' continuation's newline as one spliced unit
     for (int i = 0; i < len; i++) {
         if (input[i] == '\\' && input[i + 1] == '\n') {
             i++;
@@ -1206,6 +1207,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
     Token *rhead = NULL, *rtail = NULL;
     int vs = va_slot(m);
     bool va_empty = vs >= argc || (vs == argc - 1 && !raw_args[vs]);
+    // codeql[cpp/loop-variable-changed]: deliberate b = n/c skip-ahead past the ##/#/__VA_OPT__ operand token(s) just consumed (5 sites below)
     for (Token *b = body; b && b != end && b->kind != TK_EOF; b = b->next) {
         int is_hashhash = b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#';
         if (is_hashhash && b->next && b->next != end && b->next->kind != TK_EOF) {
@@ -1701,6 +1703,8 @@ static int64_t has_c_attribute_val(char *name) {
     return 0;
 }
 static int64_t eval_pp_expr_tok(Token **pp);
+// #if-expression primary: defined()/__has_include()/__has_c_attribute(),
+// numeric/string literals, parenthesized subexpr, unary !/-/~/+.
 static int64_t eval_primary_tok(Token **pp) {
     Token *t = *pp;
     if (!t || t->kind == TK_EOF) return 0;
@@ -2587,6 +2591,7 @@ char *dump_macros_text(void) {
                 total += strlen(m->params[i]);
             }
             total += 1;
+            if (m->is_variadic) total += 4; // ',' + '.' + '.' + '.'
         }
         total += 1;
         for (Token *b = m->body; b; b = b->next) {
@@ -2836,6 +2841,8 @@ Token *preprocess(char *filename, char *p) {
     push_level(resolved_name, full_path(resolved_name), p);
     for (int i = nb_preinclude - 1; i >= 0; i--) {
         char *inc_path = full_path((char *)preinclude_list[i]);
+        // codeql[cpp/path-injection]: -include <file> is a compiler input
+        // path, same trust model as the source file argument itself.
         char *inc_contents = read_pp_file((char *)preinclude_list[i]);
         if (inc_contents) {
             push_level(inc_path, inc_path, inc_contents);
@@ -2875,6 +2882,9 @@ Token *preprocess(char *filename, char *p) {
 // Write Make dependency rules (-Wp,-MMD,<file>)
 void write_dep_file(const char *out_path, const char *main_fpath) {
     if (!opt_depfile || !main_fpath) return;
+    // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
+    // opt_depfile is a compiler-output path (-Wp,-MMD,<file>), same
+    // trust model as -o.
     FILE *f = fopen(opt_depfile, "w");
     if (!f) {
         fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", opt_depfile);

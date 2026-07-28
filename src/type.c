@@ -297,6 +297,7 @@ static Type *composite_type(Type *t1, Type *t2) {
         return t1;
     if (t1->kind != t2->kind)
         return t1;
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (t1->kind) {
     case TY_PTR:
         return pointer_to(composite_type(t1->base, t2->base));
@@ -499,6 +500,7 @@ static void add_type_internal(Node *node) {
         }
     }
 
+    // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_ADD:
     case ND_SUB: {
@@ -694,6 +696,9 @@ static void add_type_internal(Node *node) {
         Type *lty = node->lhs->ty;
         Type *rty = node->rhs->ty;
         if (is_number(lty) && is_number(rty)) {
+            // codeql[cpp/inconsistent-null-check]: usual_arith_type()
+            // always returns a real Type* (never NULL) — every path
+            // returns lhs/rhs/higher or a static ty_* global.
             Type *cmp_ty = usual_arith_type(lty, rty);
             if (is_flonum(cmp_ty)) {
                 if (is_integer(lty))
