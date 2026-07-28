@@ -5853,8 +5853,19 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
     return tok;
 }
 
+// K&R (old-style) parameter name+type: shared by top-level function
+// definitions (parse()) and GNU nested function definitions
+// (parse_nested_function_def) - see parse_kr_param_list below.
+typedef struct KRParam KRParam;
+struct KRParam {
+    KRParam *next;
+    char *name;
+    Type *ty; // NULL until resolved by a matching declaration; defaults to int
+};
+static KRParam *parse_kr_param_list(Token **rest, Token *tok);
+
 static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
-                                        char *decl_name, char *mangled_name);
+                                        char *decl_name, char *mangled_name, KRParam *kr_params);
 
 static Node *declaration(Token **rest, Token *tok) {
     // C23 static_assert / C11 _Static_assert
@@ -5932,6 +5943,57 @@ static Node *declaration(Token **rest, Token *tok) {
         if (!name)
             error_tok(tok, "expected variable name");
 
+        if (ty->kind != TY_FUNC && name && equalc(tok, "(")) {
+            // K&R-style (old-style) nested function definition, e.g.
+            // `void r(a) { ... }` - declarator() already consumed `r`
+            // (name is set) but type_suffix's own K&R detection saw an
+            // identifier-only parameter list and bailed out, leaving
+            // `ty` as the bare return type with `tok` still at the
+            // un-consumed `(` (see type_suffix's "Detect old-style
+            // (K&R) parameter lists" comment). This mirrors the
+            // top-level K&R function-definition path in parse() (this
+            // project's own), reusing parse_kr_param_list for the
+            // shared name+type resolution logic.
+            Token *ptok = tok->next; // skip "("
+            KRParam *kr_params = parse_kr_param_list(&tok, ptok);
+            Type *fty = func_type(ty);
+            fty->is_oldstyle = true;
+            Type param_head = {0};
+            Type *pcur = &param_head;
+            for (KRParam *krp = kr_params; krp; krp = krp->next) {
+                Type *pt = arena_alloc(sizeof(Type));
+                *pt = krp->ty ? *krp->ty : *ty_int;
+                pt->param_next = NULL;
+                pcur = pcur->param_next = pt;
+            }
+            fty->param_types = param_head.param_next;
+
+            LVar *fn_sym = find_global_name(name);
+            if (!fn_sym) {
+                fn_sym = new_var(name, pointer_to(fty), false);
+                fn_sym->is_extern = true;
+                fn_sym->is_function = true;
+            }
+            LVar *lvar = arena_alloc(sizeof(LVar));
+            lvar->name = name;
+            lvar->ty = pointer_to(fty);
+            lvar->is_local = false;
+            lvar->is_extern = true;
+            lvar->is_function = true;
+            lvar->next = locals;
+            locals = lvar;
+            if (current_block_depth == 1)
+                current_fn_scope_locals = locals;
+
+            char *mangled = format(".L.nest.%s.%s.%d", parser_current_fn ? parser_current_fn : "",
+                                   name, nested_fn_counter++);
+            lvar->asm_name = mangled;
+            lvar->is_nested_fn = true;
+            tok = parse_nested_function_def(&tok, tok, fty, name, mangled, kr_params);
+            *rest = tok;
+            return head.next;
+        }
+
         if (ty->kind == TY_FUNC) {
             Type *fty = ty;
             LVar *fn_sym = find_global_name(name);
@@ -5991,7 +6053,7 @@ static Node *declaration(Token **rest, Token *tok) {
                                        name, nested_fn_counter++);
                 lvar->asm_name = mangled;
                 lvar->is_nested_fn = true;
-                tok = parse_nested_function_def(&tok, tok, fty, name, mangled);
+                tok = parse_nested_function_def(&tok, tok, fty, name, mangled, NULL);
                 *rest = tok;
                 return head.next;
             }
@@ -6602,42 +6664,110 @@ static Node *compound_stmt(Token **rest, Token *tok) {
     return compound_stmt_ex(rest, tok, NULL);
 }
 
+// Parse a K&R (old-style) parameter-name list and its following
+// declaration-list: `tok` must be positioned right after the function's
+// own `(` (i.e. at the first parameter name or `)`), with the caller
+// already having confirmed this is K&R style (first token inside `(` is
+// an identifier that isn't a typename). Returns the resolved name+type
+// list (an unresolved name - declared nowhere between `)` and `{` -
+// stays NULL, defaulting to `int` per K&R rules; the caller decides
+// when to apply that default). `*rest` is left at the `{` opening the
+// body. Deliberately returns names+types only, not LVars: a nested
+// function's parameter LVars must be created *after* push_fn_ctx() has
+// reset `locals`/`stack_offset` to the nested function's own fresh
+// scope, so LVar creation is the caller's job.
+static KRParam *parse_kr_param_list(Token **rest, Token *tok) {
+    KRParam kr_head = {0};
+    KRParam *kr_cur = &kr_head;
+    while (!equalc(tok, ")")) {
+        if (kr_cur != &kr_head)
+            tok = skip(tok, ",");
+        if (tok->kind != TK_IDENT)
+            error_tok(tok, "expected parameter name");
+        KRParam *krp = arena_alloc(sizeof(KRParam));
+        krp->name = tok->name;
+        krp->ty = NULL;
+        tok = tok->next;
+        kr_cur = kr_cur->next = krp;
+    }
+    tok = skip(tok, ")");
+    tok = skip_attributes(tok);
+    while (!equalc(tok, "{")) {
+        VarAttr dattr = {};
+        Type *dty = declspec(&tok, tok, &dattr);
+        for (;;) {
+            char *dname = NULL;
+            Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname);
+            if (dname) {
+                for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
+                    if (krp->name == dname) {
+                        krp->ty = ddecl;
+                        break;
+                    }
+                }
+            }
+            if (!equalc(tok, ","))
+                break;
+            tok = tok->next;
+        }
+        tok = skip(tok, ";");
+    }
+    *rest = tok;
+    return kr_head.next;
+}
+
 // GNU nested function: `int foo(params) { body }` appearing as a statement
 // inside another function's body. `tok` points at the opening '{'; `fty`
 // is the already-parsed TY_FUNC type from declarator() (its param_types
 // list is reused verbatim via the same placeholder-LVar mechanism the
 // top-level function-definition handler in parse() uses — see the
-// `pt->vla_len_val` branch below, mirrored from there). K&R-style nested
-// definitions never reach here (declarator() only returns TY_FUNC for
-// modern-style declarators; K&R falls through a different path in
-// parse()'s own toplevel handler, which nested functions don't share).
+// `pt->vla_len_val` branch below, mirrored from there). `kr_params`, when
+// non-NULL, is a resolved K&R name+type list from parse_kr_param_list
+// (declaration()'s caller already detected the K&R bail-out and parsed
+// it before calling here) - in that mode `fty`'s param_types are already
+// built from `kr_params` too (for is_oldstyle/signature purposes), but
+// param LVar creation uses `kr_params` directly instead of the
+// modern-declarator placeholder-LVar mechanism below.
 static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
-                                        char *decl_name, char *mangled_name) {
+                                        char *decl_name, char *mangled_name, KRParam *kr_params) {
     push_fn_ctx();
 
-    LVar head = {0};
-    LVar *cur = &head;
-    int param_index = 0;
-    for (Type *pt = fty->param_types; pt; pt = pt->param_next) {
-        char *pname = pt->name ? pt->name : format("__param%d", param_index++);
-        LVar *lvar;
-        if (pt->vla_len_val) {
-            lvar = (LVar *)pt->vla_len_val;
-            if (pt->kind != TY_STRUCT && pt->kind != TY_UNION)
-                lvar->ty = pt;
-            int sz = pt->size < 4 ? 4 : pt->size;
-            int al = pt->align < 4 ? 4 : pt->align;
-            stack_offset = align_to(stack_offset + sz, al);
-            lvar->offset = stack_offset;
-            lvar->next = locals;
-            locals = lvar;
-            lvar->param_next = NULL;
-        } else {
-            lvar = new_var(pname, pt, true);
+    LVar *params;
+    if (kr_params) {
+        LVar head = {0};
+        LVar *cur = &head;
+        for (KRParam *krp = kr_params; krp; krp = krp->next) {
+            if (!krp->ty)
+                krp->ty = ty_int;
+            LVar *var = new_var(krp->name, krp->ty, true);
+            cur = cur->param_next = var;
         }
-        cur = cur->param_next = lvar;
+        params = head.param_next;
+    } else {
+        LVar head = {0};
+        LVar *cur = &head;
+        int param_index = 0;
+        for (Type *pt = fty->param_types; pt; pt = pt->param_next) {
+            char *pname = pt->name ? pt->name : format("__param%d", param_index++);
+            LVar *lvar;
+            if (pt->vla_len_val) {
+                lvar = (LVar *)pt->vla_len_val;
+                if (pt->kind != TY_STRUCT && pt->kind != TY_UNION)
+                    lvar->ty = pt;
+                int sz = pt->size < 4 ? 4 : pt->size;
+                int al = pt->align < 4 ? 4 : pt->align;
+                stack_offset = align_to(stack_offset + sz, al);
+                lvar->offset = stack_offset;
+                lvar->next = locals;
+                locals = lvar;
+                lvar->param_next = NULL;
+            } else {
+                lvar = new_var(pname, pt, true);
+            }
+            cur = cur->param_next = lvar;
+        }
+        params = head.param_next;
     }
-    LVar *params = head.param_next;
     current_fn_scope_locals = params;
     parser_current_fn = decl_name;
 
@@ -11129,53 +11259,11 @@ Program *parse(Token *tok) {
                     if (!equalc(tok, ")") && !equalc(tok, "...") && !is_typename(tok)) {
                         // K&R function definition: param list has identifiers, not types
                         is_oldstyle = true;
-                        // First pass: collect parameter names and declarations
-                        typedef struct KRParam KRParam;
-                        struct KRParam {
-                            KRParam *next;
-                            char *name;
-                            Type *ty;
-                        };
-                        KRParam kr_head = {};
-                        KRParam *kr_cur = &kr_head;
-                        while (!equalc(tok, ")")) {
-                            if (kr_cur != &kr_head)
-                                tok = skip(tok, ",");
-                            if (tok->kind != TK_IDENT)
-                                error_tok(tok, "expected parameter name");
-                            KRParam *krp = arena_alloc(sizeof(KRParam));
-                            krp->name = tok->name;
-                            krp->ty = NULL;
-                            tok = tok->next;
-                            kr_cur = kr_cur->next = krp;
-                        }
-                        tok = skip(tok, ")");
-                        tok = skip_attributes(tok);
-                        // Parse K&R parameter declarations between ) and {, match by name
-                        while (!equalc(tok, "{")) {
-                            VarAttr dattr = {};
-                            Type *dty = declspec(&tok, tok, &dattr);
-                            for (;;) {
-                                char *dname = NULL;
-                                Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname);
-                                if (dname) {
-                                    for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
-                                        if (krp->name == dname) {
-                                            krp->ty = ddecl;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (!equalc(tok, ","))
-                                    break;
-                                tok = tok->next;
-                            }
-                            tok = skip(tok, ";");
-                        }
+                        KRParam *kr_list = parse_kr_param_list(&tok, tok);
                         // Second pass: create LVars with correct types and offsets
                         LVar head = {};
                         LVar *cur = &head;
-                        for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
+                        for (KRParam *krp = kr_list; krp; krp = krp->next) {
                             if (!krp->ty)
                                 krp->ty = ty_int;
                             LVar *var = new_var(krp->name, krp->ty, true);

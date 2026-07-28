@@ -852,6 +852,25 @@ static void arm64_load_from_fp_minus(int offset, Arm64Reg dst) {
     }
 }
 
+// ARM64: emit load from [base, #-offset] into dst (uses x17 for large
+// offsets) - like arm64_load_from_fp_minus but with a caller-supplied
+// base register instead of the fixed x29, for VLA-local references
+// chain-walked into an ancestor frame (see gen()/gen_addr()'s
+// TY_VLA ND_LVAR branches).
+static void arm64_load_from_reg_minus(Arm64Reg base, int offset, Arm64Reg dst) {
+    if (offset >= 0 && offset <= 255) {
+        arm64_ldur(cg_sec, 1, dst, base, -offset); // ldur dst, [base, #-offset]
+    } else if (offset >= 0 && offset <= 4095) {
+        arm64_sub_imm(cg_sec, 1, ARM64_X17, base, offset, 0); // sub x17, base, #offset
+        asm_ldr_reg(cg_sec, dst, ARM64_X17); // ldr dst, [x17]
+    } else {
+        unsigned v = (unsigned)offset;
+        emit_mov_imm64(ARM64_X17, (uint64_t)v); // mov x17, #v
+        arm64_sub_reg(cg_sec, 1, ARM64_X17, base, ARM64_X17, ARM64_LSL, 0); // sub x17, base, x17
+        asm_ldr_reg(cg_sec, dst, ARM64_X17); // ldr dst, [x17]
+    }
+}
+
 // ARM64: emit store src to [fp, #-offset] (uses x17 for large offsets)
 static void arm64_store_to_fp_minus(int offset) {
     // src fixed to x16
@@ -4051,13 +4070,34 @@ static VReg gen_addr(Node *node) {
         VReg r = alloc_reg();
         if (opt_W) reg_owner[r] = node->var->name;
         if (node->var->is_local) {
-#ifndef ARCH_ARM64
+            bool is_vla = node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr);
             if (node->chain_depth > 0) {
-                gen_chain_walk_into(r, node->chain_depth);
-                x86_lea(cg_sec, 8, REG(r), x86_mem(REG(r), -node->var->offset)); // lea -offset(%rN), r
-            } else
+                VReg base = alloc_reg();
+                gen_chain_walk_into(base, node->chain_depth);
+                if (is_vla) {
+                    // VLA locals are stored as fat pointers: the "address"
+                    // used by callers (e.g. array subscript lowering) is
+                    // the pointer *value* at ancestor_frame-(offset-8),
+                    // not the address of that pointer's own storage slot.
+#ifdef ARCH_ARM64
+                    arm64_load_from_reg_minus(REG(base), node->var->offset - 8, REG(r));
+#else
+                    x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(base), -(node->var->offset - 8))); // mov -(offset-8)(%rN), r
 #endif
-                if (node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr)) {
+                } else {
+#ifdef ARCH_ARM64
+                    if (node->var->offset <= 4095)
+                        arm64_sub_imm(cg_sec, 1, REG(r), REG(base), node->var->offset, 0); // sub r, base, #offset
+                    else {
+                        emit_mov_imm64(REG(r), (uint64_t)node->var->offset); // mov r, #offset
+                        arm64_sub_reg(cg_sec, 1, REG(r), REG(base), REG(r), ARM64_LSL, 0); // sub r, base, r
+                    }
+#else
+                    x86_lea(cg_sec, 8, REG(r), x86_mem(REG(base), -node->var->offset)); // lea -offset(%rN), r
+#endif
+                }
+                free_reg(base);
+            } else if (is_vla) {
 #ifdef ARCH_ARM64
                 arm64_load_from_fp_minus(node->var->offset - 8, REG(r));
 #else
@@ -4065,17 +4105,7 @@ static VReg gen_addr(Node *node) {
 #endif
             } else {
 #ifdef ARCH_ARM64
-                if (node->chain_depth > 0) {
-                    VReg base = alloc_reg();
-                    gen_chain_walk_into(base, node->chain_depth);
-                    if (node->var->offset <= 4095)
-                        arm64_sub_imm(cg_sec, 1, REG(r), REG(base), node->var->offset, 0); // sub r, base, #offset
-                    else {
-                        emit_mov_imm64(REG(r), (uint64_t)node->var->offset); // mov r, #offset
-                        arm64_sub_reg(cg_sec, 1, REG(r), REG(base), REG(r), ARM64_LSL, 0); // sub r, base, r
-                    }
-                    free_reg(base);
-                } else if (node->var->offset <= 4095)
+                if (node->var->offset <= 4095)
                     asm_sub_reg_fp_imm(cg_sec, r, node->var->offset); // sub r, x29, #node->var->offset
                 else {
                     int v = node->var->offset;
@@ -6187,11 +6217,26 @@ static VReg gen(Node *node) {
 #endif
         if (node->var->ty->kind == TY_VLA || ((node->var->ty->kind == TY_STRUCT || node->var->ty->kind == TY_UNION) && node->var->ty->vla_len_expr)) {
             if (node->var->is_local) {
+                if (node->chain_depth > 0) {
+                    // VLA locals are stored as fat pointers: the value
+                    // needed here is the pointer itself, read from
+                    // ancestor_frame-(offset-8) - see gen_addr's ND_LVAR
+                    // TY_VLA branch for the matching address-of case.
+                    VReg base = alloc_reg();
+                    gen_chain_walk_into(base, node->chain_depth);
 #ifdef ARCH_ARM64
-                arm64_load_from_fp_minus(node->var->offset - 8, REG(r));
+                    arm64_load_from_reg_minus(REG(base), node->var->offset - 8, REG(r));
 #else
-                asm_mov_rbp_reg(cg_sec, r, 8, node->var->offset - 8); // mov [rbp-8], rr
+                    x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(base), -(node->var->offset - 8))); // mov -(offset-8)(%rN), r
 #endif
+                    free_reg(base);
+                } else {
+#ifdef ARCH_ARM64
+                    arm64_load_from_fp_minus(node->var->offset - 8, REG(r));
+#else
+                    asm_mov_rbp_reg(cg_sec, r, 8, node->var->offset - 8); // mov [rbp-8], rr
+#endif
+                }
             } else {
 #ifdef ARCH_ARM64
                 if (node->var->is_tls)
