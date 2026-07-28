@@ -349,6 +349,15 @@ struct Reloc {
     int offset;
     char *label;
     int addend;
+    // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
+    // jump-table idiom): when set, this Reloc means "the value at `offset`
+    // is offset(label) - offset(label2), patched as `size` raw bytes" —
+    // resolved by codegen.c as a same-object byte patch once both labels'
+    // .text offsets are known (deferred past all function-body codegen;
+    // there is no ELF/Mach-O relocation kind for a symbol difference).
+    // `label`/`addend` are unused when label2 is set.
+    char *label2;
+    int size; // patch width in bytes (1/2/4/8) — only meaningful when label2 is set
 };
 
 typedef struct DiagEntry DiagEntry;

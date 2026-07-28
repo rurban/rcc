@@ -4160,7 +4160,7 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
     if (contains(content, "dg-require-effective-target nested") ||
         streq(name, "pr22061-3") || streq(name, "pr22061-4") || streq(name, "pr51447"))
         return SKIP_NESTED;
-    if (streq(name, "pr70460") || streq(name, "pr41935"))
+    if (streq(name, "pr41935"))
         return SKIP_NOT_IMPL;
     //if (contains(content, "vector_size") || streq(name, "pr71626-2"))
     //    return SKIP_VECTOR_SIZE;

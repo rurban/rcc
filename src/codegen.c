@@ -12012,11 +12012,51 @@ void dump_ast(Program *prog) {
     fprintf(stderr, "=== end AST dump ===\n");
 }
 
+// Deferred label-address-DIFFERENCE patch (GCC's `&&label_a - &&label_b`
+// computed-goto jump-table static-initializer idiom — see
+// parser.c's extract_label_diff()/append_label_diff_reloc()). Neither
+// label's .text offset is known when its owning static's data is emitted
+// (the early globals-emission pass below runs strictly before any
+// function body, hence before any cg_def_label() call), so the byte patch
+// is queued here and resolved right after `owner_fn`'s body has been fully
+// codegenned (see the resolution snippet at the end of the function-body
+// loop) — NOT after the whole loop: cg_label_ht is reset per-function
+// (Pass 2 needs a clean slate), so it only ever holds one function's
+// labels at a time. There is no ELF/Mach-O relocation kind for a symbol
+// difference, so this is always a same-object byte patch, never
+// objfile_add_reloc().
+typedef struct LabelDiffPatch LabelDiffPatch;
+struct LabelDiffPatch {
+    LabelDiffPatch *next;
+    int section;
+    size_t patch_off;
+    char *label_hi;
+    char *label_lo;
+    char *owner_fn; // function whose codegen defines both labels (LVar.decl_fn_name)
+    int size; // patch width in bytes (1/2/4/8)
+};
+static LabelDiffPatch *pending_label_diffs;
+
+static void queue_label_diff_patch(int section, size_t patch_off, char *label_hi, char *label_lo,
+                                   char *owner_fn, int size) {
+    LabelDiffPatch *p = arena_alloc(sizeof(LabelDiffPatch));
+    p->section = section;
+    p->patch_off = patch_off;
+    p->label_hi = label_hi;
+    p->label_lo = label_lo;
+    p->owner_fn = owner_fn;
+    p->size = size;
+    p->next = pending_label_diffs;
+    pending_label_diffs = p;
+}
+
 struct ObjFile *codegen(Program *prog) {
     init_local_builtins();
     // Reset label and fixup hashtables for new compilation unit
     cg_label_ht_reset();
     asm_fixup_ht_reset();
+    pending_label_diffs = NULL;
+
 
     // Initialize binary ObjFile for asm_* emission
     static ObjFile _obj;
@@ -12208,6 +12248,21 @@ struct ObjFile *codegen(Program *prog) {
                         for (; pos < rel->offset; pos++)
                             secbuf_emit8(cg_sec, (uint8_t)var->init_data[pos]); // .set %s, %s
                         size_t rel_off = cg_sec->len;
+                        if (rel->label2) {
+                            // Label-address DIFFERENCE: neither label's .text
+                            // offset is known yet (see queue_label_diff_patch's
+                            // doc comment above) — reserve placeholder bytes
+                            // and defer the real patch to the resolution pass
+                            // after this owning function's body has been
+                            // generated (see the resolution snippet at the
+                            // end of the function-body loop below).
+                            for (int zi = 0; zi < rel->size; zi++)
+                                secbuf_emit8(cg_sec, 0);
+                            queue_label_diff_patch(var->is_tls ? SEC_TDATA : SEC_DATA, rel_off,
+                                                   rel->label, rel->label2, var->decl_fn_name, rel->size);
+                            pos += rel->size;
+                            continue;
+                        }
                         secbuf_emit64le(cg_sec, (uint64_t)rel->addend); // .quad addend (reloc addend embedded in data)
                         const char *rel_label = sym_name(rel->label);
                         int sidx;
@@ -13688,6 +13743,29 @@ struct ObjFile *codegen(Program *prog) {
         uw_endproc(); // .seh_endproc
 #endif
 #endif
+        // Resolve every queued label-address-DIFFERENCE static-initializer
+        // patch whose labels belong to THIS function, now that its body has
+        // been fully generated (every ND_LABEL's cg_def_label() call has
+        // run, so cg_label_ht holds its final .text offsets). Must happen
+        // here, before the next iteration's cg_label_ht_reset() above wipes
+        // them — cg_label_ht holds one function's labels at a time, never
+        // accumulated across the translation unit. See queue_label_diff_patch's
+        // doc comment for why this can't just run once after the whole loop.
+        for (LabelDiffPatch **_pp = &pending_label_diffs; *_pp;) {
+            LabelDiffPatch *_p = *_pp;
+            if (_p->owner_fn && strcmp(_p->owner_fn, current_fn) == 0) {
+                size_t off_hi = cg_label_ht_get(_p->label_hi);
+                size_t off_lo = cg_label_ht_get(_p->label_lo);
+                if (off_hi != (size_t)-1 && off_lo != (size_t)-1) {
+                    int64_t diff = (int64_t)off_hi - (int64_t)off_lo;
+                    SecBuf *_sb = objfile_section_buf(cg_obj, _p->section);
+                    if (_sb) memcpy(_sb->data + _p->patch_off, &diff, (size_t)_p->size);
+                }
+                *_pp = _p->next; // consumed
+            } else {
+                _pp = &_p->next;
+            }
+        }
     }
     // Emit constructor/destructor entries
     bool has_ctor = false, has_dtor = false;

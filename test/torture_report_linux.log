@@ -1727,7 +1727,7 @@
   pr70222-1                           PASS
   pr70222-2                           PASS
   pr70429                             PASS
-  pr70460                             SKIP (not-implemented)
+  pr70460                             PASS
   pr70566                             PASS
   pr70586                             PASS
   pr70602                             PASS
@@ -3964,7 +3964,7 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3604/3608 passed (100%), 4 failed (0 compile/4 error/0 runtime), 355 skipped.
+Torture: 3605/3609 passed (100%), 4 failed (0 compile/4 error/0 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 

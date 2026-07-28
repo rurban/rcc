@@ -4230,12 +4230,11 @@ static int array_len(Type *ty) {
     return ty->size / ty->base->size;
 }
 
-static void append_reloc(LVar *var, int offset, char *label, int addend) {
-    Reloc *rel = arena_alloc(sizeof(Reloc));
-    rel->offset = offset;
-    rel->label = label;
-    rel->addend = addend;
-
+// Insert `rel` into var->relocs, sorted by offset (dedup: a later reloc at
+// the same offset replaces an earlier one — e.g. a designated-initializer
+// override). Shared by append_reloc() and append_label_diff_reloc() below.
+static void insert_reloc_sorted(LVar *var, Reloc *rel) {
+    int offset = rel->offset;
     if (!var->relocs || var->relocs->offset > offset) {
         rel->next = var->relocs;
         var->relocs = rel;
@@ -4261,6 +4260,54 @@ static void append_reloc(LVar *var, int offset, char *label, int addend) {
         rel->next = cur->next;
         cur->next = rel;
     }
+}
+
+static void append_reloc(LVar *var, int offset, char *label, int addend) {
+    Reloc *rel = arena_alloc(sizeof(Reloc));
+    rel->offset = offset;
+    rel->label = label;
+    rel->addend = addend;
+    insert_reloc_sorted(var, rel);
+}
+
+// Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
+// jump-table idiom, e.g. torture/pr70460.c's `static int b[] = { &&lab1 -
+// &&lab0, &&lab2 - &&lab0 };`). Unlike append_reloc()'s single-symbol case
+// (a real ELF/Mach-O relocation, resolved at link/object-write time), this
+// is resolved by codegen.c as a same-object byte patch once both labels'
+// .text offsets are known — there is no relocation kind that expresses
+// "symbol A minus symbol B". `size` is the patch width in bytes (the
+// initializer element's own type size: 1/2/4/8).
+static void append_label_diff_reloc(LVar *var, int offset, char *label_hi, char *label_lo, int size) {
+    Reloc *rel = arena_alloc(sizeof(Reloc));
+    rel->offset = offset;
+    rel->label = label_hi;
+    rel->label2 = label_lo;
+    rel->size = size;
+    insert_reloc_sorted(var, rel);
+}
+
+// Recognize "&&label_a - &&label_b" (both address-of-label expressions,
+// after unwrapping casts on the whole expression and each operand) for
+// label-difference initializers. Returns the resolved ".L.label.<fn>.<name>"
+// symbol names for both operands, matching cg_def_label()'s naming in
+// codegen.c (ND_LABEL case) and read_global_label_initializer()'s
+// single-label case below. A bare label (no enclosing function) can't
+// occur here: labels only exist inside function bodies, so parser_current_fn
+// is always set while parsing a static initializer that references one.
+static bool extract_label_diff(Node *node, char **label_hi, char **label_lo) {
+    while (node && node->kind == ND_CAST) node = node->lhs;
+    if (!node || node->kind != ND_SUB) return false;
+    Node *lhs = node->lhs, *rhs = node->rhs;
+    while (lhs && lhs->kind == ND_CAST) lhs = lhs->lhs;
+    while (rhs && rhs->kind == ND_CAST) rhs = rhs->lhs;
+    if (!lhs || !rhs || lhs->kind != ND_LABEL_VAL || rhs->kind != ND_LABEL_VAL)
+        return false;
+    const char *fn_hi = lhs->funcname ? lhs->funcname : parser_current_fn;
+    const char *fn_lo = rhs->funcname ? rhs->funcname : parser_current_fn;
+    *label_hi = fn_hi ? format(".L.label.%s.%s", fn_hi, lhs->label_name) : lhs->label_name;
+    *label_lo = fn_lo ? format(".L.label.%s.%s", fn_lo, rhs->label_name) : rhs->label_name;
+    return true;
 }
 
 static bool read_global_label_initializer(Token **rest, Token *tok, char **label, int *addend) {
@@ -5549,6 +5596,24 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
     if (eval_const_expr(node, &val)) {
         write_scalar_bytes(var, offset, ty->size, (int64_t)val);
         return tok;
+    }
+    // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
+    // jump-table idiom, e.g. torture/pr70460.c's `static int b[] = { &&lab1
+    // - &&lab0, &&lab2 - &&lab0 };`). Applies at any integer size (unlike
+    // the >=8-byte-only single-address case below): neither label's byte
+    // offset is knowable yet — labels live in .text, defined only once the
+    // enclosing function's body is generated, strictly after every static
+    // initializer in this early pass — so it can never fold via
+    // eval_const_expr(); defer it to codegen.c as a label-diff reloc,
+    // resolved as a same-object byte patch (there is no ELF/Mach-O
+    // relocation kind for "symbol A minus symbol B") once the enclosing
+    // function's body has been generated.
+    {
+        char *label_hi = NULL, *label_lo = NULL;
+        if (extract_label_diff(node, &label_hi, &label_lo)) {
+            append_label_diff_reloc(var, offset, label_hi, label_lo, ty->size);
+            return tok;
+        }
     }
     // A relocatable address stored in an integer-typed (not pointer-typed)
     // struct member — e.g. arch/x86/include/asm/processor.h's INIT_THREAD:
