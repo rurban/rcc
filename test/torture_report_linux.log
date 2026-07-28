@@ -6,9 +6,9 @@
   920409-1                            PASS
   920410-1                            PASS
   920411-1                            PASS
-  920415-1                            SKIP (nested-func)
+  920415-1                            PASS
   920428-1                            PASS
-  920428-2                            SKIP (trampolines)
+  920428-2                            PASS
   920429-1                            PASS
   920501-1                            PASS
   920501-2                            PASS
@@ -16,7 +16,7 @@
   920501-4                            PASS
   920501-5                            PASS
   920501-6                            PASS
-  920501-7                            SKIP (trampolines)
+  920501-7                            PASS
   920501-8                            PASS
   920501-9                            PASS
   920506-1                            PASS
@@ -24,7 +24,7 @@
   920603-1                            PASS
   920604-1                            PASS
   920612-1                            PASS
-  920612-2                            SKIP (trampolines)
+  920612-2                            PASS
   920618-1                            PASS
   920625-1                            PASS
   920710-1                            PASS
@@ -49,7 +49,7 @@
   921007-1                            PASS
   921013-1                            PASS
   921016-1                            PASS
-  921017-1                            SKIP (trampolines)
+  921017-1                            PASS
   921019-1                            PASS
   921019-2                            PASS
   921029-1                            PASS
@@ -67,7 +67,7 @@
   921207-1                            PASS
   921208-1                            PASS
   921208-2                            PASS
-  921215-1                            SKIP (trampolines)
+  921215-1                            PASS
   921218-1                            PASS
   921218-2                            PASS
   930106-1                            PASS
@@ -107,7 +107,7 @@
   930929-1                            PASS
   930930-1                            PASS
   930930-2                            PASS
-  931002-1                            SKIP (trampolines)
+  931002-1                            PASS
   931004-1                            PASS
   931004-2                            PASS
   931004-3                            PASS
@@ -346,7 +346,7 @@
   20000815-1                          PASS
   20000818-1                          PASS
   20000819-1                          PASS
-  20000822-1                          SKIP (trampolines)
+  20000822-1                          PASS
   20000910-1                          PASS
   20000910-2                          PASS
   20000914-1                          PASS
@@ -647,7 +647,7 @@
   20061031-1                          PASS
   20061101-1                          PASS
   20061101-2                          PASS
-  20061220-1                          SKIP (nested-func)
+  20061220-1                          PASS
   20070201-1                          PASS
   20070212-1                          PASS
   20070212-2                          PASS
@@ -1210,7 +1210,7 @@
   cmpsi-1                             PASS
   cmpsi-2                             PASS
   comp-goto-1                         PASS
-  comp-goto-2                         SKIP (trampolines)
+  comp-goto-2                         PASS
   compare-1                           PASS
   compare-2                           PASS
   compare-3                           PASS
@@ -1311,14 +1311,14 @@
   mul-sext                            PASS
   multdi-1                            PASS
   multi-ix                            PASS
-  nest-align-1                        SKIP (nested-func)
+  nest-align-1                        PASS
   nest-stdar-1                        SKIP (nested-func)
-  nestfunc-1                          SKIP (trampolines)
-  nestfunc-2                          SKIP (trampolines)
-  nestfunc-3                          SKIP (trampolines)
+  nestfunc-1                          PASS
+  nestfunc-2                          PASS
+  nestfunc-3                          PASS
   nestfunc-4                          PASS
-  nestfunc-5                          SKIP (trampolines)
-  nestfunc-6                          SKIP (trampolines)
+  nestfunc-5                          PASS
+  nestfunc-6                          PASS
   nestfunc-7                          SKIP (nested-func)
   p18298                              PASS
   packed-1                            PASS
@@ -1371,7 +1371,7 @@
   pr23467                             PASS
   pr23604                             PASS
   pr23941                             PASS
-  pr24135                             SKIP (trampolines)
+  pr24135                             PASS
   pr24141                             PASS
   pr24142                             PASS
   pr24716                             PASS
@@ -1734,7 +1734,7 @@
   pr70903                             PASS
   pr71083                             PASS
   pr71335                             PASS
-  pr71494                             SKIP (nested-func)
+  pr71494                             PASS
   pr71550                             PASS
   pr71554                             PASS
   pr71626-1                           PASS
@@ -3964,7 +3964,7 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3586/3590 passed (100%), 4 failed (0 compile/4 error/0 runtime), 373 skipped.
+Torture: 3604/3608 passed (100%), 4 failed (0 compile/4 error/0 runtime), 355 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 

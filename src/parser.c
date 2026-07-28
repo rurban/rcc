@@ -1286,6 +1286,22 @@ static bool is_typename(Token *tok) {
     if (tok->kw == ID___ATTRIBUTE || tok->kw == ID___ATTRIBUTE__ ||
         tok->kw == ID___DECLSPEC || tok->kw == ID__ALIGNAS)
         return true;
+    // `asm`/`__asm__` can never lead a declaration-specifier list (GNU C's
+    // asm-name-specifier only ever trails a declarator, e.g. `int x
+    // __asm__("name");`) — it's either a basic/extended inline-asm
+    // statement or, appearing here mid-lookahead, garbage. Don't route it
+    // through skip_attributes(): read_type_attrs's "simple __asm__(\"label\")
+    // for symbol naming" branch can't tell a bare inline-asm statement
+    // apart from a real name-specifier (both are just `__asm__("...")`
+    // with no operand colons), and firing it here — during a pure,
+    // supposedly side-effect-free peek — sets the global pending_asm_name
+    // as a side effect. If the peek then (correctly) decides this isn't a
+    // declaration, that leftover pending_asm_name silently attaches to
+    // whatever declaration/function comes next (e.g. a bare `__asm__("x0,
+    // x1, x2 style garbage");` statement as a function's first statement
+    // corrupts that function's own linker symbol name).
+    if (tok->kw == ID_ASM || tok->kw == ID___ASM || tok->kw == ID___ASM__)
+        return false;
     tok = skip_attributes(tok);
     if (kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE))
         return true;

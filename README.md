@@ -68,7 +68,7 @@ didn't report every expected error line, `r` = runtime failure.
 
 | Compiler | Passed | Failed | Skipped | Notes                      |
 | -------- | ------ | ------ | ------- | -------------------------- |
-| rcc      | 4067   | 4      | 373     | 99%, 4e failures           |
+| rcc      | 4085   | 4      | 355     | 99%, 4e failures           |
 | gcc      | 4154   | 74     | 215     | 98%, 38c/1r failures       |
 | ccc      | 3811   | 199    | 432     | 94%, 133c/31r failures     |
 | clang    | 3615   | 617    | 210     | 85%, 512c/39e/15r failures |
