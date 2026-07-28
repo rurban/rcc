@@ -2,14 +2,14 @@
 
 **Platform**: Windows x86_64 (mingw cross)
 
-Generated: July 25 2026 02:41
+Generated: July 29 2026 08:11
 
 ## Overall Summary
 
-- **Total**: 4436
-- **Passed**: 4041
+- **Total**: 4444
+- **Passed**: 4054
 - **Failed**: 4
-- **Skipped**: 390
+- **Skipped**: 385
 - **Overall Pass Rate**: 100%
 
 ## TCC Compatibility Tests
@@ -21,8 +21,8 @@ Generated: July 25 2026 02:41
 
 ## RCC Unit Tests
 
-- **Total**: 121
-- **Passed**: 120
+- **Total**: 128
+- **Passed**: 127
 - **Failed**: 0
 - **Pass Rate**: 99%
 
@@ -35,16 +35,16 @@ Generated: July 25 2026 02:41
 
 ## NCC Compliance Tests (vs GCC)
 
-- **Total**: 14
-- **Passed**: 14
+- **Total**: 15
+- **Passed**: 15
 - **Failed**: 0
 - **Pass Rate**: 100%
 
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 3569
+- **Passed**: 3574
 - **Failed**: 4
-- **Skipped**: 390
-- **Fail Compile**: 4
+- **Skipped**: 385
+- **Dg-error Tests**: 34/38 passed, 4 failed
 - **Pass Rate (excl. skip)**: 100%

@@ -128,22 +128,24 @@ static char *replace_ext(char *filename, char *new_ext) {
 // comment at its call site, so proper escaping would need two incompatible
 // quoting dialects; refusing a handful of characters no legitimate path
 // ever needs is simpler and strictly safer than attempting to escape them.
+// `\\` is deliberately NOT in this list: inside a double-quoted bash
+// string it only ever escapes a tiny set (\" \$ \\ \` \n), never
+// breaks the quote, and on Windows/MinGW it's the primary path
+// separator — rejecting it would break every native-Windows `-S`
+// disassembly invocation (test_peep, etc.) whose temp dir path
+// contains backslashes.
+// `%` is also deliberately omitted: it is only a metacharacter in
+// cmd.exe (variable expansion); MSYS2/MinGW system() uses sh, where
+// `%` is safe inside double quotes, and Windows temp paths routinely
+// reference `%USERPROFILE%`-style unexpanded environment variables.
+// `^` (cmd.exe escape) likewise cannot appear in legacy 8.3 filenames
+// and is only dangerous under cmd.exe, which this path never reaches
+// under an MSYS2 build.
 static bool path_is_shell_safe(const char *p) {
     for (const char *c = p; *c; c++)
-        // `\"` always breaks out of a double-quoted string. `` ` `` and `$`
-        // start shell expansions (command/parameter substitution) inside
-        // double quotes on POSIX sh; `;`, `|`, `&`, `<`, `>`, newlines, and
-        // `%`/`^` (cmd.exe metachars) break command boundaries on either
-        // shell family.
-        // `\\` is deliberately NOT in this list: inside a double-quoted bash
-        // string it only ever escapes a tiny set (\" \$ \\ \` \n), never
-        // breaks the quote, and on Windows/MinGW it's the primary path
-        // separator — rejecting it would break every native-Windows `-S`
-        // disassembly invocation (test_peep, etc.) whose temp dir path
-        // contains backslashes.
         if (*c == '"' || *c == '`' || *c == '$' || *c == ';' ||
             *c == '|' || *c == '&' || *c == '<' || *c == '>' || *c == '\n' ||
-            *c == '\r' || *c == '%' || *c == '^')
+            *c == '\r')
             return false;
     return true;
 }

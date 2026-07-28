@@ -526,23 +526,17 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     HANDLE nul_h = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
                                OPEN_EXISTING, 0, NULL);
-    bool nul_ok = (nul_h != NULL && nul_h != INVALID_HANDLE_VALUE);
 
     STARTUPINFOA si = {0};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
-    // Wine CreateProcessA rejects a NUL handle with ERROR_INVALID_PARAMETER,
-    // even though CreateFileA("NUL",...) succeeds and returns a valid-looking
-    // handle. Fall back to the parent's own standard handles when that happens.
-    HANDLE null_hdl = nul_ok ? nul_h : GetStdHandle(STD_OUTPUT_HANDLE);
-    HANDLE in_hdl = nul_ok ? nul_h : GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdInput = in_hdl;
+    si.hStdInput = nul_h;
     if (capture == 1) { /* stderr only */
-        si.hStdOutput = null_hdl;
+        si.hStdOutput = nul_h;
         si.hStdError = write_h;
     } else if (capture == 2) { /* stdout only */
         si.hStdOutput = write_h;
-        si.hStdError = null_hdl;
+        si.hStdError = nul_h;
     } else { /* both */
         si.hStdOutput = write_h;
         si.hStdError = write_h;
@@ -551,12 +545,10 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
     char *cmdline = build_cmdline(argv);
     PROCESS_INFORMATION pi = {0};
     BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd, &si, &pi);
-    DWORD spawn_err = ok ? 0 : GetLastError();
     free(cmdline);
     CloseHandle(write_h);
     if (nul_h != INVALID_HANDLE_VALUE) CloseHandle(nul_h);
     if (!ok) {
-        fprintf(stderr, "CreateProcessA failed: error=%lu\n", spawn_err);
         CloseHandle(read_h);
         r.spawn_failed = true;
         return r;
@@ -888,8 +880,10 @@ static void detect_platform(const char *rcc_path) {
             platform = "mingw";
         else {
             platform = strdup(u.sysname); // own a copy: u is stack-local and about to go out of scope
-            if (strcmp(u.sysname, "Linux") == 0)
+            if (strcmp(u.sysname, "Linux") == 0) {
+                free((void *)platform);
                 platform = "linux";
+            }
         }
         if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0) {
             is_arm64 = true;
@@ -1781,7 +1775,7 @@ static bool lldb_probed(void) {
 /* extra: NULL-terminated extra compile flags (e.g. {"-I",".","-lm",NULL}); may be NULL.
  * ob/ol/oc: output buffer for TCC suite (append mode); pass all NULL to print directly. */
 static void emit_backtrace(const char *exe_path, const char *args,
-                           const char *src_file, const char *rcc_path, const char *cflags,
+                           const char *src_file, const char *rcc, const char *cflags,
                            const char *const extra[],
                            char **ob, size_t *ol, size_t *oc) {
     /* Debugger backtraces are only useful for diagnosing rcc's own
@@ -1795,7 +1789,7 @@ static void emit_backtrace(const char *exe_path, const char *args,
     if (src_file && file_exists(src_file)) {
         char *a[32];
         int ai = 0;
-        a[ai++] = (char *)rcc_path;
+        a[ai++] = (char *)rcc;
         if (cflags && *cflags)
             a[ai++] = (char *)cflags;
         if (extra) {
@@ -2232,23 +2226,21 @@ static void print_change(const char *base, const char *new_status) {
 
 /* ── run one TCC test ────────────────────────────────────────────── */
 
-// Compile+run one TCC test (sequential path): in-process fast path when
-// available, else external rcc + exe; DT/cd_test/128_run_atexit get
-// dedicated multi-invocation handling. Updates total/passed/failed and
-// the report rows.
 static void run_one_test(const char *src_path, const char *base,
-                         const char *p_src, const char *ldflags, bool is_mingw) {
+                         const char *p_src, const char *ldflags) {
     total++;
     char expect_file[512], local_expect[512];
     snprintf(local_expect, sizeof(local_expect), "%s/test/tinycc-%s.expect", SCRIPT_DIR, base);
-    if (file_exists(local_expect)) snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
+    if (file_exists(local_expect))
+        snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
     else
         snprintf(expect_file, sizeof(expect_file), "%s/%s.expect", TEST_DIR, base);
 
     bool in_cd_dir = false;
     const char *orig_src = src_path, *orig_rcc = rcc;
     const char *fname_only = strrchr(orig_src, '/');
-    if (!fname_only) fname_only = orig_src;
+    if (!fname_only)
+        fname_only = orig_src;
     else
         fname_only++;
 
@@ -2347,9 +2339,12 @@ static void run_one_test(const char *src_path, const char *base,
     }
 
     char tmp_exe[256];
+#ifdef _WIN32
+    snprintf(tmp_exe, sizeof(tmp_exe), "%s\\rcc_test_%d.exe", get_tmpdir(), getpid());
+    //if (is_mingw || (has_runner && contains(runner_cmd, "wine")))
+#else
     snprintf(tmp_exe, sizeof(tmp_exe), "%s/rcc_test_%d", get_tmpdir(), getpid());
-    if (is_mingw || (has_runner && contains(runner_cmd, "wine")))
-        strcat(tmp_exe, ".exe");
+#endif
     char *out_buf = NULL;
     size_t out_len = 0, out_cap = 0;
     char *vlog_compile_cmd = NULL;
@@ -2913,12 +2908,12 @@ static void compile_and_exec(const char *src_path, const char *base,
          * basename. Instead of a process-global chdir() (thread-unsafe),
          * compile with cwd=TEST_DIR via posix_spawn_file_actions_addchdir_np
          * / CreateProcess's lpCurrentDirectory and pass only the basename. */
-        const char *normal_compile_src = src_path;
-        const char *normal_compile_cwd = NULL;
+        const char *compile_src = src_path;
+        const char *compile_cwd = NULL;
         if (is_cd_test(base)) {
             const char *fn = strrchr(src_path, '/');
-            normal_compile_src = fn ? fn + 1 : src_path;
-            normal_compile_cwd = TEST_DIR;
+            compile_src = fn ? fn + 1 : src_path;
+            compile_cwd = TEST_DIR;
         }
 
         char *ca[16];
@@ -2936,7 +2931,7 @@ static void compile_and_exec(const char *src_path, const char *base,
                 tok = strtok_r(NULL, " ", &sv);
             }
         }
-        ca[ai++] = (char *)normal_compile_src;
+        ca[ai++] = (char *)compile_src;
         if (ldflags && *ldflags) {
             char *lf = strdup(ldflags);
             char *sv = NULL;
@@ -2948,7 +2943,7 @@ static void compile_and_exec(const char *src_path, const char *base,
         }
         ca[ai] = NULL;
         r->compile_cmdline = cmdline_from_argv(ca);
-        ProcResult cr = proc_run_cwd(ca, 30, 0, normal_compile_cwd);
+        ProcResult cr = proc_run_cwd(ca, 30, 0, compile_cwd);
         if (cr.exit_code != 0) {
             r->exit_code = cr.exit_code;
             r->compile_out = cr.out;
@@ -3019,9 +3014,6 @@ static void compile_and_exec(const char *src_path, const char *base,
 
 /* ── parallel: evaluate stored results + report ──────────────────── */
 
-// Parallel counterpart to run_one_test(): evaluate a ParallelResult
-// already produced by a worker thread and report/tally it. Same
-// DT/128_run_atexit/normal-test branching, no process spawning here.
 static void evaluate_and_report(const char *base, ParallelResult *r) {
     total++;
     vlog_test_details(base, r->compile_cmdline, r->compile_out,
@@ -3212,10 +3204,11 @@ static bool is_todo_test(const char *base) {
 static void unit_compile_exec(const char *src_path, const char *base,
                               ParallelResult *r, int index) {
     memset(r, 0, sizeof(*r));
+#ifdef _WIN32
+    snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s\\rcc_par_%d.exe", get_tmpdir(), index);
+#else
     snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s/rcc_par_%d", get_tmpdir(), index);
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-        strcat(r->tmp_exe, ".exe");
-
+#endif
     /* test_err*: expect compile failure */
     if (is_err_test(base)) {
         char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
@@ -3404,7 +3397,11 @@ static void unit_evaluate_report(const char *base, ParallelResult *r) {
 
 static int run_unit_tests(void) {
     static char unit_path[512];
+#ifdef _WIN32
+    snprintf(unit_path, sizeof(unit_path), "%s\\test", SCRIPT_DIR);
+#else
     snprintf(unit_path, sizeof(unit_path), "%s/test", SCRIPT_DIR);
+#endif
     if (!file_exists(unit_path)) return 0;
     printf("\n%sUnit tests (test/)%s\n", COL_CYAN, COL_RESET);
 
@@ -3433,9 +3430,12 @@ static int run_unit_tests(void) {
             char *dot = strrchr(base, '.');
             if (dot) *dot = '\0';
             /* skip arm64-only tests on non-arm64, and vice versa for x86 */
-            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
-                ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
-                  streq(base, "test_label_diff") || streq(base, "test_alternative") ||
+            if ((!is_arm64 && streq(base, "test_arm64_asm")) ||
+                (is_arm64 &&
+                 (streq(base, "test_x86_asm") ||
+                  streq(base, "test_jump_label") ||
+                  streq(base, "test_label_diff") ||
+                  streq(base, "test_alternative") ||
                   streq(base, "test_cross_section_fixup") ||
                   streq(base, "test_x86_priv_insns") ||
                   streq(base, "test_skip_maxdiff") ||
@@ -3443,8 +3443,7 @@ static int run_unit_tests(void) {
                   streq(base, "test_indirect_call_jmp") ||
                   streq(base, "test_toplevel_asm") ||
                   streq(base, "test_pcrel_paren_addend") ||
-                  streq(base, "test_asm_cpp_hash_comment")) &&
-                 is_arm64)) {
+                  streq(base, "test_asm_cpp_hash_comment")))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 continue;
@@ -3462,7 +3461,11 @@ static int run_unit_tests(void) {
             ParallelJob *jobs = calloc((size_t)n_tests, sizeof(ParallelJob));
             for (int i = 0; i < n_tests; i++) {
                 char *sp = malloc(PATH_MAX);
+#ifdef _WIN32
+                snprintf(sp, PATH_MAX, "%s\\%s", unit_path, entries[i].fname);
+#else
                 snprintf(sp, PATH_MAX, "%s/%s", unit_path, entries[i].fname);
+#endif
                 jobs[i].suite = SUITE_UNIT;
                 jobs[i].src_path = sp;
                 jobs[i].base = strdup(entries[i].base);
@@ -3504,9 +3507,12 @@ static int run_unit_tests(void) {
             }
 
             /* skip arm64-only tests on non-arm64, and vice versa for x86 */
-            if ((streq(base, "test_arm64_asm") && !is_arm64) ||
-                ((streq(base, "test_x86_asm") || streq(base, "test_jump_label") ||
-                  streq(base, "test_label_diff") || streq(base, "test_alternative") ||
+            if ((!is_arm64 && streq(base, "test_arm64_asm")) ||
+                (is_arm64 &&
+                 (streq(base, "test_x86_asm") ||
+                  streq(base, "test_jump_label") ||
+                  streq(base, "test_label_diff") ||
+                  streq(base, "test_alternative") ||
                   streq(base, "test_cross_section_fixup") ||
                   streq(base, "test_x86_priv_insns") ||
                   streq(base, "test_skip_maxdiff") ||
@@ -3514,8 +3520,7 @@ static int run_unit_tests(void) {
                   streq(base, "test_indirect_call_jmp") ||
                   streq(base, "test_toplevel_asm") ||
                   streq(base, "test_pcrel_paren_addend") ||
-                  streq(base, "test_asm_cpp_hash_comment")) &&
-                 is_arm64)) {
+                  streq(base, "test_asm_cpp_hash_comment")))) {
                 print_result(base, COL_YELLOW, "SKIP");
                 add_row(base, "SKIP", "Skipped");
                 free(nl[i]);
@@ -3524,8 +3529,11 @@ static int run_unit_tests(void) {
 
             total++;
             char src_path[PATH_MAX];
+#ifdef _WIN32
+            snprintf(src_path, sizeof(src_path), "%s\\%s", unit_path, fname);
+#else
             snprintf(src_path, sizeof(src_path), "%s/%s", unit_path, fname);
-
+#endif
             char *compile_cmdline = NULL;
             char *run_cmdline = NULL;
             char *run_out = NULL;
@@ -3533,9 +3541,11 @@ static int run_unit_tests(void) {
             /* test_err*: expect compile failure */
             if (is_err_test(base)) {
                 char tmp[2 * PATH_MAX];
+#ifdef _WIN32
+                snprintf(tmp, sizeof(tmp), "%s\\rcc_test_%d.exe", get_tmpdir(), getpid());
+#else
                 snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
-                if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-                    strcat(tmp, ".exe");
+#endif
                 char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
@@ -3567,22 +3577,16 @@ static int run_unit_tests(void) {
 
             int expected_exit = test_unit_expected_exit(base);
             char tmp[2 * PATH_MAX];
+#ifdef _WIN32
+            snprintf(tmp, sizeof(tmp), "%s\\rcc_test_%d.exe", get_tmpdir(), getpid());
+#else
             snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
-            if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-                strcat(tmp, ".exe");
+#endif
             {
                 char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
-                // Wine: rcc.exe may exit 1 spuriously, and the output
-                // file may have .exe appended even when tmp does not.
-                int file_ok = access(tmp, X_OK) == 0;
-                if (!file_ok) {
-                    char tmp_exe[2 * PATH_MAX];
-                    snprintf(tmp_exe, sizeof(tmp_exe), "%s.exe", tmp);
-                    file_ok = access(tmp_exe, X_OK) == 0;
-                }
-                if (cr.exit_code != 0 && !file_ok) {
+                if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
                     if (is_todo_test(base)) {
                         print_result(base, COL_YELLOW, "TODO (compile)");
                         todo++;
@@ -3728,11 +3732,13 @@ static int move_file_atomic(const char *src, const char *dst) {
 
 static void generate_tcc_report(void) {
     char path[512];
+#ifdef _WIN32
+    snprintf(path, sizeof(path), "%s\\%s", SCRIPT_DIR, REPORT_FILE);
+#else
     snprintf(path, sizeof(path), "%s/%s", SCRIPT_DIR, REPORT_FILE);
+#endif
     char tmp_path[520];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-    // codeql[cpp/world-writable-file-creation]: internal report path
-    // (SCRIPT_DIR/REPORT_FILE), not derived from untrusted input.
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) return;
 
@@ -3847,7 +3853,6 @@ static int run_tcc_suite(void) {
                 if (dot) *dot = '\0';
 
                 if (contains(fn, "+")) {
-                    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                     if (scan_src) free((void *)scan_src);
                     scan_src = strdup(*f);
                     continue;
@@ -3870,16 +3875,9 @@ static int run_tcc_suite(void) {
                 }
                 n_tests++;
             }
-            // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
             if (scan_src) free((void *)scan_src);
 
-            // n_tests > 1 (not > 0): a single test takes the dedicated
-            // "else if (n_tests == 1)" sequential fast path below instead
-            // of spinning up the parallel job-pool machinery for one job
-            // (that branch was previously unreachable dead code: `> 0`
-            // already caught n_tests==1, tripping CodeQL's
-            // cpp/constant-comparison on the always-false `n_tests == 1`).
-            if (n_tests > 1 || n_cd > 0) {
+            if (n_tests > 0 || n_cd > 0) {
                 /* Collect jobs: the main pool, and a separate list of
                  * cd_tests/dt_tests + 46_grep (which need a per-process
                  * cwd for __FILE__ or do multiple compile+exec cycles per
@@ -3900,7 +3898,6 @@ static int run_tcc_suite(void) {
                     if (dot) *dot = '\0';
 
                     if (contains(fn, "+")) {
-                        // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                         if (scan_src) free((void *)scan_src);
                         scan_src = strdup(*f);
                         continue;
@@ -3935,7 +3932,6 @@ static int run_tcc_suite(void) {
                     (*pidx)++;
                     scan_src = NULL;
                 }
-                // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                 if (scan_src) free((void *)scan_src);
 
                 /* Main pool: parallel compile + execute, then evaluate + report */
@@ -3971,7 +3967,6 @@ static int run_tcc_suite(void) {
                     if (dot) *dot = '\0';
 
                     if (contains(fn, "+")) {
-                        // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                         if (scan_src) free((void *)scan_src);
                         scan_src = strdup(*f);
                         continue;
@@ -3983,10 +3978,9 @@ static int run_tcc_suite(void) {
                     }
                     if (is_skipped(sbase, is_mingw)) continue;
 
-                    run_one_test(*f, sbase, scan_src ? scan_src : "", extra_ldflags(sbase, *f), is_mingw);
+                    run_one_test(*f, sbase, scan_src ? scan_src : "", extra_ldflags(sbase, *f));
                     break;
                 }
-                // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                 if (scan_src) free((void *)scan_src);
             }
         } else {
@@ -4004,7 +3998,6 @@ static int run_tcc_suite(void) {
                 if (dot) *dot = '\0';
 
                 if (contains(fname, "+")) {
-                    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
                     if (p_src) free((void *)p_src);
                     p_src = strdup(*f);
                     continue;
@@ -4029,14 +4022,13 @@ static int run_tcc_suite(void) {
                     p_src = NULL;
                     continue;
                 }
-                run_one_test(*f, base, p_src ? p_src : "", extra_ldflags(base, *f), is_mingw);
+                run_one_test(*f, base, p_src ? p_src : "", extra_ldflags(base, *f));
                 p_src = NULL;
             }
         }
         for (char **f = files; *f; f++) free(*f);
         free(files);
     }
-    // codeql[cpp/guarded-free]: free(NULL) is a no-op; the guard is redundant but harmless
     if (p_src) free((void *)p_src);
 
     if (only_test_count == 0) {
@@ -4103,14 +4095,12 @@ static const char *skip_reason_str(SkipReason r) {
     switch (r) {
     case SKIP_X86_ONLY: return "x86-only";
     case SKIP_TMPNAM: return "tmpnam-macOS";
-    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_COMPLEX: return "complex";
     case SKIP_TRAMPOLINES: return "trampolines";
     case SKIP_SCALAR_STORAGE: return "scalar_storage_order";
     case SKIP_GCC_ONLY: return "gcc-only";
     case SKIP_NESTED: return "nested-func";
     case SKIP_NOT_IMPL: return "not-implemented";
-    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_VECTOR_SIZE: return "vector_size";
     case SKIP_C99_RUNTIME: return "c99-runtime";
     case SKIP_SIGNAL: return "signal";
@@ -4124,7 +4114,6 @@ static const char *skip_reason_str(SkipReason r) {
     case SKIP_TEMPLATE: return "template-file";
     case SKIP_GIMPLE: return "gimple";
     case SKIP_TARGET: return "target-mismatch";
-    // codeql[cpp/commented-out-code]: retired skip category kept for reference alongside its disabled enum/detection logic
     //case SKIP_SHADOW: return "typedef-shadow";
     case SKIP_OPENMP: return "openmp";
     case SKIP_BITINT: return "bitint";
@@ -4360,9 +4349,11 @@ static void tort_compile_exec(const char *src_path, const char *name, bool summa
                               ParallelResult *r, int index) {
     (void)summary_only;
     memset(r, 0, sizeof(*r));
+#ifdef _WIN32
+    snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s\\rcc_par_%d.exe", get_tmpdir(), index);
+#else
     snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s/rcc_par_%d", get_tmpdir(), index);
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-        strcat(r->tmp_exe, ".exe");
+#endif
 
     char *content = slurp(src_path);
     SkipReason sk = torture_should_skip(name, content, compiler_name);
@@ -4655,9 +4646,11 @@ static void run_torture_test(const char *src, bool summary_only) {
 
     DgDoAction dgdo = dgdo_parse(content);
     char exe_path[512];
+#ifdef _WIN32
+    snprintf(exe_path, sizeof(exe_path), "%s\\torture_rcc_%s.exe", get_tmpdir(), name);
+#else
     snprintf(exe_path, sizeof(exe_path), "%s/torture_rcc_%s", get_tmpdir(), name);
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-        strcat(exe_path, ".exe");
+#endif
     char *ca[32];
     int ai = 0;
     ca[ai++] = (char *)rcc;
@@ -4845,7 +4838,7 @@ static int run_torture_suite(bool summary_only) {
         open_log(lp);
     }
 
-    logprintf("\n%sGCC torture tests%s\n", COL_CYAN, COL_RESET);
+    logprintf("\n%sGCC torture tests (test/torture/)%s\n", COL_CYAN, COL_RESET);
 
     char save_cwd[PATH_MAX];
     if (!getcwd(save_cwd, sizeof(save_cwd))) save_cwd[0] = '\0';
@@ -5023,12 +5016,13 @@ static void comp_compile_exec(const char *src_path, const char *base,
                               const char *gcc_path, ParallelResult *r, int index) {
     (void)base;
     memset(r, 0, sizeof(*r));
+#ifdef _WIN32
+    snprintf(r->gcc_exe_path, sizeof(r->gcc_exe_path), "%s\\rcc_par_gcc_%d.exe", get_tmpdir(), index);
+    snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s\\rcc_par_rcc_%d.exe", get_tmpdir(), index);
+#else
     snprintf(r->gcc_exe_path, sizeof(r->gcc_exe_path), "%s/rcc_par_gcc_%d", get_tmpdir(), index);
     snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s/rcc_par_rcc_%d", get_tmpdir(), index);
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine"))) {
-        strcat(r->gcc_exe_path, ".exe");
-        strcat(r->tmp_exe, ".exe");
-    }
+#endif
 
     /* compile with gcc */
     {
@@ -5299,8 +5293,13 @@ static int run_compliance_suite(void) {
             }
 
             char gcc_exe[2 * PATH_MAX], rcc_exe[2 * PATH_MAX];
+#ifdef _WIN32
+            snprintf(gcc_exe, sizeof(gcc_exe), "%s\\compliance_gcc_%d_%s.exe", get_tmpdir(), getpid(), base);
+            snprintf(rcc_exe, sizeof(rcc_exe), "%s\\compliance_rcc_%d_%s.exe", get_tmpdir(), getpid(), base);
+#else
             snprintf(gcc_exe, sizeof(gcc_exe), "%s/compliance_gcc_%d_%s", get_tmpdir(), getpid(), base);
             snprintf(rcc_exe, sizeof(rcc_exe), "%s/compliance_rcc_%d_%s", get_tmpdir(), getpid(), base);
+#endif
 
             char *rcc_compile_cmdline = NULL;
             char *rcc_compile_out = NULL;
@@ -5422,14 +5421,16 @@ static int run_ctest_one(const char *ctest_dir, const char *test_name) {
     snprintf(exp_path, sizeof(exp_path), "%s/tests/single-exec/%s.c.expected", ctest_dir, num);
     if (!file_exists(src_path)) return -1;
 
-    printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
-    printf("Start c-testsuite with %s -O1 -lm\n", rcc);
+    printf("\n%sC-testsuite (%s/tests/single-exec)%s\n", COL_CYAN, ctest_dir, COL_RESET);
+    //printf("Start c-testsuite with %s %s -lm\n", rcc, rccflags);
 
+#ifdef _WIN32
+    snprintf(bin_path, sizeof(bin_path), "%s\\rcc_ctest_%d.exe", get_tmpdir(), getpid());
+#else
     snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d", get_tmpdir(), getpid());
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-        strcat(bin_path, ".exe");
+#endif
 
-    char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, src_path, NULL};
+    char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", bin_path, src_path, NULL};
     char *compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, scaled(30), 1);
     int fail = 0;
@@ -5472,9 +5473,11 @@ static int run_ctest_one(const char *ctest_dir, const char *test_name) {
 static void ctest_compile_exec(const char *src_path, const char *name,
                                ParallelResult *r, int index) {
     memset(r, 0, sizeof(*r));
+#ifdef _WIN32
+    snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s\\rcc_ctest_%d_%s.exe", get_tmpdir(), index, name);
+#else
     snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s/rcc_ctest_%d_%s", get_tmpdir(), index, name);
-    if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-        strcat(r->tmp_exe, ".exe");
+#endif
 
 #if 0 && defined(_WIN32) /* FIXME: rcc_lib not yet thread-safe for parallel workers */
     /* Fast path: compile+run in-process via rcc_lib.dll */
@@ -5491,7 +5494,7 @@ static void ctest_compile_exec(const char *src_path, const char *name,
         }
     }
 #endif
-    char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", r->tmp_exe, (char *)src_path, NULL};
+    char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", r->tmp_exe, (char *)src_path, NULL};
     r->compile_cmdline = cmdline_from_argv(ca);
     ProcResult cr = proc_run(ca, scaled(30), 1);
     if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
@@ -5555,12 +5558,9 @@ static bool ctest_evaluate_report(const char *name, const char *exp_path, Parall
     return pass;
 }
 
-// Run the c-testsuite (test/c-testsuite): parallel compile+exec+compare
-// against each test's expected output, then write the summary file and
-// unified report.
 static int run_ctest_suite(void) {
     if (streq(platform, "darwin_cross")) {
-        printf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
+        printf("\n%sC-testsuite (c-testsuite/tests/single-exec)%s\n", COL_CYAN, COL_RESET);
         printf("SKIP (darwin-cross: compile+link only, no execution)\n");
         return 0;
     }
@@ -5627,7 +5627,7 @@ static int run_ctest_suite(void) {
         open_log(lp);
     }
 
-    logprintf("\n%sC-testsuite%s\n", COL_CYAN, COL_RESET);
+    logprintf("\n%sC-testsuite (c-testsuite/tests/single-exec)%s\n", COL_CYAN, COL_RESET);
 
     if (is_mingw_native || under_wine || (g_num_workers > 1 && !streq(platform, "darwin_cross"))) {
         /* Native per-test execution — no POSIX shell needed.
@@ -5636,7 +5636,7 @@ static int run_ctest_suite(void) {
          * Always used for mingw/wine (no POSIX shell); also used for
          * --parallel/--jobs since the popen/TAP path below cannot be
          * parallelized. */
-        logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
+        //logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
 
         char src_dir[PATH_MAX + 64];
         snprintf(src_dir, sizeof(src_dir), "%s/tests/single-exec", ctest_dir);
@@ -5707,12 +5707,14 @@ static int run_ctest_suite(void) {
 
                 char exp_path[2 * PATH_MAX], bin_path[2 * PATH_MAX];
                 snprintf(exp_path, sizeof(exp_path), "%s/%s.c.expected", src_dir, name);
+#ifdef _WIN32
+                snprintf(bin_path, sizeof(bin_path), "%s\\rcc_ctest_%d_%s.exe",
+                         get_tmpdir(), getpid(), name);
+#else
                 snprintf(bin_path, sizeof(bin_path), "%s/rcc_ctest_%d_%s",
                          get_tmpdir(), getpid(), name);
-                if (is_mingw_native || (has_runner && contains(runner_cmd, "wine")))
-                    strcat(bin_path, ".exe");
-
-                char *ca[] = {(char *)rcc, "-O1", "-lm", "-o", bin_path, (char *)*f, NULL};
+#endif
+                char *ca[] = {(char *)rcc, (char *)rccflags, "-lm", "-o", bin_path, (char *)*f, NULL};
                 ProcResult cr = proc_run(ca, scaled(30), 1);
                 bool test_pass = false;
                 if (cr.exit_code != 0 || access(bin_path, X_OK) != 0) {
@@ -5769,8 +5771,7 @@ static int run_ctest_suite(void) {
         return ctest_fail2 > 0 ? 1 : 0;
     }
 
-    logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
-
+    //logprintf("Start c-testsuite with %s -O1 -lm\n", rcc);
     char cmd[PATH_MAX * 2 + 128];
 #ifdef __aarch64__
     const char *stdbuf = "";
@@ -5930,8 +5931,6 @@ static void generate_report(void) {
     }
     int ov_eff = ov_total - ov_skip;
 
-    // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
-    // internal report path, not derived from untrusted input.
     FILE *rf = fopen(tmp_path, "wb");
     if (!rf) {
         perror(tmp_path);
@@ -6029,7 +6028,6 @@ int main(int argc, char **argv) {
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
 
-    // codeql[cpp/loop-variable-changed]: deliberate argv[++i] to consume --jobs/--timeout's separate numeric argument (2 sites below)
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (streq(a, "--all")) {
@@ -6092,9 +6090,6 @@ int main(int argc, char **argv) {
            always uses an external process — never the in-proc rcc_lib. */
         else if (!rcc && strchr(a, ' ') != NULL) {
             char *copy = strdup(a);
-            // codeql[cpp/inconsistent-null-check]: copy is a strdup of a,
-            // and the caller's `strchr(a, ' ') != NULL` guard (just above)
-            // already proved a space exists — copy must contain one too.
             char *sp = strchr(copy, ' ');
             *sp = '\0';
             rcc = copy;

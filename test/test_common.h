@@ -30,9 +30,9 @@ static int under_aarch64_qemu(void) {
 static const char *find_rcc(void) {
     const char *env = getenv("RCC");
     if (env && access(env, X_OK) == 0)
-        return env;
+    return env;
 #ifdef _WIN32
-    return "./rcc.exe";
+    return "rcc.exe";
 #elif defined(__aarch64__)
     if (under_aarch64_qemu() && access("./rcc-arm64", X_OK) == 0)
         return "./rcc-arm64";

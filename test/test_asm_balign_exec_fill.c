@@ -35,9 +35,13 @@ int main(void)
     int pid = (int)getpid();
 
     char srcf[128], objf[128], cmd[512];
+#ifdef _WIN32
+    snprintf(srcf, sizeof(srcf), "%s\\test_abef_%d.S", td, pid);
+    snprintf(objf, sizeof(objf), "%s\\test_abef_%d.obj", td, pid);
+#else
     snprintf(srcf, sizeof(srcf), "%s/test_abef_%d.S", td, pid);
     snprintf(objf, sizeof(objf), "%s/test_abef_%d.o", td, pid);
-
+#endif
     /* "ret" (1 byte) then ".p2align 3" (no fill) - needs 7 bytes of
      * padding to reach the next 8-byte boundary - then "nop", all inside
      * a single 16-byte objdump row so the row's own address-column text
