@@ -4155,6 +4155,7 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
     if (contains(content, "dg-require-effective-target trampolines") &&
         !streq(platform, "linux") && !streq(platform, "arm64_cross"))
         return SKIP_TRAMPOLINES;
+    if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
     /* rcc does not implement FP exception (fenv) semantics or signaling NaNs,
      * so tests that assert on FE_INVALID etc. cannot pass. */
     if (contains(content, "dg-require-effective-target fenv_exceptions"))
