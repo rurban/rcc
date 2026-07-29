@@ -25,6 +25,7 @@
 #define ET_REL 1
 #define ET_EXEC 2
 #define ET_DYN 3
+#define ET_DYN 3
 #define EM_X86_64 62
 #define EM_AARCH64 183
 
@@ -65,6 +66,8 @@
 #define PF_R 4
 #define PT_GNU_STACK 0x6474e551
 #define PT_GNU_RELRO 0x6474e552
+#define PT_GNU_STACK 0x6474e551
+#define PT_GNU_RELRO 0x6474e552
 
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
@@ -76,6 +79,7 @@
 #define R_X86_64_PLT32 4
 #define R_X86_64_TPOFF32 23
 #define R_X86_64_PC64 24
+#define R_X86_64_COPY 5
 #define R_X86_64_COPY 5
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_GLOB_DAT 6
@@ -115,6 +119,10 @@
 #define DT_FLAGS_1 0x6ffffffb
 #define DF_BIND_NOW 0x8
 #define DF_1_NOW 1
+#define DT_INIT_ARRAY   25
+#define DT_FINI_ARRAY   26
+#define DT_INIT_ARRAYSZ 27
+#define DT_FINI_ARRAYSZ 28
 
 static uint8_t r8(const uint8_t *p) { return p[0]; }
 static uint16_t r16le(const uint8_t *p) {
@@ -868,6 +876,8 @@ int link_elf(LinkState *s) {
     int n_func_dyn = 0;
     int n_reladyn = 0;
     int libc_off = 0;
+    int n_needed = 1;
+    int *needed_offs = NULL;
 
     if (do_dynamic) {
         interp_sec = link_find_or_create_sec(s, ".interp", true, false, false, false, false, 1);
@@ -911,6 +921,40 @@ int link_elf(LinkState *s) {
         link_sec_append(s, dynstr_sec, &nul, 1, 1);
         libc_off = (int)link_sec_append(s, dynstr_sec,
                                         (const uint8_t *)"libc.so.6", 10, 1);
+
+        // Parse -l flags for additional DT_NEEDED entries.
+        {
+            int cap_needed = 8;
+            needed_offs = malloc((size_t)cap_needed * sizeof(int));
+            needed_offs[0] = libc_off;
+            n_needed = 1;
+            const char *lp = s->libs;
+            while (lp && *lp) {
+                while (*lp == ' ') lp++;
+                if (!*lp) break;
+                if (!strncmp(lp, "-l", 2) && lp[2]) {
+                    lp += 2;
+                    char libname[64];
+                    const char *end = lp;
+                    while (*end && *end != ' ') end++;
+                    size_t len = (size_t)(end - lp);
+                    if (len > 0 && len < 60) {
+                        snprintf(libname, sizeof(libname), "lib%.*s.so.6", (int)len, lp);
+                        int off = (int)link_sec_append(s, dynstr_sec,
+                                                       (const uint8_t *)libname,
+                                                       strlen(libname) + 1, 1);
+                        if (n_needed == cap_needed) {
+                            cap_needed *= 2;
+                            needed_offs = realloc(needed_offs, (size_t)cap_needed * sizeof(int));
+                        }
+                        needed_offs[n_needed++] = off;
+                    }
+                    lp = end;
+                } else {
+                    while (*lp && *lp != ' ') lp++;
+                }
+            }
+        }
 
         // .dynsym: null entry first.
         uint8_t zero24[24] = {0};
@@ -1049,7 +1093,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 6 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + 4;
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + 2 + n_needed + 1 + 4;
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1077,6 +1121,20 @@ int link_elf(LinkState *s) {
         int phnum = 3; // text, rodata, data
         if (do_dynamic) phnum += s->opt_shared ? 1 : 2; // dynamic (+ interp for exec)
         phnum += 1; // PT_GNU_STACK
+        uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc) continue;
+            sec->addr += hdr_size;
+            if (!sec->is_bss) sec->fileoff += hdr_size;
+        }
+    }
+
+    // Adjust section addresses so the first LOAD can start at offset 0.
+    {
+        int phnum = 3;
+        if (do_dynamic) phnum += s->opt_shared ? 1 : 2;
+        phnum += 1;
         uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
@@ -1212,7 +1270,26 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
             auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
         }
-        auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)libc_off);
+        if (n_func_dyn > 0) {
+            auto_dyn_ent(dyn, &dpos, DT_JMPREL, s->secs[relaplt_sec].addr);
+            auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
+            auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
+        }
+        // Emit DT_INIT_ARRAY / DT_FINI_ARRAY if sections exist.
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc || sec->len == 0) continue;
+            if (strcmp(sec->name, ".init_array") == 0) {
+                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAY, sec->addr);
+                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAYSZ, sec->len);
+            }
+            if (strcmp(sec->name, ".fini_array") == 0) {
+                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAY, sec->addr);
+                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAYSZ, sec->len);
+            }
+        }
+        for (int k = 0; k < n_needed; k++)
+            auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)needed_offs[k]);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW);
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);
@@ -1375,5 +1452,6 @@ int link_elf(LinkState *s) {
     free(plt_idx);
     free(got_map);
     free(dynstr_off);
+    free(needed_offs);
     return 0;
 }

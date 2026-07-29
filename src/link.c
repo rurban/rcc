@@ -59,11 +59,13 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
 // ---------------------------------------------------------------------------
 
 void link_state_init(LinkState *s, LinkArch arch, const char *out_path,
-                     bool opt_static, bool opt_pie, bool opt_shared) {
+                     bool opt_static, bool opt_pie, bool opt_shared,
+                     const char *libs) {
     memset(s, 0, sizeof(*s));
     s->arch = arch;
     s->out_path = out_path;
     s->opt_static = opt_static;
+    s->libs = libs;
     s->opt_shared = opt_shared;
     s->opt_pie = opt_pie;
 }
@@ -484,7 +486,7 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 #endif
 
     LinkState state;
-    link_state_init(&state, arch, out_path, false, opt_pie || opt_pic, opt_shared);
+    link_state_init(&state, arch, out_path, false, opt_pie || opt_pic, opt_shared, libs);
 
     for (int i = 0; i < n_objs; i++) {
         if (link_load_object(&state, obj_paths[i]) != 0) {

@@ -110,6 +110,7 @@ struct LinkState {
     bool opt_static;
     bool opt_pie;
     bool opt_shared;
+    const char *libs; // -l and other linker flags
 
     LinkSec *secs;
     int n_secs;
@@ -131,9 +132,9 @@ struct LinkState {
 
 // ---------------------------------------------------------------------------
 // Shared helpers (implemented in link.c)
-// ---------------------------------------------------------------------------
 void link_state_init(LinkState *s, LinkArch arch, const char *out_path,
-                     bool opt_static, bool opt_pie, bool opt_shared);
+                     bool opt_static, bool opt_pie, bool opt_shared,
+                     const char *libs);
 void link_state_free(LinkState *s);
 
 // Find or create an output section by name.  Returns section index.
