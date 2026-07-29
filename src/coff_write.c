@@ -472,6 +472,26 @@ int coff_write(ObjFile *obj, const char *path) {
         num_sec++;
     }
 
+    // .note.GNU-stack: zero-length marker section required by the GNU
+    // linker (both ELF and MinGW/PE) to mark the stack executable for
+    // GNU nested-function trampolines. Without it the linker leaves
+    // the stack NX, and the trampoline (a code stub living on the
+    // stack) faults on the first call.
+    if (obj->uses_trampoline) {
+        memset(sections[num_sec].short_name, 0, 8);
+        memcpy(sections[num_sec].short_name, ".note.GNU-stack", 15);
+        // Long section name (> 8 chars) — store via string table.
+        sections[num_sec].long_name = true;
+        sections[num_sec].name_stroff = cstrtab_add(&strtab, ".note.GNU-stack");
+        sections[num_sec].sec_id = -3; // dummy, never indexed
+        sections[num_sec].characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+        sections[num_sec].raw_size = 0;
+        sections[num_sec].virt_size = 0;
+        sections[num_sec].relocs = NULL;
+        sections[num_sec].reloc_count = 0;
+        num_sec++;
+    }
+
     // -------------------------------------------------------------------
     // Win64 SEH unwind: build .xdata (UNWIND_INFO) and .pdata
     // (RUNTIME_FUNCTION) from the unwind entries recorded during codegen.
