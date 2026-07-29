@@ -227,6 +227,7 @@ bool opt_fdump_ast = false;
 bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
+bool opt_shared = false;
 bool opt_time = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
@@ -417,13 +418,13 @@ int main(int argc, char **argv) {
                 return 1;
             }
             xappendf(&libs, &libs_len, &libs_cap, " -Wl,-rpath,%s", argv[i]);
+        } else if (!strcmp(argv[i], "-shared")) {
+            opt_shared = true;
+            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
-                   !strcmp(argv[i], "-shared") || !strcmp(argv[i], "-static") ||
+                   !strcmp(argv[i], "-static") ||
                    !strcmp(argv[i], "-nodefaultlibs") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
-            // -nodefaultlibs: link-stage-only flag (unlike -nostdlib, still
-            // links the standard startup files) — forward it to the
-            // backend linker invocation, which already understands it.
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
@@ -887,7 +888,7 @@ int main(int argc, char **argv) {
                     link_objs[i++] = p->path;
                 uint64_t t_link = opt_time ? now_us() : 0;
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
-                                      libs, opt_pie, opt_pic, false);
+                                      libs, opt_pie, opt_pic, opt_shared);
                 if (opt_time)
                     fprintf(stderr, "  native link %s: %6lu us\n", out_path,
                             (unsigned long)(now_us() - t_link));

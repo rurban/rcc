@@ -24,6 +24,7 @@
 #define EV_CURRENT 1
 #define ET_REL 1
 #define ET_EXEC 2
+#define ET_DYN 3
 #define EM_X86_64 62
 #define EM_AARCH64 183
 
@@ -610,12 +611,12 @@ static int resolve_archives(LinkState *s) {
 // ---------------------------------------------------------------------------
 
 static void write_ehdr(FILE *f, uint16_t machine, uint64_t entry, uint64_t phoff,
-                       uint16_t phnum) {
+                       uint16_t phnum, uint16_t e_type) {
     uint8_t ident[16] = {
         0x7f, 'E', 'L', 'F', 2, 1, 1, 0,
         0, 0, 0, 0, 0, 0, 0, 0};
     wbuf(f, ident, 16);
-    w16le(f, ET_EXEC);
+    w16le(f, e_type);
     w16le(f, machine);
     w32le(f, 1);
     w64le(f, entry);
@@ -817,15 +818,18 @@ int link_elf(LinkState *s) {
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
 
-    // Load C runtime startup files on Linux x86_64 when not linking statically.
-    if (!s->opt_static && s->arch == ARCH_X86_64) {
+    // Load C runtime startup files on Linux x86_64 when not linking statically
+    // and not creating a shared library.
+    if (!s->opt_static && !s->opt_shared && s->arch == ARCH_X86_64) {
         if (load_crt_files(s) != 0) return -1;
     }
 
-    int entry_sym = link_find_sym(s, "_start");
-    if (entry_sym < 0) {
-        // No _start: need C runtime.  Fall back to external linker.
-        return -1;
+    int entry_sym = -1;
+    if (!s->opt_shared) {
+        entry_sym = link_find_sym(s, "_start");
+        if (entry_sym < 0) {
+            return -1; // No _start: fall back to external linker
+        }
     }
 
     // Identify unresolved undefined symbols (excluding weak refs).
@@ -847,7 +851,7 @@ int link_elf(LinkState *s) {
         }
     }
 
-    bool do_dynamic = n_dyn > 0 && !s->opt_static && s->arch == ARCH_X86_64;
+    bool do_dynamic = (n_dyn > 0 || s->opt_shared) && !s->opt_static && s->arch == ARCH_X86_64;
     if (n_dyn > 0 && !do_dynamic) {
         // Unsupported dynamic linking configuration; fall back.
         free(dyn_syms);
@@ -1071,7 +1075,7 @@ int link_elf(LinkState *s) {
     // program headers occupy the first ehdr_size+phdr_size bytes of the file.
     {
         int phnum = 3; // text, rodata, data
-        if (do_dynamic) phnum += 2; // interp, dynamic
+        if (do_dynamic) phnum += s->opt_shared ? 1 : 2; // dynamic (+ interp for exec)
         phnum += 1; // PT_GNU_STACK
         uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
         for (int i = 0; i < s->n_secs; i++) {
@@ -1266,7 +1270,7 @@ int link_elf(LinkState *s) {
     if (rodata_filesz) phnum++;
     if (data_filesz || data_memsz) phnum++;
     if (do_dynamic) {
-        phnum += 2; // PT_INTERP and PT_DYNAMIC
+        phnum += s->opt_shared ? 1 : 2; // DYNAMIC (+ INTERP for exec)
     }
     phnum++; // PT_GNU_STACK
 
@@ -1295,7 +1299,8 @@ int link_elf(LinkState *s) {
     }
 
     uint16_t machine = (s->arch == ARCH_AARCH64) ? EM_AARCH64 : EM_X86_64;
-    write_ehdr(f, machine, entry_addr, ehdr_size, (uint16_t)phnum);
+    uint16_t etype = s->opt_shared ? ET_DYN : ET_EXEC;
+    write_ehdr(f, machine, entry_addr, ehdr_size, (uint16_t)phnum, etype);
 
     // Write program headers.
     uint64_t cur = ehdr_size;
@@ -1315,10 +1320,12 @@ int link_elf(LinkState *s) {
         cur += 56;
     }
     if (do_dynamic) {
-        LinkSec *interp = &s->secs[interp_sec];
-        write_phdr(f, PT_INTERP, PF_R, interp->fileoff, interp->addr,
-                   interp->addr, interp->len, interp->len, 1);
-        cur += 56;
+        if (!s->opt_shared) {
+            LinkSec *interp = &s->secs[interp_sec];
+            write_phdr(f, PT_INTERP, PF_R, interp->fileoff, interp->addr,
+                       interp->addr, interp->len, interp->len, 1);
+            cur += 56;
+        }
         LinkSec *dyn = &s->secs[dynamic_sec];
         write_phdr(f, PT_DYNAMIC, PF_R, dyn->fileoff, dyn->addr,
                    dyn->addr, dyn->len, dyn->len, 8);

@@ -22,7 +22,7 @@
 // Returns 0 on success, non-zero on error (an error message is printed to
 // stderr).
 int rcc_link(const char *out_path, char **obj_paths, int n_objs,
-             const char *libs, bool opt_pie, bool opt_pic, bool opt_static);
+             const char *libs, bool opt_pie, bool opt_pic, bool opt_shared);
 
 // ---------------------------------------------------------------------------
 // Shared relocation kinds used by all backends internally.
@@ -109,6 +109,7 @@ struct LinkState {
     const char *out_path;
     bool opt_static;
     bool opt_pie;
+    bool opt_shared;
 
     LinkSec *secs;
     int n_secs;
@@ -131,9 +132,8 @@ struct LinkState {
 // ---------------------------------------------------------------------------
 // Shared helpers (implemented in link.c)
 // ---------------------------------------------------------------------------
-
 void link_state_init(LinkState *s, LinkArch arch, const char *out_path,
-                     bool opt_static, bool opt_pie);
+                     bool opt_static, bool opt_pie, bool opt_shared);
 void link_state_free(LinkState *s);
 
 // Find or create an output section by name.  Returns section index.
