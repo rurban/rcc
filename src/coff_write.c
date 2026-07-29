@@ -472,25 +472,20 @@ int coff_write(ObjFile *obj, const char *path) {
         num_sec++;
     }
 
-    // .note.GNU-stack: zero-length marker section required by the GNU
-    // linker (both ELF and MinGW/PE) to mark the stack executable for
-    // GNU nested-function trampolines. Without it the linker leaves
-    // the stack NX, and the trampoline (a code stub living on the
-    // stack) faults on the first call.
-    if (obj->uses_trampoline) {
-        memset(sections[num_sec].short_name, 0, 8);
-        memcpy(sections[num_sec].short_name, ".note.GNU-stack", 15);
-        // Long section name (> 8 chars) — store via string table.
-        sections[num_sec].long_name = true;
-        sections[num_sec].name_stroff = cstrtab_add(&strtab, ".note.GNU-stack");
-        sections[num_sec].sec_id = -3; // dummy, never indexed
-        sections[num_sec].characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
-        sections[num_sec].raw_size = 0;
-        sections[num_sec].virt_size = 0;
-        sections[num_sec].relocs = NULL;
-        sections[num_sec].reloc_count = 0;
-        num_sec++;
-    }
+    // TODO: GNU nested-function trampoline support on Windows.
+    //
+    // Unlike ELF (where .note.GNU-stack with SHF_EXECINSTR tells the
+    // linker to emit RWE PT_GNU_STACK), the MinGW-w64 PE linker does
+    // NOT honor .note.GNU-stack — it always sets NX_COMPAT in the PE
+    // header regardless. Emitting the section here is useless.
+    //
+    // GCC on Windows/MinGW handles this by calling
+    // __enable_execute_stack(trampoline_addr) at runtime, which
+    // internally calls VirtualProtect to mark the stack page
+    // executable.  rcc needs the same: after writing the trampoline
+    // bytes (codegen.c ~line 6392), emit a call to
+    // __enable_execute_stack via the Win64 ABI (RCX = trampoline
+    // address). __enable_execute_stack is available in libmingwex.a.
 
     // -------------------------------------------------------------------
     // Win64 SEH unwind: build .xdata (UNWIND_INFO) and .pdata
