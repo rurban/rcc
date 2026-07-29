@@ -1049,6 +1049,21 @@ int link_elf(LinkState *s) {
         return -1;
     }
 
+    // Adjust section addresses so the first LOAD segment can start at file
+    // offset 0 (required by the kernel's ELF loader).  The ELF header and
+    // program headers occupy the first ehdr_size+phdr_size bytes of the file.
+    {
+        int phnum = 3; // text, rodata, data
+        if (do_dynamic) phnum += 2; // interp, dynamic
+        uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc) continue;
+            sec->addr += hdr_size;
+            if (!sec->is_bss) sec->fileoff += hdr_size;
+        }
+    }
+
     if (do_dynamic) {
         uint64_t got_addr = s->secs[gotplt_sec].addr;
         uint64_t plt_addr = s->secs[plt_sec].addr;
@@ -1172,8 +1187,8 @@ int link_elf(LinkState *s) {
         if (sec->exec) {
             if (!have_text) {
                 have_text = true;
-                text_off = sec->fileoff;
-                text_addr = sec->addr;
+                text_off = 0; // LOAD covers ELF header from offset 0
+                text_addr = base; // page-aligned base address
             }
             text_filesz = sec->fileoff + sec->len - text_off;
             text_memsz = text_filesz;
@@ -1216,20 +1231,10 @@ int link_elf(LinkState *s) {
 
     uint64_t ehdr_size = 64;
     uint64_t phdr_size = phnum * 56;
-    uint64_t file_off = align_up(ehdr_size + phdr_size, 0x1000);
+    uint64_t file_off = ehdr_size + phdr_size;
 
-    // Shift all non-bss section file offsets by the page-aligned header size.
-    for (int i = 0; i < s->n_secs; i++) {
-        LinkSec *sec = &s->secs[i];
-        if (!sec->alloc || sec->is_bss) {
-            sec->fileoff = 0;
-            continue;
-        }
-        sec->fileoff += file_off;
-    }
-    if (have_text) text_off += file_off;
-    if (have_rodata) rodata_off += file_off;
-    if (have_data) data_off += file_off;
+    // Section fileoffs and vaddrs were already adjusted above to account
+    // for the ELF header.  The first LOAD segment uses text_off=0 (set above).
 
     uint64_t entry_addr = base;
     if (entry_sym >= 0) {

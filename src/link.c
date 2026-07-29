@@ -292,8 +292,7 @@ int link_layout(LinkState *s, uint64_t base, uint64_t page_align) {
         addr = sec->addr + sec->len;
         fileoff = sec->fileoff + sec->len;
     }
-    // bss
-    addr = align_up(addr, page_align);
+    // bss (contiguous with data, same LOAD segment)
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->is_bss || sec->is_tls) continue;

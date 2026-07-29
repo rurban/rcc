@@ -865,7 +865,6 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
-
         // Linking: codegen already produced .o files; add them to linker command
         char *cmd = NULL;
         size_t cmd_len = 0, cmd_cap = 0;
@@ -911,96 +910,95 @@ int main(int argc, char **argv) {
                 // Native linker failed or unsupported; fall through to GCC.
             }
         }
-    }
-
+        // Build the linker command line: backend compiler + output flag first
 #ifdef __APPLE__
-    xappendf(&cmd, &cmd_len, &cmd_cap,
-             GCC " -o %s -arch arm64"
-                 " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-                 " -Wl,-undefined,dynamic_lookup",
-             backend_out);
+        xappendf(&cmd, &cmd_len, &cmd_cap,
+                 GCC " -o %s -arch arm64"
+                     " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+                     " -Wl,-undefined,dynamic_lookup",
+                 backend_out);
 #else
-    if (opt_pie)
-        xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o %s", backend_out);
-    else if (opt_pic)
-        xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o %s", backend_out);
-    else
-        xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o %s", backend_out);
+        if (opt_pie)
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o %s", backend_out);
+        else if (opt_pic)
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o %s", backend_out);
+        else
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o %s", backend_out);
 #endif
 
-    // Codegen already produced .o files; add them directly to linker command
-    for (OutPath *p = out_paths; p; p = p->next)
-        xappendf(&cmd, &cmd_len, &cmd_cap, " %s", p->path);
+        // Codegen already produced .o files; add them directly to linker command
+        for (OutPath *p = out_paths; p; p = p->next)
+            xappendf(&cmd, &cmd_len, &cmd_cap, " %s", p->path);
 
 #if defined(_WIN32) || defined(__MINGW32__)
-    {
-        struct stat libst;
+        {
+            struct stat libst;
 #ifdef RCC_INCDIR
-        const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
-        if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
-            xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_lib);
-        else
+            const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
+            if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
+                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_lib);
+            else
 #endif
-            if (stat("lib/rcc_mingw.obj", &libst) == 0)
-            xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_mingw.obj");
-    }
+                if (stat("lib/rcc_mingw.obj", &libst) == 0)
+                xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_mingw.obj");
+        }
 #endif
 #ifdef __APPLE__
-    {
-        struct stat libst;
-        // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
+        {
+            struct stat libst;
+            // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
 #ifdef RCC_INCDIR
-        const char *rcc_darwin = RCC_INCDIR "/../lib/rcc_darwin.dylib";
-        if (stat(rcc_darwin, &libst) == 0)
-            xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_darwin);
-        else
+            const char *rcc_darwin = RCC_INCDIR "/../lib/rcc_darwin.dylib";
+            if (stat(rcc_darwin, &libst) == 0)
+                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_darwin);
+            else
 #endif
-            if (stat("lib/rcc_darwin.dylib", &libst) == 0)
-            xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_darwin.dylib");
-    }
+                if (stat("lib/rcc_darwin.dylib", &libst) == 0)
+                xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_darwin.dylib");
+        }
 #endif
 
-    if (libs_len)
-        xappendf(&cmd, &cmd_len, &cmd_cap, "%s", libs);
+        if (libs_len)
+            xappendf(&cmd, &cmd_len, &cmd_cap, "%s", libs);
 
-    if (opt_dryrun) {
-        puts(cmd);
+        if (opt_dryrun) {
+            puts(cmd);
+            free(libs);
+            free(cmd);
+            return 0;
+        }
+        if (!status) {
+            uint64_t t_link = opt_time ? now_us() : 0;
+            status = system(cmd);
+            if (opt_time)
+                fprintf(stderr, "  link        %s: %6lu us\n", out_path,
+                        (unsigned long)(now_us() - t_link));
+            if (status != 0)
+                fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
+        }
+
+        // For -o -, stream the linked backend output to stdout.
+        if (opt_stdout && status == 0) {
+            FILE *f = fopen(stdout_tmp, "rb");
+            if (f) {
+                char buf[65536];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+                    fwrite(buf, 1, n, stdout);
+                fclose(f);
+            }
+        }
+        if (opt_stdout)
+            remove(stdout_tmp);
+
+        // Cleanup temp files
+        for (OutPath *p = out_paths; p; p = p->next)
+            remove(p->path);
         free(libs);
         free(cmd);
-        return 0;
-    }
-    if (!status) {
-        uint64_t t_link = opt_time ? now_us() : 0;
-        status = system(cmd);
-        if (opt_time)
-            fprintf(stderr, "  link        %s: %6lu us\n", out_path,
-                    (unsigned long)(now_us() - t_link));
-        if (status != 0)
-            fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
-    }
 
-    // For -o -, stream the linked backend output to stdout.
-    if (opt_stdout && status == 0) {
-        FILE *f = fopen(stdout_tmp, "rb");
-        if (f) {
-            char buf[65536];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-                fwrite(buf, 1, n, stdout);
-            fclose(f);
-        }
+        return status ? 1 : 0;
     }
-    if (opt_stdout)
-        remove(stdout_tmp);
-
-    // Cleanup temp files
-    for (OutPath *p = out_paths; p; p = p->next)
-        remove(p->path);
-    free(libs);
-    free(cmd);
-
-    return status ? 1 : 0;
-}
-if (opt_E && pp_out != stdout) fclose(pp_out);
-return 0;
+    if (opt_E && pp_out != stdout) fclose(pp_out);
+    return 0;
 }

@@ -51,7 +51,7 @@ BINDIR = $(PREFIX)/bin
 INCDIR = $(PREFIX)/include/rcc
 LIBDIR = $(PREFIX)/lib/rcc
 DOCDIR = $(PREFIX)/share/doc/rcc
-SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
+SRCS = src/main.c src/lexer.c src/preprocess.c src/parser.c src/type.c src/codegen.c src/cg_builtins.c src/opt.c src/alloc.c src/unicode.c src/keywords.c src/obj.c src/asm.c src/link.c
 TARGET_EXT = $(OBJS)
 RUN_TESTS = run_tests
 
