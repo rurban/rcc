@@ -58,7 +58,7 @@ static char *kw_false;
 
 static char *dn_define, *dn_undef, *dn_include, *dn_line, *dn_error, *dn_warning;
 static char *dn_if, *dn_ifdef, *dn_ifndef, *dn_elif, *dn_elifdef, *dn_elifndef;
-static char *dn_else, *dn_endif, *dn_pragma;
+static char *dn_else, *dn_endif, *dn_pragma, *dn_embed;
 
 // Forward declaration: a conditional-compilation directive (#ifdef/#else/
 // #endif/...) is a GNU extension when it appears in the middle of a
@@ -2193,6 +2193,82 @@ static void do_directive(void) {
         dep_add(inc_fpath);
         return;
     }
+    if (dn == dn_embed) {
+        Token *first = name->next;
+        char *spec = NULL;
+        bool is_angle = false;
+        int limit = -1; // -1 = no limit
+        if (ptok(first, "<")) {
+            is_angle = true;
+            spec = gather_spellings(first->next, ">", NULL);
+        } else if (first && first->kind == TK_STR)
+            spec = str_raw_contents(first);
+        else if (first && first->kind != TK_EOF) {
+            Token *exp = expand_list(first);
+            if (exp && exp->kind == TK_STR) spec = str_raw_contents(exp);
+            else if (ptok(exp, "<")) {
+                is_angle = true;
+                spec = gather_spellings(exp->next, ">", NULL);
+            }
+        }
+        if (!spec) return;
+        // Parse optional embed parameters: limit(N)
+        Token *parm = name->next;
+        // skip past the filename token(s) to find parameters
+        while (parm && parm->kind != TK_EOF) {
+            if (parm->kind == TK_IDENT && !strcmp(parm->name, "limit") &&
+                ptok(parm->next, "(")) {
+                Token *num = parm->next->next;
+                if (num && num->kind == TK_NUM) {
+                    limit = (int)num->val;
+                }
+            }
+            parm = parm->next;
+        }
+        char *path = resolve_include(lvl->fpath, spec, is_angle);
+        if (!path) {
+            fprintf(stderr, "%s:%d: error: #embed file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
+            exit(1);
+        }
+        char *inc_fpath = full_path(path);
+        FILE *fp = fopen(path, "rb");
+        if (!fp) {
+            fprintf(stderr, "%s:%d: error: cannot open #embed file '%s'\n", lvl->fpath, lvl->reported_line, path);
+            exit(1);
+        }
+        fseek(fp, 0, SEEK_END);
+        long fsize = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        if (fsize < 0) {
+            fclose(fp);
+            return;
+        }
+        if (limit >= 0 && fsize > limit) fsize = limit;
+        if (fsize == 0) {
+            fclose(fp);
+            return;
+        }
+        // Build comma-separated hex byte literals: "0xNN, 0xNN, ..."
+        // 6 bytes per element ("0xNN, ") + 1 for NUL, with comma dropped on last
+        size_t bufsz = (size_t)fsize * 6 + 1;
+        char *buf = arena_alloc(bufsz);
+        size_t pos = 0;
+        unsigned char *data = arena_alloc((size_t)fsize);
+        size_t nread = fread(data, 1, (size_t)fsize, fp);
+        fclose(fp);
+        for (size_t i = 0; i < nread; i++) {
+            if (i > 0) buf[pos++] = ',';
+            buf[pos++] = '0';
+            buf[pos++] = 'x';
+            unsigned char hi = (unsigned char)(data[i] >> 4);
+            unsigned char lo = (unsigned char)(data[i] & 0xf);
+            buf[pos++] = (char)(hi < 10 ? '0' + hi : 'a' + hi - 10);
+            buf[pos++] = (char)(lo < 10 ? '0' + lo : 'a' + lo - 10);
+        }
+        buf[pos] = '\0';
+        push_level(inc_fpath, inc_fpath, buf);
+        return;
+    }
     if (dn == dn_line) {
         Token *rest = expand_list(name->next);
         if (!rest || rest->kind != TK_NUM) return;
@@ -2820,6 +2896,7 @@ Token *preprocess(char *filename, char *p) {
         dn_else = str_intern("else", 4);
         dn_endif = str_intern("endif", 5);
         dn_pragma = str_intern("pragma", 6);
+        dn_embed = str_intern("embed", 5);
         saved_macros = macros;
         macros_inited = true;
     }
