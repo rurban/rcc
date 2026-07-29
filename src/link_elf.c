@@ -62,6 +62,7 @@
 #define PF_X 1
 #define PF_W 2
 #define PF_R 4
+#define PT_GNU_STACK 0x6474e551
 
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
@@ -1055,6 +1056,7 @@ int link_elf(LinkState *s) {
     {
         int phnum = 3; // text, rodata, data
         if (do_dynamic) phnum += 2; // interp, dynamic
+        phnum += 1; // PT_GNU_STACK
         uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
@@ -1227,7 +1229,7 @@ int link_elf(LinkState *s) {
     if (do_dynamic) {
         phnum += 2; // PT_INTERP and PT_DYNAMIC
     }
-    if (phnum == 0) phnum = 1;
+    phnum++; // PT_GNU_STACK
 
     uint64_t ehdr_size = 64;
     uint64_t phdr_size = phnum * 56;
@@ -1283,6 +1285,8 @@ int link_elf(LinkState *s) {
                    dyn->addr, dyn->len, dyn->len, 8);
         cur += 56;
     }
+    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | PF_X, 0, 0, 0, 0, 0, 0x10);
+    cur += 56;
     wzeros(f, file_off - cur);
 
     // Write section data in file-offset order so later sections never
