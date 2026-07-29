@@ -855,6 +855,8 @@ int link_elf(LinkState *s) {
     int n_func_dyn = 0;
     int n_reladyn = 0;
     int libc_off = 0;
+    int n_needed = 1;
+    int needed_offs[16];
 
     if (do_dynamic) {
         interp_sec = link_find_or_create_sec(s, ".interp", true, false, false, false, false, 1);
@@ -898,6 +900,32 @@ int link_elf(LinkState *s) {
         link_sec_append(s, dynstr_sec, &nul, 1, 1);
         libc_off = (int)link_sec_append(s, dynstr_sec,
                                         (const uint8_t *)"libc.so.6", 10, 1);
+
+        // Parse -l flags for additional DT_NEEDED entries.
+
+        n_needed = 1;
+        needed_offs[0] = libc_off;
+        const char *lp = s->libs;
+        while (lp && *lp) {
+            while (*lp == ' ') lp++;
+            if (!*lp) break;
+            if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
+                lp += 2;
+                char libname[64];
+                const char *end = lp;
+                while (*end && *end != ' ') end++;
+                size_t len = (size_t)(end - lp);
+                if (len > 0 && len < 60 && n_needed < 16) {
+                    snprintf(libname, sizeof(libname), "lib%.*s.so.6", (int)len, lp);
+                    needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
+                                                                 (const uint8_t *)libname, strlen(libname) + 1, 1);
+                    n_needed++;
+                }
+                lp = end;
+            } else {
+                while (*lp && *lp != ' ') lp++;
+            }
+        }
 
         // .dynsym: null entry first.
         uint8_t zero24[24] = {0};
@@ -1030,7 +1058,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 6 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + 4;
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3;
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1169,7 +1197,8 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
             auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
         }
-        auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)libc_off);
+        for (int k = 0; k < n_needed; k++)
+            auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)needed_offs[k]);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW);
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);
