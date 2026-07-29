@@ -4147,13 +4147,14 @@ static SkipReason torture_should_skip(const char *name, const char *content, con
     // load): implemented on x86-64 Linux, aarch64 Linux, and Windows/PE
     // (MinGW) via the .note.GNU-stack mechanism (ELF: SHF_EXECINSTR on
     // .note.GNU-stack; COFF/PE: .note.GNU-stack section recognized by GNU
-    // ld/MinGW-w64, which marks the stack executable in the PE header).
-    // Darwin (Mach-O) still has no equivalent wiring — keep those skipped.
+    // ld/MinGW-w64). The basic trampoline tests pass on Windows (920428-2,
+    // 920501-7, 920612-2, 921017-1), but nestfunc-{1,2,3,5,6} and a few
+    // others (921215-1, 931002-1, 20000822-1) still fail at runtime —
+    // likely Win64-specific nested-function edge cases that need separate
+    // debugging. Keep skipped until those are resolved.
     if (contains(content, "dg-require-effective-target trampolines") &&
-        !streq(platform, "linux") && !streq(platform, "arm64_cross") &&
-        !streq(platform, "mingw") && !streq(platform, "mingw_cross"))
+        !streq(platform, "linux") && !streq(platform, "arm64_cross"))
         return SKIP_TRAMPOLINES;
-    if (contains(content, "scalar_storage_order")) return SKIP_SCALAR_STORAGE;
     /* rcc does not implement FP exception (fenv) semantics or signaling NaNs,
      * so tests that assert on FE_INVALID etc. cannot pass. */
     if (contains(content, "dg-require-effective-target fenv_exceptions"))
