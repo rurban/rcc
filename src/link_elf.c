@@ -105,6 +105,10 @@
 #define DT_SYMENT 11
 #define DT_INIT 12
 #define DT_FINI 13
+#define DT_INIT_ARRAY 25
+#define DT_FINI_ARRAY 26
+#define DT_INIT_ARRAYSZ 27
+#define DT_FINI_ARRAYSZ 28
 #define DT_JMPREL 23
 #define DT_PLTREL 20
 #define DT_PLTRELSZ 2
@@ -296,8 +300,8 @@ static int map_input_sec_to_output(const char *name, bool *alloc, bool *write,
         *alloc = true;
         return 0;
     }
-    // default: non-allocated, skip
-    return 1;
+    // default: keep unknown allocatable sections
+    return 0;
 }
 
 static size_t sec_alignment(const ElfFile *ef, uint64_t shoff, int idx) {
@@ -1058,7 +1062,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3;
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4;
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1196,6 +1200,19 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_JMPREL, s->secs[relaplt_sec].addr);
             auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
             auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
+        }
+        // Emit DT_INIT_ARRAY / DT_FINI_ARRAY if sections exist.
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc || sec->len == 0) continue;
+            if (strcmp(sec->name, ".init_array") == 0) {
+                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAY, sec->addr);
+                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAYSZ, sec->len);
+            }
+            if (strcmp(sec->name, ".fini_array") == 0) {
+                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAY, sec->addr);
+                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAYSZ, sec->len);
+            }
         }
         for (int k = 0; k < n_needed; k++)
             auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)needed_offs[k]);
