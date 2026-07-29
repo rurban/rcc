@@ -1093,7 +1093,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + 2 + n_needed + 1 + 4;
+        int n_dynent = 5 + 3 + 3 + 4 + n_needed + 4; // safe upper bound
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1264,11 +1264,6 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_RELA, s->secs[reladyn_sec].addr);
             auto_dyn_ent(dyn, &dpos, DT_RELASZ, (uint64_t)n_reladyn * 24);
             auto_dyn_ent(dyn, &dpos, DT_RELAENT, 24);
-        }
-        if (n_func_dyn > 0) {
-            auto_dyn_ent(dyn, &dpos, DT_JMPREL, s->secs[relaplt_sec].addr);
-            auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
-            auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
         }
         if (n_func_dyn > 0) {
             auto_dyn_ent(dyn, &dpos, DT_JMPREL, s->secs[relaplt_sec].addr);
