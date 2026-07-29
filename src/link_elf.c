@@ -24,8 +24,6 @@
 #define EV_CURRENT 1
 #define ET_REL 1
 #define ET_EXEC 2
-#define ET_DYN 3
-#define ET_DYN 3
 #define EM_X86_64 62
 #define EM_AARCH64 183
 
@@ -64,10 +62,6 @@
 #define PF_X 1
 #define PF_W 2
 #define PF_R 4
-#define PT_GNU_STACK 0x6474e551
-#define PT_GNU_RELRO 0x6474e552
-#define PT_GNU_STACK 0x6474e551
-#define PT_GNU_RELRO 0x6474e552
 
 #define R_X86_64_64 1
 #define R_X86_64_PC32 2
@@ -79,8 +73,6 @@
 #define R_X86_64_PLT32 4
 #define R_X86_64_TPOFF32 23
 #define R_X86_64_PC64 24
-#define R_X86_64_COPY 5
-#define R_X86_64_COPY 5
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_GLOB_DAT 6
 
@@ -119,10 +111,6 @@
 #define DT_FLAGS_1 0x6ffffffb
 #define DF_BIND_NOW 0x8
 #define DF_1_NOW 1
-#define DT_INIT_ARRAY   25
-#define DT_FINI_ARRAY   26
-#define DT_INIT_ARRAYSZ 27
-#define DT_FINI_ARRAYSZ 28
 
 static uint8_t r8(const uint8_t *p) { return p[0]; }
 static uint16_t r16le(const uint8_t *p) {
@@ -619,12 +607,12 @@ static int resolve_archives(LinkState *s) {
 // ---------------------------------------------------------------------------
 
 static void write_ehdr(FILE *f, uint16_t machine, uint64_t entry, uint64_t phoff,
-                       uint16_t phnum, uint16_t e_type) {
+                       uint16_t phnum) {
     uint8_t ident[16] = {
         0x7f, 'E', 'L', 'F', 2, 1, 1, 0,
         0, 0, 0, 0, 0, 0, 0, 0};
     wbuf(f, ident, 16);
-    w16le(f, e_type);
+    w16le(f, ET_EXEC);
     w16le(f, machine);
     w32le(f, 1);
     w64le(f, entry);
@@ -681,7 +669,7 @@ static void auto_dyn_ent(LinkSec *dyn, size_t *pos, uint64_t tag, uint64_t val) 
 
 static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt_idx,
                                 const int *got_map, uint64_t got_addr,
-                                uint64_t plt_addr, LinkSec *got) {
+                                uint64_t plt_addr) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         for (int j = 0; j < sec->n_relocs; j++) {
@@ -723,19 +711,12 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
             case RL_PC32:
             case RL_PC32_PLT:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    // Functions use PLT; data symbols (COPY) resolve directly
-                    // to the copy address in .bss.
-                    if (plt_idx && plt_idx[r->sym] >= 0) {
-                        S = plt_addr + 16 + (uint64_t)plt_idx[r->sym] * 16;
-                    } else if (got_map && got_map[r->sym] >= 0) {
-                        // COPY relocation: resolve to the copy address stored
-                        // in the GOT slot (filled by the COPY setup code).
-                        S = r64le(got->data + (size_t)got_map[r->sym] * 8);
-                    } else {
-                        fprintf(stderr, "rcc: link: unsupported PC32 reference to dynamic symbol '%s'\n",
+                    if (!plt_idx || plt_idx[r->sym] < 0) {
+                        fprintf(stderr, "rcc: link: unsupported PC32 reference to dynamic data symbol '%s'\n",
                                 sym->name);
                         return -1;
                     }
+                    S = plt_addr + 16 + (uint64_t)plt_idx[r->sym] * 16;
                 } else {
                     S = symbol_address(s, r->sym);
                 }
@@ -826,18 +807,15 @@ int link_elf(LinkState *s) {
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
 
-    // Load C runtime startup files on Linux x86_64 when not linking statically
-    // and not creating a shared library.
-    if (!s->opt_static && !s->opt_shared && s->arch == ARCH_X86_64) {
+    // Load C runtime startup files on Linux x86_64 when not linking statically.
+    if (!s->opt_static && s->arch == ARCH_X86_64) {
         if (load_crt_files(s) != 0) return -1;
     }
 
-    int entry_sym = -1;
-    if (!s->opt_shared) {
-        entry_sym = link_find_sym(s, "_start");
-        if (entry_sym < 0) {
-            return -1; // No _start: fall back to external linker
-        }
+    int entry_sym = link_find_sym(s, "_start");
+    if (entry_sym < 0) {
+        // No _start: need C runtime.  Fall back to external linker.
+        return -1;
     }
 
     // Identify unresolved undefined symbols (excluding weak refs).
@@ -859,7 +837,7 @@ int link_elf(LinkState *s) {
         }
     }
 
-    bool do_dynamic = (n_dyn > 0 || s->opt_shared) && !s->opt_static && s->arch == ARCH_X86_64;
+    bool do_dynamic = n_dyn > 0 && !s->opt_static && s->arch == ARCH_X86_64;
     if (n_dyn > 0 && !do_dynamic) {
         // Unsupported dynamic linking configuration; fall back.
         free(dyn_syms);
@@ -876,8 +854,6 @@ int link_elf(LinkState *s) {
     int n_func_dyn = 0;
     int n_reladyn = 0;
     int libc_off = 0;
-    int n_needed = 1;
-    int *needed_offs = NULL;
 
     if (do_dynamic) {
         interp_sec = link_find_or_create_sec(s, ".interp", true, false, false, false, false, 1);
@@ -922,40 +898,6 @@ int link_elf(LinkState *s) {
         libc_off = (int)link_sec_append(s, dynstr_sec,
                                         (const uint8_t *)"libc.so.6", 10, 1);
 
-        // Parse -l flags for additional DT_NEEDED entries.
-        {
-            int cap_needed = 8;
-            needed_offs = malloc((size_t)cap_needed * sizeof(int));
-            needed_offs[0] = libc_off;
-            n_needed = 1;
-            const char *lp = s->libs;
-            while (lp && *lp) {
-                while (*lp == ' ') lp++;
-                if (!*lp) break;
-                if (!strncmp(lp, "-l", 2) && lp[2]) {
-                    lp += 2;
-                    char libname[64];
-                    const char *end = lp;
-                    while (*end && *end != ' ') end++;
-                    size_t len = (size_t)(end - lp);
-                    if (len > 0 && len < 60) {
-                        snprintf(libname, sizeof(libname), "lib%.*s.so.6", (int)len, lp);
-                        int off = (int)link_sec_append(s, dynstr_sec,
-                                                       (const uint8_t *)libname,
-                                                       strlen(libname) + 1, 1);
-                        if (n_needed == cap_needed) {
-                            cap_needed *= 2;
-                            needed_offs = realloc(needed_offs, (size_t)cap_needed * sizeof(int));
-                        }
-                        needed_offs[n_needed++] = off;
-                    }
-                    lp = end;
-                } else {
-                    while (*lp && *lp != ' ') lp++;
-                }
-            }
-        }
-
         // .dynsym: null entry first.
         uint8_t zero24[24] = {0};
         link_sec_append(s, dynsym_sec, zero24, 24, 8);
@@ -972,9 +914,7 @@ int link_elf(LinkState *s) {
             ent[5] = STV_DEFAULT;
             w16le_m(ent + 6, SHN_UNDEF);
             w64le_m(ent + 8, 0);
-            // Set size for COPY relocation: data symbols need size > 0
-            // so ld.so knows how many bytes to copy.
-            w64le_m(ent + 16, (sym->type == 2) ? 0 : (sym->size > 0 ? sym->size : 8));
+            w64le_m(ent + 16, 0);
             link_sec_append(s, dynsym_sec, ent, 24, 8);
         }
 
@@ -1027,11 +967,7 @@ int link_elf(LinkState *s) {
                 if (dyn_idx[si]) {
                     if (r->type == RL_PC32 || r->type == RL_PC32_PLT ||
                         r->type == RL_GOTPCREL) {
-                        // GOTPCREL is always a function reference (call through GOT).
-                        // For PC32/PC32_PLT, only actual functions get PLT entries.
-                        if (r->type == RL_GOTPCREL || s->syms[si].type == STT_FUNC ||
-                            r->type == RL_PC32_PLT)
-                            dyn_kind[si] = 1; // function reference
+                        dyn_kind[si] = 1; // function reference
                     } else if (r->type == RL_ABS64 || r->type == RL_ABS32 ||
                                r->type == RL_ABS32U) {
                         dyn_kind[si] = 2; // data reference
@@ -1093,7 +1029,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + 3 + 3 + 4 + n_needed + 4; // safe upper bound
+        int n_dynent = 6 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + 4;
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1113,28 +1049,12 @@ int link_elf(LinkState *s) {
         return -1;
     }
 
-
     // Adjust section addresses so the first LOAD segment can start at file
     // offset 0 (required by the kernel's ELF loader).  The ELF header and
     // program headers occupy the first ehdr_size+phdr_size bytes of the file.
     {
         int phnum = 3; // text, rodata, data
-        if (do_dynamic) phnum += s->opt_shared ? 1 : 2; // dynamic (+ interp for exec)
-        phnum += 1; // PT_GNU_STACK
-        uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
-        for (int i = 0; i < s->n_secs; i++) {
-            LinkSec *sec = &s->secs[i];
-            if (!sec->alloc) continue;
-            sec->addr += hdr_size;
-            if (!sec->is_bss) sec->fileoff += hdr_size;
-        }
-    }
-
-    // Adjust section addresses so the first LOAD can start at offset 0.
-    {
-        int phnum = 3;
-        if (do_dynamic) phnum += s->opt_shared ? 1 : 2;
-        phnum += 1;
+        if (do_dynamic) phnum += 2; // interp, dynamic
         uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
@@ -1207,40 +1127,17 @@ int link_elf(LinkState *s) {
                 w64le_m(rp + 16, 0);
                 relaplt_pos++;
             } else {
-                // For data symbols (not functions), use COPY relocation:
-                // allocate space in .bss so that ld.so copies the value there.
-                // rcc codegen uses lea+mov which expects a single dereference
-                // to yield the symbol's value.
-                LinkSym *sym = &s->syms[si];
-                if (sym->type != STT_FUNC) {
-                    uint64_t copy_size = sym->size > 0 ? sym->size : 8;
-                    int bss_sec = link_find_or_create_sec(s, ".bss", true, true,
-                                                          false, true, false, 8);
-                    LinkSec *bss = &s->secs[bss_sec];
-                    uint64_t bss_off = align_up(bss->len, 8);
-                    bss->len = bss_off + copy_size;
-                    uint64_t copy_addr = bss->addr + bss_off;
-                    // Fill GOT slot with copy address.
-                    w64le_m(got->data + (size_t)got_slot * 8, copy_addr);
-                    // Emit R_X86_64_COPY relocation.
-                    uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
-                    w64le_m(rp, copy_addr);
-                    w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | R_X86_64_COPY);
-                    w64le_m(rp + 16, 0);
-                    reladyn_pos++;
-                } else {
-                    // GLOB_DAT for function symbols accessed via GOT.
-                    uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
-                    w64le_m(rp, got_addr + (uint64_t)got_slot * 8);
-                    w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | R_X86_64_GLOB_DAT);
-                    w64le_m(rp + 16, 0);
-                    reladyn_pos++;
-                }
+                // GLOB_DAT relocation for data-like dynamic symbols.
+                uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
+                w64le_m(rp, got_addr + (uint64_t)got_slot * 8);
+                w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | R_X86_64_GLOB_DAT);
+                w64le_m(rp + 16, 0);
+                reladyn_pos++;
             }
         }
 
         // Apply relocations using PLT/GOT.
-        if (apply_dynamic_relocs(s, dyn_idx, plt_idx, got_map, got_addr, plt_addr, got) != 0) {
+        if (apply_dynamic_relocs(s, dyn_idx, plt_idx, got_map, got_addr, plt_addr) != 0) {
             free(dyn_syms);
             free(dyn_idx);
             free(dyn_kind);
@@ -1270,21 +1167,7 @@ int link_elf(LinkState *s) {
             auto_dyn_ent(dyn, &dpos, DT_PLTRELSZ, (uint64_t)n_func_dyn * 24);
             auto_dyn_ent(dyn, &dpos, DT_PLTREL, DT_RELA);
         }
-        // Emit DT_INIT_ARRAY / DT_FINI_ARRAY if sections exist.
-        for (int i = 0; i < s->n_secs; i++) {
-            LinkSec *sec = &s->secs[i];
-            if (!sec->alloc || sec->len == 0) continue;
-            if (strcmp(sec->name, ".init_array") == 0) {
-                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAY, sec->addr);
-                auto_dyn_ent(dyn, &dpos, DT_INIT_ARRAYSZ, sec->len);
-            }
-            if (strcmp(sec->name, ".fini_array") == 0) {
-                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAY, sec->addr);
-                auto_dyn_ent(dyn, &dpos, DT_FINI_ARRAYSZ, sec->len);
-            }
-        }
-        for (int k = 0; k < n_needed; k++)
-            auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)needed_offs[k]);
+        auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)libc_off);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW);
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);
@@ -1342,9 +1225,9 @@ int link_elf(LinkState *s) {
     if (rodata_filesz) phnum++;
     if (data_filesz || data_memsz) phnum++;
     if (do_dynamic) {
-        phnum += s->opt_shared ? 1 : 2; // DYNAMIC (+ INTERP for exec)
+        phnum += 2; // PT_INTERP and PT_DYNAMIC
     }
-    phnum++; // PT_GNU_STACK
+    if (phnum == 0) phnum = 1;
 
     uint64_t ehdr_size = 64;
     uint64_t phdr_size = phnum * 56;
@@ -1371,8 +1254,7 @@ int link_elf(LinkState *s) {
     }
 
     uint16_t machine = (s->arch == ARCH_AARCH64) ? EM_AARCH64 : EM_X86_64;
-    uint16_t etype = s->opt_shared ? ET_DYN : ET_EXEC;
-    write_ehdr(f, machine, entry_addr, ehdr_size, (uint16_t)phnum, etype);
+    write_ehdr(f, machine, entry_addr, ehdr_size, (uint16_t)phnum);
 
     // Write program headers.
     uint64_t cur = ehdr_size;
@@ -1392,20 +1274,15 @@ int link_elf(LinkState *s) {
         cur += 56;
     }
     if (do_dynamic) {
-        if (!s->opt_shared) {
-            LinkSec *interp = &s->secs[interp_sec];
-            write_phdr(f, PT_INTERP, PF_R, interp->fileoff, interp->addr,
-                       interp->addr, interp->len, interp->len, 1);
-            cur += 56;
-        }
+        LinkSec *interp = &s->secs[interp_sec];
+        write_phdr(f, PT_INTERP, PF_R, interp->fileoff, interp->addr,
+                   interp->addr, interp->len, interp->len, 1);
+        cur += 56;
         LinkSec *dyn = &s->secs[dynamic_sec];
         write_phdr(f, PT_DYNAMIC, PF_R, dyn->fileoff, dyn->addr,
                    dyn->addr, dyn->len, dyn->len, 8);
         cur += 56;
     }
-    // PT_GNU_STACK: request executable stack for nested-function trampolines.
-    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | PF_X, 0, 0, 0, 0, 0, 0x10);
-    cur += 56;
     wzeros(f, file_off - cur);
 
     // Write section data in file-offset order so later sections never
@@ -1447,6 +1324,5 @@ int link_elf(LinkState *s) {
     free(plt_idx);
     free(got_map);
     free(dynstr_off);
-    free(needed_offs);
     return 0;
 }
