@@ -910,10 +910,15 @@ int link_elf(LinkState *s) {
         libc_off = (int)link_sec_append(s, dynstr_sec,
                                         (const uint8_t *)"libc.so.6", 10, 1);
 
+        // Add libgcc_s.so.1 for compiler-rt functions (__udivti3, etc.)
+        int libgcc_off = (int)link_sec_append(s, dynstr_sec,
+                                              (const uint8_t *)"libgcc_s.so.1", 14, 1);
+
         // Parse -l flags for additional DT_NEEDED entries.
 
-        n_needed = 1;
+        n_needed = 2;
         needed_offs[0] = libc_off;
+        needed_offs[1] = libgcc_off;
         const char *lp = s->libs;
         while (lp && *lp) {
             while (*lp == ' ') lp++;

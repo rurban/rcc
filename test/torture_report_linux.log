@@ -1794,7 +1794,7 @@
   pr84478                             PASS
   pr84521                             PASS
   pr84524                             PASS
-  pr84748                             FAIL (runtime)
+  pr84748                             PASS
   pr85095                             PASS
   pr85156                             PASS
   pr85169                             PASS
@@ -3964,10 +3964,10 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3603/3609 passed (100%), 6 failed (0 compile/4 error/2 runtime), 354 skipped.
+Torture: 3604/3609 passed (100%), 5 failed (0 compile/4 error/1 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 
-Runtime failures: c23-complit-4 pr84748
+Runtime failures: c23-complit-4
 
 Dg-error tests: 34/38 passed (caught expected error), 4 failed.
