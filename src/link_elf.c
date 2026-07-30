@@ -688,8 +688,6 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
             switch (r->type) {
             case RL_ABS64:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    fprintf(stderr, "rcc: link: unsupported ABS64 reference to dynamic symbol '%s'\n",
-                            sym->name);
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
@@ -697,8 +695,6 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 break;
             case RL_ABS32:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    fprintf(stderr, "rcc: link: unsupported ABS32 reference to dynamic symbol '%s'\n",
-                            sym->name);
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
@@ -706,8 +702,6 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 break;
             case RL_ABS32U:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    fprintf(stderr, "rcc: link: unsupported ABS32U reference to dynamic symbol '%s'\n",
-                            sym->name);
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
@@ -717,8 +711,6 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
             case RL_PC32_PLT:
                 if (dyn_idx && dyn_idx[r->sym]) {
                     if (!plt_idx || plt_idx[r->sym] < 0) {
-                        fprintf(stderr, "rcc: link: unsupported PC32 reference to dynamic data symbol '%s'\n",
-                                sym->name);
                         return -1;
                     }
                     S = plt_addr + 16 + (uint64_t)plt_idx[r->sym] * 16;
@@ -729,8 +721,6 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 break;
             case RL_PC64:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    fprintf(stderr, "rcc: link: unsupported PC64 reference to dynamic symbol '%s'\n",
-                            sym->name);
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
