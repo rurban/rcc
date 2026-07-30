@@ -145,7 +145,7 @@
   941101-1                            PASS
   941110-1                            PASS
   941202-1                            PASS
-  950221-1                            FAIL (runtime)
+  950221-1                            PASS
   950322-1                            PASS
   950426-1                            PASS
   950426-2                            PASS
@@ -499,7 +499,7 @@
   20030125-1                          PASS
   20030128-1                          PASS
   20030203-1                          PASS
-  20030209-1                          FAIL (runtime)
+  20030209-1                          PASS
   20030216-1                          PASS
   20030218-1                          PASS
   20030221-1                          PASS
@@ -1347,8 +1347,8 @@
   pr20187-1                           PASS
   pr20466-1                           PASS
   pr20527-1                           PASS
-  pr20601-1                           FAIL (runtime)
-  pr20621-1                           FAIL (runtime)
+  pr20601-1                           PASS
+  pr20621-1                           PASS
   pr21173                             PASS
   pr21331                             PASS
   pr21964-1                           PASS
@@ -1563,8 +1563,8 @@
   pr51323                             PASS
   pr51447                             SKIP (nested-func)
   pr51466                             PASS
-  pr51581-1                           FAIL (runtime)
-  pr51581-2                           FAIL (runtime)
+  pr51581-1                           PASS
+  pr51581-2                           PASS
   pr51877                             PASS
   pr51933                             PASS
   pr52129                             PASS
@@ -1589,7 +1589,7 @@
   pr56205                             PASS
   pr56250                             PASS
   pr56799                             PASS
-  pr56837                             FAIL (runtime)
+  pr56837                             PASS
   pr56866                             PASS
   pr56899                             PASS
   pr56962                             PASS
@@ -1646,7 +1646,7 @@
   pr60062                             PASS
   pr60072                             PASS
   pr60454                             PASS
-  pr60822                             FAIL (runtime)
+  pr60822                             PASS
   pr60960                             PASS
   pr61306-1                           PASS
   pr61306-2                           PASS
@@ -1828,7 +1828,7 @@
   pr90311                             PASS
   pr90348                             PASS
   pr90949                             PASS
-  pr91137                             FAIL (runtime)
+  pr91137                             PASS
   pr91450-1                           PASS
   pr91450-2                           PASS
   pr91597                             PASS
@@ -2074,7 +2074,7 @@
   vect/O3-pr45971                     PASS (compile only)
   vect/O3-pr46077                     PASS (compile only)
   vect/O3-pr49087                     PASS (compile only)
-  vect/O3-pr70130                     FAIL (runtime)
+  vect/O3-pr70130                     PASS
   vect/O3-pr85794                     PASS (compile only)
   vect/O3-pr87546                     PASS
   vect/O3-slp-reduc-10                PASS
@@ -2268,7 +2268,7 @@
   vect/fast-math-vect-reduc-5         PASS
   vect/fast-math-vect-reduc-7         PASS
   vect/fast-math-vect-reduc-8         PASS (compile only)
-  vect/fast-math-vect-reduc-9         FAIL (runtime)
+  vect/fast-math-vect-reduc-9         PASS
   vect/ggc-pr37574                    PASS (compile only)
   vect/gimplefe-40                    SKIP (gimple)
   vect/gimplefe-41                    SKIP (gimple)
@@ -2279,7 +2279,7 @@
   vect/no-math-errno-slp-32           PASS (compile only)
   vect/no-math-errno-vect-pow-1       PASS (compile only)
   vect/no-scevccp-noreassoc-outer-1   PASS
-  vect/no-scevccp-noreassoc-outer-2   FAIL (runtime)
+  vect/no-scevccp-noreassoc-outer-2   PASS
   vect/no-scevccp-noreassoc-outer-3   PASS
   vect/no-scevccp-noreassoc-outer-4   PASS
   vect/no-scevccp-noreassoc-outer-5   PASS
@@ -2330,7 +2330,7 @@
   vect/no-section-anchors-vect-66     SKIP (missing include)
   vect/no-section-anchors-vect-68     SKIP (missing include)
   vect/no-section-anchors-vect-69     SKIP (missing include)
-  vect/no-section-anchors-vect-outer-4h FAIL (runtime)
+  vect/no-section-anchors-vect-outer-4h PASS
   vect/no-trapping-math-1             PASS (compile only)
   vect/no-trapping-math-2             PASS
   vect/no-trapping-math-vect-111      PASS
@@ -2446,7 +2446,7 @@
   vect/pr45752                        SKIP (missing include)
   vect/pr45847                        PASS (compile only)
   vect/pr45902                        PASS
-  vect/pr46009                        FAIL (runtime)
+  vect/pr46009                        PASS
   vect/pr46032                        SKIP (openmp)
   vect/pr46049                        PASS (compile only)
   vect/pr46052                        PASS (compile only)
@@ -2501,7 +2501,7 @@
   vect/pr57206                        PASS (compile only)
   vect/pr57558-1                      PASS (compile only)
   vect/pr57558-2                      PASS (compile only)
-  vect/pr57705                        FAIL (runtime)
+  vect/pr57705                        PASS
   vect/pr57741-1                      PASS (compile only)
   vect/pr57741-2                      PASS
   vect/pr57741-3                      PASS
@@ -2511,7 +2511,7 @@
   vect/pr59519-2                      PASS (compile only)
   vect/pr59591-1                      SKIP (openmp)
   vect/pr59591-2                      SKIP (openmp)
-  vect/pr59594                        FAIL (runtime)
+  vect/pr59594                        PASS
   vect/pr59651                        SKIP (missing include)
   vect/pr59984                        SKIP (openmp)
   vect/pr60012                        SKIP (missing include)
@@ -2525,9 +2525,9 @@
   vect/pr60505                        PASS (compile only)
   vect/pr60656                        PASS
   vect/pr60841                        PASS (compile only)
-  vect/pr61194                        FAIL (runtime)
+  vect/pr61194                        PASS
   vect/pr61634                        PASS (compile only)
-  vect/pr61680                        FAIL (runtime)
+  vect/pr61680                        PASS
   vect/pr62021                        SKIP (avx)
   vect/pr62073                        PASS (compile only)
   vect/pr62075                        PASS (compile only)
@@ -2540,7 +2540,7 @@
   vect/pr63530                        SKIP (missing include)
   vect/pr63605                        PASS
   vect/pr64252                        SKIP (avx)
-  vect/pr64404                        FAIL (runtime)
+  vect/pr64404                        PASS
   vect/pr64421                        SKIP (avx)
   vect/pr64493                        PASS
   vect/pr64495                        PASS
@@ -2568,8 +2568,8 @@
   vect/pr65947-14                     SKIP (missing include)
   vect/pr65951                        PASS
   vect/pr66142                        SKIP (avx)
-  vect/pr66251                        FAIL (runtime)
-  vect/pr66253                        FAIL (runtime)
+  vect/pr66251                        PASS
+  vect/pr66253                        PASS
   vect/pr66278                        PASS (compile only)
   vect/pr66623                        PASS
   vect/pr66636                        SKIP (avx)
@@ -2589,10 +2589,10 @@
   vect/pr69652                        PASS (compile only)
   vect/pr69783                        PASS (compile only)
   vect/pr69820                        PASS
-  vect/pr70021                        FAIL (runtime)
-  vect/pr70138-1                      FAIL (runtime)
+  vect/pr70021                        PASS
+  vect/pr70138-1                      PASS
   vect/pr70138-2                      PASS
-  vect/pr70354-1                      FAIL (runtime)
+  vect/pr70354-1                      PASS
   vect/pr70354-2                      PASS
   vect/pr71259                        SKIP (avx)
   vect/pr71264                        PASS (compile only)
@@ -2609,7 +2609,7 @@
   vect/pr77503                        PASS (compile only)
   vect/pr77724                        PASS (compile only)
   vect/pr78005                        PASS
-  vect/pr78558                        FAIL (runtime)
+  vect/pr78558                        PASS
   vect/pr78938                        PASS (compile only)
   vect/pr79347                        PASS (compile only)
   vect/pr79824-1                      PASS
@@ -2618,9 +2618,9 @@
   vect/pr79920                        PASS
   vect/pr80631-1                      SKIP (missing include)
   vect/pr80631-2                      SKIP (missing include)
-  vect/pr80815-1                      FAIL (runtime)
-  vect/pr80815-2                      FAIL (runtime)
-  vect/pr80815-3                      FAIL (runtime)
+  vect/pr80815-1                      PASS
+  vect/pr80815-2                      PASS
+  vect/pr80815-3                      PASS
   vect/pr80928                        PASS (compile only)
   vect/pr81082                        PASS (compile only)
   vect/pr81136                        PASS (compile only)
@@ -2670,8 +2670,8 @@
   vect/pr88598-4                      PASS
   vect/pr88598-5                      PASS
   vect/pr88598-6                      PASS
-  vect/pr88903-1                      FAIL (runtime)
-  vect/pr88903-2                      FAIL (runtime)
+  vect/pr88903-1                      PASS
+  vect/pr88903-2                      PASS
   vect/pr89268                        SKIP (missing include)
   vect/pr89440                        PASS
   vect/pr90018                        PASS
@@ -2684,8 +2684,8 @@
   vect/pr91750                        PASS (compile only)
   vect/pr92205                        PASS (compile only)
   vect/pr92324-1                      PASS (compile only)
-  vect/pr92324-2                      FAIL (runtime)
-  vect/pr92324-3                      FAIL (runtime)
+  vect/pr92324-2                      PASS
+  vect/pr92324-3                      PASS
   vect/pr92324-4                      PASS
   vect/pr92347                        SKIP (openmp)
   vect/pr92420                        SKIP (avx)
@@ -2705,7 +2705,7 @@
   vect/pr93843-2                      PASS
   vect/pr94443                        PASS (compile only)
   vect/pr94606                        PASS (compile only)
-  vect/pr94727                        FAIL (runtime)
+  vect/pr94727                        PASS
   vect/pr94994                        PASS
   vect/pr95272                        PASS (compile only)
   vect/pr95495                        PASS (compile only)
@@ -2716,7 +2716,7 @@
   vect/pr95916                        PASS (compile only)
   vect/pr96698                        PASS (compile only)
   vect/pr96783-1                      PASS
-  vect/pr96783-2                      FAIL (runtime)
+  vect/pr96783-2                      PASS
   vect/pr96854                        PASS
   vect/pr96920                        PASS (compile only)
   vect/pr97081-2                      PASS
@@ -2732,7 +2732,7 @@
   vect/pr97558                        PASS (compile only)
   vect/pr97678                        PASS
   vect/pr97693                        PASS (compile only)
-  vect/pr97730                        FAIL (runtime)
+  vect/pr97730                        PASS
   vect/pr97753                        PASS (compile only)
   vect/pr97760                        PASS
   vect/pr97769                        PASS (compile only)
@@ -2757,10 +2757,10 @@
   vect/pr99540                        PASS (compile only)
   vect/pr99856                        PASS (compile only)
   vect/pr100756                       PASS (compile only)
-  vect/pr101145                       FAIL (runtime)
-  vect/pr101145_1                     FAIL (runtime)
-  vect/pr101145_2                     FAIL (runtime)
-  vect/pr101145_3                     FAIL (runtime)
+  vect/pr101145                       PASS
+  vect/pr101145_1                     PASS
+  vect/pr101145_2                     PASS
+  vect/pr101145_3                     PASS
   vect/pr101145inf                    PASS
   vect/pr101145inf_1                  PASS
   vect/pr101445                       PASS
@@ -2845,9 +2845,9 @@
   vect/pr114485                       PASS
   vect/pr114733                       PASS
   vect/pr114832                       PASS (compile only)
-  vect/pr115192                       FAIL (runtime)
+  vect/pr115192                       PASS
   vect/pr115383                       PASS
-  vect/pr115385                       FAIL (runtime)
+  vect/pr115385                       PASS
   vect/pr115395                       PASS
   vect/pr115537                       PASS (compile only)
   vect/pr115602                       PASS (compile only)
@@ -2940,13 +2940,13 @@
   vect/slp-39                         PASS (compile only)
   vect/slp-41                         PASS
   vect/slp-42                         PASS (compile only)
-  vect/slp-43                         FAIL (runtime)
+  vect/slp-43                         PASS
   vect/slp-44                         PASS (compile only)
-  vect/slp-45                         FAIL (runtime)
+  vect/slp-45                         PASS
   vect/slp-46                         SKIP (missing include)
-  vect/slp-47                         FAIL (runtime)
-  vect/slp-48                         FAIL (runtime)
-  vect/slp-49                         FAIL (runtime)
+  vect/slp-47                         PASS
+  vect/slp-48                         PASS
+  vect/slp-49                         PASS
   vect/slp-50                         PASS (compile only)
   vect/slp-51                         PASS (compile only)
   vect/slp-52                         PASS (compile only)
@@ -2996,7 +2996,7 @@
   vect/slp-reduc-5                    SKIP (missing include)
   vect/slp-reduc-6                    SKIP (missing include)
   vect/slp-reduc-7                    PASS
-  vect/slp-reduc-8                    FAIL (runtime)
+  vect/slp-reduc-8                    PASS
   vect/slp-reduc-9                    PASS (compile only)
   vect/slp-reduc-10a                  SKIP (gimple)
   vect/slp-reduc-10b                  SKIP (gimple)
@@ -3158,7 +3158,7 @@
   vect/vect-alias-check-5             PASS (compile only)
   vect/vect-alias-check-6             PASS (compile only)
   vect/vect-alias-check-7             PASS (compile only)
-  vect/vect-alias-check-8             FAIL (runtime)
+  vect/vect-alias-check-8             PASS
   vect/vect-alias-check-9             PASS
   vect/vect-alias-check-10            PASS
   vect/vect-alias-check-11            PASS
@@ -3168,15 +3168,15 @@
   vect/vect-alias-check-15            PASS
   vect/vect-alias-check-16            PASS
   vect/vect-alias-check-17            PASS (compile only)
-  vect/vect-alias-check-18            FAIL (runtime)
-  vect/vect-alias-check-19            FAIL (runtime)
-  vect/vect-alias-check-20            FAIL (runtime)
+  vect/vect-alias-check-18            PASS
+  vect/vect-alias-check-19            PASS
+  vect/vect-alias-check-20            PASS
   vect/vect-alias-check               PASS (compile only)
   vect/vect-align-1                   PASS
   vect/vect-align-2                   PASS
   vect/vect-align-3                   PASS (compile only)
   vect/vect-align-4                   PASS (compile only)
-  vect/vect-all-big-array             FAIL (runtime)
+  vect/vect-all-big-array             PASS
   vect/vect-all                       PASS
   vect/vect-avg-1                     PASS
   vect/vect-avg-2                     PASS
@@ -3236,15 +3236,15 @@
   vect/vect-cond-2                    PASS
   vect/vect-cond-3                    PASS
   vect/vect-cond-4                    PASS
-  vect/vect-cond-5                    FAIL (runtime)
-  vect/vect-cond-6                    FAIL (runtime)
-  vect/vect-cond-7                    FAIL (runtime)
-  vect/vect-cond-8                    FAIL (runtime)
-  vect/vect-cond-9                    FAIL (runtime)
-  vect/vect-cond-10                   FAIL (runtime)
-  vect/vect-cond-11                   FAIL (runtime)
+  vect/vect-cond-5                    PASS
+  vect/vect-cond-6                    PASS
+  vect/vect-cond-7                    PASS
+  vect/vect-cond-8                    PASS
+  vect/vect-cond-9                    PASS
+  vect/vect-cond-10                   PASS
+  vect/vect-cond-11                   PASS
   vect/vect-cond-12                   PASS (compile only)
-  vect/vect-cond-13                   FAIL (runtime)
+  vect/vect-cond-13                   PASS
   vect/vect-cond-arith-1              PASS
   vect/vect-cond-arith-2              SKIP (gimple)
   vect/vect-cond-arith-3              PASS
@@ -3257,7 +3257,7 @@
   vect/vect-cond-reduc-2              PASS (compile only)
   vect/vect-cond-reduc-3              SKIP (missing include)
   vect/vect-cond-reduc-4              SKIP (missing include)
-  vect/vect-cond-reduc-5              FAIL (runtime)
+  vect/vect-cond-reduc-5              PASS
   vect/vect-cond-reduc-6              PASS (compile only)
   vect/vect-cond-reduc-in-order-2-signed-zero PASS
   vect/vect-conditional_store_1       PASS (compile only)
@@ -3281,14 +3281,14 @@
   vect/vect-div-bitmask-4             PASS
   vect/vect-div-bitmask-5             PASS
   vect/vect-dotprod-conv-optab        PASS (compile only)
-  vect/vect-double-reduc-1            FAIL (runtime)
-  vect/vect-double-reduc-2            FAIL (runtime)
-  vect/vect-double-reduc-3            FAIL (runtime)
-  vect/vect-double-reduc-4            FAIL (runtime)
-  vect/vect-double-reduc-5            FAIL (runtime)
+  vect/vect-double-reduc-1            PASS
+  vect/vect-double-reduc-2            PASS
+  vect/vect-double-reduc-3            PASS
+  vect/vect-double-reduc-4            PASS
+  vect/vect-double-reduc-5            PASS
   vect/vect-double-reduc-6-big-array  PASS
   vect/vect-double-reduc-6            PASS
-  vect/vect-double-reduc-7            FAIL (runtime)
+  vect/vect-double-reduc-7            PASS
   vect/vect-dv-1                      PASS (compile only)
   vect/vect-early-break-run_1         PASS
   vect/vect-early-break-run_2         PASS
@@ -3378,7 +3378,7 @@
   vect/vect-early-break_74            PASS
   vect/vect-early-break_75            PASS
   vect/vect-early-break_76            PASS
-  vect/vect-early-break_77            FAIL (runtime)
+  vect/vect-early-break_77            PASS
   vect/vect-early-break_78            PASS
   vect/vect-early-break_79            PASS (compile only)
   vect/vect-early-break_80            PASS
@@ -3509,7 +3509,7 @@
   vect/vect-live-3                    SKIP (missing include)
   vect/vect-live-4                    SKIP (missing include)
   vect/vect-live-5                    PASS
-  vect/vect-live-6                    FAIL (runtime)
+  vect/vect-live-6                    PASS
   vect/vect-live-slp-1                SKIP (missing include)
   vect/vect-live-slp-2                SKIP (missing include)
   vect/vect-live-slp-3                SKIP (missing include)
@@ -3564,20 +3564,20 @@
   vect/vect-outer-1a                  PASS (compile only)
   vect/vect-outer-1b-big-array        PASS (compile only)
   vect/vect-outer-1b                  PASS (compile only)
-  vect/vect-outer-2-big-array         FAIL (runtime)
-  vect/vect-outer-2                   FAIL (runtime)
-  vect/vect-outer-2a-big-array        FAIL (runtime)
-  vect/vect-outer-2a                  FAIL (runtime)
-  vect/vect-outer-2b                  FAIL (runtime)
-  vect/vect-outer-2c-big-array        FAIL (runtime)
-  vect/vect-outer-2c                  FAIL (runtime)
-  vect/vect-outer-2d                  FAIL (runtime)
-  vect/vect-outer-3-big-array         FAIL (runtime)
-  vect/vect-outer-3                   FAIL (runtime)
-  vect/vect-outer-3a-big-array        FAIL (runtime)
-  vect/vect-outer-3a                  FAIL (runtime)
-  vect/vect-outer-3b                  FAIL (runtime)
-  vect/vect-outer-3c                  FAIL (runtime)
+  vect/vect-outer-2-big-array         PASS
+  vect/vect-outer-2                   PASS
+  vect/vect-outer-2a-big-array        PASS
+  vect/vect-outer-2a                  PASS
+  vect/vect-outer-2b                  PASS
+  vect/vect-outer-2c-big-array        PASS
+  vect/vect-outer-2c                  PASS
+  vect/vect-outer-2d                  PASS
+  vect/vect-outer-3-big-array         PASS
+  vect/vect-outer-3                   PASS
+  vect/vect-outer-3a-big-array        PASS
+  vect/vect-outer-3a                  PASS
+  vect/vect-outer-3b                  PASS
+  vect/vect-outer-3c                  PASS
   vect/vect-outer-4                   PASS
   vect/vect-outer-4a-big-array        PASS (compile only)
   vect/vect-outer-4a                  PASS (compile only)
@@ -3585,7 +3585,7 @@
   vect/vect-outer-4b                  PASS (compile only)
   vect/vect-outer-4c-big-array        PASS (compile only)
   vect/vect-outer-4c                  PASS (compile only)
-  vect/vect-outer-4d-big-array        FAIL (runtime)
+  vect/vect-outer-4d-big-array        PASS
   vect/vect-outer-4d                  PASS
   vect/vect-outer-4e                  PASS (compile only)
   vect/vect-outer-4f                  PASS
@@ -3652,7 +3652,7 @@
   vect/vect-peel-4                    SKIP (missing include)
   vect/vect-pr69848                   PASS
   vect/vect-pr111779                  PASS
-  vect/vect-pr114375                  FAIL (runtime)
+  vect/vect-pr114375                  PASS
   vect/vect-pre-interact              PASS (compile only)
   vect/vect-prefetch-drop             PASS (compile only)
   vect/vect-profile-1                 PASS (compile only)
@@ -3676,8 +3676,8 @@
   vect/vect-reduc-7                   PASS
   vect/vect-reduc-8                   PASS
   vect/vect-reduc-9                   PASS
-  vect/vect-reduc-10                  FAIL (runtime)
-  vect/vect-reduc-11                  FAIL (runtime)
+  vect/vect-reduc-10                  PASS
+  vect/vect-reduc-11                  PASS
   vect/vect-reduc-chain-1             SKIP (missing include)
   vect/vect-reduc-chain-2             SKIP (missing include)
   vect/vect-reduc-chain-3             SKIP (missing include)
@@ -3761,9 +3761,9 @@
   vect/vect-rounding-round            PASS (compile only)
   vect/vect-rounding-roundf           PASS (compile only)
   vect/vect-sdiv-pow2-1               PASS
-  vect/vect-sdivmod-1                 FAIL (runtime)
+  vect/vect-sdivmod-1                 PASS
   vect/vect-shift-1                   PASS
-  vect/vect-shift-2-big-array         FAIL (runtime)
+  vect/vect-shift-2-big-array         PASS
   vect/vect-shift-2                   PASS
   vect/vect-shift-3                   PASS
   vect/vect-shift-4                   PASS
@@ -3844,7 +3844,7 @@
   vect/vect-strided-mult-char-ls      PASS
   vect/vect-strided-mult              PASS
   vect/vect-strided-same-dr           PASS
-  vect/vect-strided-shift-1           FAIL (runtime)
+  vect/vect-strided-shift-1           PASS
   vect/vect-strided-store-a-u8-i2     PASS
   vect/vect-strided-store-u16-i4      PASS
   vect/vect-strided-store-u32-i2      PASS
@@ -3964,10 +3964,10 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3513/3609 passed (97%), 96 failed (0 compile/4 error/92 runtime), 354 skipped.
+Torture: 3603/3609 passed (100%), 6 failed (0 compile/4 error/2 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 
-Runtime failures: 950221-1 20030209-1 c23-complit-4 pr20601-1 pr20621-1 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 vect/O3-pr70130 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr115192 vect/pr115385 vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-reduc-8 vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-strided-shift-1
+Runtime failures: c23-complit-4 pr84748
 
 Dg-error tests: 34/38 passed (caught expected error), 4 failed.

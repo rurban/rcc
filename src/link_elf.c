@@ -1081,6 +1081,21 @@ int link_elf(LinkState *s) {
     // starts at a valid file offset / virtual address pair.
     uint64_t base = 0x400000ULL;
     if (s->opt_pie) base = 0x10000ULL;
+    // Fix BSS section length from symbol sizes.
+    {
+        int bss_sec = link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
+        uint64_t max_bss = 0;
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec == bss_sec) {
+                uint64_t end = sym->value + sym->size;
+                if (end > max_bss) max_bss = end;
+            }
+        }
+        if (max_bss > s->secs[bss_sec].len)
+            s->secs[bss_sec].len = (size_t)max_bss;
+    }
+
     if (link_layout(s, base, 0x1000) != 0) {
         free(dyn_syms);
         free(dyn_idx);
