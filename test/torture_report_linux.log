@@ -439,7 +439,7 @@
   20020225-2                          PASS
   20020226-1                          PASS
   20020227-1                          PASS
-  20020307-1                          FAIL (runtime)
+  20020307-1                          PASS
   20020314-1                          PASS
   20020320-1                          PASS
   20020321-1                          PASS
@@ -569,11 +569,11 @@
   20040423-1                          PASS
   20040520-1                          SKIP (nested-func)
   20040625-1                          PASS
-  20040629-1                          FAIL (runtime)
+  20040629-1                          PASS
   20040703-1                          PASS
   20040704-1                          PASS
-  20040705-1                          FAIL (runtime)
-  20040705-2                          FAIL (runtime)
+  20040705-1                          PASS
+  20040705-2                          PASS
   20040706-1                          PASS
   20040707-1                          PASS
   20040709-1                          PASS
@@ -623,7 +623,7 @@
   20050607-1                          SKIP (nested-func)
   20050613-1                          PASS
   20050713-1                          PASS
-  20050826-1                          FAIL (runtime)
+  20050826-1                          PASS
   20050826-2                          PASS
   20050929-1                          PASS
   20051012-1                          PASS
@@ -805,7 +805,7 @@
   builtin-prefetch-1                  PASS
   builtin-prefetch-2                  PASS
   builtin-prefetch-3                  PASS
-  builtin-prefetch-4                  FAIL (runtime)
+  builtin-prefetch-4                  PASS
   builtin-prefetch-5                  PASS
   builtin-prefetch-6                  PASS
   builtin-types-compatible-p          SKIP (nested-func)
@@ -1229,7 +1229,7 @@
   divcmp-1                            PASS
   divcmp-2                            PASS
   divcmp-3                            PASS
-  divcmp-4                            FAIL (runtime)
+  divcmp-4                            PASS
   divcmp-5                            PASS
   divconst-1                          PASS
   divconst-2                          PASS
@@ -1301,7 +1301,7 @@
   memcpy-a8                           PASS
   memcpy-bi                           PASS
   memset-1                            PASS
-  memset-2                            FAIL (runtime)
+  memset-2                            PASS
   memset-3                            PASS
   memset-4                            PASS
   minmaxcmp-1                         PASS
@@ -1458,7 +1458,7 @@
   pr38212                             PASS
   pr38236                             PASS
   pr38422                             PASS
-  pr38533                             FAIL (runtime)
+  pr38533                             PASS
   pr38819                             PASS
   pr38969                             PASS
   pr39100                             PASS
@@ -1980,10 +1980,10 @@
   simd-5                              PASS
   simd-6                              PASS
   ssad-run                            PASS
-  stdarg-1                            FAIL (runtime)
+  stdarg-1                            PASS
   stdarg-2                            PASS
   stdarg-3                            PASS
-  stdarg-4                            FAIL (runtime)
+  stdarg-4                            PASS
   stkalign                            PASS
   strcmp-1                            PASS
   strcpy-1                            PASS
@@ -1994,7 +1994,7 @@
   strct-pack-4                        PASS
   strct-stdarg-1                      PASS
   strct-varg-1                        PASS
-  string-opt-5                        FAIL (runtime)
+  string-opt-5                        PASS
   string-opt-17                       PASS
   string-opt-18                       PASS
   strlen-1                            PASS
@@ -2247,7 +2247,7 @@
   vect/bb-slp-subgroups-1             PASS
   vect/bb-slp-subgroups-2             PASS
   vect/bb-slp-subgroups-3             PASS
-  vect/fast-math-bb-slp-call-1        FAIL (runtime)
+  vect/fast-math-bb-slp-call-1        PASS
   vect/fast-math-bb-slp-call-2        PASS
   vect/fast-math-bb-slp-call-3        PASS
   vect/fast-math-ifcvt-1              PASS (compile only)
@@ -2464,7 +2464,7 @@
   vect/pr49352                        PASS (compile only)
   vect/pr49478                        PASS (compile only)
   vect/pr49610                        PASS (compile only)
-  vect/pr49771                        FAIL (runtime)
+  vect/pr49771                        PASS
   vect/pr49926                        PASS (compile only)
   vect/pr50014                        PASS (compile only)
   vect/pr50451                        PASS (compile only)
@@ -2615,7 +2615,7 @@
   vect/pr79824-1                      PASS
   vect/pr79824-2                      PASS
   vect/pr79887                        SKIP (missing include)
-  vect/pr79920                        FAIL (runtime)
+  vect/pr79920                        PASS
   vect/pr80631-1                      SKIP (missing include)
   vect/pr80631-2                      SKIP (missing include)
   vect/pr80815-1                      FAIL (runtime)
@@ -2631,7 +2631,7 @@
   vect/pr81740-1                      PASS
   vect/pr81740-2                      PASS
   vect/pr81815                        PASS
-  vect/pr82108                        FAIL (runtime)
+  vect/pr82108                        PASS
   vect/pr82289                        PASS (compile only)
   vect/pr82436                        PASS (compile only)
   vect/pr83202-1                      PASS (compile only)
@@ -2644,7 +2644,7 @@
   vect/pr84201                        SKIP (missing include)
   vect/pr84265                        PASS (compile only)
   vect/pr84357                        PASS (compile only)
-  vect/pr84419                        FAIL (runtime)
+  vect/pr84419                        PASS
   vect/pr84711                        PASS (compile only)
   vect/pr85286                        SKIP (missing include)
   vect/pr85586                        PASS
@@ -2719,7 +2719,7 @@
   vect/pr96783-2                      FAIL (runtime)
   vect/pr96854                        PASS
   vect/pr96920                        PASS (compile only)
-  vect/pr97081-2                      FAIL (runtime)
+  vect/pr97081-2                      PASS
   vect/pr97081                        PASS
   vect/pr97085                        PASS (compile only)
   vect/pr97139                        PASS
@@ -2768,8 +2768,8 @@
   vect/pr102046                       PASS (compile only)
   vect/pr102318                       PASS (compile only)
   vect/pr102832                       PASS (compile only)
-  vect/pr103116-1                     FAIL (runtime)
-  vect/pr103116-2                     FAIL (runtime)
+  vect/pr103116-1                     PASS
+  vect/pr103116-2                     PASS
   vect/pr103253                       SKIP (openmp)
   vect/pr103494                       PASS (compile only)
   vect/pr103517                       PASS (compile only)
@@ -2893,7 +2893,7 @@
   vect/pr119757                       PASS (compile only)
   vect/section-anchors-pr27770        PASS
   vect/section-anchors-vect-69        SKIP (missing include)
-  vect/slp-1                          FAIL (runtime)
+  vect/slp-1                          PASS
   vect/slp-2                          PASS
   vect/slp-3-big-array                PASS
   vect/slp-3                          PASS
@@ -2928,10 +2928,10 @@
   vect/slp-24-big-array               PASS
   vect/slp-24                         PASS
   vect/slp-25                         SKIP (missing include)
-  vect/slp-26                         FAIL (runtime)
+  vect/slp-26                         PASS
   vect/slp-28                         PASS
   vect/slp-33                         PASS
-  vect/slp-34-big-array               FAIL (runtime)
+  vect/slp-34-big-array               PASS
   vect/slp-34                         PASS
   vect/slp-35                         PASS
   vect/slp-36                         PASS (compile only)
@@ -2986,7 +2986,7 @@
   vect/slp-perm-7                     PASS
   vect/slp-perm-8                     PASS
   vect/slp-perm-9                     PASS
-  vect/slp-perm-10                    FAIL (runtime)
+  vect/slp-perm-10                    PASS
   vect/slp-perm-11                    PASS
   vect/slp-perm-12                    SKIP (missing include)
   vect/slp-reduc-1                    PASS
@@ -3024,7 +3024,7 @@
   vect/vect-3                         PASS
   vect/vect-4                         PASS
   vect/vect-5                         PASS
-  vect/vect-6-big-array               FAIL (runtime)
+  vect/vect-6-big-array               PASS
   vect/vect-6                         PASS
   vect/vect-7                         PASS
   vect/vect-8                         PASS
@@ -3127,7 +3127,7 @@
   vect/vect-100                       PASS
   vect/vect-103                       SKIP (missing include)
   vect/vect-104                       SKIP (missing include)
-  vect/vect-105-big-array             FAIL (runtime)
+  vect/vect-105-big-array             PASS
   vect/vect-105                       PASS
   vect/vect-106                       PASS
   vect/vect-107                       PASS
@@ -3594,13 +3594,13 @@
   vect/vect-outer-4j                  PASS (compile only)
   vect/vect-outer-4k                  PASS
   vect/vect-outer-4l                  PASS
-  vect/vect-outer-4m-big-array        FAIL (runtime)
+  vect/vect-outer-4m-big-array        PASS
   vect/vect-outer-4m                  PASS
   vect/vect-outer-5                   PASS
   vect/vect-outer-6                   PASS
   vect/vect-outer-call-1              PASS (compile only)
-  vect/vect-outer-fir-big-array       FAIL (runtime)
-  vect/vect-outer-fir-lb-big-array    FAIL (runtime)
+  vect/vect-outer-fir-big-array       PASS
+  vect/vect-outer-fir-lb-big-array    PASS
   vect/vect-outer-fir-lb              PASS
   vect/vect-outer-fir                 PASS
   vect/vect-outer-pr69720             PASS
@@ -3764,7 +3764,7 @@
   vect/vect-sdivmod-1                 FAIL (runtime)
   vect/vect-shift-1                   PASS
   vect/vect-shift-2-big-array         FAIL (runtime)
-  vect/vect-shift-2                   FAIL (runtime)
+  vect/vect-shift-2                   PASS
   vect/vect-shift-3                   PASS
   vect/vect-shift-4                   PASS
   vect/vect-shift-5                   PASS (compile only)
@@ -3854,7 +3854,7 @@
   vect/vect-strided-u8-i8-gap2-big-array PASS
   vect/vect-strided-u8-i8-gap2        PASS
   vect/vect-strided-u8-i8-gap4-big-array PASS
-  vect/vect-strided-u8-i8-gap4-unknown FAIL (runtime)
+  vect/vect-strided-u8-i8-gap4-unknown PASS
   vect/vect-strided-u8-i8-gap4        PASS
   vect/vect-strided-u8-i8-gap7-big-array PASS
   vect/vect-strided-u8-i8-gap7        PASS
@@ -3964,10 +3964,10 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3476/3609 passed (96%), 133 failed (0 compile/4 error/129 runtime), 354 skipped.
+Torture: 3507/3609 passed (97%), 102 failed (0 compile/4 error/98 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 
-Runtime failures: 950221-1 20020307-1 20030209-1 20040629-1 20040705-1 20040705-2 20050826-1 builtin-prefetch-4 c23-complit-4 divcmp-4 fprintf-1 fprintf-chk-1 memset-2 pr20601-1 pr20621-1 pr38533 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 printf-2 stdarg-1 stdarg-4 string-opt-5 user-printf vfprintf-1 vfprintf-chk-1 vect/O3-pr70130 vect/fast-math-bb-slp-call-1 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr49771 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr79920 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr82108 vect/pr84419 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97081-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr103116-1 vect/pr103116-2 vect/pr115192 vect/pr115385 vect/slp-1 vect/slp-26 vect/slp-34-big-array vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-perm-10 vect/slp-reduc-8 vect/vect-6-big-array vect/vect-105-big-array vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-outer-4m-big-array vect/vect-outer-fir-big-array vect/vect-outer-fir-lb-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-shift-2 vect/vect-strided-shift-1 vect/vect-strided-u8-i8-gap4-unknown
+Runtime failures: 950221-1 20030209-1 c23-complit-4 fprintf-1 fprintf-chk-1 pr20601-1 pr20621-1 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 printf-2 user-printf vfprintf-1 vfprintf-chk-1 vect/O3-pr70130 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr115192 vect/pr115385 vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-reduc-8 vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-strided-shift-1
 
 Dg-error tests: 34/38 passed (caught expected error), 4 failed.
