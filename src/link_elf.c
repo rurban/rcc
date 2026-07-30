@@ -751,7 +751,22 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 break;
             }
             case RL_TPOFF32: {
-                S = symbol_address(s, r->sym);
+                LinkSym *tsym = &s->syms[r->sym];
+                if (tsym->sec >= 0 && s->secs[tsym->sec].is_tls) {
+                    uint64_t tbase = 0, tsize = 0;
+                    for (int k = 0; k < s->n_secs; k++) {
+                        if (s->secs[k].is_tls && s->secs[k].alloc) {
+                            if (tbase == 0) tbase = s->secs[k].addr;
+                            uint64_t end = s->secs[k].addr + s->secs[k].len;
+                            if (end - tbase > tsize) tsize = end - tbase;
+                        }
+                    }
+                    uint64_t offset = (s->secs[tsym->sec].addr - tbase) + tsym->value;
+                    // x86-64 TLS LE: negative offset from TP
+                    S = offset - tsize;
+                } else {
+                    S = symbol_address(s, r->sym);
+                }
                 w32le_m(p, (uint32_t)((int32_t)r32le(p) + (int32_t)A + (int64_t)S));
                 break;
             }
@@ -921,6 +936,8 @@ int link_elf(LinkState *s) {
                 size_t len = (size_t)(end - lp);
                 if (len > 0 && len < 60 && n_needed < 16) {
                     snprintf(libname, sizeof(libname), "lib%.*s.so.6", (int)len, lp);
+                    // Skip libs integrated into libc on modern glibc
+                    if (len == 7 && !memcmp(lp, "pthread", 7)) continue;
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
                                                                  (const uint8_t *)libname, strlen(libname) + 1, 1);
                     n_needed++;
@@ -1089,6 +1106,11 @@ int link_elf(LinkState *s) {
         int phnum = 3; // text, rodata, data
         if (do_dynamic) phnum += 2; // interp, dynamic
         phnum += 1; // PT_GNU_STACK
+        for (int i = 0; i < s->n_secs; i++)
+            if (s->secs[i].is_tls) {
+                phnum++;
+                break;
+            }
         uint64_t hdr_size = 64 + (uint64_t)phnum * 56;
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
@@ -1231,7 +1253,7 @@ int link_elf(LinkState *s) {
     bool have_text = false, have_rodata = false, have_data = false;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
-        if (!sec->alloc) continue;
+        if (!sec->alloc || sec->is_tls) continue;
         if (sec->exec) {
             if (!have_text) {
                 have_text = true;
@@ -1276,6 +1298,12 @@ int link_elf(LinkState *s) {
         phnum += 2; // PT_INTERP and PT_DYNAMIC
     }
     phnum++; // PT_GNU_STACK
+    {
+        bool htls = false;
+        for (int i = 0; i < s->n_secs; i++)
+            if (s->secs[i].alloc && s->secs[i].is_tls) htls = true;
+        if (htls) phnum++;
+    }
 
     uint64_t ehdr_size = 64;
     uint64_t phdr_size = phnum * 56;
@@ -1320,6 +1348,32 @@ int link_elf(LinkState *s) {
         write_phdr(f, PT_LOAD, PF_R | PF_W, data_off,
                    data_addr, data_addr, data_filesz, data_memsz, 0x1000);
         cur += 56;
+    }
+    // PT_TLS: thread-local storage segment
+    {
+        uint64_t tls_off = 0, tls_addr = 0, tls_filesz = 0, tls_memsz = 0;
+        bool have_tls = false;
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc || !sec->is_tls) continue;
+            if (!have_tls) {
+                have_tls = true;
+                tls_off = sec->fileoff;
+                tls_addr = sec->addr;
+            }
+            if (sec->is_bss) {
+                uint64_t end = sec->addr + sec->len - tls_addr;
+                if (end > tls_memsz) tls_memsz = end;
+            } else {
+                uint64_t end = sec->fileoff + sec->len - tls_off;
+                if (end > tls_filesz) tls_filesz = end;
+                if (end > tls_memsz) tls_memsz = end;
+            }
+        }
+        if (have_tls) {
+            write_phdr(f, PT_TLS, PF_R, tls_off, tls_addr, tls_addr, tls_filesz, tls_memsz, 1);
+            cur += 56;
+        }
     }
     if (do_dynamic) {
         LinkSec *interp = &s->secs[interp_sec];

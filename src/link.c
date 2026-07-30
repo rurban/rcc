@@ -303,9 +303,7 @@ int link_layout(LinkState *s, uint64_t base, uint64_t page_align) {
         sec->fileoff = 0;
         addr = sec->addr + sec->len;
     }
-    // tls
-    addr = align_up(addr, page_align);
-    fileoff = align_up(fileoff, page_align);
+    // tls (contiguous, separate PT_TLS segment)
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->is_tls) continue;
