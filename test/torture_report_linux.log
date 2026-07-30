@@ -1222,7 +1222,7 @@
   complex-6                           SKIP (nested-func)
   complex-7                           SKIP (nested-func)
   compndlit-1                         SKIP (nested-func)
-  const-addr-expr-1                   FAIL (runtime)
+  const-addr-expr-1                   PASS
   conversion                          PASS
   cvt-1                               PASS
   dbra-1                              PASS
@@ -1573,7 +1573,7 @@
   pr52760                             PASS
   pr52979-1                           PASS
   pr52979-2                           PASS
-  pr53084                             FAIL (runtime)
+  pr53084                             PASS
   pr53160                             PASS
   pr53465                             PASS
   pr53645-2                           PASS
@@ -1604,7 +1604,7 @@
   pr57344-2                           PASS
   pr57344-3                           PASS
   pr57344-4                           PASS
-  pr57568                             FAIL (runtime)
+  pr57568                             PASS
   pr57829                             PASS
   pr57860                             PASS
   pr57861                             PASS
@@ -2000,7 +2000,7 @@
   strlen-1                            PASS
   strlen-2                            PASS
   strlen-3                            PASS
-  strlen-4                            FAIL (runtime)
+  strlen-4                            PASS
   strlen-5                            PASS
   strlen-6                            PASS
   strlen-7                            PASS
@@ -3964,10 +3964,10 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3472/3609 passed (96%), 137 failed (0 compile/4 error/133 runtime), 354 skipped.
+Torture: 3476/3609 passed (96%), 133 failed (0 compile/4 error/129 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 
-Runtime failures: 950221-1 20020307-1 20030209-1 20040629-1 20040705-1 20040705-2 20050826-1 builtin-prefetch-4 c23-complit-4 const-addr-expr-1 divcmp-4 fprintf-1 fprintf-chk-1 memset-2 pr20601-1 pr20621-1 pr38533 pr51581-1 pr51581-2 pr53084 pr56837 pr57568 pr60822 pr84748 pr91137 printf-2 stdarg-1 stdarg-4 string-opt-5 strlen-4 user-printf vfprintf-1 vfprintf-chk-1 vect/O3-pr70130 vect/fast-math-bb-slp-call-1 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr49771 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr79920 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr82108 vect/pr84419 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97081-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr103116-1 vect/pr103116-2 vect/pr115192 vect/pr115385 vect/slp-1 vect/slp-26 vect/slp-34-big-array vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-perm-10 vect/slp-reduc-8 vect/vect-6-big-array vect/vect-105-big-array vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-outer-4m-big-array vect/vect-outer-fir-big-array vect/vect-outer-fir-lb-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-shift-2 vect/vect-strided-shift-1 vect/vect-strided-u8-i8-gap4-unknown
+Runtime failures: 950221-1 20020307-1 20030209-1 20040629-1 20040705-1 20040705-2 20050826-1 builtin-prefetch-4 c23-complit-4 divcmp-4 fprintf-1 fprintf-chk-1 memset-2 pr20601-1 pr20621-1 pr38533 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 printf-2 stdarg-1 stdarg-4 string-opt-5 user-printf vfprintf-1 vfprintf-chk-1 vect/O3-pr70130 vect/fast-math-bb-slp-call-1 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr49771 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr79920 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr82108 vect/pr84419 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97081-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr103116-1 vect/pr103116-2 vect/pr115192 vect/pr115385 vect/slp-1 vect/slp-26 vect/slp-34-big-array vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-perm-10 vect/slp-reduc-8 vect/vect-6-big-array vect/vect-105-big-array vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-outer-4m-big-array vect/vect-outer-fir-big-array vect/vect-outer-fir-lb-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-shift-2 vect/vect-strided-shift-1 vect/vect-strided-u8-i8-gap4-unknown
 
 Dg-error tests: 34/38 passed (caught expected error), 4 failed.

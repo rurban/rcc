@@ -691,21 +691,21 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
-                w64le_m(p, r64le(p) + S + (uint64_t)A);
+                w64le_m(p, (r->addend ? 0 : r64le(p)) + S + (uint64_t)A);
                 break;
             case RL_ABS32:
                 if (dyn_idx && dyn_idx[r->sym]) {
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
-                w32le_m(p, (uint32_t)((int32_t)r32le(p) + (int32_t)A + (int64_t)S));
+                w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)S));
                 break;
             case RL_ABS32U:
                 if (dyn_idx && dyn_idx[r->sym]) {
                     return -1;
                 }
                 S = symbol_address(s, r->sym);
-                w32le_m(p, (uint32_t)(r32le(p) + (uint64_t)A + S));
+                w32le_m(p, (uint32_t)((r->addend ? 0 : r32le(p)) + (uint64_t)A + S));
                 break;
             case RL_PC32:
             case RL_PC32_PLT:
@@ -717,7 +717,7 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 } else {
                     S = symbol_address(s, r->sym);
                 }
-                w32le_m(p, (uint32_t)((int32_t)r32le(p) + (int32_t)A + (int64_t)(S - pc)));
+                w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)(S - pc)));
                 break;
             case RL_PC64:
                 if (dyn_idx && dyn_idx[r->sym]) {
@@ -737,7 +737,7 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                     return -1;
                 }
                 S = got_addr + (uint64_t)slot * 8;
-                w32le_m(p, (uint32_t)((int32_t)r32le(p) + (int32_t)A + (int64_t)(S - pc)));
+                w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)(S - pc)));
                 break;
             }
             case RL_TPOFF32: {
@@ -757,7 +757,7 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 } else {
                     S = symbol_address(s, r->sym);
                 }
-                w32le_m(p, (uint32_t)((int32_t)r32le(p) + (int32_t)A + (int64_t)S));
+                w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)S));
                 break;
             }
             default:

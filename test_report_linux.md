@@ -2,13 +2,13 @@
 
 **Platform**: Linux x86_64
 
-Generated: July 30 2026 19:47
+Generated: July 30 2026 20:07
 
 ## Overall Summary
 
 - **Total**: 4445
-- **Passed**: 3943
-- **Failed**: 147
+- **Passed**: 3947
+- **Failed**: 143
 - **Skipped**: 354
 - **Overall Pass Rate**: 96%
 
@@ -43,9 +43,9 @@ Generated: July 30 2026 19:47
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 3472
-- **Failed**: 137
+- **Passed**: 3476
+- **Failed**: 133
 - **Skipped**: 354
-- **Fail Runtime**: 133
+- **Fail Runtime**: 129
 - **Dg-error Tests**: 34/38 passed, 4 failed
 - **Pass Rate (excl. skip)**: 96%
