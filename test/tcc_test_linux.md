@@ -5,9 +5,9 @@ Generated: July 2026
 ## Summary
 
 - **Total**: 118
-- **Passed**: 113
-- **Failed**: 5
-- **Pass Rate**: 96%
+- **Passed**: 115
+- **Failed**: 3
+- **Pass Rate**: 97%
 
 ## Detailed Results
 
@@ -55,7 +55,7 @@ Generated: July 2026
 | 39_typedef                  | PASS     | Output matches                |
 | 40_stdio                    | PASS     | Output matches                |
 | 41_hashif                   | PASS     | Output matches                |
-| 42_function_pointer         | MISMATCH | Output does not match .expect |
+| 42_function_pointer         | PASS     | Output matches                |
 | 43_void_param               | PASS     | Output matches                |
 | 44_scoped_declarations      | PASS     | Output matches                |
 | 45_empty_for                | PASS     | Output matches                |
@@ -121,7 +121,7 @@ Generated: July 2026
 | 116_bound_setjmp2           | SKIP     | Skipped                       |
 | 117_builtins                | PASS     | Output matches                |
 | 118_switch                  | PASS     | Output matches                |
-| 119_random_stuff            | MISMATCH | Output does not match .expect |
+| 119_random_stuff            | PASS     | Output matches                |
 | 120_alias                   | SKIP     | Skipped                       |
 | 121_struct_return           | PASS     | Output matches                |
 | 122_vla_reuse               | PASS     | Output matches                |
