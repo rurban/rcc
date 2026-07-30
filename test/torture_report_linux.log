@@ -1246,9 +1246,9 @@
   ffs-2                               PASS
   float-floor                         PASS
   floatunsisf-1                       PASS
-  fprintf-1                           FAIL (runtime)
+  fprintf-1                           PASS
   fprintf-2                           PASS
-  fprintf-chk-1                       FAIL (runtime)
+  fprintf-chk-1                       PASS
   frame-address                       PASS
   func-ptr-1                          PASS
   gofast                              PASS
@@ -1956,7 +1956,7 @@
   pr119291                            PASS
   pr119428                            PASS
   printf-1                            PASS
-  printf-2                            FAIL (runtime)
+  printf-2                            PASS
   printf-chk-1                        PASS
   pta-field-1                         PASS
   pta-field-2                         PASS
@@ -2017,7 +2017,7 @@
   tstdi-1                             PASS
   unroll-1                            PASS
   usad-run                            PASS
-  user-printf                         FAIL (runtime)
+  user-printf                         PASS
   usmul                               PASS
   va-arg-1                            PASS
   va-arg-2                            PASS
@@ -2045,8 +2045,8 @@
   va-arg-26                           PASS
   va-arg-pack-1                       PASS
   va-arg-trap-1                       PASS
-  vfprintf-1                          FAIL (runtime)
-  vfprintf-chk-1                      FAIL (runtime)
+  vfprintf-1                          PASS
+  vfprintf-chk-1                      PASS
   vla-dealloc-1                       PASS
   vprintf-1                           PASS
   vprintf-chk-1                       PASS
@@ -3964,10 +3964,10 @@
   vect/complex/vect-complex-add-pattern-unsigned-long PASS (compile only)
   vect/complex/vect-complex-add-pattern-unsigned-short PASS (compile only)
 
-Torture: 3507/3609 passed (97%), 102 failed (0 compile/4 error/98 runtime), 354 skipped.
+Torture: 3513/3609 passed (97%), 96 failed (0 compile/4 error/92 runtime), 354 skipped.
 
 Compile failures: c23-complit-5 c23-constexpr-3 c23-enum-7 c23-tag-composite-1
 
-Runtime failures: 950221-1 20030209-1 c23-complit-4 fprintf-1 fprintf-chk-1 pr20601-1 pr20621-1 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 printf-2 user-printf vfprintf-1 vfprintf-chk-1 vect/O3-pr70130 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr115192 vect/pr115385 vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-reduc-8 vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-strided-shift-1
+Runtime failures: 950221-1 20030209-1 c23-complit-4 pr20601-1 pr20621-1 pr51581-1 pr51581-2 pr56837 pr60822 pr84748 pr91137 vect/O3-pr70130 vect/fast-math-vect-reduc-9 vect/no-scevccp-noreassoc-outer-2 vect/no-section-anchors-vect-outer-4h vect/pr46009 vect/pr57705 vect/pr59594 vect/pr61194 vect/pr61680 vect/pr64404 vect/pr66251 vect/pr66253 vect/pr70021 vect/pr70138-1 vect/pr70354-1 vect/pr78558 vect/pr80815-1 vect/pr80815-2 vect/pr80815-3 vect/pr88903-1 vect/pr88903-2 vect/pr92324-2 vect/pr92324-3 vect/pr94727 vect/pr96783-2 vect/pr97730 vect/pr101145 vect/pr101145_1 vect/pr101145_2 vect/pr101145_3 vect/pr115192 vect/pr115385 vect/slp-43 vect/slp-45 vect/slp-47 vect/slp-48 vect/slp-49 vect/slp-reduc-8 vect/vect-alias-check-8 vect/vect-alias-check-18 vect/vect-alias-check-19 vect/vect-alias-check-20 vect/vect-all-big-array vect/vect-cond-5 vect/vect-cond-6 vect/vect-cond-7 vect/vect-cond-8 vect/vect-cond-9 vect/vect-cond-10 vect/vect-cond-11 vect/vect-cond-13 vect/vect-cond-reduc-5 vect/vect-double-reduc-1 vect/vect-double-reduc-2 vect/vect-double-reduc-3 vect/vect-double-reduc-4 vect/vect-double-reduc-5 vect/vect-double-reduc-7 vect/vect-early-break_77 vect/vect-live-6 vect/vect-outer-2-big-array vect/vect-outer-2 vect/vect-outer-2a-big-array vect/vect-outer-2a vect/vect-outer-2b vect/vect-outer-2c-big-array vect/vect-outer-2c vect/vect-outer-2d vect/vect-outer-3-big-array vect/vect-outer-3 vect/vect-outer-3a-big-array vect/vect-outer-3a vect/vect-outer-3b vect/vect-outer-3c vect/vect-outer-4d-big-array vect/vect-pr114375 vect/vect-reduc-10 vect/vect-reduc-11 vect/vect-sdivmod-1 vect/vect-shift-2-big-array vect/vect-strided-shift-1
 
 Dg-error tests: 34/38 passed (caught expected error), 4 failed.

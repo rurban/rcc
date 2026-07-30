@@ -1007,7 +1007,9 @@ int link_elf(LinkState *s) {
                 if (dyn_idx[si]) {
                     if (r->type == RL_PC32 || r->type == RL_PC32_PLT ||
                         r->type == RL_GOTPCREL) {
-                        dyn_kind[si] = 1; // function reference
+                        // Only actual functions get PLT entries.
+                        if (s->syms[si].type == STT_FUNC || r->type == RL_PC32_PLT)
+                            dyn_kind[si] = 1; // function reference
                     } else if (r->type == RL_ABS64 || r->type == RL_ABS32 ||
                                r->type == RL_ABS32U) {
                         dyn_kind[si] = 2; // data reference
