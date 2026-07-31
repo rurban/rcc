@@ -36,6 +36,9 @@
 #define SHT_REL 9
 #define SHT_INIT_ARRAY 14
 #define SHT_FINI_ARRAY 15
+#define SHT_DYNSYM 11
+#define SHT_GNU_verdef 0x6ffffffd
+#define SHT_GNU_versym 0x6fffffff
 
 #define SHF_WRITE 0x1
 #define SHF_ALLOC 0x2
@@ -116,6 +119,11 @@
 #define DT_FLAGS_1 0x6ffffffb
 #define DF_BIND_NOW 0x8
 #define DF_1_NOW 1
+#define DT_VERSYM 0x6ffffff0
+#define DT_VERNEED 0x6ffffffe
+#define DT_VERNEEDNUM 0x6fffffff
+#define VER_NDX_GLOBAL 1
+#define VERSYM_HIDDEN 0x8000
 
 static uint8_t r8(const uint8_t *p) { return p[0]; }
 static uint16_t r16le(const uint8_t *p) {
@@ -770,6 +778,136 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
     return 0;
 }
 
+// Find a shared library by name in the standard system library directories.
+// Returns 0 and fills out_path on success, -1 if not found anywhere.
+static int find_shared_lib(const char *libname, char *out_path, size_t out_sz) {
+    static const char *dirs[] = {
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib/x86_64-linux-gnu",
+        "/lib64",
+        "/lib",
+        "/usr/lib",
+        NULL,
+    };
+    for (int i = 0; dirs[i]; i++) {
+        snprintf(out_path, out_sz, "%s/%s", dirs[i], libname);
+        struct stat st;
+        if (stat(out_path, &st) == 0) return 0;
+    }
+    return -1;
+}
+
+// For each of the `n` requested symbol `names`, look up the *default*
+// (non-hidden) versioned definition of that symbol in the shared library
+// at `path`, via its .dynsym / .gnu.version (versym) / .gnu.version_d
+// (verdef) sections. out[i] receives a malloc'd version-name string (e.g.
+// "GLIBC_2.3.2") for symbols the library defines with version info, or
+// NULL if the symbol isn't found or the library carries no version data
+// for it (unversioned linking is used for those, unaffected).
+//
+// This matters because several glibc functions (pthread_cond_init,
+// pthread_rwlock_init, etc.) have multiple ABI-incompatible symbol
+// versions coexisting in one library for compatibility. An unversioned
+// dynamic symbol reference can bind to whichever definition the loader's
+// hash lookup happens to find first -- which is not guaranteed to be the
+// current (default, "@@") one -- silently corrupting behavior instead of
+// failing to link. Emitting proper VERNEED/VERSYM info pins each
+// reference to the same version a normal ld-linked binary would use.
+static void lookup_lib_symbol_versions(const char *path, const char **names,
+                                       char **out, int n) {
+    for (int i = 0; i < n; i++) out[i] = NULL;
+    ElfFile ef;
+    if (elf_open(path, &ef) != 0) return;
+    if (ef.size < 64 || memcmp(ef.image, "\x7f"
+                                         "ELF",
+                               4) != 0) {
+        elf_close(&ef);
+        return;
+    }
+    uint64_t e_shoff = r64le(ef.image + 40);
+    uint16_t e_shnum = r16le(ef.image + 60);
+    if (!e_shoff || e_shnum == 0 || e_shoff + (uint64_t)e_shnum * 64 > ef.size) {
+        elf_close(&ef);
+        return;
+    }
+
+    int dynsym_idx = -1, versym_idx = -1, verdef_idx = -1;
+    for (int i = 0; i < e_shnum; i++) {
+        const uint8_t *sh = ef.image + e_shoff + (uint64_t)i * 64;
+        uint32_t sh_type = r32le(sh + 4);
+        if (sh_type == SHT_DYNSYM && dynsym_idx < 0) dynsym_idx = i;
+        else if (sh_type == SHT_GNU_versym)
+            versym_idx = i;
+        else if (sh_type == SHT_GNU_verdef)
+            verdef_idx = i;
+    }
+    if (dynsym_idx < 0 || versym_idx < 0 || verdef_idx < 0) {
+        elf_close(&ef); // no version info in this library; leave all NULL
+        return;
+    }
+
+    const uint8_t *dynsym_sh = ef.image + e_shoff + (uint64_t)dynsym_idx * 64;
+    uint64_t dynsym_off = r64le(dynsym_sh + 24);
+    uint64_t dynsym_size = r64le(dynsym_sh + 32);
+    uint64_t dynsym_link = r32le(dynsym_sh + 40);
+    uint64_t dynsym_entsz = r64le(dynsym_sh + 56);
+    uint64_t n_syms = dynsym_entsz ? dynsym_size / dynsym_entsz : 0;
+
+    const uint8_t *dynstr_sh = ef.image + e_shoff + dynsym_link * 64;
+    uint64_t dynstr_off = r64le(dynstr_sh + 24);
+
+    const uint8_t *versym_sh = ef.image + e_shoff + (uint64_t)versym_idx * 64;
+    const uint8_t *versym_data = ef.image + r64le(versym_sh + 24);
+
+    const uint8_t *verdef_sh = ef.image + e_shoff + (uint64_t)verdef_idx * 64;
+    uint64_t verdef_off = r64le(verdef_sh + 24);
+    uint32_t verdef_link = r32le(verdef_sh + 40);
+    const uint8_t *verdefstr_sh = ef.image + e_shoff + (uint64_t)verdef_link * 64;
+    uint64_t verdefstr_off = r64le(verdefstr_sh + 24);
+
+    for (uint64_t si = 0; si < n_syms; si++) {
+        const uint8_t *se = ef.image + dynsym_off + si * dynsym_entsz;
+        uint32_t nm_off = r32le(se);
+        uint16_t shndx = r16le(se + 6);
+        if (shndx == SHN_UNDEF) continue; // not defined in this library
+        uint8_t info = se[4];
+        int bind = info >> 4;
+        if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        const char *sname = (const char *)(ef.image + dynstr_off + nm_off);
+        int match = -1;
+        for (int i = 0; i < n; i++) {
+            if (!out[i] && strcmp(sname, names[i]) == 0) {
+                match = i;
+                break;
+            }
+        }
+        if (match < 0) continue;
+        uint16_t vs = r16le(versym_data + si * 2);
+        uint16_t vidx = vs & 0x7fff;
+        bool hidden = (vs & VERSYM_HIDDEN) != 0;
+        if (hidden || vidx < 2) continue; // not a default versioned definition
+        // Walk the verdef chain to find the entry defining index `vidx`.
+        uint64_t off = verdef_off;
+        for (;;) {
+            const uint8_t *vd = ef.image + off;
+            uint16_t vd_ndx = r16le(vd + 4);
+            uint16_t vd_cnt = r16le(vd + 6);
+            uint32_t vd_aux = r32le(vd + 12);
+            uint32_t vd_next = r32le(vd + 16);
+            if (vd_ndx == vidx && vd_cnt > 0) {
+                const uint8_t *vda = vd + vd_aux;
+                uint32_t vda_name = r32le(vda);
+                out[match] = strdup((const char *)(ef.image + verdefstr_off + vda_name));
+                break;
+            }
+            if (vd_next == 0) break;
+            off += vd_next;
+        }
+    }
+    elf_close(&ef);
+}
+
 static int try_load_crt(LinkState *s, const char *dir, const char *file) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", dir, file);
@@ -857,6 +995,7 @@ int link_elf(LinkState *s) {
 
     int interp_sec = -1, dynamic_sec = -1, dynsym_sec = -1, dynstr_sec = -1;
     int hash_sec = -1, plt_sec = -1, gotplt_sec = -1, relaplt_sec = -1, reladyn_sec = -1;
+    int versym_sec = -1, verneed_sec = -1, n_verneed_versions = 0;
     int *dyn_kind = NULL;
     int *plt_idx = NULL;
     int *got_map = NULL;
@@ -877,6 +1016,8 @@ int link_elf(LinkState *s) {
         gotplt_sec = link_find_or_create_sec(s, ".got.plt", true, true, false, false, false, 8);
         relaplt_sec = link_find_or_create_sec(s, ".rela.plt", true, false, false, false, false, 8);
         reladyn_sec = link_find_or_create_sec(s, ".rela.dyn", true, false, false, false, false, 8);
+        versym_sec = link_find_or_create_sec(s, ".gnu.version", true, false, false, false, false, 2);
+        verneed_sec = link_find_or_create_sec(s, ".gnu.version_r", true, false, false, false, false, 4);
 
         // Define the global offset table symbol before scanning unresolved symbols.
         int got_sym = link_find_sym(s, "_GLOBAL_OFFSET_TABLE_");
@@ -962,6 +1103,76 @@ int link_elf(LinkState *s) {
             w64le_m(ent + 16, 0);
             link_sec_append(s, dynsym_sec, ent, 24, 8);
         }
+
+        // Symbol versioning: pin each imported dynamic symbol to the same
+        // default (non-hidden) glibc version a normal ld-linked binary
+        // would bind to. Without this, unversioned lookups can silently
+        // resolve to an old ABI-incompatible compat symbol (e.g.
+        // pthread_cond_init@GLIBC_2.2.5 instead of @GLIBC_2.3.2) --
+        // functions succeed individually but disagree on internal layout.
+        char **dyn_versions = calloc((size_t)n_dyn, sizeof(char *));
+        if (n_dyn > 0) {
+            const char **names = malloc((size_t)n_dyn * sizeof(char *));
+            for (int k = 0; k < n_dyn; k++)
+                names[k] = s->syms[dyn_syms[k]].name;
+            char libc_path[512];
+            if (find_shared_lib("libc.so.6", libc_path, sizeof(libc_path)) == 0)
+                lookup_lib_symbol_versions(libc_path, names, dyn_versions, n_dyn);
+            free(names);
+        }
+        // Assign a VERSYM index (>= 2) to each distinct version name seen,
+        // in first-seen order, and record them for the Verneed/Vernaux
+        // section. dyn_verndx[k] mirrors dyn_versions[k] as an index.
+        char *verneed_names[64];
+        int *dyn_verndx = calloc((size_t)n_dyn, sizeof(int));
+        for (int k = 0; k < n_dyn; k++) {
+            if (!dyn_versions[k]) continue;
+            int found = -1;
+            for (int v = 0; v < n_verneed_versions; v++)
+                if (strcmp(verneed_names[v], dyn_versions[k]) == 0) {
+                    found = v;
+                    break;
+                }
+            if (found < 0 && n_verneed_versions < 64) {
+                found = n_verneed_versions++;
+                verneed_names[found] = dyn_versions[k];
+            }
+            dyn_verndx[k] = found >= 0 ? found + 2 : 0;
+        }
+        if (n_verneed_versions > 0) {
+            // .gnu.version: parallel to .dynsym, null entry first.
+            uint8_t vs0[2] = {0, 0};
+            link_sec_append(s, versym_sec, vs0, 2, 2);
+            for (int k = 0; k < n_dyn; k++) {
+                uint16_t vidx = dyn_verndx[k] > 0 ? (uint16_t)dyn_verndx[k] : VER_NDX_GLOBAL;
+                uint8_t vb[2];
+                w16le_m(vb, vidx);
+                link_sec_append(s, versym_sec, vb, 2, 2);
+            }
+            // .gnu.version_r: one Verneed record for libc.so.6 with one
+            // Vernaux entry per distinct required version.
+            uint8_t vnbuf[16];
+            w16le_m(vnbuf, 1); // vn_version
+            w16le_m(vnbuf + 2, (uint16_t)n_verneed_versions); // vn_cnt
+            w32le_m(vnbuf + 4, (uint32_t)libc_off); // vn_file
+            w32le_m(vnbuf + 8, 16); // vn_aux: first Vernaux right after this record
+            w32le_m(vnbuf + 12, 0); // vn_next: only one Verneed record
+            link_sec_append(s, verneed_sec, vnbuf, 16, 4);
+            for (int v = 0; v < n_verneed_versions; v++) {
+                int name_off = (int)link_sec_append(s, dynstr_sec,
+                                                    (const uint8_t *)verneed_names[v], strlen(verneed_names[v]) + 1, 1);
+                uint8_t vabuf[16];
+                w32le_m(vabuf, elf_hash(verneed_names[v])); // vna_hash
+                w16le_m(vabuf + 4, 0); // vna_flags
+                w16le_m(vabuf + 6, (uint16_t)(v + 2)); // vna_other (VERSYM index)
+                w32le_m(vabuf + 8, (uint32_t)name_off); // vna_name
+                w32le_m(vabuf + 12, v + 1 < n_verneed_versions ? 16 : 0); // vna_next
+                link_sec_append(s, verneed_sec, vabuf, 16, 4);
+            }
+        }
+        for (int k = 0; k < n_dyn; k++) free(dyn_versions[k]);
+        free(dyn_versions);
+        free(dyn_verndx);
 
         // .hash
         uint32_t nchain = (uint32_t)(n_dyn + 1);
@@ -1076,7 +1287,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4;
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3;
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1250,6 +1461,11 @@ int link_elf(LinkState *s) {
         }
         for (int k = 0; k < n_needed; k++)
             auto_dyn_ent(dyn, &dpos, DT_NEEDED, (uint64_t)needed_offs[k]);
+        if (n_verneed_versions > 0) {
+            auto_dyn_ent(dyn, &dpos, DT_VERSYM, s->secs[versym_sec].addr);
+            auto_dyn_ent(dyn, &dpos, DT_VERNEED, s->secs[verneed_sec].addr);
+            auto_dyn_ent(dyn, &dpos, DT_VERNEEDNUM, 1);
+        }
         auto_dyn_ent(dyn, &dpos, DT_FLAGS, DF_BIND_NOW);
         auto_dyn_ent(dyn, &dpos, DT_FLAGS_1, DF_1_NOW);
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);

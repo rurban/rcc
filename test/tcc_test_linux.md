@@ -5,9 +5,9 @@ Generated: July 2026
 ## Summary
 
 - **Total**: 118
-- **Passed**: 116
-- **Failed**: 2
-- **Pass Rate**: 98%
+- **Passed**: 117
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## Detailed Results
 
@@ -119,7 +119,7 @@ Generated: July 2026
 | 103_implicit_memmove        | PASS     | Output matches                |
 | 104_inline                  | MISMATCH | Output does not match .expect |
 | 105_local_extern            | PASS     | Output matches                |
-| 106_versym                  | MISMATCH | Output does not match .expect |
+| 106_versym                  | PASS     | Output matches                |
 | 107_stack_safe              | PASS     | Output matches                |
 | 108_constructor             | PASS     | Output matches                |
 | 109_float_struct_calling    | PASS     | Output matches                |
