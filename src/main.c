@@ -228,6 +228,7 @@ bool opt_g = false;
 bool opt_pie = false;
 bool opt_pic = false;
 bool opt_shared = false;
+bool opt_static = false;
 bool opt_time = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
@@ -421,8 +422,10 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-shared")) {
             opt_shared = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+        } else if (!strcmp(argv[i], "-static")) {
+            opt_static = true;
+            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
-                   !strcmp(argv[i], "-static") ||
                    !strcmp(argv[i], "-nodefaultlibs") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
@@ -888,7 +891,7 @@ int main(int argc, char **argv) {
                     link_objs[i++] = p->path;
                 uint64_t t_link = opt_time ? now_us() : 0;
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
-                                      libs, opt_pie, opt_pic, opt_shared);
+                                      libs, opt_pie, opt_pic, opt_shared, opt_static);
                 if (opt_time)
                     fprintf(stderr, "  link %s: %6lu us\n", out_path,
                             (unsigned long)(now_us() - t_link));
@@ -909,6 +912,10 @@ int main(int argc, char **argv) {
                     return 0;
                 }
                 // Native linker failed or unsupported; fall through to GCC.
+                if (getenv("RCC_LINK_DEBUG")) {
+                    fprintf(stderr, "rcc: LINK_DEBUG native linker returned %d for %s, falling back to %s\n",
+                            native, out_path, GCC);
+                }
             }
         }
         // Build the linker command line: backend compiler + output flag first

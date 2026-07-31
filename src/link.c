@@ -421,15 +421,37 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
     case RL_ARM64_ADD_LO: {
         uint32_t ins = r32le_m(p);
         uint64_t off = (S + (uint64_t)A) & 0xfff;
-        ins = (ins & 0xffc003ff) | ((uint32_t)(off >> 3) << 10);
+        // ADD (immediate) imm12 is unscaled -- unlike LDR/STR it does not
+        // divide the low-12-bit page offset by the access size.
+        ins = (ins & 0xffc003ff) | ((uint32_t)off << 10);
         w32le(p, ins);
         break;
     }
     case RL_ARM64_GOT_PG:
-    case RL_ARM64_GOT_LO:
-        // No real GOT yet; resolve directly.
-        link_reloc_apply(arch, sec, r, sym_addr, pc, image_base);
+        // No real GOT at this level (arch-generic, PLT/GOT-unaware path):
+        // resolve as if the symbol's own address were loaded, same as
+        // ADR_PG.  Callers that need real GOT indirection (dynamic ELF
+        // linking) apply GOT_PG/GOT_LO themselves via apply_dynamic_relocs
+        // instead of reaching this fallback.
+        {
+            uint32_t ins = r32le_m(p);
+            int64_t delta = (int64_t)((S + (uint64_t)A) - (pc & ~(uint64_t)0xfff));
+            int64_t imm = delta >> 12;
+            ins = (ins & 0x9f00001f) |
+                ((uint32_t)(imm & 3) << 29) |
+                ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+            w32le(p, ins);
+        }
         break;
+    case RL_ARM64_GOT_LO: {
+        // LDR (unsigned offset, 64-bit) imm12 is scaled by the 8-byte
+        // transfer size, unlike ADD's unscaled imm12.
+        uint32_t ins = r32le_m(p);
+        uint64_t off = (S + (uint64_t)A) & 0xfff;
+        ins = (ins & 0xffc003ff) | ((uint32_t)(off >> 3) << 10);
+        w32le(p, ins);
+        break;
+    }
     default:
         fprintf(stderr, "rcc: link warning: unhandled relocation %u\n", r->type);
         break;
@@ -488,14 +510,14 @@ int link_load_archive(LinkState *s, const char *name, const char *lib_paths) {
 // ---------------------------------------------------------------------------
 
 int rcc_link(const char *out_path, char **obj_paths, int n_objs,
-             const char *libs, bool opt_pie, bool opt_pic, bool opt_shared) {
+             const char *libs, bool opt_pie, bool opt_pic, bool opt_shared,
+             bool opt_static) {
     // Native linker only handles host-native ELF; fall back for cross targets.
     // On Windows/mingw hosts, .exe is the normal extension for native binaries.
 #if !defined(_WIN32) && !defined(__MINGW32__)
     size_t out_len = strlen(out_path);
     if (out_len > 4 && strcmp(out_path + out_len - 4, ".exe") == 0) return -1;
 #endif
-    (void)libs;
 #ifdef __APPLE__
     LinkArch arch = ARCH_AARCH64;
 #elif defined(__x86_64__)
@@ -507,7 +529,7 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 #endif
 
     LinkState state;
-    link_state_init(&state, arch, out_path, false, opt_pie || opt_pic, opt_shared, libs);
+    link_state_init(&state, arch, out_path, opt_static, opt_pie || opt_pic, opt_shared, libs);
 
     for (int i = 0; i < n_objs; i++) {
         if (link_load_object(&state, obj_paths[i]) != 0) {

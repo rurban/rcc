@@ -720,6 +720,10 @@ static void pe_layout_sections(LinkState *s, uint64_t base) {
 }
 
 int link_pe(LinkState *s) {
+    // Static libgcc/libmingwex linking and DLL (.dll/-shared) output are not
+    // implemented -- only a dynamically-linked .exe against system DLLs via
+    // the synthesized CRT stub.  Fall back to the mingw toolchain for both.
+    if (s->opt_static || s->opt_shared) return -1;
     // Create standard sections
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 16);

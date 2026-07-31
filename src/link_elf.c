@@ -82,6 +82,7 @@
 
 #define R_AARCH64_ABS64 257
 #define R_AARCH64_ABS32 258
+#define R_AARCH64_PREL32 261
 #define R_AARCH64_CALL26 283
 #define R_AARCH64_JUMP26 282
 #define R_AARCH64_ADR_PREL_PG_HI21 275
@@ -94,6 +95,9 @@
 #define R_AARCH64_LD64_GOT_LO12_NC 312
 #define R_AARCH64_TLSLE_ADD_TPREL_HI12 549
 #define R_AARCH64_TLSLE_ADD_TPREL_LO12 550
+#define R_AARCH64_GLOB_DAT 1025
+#define R_AARCH64_JUMP_SLOT 1026
+#define R_AARCH64_RELATIVE 1027
 
 // Dynamic tags
 #define DT_NULL 0
@@ -232,6 +236,7 @@ static int map_reloc_type(uint32_t elf_type, LinkArch arch) {
         switch (elf_type) {
         case R_AARCH64_ABS64: return RL_ABS64;
         case R_AARCH64_ABS32: return RL_ABS32U;
+        case R_AARCH64_PREL32: return RL_PC32;
         case R_AARCH64_CALL26:
         case R_AARCH64_JUMP26: return RL_ARM64_B26;
         case R_AARCH64_ADR_PREL_PG_HI21: return RL_ARM64_ADR_PG;
@@ -438,7 +443,32 @@ static int elf_load_object(LinkState *s, const char *path) {
                 else
                     out_sec = -1;
                 (void)other;
-                if (bind == STB_LOCAL && (stype == STT_SECTION || *name == '\0')) {
+                if (bind == STB_LOCAL && stype == STT_SECTION) {
+                    // Section symbols are unnamed but ARE valid relocation
+                    // targets: "this input section's base address", with
+                    // the actual offset carried by the relocation's own
+                    // addend (e.g. gcc-emitted crt startup objects
+                    // reference internal statics like "__wrap_main" this
+                    // way instead of by name). Map to the merged output
+                    // section at its base offset instead of dropping the
+                    // symbol -- silently skipping it left any relocation
+                    // against it unpatched, corrupting local address
+                    // computations that depend on it (e.g. AArch64 crt1.o's
+                    // ADRP+ADD sequence loading &__wrap_main to pass to
+                    // __libc_start_main).
+                    int sym_idx = link_add_sym(s, "", out_sec,
+                                               out_sec >= 0 ? sec_base_off[shndx] : 0,
+                                               0, 0, 0, s->n_objs);
+                    if (sym_idx < 0) {
+                        free(sec_map);
+                        free(sym_map);
+                        elf_close(&ef);
+                        return -1;
+                    }
+                    sym_map[k] = sym_idx;
+                    continue;
+                }
+                if (bind == STB_LOCAL && *name == '\0') {
                     sym_map[k] = -1;
                     continue;
                 }
@@ -768,6 +798,108 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
                 w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)S));
                 break;
             }
+            case RL_ARM64_TPREL_HI:
+            case RL_ARM64_TPREL_LO: {
+                // AArch64 local-exec TLS: unlike x86-64's negative,
+                // TP-relative offset, AArch64 places the TLS block AFTER
+                // a fixed 16-byte TCB header, so the offset is POSITIVE:
+                // addr = TP + 16 + (var's offset within the merged block).
+                LinkSym *tsym = &s->syms[r->sym];
+                uint64_t tprel;
+                if (tsym->sec >= 0 && s->secs[tsym->sec].is_tls) {
+                    uint64_t tbase = 0;
+                    for (int k = 0; k < s->n_secs; k++) {
+                        if (s->secs[k].is_tls && s->secs[k].alloc) {
+                            if (tbase == 0) tbase = s->secs[k].addr;
+                        }
+                    }
+                    uint64_t offset = (s->secs[tsym->sec].addr - tbase) + tsym->value;
+                    tprel = 16 + offset + (uint64_t)A;
+                } else {
+                    tprel = symbol_address(s, r->sym) + (uint64_t)A;
+                }
+                uint32_t ins = r32le(p);
+                uint32_t imm12 = r->type == RL_ARM64_TPREL_HI
+                    ? (uint32_t)((tprel >> 12) & 0xfff)
+                    : (uint32_t)(tprel & 0xfff);
+                ins = (ins & 0xffc003ff) | (imm12 << 10);
+                w32le_m(p, ins);
+                break;
+            }
+            case RL_ARM64_B26: {
+                if (dyn_idx && dyn_idx[r->sym]) {
+                    if (!plt_idx || plt_idx[r->sym] < 0) {
+                        return -1;
+                    }
+                    S = plt_addr + 16 + (uint64_t)plt_idx[r->sym] * 16;
+                } else {
+                    S = symbol_address(s, r->sym);
+                }
+                uint32_t ins = r32le(p);
+                int64_t delta = (int64_t)(S + (uint64_t)A - pc);
+                delta >>= 2;
+                ins = (ins & ~0x03ffffffu) | ((uint32_t)(delta & 0x03ffffffu));
+                w32le_m(p, ins);
+                break;
+            }
+            case RL_ARM64_ADR_PG:
+                // RCC's codegen always computes external symbol addresses
+                // directly (ADRP+ADD), never via GOT indirection on Linux.
+                // That can't represent a true dynamic (undefined-until-load)
+                // symbol's address, so fall back, matching RL_ABS64/32/32U.
+                if (dyn_idx && dyn_idx[r->sym]) {
+                    return -1;
+                }
+                S = symbol_address(s, r->sym);
+                {
+                    uint32_t ins = r32le(p);
+                    int64_t delta = (int64_t)((S + (uint64_t)A) - (pc & ~(uint64_t)0xfff));
+                    int64_t imm = delta >> 12;
+                    ins = (ins & 0x9f00001f) |
+                        ((uint32_t)(imm & 3) << 29) |
+                        ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+                    w32le_m(p, ins);
+                }
+                break;
+            case RL_ARM64_ADD_LO:
+                if (dyn_idx && dyn_idx[r->sym]) {
+                    return -1;
+                }
+                S = symbol_address(s, r->sym);
+                {
+                    uint32_t ins = r32le(p);
+                    uint64_t off = (S + (uint64_t)A) & 0xfff;
+                    // ADD imm12 is unscaled, unlike LDR/STR's imm12.
+                    ins = (ins & 0xffc003ff) | ((uint32_t)off << 10);
+                    w32le_m(p, ins);
+                }
+                break;
+            case RL_ARM64_GOT_PG:
+            case RL_ARM64_GOT_LO: {
+                if (!got_map) {
+                    fprintf(stderr, "rcc: link: GOT-relative reloc without GOT\n");
+                    return -1;
+                }
+                int slot = got_map[r->sym];
+                if (slot < 0) {
+                    fprintf(stderr, "rcc: link: no GOT slot for '%s'\n", sym->name);
+                    return -1;
+                }
+                S = got_addr + (uint64_t)slot * 8;
+                uint32_t ins = r32le(p);
+                if (r->type == RL_ARM64_GOT_PG) {
+                    int64_t delta = (int64_t)((S + (uint64_t)A) - (pc & ~(uint64_t)0xfff));
+                    int64_t imm = delta >> 12;
+                    ins = (ins & 0x9f00001f) |
+                        ((uint32_t)(imm & 3) << 29) |
+                        ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+                } else {
+                    uint64_t off = (S + (uint64_t)A) & 0xfff;
+                    ins = (ins & 0xffc003ff) | ((uint32_t)(off >> 3) << 10);
+                }
+                w32le_m(p, ins);
+                break;
+            }
             default:
                 // Let the shared backend handle the rest (ARM64, etc.)
                 link_reloc_apply(s->arch, sec, r, symbol_address(s, r->sym), pc, 0);
@@ -917,13 +1049,21 @@ static int try_load_crt(LinkState *s, const char *dir, const char *file) {
 }
 
 static int load_crt_files(LinkState *s) {
-    static const char *dirs[] = {
+    static const char *dirs_x86_64[] = {
         "/usr/lib64",
         "/usr/lib/x86_64-linux-gnu",
         "/lib/x86_64-linux-gnu",
         "/lib64",
         NULL,
     };
+    static const char *dirs_aarch64[] = {
+        "/usr/lib64",
+        "/usr/lib/aarch64-linux-gnu",
+        "/lib/aarch64-linux-gnu",
+        "/lib64",
+        NULL,
+    };
+    const char **dirs = s->arch == ARCH_AARCH64 ? dirs_aarch64 : dirs_x86_64;
     const char *crt_dir = NULL;
     for (int i = 0; dirs[i]; i++) {
         if (try_load_crt(s, dirs[i], "crt1.o") == 0) {
@@ -947,6 +1087,10 @@ static int load_crt_files(LinkState *s) {
 }
 
 int link_elf(LinkState *s) {
+    // Shared-object (.so) output is not implemented: no ET_DYN/SONAME/PT_DYNAMIC
+    // "is-a-library" support.  Fall back to the external linker rather than
+    // silently emitting a mislabeled ET_EXEC file.
+    if (s->opt_shared) return -1;
     if (resolve_archives(s) != 0) return -1;
 
     // Ensure required sections exist.
@@ -955,8 +1099,8 @@ int link_elf(LinkState *s) {
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
 
-    // Load C runtime startup files on Linux x86_64 when not linking statically.
-    if (!s->opt_static && s->arch == ARCH_X86_64) {
+    // Load C runtime startup files when not linking statically.
+    if (!s->opt_static) {
         if (load_crt_files(s) != 0) return -1;
     }
 
@@ -985,7 +1129,7 @@ int link_elf(LinkState *s) {
         }
     }
 
-    bool do_dynamic = n_dyn > 0 && !s->opt_static && s->arch == ARCH_X86_64;
+    bool do_dynamic = n_dyn > 0 && !s->opt_static;
     if (n_dyn > 0 && !do_dynamic) {
         // Unsupported dynamic linking configuration; fall back.
         free(dyn_syms);
@@ -1042,7 +1186,8 @@ int link_elf(LinkState *s) {
         }
 
         // .interp
-        const char *interp = "/lib64/ld-linux-x86-64.so.2";
+        const char *interp = s->arch == ARCH_AARCH64 ? "/lib/ld-linux-aarch64.so.1"
+                                                     : "/lib64/ld-linux-x86-64.so.2";
         link_sec_append(s, interp_sec, (const uint8_t *)interp, strlen(interp) + 1, 1);
 
         // .dynstr: start with a null byte, then needed library names.
@@ -1222,15 +1367,18 @@ int link_elf(LinkState *s) {
                 int si = r->sym;
                 if (dyn_idx[si]) {
                     if (r->type == RL_PC32 || r->type == RL_PC32_PLT ||
-                        r->type == RL_GOTPCREL) {
+                        r->type == RL_GOTPCREL || r->type == RL_ARM64_B26 ||
+                        r->type == RL_ARM64_GOT_PG) {
                         // Only actual functions get PLT entries.
-                        if (s->syms[si].type == STT_FUNC || r->type == RL_PC32_PLT)
+                        if (s->syms[si].type == STT_FUNC || r->type == RL_PC32_PLT ||
+                            r->type == RL_ARM64_B26)
                             dyn_kind[si] = 1; // function reference
                     } else if (r->type == RL_ABS64 || r->type == RL_ABS32 ||
                                r->type == RL_ABS32U) {
                         dyn_kind[si] = 2; // data reference
                     }
-                } else if (r->type == RL_GOTPCREL && got_map[si] < 0) {
+                } else if ((r->type == RL_GOTPCREL || r->type == RL_ARM64_GOT_PG) &&
+                           got_map[si] < 0) {
                     // Defined or weak symbol referenced through GOT.
                     got_map[si] = 3 + n_dyn; // placeholder; counted below
                 }
@@ -1244,7 +1392,8 @@ int link_elf(LinkState *s) {
             for (int j = 0; j < sec->n_relocs; j++) {
                 LinkReloc *r = &sec->relocs[j];
                 int si = r->sym;
-                if (!dyn_idx[si] && r->type == RL_GOTPCREL && got_map[si] == 3 + n_dyn) {
+                if (!dyn_idx[si] && (r->type == RL_GOTPCREL || r->type == RL_ARM64_GOT_PG) &&
+                    got_map[si] == 3 + n_dyn) {
                     got_map[si] = 3 + n_dyn + n_extra_got;
                     n_extra_got++;
                 }
@@ -1366,19 +1515,37 @@ int link_elf(LinkState *s) {
         }
 
         // PLT entries.
-        // PLT0: push GOTPLT+8(%rip); jmp *GOTPLT+16(%rip); nop
-        int32_t disp_push = (int32_t)((got_addr + 8) - (plt_addr + 6));
-        int32_t disp_jmp0 = (int32_t)((got_addr + 16) - (plt_addr + 12));
-        plt->data[0] = 0xff;
-        plt->data[1] = 0x35;
-        w32le_m(plt->data + 2, (uint32_t)disp_push);
-        plt->data[6] = 0xff;
-        plt->data[7] = 0x25;
-        w32le_m(plt->data + 8, (uint32_t)disp_jmp0);
-        plt->data[12] = 0x0f;
-        plt->data[13] = 0x1f;
-        plt->data[14] = 0x40;
-        plt->data[15] = 0x00;
+        if (s->arch == ARCH_AARCH64) {
+            // PLT0 (functionally dead: DF_BIND_NOW means ld.so resolves all
+            // GOT.PLT slots eagerly before _start runs, so this is never
+            // actually executed -- but keep a plausible skeleton).
+            //   stp x16, x30, [sp, #-16]!
+            //   adrp x16, GOT+16
+            //   ldr x17, [x16, #:lo12:GOT+16]
+            //   br x17
+            w32le_m(plt->data + 0, 0xa9bf7bf0u);
+            uint64_t got2_addr = got_addr + 16;
+            uint64_t plt0_pc = plt_addr;
+            int64_t d0 = (int64_t)(got2_addr - (plt0_pc & ~(uint64_t)0xfff));
+            int64_t imm0 = d0 >> 12;
+            w32le_m(plt->data + 4, 0x90000010u | ((uint32_t)(imm0 & 3) << 29) | ((uint32_t)((imm0 >> 2) & 0x7ffff) << 5));
+            w32le_m(plt->data + 8, 0xf9400211u | (((uint32_t)(got2_addr & 0xfff) >> 3) << 10));
+            w32le_m(plt->data + 12, 0xd61f0220u);
+        } else {
+            // PLT0: push GOTPLT+8(%rip); jmp *GOTPLT+16(%rip); nop
+            int32_t disp_push = (int32_t)((got_addr + 8) - (plt_addr + 6));
+            int32_t disp_jmp0 = (int32_t)((got_addr + 16) - (plt_addr + 12));
+            plt->data[0] = 0xff;
+            plt->data[1] = 0x35;
+            w32le_m(plt->data + 2, (uint32_t)disp_push);
+            plt->data[6] = 0xff;
+            plt->data[7] = 0x25;
+            w32le_m(plt->data + 8, (uint32_t)disp_jmp0);
+            plt->data[12] = 0x0f;
+            plt->data[13] = 0x1f;
+            plt->data[14] = 0x40;
+            plt->data[15] = 0x00;
+        }
 
         int relaplt_pos = 0;
         int reladyn_pos = 0;
@@ -1386,30 +1553,44 @@ int link_elf(LinkState *s) {
             int si = dyn_syms[k];
             int dynsym_index = k + 1;
             int got_slot = got_map[si];
+            uint64_t slot_addr = got_addr + (uint64_t)got_slot * 8;
             if (plt_idx[si] >= 0) {
                 int fidx = plt_idx[si];
                 uint64_t entry_addr = plt_addr + 16 + (uint64_t)fidx * 16;
-                int32_t disp_got = (int32_t)((got_addr + (uint64_t)got_slot * 8) - (entry_addr + 6));
-                int32_t disp_plt0 = (int32_t)(plt_addr - (entry_addr + 11));
                 uint8_t *p = plt->data + 16 + (size_t)fidx * 16;
-                p[0] = 0xff;
-                p[1] = 0x25;
-                w32le_m(p + 2, (uint32_t)disp_got);
-                p[6] = 0x68;
-                w32le_m(p + 7, (uint32_t)fidx);
-                p[11] = 0xe9;
-                w32le_m(p + 12, (uint32_t)disp_plt0);
+                if (s->arch == ARCH_AARCH64) {
+                    // adrp x16, GOT[slot]; ldr x17, [x16, #lo12]; add x16, x16, #lo12; br x17
+                    int64_t d = (int64_t)(slot_addr - (entry_addr & ~(uint64_t)0xfff));
+                    int64_t imm = d >> 12;
+                    w32le_m(p + 0, 0x90000010u | ((uint32_t)(imm & 3) << 29) | ((uint32_t)((imm >> 2) & 0x7ffff) << 5));
+                    uint32_t lo12 = (uint32_t)(slot_addr & 0xfff);
+                    w32le_m(p + 4, 0xf9400211u | ((lo12 >> 3) << 10));
+                    w32le_m(p + 8, 0x91000210u | (lo12 << 10));
+                    w32le_m(p + 12, 0xd61f0220u);
+                } else {
+                    int32_t disp_got = (int32_t)(slot_addr - (entry_addr + 6));
+                    int32_t disp_plt0 = (int32_t)(plt_addr - (entry_addr + 11));
+                    p[0] = 0xff;
+                    p[1] = 0x25;
+                    w32le_m(p + 2, (uint32_t)disp_got);
+                    p[6] = 0x68;
+                    w32le_m(p + 7, (uint32_t)fidx);
+                    p[11] = 0xe9;
+                    w32le_m(p + 12, (uint32_t)disp_plt0);
+                }
 
                 uint8_t *rp = relaplt->data + (size_t)relaplt_pos * 24;
-                w64le_m(rp, got_addr + (uint64_t)got_slot * 8);
-                w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | R_X86_64_JUMP_SLOT);
+                w64le_m(rp, slot_addr);
+                uint32_t jump_slot = s->arch == ARCH_AARCH64 ? R_AARCH64_JUMP_SLOT : R_X86_64_JUMP_SLOT;
+                w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | jump_slot);
                 w64le_m(rp + 16, 0);
                 relaplt_pos++;
             } else {
                 // GLOB_DAT relocation for data-like dynamic symbols.
                 uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
-                w64le_m(rp, got_addr + (uint64_t)got_slot * 8);
-                w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | R_X86_64_GLOB_DAT);
+                w64le_m(rp, slot_addr);
+                uint32_t glob_dat = s->arch == ARCH_AARCH64 ? R_AARCH64_GLOB_DAT : R_X86_64_GLOB_DAT;
+                w64le_m(rp + 8, ((uint64_t)dynsym_index << 32) | glob_dat);
                 w64le_m(rp + 16, 0);
                 reladyn_pos++;
             }

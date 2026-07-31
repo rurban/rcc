@@ -22,7 +22,8 @@
 // Returns 0 on success, non-zero on error (an error message is printed to
 // stderr).
 int rcc_link(const char *out_path, char **obj_paths, int n_objs,
-             const char *libs, bool opt_pie, bool opt_pic, bool opt_shared);
+             const char *libs, bool opt_pie, bool opt_pic, bool opt_shared,
+             bool opt_static);
 
 // ---------------------------------------------------------------------------
 // Shared relocation kinds used by all backends internally.

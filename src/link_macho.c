@@ -349,6 +349,10 @@ static uint64_t mo_symbol_address(LinkState *s, int idx) {
 // ---------------------------------------------------------------------------
 
 int link_macho(LinkState *s) {
+    // Static linking and dylib (.dylib/-shared) output are not implemented --
+    // only a dynamically-linked Mach-O executable (MH_EXECUTE) against
+    // system dylibs.  Fall back to the external linker for both.
+    if (s->opt_static || s->opt_shared) return -1;
     // Create standard sections
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
