@@ -52,6 +52,16 @@ jobs:
             mingw-w64-x86_64-gdb
             make
 
+      - name: Disable Windows Error Reporting UI
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Prevent a crashing test binary from hanging the job on a WER
+          # "program has stopped working" dialog with nobody to dismiss it
+          # -- force crashes to fail fast with their real exit code instead.
+          reg add "HKCU\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v DontShowUI /t REG_DWORD /d 1 /f
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting" /v Disabled /t REG_DWORD /d 1 /f
+
       - name: Build and install TinyCC (Windows)
         if: matrix.os == 'windows-latest'
         shell: msys2 {0}
@@ -92,10 +102,10 @@ jobs:
         run: |
           printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
           ./rcc.exe -o /tmp/smoke.exe /tmp/smoke.c
-          cmd //c "$(cygpath -w /tmp/smoke.exe)"
+          timeout 20 cmd //c "$(cygpath -w /tmp/smoke.exe)"
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
           ./rcc.exe -o /tmp/smoke2.exe /tmp/smoke2.c
-          cmd //c "$(cygpath -w /tmp/smoke2.exe)"
+          timeout 20 cmd //c "$(cygpath -w /tmp/smoke2.exe)"
           rm -f /tmp/smoke.exe /tmp/smoke.c /tmp/smoke2.exe /tmp/smoke2.c
 
       - name: Run tests
