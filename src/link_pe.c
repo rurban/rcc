@@ -907,8 +907,13 @@ int link_pe(LinkState *s) {
     pe_w32le(f, hdr_file_size); // SizeOfHeaders
     pe_w32le(f, 0); // CheckSum
     pe_w16le(f, IMAGE_SUBSYSTEM_WINDOWS_CUI);
-    uint16_t dll_flags = IMAGE_DLLCHARACTERISTICS_NX_COMPAT |
-        IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+    // We load at a fixed preferred base and never emit a .reloc (base
+    // relocation) section, so DYNAMIC_BASE must NOT be claimed here:
+    // under system-enforced Mandatory ASLR, an image claiming ASLR
+    // support with no relocation data to back it up can be rejected
+    // outright by the loader ("not a valid application for this OS
+    // platform") instead of just silently loading at the fixed address.
+    uint16_t dll_flags = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
     pe_w16le(f, dll_flags);
     pe_w64le(f, 0x100000);
     pe_w64le(f, 0x1000); // stack
