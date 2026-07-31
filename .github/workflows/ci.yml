@@ -96,17 +96,25 @@ jobs:
           /tmp/smoke2
           rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
 
-      - name: Smoke test (Windows)
+      - name: Smoke test (Windows) - compile
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
-          ./rcc.exe -o /tmp/smoke.exe /tmp/smoke.c
-          timeout 20 cmd //c "$(cygpath -w /tmp/smoke.exe)"
-          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
-          ./rcc.exe -o /tmp/smoke2.exe /tmp/smoke2.c
-          timeout 20 cmd //c "$(cygpath -w /tmp/smoke2.exe)"
-          rm -f /tmp/smoke.exe /tmp/smoke.c /tmp/smoke2.exe /tmp/smoke2.c
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > smoke.c
+          ./rcc.exe -o smoke.exe smoke.c
+          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > smoke2.c
+          ./rcc.exe -o smoke2.exe smoke2.c
+
+      - name: Smoke test (Windows) - run
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          & .\smoke.exe
+          if ($LASTEXITCODE -ne 0) { throw "smoke.exe failed with exit code $LASTEXITCODE" }
+          & .\smoke2.exe
+          if ($LASTEXITCODE -ne 0) { throw "smoke2.exe failed with exit code $LASTEXITCODE" }
+          Remove-Item -Force smoke.exe, smoke.c, smoke2.exe, smoke2.c
 
       - name: Run tests
         id: tests
