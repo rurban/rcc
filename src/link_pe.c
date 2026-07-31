@@ -32,17 +32,19 @@
 #define IMAGE_REL_AMD64_REL32     4
 #define IMAGE_REL_AMD64_REL32_1   5
 #define IMAGE_REL_AMD64_REL32_2   6
-#define IMAGE_REL_AMD64_REL32_4   7
-#define IMAGE_REL_AMD64_REL32_5   8
+#define IMAGE_REL_AMD64_REL32_3   7
+#define IMAGE_REL_AMD64_REL32_4   8
+#define IMAGE_REL_AMD64_REL32_5   9
 #define IMAGE_REL_AMD64_SECTION   10
 #define IMAGE_REL_AMD64_SECREL    11
 
-// COFF relocation types (ARM64)
-#define IMAGE_REL_ARM64_ADDR64           1
-#define IMAGE_REL_ARM64_ADDR32           2
+// COFF relocation types (ARM64) — values per Microsoft PE/COFF spec
+#define IMAGE_REL_ARM64_ADDR32           1
+#define IMAGE_REL_ARM64_ADDR32NB         2
 #define IMAGE_REL_ARM64_BRANCH26         3
 #define IMAGE_REL_ARM64_PAGEBASE_REL21   4
-#define IMAGE_REL_ARM64_PAGEOFFSET_12A   5
+#define IMAGE_REL_ARM64_PAGEOFFSET_12A   6
+#define IMAGE_REL_ARM64_ADDR64           14
 
 // Section flags
 #define IMAGE_SCN_CNT_CODE               0x00000020
@@ -81,6 +83,16 @@ static uint16_t pe_r16le(const uint8_t *p) {
 static uint32_t pe_r32le(const uint8_t *p) {
     return (uint32_t)pe_r16le(p) | ((uint32_t)pe_r16le(p + 2) << 16);
 }
+static void pe_w32le_m(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+static void pe_w64le_m(uint8_t *p, uint64_t v) {
+    pe_w32le_m(p, (uint32_t)v);
+    pe_w32le_m(p + 4, (uint32_t)(v >> 32));
+}
 static void pe_w16le(FILE *f, uint16_t v) {
     fputc(v & 0xFF, f);
     fputc(v >> 8, f);
@@ -117,14 +129,17 @@ static int pe_map_reloc(uint16_t coff_type, uint16_t machine) {
         case IMAGE_REL_AMD64_REL32: return RL_PC32;
         case IMAGE_REL_AMD64_REL32_1: return RL_PC32;
         case IMAGE_REL_AMD64_REL32_2: return RL_PC32;
+        case IMAGE_REL_AMD64_REL32_3: return RL_PC32;
         case IMAGE_REL_AMD64_REL32_4: return RL_PC32;
         case IMAGE_REL_AMD64_REL32_5: return RL_PC32;
+        case IMAGE_REL_AMD64_ADDR32NB: return RL_ADDR32NB;
         default: return -1;
         }
     } else if (machine == IMAGE_FILE_MACHINE_ARM64) {
         switch (coff_type) {
         case IMAGE_REL_ARM64_ADDR64: return RL_ABS64;
         case IMAGE_REL_ARM64_ADDR32: return RL_ABS32;
+        case IMAGE_REL_ARM64_ADDR32NB: return RL_ADDR32NB;
         case IMAGE_REL_ARM64_BRANCH26: return RL_ARM64_B26;
         case IMAGE_REL_ARM64_PAGEBASE_REL21: return RL_ARM64_ADR_PG;
         case IMAGE_REL_ARM64_PAGEOFFSET_12A: return RL_ARM64_ADD_LO;
@@ -132,6 +147,30 @@ static int pe_map_reloc(uint16_t coff_type, uint16_t machine) {
         }
     }
     return -1;
+}
+
+// COFF's REL32 family uses an implicit addend derived from the relocation
+// type itself (unlike ELF's RELA, which carries an explicit addend field):
+// IMAGE_REL_AMD64_REL32 means "value relative to the byte 4 past the
+// relocation site" (the common case: a 4-byte disp32 field is the last
+// operand bytes of the instruction). The _1.._5 variants exist for
+// instructions with 1-5 more operand bytes trailing the disp32 (e.g. an
+// immediate operand after a RIP-relative memory operand), shifting the
+// reference point further past the relocation site. Our own PC32 apply
+// path computes S - pc + A with pc = address of the disp32 field itself,
+// so the negative distance must be supplied as the addend here.
+static int64_t pe_pc32_addend(uint16_t coff_type, uint16_t machine) {
+    if (machine == IMAGE_FILE_MACHINE_AMD64) {
+        switch (coff_type) {
+        case IMAGE_REL_AMD64_REL32: return -4;
+        case IMAGE_REL_AMD64_REL32_1: return -5;
+        case IMAGE_REL_AMD64_REL32_2: return -6;
+        case IMAGE_REL_AMD64_REL32_3: return -7;
+        case IMAGE_REL_AMD64_REL32_4: return -8;
+        case IMAGE_REL_AMD64_REL32_5: return -9;
+        }
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +243,7 @@ int link_load_object(LinkState *s, const char *path) {
         for (int j = 7; j >= 0 && (sname[j] == ' ' || sname[j] == '\0'); j--)
             sname[j] = '\0';
 
+        uint32_t virtual_size = pe_r32le(shdr + 8);
         uint32_t raw_size = pe_r32le(shdr + 16);
         uint32_t raw_offset = pe_r32le(shdr + 20);
         uint32_t n_relocs = pe_r16le(shdr + 32);
@@ -234,10 +274,10 @@ int link_load_object(LinkState *s, const char *path) {
                     continue;
                 }
                 link_add_reloc(s, out_idx, off + r_va, (uint32_t)rl,
-                               (int)r_sym, 0);
+                               (int)r_sym, pe_pc32_addend(r_type, machine));
             }
-        } else if (is_bss && raw_size > 0) {
-            s->secs[out_idx].len += raw_size;
+        } else if (is_bss && virtual_size > 0) {
+            s->secs[out_idx].len += virtual_size;
         }
     }
 
@@ -325,8 +365,359 @@ static uint64_t pe_symbol_address(LinkState *s, int idx) {
 }
 
 // ---------------------------------------------------------------------------
+// DLL import resolution and .idata (import table) generation
+// ---------------------------------------------------------------------------
+//
+// Our own COFF codegen emits a plain IMAGE_REL_AMD64_REL32 direct call to
+// the imported symbol's name (e.g. "printf"), exactly like a normal mingw
+// object file. Standard mingw import libraries satisfy that by providing a
+// tiny code thunk *named* "printf" that does `jmp qword ptr [rip+disp]`
+// through an Import Address Table (IAT) slot the loader fills in at load
+// time. We synthesize the same thing directly: for each undefined strong
+// symbol left after loading all objects, find which system DLL exports it,
+// emit one .idata import descriptor per needed DLL, and redefine the
+// symbol to point at a matching 6-byte trampoline in .text.
+
+// Standard system DLLs searched (in order) for undefined symbols -- mirrors
+// the default `-l` list mingw-w64-gcc links a normal executable against
+// (msvcrt for the C runtime, then the core Win32 API libraries).
+static const char *pe_default_dlls[] = {
+    "msvcrt.dll",
+    "kernel32.dll",
+    "advapi32.dll",
+    "user32.dll",
+    "shell32.dll",
+    NULL,
+};
+
+static uint32_t pe_rva_to_off(const uint8_t *img, uint32_t sec_hdr_off,
+                              uint16_t n_secs, uint32_t rva) {
+    for (uint16_t i = 0; i < n_secs; i++) {
+        const uint8_t *sh = img + sec_hdr_off + (uint32_t)i * 40;
+        uint32_t vsize = pe_r32le(sh + 8);
+        uint32_t vaddr = pe_r32le(sh + 12);
+        uint32_t rawsize = pe_r32le(sh + 16);
+        uint32_t rawoff = pe_r32le(sh + 20);
+        uint32_t span = vsize > rawsize ? vsize : rawsize;
+        if (rva >= vaddr && rva < vaddr + span) return rawoff + (rva - vaddr);
+    }
+    return 0;
+}
+
+// Check which of `names[0..n)` are exported by the DLL at `path`, setting
+// out[i] = true for each match found. Returns 0 if the file could be
+// opened and parsed as a PE image (whether or not anything matched), -1 if
+// it couldn't be opened/parsed at all (caller tries the next DLL).
+static int pe_dll_check_exports(const char *path, const char **names, bool *out, int n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 64) {
+        fclose(f);
+        return -1;
+    }
+    uint8_t *img = malloc((size_t)sz);
+    if (!img || fread(img, 1, (size_t)sz, f) != (size_t)sz) {
+        free(img);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    int rc = -1;
+    if (img[0] == 'M' && img[1] == 'Z') {
+        uint32_t pe_off = pe_r32le(img + 0x3c);
+        if (pe_off + 24 < (uint32_t)sz && !memcmp(img + pe_off, "PE\0\0", 4)) {
+            uint16_t n_secs = pe_r16le(img + pe_off + 6);
+            uint16_t opthdr_size = pe_r16le(img + pe_off + 20);
+            uint32_t opt_off = pe_off + 24;
+            uint16_t magic = pe_r16le(img + opt_off);
+            uint32_t datadir_off = opt_off + (magic == PE32PLUS_MAGIC ? 112 : 96);
+            uint32_t exp_rva = pe_r32le(img + datadir_off);
+            uint32_t sec_hdr_off = opt_off + opthdr_size;
+            rc = 0;
+            if (exp_rva) {
+                uint32_t exp_off = pe_rva_to_off(img, sec_hdr_off, n_secs, exp_rva);
+                if (exp_off && exp_off + 40 <= (uint32_t)sz) {
+                    uint32_t n_names = pe_r32le(img + exp_off + 24);
+                    uint32_t names_rva = pe_r32le(img + exp_off + 32);
+                    uint32_t names_off = pe_rva_to_off(img, sec_hdr_off, n_secs, names_rva);
+                    for (uint32_t k = 0; k < n_names && names_off; k++) {
+                        uint32_t name_rva = pe_r32le(img + names_off + k * 4);
+                        uint32_t name_off = pe_rva_to_off(img, sec_hdr_off, n_secs, name_rva);
+                        if (!name_off || name_off >= (uint32_t)sz) continue;
+                        const char *ename = (const char *)(img + name_off);
+                        for (int i = 0; i < n; i++)
+                            if (!out[i] && !strcmp(ename, names[i])) out[i] = true;
+                    }
+                }
+            }
+        }
+    }
+    free(img);
+    return rc;
+}
+
+// Locate a system DLL by name. Only meaningful when this file is itself
+// compiled as a Windows binary (the only configuration link_pe() ever runs
+// in -- see rcc_link()'s host dispatch), so system DLLs live under
+// %SystemRoot%\System32.
+static int pe_find_system_dll(const char *name, char *out_path, size_t out_sz) {
+#ifdef _WIN32
+    const char *root = getenv("SystemRoot");
+    if (!root) root = getenv("windir");
+    if (!root) root = "C:\\Windows";
+    snprintf(out_path, out_sz, "%s\\System32\\%s", root, name);
+    struct stat st;
+    if (stat(out_path, &st) == 0) return 0;
+#else
+    (void)name;
+    (void)out_path;
+    (void)out_sz;
+#endif
+    return -1;
+}
+
+// A single 4-byte RVA field written into the .idata section's own byte
+// buffer at build time as an offset-within-section placeholder; patched to
+// an absolute RVA once the section's final address is known post-layout.
+typedef struct {
+    size_t off;
+} PePatch;
+
+// Scan for undefined strong (non-weak) symbols, resolve each against the
+// system DLLs, and build a complete .idata import table plus one .text
+// trampoline per resolved import. Returns 0 on success (including the
+// trivial case of zero imports needed), -1 if any strong symbol could not
+// be resolved against any known DLL (caller falls back to GCC's linker).
+static int build_pe_imports(LinkState *s, int *idata_sec_out,
+                            PePatch **patches_out, int *n_patches_out,
+                            uint64_t *iat_off_out, uint64_t *iat_size_out,
+                            uint64_t *import_dir_size_out) {
+    *idata_sec_out = -1;
+    *patches_out = NULL;
+    *n_patches_out = 0;
+    *iat_off_out = 0;
+    *iat_size_out = 0;
+    *import_dir_size_out = 0;
+    // Collect distinct undefined strong symbol names.
+    int n_undef = 0, cap_undef = 0;
+    int *undef_idx = NULL;
+    for (int i = 0; i < s->n_syms; i++) {
+        LinkSym *sym = &s->syms[i];
+        if (sym->sec >= 0 || sym->bind == 2 /* weak */ || !sym->name[0]) continue;
+        if (n_undef == cap_undef) {
+            cap_undef = cap_undef ? cap_undef * 2 : 16;
+            undef_idx = realloc(undef_idx, (size_t)cap_undef * sizeof(int));
+        }
+        undef_idx[n_undef++] = i;
+    }
+    if (n_undef == 0) {
+        free(undef_idx);
+        return 0;
+    }
+
+    const char **names = malloc((size_t)n_undef * sizeof(char *));
+    for (int i = 0; i < n_undef; i++) names[i] = s->syms[undef_idx[i]].name;
+
+    // For each undefined symbol, which pe_default_dlls[] index resolves it
+    // (-1 = unresolved).
+    int *owner_dll = malloc((size_t)n_undef * sizeof(int));
+    for (int i = 0; i < n_undef; i++) owner_dll[i] = -1;
+    bool *found_this_dll = malloc((size_t)n_undef * sizeof(bool));
+
+    bool any_dll_used[16] = {false};
+    for (int d = 0; pe_default_dlls[d]; d++) {
+        char dll_path[512];
+        if (pe_find_system_dll(pe_default_dlls[d], dll_path, sizeof(dll_path)) != 0)
+            continue;
+        memset(found_this_dll, 0, (size_t)n_undef * sizeof(bool));
+        if (pe_dll_check_exports(dll_path, names, found_this_dll, n_undef) != 0)
+            continue;
+        for (int i = 0; i < n_undef; i++) {
+            if (owner_dll[i] < 0 && found_this_dll[i]) {
+                owner_dll[i] = d;
+                if (d < 16) any_dll_used[d] = true;
+            }
+        }
+    }
+    free(found_this_dll);
+
+    bool all_resolved = true;
+    for (int i = 0; i < n_undef; i++)
+        if (owner_dll[i] < 0) all_resolved = false;
+    if (!all_resolved) {
+        free(names);
+        free(owner_dll);
+        free(undef_idx);
+        return -1;
+    }
+
+    int idata_sec = link_find_or_create_sec(s, ".idata", true, true, false, false, false, 8);
+    int text_sec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
+
+    // Layout the .idata contents as offsets-within-section first; patch to
+    // absolute RVAs after link_layout() assigns the section's address.
+    int n_dlls = 0;
+    for (int d = 0; d < 16; d++)
+        if (any_dll_used[d]) n_dlls++;
+
+    PePatch *patches = malloc((size_t)(n_dlls * 3 + n_undef * 2) * sizeof(PePatch));
+    int n_patches = 0;
+
+    // Import Directory Table: (n_dlls + 1) * 20 bytes, zero-filled.
+    size_t descriptors_off = link_sec_append(s, idata_sec, (const uint8_t *)"", 0, 8);
+    uint8_t *zero20 = calloc((size_t)(n_dlls + 1) * 20, 1);
+    link_sec_append(s, idata_sec, zero20, (size_t)(n_dlls + 1) * 20, 8);
+    free(zero20);
+
+    // DLL name strings.
+    size_t *dll_name_off = calloc((size_t)16, sizeof(size_t));
+    for (int d = 0; d < 16; d++) {
+        if (!any_dll_used[d]) continue;
+        dll_name_off[d] = link_sec_append(s, idata_sec,
+                                          (const uint8_t *)pe_default_dlls[d], strlen(pe_default_dlls[d]) + 1, 1);
+    }
+
+    // Hint/name entries: one per import, 2-byte hint(0) + name + NUL,
+    // padded to even length.
+    size_t *hintname_off = malloc((size_t)n_undef * sizeof(size_t));
+    for (int i = 0; i < n_undef; i++) {
+        size_t namelen = strlen(names[i]);
+        size_t entlen = 2 + namelen + 1;
+        if (entlen & 1) entlen++;
+        uint8_t *ent = calloc(entlen, 1);
+        memcpy(ent + 2, names[i], namelen);
+        hintname_off[i] = link_sec_append(s, idata_sec, ent, entlen, 2);
+        free(ent);
+    }
+
+    // ILT then IAT, grouped per DLL, each terminated by an 8-byte zero
+    // entry. iat_slot_off[i] is where this import's IAT pointer lives --
+    // that is the address the loader overwrites with the real DLL function
+    // pointer, and what our trampoline's indirect jump targets.
+    size_t *ilt_start_off = calloc((size_t)16, sizeof(size_t));
+    size_t *iat_start_off = calloc((size_t)16, sizeof(size_t));
+    size_t *iat_slot_off = malloc((size_t)n_undef * sizeof(size_t));
+    for (int d = 0; d < 16; d++) {
+        if (!any_dll_used[d]) continue;
+        ilt_start_off[d] = link_sec_append(s, idata_sec, (const uint8_t *)"", 0, 8);
+        for (int i = 0; i < n_undef; i++) {
+            if (owner_dll[i] != d) continue;
+            uint8_t ent[8];
+            pe_w64le_m(ent, hintname_off[i]); // placeholder: offset-within-section
+            link_sec_append(s, idata_sec, ent, 8, 8);
+            patches[n_patches++].off = s->secs[idata_sec].len - 8;
+        }
+        uint8_t zero8[8] = {0};
+        link_sec_append(s, idata_sec, zero8, 8, 8);
+    }
+    for (int d = 0; d < 16; d++) {
+        if (!any_dll_used[d]) continue;
+        iat_start_off[d] = link_sec_append(s, idata_sec, (const uint8_t *)"", 0, 8);
+        for (int i = 0; i < n_undef; i++) {
+            if (owner_dll[i] != d) continue;
+            uint8_t ent[8];
+            pe_w64le_m(ent, hintname_off[i]); // placeholder: offset-within-section
+            link_sec_append(s, idata_sec, ent, 8, 8);
+            iat_slot_off[i] = s->secs[idata_sec].len - 8;
+            patches[n_patches++].off = iat_slot_off[i];
+        }
+        uint8_t zero8[8] = {0};
+        link_sec_append(s, idata_sec, zero8, 8, 8);
+    }
+    uint64_t iat_region_off = 0, iat_region_size = 0;
+    for (int d = 0; d < 16; d++) {
+        if (!any_dll_used[d]) continue;
+        iat_region_off = iat_start_off[d];
+        break;
+    }
+    iat_region_size = (uint64_t)s->secs[idata_sec].len - iat_region_off;
+
+    // Fill the descriptor table now that every referenced offset is known.
+    for (int d = 0, k = 0; d < 16; d++) {
+        if (!any_dll_used[d]) continue;
+        uint8_t *desc = s->secs[idata_sec].data + descriptors_off + (size_t)k * 20;
+        pe_w32le_m(desc, (uint32_t)ilt_start_off[d]); // OriginalFirstThunk
+        pe_w32le_m(desc + 4, 0); // TimeDateStamp
+        pe_w32le_m(desc + 8, 0); // ForwarderChain
+        pe_w32le_m(desc + 12, (uint32_t)dll_name_off[d]); // Name
+        pe_w32le_m(desc + 16, (uint32_t)iat_start_off[d]); // FirstThunk
+        patches[n_patches++].off = descriptors_off + (size_t)k * 20;
+        patches[n_patches++].off = descriptors_off + (size_t)k * 20 + 12;
+        patches[n_patches++].off = descriptors_off + (size_t)k * 20 + 16;
+        k++;
+    }
+
+    // One 6-byte `jmp qword ptr [rip+disp32]` trampoline per import,
+    // redefining the original undefined symbol to its address. The
+    // relocation uses the same -4 addend convention as a normal COFF
+    // REL32 call/jmp (see pe_pc32_addend).
+    for (int i = 0; i < n_undef; i++) {
+        uint8_t stub[6] = {0xFF, 0x25, 0, 0, 0, 0};
+        size_t stub_off = link_sec_append(s, text_sec, stub, sizeof(stub), 16);
+        char impname[300];
+        snprintf(impname, sizeof(impname), "__imp_%s", names[i]);
+        int imp_sym = link_add_sym(s, impname, idata_sec, (uint64_t)iat_slot_off[i],
+                                   8, 1 /* global */, 1 /* object */, -1);
+        link_add_reloc(s, text_sec, stub_off + 2, RL_PC32, imp_sym, -4);
+        link_add_sym(s, names[i], text_sec, (uint64_t)stub_off, 0,
+                     1 /* global */, 2 /* func */, -1);
+    }
+
+    *idata_sec_out = idata_sec;
+    *patches_out = patches;
+    *n_patches_out = n_patches;
+    *iat_off_out = iat_region_off;
+    *iat_size_out = iat_region_size;
+    *import_dir_size_out = (uint64_t)(n_dlls + 1) * 20;
+
+    free(names);
+    free(owner_dll);
+    free(undef_idx);
+    free(dll_name_off);
+    free(hintname_off);
+    free(ilt_start_off);
+    free(iat_start_off);
+    free(iat_slot_off);
+    return 0;
+}
+
+static void pe_patch_idata(LinkState *s, int idata_sec, uint64_t image_base,
+                           PePatch *patches, int n_patches) {
+    if (idata_sec < 0) return;
+    uint64_t sec_rva = s->secs[idata_sec].addr - image_base;
+    uint8_t *data = s->secs[idata_sec].data;
+    for (int i = 0; i < n_patches; i++) {
+        uint32_t v = pe_r32le(data + patches[i].off);
+        pe_w32le_m(data + patches[i].off, v + (uint32_t)sec_rva);
+    }
+    free(patches);
+}
+
+// ---------------------------------------------------------------------------
 // Main PE link entry point
 // ---------------------------------------------------------------------------
+
+// Lay out sections for a PE image: unlike ELF (which packs multiple small
+// read-only/read-write sections into shared pages within one PT_LOAD
+// segment), the Windows loader maps every PE section header as its own
+// independently-protected region and expects each one's VirtualAddress to
+// start on its own SectionAlignment (page) boundary -- real link.exe/
+// lld-link output never packs .rdata/.xdata/.pdata etc. together the way
+// ELF's link_layout() does. `base` already accounts for the one page
+// reserved for the PE/COFF headers (the caller passes base + SECTION_ALIGN).
+static void pe_layout_sections(LinkState *s, uint64_t base) {
+    uint64_t addr = base;
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec->alloc) continue;
+        addr = pe_align_up(addr, PE_SECTION_ALIGN);
+        sec->addr = addr;
+        addr += sec->len ? sec->len : 1; // reserve space even for empty sections
+    }
+}
 
 int link_pe(LinkState *s) {
     // Create standard sections
@@ -336,17 +727,89 @@ int link_pe(LinkState *s) {
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 16);
 
     // Find entry point
-    int entry_sym = link_find_sym(s, "main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "_main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "WinMain");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "mainCRTStartup");
+    int entry_sym = link_find_sym(s, "mainCRTStartup");
+    if (entry_sym < 0) {
+        int main_sym = link_find_sym(s, "main");
+        if (main_sym < 0) main_sym = link_find_sym(s, "_main");
+        if (main_sym < 0) main_sym = link_find_sym(s, "WinMain");
+        if (main_sym < 0) {
+            // No known entry point at all: nothing we could run even with
+            // a synthesized stub. Fall back to the mingw toolchain.
+            return -1;
+        }
+        // We don't auto-load mingw's own CRT startup (crt2.o pulls in
+        // libmingw32.a/libmingwex.a via full archive resolution, which
+        // this linker doesn't implement yet), so there is no real
+        // mainCRTStartup to call. Synthesize a minimal replacement: align
+        // the stack per the Win64 ABI (process entry alignment is
+        // unspecified), call main(), and hand its result to ExitProcess.
+        // This runs and exits correctly but skips what a real CRT would
+        // also do: real argv/environ parsing, atexit handlers, and C++
+        // static initializers. main() is called with argc=0, argv=NULL
+        // (safe zeroed defaults) rather than whatever garbage happened to
+        // be in the entry registers.
+        int text_sec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
+        int exitprocess_sym = link_add_sym(s, "ExitProcess", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
+        uint8_t stub[] = {
+            0x48,
+            0x83,
+            0xE4,
+            0xF0, // and $-16, %rsp
+            0x48,
+            0x83,
+            0xEC,
+            0x20, // sub $0x20, %rsp
+            0x31,
+            0xC9, // xor %ecx, %ecx   (argc = 0)
+            0x31,
+            0xD2, // xor %edx, %edx   (argv = NULL)
+            0xE8,
+            0,
+            0,
+            0,
+            0, // call main
+            0x89,
+            0xC1, // mov %eax, %ecx
+            0xE8,
+            0,
+            0,
+            0,
+            0, // call ExitProcess
+            0x90, // nop (unreachable)
+        };
+        uint64_t stub_off = link_sec_append(s, text_sec, stub, sizeof(stub), 16);
+        link_add_reloc(s, text_sec, stub_off + 13, RL_PC32, main_sym, -4);
+        link_add_reloc(s, text_sec, stub_off + 20, RL_PC32, exitprocess_sym, -4);
+        entry_sym = link_add_sym(s, "_rcc_pe_start", text_sec, stub_off, sizeof(stub),
+                                 1 /* global */, 2 /* func */, -1);
+    }
 
-    // Layout sections
+    // Resolve external symbols against system DLLs and synthesize the
+    // import table + trampolines before layout, since this may add new
+    // sections/symbols that layout and relocation application must see.
+    int idata_sec = -1, n_idata_patches = 0;
+    PePatch *idata_patches = NULL;
+    uint64_t iat_off = 0, iat_size = 0, import_dir_size = 0;
+    if (build_pe_imports(s, &idata_sec, &idata_patches, &n_idata_patches,
+                         &iat_off, &iat_size, &import_dir_size) != 0) {
+        // A strong symbol we can't resolve against any known DLL (or an
+        // exotic construct like TLS/weak imports we don't model yet).
+        // Fall back to the mingw toolchain's own linker.
+        return -1;
+    }
+
+    // Layout sections: one page per section (see pe_layout_sections), with
+    // the first page reserved for the PE/COFF headers so .text starts at
+    // RVA 0x1000, not RVA 0 (which would overlap the header region every
+    // PE loader always maps there).
     uint64_t base = 0x140000000ULL;
-    if (link_layout(s, base, PE_SECTION_ALIGN) != 0) return -1;
+    pe_layout_sections(s, base + PE_SECTION_ALIGN);
 
-    // Apply relocations
-    link_apply_relocs(s);
+    // Fix up the import table's internal RVAs now that .idata has its
+    // final address, then apply ordinary relocations (this also resolves
+    // the trampolines' RIP-relative jumps into the IAT).
+    pe_patch_idata(s, idata_sec, base, idata_patches, n_idata_patches);
+    link_apply_relocs(s, base);
 
     // Entry point
     uint64_t entry_addr = 0;
@@ -366,7 +829,10 @@ int link_pe(LinkState *s) {
 
     // Header sizes
     uint32_t dos_stub_size = 64;
-    uint32_t hdr_off = 64 + dos_stub_size + 4 + 20 + 112; // end of optional header
+    // PE32+ optional header: 112 fixed bytes (through NumberOfRvaAndSizes)
+    // plus 16 data directory entries * 8 bytes = 240 total.
+    uint32_t opthdr_size = 112 + 16 * 8;
+    uint32_t hdr_off = 64 + dos_stub_size + 4 + 20 + opthdr_size; // end of optional header
     uint32_t sec_hdr_total = (uint32_t)n_output_secs * 40;
     uint32_t hdr_total = hdr_off + sec_hdr_total;
     uint32_t hdr_file_size = (uint32_t)pe_align_up(hdr_total, PE_FILE_ALIGN);
@@ -415,7 +881,7 @@ int link_pe(LinkState *s) {
     pe_w32le(f, 0);
     pe_w32le(f, 0);
     pe_w32le(f, 0); // timestamp, symtab, nsyms
-    pe_w16le(f, 112); // sizeof optional header
+    pe_w16le(f, (uint16_t)opthdr_size); // sizeof optional header
     pe_w16le(f, 0x0022); // EXECUTABLE | LARGE_ADDRESS_AWARE
 
     // --- Optional Header (PE32+) ---
@@ -451,19 +917,37 @@ int link_pe(LinkState *s) {
     pe_w32le(f, 0); // loader flags
     pe_w32le(f, 16); // number of directory entries
 
-    // Data directories (16 entries)
+    // Data directories (16 entries). Index 1 = Import Table, index 12 =
+    // IAT (per IMAGE_DIRECTORY_ENTRY_IMPORT / IMAGE_DIRECTORY_ENTRY_IAT).
     for (int i = 0; i < 16; i++) {
-        pe_w32le(f, 0);
-        pe_w32le(f, 0);
+        uint32_t rva = 0, size = 0;
+        if (idata_sec >= 0) {
+            uint64_t sec_base = s->secs[idata_sec].addr - base;
+            if (i == 1) {
+                rva = (uint32_t)sec_base;
+                size = (uint32_t)import_dir_size;
+            } else if (i == 12) {
+                rva = (uint32_t)(sec_base + iat_off);
+                size = (uint32_t)iat_size;
+            }
+        }
+        pe_w32le(f, rva);
+        pe_w32le(f, size);
     }
 
     // --- Section Headers ---
-    // We need to know file offsets before writing; compute them in a first pass
+    // We need to know file offsets before writing; compute them in a first pass.
+    // BSS sections have no file content (SizeOfRawData/PointerToRawData = 0,
+    // matching link_load_object's own convention) and so must be skipped
+    // here exactly like the "Write Section Data" pass below skips them --
+    // otherwise this pass reserves phantom file space for bss that the
+    // write pass never actually consumes, desyncing every later section's
+    // real file position from what its own header claims.
     uint32_t *sec_file_offs = calloc((size_t)s->n_secs, sizeof(uint32_t));
     uint32_t cur_file_off = hdr_file_size;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
-        if (!sec->alloc || sec->len == 0) continue;
+        if (!sec->alloc || sec->len == 0 || sec->is_bss) continue;
         sec_file_offs[i] = cur_file_off;
         cur_file_off += (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
     }
@@ -480,8 +964,8 @@ int link_pe(LinkState *s) {
 
         uint32_t virt_size = (uint32_t)pe_align_up(sec->len, PE_SECTION_ALIGN);
         uint32_t virt_addr = (uint32_t)(sec->addr - base);
-        uint32_t raw_size = (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
-        uint32_t raw_off = sec_file_offs[i];
+        uint32_t raw_size = sec->is_bss ? 0 : (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
+        uint32_t raw_off = sec->is_bss ? 0 : sec_file_offs[i];
         uint32_t flags = IMAGE_SCN_MEM_READ;
         if (sec->exec)
             flags |= IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE;
@@ -538,12 +1022,19 @@ int link_pe(LinkState *s) {
 
     cur_file_off = hdr_file_size;
     for (int i = 0; i < n_ws; i++) {
-        if (ws[i].file_off > cur_file_off)
-            pe_wzeros(f, ws[i].file_off - cur_file_off);
+        long real_pos = ftell(f);
+        if (real_pos >= 0 && (uint64_t)ws[i].file_off > (uint64_t)real_pos)
+            pe_wzeros(f, (size_t)((uint64_t)ws[i].file_off - (uint64_t)real_pos));
         pe_wbuf(f, ws[i].sec->data, ws[i].sec->len);
         cur_file_off = ws[i].file_off +
             (uint32_t)pe_align_up(ws[i].sec->len, PE_FILE_ALIGN);
     }
+    // Pad the final section out to its full file-aligned raw size -- the
+    // gap-fill above only covers bytes *between* sections, never the tail
+    // of the last one, which SizeOfRawData still promises the loader.
+    long final_pos = ftell(f);
+    if (final_pos >= 0 && (uint64_t)cur_file_off > (uint64_t)final_pos)
+        pe_wzeros(f, (size_t)((uint64_t)cur_file_off - (uint64_t)final_pos));
     free(ws);
 
     fclose(f);
