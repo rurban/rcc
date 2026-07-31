@@ -28,31 +28,32 @@ Linux:
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           41 |          628 |        669 |
-| RCC -O1   |           40 |          614 |        654 |
-| RCC -O2   |           43 |          614 |        657 |
-| TCC       |        **7** |          573 |    **580** |
+| RCC       |           19 |          583 |        602 |
+| RCC -O1   |           17 |          576 |        593 |
+| RCC -O2   |       **13** |          560 |    **573** |
+| TCC       |           14 |          580 |        594 |
 | SLIMCC    |           51 |          630 |        681 |
-| KEFIR     |          237 |          674 |        911 |
-| KEFIR -O1 |          208 |      **504** |        712 |
-| CCC       |           63 |          622 |        685 |
-| GCC -O0   |           72 |          585 |        657 |
-| GCC -O2   |          215 |          233 |        448 |
-| Clang -O0 |          130 |          677 |        807 |
-| Clang -O2 |          150 |          233 |        383 |
+| XCC       |           14 |      **355** |    **369** |
+| KEFIR     |          236 |          695 |        931 |
+| KEFIR -O1 |          194 |          521 |        715 |
+| CCC       |           37 |          584 |        621 |
+| GCC -O0   |           75 |          581 |        656 |
+| GCC -O2   |          202 |          215 |        417 |
+| Clang -O0 |          106 |          687 |        793 |
+| Clang -O2 |          177 |          246 |        423 |
 
 - RCC vs TCC vs GCC -O2 execution: same speed on windows, competitive on linux.
 - All outputs verified correct against TCC, GCC -O2 and CLANG -O2 references.
-- **Compile-time performance**: RCC invokes GCC (`system()`) to link, which is ~2× slower than TCC's native internal assembler/linker. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Faster branch patching and a native linker as in TCC is in works. Generated code quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel.
+- **Compile-time performance**: RCC has now it's own native linker, same as TCC. The peephole optimizer uses a 3-line sliding window (single pass over emitted asm), while TCC works on an internal abstract representation. Together these account for the compile-time gap. Faster branch patching as in TCC is in works. Generated code quality is on par with TCC. CCC is claudes-c-compiler vibe-coded in rust, which can compile the kernel. XCC is very fast, but cannot compile much.
 
 rcc -O1 -time:
 
-    preprocess  bench.c:   4215 us
-    parse       bench.c:    473 us
-    typecheck   bench.c:     11 us
-    opt         bench.c:     21 us
-    codegen     bench.c:    414 us
-    link        bench_o1: 38308 us
+    preprocess  bench.c:   7916 us
+    parse       bench.c:    721 us
+    typecheck   bench.c:     87 us
+    opt         bench.c:     45 us
+    codegen     bench.c:   1247 us
+    link        bench_o1:   294 us
 
 ## Test Results
 

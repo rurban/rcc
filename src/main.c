@@ -890,7 +890,7 @@ int main(int argc, char **argv) {
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
                                       libs, opt_pie, opt_pic, opt_shared);
                 if (opt_time)
-                    fprintf(stderr, "  native link %s: %6lu us\n", out_path,
+                    fprintf(stderr, "  link %s: %6lu us\n", out_path,
                             (unsigned long)(now_us() - t_link));
                 if (native == 0) {
                     if (opt_stdout) {
