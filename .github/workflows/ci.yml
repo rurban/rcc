@@ -92,10 +92,10 @@ jobs:
         run: |
           printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
           ./rcc.exe -o /tmp/smoke.exe /tmp/smoke.c
-          /tmp/smoke.exe
+          cmd //c "$(cygpath -w /tmp/smoke.exe)"
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
           ./rcc.exe -o /tmp/smoke2.exe /tmp/smoke2.c
-          /tmp/smoke2.exe
+          cmd //c "$(cygpath -w /tmp/smoke2.exe)"
           rm -f /tmp/smoke.exe /tmp/smoke.c /tmp/smoke2.exe /tmp/smoke2.c
 
       - name: Run tests
