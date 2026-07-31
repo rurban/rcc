@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +85,18 @@ jobs:
           ./rcc -o /tmp/smoke2 /tmp/smoke2.c
           /tmp/smoke2
           rm -f /tmp/smoke /tmp/smoke.c /tmp/smoke2 /tmp/smoke2.c
+
+      - name: Smoke test (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke.c
+          ./rcc.exe -o /tmp/smoke.exe /tmp/smoke.c
+          /tmp/smoke.exe
+          printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > /tmp/smoke2.c
+          ./rcc.exe -o /tmp/smoke2.exe /tmp/smoke2.c
+          /tmp/smoke2.exe
+          rm -f /tmp/smoke.exe /tmp/smoke.c /tmp/smoke2.exe /tmp/smoke2.c
 
       - name: Run tests
         id: tests
