@@ -367,7 +367,7 @@ int link_macho(LinkState *s) {
     if (link_layout(s, base, 0x4000) != 0) return -1;
 
     // Apply relocations
-    link_apply_relocs(s);
+    link_apply_relocs(s, 0);
 
     // Entry
     uint64_t entry_addr = 0;

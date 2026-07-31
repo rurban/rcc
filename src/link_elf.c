@@ -770,7 +770,7 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
             }
             default:
                 // Let the shared backend handle the rest (ARM64, etc.)
-                link_reloc_apply(s->arch, sec, r, symbol_address(s, r->sym), pc);
+                link_reloc_apply(s->arch, sec, r, symbol_address(s, r->sym), pc, 0);
                 break;
             }
         }
@@ -1471,7 +1471,7 @@ int link_elf(LinkState *s) {
         auto_dyn_ent(dyn, &dpos, DT_NULL, 0);
     } else {
         // Static link: apply relocations normally.
-        link_apply_relocs(s);
+        link_apply_relocs(s, 0);
     }
 
     // Build program headers.

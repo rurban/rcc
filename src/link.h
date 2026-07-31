@@ -45,6 +45,7 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 #define RL_ARM64_TLSDESC_LO 15
 #define RL_ARM64_TPREL_HI   16
 #define RL_ARM64_TPREL_LO   17
+#define RL_ADDR32NB     18  // PE: IMAGE_REL_AMD64/ARM64_ADDR32NB (RVA-relative)
 
 // Architecture of the link session.
 typedef enum {
@@ -63,6 +64,8 @@ struct LinkReloc {
     int sym; // index into LinkState.syms
     int64_t addend;
 };
+
+#define STB_LOCAL 0
 
 typedef struct LinkSym LinkSym;
 struct LinkSym {
@@ -165,11 +168,13 @@ LinkSym *link_get_sym(LinkState *s, int idx);
 int link_layout(LinkState *s, uint64_t base, uint64_t page_align);
 
 // Apply all recorded relocations.  `s1->secs[].addr` must be valid.
-void link_apply_relocs(LinkState *s);
+// `image_base` is only meaningful for PE's RL_ADDR32NB (RVA-relative);
+// ELF/Mach-O callers pass 0.
+void link_apply_relocs(LinkState *s, uint64_t image_base);
 
 // Architecture-specific relocation encoder (implemented in link.c).
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
-                      uint64_t sym_addr, uint64_t pc);
+                      uint64_t sym_addr, uint64_t pc, uint64_t image_base);
 
 // Search a library name in the configured paths and load it.
 int link_load_archive(LinkState *s, const char *name, const char *lib_paths);

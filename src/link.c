@@ -180,6 +180,7 @@ static void sym_hash_grow(LinkState *s) {
     s->sym_hash = calloc((size_t)s->sym_hash_cap, sizeof(int));
     for (int i = 0; i < s->n_syms; i++) s->syms[i].hash_next = 0;
     for (int i = 0; i < s->n_syms; i++) {
+        if (s->syms[i].bind == STB_LOCAL) continue; // never searchable by name
         unsigned h = sym_hash_fn(s->syms[i].name) & (s->sym_hash_cap - 1);
         int *slot = &s->sym_hash[h];
         while (*slot) slot = &s->syms[*slot - 1].hash_next;
@@ -208,29 +209,39 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
                  uint64_t size, int bind, int type, int src_obj) {
     if (s->n_syms >= s->sym_hash_cap / 2) sym_hash_grow(s);
 
-    int idx = link_find_sym(s, name);
-    if (idx >= 0) {
-        LinkSym *sym = &s->syms[idx];
-        bool new_def = sec >= 0;
-        bool old_def = sym->sec >= 0;
-        if (new_def && old_def) {
-            if (bind == 0 || sym->bind == 0) {
-                // local vs anything: keep existing
-                return idx;
+    // Local (file-scope static) symbols never participate in cross-file
+    // name resolution: two translation units may each define their own
+    // `static void foo(void)` under the same name, and neither may ever
+    // satisfy another file's undefined/weak reference to that name.
+    // Give each local symbol its own entry and skip the searchable hash
+    // entirely -- relocations reach it via the per-object sym_map index,
+    // never by name, so link_find_sym() must not be able to see it.
+    if (bind != STB_LOCAL) {
+        int idx = link_find_sym(s, name);
+        if (idx >= 0) {
+            LinkSym *sym = &s->syms[idx];
+            bool new_def = sec >= 0;
+            bool old_def = sym->sec >= 0;
+            if (new_def && old_def) {
+                if (sym->bind == 0) {
+                    // shouldn't happen: locals are never hashed, but keep
+                    // the existing definition defensively.
+                    return idx;
+                }
+                fprintf(stderr, "rcc: link error: duplicate definition of '%s'\n", name);
+                return -1;
             }
-            fprintf(stderr, "rcc: link error: duplicate definition of '%s'\n", name);
-            return -1;
+            if (new_def) {
+                sym->sec = sec;
+                sym->value = value;
+                sym->size = size;
+                sym->bind = bind;
+                sym->type = type;
+                sym->src_obj = src_obj;
+                sym->resolved = true;
+            }
+            return idx;
         }
-        if (new_def) {
-            sym->sec = sec;
-            sym->value = value;
-            sym->size = size;
-            sym->bind = bind;
-            sym->type = type;
-            sym->src_obj = src_obj;
-            sym->resolved = true;
-        }
-        return idx;
     }
 
     if (s->n_syms == s->cap_syms) {
@@ -248,10 +259,12 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
     sym->hash_next = 0;
     sym->resolved = sec >= 0;
 
-    unsigned h = sym_hash_fn(name) & (s->sym_hash_cap - 1);
-    int *slot = &s->sym_hash[h];
-    while (*slot) slot = &s->syms[*slot - 1].hash_next;
-    *slot = s->n_syms + 1;
+    if (bind != STB_LOCAL) {
+        unsigned h = sym_hash_fn(name) & (s->sym_hash_cap - 1);
+        int *slot = &s->sym_hash[h];
+        while (*slot) slot = &s->syms[*slot - 1].hash_next;
+        *slot = s->n_syms + 1;
+    }
 
     return s->n_syms++;
 }
@@ -348,7 +361,7 @@ static int64_t sign_extend(uint64_t v, int bits) {
 }
 
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
-                      uint64_t sym_addr, uint64_t pc) {
+                      uint64_t sym_addr, uint64_t pc, uint64_t image_base) {
     uint8_t *p = sec->data + r->offset;
     uint64_t S = sym_addr;
     int64_t A = r->addend;
@@ -375,6 +388,12 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
         w32le(p, (uint32_t)((int32_t)r32le_m(p) + (int32_t)A + (int64_t)(S - pc)));
         break;
     }
+    case RL_ADDR32NB:
+        // PE RVA-relative: value is the symbol's address minus the image
+        // base (i.e. its RVA), not PC-relative and not absolute. Used for
+        // .pdata/.xdata (SEH unwind tables) referencing .text/.xdata.
+        w32le(p, (uint32_t)((int32_t)r32le_m(p) + (int32_t)A + (int64_t)(S - image_base)));
+        break;
     case RL_TPOFF32: {
         uint64_t tls_base = 0; // runtime fills this; TLSLE is relative to tcb
         (void)tls_base;
@@ -409,7 +428,7 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
     case RL_ARM64_GOT_PG:
     case RL_ARM64_GOT_LO:
         // No real GOT yet; resolve directly.
-        link_reloc_apply(arch, sec, r, sym_addr, pc);
+        link_reloc_apply(arch, sec, r, sym_addr, pc, image_base);
         break;
     default:
         fprintf(stderr, "rcc: link warning: unhandled relocation %u\n", r->type);
@@ -421,7 +440,7 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
 // Apply all relocations
 // ---------------------------------------------------------------------------
 
-void link_apply_relocs(LinkState *s) {
+void link_apply_relocs(LinkState *s, uint64_t image_base) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         for (int j = 0; j < sec->n_relocs; j++) {
@@ -433,7 +452,7 @@ void link_apply_relocs(LinkState *s) {
                 sym_addr = s->secs[sym->sec].addr + sym->value;
             }
             uint64_t pc = sec->addr + r->offset;
-            link_reloc_apply(s->arch, sec, r, sym_addr, pc);
+            link_reloc_apply(s->arch, sec, r, sym_addr, pc, image_base);
         }
     }
 }
