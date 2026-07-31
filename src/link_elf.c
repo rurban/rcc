@@ -1265,7 +1265,14 @@ int link_elf(LinkState *s) {
     bool have_text = false, have_rodata = false, have_data = false;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
-        if (!sec->alloc || sec->is_tls) continue;
+        if (!sec->alloc) continue;
+        // .tbss occupies no bytes in any PT_LOAD segment: its storage only
+        // exists per-thread via PT_TLS's memsz. .tdata, however, is real
+        // file-backed data that physically lives inside the RW LOAD
+        // segment (PT_TLS just points at the same bytes as a template),
+        // so it must be counted here or ld.so's static TLS copy reads
+        // demand-zeroed (unmapped-from-file) memory instead of the image.
+        if (sec->is_tls && sec->is_bss) continue;
         if (sec->exec) {
             if (!have_text) {
                 have_text = true;

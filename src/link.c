@@ -295,15 +295,11 @@ int link_layout(LinkState *s, uint64_t base, uint64_t page_align) {
         addr = sec->addr + sec->len;
         fileoff = sec->fileoff + sec->len;
     }
-    // bss (contiguous with data, same LOAD segment)
-    for (int i = 0; i < s->n_secs; i++) {
-        LinkSec *sec = &s->secs[i];
-        if (!sec->is_bss || sec->is_tls) continue;
-        sec->addr = align_up(addr, sec->align);
-        sec->fileoff = 0;
-        addr = sec->addr + sec->len;
-    }
-    // tls (contiguous, separate PT_TLS segment)
+    // tls (separate PT_TLS segment; laid out immediately after .data,
+    // before regular .bss, so addr and fileoff stay in sync entering TLS.
+    // Regular .bss has no file content and would otherwise skew addr
+    // ahead of fileoff, breaking the ELF p_vaddr === p_offset (mod
+    // p_align) requirement that ld.so's static TLS image copy relies on.)
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->is_tls) continue;
@@ -311,6 +307,14 @@ int link_layout(LinkState *s, uint64_t base, uint64_t page_align) {
         sec->fileoff = sec->is_bss ? 0 : align_up(fileoff, sec->align);
         addr = sec->addr + sec->len;
         if (!sec->is_bss) fileoff = sec->fileoff + sec->len;
+    }
+    // bss (contiguous with data, same LOAD segment)
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec->is_bss || sec->is_tls) continue;
+        sec->addr = align_up(addr, sec->align);
+        sec->fileoff = 0;
+        addr = sec->addr + sec->len;
     }
     return 0;
 }
