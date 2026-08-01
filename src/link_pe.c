@@ -1029,6 +1029,7 @@ int link_pe(LinkState *s) {
             break;
         }
     }
+    if (getenv("RCC_PE_NO_EXCEPTION_DIR")) pdata_sec = -1;
     for (int i = 0; i < 16; i++) {
         uint32_t rva = 0, size = 0;
         if (idata_sec >= 0) {
