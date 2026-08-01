@@ -719,6 +719,77 @@ static void pe_layout_sections(LinkState *s, uint64_t base) {
     }
 }
 
+// IMAGE_REL_BASED_* relocation types used in .reloc block entries.
+#define IMAGE_REL_BASED_ABSOLUTE 0
+#define IMAGE_REL_BASED_DIR64    10
+
+// Build the PE base relocation table (.reloc) from every RL_ABS64/RL_ABS32
+// site recorded across all other sections, now that every section has its
+// final layout address. Real linkers always pair DYNAMIC_BASE with a
+// backing .reloc section (even one with very few entries) -- our own
+// codegen uses RIP-relative addressing everywhere in practice, so this is
+// typically empty, but must still exist structurally for any absolute-VA
+// reference (e.g. a function pointer table) that does show up. Returns the
+// new section's index, or -1 if there was nothing to relocate (in which
+// case DYNAMIC_BASE must NOT be claimed, since there is no data to back
+// it under system-enforced Mandatory ASLR).
+static int build_pe_reloc(LinkState *s, uint64_t base) {
+    // Collect (page RVA, offset-in-page) pairs for every ABS64/ABS32 site.
+    int n_sites = 0, cap_sites = 0;
+    uint32_t *site_rva = NULL;
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec->alloc || strcmp(sec->name, ".reloc") == 0) continue;
+        for (int j = 0; j < sec->n_relocs; j++) {
+            LinkReloc *r = &sec->relocs[j];
+            if (r->type != RL_ABS64 && r->type != RL_ABS32 && r->type != RL_ABS32U) continue;
+            if (n_sites == cap_sites) {
+                cap_sites = cap_sites ? cap_sites * 2 : 16;
+                site_rva = realloc(site_rva, (size_t)cap_sites * sizeof(uint32_t));
+            }
+            site_rva[n_sites++] = (uint32_t)(sec->addr + r->offset - base);
+        }
+    }
+    if (n_sites == 0) {
+        free(site_rva);
+        return -1;
+    }
+    // Sort by RVA so entries group into contiguous per-page blocks.
+    for (int i = 0; i < n_sites; i++)
+        for (int j = i + 1; j < n_sites; j++)
+            if (site_rva[j] < site_rva[i]) {
+                uint32_t t = site_rva[i];
+                site_rva[i] = site_rva[j];
+                site_rva[j] = t;
+            }
+
+    int reloc_sec = link_find_or_create_sec(s, ".reloc", true, false, false, false, false, 4);
+    int i = 0;
+    while (i < n_sites) {
+        uint32_t page = site_rva[i] & ~(uint32_t)0xfff;
+        int j = i;
+        while (j < n_sites && (site_rva[j] & ~(uint32_t)0xfff) == page) j++;
+        int n_entries = j - i;
+        bool pad = (n_entries & 1) != 0;
+        uint32_t block_size = 8 + (uint32_t)(n_entries + (pad ? 1 : 0)) * 2;
+        uint8_t *block = calloc(block_size, 1);
+        pe_w32le_m(block, page);
+        pe_w32le_m(block + 4, block_size);
+        for (int k = 0; k < n_entries; k++) {
+            uint16_t off_in_page = (uint16_t)(site_rva[i + k] - page);
+            uint16_t entry = (uint16_t)((IMAGE_REL_BASED_DIR64 << 12) | off_in_page);
+            block[8 + k * 2] = (uint8_t)entry;
+            block[8 + k * 2 + 1] = (uint8_t)(entry >> 8);
+        }
+        // Padding entry (IMAGE_REL_BASED_ABSOLUTE = 0) stays zero-filled.
+        link_sec_append(s, reloc_sec, block, block_size, 4);
+        free(block);
+        i = j;
+    }
+    free(site_rva);
+    return reloc_sec;
+}
+
 int link_pe(LinkState *s) {
     // Static libgcc/libmingwex linking and DLL (.dll/-shared) output are not
     // implemented -- only a dynamically-linked .exe against system DLLs via
@@ -814,6 +885,13 @@ int link_pe(LinkState *s) {
     // the trampolines' RIP-relative jumps into the IAT).
     pe_patch_idata(s, idata_sec, base, idata_patches, n_idata_patches);
     link_apply_relocs(s, base);
+
+    // Build the base relocation table from every ABS64/ABS32 site now
+    // that section addresses are final, then re-run layout (idempotent
+    // for every pre-existing section -- their addr/len are unchanged) so
+    // the newly-appended .reloc section gets a real address too.
+    int reloc_sec = build_pe_reloc(s, base);
+    if (reloc_sec >= 0) pe_layout_sections(s, base + PE_SECTION_ALIGN);
 
     // Entry point
     uint64_t entry_addr = 0;
@@ -923,13 +1001,13 @@ int link_pe(LinkState *s) {
     pe_w32le(f, hdr_file_size); // SizeOfHeaders
     pe_w32le(f, 0); // CheckSum
     pe_w16le(f, IMAGE_SUBSYSTEM_WINDOWS_CUI);
-    // We load at a fixed preferred base and never emit a .reloc (base
-    // relocation) section, so DYNAMIC_BASE must NOT be claimed here:
-    // under system-enforced Mandatory ASLR, an image claiming ASLR
-    // support with no relocation data to back it up can be rejected
-    // outright by the loader ("not a valid application for this OS
-    // platform") instead of just silently loading at the fixed address.
+    // DYNAMIC_BASE is only claimed when backed by a real .reloc section --
+    // under system-enforced Mandatory ASLR, an image claiming ASLR support
+    // with no relocation data to back it up can be rejected outright by
+    // the loader ("not a valid application for this OS platform") instead
+    // of just silently loading at the fixed preferred address.
     uint16_t dll_flags = IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+    if (reloc_sec >= 0) dll_flags |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
     pe_w16le(f, dll_flags);
     pe_w64le(f, 0x100000);
     pe_w64le(f, 0x1000); // stack
@@ -940,8 +1018,9 @@ int link_pe(LinkState *s) {
 
     // Data directories (16 entries). Index 1 = Import Table, index 3 =
     // Exception Table (.pdata, if our own COFF codegen emitted Win64 SEH
-    // unwind info for this object), index 12 = IAT (per
-    // IMAGE_DIRECTORY_ENTRY_IMPORT / _EXCEPTION / _IAT).
+    // unwind info for this object), index 5 = Base Relocation Table
+    // (.reloc), index 12 = IAT (per IMAGE_DIRECTORY_ENTRY_IMPORT /
+    // _EXCEPTION / _BASERELOC / _IAT).
     int pdata_sec = -1;
     for (int i = 0; i < s->n_secs; i++) {
         if (s->secs[i].alloc && s->secs[i].len > 0 &&
@@ -965,6 +1044,10 @@ int link_pe(LinkState *s) {
         if (i == 3 && pdata_sec >= 0) {
             rva = (uint32_t)(s->secs[pdata_sec].addr - base);
             size = (uint32_t)s->secs[pdata_sec].len;
+        }
+        if (i == 5 && reloc_sec >= 0) {
+            rva = (uint32_t)(s->secs[reloc_sec].addr - base);
+            size = (uint32_t)s->secs[reloc_sec].len;
         }
         pe_w32le(f, rva);
         pe_w32le(f, size);

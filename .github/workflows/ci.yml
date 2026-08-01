@@ -123,6 +123,8 @@ jobs:
           public class Native {
             [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
             public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+            [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Ansi)]
+            public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
             [StructLayout(LayoutKind.Sequential)]
             public struct STARTUPINFO { public Int32 cb; public string lpReserved; public string lpDesktop;
               public string lpTitle; public Int32 dwX; public Int32 dwY; public Int32 dwXSize; public Int32 dwYSize;
@@ -137,6 +139,12 @@ jobs:
               IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
           }
           "@
+          $mCrt = [Native]::LoadLibraryEx("msvcrt.dll", [IntPtr]::Zero, 0)
+          $pPrintf = [Native]::GetProcAddress($mCrt, "printf")
+          Write-Host "msvcrt.dll handle=$mCrt  printf addr=$pPrintf"
+          $mK32 = [Native]::LoadLibraryEx("kernel32.dll", [IntPtr]::Zero, 0)
+          $pExitProcess = [Native]::GetProcAddress($mK32, "ExitProcess")
+          Write-Host "kernel32.dll handle=$mK32  ExitProcess addr=$pExitProcess"
           $path = (Resolve-Path .\smoke.exe).Path
           $h1 = [Native]::LoadLibraryEx($path, [IntPtr]::Zero, 0x00000002) # DONT_RESOLVE_DLL_REFERENCES
           Write-Host "LoadLibraryEx(minimal) handle=$h1  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
