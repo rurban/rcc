@@ -104,7 +104,8 @@ jobs:
           ./rcc.exe -o smoke.exe smoke.c
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > smoke2.c
           ./rcc.exe -o smoke2.exe smoke2.c
-          RCC_PE_NO_EXCEPTION_DIR=1 ./rcc.exe -o smoke_noexc.exe smoke.c
+          printf 'int main(){return 0;}\n' > tiny.c
+          ./rcc.exe -o tiny.exe tiny.c
           gcc -o real_smoke.exe smoke.c
 
       - name: Upload smoke.exe for diagnosis
@@ -163,12 +164,17 @@ jobs:
           $pi2 = New-Object Native+PROCESS_INFORMATION
           $ok2 = [Native]::CreateProcess($rpath, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, (Get-Location).Path, [ref]$si2, [ref]$pi2)
           Write-Host "CreateProcess(gcc-built) ok=$ok2  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-          $npath = (Resolve-Path .\smoke_noexc.exe).Path
+          $npath = (Resolve-Path .\tiny.exe).Path
           $si3 = New-Object Native+STARTUPINFO
           $si3.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si3)
           $pi3 = New-Object Native+PROCESS_INFORMATION
           $ok3 = [Native]::CreateProcess($npath, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, (Get-Location).Path, [ref]$si3, [ref]$pi3)
-          Write-Host "CreateProcess(no-exception-dir) ok=$ok3  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          Write-Host "CreateProcess(tiny, single-import) ok=$ok3  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          Write-Host "--- OS build ---"
+          [System.Environment]::OSVersion.VersionString
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object ProductName, CurrentBuild, DisplayVersion | Format-List
+          Write-Host "--- process mitigation policy ---"
+          try { Get-ProcessMitigation -System | Format-List } catch { Write-Host "Get-ProcessMitigation failed: $_" }
 
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'

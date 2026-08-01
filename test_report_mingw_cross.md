@@ -2,12 +2,12 @@
 
 **Platform**: Windows x86_64 (mingw cross)
 
-Generated: July 31 2026 17:25
+Generated: July 31 2026 20:26
 
 ## Overall Summary
 
-- **Total**: 4430
-- **Passed**: 4038
+- **Total**: 4445
+- **Passed**: 4053
 - **Failed**: 6
 - **Skipped**: 385
 - **Overall Pass Rate**: 100%
@@ -30,6 +30,13 @@ Generated: July 31 2026 17:25
 
 - **Total**: 220
 - **Passed**: 220
+- **Failed**: 0
+- **Pass Rate**: 100%
+
+## NCC Compliance Tests (vs GCC)
+
+- **Total**: 15
+- **Passed**: 15
 - **Failed**: 0
 - **Pass Rate**: 100%
 
