@@ -35,6 +35,7 @@
 #define LC_MAIN           0x80000028
 #define LC_BUILD_VERSION  0x32
 #define LC_DYLD_INFO_ONLY 0x80000022
+#define LC_CODE_SIGNATURE 0x1d
 
 // Section flags
 #define S_REGULAR                   0x0
@@ -104,6 +105,315 @@ static void mo_wzeros(FILE *f, size_t n) {
     mo_wbuf(f, z, n);
 }
 static uint64_t mo_align(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
+
+// ---------------------------------------------------------------------------
+// SHA-256 (single-shot/streaming, from FIPS 180-4) -- the only consumer is
+// the ad-hoc code-signature builder below; this is not a general crypto API.
+// Verified against the NIST test vectors (empty string, "abc", and the
+// classic one-million-'a' multi-block vector) before integration.
+// ---------------------------------------------------------------------------
+typedef struct {
+    uint32_t h[8];
+    uint8_t buf[64];
+    size_t buflen;
+    uint64_t total;
+} MoSha256;
+
+static const uint32_t mo_sha256_k[64] = {
+    0x428a2f98,
+    0x71374491,
+    0xb5c0fbcf,
+    0xe9b5dba5,
+    0x3956c25b,
+    0x59f111f1,
+    0x923f82a4,
+    0xab1c5ed5,
+    0xd807aa98,
+    0x12835b01,
+    0x243185be,
+    0x550c7dc3,
+    0x72be5d74,
+    0x80deb1fe,
+    0x9bdc06a7,
+    0xc19bf174,
+    0xe49b69c1,
+    0xefbe4786,
+    0x0fc19dc6,
+    0x240ca1cc,
+    0x2de92c6f,
+    0x4a7484aa,
+    0x5cb0a9dc,
+    0x76f988da,
+    0x983e5152,
+    0xa831c66d,
+    0xb00327c8,
+    0xbf597fc7,
+    0xc6e00bf3,
+    0xd5a79147,
+    0x06ca6351,
+    0x14292967,
+    0x27b70a85,
+    0x2e1b2138,
+    0x4d2c6dfc,
+    0x53380d13,
+    0x650a7354,
+    0x766a0abb,
+    0x81c2c92e,
+    0x92722c85,
+    0xa2bfe8a1,
+    0xa81a664b,
+    0xc24b8b70,
+    0xc76c51a3,
+    0xd192e819,
+    0xd6990624,
+    0xf40e3585,
+    0x106aa070,
+    0x19a4c116,
+    0x1e376c08,
+    0x2748774c,
+    0x34b0bcb5,
+    0x391c0cb3,
+    0x4ed8aa4a,
+    0x5b9cca4f,
+    0x682e6ff3,
+    0x748f82ee,
+    0x78a5636f,
+    0x84c87814,
+    0x8cc70208,
+    0x90befffa,
+    0xa4506ceb,
+    0xbef9a3f7,
+    0xc67178f2,
+};
+
+#define MO_ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void mo_sha256_block(MoSha256 *c, const uint8_t *p) {
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++)
+        w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
+            ((uint32_t)p[i * 4 + 2] << 8) | (uint32_t)p[i * 4 + 3];
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = MO_ROTR(w[i - 15], 7) ^ MO_ROTR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        uint32_t s1 = MO_ROTR(w[i - 2], 17) ^ MO_ROTR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    uint32_t a = c->h[0], b = c->h[1], cc = c->h[2], d = c->h[3];
+    uint32_t e = c->h[4], f = c->h[5], g = c->h[6], h = c->h[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = MO_ROTR(e, 6) ^ MO_ROTR(e, 11) ^ MO_ROTR(e, 25);
+        uint32_t ch = (e & f) ^ (~e & g);
+        uint32_t t1 = h + S1 + ch + mo_sha256_k[i] + w[i];
+        uint32_t S0 = MO_ROTR(a, 2) ^ MO_ROTR(a, 13) ^ MO_ROTR(a, 22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t t2 = S0 + maj;
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = cc;
+        cc = b;
+        b = a;
+        a = t1 + t2;
+    }
+    c->h[0] += a;
+    c->h[1] += b;
+    c->h[2] += cc;
+    c->h[3] += d;
+    c->h[4] += e;
+    c->h[5] += f;
+    c->h[6] += g;
+    c->h[7] += h;
+}
+
+static void mo_sha256_init(MoSha256 *c) {
+    static const uint32_t iv[8] = {
+        0x6a09e667,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    };
+    memcpy(c->h, iv, sizeof iv);
+    c->buflen = 0;
+    c->total = 0;
+}
+
+static void mo_sha256_update(MoSha256 *c, const uint8_t *data, size_t len) {
+    c->total += len;
+    if (c->buflen) {
+        size_t take = 64 - c->buflen;
+        if (take > len) take = len;
+        memcpy(c->buf + c->buflen, data, take);
+        c->buflen += take;
+        data += take;
+        len -= take;
+        if (c->buflen == 64) {
+            mo_sha256_block(c, c->buf);
+            c->buflen = 0;
+        }
+    }
+    while (len >= 64) {
+        mo_sha256_block(c, data);
+        data += 64;
+        len -= 64;
+    }
+    if (len) {
+        memcpy(c->buf, data, len);
+        c->buflen = len;
+    }
+}
+
+static void mo_sha256_final(MoSha256 *c, uint8_t out[32]) {
+    uint64_t bitlen = c->total * 8;
+    size_t i = c->buflen;
+    c->buf[i++] = 0x80;
+    if (i > 56) {
+        while (i < 64) c->buf[i++] = 0;
+        mo_sha256_block(c, c->buf);
+        i = 0;
+    }
+    while (i < 56) c->buf[i++] = 0;
+    for (int j = 7; j >= 0; j--) c->buf[i++] = (uint8_t)(bitlen >> (j * 8));
+    mo_sha256_block(c, c->buf);
+    for (int j = 0; j < 8; j++) {
+        out[j * 4] = (uint8_t)(c->h[j] >> 24);
+        out[j * 4 + 1] = (uint8_t)(c->h[j] >> 16);
+        out[j * 4 + 2] = (uint8_t)(c->h[j] >> 8);
+        out[j * 4 + 3] = (uint8_t)(c->h[j]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ad-hoc Mach-O code signature (CSMAGIC_EMBEDDED_SIGNATURE SuperBlob wrapping
+// a single CodeDirectory blob, no cryptographic identity). Apple Silicon's
+// kernel (AMFI) refuses to map the executable pages of -- and instantly
+// SIGKILLs -- any Mach-O binary lacking a valid signature, even a purely
+// local one with no trust chain behind it; unlike ELF/PE this check happens
+// before user code ever runs. Layout/field values follow the format Apple's
+// own linker/codesign_allocate produce for ad-hoc signing, cross-checked
+// against the Go toolchain's from-scratch implementation
+// (cmd/internal/codesign in the Go source tree), which is proven correct
+// against the real kernel loader. All multi-byte fields in the signature
+// blob are big-endian, unlike the little-endian Mach-O header/load commands
+// above.
+// ---------------------------------------------------------------------------
+#define MO_CS_PAGE_SIZE 4096
+#define MO_CS_PAGE_BITS 12
+#define MO_CS_HASH_SIZE 32 // SHA-256
+#define MO_CS_SUPERBLOB_SIZE 12 // magic(4) + length(4) + count(4)
+#define MO_CS_BLOB_SIZE 8 // type(4) + offset(4)
+#define MO_CS_CODEDIR_SIZE 88 // fixed CodeDirectory header, see mo_codesign_sign
+
+#define MO_CSMAGIC_CODEDIRECTORY 0xfade0c02U
+#define MO_CSMAGIC_EMBEDDED_SIGNATURE 0xfade0cc0U
+#define MO_CSSLOT_CODEDIRECTORY 0U
+#define MO_CS_HASHTYPE_SHA256 2U
+#define MO_CS_ADHOC 0x00000002U
+#define MO_CS_LINKER_SIGNED 0x00020000U
+#define MO_CS_EXECSEG_MAIN_BINARY 0x1ULL
+
+static void mo_put32be(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+static void mo_put64be(uint8_t *p, uint64_t v) {
+    mo_put32be(p, (uint32_t)(v >> 32));
+    mo_put32be(p + 4, (uint32_t)v);
+}
+
+// Total byte size of the ad-hoc signature blob for a file whose signed
+// content (everything before the signature itself) is `code_size` bytes.
+static uint64_t mo_codesign_size(uint64_t code_size, const char *id) {
+    uint64_t nhashes = (code_size + MO_CS_PAGE_SIZE - 1) / MO_CS_PAGE_SIZE;
+    uint64_t id_off = MO_CS_CODEDIR_SIZE;
+    uint64_t hash_off = id_off + strlen(id) + 1;
+    uint64_t cdir_sz = hash_off + nhashes * MO_CS_HASH_SIZE;
+    return MO_CS_SUPERBLOB_SIZE + MO_CS_BLOB_SIZE + cdir_sz;
+}
+
+// Builds the ad-hoc signature blob into `out` (must be
+// mo_codesign_size(code_size, id) bytes). Reads the first `code_size` bytes
+// already written to `f` (opened "wb+") to compute the per-4KB-page
+// SHA-256 hashes the CodeDirectory embeds -- this must run after every
+// other byte of the signed range has been written, since it hashes exactly
+// what is already on disk. `text_off`/`text_size` are the __TEXT segment's
+// file offset/size (the CodeDirectory's execSegBase/execSegLimit, used by
+// the kernel to bound the executable range it enforces the signature over).
+static void mo_codesign_sign(FILE *f, uint8_t *out, uint64_t code_size, const char *id,
+                             uint64_t text_off, uint64_t text_size, bool is_main) {
+    uint64_t nhashes = (code_size + MO_CS_PAGE_SIZE - 1) / MO_CS_PAGE_SIZE;
+    size_t id_len = strlen(id);
+    uint64_t id_off = MO_CS_CODEDIR_SIZE;
+    uint64_t hash_off = id_off + id_len + 1;
+    uint64_t cdir_sz = hash_off + nhashes * MO_CS_HASH_SIZE;
+    uint64_t total = MO_CS_SUPERBLOB_SIZE + MO_CS_BLOB_SIZE + cdir_sz;
+
+    // SuperBlob header
+    uint8_t *p = out;
+    mo_put32be(p, MO_CSMAGIC_EMBEDDED_SIGNATURE);
+    p += 4;
+    mo_put32be(p, (uint32_t)total);
+    p += 4;
+    mo_put32be(p, 1);
+    p += 4; // count = 1 (single CodeDirectory blob)
+
+    // BlobIndex[0]: CodeDirectory
+    uint32_t cdir_blob_off = MO_CS_SUPERBLOB_SIZE + MO_CS_BLOB_SIZE;
+    mo_put32be(p, MO_CSSLOT_CODEDIRECTORY);
+    p += 4;
+    mo_put32be(p, cdir_blob_off);
+    p += 4;
+
+    // CodeDirectory header (88 bytes)
+    uint8_t *cd = out + cdir_blob_off;
+    mo_put32be(cd + 0, MO_CSMAGIC_CODEDIRECTORY);
+    mo_put32be(cd + 4, (uint32_t)cdir_sz); // length of this blob
+    mo_put32be(cd + 8, 0x00020400); // version
+    mo_put32be(cd + 12, MO_CS_ADHOC | MO_CS_LINKER_SIGNED); // flags
+    mo_put32be(cd + 16, (uint32_t)hash_off); // hashOffset
+    mo_put32be(cd + 20, (uint32_t)id_off); // identOffset
+    mo_put32be(cd + 24, 0); // nSpecialSlots
+    mo_put32be(cd + 28, (uint32_t)nhashes); // nCodeSlots
+    mo_put32be(cd + 32, (uint32_t)code_size); // codeLimit
+    cd[36] = MO_CS_HASH_SIZE; // hashSize
+    cd[37] = MO_CS_HASHTYPE_SHA256; // hashType
+    cd[38] = 0; // _pad1
+    cd[39] = MO_CS_PAGE_BITS; // pageSize = log2(4096)
+    mo_put32be(cd + 40, 0); // _pad2
+    mo_put32be(cd + 44, 0); // scatterOffset
+    mo_put32be(cd + 48, 0); // teamOffset
+    mo_put32be(cd + 52, 0); // _pad3
+    mo_put64be(cd + 56, code_size); // codeLimit64 (unused when codeLimit fits in 32 bits, but set for consistency)
+    mo_put64be(cd + 64, text_off); // execSegBase
+    mo_put64be(cd + 72, text_size); // execSegLimit
+    mo_put64be(cd + 80, is_main ? MO_CS_EXECSEG_MAIN_BINARY : 0); // execSegFlags
+
+    // Identifier string
+    memcpy(cd + id_off, id, id_len + 1);
+
+    // Per-page SHA-256 hashes over the signed range already on disk
+    if (fseek(f, 0, SEEK_SET) != 0) return;
+    uint8_t page[MO_CS_PAGE_SIZE];
+    uint64_t remaining = code_size;
+    uint8_t *hp = cd + hash_off;
+    while (remaining > 0) {
+        size_t chunk = remaining < MO_CS_PAGE_SIZE ? (size_t)remaining : MO_CS_PAGE_SIZE;
+        size_t got = fread(page, 1, chunk, f);
+        if (got != chunk) break; // short read: leave remaining hashes zeroed (should not happen)
+        MoSha256 h;
+        mo_sha256_init(&h);
+        mo_sha256_update(&h, page, chunk);
+        mo_sha256_final(&h, hp);
+        hp += MO_CS_HASH_SIZE;
+        remaining -= chunk;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Map Mach-O relocation type to internal RL_ type
@@ -516,8 +826,10 @@ int link_macho(LinkState *s) {
     ncmds += 1; // LC_LOAD_DYLIB
     ncmds += 1; // LC_BUILD_VERSION
     ncmds += 1; // LC_MAIN
+    ncmds += 1; // LC_CODE_SIGNATURE
     uint32_t lc_pagezero = 72; // __PAGEZERO segment
     uint32_t lc_linkedit = 72; // __LINKEDIT segment
+    uint32_t lc_codesig_cmd = 16; // linkedit_data_command (cmd/cmdsize/dataoff/datasize)
 
     uint32_t header_size = 32;
     // sizeofcmds (mach_header_64) covers every load command written below,
@@ -529,7 +841,7 @@ int link_macho(LinkState *s) {
     // mismatch did above.
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size + data_lc_size;
     total_lc += lc_build_version + lc_main + lc_dylib + lc_dyld_info;
-    total_lc += lc_symtab + lc_dysymtab;
+    total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
     uint32_t cmds_end = header_size + total_lc;
 
     // Compute file offsets
@@ -553,8 +865,18 @@ int link_macho(LinkState *s) {
     strtab_size = mo_align(strtab_size, 8);
     uint64_t linkedit_end = strtab_off + strtab_size;
 
-    // Open output file
-    FILE *f = fopen(s->out_path, "wb");
+    // Ad-hoc code signature: must start 16-byte aligned (matches what
+    // Apple's codesign_allocate expects and avoids needing it to move the
+    // load command itself) and covers every byte written before it --
+    // codesig_off IS the "codeSize" the CodeDirectory hashes.
+    uint64_t codesig_off = mo_align(linkedit_end, 16);
+    uint64_t codesig_size = mo_codesign_size(codesig_off, "a.out");
+    uint64_t linkedit_total_end = codesig_off + codesig_size;
+
+    // Open output file. "wb+" (not "wb") so the code-signing pass below can
+    // seek back and re-read the bytes already written to hash them --
+    // write-only would make that impossible.
+    FILE *f = fopen(s->out_path, "wb+");
     if (!f) {
         fprintf(stderr, "rcc: link: cannot create %s: %s\n", s->out_path, strerror(errno));
         free(mo_secs);
@@ -675,14 +997,14 @@ int link_macho(LinkState *s) {
     mo_w32(f, 72);
     mo_wbuf(f, "__LINKEDIT\0\0\0\0\0", 16);
     mo_w64(f, cur_vm);
-    mo_w64(f, mo_align(linkedit_end - linkedit_fileoff, 0x4000));
+    mo_w64(f, mo_align(linkedit_total_end - linkedit_fileoff, 0x4000));
     mo_w64(f, linkedit_fileoff);
     // filesize must equal exactly what gets written below (LINKEDIT's
-    // content already ends at a strtab_size-rounded, page-independent
-    // byte count -- no separate rounding here); rounding up to 16 claimed
-    // 8 more bytes than were ever written, so dyld rejected the file as
-    // truncated ("fileoff+filesize extends past the end of the file").
-    mo_w64(f, linkedit_end - linkedit_fileoff);
+    // content, including the trailing ad-hoc code-signature blob, ends at
+    // linkedit_total_end with no further rounding); rounding up here
+    // claims more bytes than are ever written, which dyld rejects as
+    // "fileoff+filesize extends past the end of the file".
+    mo_w64(f, linkedit_total_end - linkedit_fileoff);
     mo_w32(f, 7);
     mo_w32(f, 1); // maxprot=rwx, initprot=r--
     mo_w32(f, 0);
@@ -758,6 +1080,15 @@ int link_macho(LinkState *s) {
     mo_w64(f, entry_addr - base); // entry offset
     mo_w64(f, 0); // stack size (default)
 
+    // --- LC_CODE_SIGNATURE ---
+    // codesig_off/codesig_size were fixed above, before file offsets were
+    // finalized, so the load command's claimed range matches exactly what
+    // gets hashed and written after every other byte below.
+    mo_w32(f, LC_CODE_SIGNATURE);
+    mo_w32(f, lc_codesig_cmd);
+    mo_w32(f, (uint32_t)codesig_off);
+    mo_w32(f, (uint32_t)codesig_size);
+
     // Pad to section alignment
     uint64_t cur = ftell(f);
     if (text_fileoff > cur) mo_wzeros(f, (size_t)(text_fileoff - cur));
@@ -819,6 +1150,22 @@ int link_macho(LinkState *s) {
     cur = ftell(f);
     if (mo_align((uint64_t)cur, 8) > (uint64_t)cur)
         mo_wzeros(f, mo_align((uint64_t)cur, 8) - (uint64_t)cur);
+
+    // Pad to codesig_off (16-byte-aligned start of the signature blob).
+    cur = ftell(f);
+    if (codesig_off > (uint64_t)cur) mo_wzeros(f, (size_t)(codesig_off - (uint64_t)cur));
+
+    // Ad-hoc code sign: hash every 4KB page of the codesig_off bytes just
+    // written (fflush first so the read-back below sees them) and lay the
+    // SuperBlob/CodeDirectory down as the file's final bytes. Without this
+    // the kernel's AMFI policy SIGKILLs the binary before main() ever runs
+    // on Apple Silicon, even though nothing else about the file is wrong.
+    fflush(f);
+    uint8_t *sig = malloc(codesig_size);
+    mo_codesign_sign(f, sig, codesig_off, "a.out", text_fileoff, text_vmsize, true);
+    fseek(f, (long)codesig_off, SEEK_SET);
+    mo_wbuf(f, sig, codesig_size);
+    free(sig);
 
     fclose(f);
     chmod(s->out_path, 0755);
