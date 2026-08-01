@@ -21,7 +21,7 @@
 #define MH_MAGIC_64   0xFEEDFACFU
 #define MH_OBJECT     1
 #define MH_EXECUTE    2
-
+#define MH_DYLIB       6
 #define CPU_TYPE_ARM64    0x0100000C
 #define CPU_TYPE_X86_64   0x01000007
 #define CPU_SUBTYPE_ALL   0x00000003
@@ -32,6 +32,7 @@
 #define LC_SYMTAB         0x02
 #define LC_DYSYMTAB       0x0B
 #define LC_LOAD_DYLIB     0x0C
+#define LC_ID_DYLIB       0x0D
 #define LC_LOAD_DYLINKER   0x0E
 #define LC_UUID            0x1B
 #define LC_DYLD_EXPORTS_TRIE 0x80000033
@@ -679,10 +680,9 @@ static uint64_t mo_symbol_address(LinkState *s, int idx) {
 // ---------------------------------------------------------------------------
 
 int link_macho(LinkState *s) {
-    // Static linking and dylib (.dylib/-shared) output are not implemented --
-    // only a dynamically-linked Mach-O executable (MH_EXECUTE) against
-    // system dylibs.  Fall back to the external linker for both.
-    if (s->opt_static || s->opt_shared) return -1;
+    // Static linking is not implemented — fall back to the external linker.
+    if (s->opt_static) return -1;
+    bool is_dylib = s->opt_shared;
     // KNOWN LIMITATION: no GOT table or PLT/lazy-binding stubs are built.
     // RL_ARM64_GOT_PG/RL_ARM64_GOT_LO and RL_GOTPCREL relocations against
     // *external* symbols (link_reloc_apply's "no real GOT at this level"
@@ -721,7 +721,7 @@ int link_macho(LinkState *s) {
     // .init_array for ctors
     link_find_or_create_sec(s, ".init_array", true, true, false, false, false, 8);
 
-    uint64_t base = 0x100000000ULL; // default ARM64 base
+    uint64_t base = is_dylib ? 0 : 0x100000000ULL;
 
     // Section listing and address assignment. This -- not the shared,
     // ELF/PE-oriented link_layout() (which spreads text/rodata/data across
@@ -772,10 +772,14 @@ int link_macho(LinkState *s) {
 
 
     // Identify undefined symbols for dynamic linking
-    int n_undef = 0;
+    // Identify undefined symbols (for dynamic linking) and defined globals (for dylib export).
+    int n_undef = 0, n_defsym = 0;
     for (int i = 0; i < s->n_syms; i++) {
-        if (s->syms[i].sec < 0 && s->syms[i].name && s->syms[i].name[0])
-            n_undef++;
+        LinkSym *sym = &s->syms[i];
+        if (!sym->name || !sym->name[0]) continue;
+        if (sym->sec < 0) n_undef++;
+        else if (sym->bind == 1)
+            n_defsym++;
     }
 
     // Header size computation
@@ -807,29 +811,31 @@ int link_macho(LinkState *s) {
     // (two zero bytes: \0 terminal-info-size \0).  dyld expects this.
     uint32_t lc_export_trie = 16; // linkedit_data_command
     uint32_t lc_uuid = 24; // uuid_command: cmd+cmdsize+16-byte uuid
+    uint32_t lc_id_dylib = is_dylib ? (uint32_t)mo_align(24 + strlen(s->out_path) + 1, 8) : 0;
     bool has_data = nsects_data > 0;
-    uint32_t ncmds = 3; // PAGEZERO, TEXT, LINKEDIT
+    uint32_t ncmds = is_dylib ? 2 : 3; // TEXT, LINKEDIT (+PAGEZERO for exec)
     if (has_data) ncmds += 1; // DATA
     ncmds += 1; // LC_DYLD_CHAINED_FIXUPS
     ncmds += 1; // LC_SYMTAB
     ncmds += 1; // LC_DYSYMTAB
     ncmds += 1; // LC_LOAD_DYLIB
-    ncmds += 1; // LC_LOAD_DYLINKER
+    if (!is_dylib) ncmds += 1; // LC_LOAD_DYLINKER
+    if (is_dylib) ncmds += 1; // LC_ID_DYLIB
     ncmds += 1; // LC_UUID
     ncmds += 1; // LC_BUILD_VERSION
-    ncmds += 1; // LC_MAIN
+    if (!is_dylib) ncmds += 1; // LC_MAIN
     ncmds += 1; // LC_DYLD_EXPORTS_TRIE
     ncmds += 1; // LC_CODE_SIGNATURE
-    uint32_t lc_pagezero = 72; // __PAGEZERO segment
-    uint32_t lc_linkedit = 72; // __LINKEDIT segment
-    uint32_t lc_codesig_cmd = 16; // linkedit_data_command (cmd/cmdsize/dataoff/datasize)
+    uint32_t lc_pagezero = is_dylib ? 0 : 72;
+    uint32_t lc_linkedit = 72;
+    uint32_t lc_codesig_cmd = 16;
 
     uint32_t header_size = 32;
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
     if (has_data) total_lc += data_lc_size;
-    total_lc += lc_build_version + lc_main + lc_dylib + lc_dyld_chained_fixups;
+    total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib + lc_dyld_chained_fixups;
     total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
-    total_lc += lc_dylinker + lc_export_trie + lc_uuid;
+    total_lc += (is_dylib ? 0 : lc_dylinker) + lc_export_trie + lc_uuid + lc_id_dylib;
 
     // --- Layout: assign vm addresses ---
     uint64_t text_vmaddr = base; // encompass headers in __TEXT
@@ -889,15 +895,19 @@ int link_macho(LinkState *s) {
     uint64_t chained_fixups_off = linkedit_fileoff;
     uint32_t chained_fixups_size = 56;
 
-    // Symbol table: 1 null + undef
+    // Symbol table: 1 null + undef externals (+ defined globals for dylibs).
     uint32_t nsyms = 1 + (uint32_t)n_undef;
+    if (is_dylib) nsyms += (uint32_t)n_defsym;
     uint64_t symtab_off = chained_fixups_off + chained_fixups_size;
     uint64_t strtab_off = symtab_off + nsyms * 16;
-    // String table: "\0" + undef names + dylib path
+    // String table: "\0" + undef names + dylib path + (for dylibs) defined global names
     size_t strtab_size = 1; // leading \0
     for (int i = 0; i < s->n_syms; i++) {
-        if (s->syms[i].sec < 0 && s->syms[i].name && s->syms[i].name[0])
-            strtab_size += strlen(s->syms[i].name) + 1;
+        LinkSym *sym = &s->syms[i];
+        if (!sym->name || !sym->name[0]) continue;
+        if (sym->sec < 0) strtab_size += strlen(sym->name) + 1;
+        else if (is_dylib && sym->bind == 1)
+            strtab_size += strlen(sym->name) + 1;
     }
     const char *dylib_path = "/usr/lib/libSystem.B.dylib";
     strtab_size += strlen(dylib_path) + 1;
@@ -939,27 +949,27 @@ int link_macho(LinkState *s) {
     mo_w32(f, MH_MAGIC_64);
     mo_w32(f, cpu_type);
     mo_w32(f, cpu_subtype);
-    mo_w32(f, MH_EXECUTE);
+    mo_w32(f, is_dylib ? MH_DYLIB : MH_EXECUTE);
     mo_w32(f, ncmds);
     mo_w32(f, total_lc);
     // MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE
     mo_w32(f, 0x00200085); // flags
     mo_w32(f, 0); // reserved
 
-    // --- LC_SEGMENT_64: __PAGEZERO ---
-    mo_w32(f, LC_SEGMENT_64);
-    mo_w32(f, 72);
-    mo_wbuf(f, "__PAGEZERO\0\0\0\0\0\0", 16);
-    mo_w64(f, 0);
-    mo_w64(f, base); // vmaddr=0, vmsize=base (4GB guard)
-    mo_w64(f, 0);
-    mo_w64(f, 0); // fileoff=0, filesize=0
-    mo_w32(f, 0);
-    mo_w32(f, 0); // maxprot=0, initprot=0
-    mo_w32(f, 0);
-    mo_w32(f, 0); // nsects=0, flags=0
-
-    // --- LC_SEGMENT_64: __TEXT ---
+    // --- LC_SEGMENT_64: __PAGEZERO (executables only) ---
+    if (!is_dylib) {
+        mo_w32(f, LC_SEGMENT_64);
+        mo_w32(f, 72);
+        mo_wbuf(f, "__PAGEZERO\0\0\0\0\0\0", 16);
+        mo_w64(f, 0);
+        mo_w64(f, base); // vmaddr=0, vmsize=base (4GB guard)
+        mo_w64(f, 0);
+        mo_w64(f, 0); // fileoff=0, filesize=0
+        mo_w32(f, 0);
+        mo_w32(f, 0); // maxprot=0, initprot=0
+        mo_w32(f, 0);
+        mo_w32(f, 0); // nsects=0, flags=0
+    }
     mo_w32(f, LC_SEGMENT_64);
     mo_w32(f, text_lc_size);
     mo_wbuf(f, "__TEXT\0\0\0\0\0\0\0\0\0\0", 16);
@@ -1082,22 +1092,33 @@ int link_macho(LinkState *s) {
     // --- LC_DYSYMTAB ---
     mo_w32(f, LC_DYSYMTAB);
     mo_w32(f, 80);
-    mo_w32(f, 1); // ilocalsym = 1 (skip null entry)
-    mo_w32(f, (uint32_t)n_undef); // nlocalsym = undef externals
-    mo_w32(f, 0);
-    mo_w32(f, 0);
-    mo_w32(f, 0); // iextdefsym, nextdefsym, iundefsym=0
-    mo_w32(f, (uint32_t)n_undef); // nundefsym
-    mo_w32(f, 0);
-    mo_w32(f, 0); // toc, modtab
-    mo_w32(f, 0);
-    mo_w32(f, 0); // extrefsym, indirectsym
-    mo_w32(f, 0);
-    mo_w32(f, 0); // extrel, local
-    mo_w32(f, 0);
-    mo_w32(f, 0); // locrel, locrel count
-    // dysymtab_command has exactly 18 uint32_t fields after cmd/cmdsize.
-    for (int i = 0; i < 4; i++) mo_w32(f, 0);
+    if (!is_dylib) {
+        mo_w32(f, 1); // ilocalsym = 1 (skip null entry)
+        mo_w32(f, (uint32_t)n_undef); // nlocalsym = undef externals
+        mo_w32(f, 0); // iextdefsym
+        mo_w32(f, 0); // nextdefsym
+        mo_w32(f, 0); // iundefsym
+        mo_w32(f, (uint32_t)n_undef); // nundefsym
+    } else {
+        mo_w32(f, 0); // ilocalsym = 0 (null is extern)
+        mo_w32(f, 0); // nlocalsym
+        mo_w32(f, 0); // iextdefsym = 0 (null is defined extern)
+        mo_w32(f, 1 + (uint32_t)n_defsym); // nextdefsym (includes null)
+        mo_w32(f, 1 + (uint32_t)n_defsym); // iundefsym
+        mo_w32(f, (uint32_t)n_undef); // nundefsym
+    }
+    mo_w32(f, 0); // tocoff
+    mo_w32(f, 0); // ntoc
+    mo_w32(f, 0); // modtaboff
+    mo_w32(f, 0); // nmodtab
+    mo_w32(f, 0); // extrefsymoff
+    mo_w32(f, 0); // nextrefsyms
+    mo_w32(f, 0); // indirectsymoff
+    mo_w32(f, 0); // nindirectsyms
+    mo_w32(f, 0); // extreloff
+    mo_w32(f, 0); // nextrel
+    mo_w32(f, 0); // locreloff
+    mo_w32(f, 0); // nlocrel
 
     // --- LC_LOAD_DYLIB ---
     uint32_t dylib_padded = lc_dylib;
@@ -1111,21 +1132,34 @@ int link_macho(LinkState *s) {
     for (uint32_t p = (uint32_t)strlen(dylib_path) + 1; p < dylib_padded - 24; p++)
         fputc(0, f);
 
-    // --- LC_LOAD_DYLINKER ---
-    // Embed "/usr/lib/dyld" directly in the command (offset 12 = header size).
-    mo_w32(f, LC_LOAD_DYLINKER);
-    mo_w32(f, lc_dylinker);
-    mo_w32(f, 12); // offset to string within this command
-    mo_wbuf(f, "/usr/lib/dyld", strlen("/usr/lib/dyld") + 1);
-    // Pad to lc_dylinker (already 8-byte aligned by construction).
-    for (uint32_t p = (uint32_t)(12 + strlen("/usr/lib/dyld") + 1); p < lc_dylinker; p++)
-        fputc(0, f);
+    // --- LC_LOAD_DYLINKER (executables only) ---
+    if (!is_dylib) {
+        mo_w32(f, LC_LOAD_DYLINKER);
+        mo_w32(f, lc_dylinker);
+        mo_w32(f, 12); // offset to string within this command
+        mo_wbuf(f, "/usr/lib/dyld", strlen("/usr/lib/dyld") + 1);
+        for (uint32_t p = (uint32_t)(12 + strlen("/usr/lib/dyld") + 1); p < lc_dylinker; p++)
+            fputc(0, f);
+    }
 
+    // --- LC_ID_DYLIB (dylibs only) ---
+    if (is_dylib) {
+        uint32_t id_padded = lc_id_dylib;
+        mo_w32(f, LC_ID_DYLIB);
+        mo_w32(f, id_padded);
+        mo_w32(f, 24); // offset to install name string
+        mo_w32(f, 1); // timestamp
+        mo_w32(f, 0); // current_version
+        mo_w32(f, 0); // compatibility_version
+        mo_wbuf(f, s->out_path, strlen(s->out_path) + 1);
+        for (uint32_t p = (uint32_t)(24 + strlen(s->out_path) + 1); p < id_padded; p++)
+            fputc(0, f);
+    }
 
     // --- LC_UUID ---
     mo_w32(f, LC_UUID);
     mo_w32(f, lc_uuid);
-    for (int i = 0; i < 16; i++) fputc(0, f); // zero UUID
+    for (int i = 0; i < 16; i++) fputc(0, f);
 
     // --- LC_BUILD_VERSION ---
     mo_w32(f, LC_BUILD_VERSION);
@@ -1135,11 +1169,13 @@ int link_macho(LinkState *s) {
     mo_w32(f, 0x000E0000); // sdk 14.0
     mo_w32(f, 0); // ntools = 0
 
-    // --- LC_MAIN ---
-    mo_w32(f, LC_MAIN);
-    mo_w32(f, 24);
-    mo_w64(f, entry_addr - base); // entry offset
-    mo_w64(f, 0); // stack size (default)
+    // --- LC_MAIN (executables only) ---
+    if (!is_dylib) {
+        mo_w32(f, LC_MAIN);
+        mo_w32(f, 24);
+        mo_w64(f, entry_addr - base); // entry offset
+        mo_w64(f, 0); // stack size (default)
+    }
 
     // --- LC_DYLD_EXPORTS_TRIE ---
     mo_w32(f, LC_DYLD_EXPORTS_TRIE);
@@ -1251,9 +1287,32 @@ int link_macho(LinkState *s) {
     fputc(0, f);
     fputc(0 & 0xFF, f);
     fputc((0 >> 8) & 0xFF, f);
-    mo_w64(f, 0);
     // Undefined external symbols
     uint32_t str_off = 1; // skip leading \0
+    // For dylibs: write defined globals first (indices 1..n_defsym),
+    // then undefined symbols (indices 1+n_defsym..).
+    if (is_dylib) {
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
+                continue;
+            uint8_t n_sect = 0;
+            for (int m = 0; m < n_mo; m++) {
+                if (mo_secs[m].sec == &s->secs[sym->sec]) {
+                    n_sect = (uint8_t)(m + 1);
+                    break;
+                }
+            }
+            mo_w32(f, str_off);
+            fputc(N_SECT | N_EXT, f);
+            fputc(n_sect, f);
+            fputc(0, f);
+            fputc(0, f);
+            mo_w64(f, s->secs[sym->sec].addr + sym->value);
+            str_off += (uint32_t)strlen(sym->name) + 1;
+        }
+    }
+    // Undefined external symbols
     for (int i = 0; i < s->n_syms; i++) {
         LinkSym *sym = &s->syms[i];
         if (sym->sec >= 0 || !sym->name || !sym->name[0]) continue;
@@ -1268,6 +1327,14 @@ int link_macho(LinkState *s) {
 
     // --- Write string table ---
     fputc(0, f); // leading \0
+    if (is_dylib) {
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
+                continue;
+            mo_wbuf(f, sym->name, strlen(sym->name) + 1);
+        }
+    }
     for (int i = 0; i < s->n_syms; i++) {
         LinkSym *sym = &s->syms[i];
         if (sym->sec >= 0 || !sym->name || !sym->name[0]) continue;
