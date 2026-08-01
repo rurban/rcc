@@ -108,6 +108,31 @@ jobs:
           ./rcc.exe -o tiny.exe tiny.c
           gcc -o real_smoke.exe smoke.c
 
+      - name: Smoke test (Windows) - dumpbin
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Write-Host "VS install path: $vsPath"
+          $verFile = Join-Path $vsPath "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
+          $ver = (Get-Content $verFile).Trim()
+          $dumpbin = Join-Path $vsPath "VC\Tools\MSVC\$ver\bin\Hostx64\x64\dumpbin.exe"
+          Write-Host "dumpbin: $dumpbin"
+          if (Test-Path $dumpbin) {
+            foreach ($f in @("tiny.exe", "smoke.exe", "real_smoke.exe")) {
+              Write-Host "=== dumpbin /headers $f ==="
+              & $dumpbin /headers $f 2>&1 | Select-String -Pattern 'error|warning|magic|characteristics|subsystem|DYNAMIC_BASE|checksum|size of image|size of headers' -CaseSensitive:$false
+              Write-Host "=== dumpbin /imports $f ==="
+              & $dumpbin /imports $f 2>&1
+              Write-Host "=== dumpbin /loadconfig $f ==="
+              & $dumpbin /loadconfig $f 2>&1
+            }
+          } else {
+            Write-Host "dumpbin not found"
+          }
+
       - name: Upload smoke.exe for diagnosis
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
