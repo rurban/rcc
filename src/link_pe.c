@@ -889,12 +889,24 @@ int link_pe(LinkState *s) {
     pe_w16le(f, 0x0022); // EXECUTABLE | LARGE_ADDRESS_AWARE
 
     // --- Optional Header (PE32+) ---
+    uint32_t size_of_code = 0, size_of_init_data = 0, size_of_uninit_data = 0;
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec->alloc || sec->len == 0) continue;
+        uint32_t raw = sec->is_bss ? (uint32_t)pe_align_up(sec->len, PE_SECTION_ALIGN)
+                                   : (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
+        if (sec->exec) size_of_code += raw;
+        else if (sec->is_bss)
+            size_of_uninit_data += raw;
+        else
+            size_of_init_data += raw;
+    }
     pe_w16le(f, PE32PLUS_MAGIC);
     fputc(0, f);
     fputc(0, f); // linker ver
-    pe_w32le(f, 0);
-    pe_w32le(f, 0);
-    pe_w32le(f, 0); // sizes of code/data/bss
+    pe_w32le(f, size_of_code);
+    pe_w32le(f, size_of_init_data);
+    pe_w32le(f, size_of_uninit_data);
     pe_w32le(f, (uint32_t)(entry_addr - base)); // RVA of entry
     pe_w32le(f, 0x1000); // base of code RVA
     pe_w64le(f, base);
@@ -926,8 +938,18 @@ int link_pe(LinkState *s) {
     pe_w32le(f, 0); // loader flags
     pe_w32le(f, 16); // number of directory entries
 
-    // Data directories (16 entries). Index 1 = Import Table, index 12 =
-    // IAT (per IMAGE_DIRECTORY_ENTRY_IMPORT / IMAGE_DIRECTORY_ENTRY_IAT).
+    // Data directories (16 entries). Index 1 = Import Table, index 3 =
+    // Exception Table (.pdata, if our own COFF codegen emitted Win64 SEH
+    // unwind info for this object), index 12 = IAT (per
+    // IMAGE_DIRECTORY_ENTRY_IMPORT / _EXCEPTION / _IAT).
+    int pdata_sec = -1;
+    for (int i = 0; i < s->n_secs; i++) {
+        if (s->secs[i].alloc && s->secs[i].len > 0 &&
+            strcmp(s->secs[i].name, ".pdata") == 0) {
+            pdata_sec = i;
+            break;
+        }
+    }
     for (int i = 0; i < 16; i++) {
         uint32_t rva = 0, size = 0;
         if (idata_sec >= 0) {
@@ -939,6 +961,10 @@ int link_pe(LinkState *s) {
                 rva = (uint32_t)(sec_base + iat_off);
                 size = (uint32_t)iat_size;
             }
+        }
+        if (i == 3 && pdata_sec >= 0) {
+            rva = (uint32_t)(s->secs[pdata_sec].addr - base);
+            size = (uint32_t)s->secs[pdata_sec].len;
         }
         pe_w32le(f, rva);
         pe_w32le(f, size);
