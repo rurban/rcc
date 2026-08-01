@@ -123,16 +123,30 @@ jobs:
           public class Native {
             [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
             public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+            [StructLayout(LayoutKind.Sequential)]
+            public struct STARTUPINFO { public Int32 cb; public string lpReserved; public string lpDesktop;
+              public string lpTitle; public Int32 dwX; public Int32 dwY; public Int32 dwXSize; public Int32 dwYSize;
+              public Int32 dwXCountChars; public Int32 dwYCountChars; public Int32 dwFillAttribute; public Int32 dwFlags;
+              public Int16 wShowWindow; public Int16 cbReserved2; public IntPtr lpReserved2;
+              public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+            [StructLayout(LayoutKind.Sequential)]
+            public struct PROCESS_INFORMATION { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
+            [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+            public static extern bool CreateProcess(string lpApplicationName, string lpCommandLine,
+              IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags,
+              IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
           }
           "@
           $path = (Resolve-Path .\smoke.exe).Path
-          $h = [Native]::LoadLibraryEx($path, [IntPtr]::Zero, 0x00000002) # DONT_RESOLVE_DLL_REFERENCES
-          $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
-          Write-Host "LoadLibraryEx handle=$h  Win32Error=$err"
-          Write-Host "File size: $((Get-Item $path).Length)"
-          $bytes = [System.IO.File]::ReadAllBytes($path)
-          Write-Host "First 128 bytes:"
-          Write-Host (($bytes[0..127] | ForEach-Object { $_.ToString("x2") }) -join ' ')
+          $h1 = [Native]::LoadLibraryEx($path, [IntPtr]::Zero, 0x00000002) # DONT_RESOLVE_DLL_REFERENCES
+          Write-Host "LoadLibraryEx(minimal) handle=$h1  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          $h2 = [Native]::LoadLibraryEx($path, [IntPtr]::Zero, 0)
+          Write-Host "LoadLibraryEx(full) handle=$h2  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          $si = New-Object Native+STARTUPINFO
+          $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
+          $pi = New-Object Native+PROCESS_INFORMATION
+          $ok = [Native]::CreateProcess($path, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, (Get-Location).Path, [ref]$si, [ref]$pi)
+          Write-Host "CreateProcess ok=$ok  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
 
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'
