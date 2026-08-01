@@ -712,10 +712,20 @@ static void pe_layout_sections(LinkState *s, uint64_t base) {
     uint64_t addr = base;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
-        if (!sec->alloc) continue;
+        // Real linkers never emit a section header (let alone reserve VA
+        // space) for a section nothing was ever appended to -- .data/
+        // .rdata/.bss are created unconditionally up front and often end
+        // up empty. Giving them a VA slot anyway (the pre-existing
+        // "reserve space even for empty sections" behavior) leaves a
+        // wasted gap in the address space between real sections that no
+        // real PE ever has and that the section-header write pass below
+        // skips right past anyway (see "if (!sec->alloc || sec->len ==
+        // 0) continue;"), desyncing what the layout reserved from what
+        // actually got written.
+        if (!sec->alloc || sec->len == 0) continue;
         addr = pe_align_up(addr, PE_SECTION_ALIGN);
         sec->addr = addr;
-        addr += sec->len ? sec->len : 1; // reserve space even for empty sections
+        addr += sec->len;
     }
 }
 
