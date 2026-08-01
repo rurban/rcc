@@ -578,7 +578,7 @@ int link_load_object(LinkState *s, const char *path) {
                         int32_t r_addr = (int32_t)mo_r32(rp);
                         uint32_t r_symtype = mo_r32(rp + 4);
                         int r_sym = (int)(r_symtype & 0xFFFFFF);
-                        uint32_t r_type = (r_symtype >> 24) & 0xFF;
+                        uint32_t r_type = (r_symtype >> 28) & 0xF; // 4-bit type in bits 28-31
                         int rl = -1;
                         if (cpu_type == CPU_TYPE_ARM64)
                             rl = mo_map_reloc_arm64(r_type);
@@ -702,6 +702,17 @@ int link_macho(LinkState *s) {
     // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
     // pointers) -- anything needing a real GOT/PLT slot silently emits a
     // corrupted call/load.
+    // Fall back to the external linker when GOT/PLT indirection is needed.
+    for (int si = 0; si < s->n_secs; si++) {
+        LinkSec *sec = &s->secs[si];
+        for (int rj = 0; rj < sec->n_relocs; rj++) {
+            LinkReloc *r = &sec->relocs[rj];
+            // GOT/PLT relocations are not yet supported — fall back.
+            if (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
+                r->type == RL_GOTPCREL || r->type == RL_ARM64_B26)
+                return -1;
+        }
+    }
     // Create standard sections
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
