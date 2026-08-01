@@ -104,6 +104,7 @@ jobs:
           ./rcc.exe -o smoke.exe smoke.c
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > smoke2.c
           ./rcc.exe -o smoke2.exe smoke2.c
+          gcc -o real_smoke.exe smoke.c
 
       - name: Upload smoke.exe for diagnosis
         if: matrix.os == 'windows-latest'
@@ -154,7 +155,13 @@ jobs:
           $si.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si)
           $pi = New-Object Native+PROCESS_INFORMATION
           $ok = [Native]::CreateProcess($path, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, (Get-Location).Path, [ref]$si, [ref]$pi)
-          Write-Host "CreateProcess ok=$ok  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          Write-Host "CreateProcess(rcc-built) ok=$ok  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+          $rpath = (Resolve-Path .\real_smoke.exe).Path
+          $si2 = New-Object Native+STARTUPINFO
+          $si2.cb = [System.Runtime.InteropServices.Marshal]::SizeOf($si2)
+          $pi2 = New-Object Native+PROCESS_INFORMATION
+          $ok2 = [Native]::CreateProcess($rpath, $null, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, (Get-Location).Path, [ref]$si2, [ref]$pi2)
+          Write-Host "CreateProcess(gcc-built) ok=$ok2  err=$([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
 
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'
