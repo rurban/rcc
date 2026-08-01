@@ -174,8 +174,15 @@ int link_load_object(LinkState *s, const char *path) {
         return -1;
     }
 
-    // Track object for cleanup
-    LinkObj obj = {.path = strdup(path), .image = image, .image_size = (size_t)st.st_size};
+    // Track object path for diagnostics only -- image stays local to this
+    // function (unlike ELF's LinkObj tracking, which keeps its own copy).
+    // mmap()'d memory must be released with munmap(), never free(); handing
+    // a live mmap pointer to link_state_free()'s free(s->objs[i].image)
+    // corrupts the heap allocator (observed as an immediate SIGABRT/SIGSEGV
+    // in free() on the next allocation, since every byte of this object's
+    // data has already been copied out via link_sec_append()/link_add_sym()
+    // by the time this function returns -- the mapping is not needed after).
+    LinkObj obj = {.path = strdup(path), .image = NULL, .image_size = 0};
     if (s->n_objs == s->cap_objs) {
         s->cap_objs = s->cap_objs ? s->cap_objs * 2 : 4;
         s->objs = realloc(s->objs, (size_t)s->cap_objs * sizeof(LinkObj));
@@ -205,12 +212,20 @@ int link_load_object(LinkState *s, const char *path) {
                 char sectname[17] = {0}, segname_s[17] = {0};
                 memcpy(sectname, sc, 16);
                 memcpy(segname_s, sc + 16, 16);
-                uint64_t size = mo_r64(sc + 32);
-                uint32_t offset = mo_r32(sc + 40);
-                uint32_t align_p2 = mo_r32(sc + 48);
-                uint32_t reloff = mo_r32(sc + 52);
-                uint32_t nreloc = mo_r32(sc + 56);
-                uint32_t flags = mo_r32(sc + 60);
+                // section_64 layout: sectname[16]+segname[16] then addr(8)
+                // at +32, size(8) at +40, offset(4) at +48, align(4) at +52,
+                // reloff(4) at +56, nreloc(4) at +60, flags(4) at +64. This
+                // previously read size/offset/align/reloff/nreloc/flags all
+                // 8 bytes too early (starting from the always-zero `addr`
+                // field instead of skipping past it), making every
+                // section's observed size 0 -- the writer's section data
+                // was silently dropped from every linked executable.
+                uint64_t size = mo_r64(sc + 40);
+                uint32_t offset = mo_r32(sc + 48);
+                uint32_t align_p2 = mo_r32(sc + 52);
+                uint32_t reloff = mo_r32(sc + 56);
+                uint32_t nreloc = mo_r32(sc + 60);
+                uint32_t flags = mo_r32(sc + 64);
                 (void)align_p2;
 
                 bool is_text = (strcmp(segname_s, "__TEXT") == 0 &&
@@ -332,6 +347,7 @@ int link_load_object(LinkState *s, const char *path) {
         free(sym_map);
     }
     free(sec_map);
+    munmap(image, (size_t)st.st_size);
     return 0;
 }
 
@@ -353,6 +369,25 @@ int link_macho(LinkState *s) {
     // only a dynamically-linked Mach-O executable (MH_EXECUTE) against
     // system dylibs.  Fall back to the external linker for both.
     if (s->opt_static || s->opt_shared) return -1;
+    // KNOWN LIMITATION: no GOT table or PLT/lazy-binding stubs are built.
+    // RL_ARM64_GOT_PG/RL_ARM64_GOT_LO and RL_GOTPCREL relocations against
+    // *external* symbols (link_reloc_apply's "no real GOT at this level"
+    // fallback in link.c) resolve as if the ADRP+LDR/ADRP+ADD sequence the
+    // codegen emitted for GOT-relative addressing were instead a direct,
+    // link-time-known address -- correct only when the symbol is DEFINED
+    // in this same link (e.g. a local .rodata reference), and silently
+    // wrong for anything genuinely external (e.g. libSystem's printf),
+    // whose real address isn't known until dyld resolves it at load time.
+    // A real fix needs the same machinery link_elf.c's .plt/.got.plt and
+    // link_pe.c's IAT trampolines already have for their platforms: a
+    // __DATA,__got section of real pointer slots plus, for calls,
+    // PLT-style stub bodies dyld's lazy/non-lazy bind opcodes (currently
+    // hardcoded empty in LC_DYLD_INFO_ONLY below) can bind into. Until
+    // then this linker only actually works for programs whose every
+    // external reference resolves through relocations we do apply
+    // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
+    // pointers) -- anything needing a real GOT/PLT slot silently emits a
+    // corrupted call/load.
     // Create standard sections
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
@@ -361,30 +396,23 @@ int link_macho(LinkState *s) {
     // .init_array for ctors
     link_find_or_create_sec(s, ".init_array", true, true, false, false, false, 8);
 
-    // Entry point
-    int entry_sym = link_find_sym(s, "_main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
-
-    // Layout
     uint64_t base = 0x100000000ULL; // default ARM64 base
-    if (link_layout(s, base, 0x4000) != 0) return -1;
 
-    // Apply relocations
-    link_apply_relocs(s, 0);
-
-    // Entry
-    uint64_t entry_addr = 0;
-    if (entry_sym >= 0) entry_addr = mo_symbol_address(s, entry_sym);
-
-    // Identify undefined symbols for dynamic linking
-    int n_undef = 0;
-    for (int i = 0; i < s->n_syms; i++) {
-        if (s->syms[i].sec < 0 && s->syms[i].name && s->syms[i].name[0])
-            n_undef++;
-    }
-
-    // Section listing
+    // Section listing and address assignment. This -- not the shared,
+    // ELF/PE-oriented link_layout() (which spreads text/rodata/data across
+    // separate page-aligned regions) -- is Mach-O's real segment model:
+    // __TEXT houses every executable and read-only section packed
+    // 16-byte-aligned, __DATA houses everything else the same way.
+    // Addresses must be assigned here, before relocations and the entry
+    // point are resolved: link_apply_relocs()/mo_symbol_address() read
+    // sec->addr, and this file's own writer below places every section
+    // exactly where this loop says it goes (identical arithmetic, so the
+    // two can never disagree). The previous code called the shared
+    // link_layout() for this instead, then only computed these real
+    // addresses afterward purely for the writer -- relocations and the
+    // entry point silently used link_layout()'s incompatible addresses,
+    // corrupting every reference into .text/.rodata/.data (a jump to
+    // __PAGEZERO for the entry point in the simplest case).
     typedef struct {
         LinkSec *sec;
         const char *segname;
@@ -417,18 +445,46 @@ int link_macho(LinkState *s) {
         n_mo++;
     }
 
-    // Compute segment sizes
+    uint64_t text_vmaddr = base + 0x4000; // after __PAGEZERO
     uint64_t text_vmsize = 0, data_vmsize = 0;
-    for (int i = 0; i < n_mo; i++) {
-        LinkSec *sec = mo_secs[i].sec;
-        uint64_t sz = mo_align(sec->len, 16);
-        if (strcmp(mo_secs[i].segname, "__TEXT") == 0)
+    {
+        uint64_t cur_vm = text_vmaddr;
+        for (int i = 0; i < n_mo; i++) {
+            if (strcmp(mo_secs[i].segname, "__TEXT") != 0) continue;
+            mo_secs[i].sec->addr = cur_vm;
+            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
+            cur_vm += sz;
             text_vmsize += sz;
-        else
-            data_vmsize += sz;
+        }
     }
-    uint64_t text_vmaddr = base + 0x4000; // after pagezero
     uint64_t data_vmaddr = mo_align(text_vmaddr + text_vmsize, 0x4000);
+    {
+        uint64_t cur_vm = data_vmaddr;
+        for (int i = 0; i < n_mo; i++) {
+            if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
+            mo_secs[i].sec->addr = cur_vm;
+            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
+            cur_vm += sz;
+            data_vmsize += sz;
+        }
+    }
+
+    // Apply relocations now that every section has its real address.
+    link_apply_relocs(s, 0);
+
+    // Entry point
+    int entry_sym = link_find_sym(s, "_main");
+    if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
+    if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
+    uint64_t entry_addr = 0;
+    if (entry_sym >= 0) entry_addr = mo_symbol_address(s, entry_sym);
+
+    // Identify undefined symbols for dynamic linking
+    int n_undef = 0;
+    for (int i = 0; i < s->n_syms; i++) {
+        if (s->syms[i].sec < 0 && s->syms[i].name && s->syms[i].name[0])
+            n_undef++;
+    }
 
     // Header size computation
     uint32_t nsects_text = 0, nsects_data = 0;
@@ -441,7 +497,14 @@ int link_macho(LinkState *s) {
     uint32_t data_lc_size = 72 + nsects_data * 80;
     uint32_t lc_build_version = 24;
     uint32_t lc_main = 24;
-    uint32_t lc_dylib = 24 + 28; // "usr/lib/libSystem.B.dylib\0" padded to align
+    // Must match the padded size link_macho() actually writes below for
+    // LC_LOAD_DYLIB, byte for byte -- this feeds cmds_end/text_fileoff,
+    // which every later file offset (section data, symtab, strtab) is
+    // computed from. A stale hardcoded constant here desyncs those offsets
+    // from what the LC_SEGMENT_64 section headers claim, corrupting the
+    // whole file layout (ld64/dyld reject it outright; observed as
+    // "malformed object" / an immediate crash on load).
+    uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
     uint32_t lc_dyld_info = 48;
     // Symbol table: 1 null entry + undefined symbols
     uint32_t lc_symtab = 24;
@@ -453,10 +516,18 @@ int link_macho(LinkState *s) {
     ncmds += 1; // LC_LOAD_DYLIB
     ncmds += 1; // LC_BUILD_VERSION
     ncmds += 1; // LC_MAIN
+    uint32_t lc_pagezero = 72; // __PAGEZERO segment
     uint32_t lc_linkedit = 72; // __LINKEDIT segment
 
     uint32_t header_size = 32;
-    uint32_t total_lc = lc_linkedit + text_lc_size + data_lc_size;
+    // sizeofcmds (mach_header_64) covers every load command written below,
+    // __PAGEZERO included -- it was missing here, so cmds_end/text_fileoff
+    // (and therefore every file offset the __TEXT/__DATA section headers
+    // and the "write section data"/"write symtab" cursors below rely on)
+    // were 72 bytes short of where __PAGEZERO's own bytes actually land in
+    // the file, corrupting the layout the same way the LC_LOAD_DYLIB size
+    // mismatch did above.
+    uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size + data_lc_size;
     total_lc += lc_build_version + lc_main + lc_dylib + lc_dyld_info;
     total_lc += lc_symtab + lc_dysymtab;
     uint32_t cmds_end = header_size + total_lc;
@@ -606,7 +677,12 @@ int link_macho(LinkState *s) {
     mo_w64(f, cur_vm);
     mo_w64(f, mo_align(linkedit_end - linkedit_fileoff, 0x4000));
     mo_w64(f, linkedit_fileoff);
-    mo_w64(f, mo_align(linkedit_end - linkedit_fileoff, 16));
+    // filesize must equal exactly what gets written below (LINKEDIT's
+    // content already ends at a strtab_size-rounded, page-independent
+    // byte count -- no separate rounding here); rounding up to 16 claimed
+    // 8 more bytes than were ever written, so dyld rejected the file as
+    // truncated ("fileoff+filesize extends past the end of the file").
+    mo_w64(f, linkedit_end - linkedit_fileoff);
     mo_w32(f, 7);
     mo_w32(f, 1); // maxprot=rwx, initprot=r--
     mo_w32(f, 0);
@@ -642,10 +718,22 @@ int link_macho(LinkState *s) {
     mo_w32(f, 0); // extrel, local
     mo_w32(f, 0);
     mo_w32(f, 0); // locrel, locrel count
-    for (int i = 0; i < 5; i++) mo_w32(f, 0);
+    // dysymtab_command has exactly 18 uint32_t fields after cmd/cmdsize
+    // (ilocalsym..nlocalsym, iextdefsym..nundefsym, tocoff..nmodtab,
+    // extrefsymoff..nindirectsyms, extreloff..nlocrel); 14 are written
+    // individually above, so this loop covers the last 4
+    // (extreloff,nextrel,locreloff,nlocrel), not 5 -- the stray extra
+    // zero word pushed every load command after LC_DYSYMTAB 4 bytes out
+    // of place, which is what otool's "cmdsize not a multiple of 8"
+    // report on the (now misaligned) LC_LOAD_DYLIB was actually seeing.
+    for (int i = 0; i < 4; i++) mo_w32(f, 0);
 
     // --- LC_LOAD_DYLIB ---
-    uint32_t dylib_padded = (uint32_t)mo_align(24 + strlen(dylib_path) + 1, 8);
+    // dylib_padded must equal lc_dylib (computed earlier and baked into
+    // cmds_end/text_fileoff): keeping this a single source of truth
+    // instead of two independent computations is what the fix above
+    // exists to guarantee.
+    uint32_t dylib_padded = lc_dylib;
     mo_w32(f, LC_LOAD_DYLIB);
     mo_w32(f, dylib_padded);
     mo_w32(f, 24); // offset to string
@@ -675,15 +763,25 @@ int link_macho(LinkState *s) {
     if (text_fileoff > cur) mo_wzeros(f, (size_t)(text_fileoff - cur));
 
     // --- Write section data ---
+    // sec->data is exactly sec->len bytes (unaligned); every offset this
+    // file computes for the section *after* this one (and the fixed
+    // relationship between mo_align(sec->len,16) steps and the section
+    // headers written above) assumes each section occupies its
+    // 16-byte-rounded length on disk. The previous code advanced cur_fo
+    // by the rounded length but only ever wrote the unrounded sec->len
+    // bytes, silently drifting ftell() behind cur_fo by the rounding slack
+    // of every section so far -- so each later section's real file bytes
+    // landed short of the offset its own header claims (observed as e.g.
+    // __const's bytes ending up 8 bytes before the offset dyld/otool read
+    // them at, showing up as all-zero padding instead of the real data).
     cur_fo = text_fileoff;
     for (int i = 0; i < n_mo; i++) {
         LinkSec *sec = mo_secs[i].sec;
         if (sec->is_bss) continue;
-        // Compute actual file offset based on section order
-        uint64_t act_fo = cur_fo;
-        if (act_fo > cur_fo) mo_wzeros(f, (size_t)(act_fo - (uint64_t)cur_fo));
         mo_wbuf(f, sec->data, sec->len);
-        cur_fo = act_fo + mo_align(sec->len, 16);
+        uint64_t padded = mo_align(sec->len, 16);
+        if (padded > sec->len) mo_wzeros(f, (size_t)(padded - sec->len));
+        cur_fo += padded;
     }
     cur = ftell(f);
     if (symtab_off > (uint64_t)cur) mo_wzeros(f, (size_t)(symtab_off - (uint64_t)cur));
