@@ -115,6 +115,7 @@ jobs:
       - name: Smoke test (Windows) - diagnose
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        timeout-minutes: 2
         run: |
           Add-Type @"
           using System;
@@ -132,9 +133,6 @@ jobs:
           $bytes = [System.IO.File]::ReadAllBytes($path)
           Write-Host "First 128 bytes:"
           Write-Host (($bytes[0..127] | ForEach-Object { $_.ToString("x2") }) -join ' ')
-          Write-Host "--- via cmd /c ---"
-          cmd /c smoke.exe
-          Write-Host "cmd exit: $LASTEXITCODE"
 
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'
