@@ -101,6 +101,9 @@ int main(void)
         char srcf[128], exef[128], cmd[512];
         snprintf(srcf, sizeof(srcf), "%s/test_ppa_run_%d.c", td, pid);
         snprintf(exef, sizeof(exef), "%s/test_ppa_run_%d", td, pid);
+#ifdef _WIN32
+        strcat(exef, ".exe");
+#endif
         static const char src[] =
             "int hit;\n"
             "void real_target(void) { hit = 42; }\n"

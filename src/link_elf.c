@@ -52,6 +52,7 @@
 #define STT_OBJECT 1
 #define STT_FUNC 2
 #define STT_SECTION 3
+#define STT_FILE 4
 #define STT_TLS 6
 #define STV_DEFAULT 0
 #define SHN_UNDEF 0
@@ -135,6 +136,13 @@ static uint16_t r16le(const uint8_t *p) {
 }
 static uint32_t r32le(const uint8_t *p) {
     return (uint32_t)r16le(p) | ((uint32_t)r16le(p + 2) << 16);
+}
+// The classic ar/ranlib archive symbol table ("/" member) always stores
+// its offset entries big-endian, independent of the target ELF's own
+// byte order -- a fixed historical convention of the ar file format
+// itself, not something to swap based on ELFDATA2LSB/MSB.
+static uint32_t r32be(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 static uint64_t r64le(const uint8_t *p) {
     return (uint64_t)r32le(p) | ((uint64_t)r32le(p + 4) << 32);
@@ -468,6 +476,22 @@ static int elf_load_object(LinkState *s, const char *path) {
                     sym_map[k] = sym_idx;
                     continue;
                 }
+                if (stype == STT_FILE) {
+                    // Compiler-emitted ".file" debug metadata (the
+                    // source filename, e.g. "foo.c") -- pure debug
+                    // info, never a real relocation target. Its
+                    // SHN_ABS section index maps to out_sec=-2, which
+                    // gets folded to map_sec=-1 (undefined) below same
+                    // as any other absolute symbol; left in, that
+                    // makes it indistinguishable from a genuine
+                    // undefined external reference by the time
+                    // link_elf()'s "identify unresolved undefined
+                    // symbols" pass runs, so it was getting synthesized
+                    // a bogus DT_NEEDED/PLT entry and rejected by the
+                    // runtime loader as "undefined symbol: foo.c".
+                    sym_map[k] = -1;
+                    continue;
+                }
                 if (bind == STB_LOCAL && *name == '\0') {
                     sym_map[k] = -1;
                     continue;
@@ -590,33 +614,45 @@ static int load_archive(LinkState *s, const char *path) {
         return 0;
     }
 
-    uint32_t nsym = r32le(data + symtab_off);
+    // The classic ar symbol table ("/" member): a big-endian symbol
+    // count, that many big-endian archive-member-header offsets (each
+    // pointing at the ABSOLUTE FILE OFFSET -- including the leading
+    // "!<arch>\n" -- of the header of the member defining that symbol),
+    // then that many NUL-terminated symbol name strings packed back to
+    // back in the same order. Precompute each name's start once, up
+    // front, by walking the string table sequentially: strings don't
+    // carry their own length or fixed stride, so finding the k-th one
+    // requires having already found the (k-1)-th one's terminator.
+    uint32_t nsym = r32be(data + symtab_off);
+    const uint8_t *nametab = data + symtab_off + 4 + (size_t)nsym * 4;
+    const uint8_t *nametab_end = data + symtab_off + symtab_size;
+    const char **symnames = calloc(nsym, sizeof(char *));
+    uint32_t *symoffs = calloc(nsym, sizeof(uint32_t));
+    const uint8_t *cur = nametab;
+    for (uint32_t i = 0; i < nsym && cur < nametab_end; i++) {
+        symoffs[i] = r32be(data + symtab_off + 4 + i * 4);
+        symnames[i] = (const char *)cur;
+        while (cur < nametab_end && *cur) cur++;
+        if (cur < nametab_end) cur++; // skip the NUL
+    }
+
     uint8_t *used = calloc(nsym, 1);
     int changed = 1, round = 0;
     while (changed && round < 32) {
         changed = 0;
         round++;
         for (uint32_t i = 0; i < nsym; i++) {
-            if (used[i]) continue;
-            uint32_t moff = r32le(data + symtab_off + 4 + i * 4);
-            const char *name = (const char *)data + symtab_off + 4 + nsym * 4 + i;
-            while (name < (const char *)data + symtab_off + symtab_size && *name == '\0') name++;
-            if ((const uint8_t *)name >= data + symtab_off + symtab_size) continue;
-            const char *end = name;
-            while (end < (const char *)data + symtab_off + symtab_size && *end) end++;
-            char symname[256];
-            size_t len = (size_t)(end - name);
-            if (len >= sizeof(symname)) len = sizeof(symname) - 1;
-            memcpy(symname, name, len);
-            symname[len] = '\0';
-            name = end;
-            if (link_find_sym(s, symname) < 0) continue;
+            if (used[i] || !symnames[i]) continue;
+            if (link_find_sym(s, symnames[i]) < 0) continue;
+            // symoffs[i] is the target member header's absolute file
+            // offset (including the archive-wide magic); off tracks the
+            // same convention while scanning member headers below.
             off = 8;
             while (off + 60 <= sz) {
                 char hdr[60];
                 memcpy(hdr, data + off, 60);
                 uint64_t msize = (uint64_t)strtoull(hdr + 48, NULL, 10);
-                if (off + 60 == moff + 8) {
+                if (off == symoffs[i]) {
                     char tmp[] = "/tmp/rcc_link_ar_XXXXXX";
                     int tfd = mkstemp(tmp);
                     if (tfd >= 0) {
@@ -636,12 +672,101 @@ static int load_archive(LinkState *s, const char *path) {
     }
 
     free(used);
+    free(symoffs);
+    free((void *)symnames);
     munmap(data, sz);
     return 0;
 }
 
+// A bare "lib<name>.so" -- what a real linker's -l<name> search looks
+// for -- is frequently not a real, loadable ELF shared object at all:
+// distro -dev packages commonly ship it as a GNU ld *linker script*
+// (plain text, e.g. `GROUP ( /lib64/libm.so.6 AS_NEEDED (...) )`),
+// meant only for link-time consumption by a real linker that knows how
+// to follow it -- the *runtime* loader (ld.so) has no idea what a
+// linker script is and rejects it outright ("invalid ELF header") the
+// moment it tries to map a DT_NEEDED entry naming one. Rather than
+// parsing linker scripts ourselves, just refuse to claim a name that
+// isn't backed by a real, loadable ELF shared object: fall back to the
+// mingw/gcc toolchain, whose own linker already knows how to follow
+// them.
+static bool is_real_elf_so(const char *path) {
+    uint8_t hdr[4];
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t n = fread(hdr, 1, 4, f);
+    fclose(f);
+    return n == 4 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F';
+}
+
+// Forward decl: full definition (with the standard-dirs search list)
+// comes later in this file; resolve_archives() needs it earlier.
+static int find_shared_lib(const char *libname, char *out_path, size_t out_sz,
+                           char *out_soname, size_t out_soname_sz);
+
+// Parse -l/-L flags from s->libs and pull in any static archive (.a) that
+// resolves an -l<name> to a real file, using load_archive()'s existing
+// GNU-ar symbol-table walker.  A shared object of the same name is
+// preferred over a static archive when both exist (matching a real
+// linker's -l search: .so before .a, unless -static), so an -l<name>
+// with a matching .so is left alone here -- that gets a verified
+// DT_NEEDED entry later in link_elf() itself, once .dynstr exists to
+// hold the name.
 static int resolve_archives(LinkState *s) {
-    (void)s;
+    const char *lp = s->libs;
+    while (lp && *lp) {
+        while (*lp == ' ') lp++;
+        if (!*lp) break;
+        if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
+            lp += 2;
+            const char *end = lp;
+            while (*end && *end != ' ') end++;
+            size_t len = (size_t)(end - lp);
+            if (len > 0 && len < 60) {
+                char aname[64], soname[64];
+                snprintf(aname, sizeof(aname), "lib%.*s.a", (int)len, lp);
+                snprintf(soname, sizeof(soname), "lib%.*s.so", (int)len, lp);
+                char apath[600], sopath[600];
+                bool found_a = false, found_so = false;
+                const char *dp = s->libs;
+                while (dp && *dp && !(found_a && found_so)) {
+                    while (*dp == ' ') dp++;
+                    if (!*dp) break;
+                    if (!strncmp(dp, "-L", 2) && dp[2] && dp[2] != ' ') {
+                        dp += 2;
+                        const char *dend = dp;
+                        while (*dend && *dend != ' ') dend++;
+                        if (!found_a) {
+                            snprintf(apath, sizeof(apath), "%.*s/%s", (int)(dend - dp), dp, aname);
+                            struct stat ast;
+                            if (stat(apath, &ast) == 0) found_a = true;
+                        }
+                        if (!found_so) {
+                            snprintf(sopath, sizeof(sopath), "%.*s/%s", (int)(dend - dp), dp, soname);
+                            if (is_real_elf_so(sopath)) found_so = true;
+                        }
+                        dp = dend;
+                    } else {
+                        while (*dp && *dp != ' ') dp++;
+                    }
+                }
+                if (!found_so) {
+                    char stdpath[600];
+                    if (find_shared_lib(soname, stdpath, sizeof(stdpath), NULL, 0) == 0)
+                        found_so = true;
+                }
+                // Only pull the archive in when there's no .so for this
+                // exact name to prefer instead (or we're statically
+                // linking, where a .so wouldn't be usable anyway).
+                if (found_a && (s->opt_static || !found_so)) {
+                    if (load_archive(s, apath) != 0) return -1;
+                }
+            }
+            lp = end;
+        } else {
+            while (*lp && *lp != ' ') lp++;
+        }
+    }
     return 0;
 }
 
@@ -910,22 +1035,52 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
     return 0;
 }
 
-// Find a shared library by name in the standard system library directories.
-// Returns 0 and fills out_path on success, -1 if not found anywhere.
-static int find_shared_lib(const char *libname, char *out_path, size_t out_sz) {
+// Find a shared library by name in the standard, architecture-specific
+// system library directories (never the bare /lib or /usr/lib: on a
+// multilib system those commonly hold the *other* architecture's copy,
+// and even when they don't, whatever they resolve "libname" to via a
+// symlink is not reliably what the runtime loader's own search --
+// governed by /etc/ld.so.cache, not by directory-list order here --
+// will resolve the same bare name to). Returns 0 and fills out_path
+// (the full path actually used) and out_soname (just the basename --
+// what a DT_NEEDED entry carries) on success, -1 if nothing usable was
+// found anywhere.
+//
+// A bare "lib<name>.so" is frequently not a real, loadable ELF shared
+// object at all: distro -dev packages commonly ship it as a GNU ld
+// *linker script* (plain text, e.g. `GROUP ( /lib64/libm.so.6
+// AS_NEEDED (...) )`), meant only for link-time consumption by a real
+// linker that knows how to follow it -- the *runtime* loader has no
+// idea what a linker script is and rejects it outright ("invalid ELF
+// header") the moment it tries to map a DT_NEEDED entry naming one.
+// Rather than parsing linker scripts in general, special-case the one
+// pattern every glibc install actually needs: if "lib<name>.so" itself
+// isn't real ELF, retry "lib<name>.so.6" in the same directory -- the
+// canonical glibc SONAME a real ld-linked binary ends up with for
+// libm/libpthread/etc regardless (glibc's own -dev packages ship
+// exactly this script-plus-real-so.6 pairing).
+static int find_shared_lib(const char *libname, char *out_path, size_t out_sz,
+                           char *out_soname, size_t out_soname_sz) {
     static const char *dirs[] = {
         "/usr/lib64",
         "/usr/lib/x86_64-linux-gnu",
         "/lib/x86_64-linux-gnu",
         "/lib64",
-        "/lib",
-        "/usr/lib",
         NULL,
     };
     for (int i = 0; dirs[i]; i++) {
         snprintf(out_path, out_sz, "%s/%s", dirs[i], libname);
-        struct stat st;
-        if (stat(out_path, &st) == 0) return 0;
+        if (is_real_elf_so(out_path)) {
+            if (out_soname) snprintf(out_soname, out_soname_sz, "%s", libname);
+            return 0;
+        }
+        char versioned[600];
+        snprintf(versioned, sizeof(versioned), "%s.6", out_path);
+        if (is_real_elf_so(versioned)) {
+            snprintf(out_path, out_sz, "%s", versioned);
+            if (out_soname) snprintf(out_soname, out_soname_sz, "%s.6", libname);
+            return 0;
+        }
     }
     return -1;
 }
@@ -1200,33 +1355,124 @@ int link_elf(LinkState *s) {
         int libgcc_off = (int)link_sec_append(s, dynstr_sec,
                                               (const uint8_t *)"libgcc_s.so.1", 14, 1);
 
-        // Parse -l flags for additional DT_NEEDED entries.
+        // Parse -l flags for additional DT_NEEDED entries.  Collect -L
+        // search dirs first (order matters: -L dirs are searched before
+        // the standard system dirs, same as a real linker) so each -l
+        // name can be verified against a real file instead of assumed.
+
+        const char *user_dirs[16];
+        int n_user_dirs = 0;
+        {
+            const char *dp = s->libs;
+            while (dp && *dp) {
+                while (*dp == ' ') dp++;
+                if (!*dp) break;
+                if (!strncmp(dp, "-L", 2) && dp[2] && dp[2] != ' ') {
+                    dp += 2;
+                    const char *dend = dp;
+                    while (*dend && *dend != ' ') dend++;
+                    if (n_user_dirs < 16) {
+                        char *d = malloc((size_t)(dend - dp) + 1);
+                        memcpy(d, dp, (size_t)(dend - dp));
+                        d[dend - dp] = '\0';
+                        user_dirs[n_user_dirs++] = d;
+                    }
+                    dp = dend;
+                } else {
+                    while (*dp && *dp != ' ') dp++;
+                }
+            }
+        }
 
         n_needed = 2;
         needed_offs[0] = libc_off;
         needed_offs[1] = libgcc_off;
+        bool lib_lookup_failed = false;
         const char *lp = s->libs;
         while (lp && *lp) {
             while (*lp == ' ') lp++;
             if (!*lp) break;
             if (!strncmp(lp, "-l", 2) && lp[2] && lp[2] != ' ') {
                 lp += 2;
-                char libname[64];
                 const char *end = lp;
                 while (*end && *end != ' ') end++;
                 size_t len = (size_t)(end - lp);
+                // Skip libs integrated into libc on modern glibc.
+                if (len == 7 && !memcmp(lp, "pthread", 7)) {
+                    lp = end;
+                    continue;
+                }
                 if (len > 0 && len < 60 && n_needed < 16) {
-                    snprintf(libname, sizeof(libname), "lib%.*s.so.6", (int)len, lp);
-                    // Skip libs integrated into libc on modern glibc
-                    if (len == 7 && !memcmp(lp, "pthread", 7)) continue;
+                    char soname[64];
+                    snprintf(soname, sizeof(soname), "lib%.*s.so", (int)len, lp);
+                    // A DT_NEEDED entry is a promise the dynamic loader
+                    // will be able to find this file at run time -- verify
+                    // it actually exists (checking -L dirs first, then the
+                    // standard system dirs) instead of assuming every
+                    // -l<name> names some shared library we've never
+                    // looked for. An unverified guess here previously
+                    // produced executables that "linked" successfully but
+                    // failed at startup with a missing-library error the
+                    // moment the loader actually went looking for it.
+                    char found_path[600];
+                    char resolved_soname[64];
+                    snprintf(resolved_soname, sizeof(resolved_soname), "%s", soname);
+                    bool found = false;
+                    for (int di = 0; di < n_user_dirs && !found; di++) {
+                        snprintf(found_path, sizeof(found_path), "%s/%s", user_dirs[di], soname);
+                        if (is_real_elf_so(found_path)) {
+                            found = true;
+                        } else {
+                            char versioned[600];
+                            snprintf(versioned, sizeof(versioned), "%s.6", found_path);
+                            if (is_real_elf_so(versioned)) {
+                                snprintf(resolved_soname, sizeof(resolved_soname), "%s.6", soname);
+                                found = true;
+                            }
+                        }
+                    }
+                    if (!found && find_shared_lib(soname, found_path, sizeof(found_path), resolved_soname, sizeof(resolved_soname)) == 0)
+                        found = true;
+                    if (!found) {
+                        // No .so anywhere -- but resolve_archives() above
+                        // already pulled in a matching .a for this exact
+                        // name if one existed in an -L dir, satisfying
+                        // whatever symbols it needed to statically. If
+                        // that's what happened, this -l flag needs no
+                        // DT_NEEDED entry at all (nothing dynamic to load).
+                        char aname[64], apath[600];
+                        snprintf(aname, sizeof(aname), "lib%.*s.a", (int)len, lp);
+                        bool found_a = false;
+                        for (int di = 0; di < n_user_dirs && !found_a; di++) {
+                            snprintf(apath, sizeof(apath), "%s/%s", user_dirs[di], aname);
+                            struct stat ast;
+                            if (stat(apath, &ast) == 0) found_a = true;
+                        }
+                        if (found_a) {
+                            lp = end;
+                            continue;
+                        }
+                        // Neither a real .so nor a real .a for this name:
+                        // we can't back the promise a DT_NEEDED entry
+                        // makes. Fall back to the mingw/gcc toolchain,
+                        // which does real -L/-l search.
+                        lib_lookup_failed = true;
+                        break;
+                    }
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
-                                                                 (const uint8_t *)libname, strlen(libname) + 1, 1);
+                                                                 (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
                     n_needed++;
                 }
                 lp = end;
             } else {
                 while (*lp && *lp != ' ') lp++;
             }
+        }
+        for (int di = 0; di < n_user_dirs; di++) free((void *)user_dirs[di]);
+        if (lib_lookup_failed) {
+            free(dyn_syms);
+            free(dyn_idx);
+            return -1;
         }
 
         // .dynsym: null entry first.
@@ -1261,7 +1507,7 @@ int link_elf(LinkState *s) {
             for (int k = 0; k < n_dyn; k++)
                 names[k] = s->syms[dyn_syms[k]].name;
             char libc_path[512];
-            if (find_shared_lib("libc.so.6", libc_path, sizeof(libc_path)) == 0)
+            if (find_shared_lib("libc.so.6", libc_path, sizeof(libc_path), NULL, 0) == 0)
                 lookup_lib_symbol_versions(libc_path, names, dyn_versions, n_dyn);
             free(names);
         }

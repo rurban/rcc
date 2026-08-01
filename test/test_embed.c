@@ -29,6 +29,9 @@ static int compile_and_run(const char *rcc, const char *src, const char *tag) {
     char srcf[512], exef[512], cmd[2048];
     snprintf(srcf, sizeof(srcf), "%s/test_embed_%s_%d.c", td, tag, pid);
     snprintf(exef, sizeof(exef), "%s/test_embed_%s_%d", td, tag, pid);
+#ifdef _WIN32
+    strcat(exef, ".exe");
+#endif
     FILE *f = fopen(srcf, "w");
     if (!f) { printf("FAIL [%s]: cannot write %s\n", tag, srcf); return -1; }
     fputs(src, f);

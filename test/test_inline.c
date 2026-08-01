@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include "test_common.h"
 
@@ -54,6 +55,9 @@ static void check_finline_stmt_expr_clone(void) {
     char srcf[128], exef[128], cmd[512];
     snprintf(srcf, sizeof(srcf), "%s/test_finline_se_%d.c", td, pid);
     snprintf(exef, sizeof(exef), "%s/test_finline_se_%d", td, pid);
+#ifdef _WIN32
+    strcat(exef, ".exe");
+#endif
 
     static const char src[] =
         "struct S { int x; };\n"
