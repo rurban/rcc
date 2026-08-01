@@ -112,6 +112,30 @@ jobs:
           name: windows-smoke-exe
           path: smoke.exe
 
+      - name: Smoke test (Windows) - diagnose
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class Native {
+            [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+            public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+          }
+          "@
+          $path = (Resolve-Path .\smoke.exe).Path
+          $h = [Native]::LoadLibraryEx($path, [IntPtr]::Zero, 0x00000002) # DONT_RESOLVE_DLL_REFERENCES
+          $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          Write-Host "LoadLibraryEx handle=$h  Win32Error=$err"
+          Write-Host "File size: $((Get-Item $path).Length)"
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          Write-Host "First 128 bytes:"
+          Write-Host (($bytes[0..127] | ForEach-Object { $_.ToString("x2") }) -join ' ')
+          Write-Host "--- via cmd /c ---"
+          cmd /c smoke.exe
+          Write-Host "cmd exit: $LASTEXITCODE"
+
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'
         timeout-minutes: 2
