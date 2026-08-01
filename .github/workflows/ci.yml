@@ -105,6 +105,13 @@ jobs:
           printf '#include <stdlib.h>\nint main(){void *p=malloc(8);free(p);return p?0:1;}\n' > smoke2.c
           ./rcc.exe -o smoke2.exe smoke2.c
 
+      - name: Upload smoke.exe for diagnosis
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-smoke-exe
+          path: smoke.exe
+
       - name: Smoke test (Windows) - run
         if: matrix.os == 'windows-latest'
         timeout-minutes: 2
