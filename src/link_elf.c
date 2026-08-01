@@ -24,6 +24,7 @@
 #define EV_CURRENT 1
 #define ET_REL 1
 #define ET_EXEC 2
+#define ET_DYN 3
 #define EM_X86_64 62
 #define EM_AARCH64 183
 
@@ -80,6 +81,7 @@
 #define R_X86_64_PC64 24
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_GLOB_DAT 6
+#define R_X86_64_RELATIVE 8
 
 #define R_AARCH64_ABS64 257
 #define R_AARCH64_ABS32 258
@@ -103,6 +105,7 @@
 // Dynamic tags
 #define DT_NULL 0
 #define DT_NEEDED 1
+#define DT_SONAME 14
 #define DT_HASH 4
 #define DT_STRTAB 5
 #define DT_SYMTAB 6
@@ -774,13 +777,13 @@ static int resolve_archives(LinkState *s) {
 // ELF executable writer
 // ---------------------------------------------------------------------------
 
-static void write_ehdr(FILE *f, uint16_t machine, uint64_t entry, uint64_t phoff,
+static void write_ehdr(FILE *f, uint16_t e_type, uint16_t machine, uint64_t entry, uint64_t phoff,
                        uint16_t phnum) {
     uint8_t ident[16] = {
         0x7f, 'E', 'L', 'F', 2, 1, 1, 0,
         0, 0, 0, 0, 0, 0, 0, 0};
     wbuf(f, ident, 16);
-    w16le(f, ET_EXEC);
+    w16le(f, e_type);
     w16le(f, machine);
     w32le(f, 1);
     w64le(f, entry);
@@ -850,22 +853,34 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
 
             switch (r->type) {
             case RL_ABS64:
+                // A dynamic (imported) symbol's real address isn't known
+                // until ld.so resolves it at load time -- can't bake it
+                // in here. Write just the addend; the R_X86_64_64/
+                // R_AARCH64_ABS64 .rela.dyn entry emitted below (after
+                // this function returns) tells ld.so to add the symbol's
+                // resolved address on top at load time, same as a real
+                // linker's copy relocation for a function-pointer-typed
+                // global initialized from an external symbol (e.g.
+                // `void (*fp)(void) = close;`).
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    return -1;
+                    w64le_m(p, (uint64_t)A);
+                    break;
                 }
                 S = symbol_address(s, r->sym);
                 w64le_m(p, (r->addend ? 0 : r64le(p)) + S + (uint64_t)A);
                 break;
             case RL_ABS32:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    return -1;
+                    w32le_m(p, (uint32_t)A);
+                    break;
                 }
                 S = symbol_address(s, r->sym);
                 w32le_m(p, (uint32_t)((int32_t)(r->addend ? 0 : r32le(p)) + (int32_t)A + (int64_t)S));
                 break;
             case RL_ABS32U:
                 if (dyn_idx && dyn_idx[r->sym]) {
-                    return -1;
+                    w32le_m(p, (uint32_t)A);
+                    break;
                 }
                 S = symbol_address(s, r->sym);
                 w32le_m(p, (uint32_t)((r->addend ? 0 : r32le(p)) + (uint64_t)A + S));
@@ -1242,10 +1257,9 @@ static int load_crt_files(LinkState *s) {
 }
 
 int link_elf(LinkState *s) {
-    // Shared-object (.so) output is not implemented: no ET_DYN/SONAME/PT_DYNAMIC
-    // "is-a-library" support.  Fall back to the external linker rather than
-    // silently emitting a mislabeled ET_EXEC file.
-    if (s->opt_shared) return -1;
+    // Static + shared is nonsensical (there's no "statically linked
+    // shared object" concept); refuse rather than guess which one wins.
+    if (s->opt_static && s->opt_shared) return -1;
     if (resolve_archives(s) != 0) return -1;
 
     // Ensure required sections exist.
@@ -1254,15 +1268,23 @@ int link_elf(LinkState *s) {
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
 
-    // Load C runtime startup files when not linking statically.
-    if (!s->opt_static) {
+    // Load C runtime startup files when producing a standalone executable
+    // (crt1.o's _start -> __libc_start_main chain). A shared object needs
+    // none of this: it has no entry point of its own, and DT_INIT_ARRAY
+    // (set up below from any .init_array this link produced) is how its
+    // constructors run, the same way crt1.o would have wired them for an
+    // executable via .init_array too.
+    if (!s->opt_static && !s->opt_shared) {
         if (load_crt_files(s) != 0) return -1;
     }
 
-    int entry_sym = link_find_sym(s, "_start");
-    if (entry_sym < 0) {
-        // No _start: need C runtime.  Fall back to external linker.
-        return -1;
+    int entry_sym = -1;
+    if (!s->opt_shared) {
+        entry_sym = link_find_sym(s, "_start");
+        if (entry_sym < 0) {
+            // No _start: need C runtime.  Fall back to external linker.
+            return -1;
+        }
     }
 
     // Identify unresolved undefined symbols (excluding weak refs).
@@ -1284,12 +1306,39 @@ int link_elf(LinkState *s) {
         }
     }
 
-    bool do_dynamic = n_dyn > 0 && !s->opt_static;
+    // A shared object always needs .dynamic/.dynsym/PT_DYNAMIC
+    // infrastructure to be a discoverable, loadable shared object at
+    // all -- regardless of whether it happens to import anything.
+    bool do_dynamic = (n_dyn > 0 && !s->opt_static) || s->opt_shared;
     if (n_dyn > 0 && !do_dynamic) {
         // Unsupported dynamic linking configuration; fall back.
         free(dyn_syms);
         free(dyn_idx);
         return -1;
+    }
+
+    // For -shared, also collect every globally-visible symbol *defined*
+    // in this link (not just the undefined ones above) to export via
+    // .dynsym with a real address -- so other objects, or a dlopen()
+    // caller, can actually resolve this library's own functions/data.
+    // Exported entries are appended to .dynsym after the imported ones
+    // (dynsym index n_dyn+1 .. n_dyn+n_exp); dyn_idx[] intentionally
+    // stays untouched by them since dyn_idx marks *imports* specifically
+    // (apply_dynamic_relocs uses it to route a reference through the
+    // PLT/GOT instead of resolving it directly).
+    int n_exp = 0, cap_exp = 0;
+    int *exp_syms = NULL;
+    if (s->opt_shared) {
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0]) {
+                if (n_exp == cap_exp) {
+                    cap_exp = cap_exp ? cap_exp * 2 : 16;
+                    exp_syms = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
+                }
+                exp_syms[n_exp++] = i;
+            }
+        }
     }
 
     int interp_sec = -1, dynamic_sec = -1, dynsym_sec = -1, dynstr_sec = -1;
@@ -1301,12 +1350,16 @@ int link_elf(LinkState *s) {
     int *dynstr_off = NULL;
     int n_func_dyn = 0;
     int n_reladyn = 0;
+    int n_relative = 0;
+    int n_absdyn = 0;
+    int soname_off = 0;
     int libc_off = 0;
     int n_needed = 1;
     int needed_offs[16];
 
     if (do_dynamic) {
-        interp_sec = link_find_or_create_sec(s, ".interp", true, false, false, false, false, 1);
+        if (!s->opt_shared)
+            interp_sec = link_find_or_create_sec(s, ".interp", true, false, false, false, false, 1);
         dynamic_sec = link_find_or_create_sec(s, ".dynamic", true, false, false, false, false, 8);
         dynsym_sec = link_find_or_create_sec(s, ".dynsym", true, false, false, false, false, 8);
         dynstr_sec = link_find_or_create_sec(s, ".dynstr", true, false, false, false, false, 1);
@@ -1340,10 +1393,14 @@ int link_elf(LinkState *s) {
             }
         }
 
-        // .interp
-        const char *interp = s->arch == ARCH_AARCH64 ? "/lib/ld-linux-aarch64.so.1"
-                                                     : "/lib64/ld-linux-x86-64.so.2";
-        link_sec_append(s, interp_sec, (const uint8_t *)interp, strlen(interp) + 1, 1);
+        // .interp: only executables need to tell the kernel which
+        // dynamic linker to invoke on exec(); a shared object is always
+        // loaded *by* one (or by dlopen()), never exec()'d directly.
+        if (!s->opt_shared) {
+            const char *interp = s->arch == ARCH_AARCH64 ? "/lib/ld-linux-aarch64.so.1"
+                                                         : "/lib64/ld-linux-x86-64.so.2";
+            link_sec_append(s, interp_sec, (const uint8_t *)interp, strlen(interp) + 1, 1);
+        }
 
         // .dynstr: start with a null byte, then needed library names.
         uint8_t nul = 0;
@@ -1354,6 +1411,21 @@ int link_elf(LinkState *s) {
         // Add libgcc_s.so.1 for compiler-rt functions (__udivti3, etc.)
         int libgcc_off = (int)link_sec_append(s, dynstr_sec,
                                               (const uint8_t *)"libgcc_s.so.1", 14, 1);
+
+        // DT_SONAME: the name other objects' DT_NEEDED entries record
+        // when they link against this library -- what the runtime loader
+        // actually looks up at their load time, taking precedence over
+        // whatever path this file happened to be found at. Real linkers
+        // only emit one when passed -soname explicitly; lacking that
+        // flag here, fall back to this output file's own basename (e.g.
+        // "libfoo.so"), which is what every DT_NEEDED consumer will look
+        // for anyway since that's the name they pass to -l.
+        if (s->opt_shared) {
+            const char *base = strrchr(s->out_path, '/');
+            base = base ? base + 1 : s->out_path;
+            soname_off = (int)link_sec_append(s, dynstr_sec,
+                                              (const uint8_t *)base, strlen(base) + 1, 1);
+        }
 
         // Parse -l flags for additional DT_NEEDED entries.  Collect -L
         // search dirs first (order matters: -L dirs are searched before
@@ -1495,6 +1567,30 @@ int link_elf(LinkState *s) {
             link_sec_append(s, dynsym_sec, ent, 24, 8);
         }
 
+        // Exported (locally-defined, globally-visible) symbols: appended
+        // after the imports at dynsym index n_dyn+1..n_dyn+n_exp. Real
+        // section index doesn't matter for runtime resolution (this
+        // linker never emits a section header table at all, matching its
+        // existing ET_EXEC output; ld.so/dlsym() only look at st_value +
+        // the library's own load bias) -- 1 just needs to be anything
+        // other than SHN_UNDEF/SHN_ABS/SHN_COMMON so ld.so treats the
+        // symbol as defined here. st_value is only known after layout;
+        // patched in place below once addresses are final.
+        for (int k = 0; k < n_exp; k++) {
+            LinkSym *sym = &s->syms[exp_syms[k]];
+            int off = (int)link_sec_append(s, dynstr_sec, (const uint8_t *)sym->name,
+                                           strlen(sym->name) + 1, 1);
+            uint8_t ent[24];
+            w32le_m(ent, (uint32_t)off);
+            ent[4] = (uint8_t)(((sym->bind == 2 ? STB_WEAK : STB_GLOBAL) << 4) |
+                               (sym->type == 2 ? STT_FUNC : (sym->type == 1 ? STT_OBJECT : STT_NOTYPE)));
+            ent[5] = STV_DEFAULT;
+            w16le_m(ent + 6, 1);
+            w64le_m(ent + 8, 0); // st_value: patched after layout
+            w64le_m(ent + 16, sym->size);
+            link_sec_append(s, dynsym_sec, ent, 24, 8);
+        }
+
         // Symbol versioning: pin each imported dynamic symbol to the same
         // default (non-hidden) glibc version a normal ld-linked binary
         // would bind to. Without this, unversioned lookups can silently
@@ -1540,6 +1636,19 @@ int link_elf(LinkState *s) {
                 w16le_m(vb, vidx);
                 link_sec_append(s, versym_sec, vb, 2, 2);
             }
+            // .gnu.version is indexed 1:1 with .dynsym -- it must cover
+            // every entry there, imports AND (for -shared) the appended
+            // exports, or a reader walking past the imports' n_dyn count
+            // finds garbage past the array's real end (observed as
+            // "<corrupt>" version info on exported symbols via
+            // objdump/readelf, and ld.so itself either mis-binding or
+            // crashing while resolving them). VER_NDX_GLOBAL (1) is the
+            // standard "defined here, no specific version" index.
+            for (int k = 0; k < n_exp; k++) {
+                uint8_t vb[2];
+                w16le_m(vb, VER_NDX_GLOBAL);
+                link_sec_append(s, versym_sec, vb, 2, 2);
+            }
             // .gnu.version_r: one Verneed record for libc.so.6 with one
             // Vernaux entry per distinct required version.
             uint8_t vnbuf[16];
@@ -1565,8 +1674,10 @@ int link_elf(LinkState *s) {
         free(dyn_versions);
         free(dyn_verndx);
 
-        // .hash
-        uint32_t nchain = (uint32_t)(n_dyn + 1);
+        // .hash: covers both imported (indices 1..n_dyn) and, for
+        // -shared, exported (indices n_dyn+1..n_dyn+n_exp) symbols --
+        // anything a consumer might look up by name via ld.so/dlsym().
+        uint32_t nchain = (uint32_t)(n_dyn + n_exp + 1);
         uint32_t nbucket = 1;
         while (nbucket < nchain) nbucket <<= 1;
         uint32_t *buckets = calloc(nbucket, sizeof(uint32_t));
@@ -1576,6 +1687,13 @@ int link_elf(LinkState *s) {
             uint32_t h = elf_hash(name) % nbucket;
             chain[k] = buckets[h];
             buckets[h] = k;
+        }
+        for (int k = 0; k < n_exp; k++) {
+            uint32_t idx = (uint32_t)(n_dyn + 1 + k);
+            const char *name = s->syms[exp_syms[k]].name;
+            uint32_t h = elf_hash(name) % nbucket;
+            chain[idx] = buckets[h];
+            buckets[h] = idx;
         }
         uint8_t htmp[4];
         w32le_m(htmp, nbucket);
@@ -1654,7 +1772,51 @@ int link_elf(LinkState *s) {
                 plt_idx[si] = n_func_dyn++;
             }
         }
-        n_reladyn = n_dyn - n_func_dyn;
+        // ABS64/32/32U relocations against an *imported* (dynamic)
+        // symbol -- e.g. `void (*fp)(void) = close;`, a function
+        // pointer variable statically initialized from an external
+        // symbol -- can't be resolved at link time either: emit a real
+        // R_X86_64_64/R_AARCH64_ABS64 .rela.dyn entry naming the symbol,
+        // which ld.so resolves and writes at load time (apply_dynamic_
+        // relocs() above already left just the addend in place for
+        // these). Unlike n_relative/n_extra_got below, this isn't
+        // -shared-specific: a dynamically-linked *executable* doing the
+        // same thing hits the identical "address not known until load
+        // time" problem.
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            for (int j = 0; j < sec->n_relocs; j++) {
+                LinkReloc *r = &sec->relocs[j];
+                if (dyn_idx[r->sym] &&
+                    (r->type == RL_ABS64 || r->type == RL_ABS32 || r->type == RL_ABS32U))
+                    n_absdyn++;
+            }
+        }
+        // -shared additionally needs one R_*_RELATIVE .rela.dyn entry per
+        // ABS64/32/32U relocation against a *locally* defined symbol:
+        // codegen bakes in a link-time address assuming base 0 (this
+        // link uses base=0 for -shared, see below), but the real runtime
+        // address is base 0 + whatever load bias ld.so/dlopen() picks --
+        // ld.so applies that bias for us at load time via this reloc,
+        // exactly the way it does for PIE executables. PC-relative/
+        // GOT-relative code references need no such fixup: they're
+        // position-independent by construction.
+        if (s->opt_shared) {
+            for (int i = 0; i < s->n_secs; i++) {
+                LinkSec *sec = &s->secs[i];
+                for (int j = 0; j < sec->n_relocs; j++) {
+                    LinkReloc *r = &sec->relocs[j];
+                    if (!dyn_idx[r->sym] &&
+                        (r->type == RL_ABS64 || r->type == RL_ABS32 || r->type == RL_ABS32U))
+                        n_relative++;
+                }
+            }
+        }
+        // Extra GOT slots (n_extra_got, above) hold a base-0 absolute
+        // address for a locally-resolved GOT-relative reference too --
+        // same fixup requirement as n_relative, just via a different
+        // write path (got->data directly, not sec->relocs[]).
+        n_reladyn = n_dyn - n_func_dyn + n_relative + n_absdyn + (s->opt_shared ? n_extra_got : 0);
 
         // Allocate .got.plt, .plt, .rela.plt, .rela.dyn.
         int total_got_slots = 3 + n_dyn + n_extra_got;
@@ -1682,7 +1844,7 @@ int link_elf(LinkState *s) {
         }
 
         // Pre-allocate .dynamic entries so layout reserves the correct size.
-        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3;
+        int n_dynent = 5 + (n_reladyn > 0 ? 3 : 0) + (n_func_dyn > 0 ? 3 : 0) + n_needed + 3 + 4 + 3 + (s->opt_shared ? 1 : 0);
         uint8_t *dyn_placeholder = calloc((size_t)n_dynent * 16, 1);
         link_sec_append(s, dynamic_sec, dyn_placeholder, (size_t)n_dynent * 16, 8);
         free(dyn_placeholder);
@@ -1690,8 +1852,16 @@ int link_elf(LinkState *s) {
 
     // Layout.  Use page-aligned region boundaries so each PT_LOAD segment
     // starts at a valid file offset / virtual address pair.
+    // -shared uses base 0: a real shared object's own p_vaddr values are
+    // offsets from whatever load address ld.so/dlopen() actually picks
+    // (there is no fixed "preferred" address the way an ET_EXEC has),
+    // and R_*_RELATIVE relocs (see n_relative above) are computed
+    // assuming exactly this base -- ld.so adds its real load bias to
+    // them at load time.
     uint64_t base = 0x400000ULL;
-    if (s->opt_pie) base = 0x10000ULL;
+    if (s->opt_shared) base = 0;
+    else if (s->opt_pie)
+        base = 0x10000ULL;
     // Fix BSS section length from symbol sizes.
     {
         int bss_sec = link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
@@ -1721,8 +1891,10 @@ int link_elf(LinkState *s) {
     // Compute page-aligned header size for address shifting.
     {
         int phnum = 3;
-        if (do_dynamic) phnum += 2;
-        phnum += 1; // PT_GNU_STACK
+        if (do_dynamic) {
+            phnum += 1; // PT_DYNAMIC
+            if (!s->opt_shared) phnum += 1; // PT_INTERP
+        }
         for (int i = 0; i < s->n_secs; i++)
             if (s->secs[i].is_tls) {
                 phnum++;
@@ -1758,6 +1930,16 @@ int link_elf(LinkState *s) {
             if (dyn_idx[i]) continue; // resolved by dynamic linker
             uint64_t addr = symbol_address(s, i);
             w64le_m(got->data + (size_t)slot * 8, addr);
+        }
+
+        // Patch each exported symbol's dynsym entry with its real,
+        // final address (st_value at byte offset 8 within its 24-byte
+        // nlist entry, appended at dynsym index n_dyn+1..n_dyn+n_exp
+        // when .dynsym was built, before layout knew any addresses).
+        LinkSec *dynsym = &s->secs[dynsym_sec];
+        for (int k = 0; k < n_exp; k++) {
+            uint8_t *ent = dynsym->data + (size_t)(1 + n_dyn + k) * 24;
+            w64le_m(ent + 8, symbol_address(s, exp_syms[k]));
         }
 
         // PLT entries.
@@ -1853,9 +2035,79 @@ int link_elf(LinkState *s) {
             return -1;
         }
 
+        // R_X86_64_64/R_AARCH64_ABS64 entries for ABS64/32/32U relocs
+        // against *imported* symbols (n_absdyn, counted above) -- not
+        // -shared-specific, applies to any do_dynamic link. Unlike
+        // RELATIVE entries this carries a real symbol index: ld.so
+        // resolves the named symbol and adds it to r_addend itself.
+        {
+            uint32_t abs_type = s->arch == ARCH_AARCH64 ? R_AARCH64_ABS64 : R_X86_64_64;
+            for (int i = 0; i < s->n_secs; i++) {
+                LinkSec *sec = &s->secs[i];
+                for (int j = 0; j < sec->n_relocs; j++) {
+                    LinkReloc *r = &sec->relocs[j];
+                    if (!dyn_idx[r->sym] ||
+                        (r->type != RL_ABS64 && r->type != RL_ABS32 && r->type != RL_ABS32U))
+                        continue;
+                    uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
+                    w64le_m(rp, sec->addr + r->offset);
+                    w64le_m(rp + 8, ((uint64_t)dyn_idx[r->sym] << 32) | abs_type);
+                    w64le_m(rp + 16, (uint64_t)r->addend);
+                    reladyn_pos++;
+                }
+            }
+        }
+
+        // R_*_RELATIVE entries for -shared: one per ABS64/32/32U reloc
+        // against a locally-defined symbol (n_relative, counted above).
+        // apply_dynamic_relocs() already wrote the base-0 link-time value
+        // into the data at r->offset (symbol_address() returns an
+        // offset from base=0 for -shared, see above) -- read it back as
+        // the addend ld.so will add its real load bias to at load time.
+        if (s->opt_shared) {
+            uint32_t relative = s->arch == ARCH_AARCH64 ? R_AARCH64_RELATIVE : R_X86_64_RELATIVE;
+            for (int i = 0; i < s->n_secs; i++) {
+                LinkSec *sec = &s->secs[i];
+                for (int j = 0; j < sec->n_relocs; j++) {
+                    LinkReloc *r = &sec->relocs[j];
+                    if (dyn_idx[r->sym] ||
+                        (r->type != RL_ABS64 && r->type != RL_ABS32 && r->type != RL_ABS32U))
+                        continue;
+                    uint8_t *p = sec->data + r->offset;
+                    uint64_t addend = r->type == RL_ABS64 ? r64le(p)
+                        : r->type == RL_ABS32             ? (uint64_t)(int64_t)(int32_t)r32le(p)
+                                                          : (uint64_t)r32le(p);
+                    uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
+                    w64le_m(rp, sec->addr + r->offset);
+                    w64le_m(rp + 8, relative);
+                    w64le_m(rp + 16, addend);
+                    reladyn_pos++;
+                }
+            }
+
+            // Same fixup for the "extra" GOT slots filled above for
+            // locally-resolved GOT-relative references (e.g. a global
+            // variable accessed via GOT-indirect load, standard -fPIC
+            // codegen even for symbols defined in this same object):
+            // each slot holds symbol_address()'s base-0 value, which
+            // ld.so must still bias by the real load address, or code
+            // dereferencing the GOT slot's *content* (not the slot
+            // itself) follows a pointer into whatever used to be mapped
+            // at that offset in the pre-ASLR address space.
+            for (int i = 0; i < s->n_syms; i++) {
+                int slot = got_map[i];
+                if (slot < 0 || dyn_idx[i]) continue;
+                if (slot < 3 + n_dyn) continue; // reserved/dynamic slots
+                uint8_t *rp = reladyn->data + (size_t)reladyn_pos * 24;
+                w64le_m(rp, got_addr + (uint64_t)slot * 8);
+                w64le_m(rp + 8, relative);
+                w64le_m(rp + 16, symbol_address(s, i));
+                reladyn_pos++;
+            }
+        }
+
         // Build .dynamic section after layout so addresses are known.
         // The .dynamic section was pre-allocated before layout; patch it now.
-        uint8_t ent[16];
         size_t dpos = 0;
         LinkSec *dyn = &s->secs[dynamic_sec];
         auto_dyn_ent(dyn, &dpos, DT_HASH, s->secs[hash_sec].addr);
@@ -1863,6 +2115,8 @@ int link_elf(LinkState *s) {
         auto_dyn_ent(dyn, &dpos, DT_SYMTAB, s->secs[dynsym_sec].addr);
         auto_dyn_ent(dyn, &dpos, DT_STRSZ, s->secs[dynstr_sec].len);
         auto_dyn_ent(dyn, &dpos, DT_SYMENT, 24);
+        if (s->opt_shared)
+            auto_dyn_ent(dyn, &dpos, DT_SONAME, (uint64_t)soname_off);
         if (n_reladyn > 0) {
             auto_dyn_ent(dyn, &dpos, DT_RELA, s->secs[reladyn_sec].addr);
             auto_dyn_ent(dyn, &dpos, DT_RELASZ, (uint64_t)n_reladyn * 24);
@@ -1957,7 +2211,8 @@ int link_elf(LinkState *s) {
     if (rodata_filesz) phnum++;
     if (data_filesz || data_memsz) phnum++;
     if (do_dynamic) {
-        phnum += 2; // PT_INTERP and PT_DYNAMIC
+        phnum += 1; // PT_DYNAMIC
+        if (!s->opt_shared) phnum += 1; // PT_INTERP
     }
     phnum++; // PT_GNU_STACK
     {
@@ -1974,7 +2229,11 @@ int link_elf(LinkState *s) {
     // Section fileoffs and vaddrs already shifted above.
     // First LOAD covers offset 0 with text_off=0, text_addr=base.
 
-    uint64_t entry_addr = base;
+    // A shared object has no entry point of its own (dlopen()/DT_NEEDED
+    // never jump into it directly -- only DT_INIT_ARRAY constructors run,
+    // driven by ld.so, not e_entry); leave it 0, matching what a real
+    // `ld -shared` output's ELF header carries.
+    uint64_t entry_addr = s->opt_shared ? 0 : base;
     if (entry_sym >= 0) {
         entry_addr = s->secs[s->syms[entry_sym].sec].addr + s->syms[entry_sym].value;
     }
@@ -1992,7 +2251,7 @@ int link_elf(LinkState *s) {
     }
 
     uint16_t machine = (s->arch == ARCH_AARCH64) ? EM_AARCH64 : EM_X86_64;
-    write_ehdr(f, machine, entry_addr, ehdr_size, (uint16_t)phnum);
+    write_ehdr(f, s->opt_shared ? ET_DYN : ET_EXEC, machine, entry_addr, ehdr_size, (uint16_t)phnum);
 
     // Write program headers.
     uint64_t cur = ehdr_size;
@@ -2037,17 +2296,26 @@ int link_elf(LinkState *s) {
             cur += 56;
         }
     }
-    if (do_dynamic) {
+    if (do_dynamic && !s->opt_shared) {
         LinkSec *interp = &s->secs[interp_sec];
         write_phdr(f, PT_INTERP, PF_R, interp->fileoff, interp->addr,
                    interp->addr, interp->len, interp->len, 1);
         cur += 56;
+    }
+    if (do_dynamic) {
         LinkSec *dyn = &s->secs[dynamic_sec];
         write_phdr(f, PT_DYNAMIC, PF_R, dyn->fileoff, dyn->addr,
                    dyn->addr, dyn->len, dyn->len, 8);
         cur += 56;
     }
-    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | PF_X, 0, 0, 0, 0, 0, 0x10);
+    // glibc's ld.so refuses to dlopen()/load-as-a-dependency any shared
+    // object whose PT_GNU_STACK requests an executable stack ("cannot
+    // enable executable stack as shared object requires") -- a
+    // hardening check that doesn't apply to ET_EXEC (the kernel's own
+    // loader doesn't enforce it). PF_X here exists for GNU nested-
+    // function trampolines, which -shared doesn't support emitting
+    // executable-stack code into anyway; keep it only for executables.
+    write_phdr(f, PT_GNU_STACK, PF_R | PF_W | (s->opt_shared ? 0 : PF_X), 0, 0, 0, 0, 0, 0x10);
     cur += 56;
     wzeros(f, file_off - cur);
 
