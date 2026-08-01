@@ -1156,5 +1156,6 @@ int link_pe(LinkState *s) {
     free(ws);
 
     fclose(f);
+    chmod(s->out_path, 0755);
     return 0;
 }

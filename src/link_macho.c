@@ -723,6 +723,7 @@ int link_macho(LinkState *s) {
         mo_wzeros(f, mo_align((uint64_t)cur, 8) - (uint64_t)cur);
 
     fclose(f);
+    chmod(s->out_path, 0755);
     free(mo_secs);
     return 0;
 }
