@@ -31,6 +31,8 @@ fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
+LARGE_SO="bench/libsqlite3.so"
+LARGE_CFLAGS="-shared -fPIC $LARGE_SRC -o $LARGE_SO"
 
 # download_sqlite: fetch sqlite3.c amalgamation if missing (cached)
 download_sqlite() {
@@ -107,7 +109,7 @@ resume_gortex() {
 
 cleanup() {
 	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
-	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE"
+	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
 	resume_gortex
@@ -228,13 +230,16 @@ if download_sqlite; then
     echo "============================================"
     echo ""
     printf "\n--- RCC ---\n"
-    rcc_large_time=$("$RCC" -time -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    # shellcheck disable=SC2086
+    rcc_large_time=$("$RCC" -time $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_time" | column -t
     printf "\n--- RCC -O1 ---\n"
-    rcc_large_o1_time=$("$RCC" -time -O1 -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    # shellcheck disable=SC2086
+    rcc_large_o1_time=$("$RCC" -time -O1 $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o1_time" | column -t
     printf "\n--- RCC -O2 ---\n"
-    rcc_large_o2_time=$("$RCC" -time -O2 -c "$LARGE_SRC" -o /dev/null 2>&1 >/dev/null) || true
+    # shellcheck disable=SC2086
+    rcc_large_o2_time=$("$RCC" -time -O2 $LARGE_CFLAGS 2>&1 >/dev/null) || true
     printf '%s\n' "$rcc_large_o2_time" | column -t
 fi
 
@@ -293,7 +298,7 @@ IFS="$oldifs"
 if [ -f "$LARGE_SRC" ]; then
     echo ""
     echo "============================================="
-    echo "     LARGE FILE COMPILE-ONLY  (sqlite3.c)"
+    echo "     LARGE FILE (sqlite3.c)"
     echo "============================================="
     printf "%-30s %10s\n" "Compiler" "Compile (ms)"
     printf "%-30s %10s\n" "--------" "-----------"
@@ -318,32 +323,45 @@ if [ -f "$LARGE_SRC" ]; then
 	fi
     }
 
-    _compile_large "RCC" "$RCC" -c "$LARGE_SRC" -o /dev/null
-    _compile_large "RCC -O1" "$RCC" -O1 -c "$LARGE_SRC" -o /dev/null
-    _compile_large "RCC -O2" "$RCC" -O2 -c "$LARGE_SRC" -o /dev/null
+    # shellcheck disable=SC2086
+    _compile_large "RCC" "$RCC" $LARGE_CFLAGS
+    # shellcheck disable=SC2086
+    _compile_large "RCC -O1" "$RCC" -O1 $LARGE_CFLAGS
+    # shellcheck disable=SC2086
+    _compile_large "RCC -O2" "$RCC" -O2 $LARGE_CFLAGS
     if [ -n "$TCC" ]; then
 	# TCC defines __GNUC__ but doesn't support __uint128_t casts on ARM64
-	_compile_large "TCC" "$TCC" -DSQLITE_DISABLE_INTRINSIC -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "TCC" "$TCC" -DSQLITE_DISABLE_INTRINSIC $LARGE_CFLAGS
     fi
     if [ -n "$SLIMCC" ]; then
 	# SLIMCC lacks __atomic_store_n; expected to FAIL
-	_compile_large "SLIMCC" "$SLIMCC" -DSQLITE_THREADSAFE=0 -D"__atomic_store_n(x,y,z)" -D"__atomic_load_n(x,z)" -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "SLIMCC" "$SLIMCC" -DSQLITE_THREADSAFE=0 -D"__atomic_store_n(x,y,z)" -D"__atomic_load_n(x,z)" $LARGE_CFLAGS
     fi
     if [ -n "$XCC" ]; then
-	_compile_large "XCC" "$XCC" -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "XCC" "$XCC" $LARGE_CFLAGS
     fi
     if [ -n "$KEFIR" ]; then
-	_compile_large "KEFIR" "$KEFIR" -c "$LARGE_SRC" -o /dev/null
-	_compile_large "KEFIR -O1" "$KEFIR" -O1 -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "KEFIR" "$KEFIR" $LARGE_CFLAGS
+        # shellcheck disable=SC2086
+	_compile_large "KEFIR -O1" "$KEFIR" -O1 $LARGE_CFLAGS
     fi
     if [ -n "$CCC" ]; then
-	_compile_large "CCC" "$CCC" -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "CCC" "$CCC" $LARGE_CFLAGS
     fi
-    _compile_large "GCC -O0" "$GCC" -O0 -c "$LARGE_SRC" -o /dev/null
-    _compile_large "GCC -O2" "$GCC" -O2 -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+    _compile_large "GCC -O0" "$GCC" -O0 $LARGE_CFLAGS
+        # shellcheck disable=SC2086
+    _compile_large "GCC -O2" "$GCC" -O2 $LARGE_CFLAGS
     if [ -n "$CLANG" ]; then
-	_compile_large "Clang -O0" "$CLANG" -O0 -c "$LARGE_SRC" -o /dev/null
-	_compile_large "Clang -O2" "$CLANG" -O2 -c "$LARGE_SRC" -o /dev/null
+        # shellcheck disable=SC2086
+	_compile_large "Clang -O0" "$CLANG" -O0 $LARGE_CFLAGS
+        # shellcheck disable=SC2086
+	_compile_large "Clang -O2" "$CLANG" -O2 $LARGE_CFLAGS
     fi
 fi # LARGE_SRC
 
