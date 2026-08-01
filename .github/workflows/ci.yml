@@ -74,6 +74,25 @@ jobs:
       - name: Build
         run: make
 
+      - name: Smoke test (macOS) - diagnose
+        if: matrix.os == 'macos-latest'
+        run: |
+          printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' > /tmp/smoke_diag.c
+          echo "=== compile-only (exercises macho_write.c) ==="
+          ./rcc -c -o /tmp/smoke_diag.o /tmp/smoke_diag.c
+          echo "compile exit=$?"
+          echo "--- otool -hv (mach header) ---"
+          otool -hv /tmp/smoke_diag.o || true
+          echo "--- otool -lv (load commands) ---"
+          otool -lv /tmp/smoke_diag.o || true
+          echo "--- otool -tv (disassembly) ---"
+          otool -tv /tmp/smoke_diag.o || true
+          echo "=== link-only (exercises link_macho.c) under lldb ==="
+          lldb -b -o run -o bt -o quit -- ./rcc -o /tmp/smoke_diag /tmp/smoke_diag.o 2>&1 || true
+          echo "--- otool -hv on linked executable (if produced) ---"
+          test -f /tmp/smoke_diag && otool -hv /tmp/smoke_diag || echo "(no executable produced)"
+          rm -f /tmp/smoke_diag.c /tmp/smoke_diag.o /tmp/smoke_diag
+
       - name: Smoke test (macOS)
         if: matrix.os == 'macos-latest'
         run: |
