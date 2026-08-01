@@ -825,46 +825,106 @@ int link_pe(LinkState *s) {
         // We don't auto-load mingw's own CRT startup (crt2.o pulls in
         // libmingw32.a/libmingwex.a via full archive resolution, which
         // this linker doesn't implement yet), so there is no real
-        // mainCRTStartup to call. Synthesize a minimal replacement: align
-        // the stack per the Win64 ABI (process entry alignment is
-        // unspecified), call main(), and hand its result to ExitProcess.
-        // This runs and exits correctly but skips what a real CRT would
-        // also do: real argv/environ parsing, atexit handlers, and C++
-        // static initializers. main() is called with argc=0, argv=NULL
-        // (safe zeroed defaults) rather than whatever garbage happened to
-        // be in the entry registers.
+        // mainCRTStartup to call. Synthesize a minimal replacement that
+        // still gets real argc/argv: call msvcrt's own __getmainargs
+        // (exactly what a real mingw mainCRTStartup calls internally)
+        // rather than passing argc=0/argv=NULL and silently breaking
+        // every program that inspects its own arguments. Still skips
+        // what a real CRT would also do beyond that: atexit handlers,
+        // environ population, and C++ static initializers.
+        //
+        // int __cdecl __getmainargs(int *_Argc, char ***_Argv,
+        //     char ***_Env, int _DoWildCard, _startupinfo *_StartInfo);
+        // (_startupinfo is a single int, "newmode" -- zeroed, meaning
+        // "don't change the floating-point/heap error mode").
+        //
+        // Stack layout after `sub rsp, 0x50` (80 bytes, 16-aligned):
+        //   [rsp+0x00..0x1f]  32-byte shadow space (callee's, unused by us)
+        //   [rsp+0x20]        5th arg slot: &startinfo
+        //   [rsp+0x28]        padding
+        //   [rsp+0x30]        argc  (out)
+        //   [rsp+0x38]        argv  (out)
+        //   [rsp+0x40]        env   (out, unused after the call)
+        //   [rsp+0x48]        startinfo.newmode (in: 0, out: unused)
         int text_sec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
         int exitprocess_sym = link_add_sym(s, "ExitProcess", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
+        int getmainargs_sym = link_add_sym(s, "__getmainargs", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
         uint8_t stub[] = {
             0x48,
             0x83,
             0xE4,
-            0xF0, // and $-16, %rsp
+            0xF0, // and rsp, -16
             0x48,
             0x83,
             0xEC,
-            0x20, // sub $0x20, %rsp
+            0x50, // sub rsp, 0x50
+            0xC7,
+            0x44,
+            0x24,
+            0x48,
+            0x00,
+            0x00,
+            0x00,
+            0x00, // mov dword [rsp+0x48], 0  (newmode = 0)
+            0x48,
+            0x8D,
+            0x4C,
+            0x24,
+            0x30, // lea rcx, [rsp+0x30]      (&argc)
+            0x48,
+            0x8D,
+            0x54,
+            0x24,
+            0x38, // lea rdx, [rsp+0x38]      (&argv)
+            0x4C,
+            0x8D,
+            0x44,
+            0x24,
+            0x40, // lea r8,  [rsp+0x40]      (&env)
+            0x45,
             0x31,
-            0xC9, // xor %ecx, %ecx   (argc = 0)
-            0x31,
-            0xD2, // xor %edx, %edx   (argv = NULL)
-            0xE8,
-            0,
-            0,
-            0,
-            0, // call main
+            0xC9, // xor r9d, r9d                        (expand_wildcards = 0)
+            0x48,
+            0x8D,
+            0x44,
+            0x24,
+            0x48, // lea rax, [rsp+0x48]      (&startinfo)
+            0x48,
             0x89,
-            0xC1, // mov %eax, %ecx
+            0x44,
+            0x24,
+            0x20, // mov [rsp+0x20], rax      (5th arg on stack)
             0xE8,
             0,
             0,
             0,
-            0, // call ExitProcess
-            0x90, // nop (unreachable)
+            0, // call __getmainargs                  (disp32 @ +0x2d)
+            0x8B,
+            0x4C,
+            0x24,
+            0x30, // mov ecx, [rsp+0x30]            (argc)
+            0x48,
+            0x8B,
+            0x54,
+            0x24,
+            0x38, // mov rdx, [rsp+0x38]      (argv)
+            0xE8,
+            0,
+            0,
+            0,
+            0, // call main                           (disp32 @ +0x3b)
+            0x89,
+            0xC1, // mov ecx, eax
+            0xE8,
+            0,
+            0,
+            0,
+            0, // call ExitProcess                    (disp32 @ +0x42)
         };
         uint64_t stub_off = link_sec_append(s, text_sec, stub, sizeof(stub), 16);
-        link_add_reloc(s, text_sec, stub_off + 13, RL_PC32, main_sym, -4);
-        link_add_reloc(s, text_sec, stub_off + 20, RL_PC32, exitprocess_sym, -4);
+        link_add_reloc(s, text_sec, stub_off + 0x2d, RL_PC32, getmainargs_sym, -4);
+        link_add_reloc(s, text_sec, stub_off + 0x3b, RL_PC32, main_sym, -4);
+        link_add_reloc(s, text_sec, stub_off + 0x42, RL_PC32, exitprocess_sym, -4);
         entry_sym = link_add_sym(s, "_rcc_pe_start", text_sec, stub_off, sizeof(stub),
                                  1 /* global */, 2 /* func */, -1);
     }
