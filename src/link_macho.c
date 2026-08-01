@@ -32,7 +32,11 @@
 #define LC_SYMTAB         0x02
 #define LC_DYSYMTAB       0x0B
 #define LC_LOAD_DYLIB     0x0C
+#define LC_LOAD_DYLINKER   0x0E
+#define LC_UUID            0x1B
+#define LC_DYLD_EXPORTS_TRIE 0x80000033
 #define LC_MAIN           0x80000028
+#define LC_DYLD_CHAINED_FIXUPS 0x80000034
 #define LC_BUILD_VERSION  0x32
 #define LC_DYLD_INFO_ONLY 0x80000022
 #define LC_CODE_SIGNATURE 0x1d
@@ -755,39 +759,6 @@ int link_macho(LinkState *s) {
         n_mo++;
     }
 
-    uint64_t text_vmaddr = base + 0x4000; // after __PAGEZERO
-    uint64_t text_vmsize = 0, data_vmsize = 0;
-    {
-        uint64_t cur_vm = text_vmaddr;
-        for (int i = 0; i < n_mo; i++) {
-            if (strcmp(mo_secs[i].segname, "__TEXT") != 0) continue;
-            mo_secs[i].sec->addr = cur_vm;
-            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
-            cur_vm += sz;
-            text_vmsize += sz;
-        }
-    }
-    uint64_t data_vmaddr = mo_align(text_vmaddr + text_vmsize, 0x4000);
-    {
-        uint64_t cur_vm = data_vmaddr;
-        for (int i = 0; i < n_mo; i++) {
-            if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
-            mo_secs[i].sec->addr = cur_vm;
-            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
-            cur_vm += sz;
-            data_vmsize += sz;
-        }
-    }
-
-    // Apply relocations now that every section has its real address.
-    link_apply_relocs(s, 0);
-
-    // Entry point
-    int entry_sym = link_find_sym(s, "_main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
-    if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
-    uint64_t entry_addr = 0;
-    if (entry_sym >= 0) entry_addr = mo_symbol_address(s, entry_sym);
 
     // Identify undefined symbols for dynamic linking
     int n_undef = 0;
@@ -814,45 +785,102 @@ int link_macho(LinkState *s) {
     // from what the LC_SEGMENT_64 section headers claim, corrupting the
     // whole file layout (ld64/dyld reject it outright; observed as
     // "malformed object" / an immediate crash on load).
-    uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
-    uint32_t lc_dyld_info = 48;
-    // Symbol table: 1 null entry + undefined symbols
     uint32_t lc_symtab = 24;
     uint32_t lc_dysymtab = 80;
-    uint32_t ncmds = 4; // PAGEZERO, TEXT, DATA, LINKEDIT
-    ncmds += 1; // LC_DYLD_INFO_ONLY
+    // LC_LOAD_DYLINKER: dylinker_command (cmd/cmdsize/name.offset) = 12 bytes
+    // plus the padded string "/usr/lib/dyld".
+    uint32_t lc_dylinker = (uint32_t)mo_align(12 + strlen("/usr/lib/dyld") + 1, 8);
+    uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
+    uint32_t lc_dyld_chained_fixups = 16; // linkedit_data_command (not the data itself)
+    // LC_DYLD_EXPORTS_TRIE: a tiny export trie with a single terminal node
+    // (two zero bytes: \0 terminal-info-size \0).  dyld expects this.
+    uint32_t lc_export_trie = 16; // linkedit_data_command
+    uint32_t lc_uuid = 24; // uuid_command: cmd+cmdsize+16-byte uuid
+    bool has_data = nsects_data > 0;
+    uint32_t ncmds = 3; // PAGEZERO, TEXT, LINKEDIT
+    if (has_data) ncmds += 1; // DATA
+    ncmds += 1; // LC_DYLD_CHAINED_FIXUPS
     ncmds += 1; // LC_SYMTAB
     ncmds += 1; // LC_DYSYMTAB
     ncmds += 1; // LC_LOAD_DYLIB
+    ncmds += 1; // LC_LOAD_DYLINKER
+    ncmds += 1; // LC_UUID
     ncmds += 1; // LC_BUILD_VERSION
     ncmds += 1; // LC_MAIN
+    ncmds += 1; // LC_DYLD_EXPORTS_TRIE
     ncmds += 1; // LC_CODE_SIGNATURE
     uint32_t lc_pagezero = 72; // __PAGEZERO segment
     uint32_t lc_linkedit = 72; // __LINKEDIT segment
     uint32_t lc_codesig_cmd = 16; // linkedit_data_command (cmd/cmdsize/dataoff/datasize)
 
     uint32_t header_size = 32;
-    // sizeofcmds (mach_header_64) covers every load command written below,
-    // __PAGEZERO included -- it was missing here, so cmds_end/text_fileoff
-    // (and therefore every file offset the __TEXT/__DATA section headers
-    // and the "write section data"/"write symtab" cursors below rely on)
-    // were 72 bytes short of where __PAGEZERO's own bytes actually land in
-    // the file, corrupting the layout the same way the LC_LOAD_DYLIB size
-    // mismatch did above.
-    uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size + data_lc_size;
-    total_lc += lc_build_version + lc_main + lc_dylib + lc_dyld_info;
+    uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
+    if (has_data) total_lc += data_lc_size;
+    total_lc += lc_build_version + lc_main + lc_dylib + lc_dyld_chained_fixups;
     total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
-    uint32_t cmds_end = header_size + total_lc;
+    total_lc += lc_dylinker + lc_export_trie + lc_uuid;
 
-    // Compute file offsets
-    uint64_t fileoff = mo_align(cmds_end, 16);
-    uint64_t text_fileoff = fileoff;
-    uint64_t data_fileoff = mo_align(text_fileoff + text_vmsize, 16);
-    uint64_t linkedit_fileoff = data_fileoff + data_vmsize;
+    // --- Layout: assign vm addresses ---
+    uint64_t text_vmaddr = base; // encompass headers in __TEXT
+    uint64_t text_vmsize = 0, data_vmsize = 0;
+    {
+        // Start section data after the padded Mach-O header + load commands,
+        // same offset in file and vmaddr (both relative to __TEXT start).
+        uint64_t hdr_pad = mo_align(header_size + total_lc, 16);
+        uint64_t cur_vm = text_vmaddr + hdr_pad;
+        for (int i = 0; i < n_mo; i++) {
+            if (strcmp(mo_secs[i].segname, "__TEXT") != 0) continue;
+            mo_secs[i].sec->addr = cur_vm;
+            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
+            cur_vm += sz;
+            text_vmsize += sz;
+        }
+        text_vmsize += hdr_pad; // __TEXT vmsize covers headers + section data
+    }
+    uint64_t data_vmaddr = mo_align(text_vmaddr + text_vmsize, 0x4000);
+    {
+        uint64_t cur_vm = data_vmaddr;
+        for (int i = 0; i < n_mo; i++) {
+            if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
+            mo_secs[i].sec->addr = cur_vm;
+            uint64_t sz = mo_align(mo_secs[i].sec->len, 16);
+            cur_vm += sz;
+            data_vmsize += sz;
+        }
+    }
+
+    // Apply relocations now that every section has its real address.
+    link_apply_relocs(s, 0);
+
+    // Entry point
+    int entry_sym = link_find_sym(s, "_main");
+    if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
+    if (entry_sym < 0) entry_sym = link_find_sym(s, "start");
+    uint64_t entry_addr = 0;
+    if (entry_sym >= 0) entry_addr = mo_symbol_address(s, entry_sym);
+
+    // Compute file offsets.  __TEXT starts at file offset 0 to encompass
+    // the Mach-O header + load commands; section data follows at the first
+    // 16-byte-aligned boundary after the load commands (same offset as the
+    // old text_fileoff was, now kept solely as the section-data start).
+    uint64_t text_fileoff = 0;
+    uint64_t linkedit_fileoff;
+    if (has_data) {
+        uint64_t data_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
+        linkedit_fileoff = data_fileoff + mo_align(data_vmsize, 0x4000);
+    } else {
+        linkedit_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
+    }
+
+    // Chained fixups: modern dyld requires this instead of LC_DYLD_INFO_ONLY.
+    // Minimal 56-byte payload with no actual fixups (matching what ld64 emits
+    // for a binary with zero dynamic fixups).
+    uint64_t chained_fixups_off = linkedit_fileoff;
+    uint32_t chained_fixups_size = 56;
 
     // Symbol table: 1 null + undef
     uint32_t nsyms = 1 + (uint32_t)n_undef;
-    uint64_t symtab_off = linkedit_fileoff + 0; // inside __LINKEDIT
+    uint64_t symtab_off = chained_fixups_off + chained_fixups_size;
     uint64_t strtab_off = symtab_off + nsyms * 16;
     // String table: "\0" + undef names + dylib path
     size_t strtab_size = 1; // leading \0
@@ -864,6 +892,12 @@ int link_macho(LinkState *s) {
     strtab_size += strlen(dylib_path) + 1;
     strtab_size = mo_align(strtab_size, 8);
     uint64_t linkedit_end = strtab_off + strtab_size;
+
+    // Export trie: a minimal trie (single terminal node: \0\0 = 0 children,
+    // 0 terminal info size).  dyld expects this trie to exist.
+    uint64_t export_off = linkedit_end;
+    uint32_t export_size = 2;
+    linkedit_end = export_off + export_size;
 
     // Ad-hoc code signature: must start 16-byte aligned (matches what
     // Apple's codesign_allocate expects and avoids needing it to move the
@@ -897,7 +931,8 @@ int link_macho(LinkState *s) {
     mo_w32(f, MH_EXECUTE);
     mo_w32(f, ncmds);
     mo_w32(f, total_lc);
-    mo_w32(f, 0); // flags
+    // MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE
+    mo_w32(f, 0x00200085); // flags
     mo_w32(f, 0); // reserved
 
     // --- LC_SEGMENT_64: __PAGEZERO ---
@@ -918,16 +953,18 @@ int link_macho(LinkState *s) {
     mo_w32(f, text_lc_size);
     mo_wbuf(f, "__TEXT\0\0\0\0\0\0\0\0\0\0", 16);
     mo_w64(f, text_vmaddr);
-    mo_w64(f, text_vmsize);
-    mo_w64(f, text_fileoff);
-    mo_w64(f, text_vmsize);
-    mo_w32(f, 7);
-    mo_w32(f, 5); // maxprot=rwx, initprot=r-x
+    mo_w64(f, text_vmsize); // vmsize (covers headers + section data)
+    mo_w64(f, text_fileoff); // fileoff = 0
+    mo_w64(f, text_vmsize); // filesize
+    mo_w32(f, 5); // maxprot=r-x
+    mo_w32(f, 5); // initprot=r-x
     mo_w32(f, nsects_text);
-    mo_w32(f, 0);
+    mo_w32(f, 0); // flags
 
-    uint64_t cur_vm = text_vmaddr;
-    uint64_t cur_fo = text_fileoff;
+    // Section data starts after the aligned load commands, both in file and vm.
+    uint64_t hdr_pad = mo_align(header_size + total_lc, 16);
+    uint64_t cur_vm = text_vmaddr + hdr_pad;
+    uint64_t cur_fo = text_fileoff + hdr_pad;
     for (int i = 0; i < n_mo; i++) {
         if (strcmp(mo_secs[i].segname, "__TEXT") != 0) continue;
         LinkSec *sec = mo_secs[i].sec;
@@ -953,46 +990,53 @@ int link_macho(LinkState *s) {
     }
 
     // --- LC_SEGMENT_64: __DATA ---
-    cur_vm = data_vmaddr;
-    cur_fo = data_fileoff;
-    mo_w32(f, LC_SEGMENT_64);
-    mo_w32(f, data_lc_size);
-    mo_wbuf(f, "__DATA\0\0\0\0\0\0\0\0\0\0", 16);
-    uint64_t data_total_vmsize = 0;
-    for (int i = 0; i < n_mo; i++)
-        if (strcmp(mo_secs[i].segname, "__TEXT") != 0)
-            data_total_vmsize += mo_align(mo_secs[i].sec->len, 16);
-    mo_w64(f, data_vmaddr);
-    mo_w64(f, data_total_vmsize);
-    mo_w64(f, data_fileoff);
-    mo_w64(f, data_total_vmsize);
-    mo_w32(f, 7);
-    mo_w32(f, 3); // maxprot=rwx, initprot=rw-
-    mo_w32(f, nsects_data);
-    mo_w32(f, 0);
-    for (int i = 0; i < n_mo; i++) {
-        if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
-        LinkSec *sec = mo_secs[i].sec;
-        char sn[16] = {0}, sg[16] = {0};
-        strncpy(sn, mo_secs[i].sectname, 16);
-        strncpy(sg, "__DATA", 16);
-        mo_wbuf(f, sn, 16);
-        mo_wbuf(f, sg, 16);
-        mo_w64(f, cur_vm);
-        mo_w64(f, sec->len);
-        mo_w32(f, (uint32_t)(sec->is_bss ? 0 : cur_fo));
-        mo_w32(f, 3); // offset, align=8
+    if (has_data) {
+        uint64_t data_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
+        cur_vm = data_vmaddr;
+        cur_fo = data_fileoff;
+        mo_w32(f, LC_SEGMENT_64);
+        mo_w32(f, data_lc_size);
+        mo_wbuf(f, "__DATA\0\0\0\0\0\0\0\0\0\0", 16);
+        uint64_t data_total_vmsize = 0;
+        for (int i = 0; i < n_mo; i++)
+            if (strcmp(mo_secs[i].segname, "__TEXT") != 0)
+                data_total_vmsize += mo_align(mo_secs[i].sec->len, 16);
+        mo_w64(f, data_vmaddr);
+        mo_w64(f, data_total_vmsize);
+        mo_w64(f, data_fileoff);
+        mo_w64(f, data_total_vmsize);
+        mo_w32(f, 7);
+        mo_w32(f, 3); // maxprot=rwx, initprot=rw-
+        mo_w32(f, nsects_data);
         mo_w32(f, 0);
-        mo_w32(f, 0);
-        mo_w32(f, sec->is_bss ? S_ZEROFILL : S_REGULAR);
-        mo_w32(f, 0);
-        mo_w32(f, 0);
-        mo_w32(f, 0);
-        cur_vm += mo_align(sec->len, 16);
-        if (!sec->is_bss) cur_fo += mo_align(sec->len, 16);
+        for (int i = 0; i < n_mo; i++) {
+            if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
+            LinkSec *sec = mo_secs[i].sec;
+            char sn[16] = {0}, sg[16] = {0};
+            strncpy(sn, mo_secs[i].sectname, 16);
+            strncpy(sg, "__DATA", 16);
+            mo_wbuf(f, sn, 16);
+            mo_wbuf(f, sg, 16);
+            mo_w64(f, cur_vm);
+            mo_w64(f, sec->len);
+            mo_w32(f, (uint32_t)(sec->is_bss ? 0 : cur_fo));
+            mo_w32(f, 3); // offset, align=8
+            mo_w32(f, 0);
+            mo_w32(f, 0);
+            mo_w32(f, sec->is_bss ? S_ZEROFILL : S_REGULAR);
+            mo_w32(f, 0);
+            mo_w32(f, 0);
+            mo_w32(f, 0);
+            cur_vm += mo_align(sec->len, 16);
+            if (!sec->is_bss) cur_fo += mo_align(sec->len, 16);
+        }
     }
 
     // --- LC_SEGMENT_64: __LINKEDIT ---
+    // linkedit must start at a page boundary.
+    if (!has_data) cur_vm = data_vmaddr;
+    else
+        cur_vm = mo_align(cur_vm, 0x4000);
     mo_w32(f, LC_SEGMENT_64);
     mo_w32(f, 72);
     mo_wbuf(f, "__LINKEDIT\0\0\0\0\0", 16);
@@ -1005,15 +1049,16 @@ int link_macho(LinkState *s) {
     // claims more bytes than are ever written, which dyld rejects as
     // "fileoff+filesize extends past the end of the file".
     mo_w64(f, linkedit_total_end - linkedit_fileoff);
-    mo_w32(f, 7);
-    mo_w32(f, 1); // maxprot=rwx, initprot=r--
-    mo_w32(f, 0);
-    mo_w32(f, 0);
+    mo_w32(f, 1); // maxprot=r--
+    mo_w32(f, 1); // initprot=r--
+    mo_w32(f, 0); // nsects
+    mo_w32(f, 0); // flags
 
-    // --- LC_DYLD_INFO_ONLY ---
-    mo_w32(f, LC_DYLD_INFO_ONLY);
-    mo_w32(f, 48);
-    for (int i = 0; i < 10; i++) mo_w32(f, 0); // all offsets/sizes = 0 (no bind/lazy/export)
+    // --- LC_DYLD_CHAINED_FIXUPS ---
+    mo_w32(f, LC_DYLD_CHAINED_FIXUPS);
+    mo_w32(f, lc_dyld_chained_fixups);
+    mo_w32(f, (uint32_t)chained_fixups_off);
+    mo_w32(f, chained_fixups_size);
 
     // --- LC_SYMTAB ---
     mo_w32(f, LC_SYMTAB);
@@ -1040,21 +1085,10 @@ int link_macho(LinkState *s) {
     mo_w32(f, 0); // extrel, local
     mo_w32(f, 0);
     mo_w32(f, 0); // locrel, locrel count
-    // dysymtab_command has exactly 18 uint32_t fields after cmd/cmdsize
-    // (ilocalsym..nlocalsym, iextdefsym..nundefsym, tocoff..nmodtab,
-    // extrefsymoff..nindirectsyms, extreloff..nlocrel); 14 are written
-    // individually above, so this loop covers the last 4
-    // (extreloff,nextrel,locreloff,nlocrel), not 5 -- the stray extra
-    // zero word pushed every load command after LC_DYSYMTAB 4 bytes out
-    // of place, which is what otool's "cmdsize not a multiple of 8"
-    // report on the (now misaligned) LC_LOAD_DYLIB was actually seeing.
+    // dysymtab_command has exactly 18 uint32_t fields after cmd/cmdsize.
     for (int i = 0; i < 4; i++) mo_w32(f, 0);
 
     // --- LC_LOAD_DYLIB ---
-    // dylib_padded must equal lc_dylib (computed earlier and baked into
-    // cmds_end/text_fileoff): keeping this a single source of truth
-    // instead of two independent computations is what the fix above
-    // exists to guarantee.
     uint32_t dylib_padded = lc_dylib;
     mo_w32(f, LC_LOAD_DYLIB);
     mo_w32(f, dylib_padded);
@@ -1065,6 +1099,22 @@ int link_macho(LinkState *s) {
     mo_wbuf(f, dylib_path, strlen(dylib_path) + 1);
     for (uint32_t p = (uint32_t)strlen(dylib_path) + 1; p < dylib_padded - 24; p++)
         fputc(0, f);
+
+    // --- LC_LOAD_DYLINKER ---
+    // Embed "/usr/lib/dyld" directly in the command (offset 12 = header size).
+    mo_w32(f, LC_LOAD_DYLINKER);
+    mo_w32(f, lc_dylinker);
+    mo_w32(f, 12); // offset to string within this command
+    mo_wbuf(f, "/usr/lib/dyld", strlen("/usr/lib/dyld") + 1);
+    // Pad to lc_dylinker (already 8-byte aligned by construction).
+    for (uint32_t p = (uint32_t)(12 + strlen("/usr/lib/dyld") + 1); p < lc_dylinker; p++)
+        fputc(0, f);
+
+
+    // --- LC_UUID ---
+    mo_w32(f, LC_UUID);
+    mo_w32(f, lc_uuid);
+    for (int i = 0; i < 16; i++) fputc(0, f); // zero UUID
 
     // --- LC_BUILD_VERSION ---
     mo_w32(f, LC_BUILD_VERSION);
@@ -1080,6 +1130,12 @@ int link_macho(LinkState *s) {
     mo_w64(f, entry_addr - base); // entry offset
     mo_w64(f, 0); // stack size (default)
 
+    // --- LC_DYLD_EXPORTS_TRIE ---
+    mo_w32(f, LC_DYLD_EXPORTS_TRIE);
+    mo_w32(f, lc_export_trie);
+    mo_w32(f, (uint32_t)export_off);
+    mo_w32(f, export_size);
+
     // --- LC_CODE_SIGNATURE ---
     // codesig_off/codesig_size were fixed above, before file offsets were
     // finalized, so the load command's claimed range matches exactly what
@@ -1089,33 +1145,93 @@ int link_macho(LinkState *s) {
     mo_w32(f, (uint32_t)codesig_off);
     mo_w32(f, (uint32_t)codesig_size);
 
-    // Pad to section alignment
-    uint64_t cur = ftell(f);
-    if (text_fileoff > cur) mo_wzeros(f, (size_t)(text_fileoff - cur));
+    uint64_t cur;
+
+    // Pad to section data start (hdr_pad = first 16-byte boundary after
+    // the load commands, same as the old text_fileoff when it was != 0).
+    {
+        uint64_t hdr_pad = mo_align(header_size + total_lc, 16);
+        cur = ftell(f);
+        if (hdr_pad > cur) mo_wzeros(f, (size_t)(hdr_pad - cur));
+    }
 
     // --- Write section data ---
-    // sec->data is exactly sec->len bytes (unaligned); every offset this
-    // file computes for the section *after* this one (and the fixed
-    // relationship between mo_align(sec->len,16) steps and the section
-    // headers written above) assumes each section occupies its
-    // 16-byte-rounded length on disk. The previous code advanced cur_fo
-    // by the rounded length but only ever wrote the unrounded sec->len
-    // bytes, silently drifting ftell() behind cur_fo by the rounding slack
-    // of every section so far -- so each later section's real file bytes
-    // landed short of the offset its own header claims (observed as e.g.
-    // __const's bytes ending up 8 bytes before the offset dyld/otool read
-    // them at, showing up as all-zero padding instead of the real data).
-    cur_fo = text_fileoff;
+    // Sections are written in MO order (TEXT first, then DATA), with a
+    // page-aligned gap between segments matching the segment file offsets.
+    {
+        uint64_t hdr_pad = mo_align(header_size + total_lc, 16);
+        cur_fo = text_fileoff + hdr_pad;
+    }
+    const char *cur_seg = "__TEXT";
     for (int i = 0; i < n_mo; i++) {
         LinkSec *sec = mo_secs[i].sec;
         if (sec->is_bss) continue;
+        // When switching from TEXT to DATA, pad to the DATA segment file offset.
+        if (strcmp(mo_secs[i].segname, "__TEXT") != 0 && cur_seg &&
+            strcmp(cur_seg, "__TEXT") == 0) {
+            cur_seg = "__DATA";
+            uint64_t data_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
+            cur = ftell(f);
+            if (data_fileoff > (uint64_t)cur)
+                mo_wzeros(f, (size_t)(data_fileoff - (uint64_t)cur));
+            cur_fo = data_fileoff;
+        }
         mo_wbuf(f, sec->data, sec->len);
         uint64_t padded = mo_align(sec->len, 16);
         if (padded > sec->len) mo_wzeros(f, (size_t)(padded - sec->len));
         cur_fo += padded;
     }
     cur = ftell(f);
-    if (symtab_off > (uint64_t)cur) mo_wzeros(f, (size_t)(symtab_off - (uint64_t)cur));
+    if (chained_fixups_off > (uint64_t)cur)
+        mo_wzeros(f, (size_t)(chained_fixups_off - (uint64_t)cur));
+
+    // --- Write chained fixups data (56 bytes, matches ld64 output) ---
+    // Minimal header: version=0, no starts, no imports, no symbols.
+    {
+        static const uint8_t cf[56] = {
+            0x00,
+            0x00,
+            0x00,
+            0x00, // fixups_version = 0
+            0x20,
+            0x00,
+            0x00,
+            0x00, // starts_offset = 32
+            0x30,
+            0x00,
+            0x00,
+            0x00, // imports_offset = 48
+            0x30,
+            0x00,
+            0x00,
+            0x00, // symbols_offset = 48
+            0x00,
+            0x00,
+            0x00,
+            0x00, // imports_count = 0
+            0x01,
+            0x00,
+            0x00,
+            0x00, // imports_format = 1 (DYLD_CHAINED_IMPORT)
+            0x00,
+            0x00,
+            0x00,
+            0x00, // symbols_format = 0
+            0x00,
+            0x00,
+            0x00,
+            0x00, // _pad
+            // dyld_chained_starts_in_segment (offset 32)
+            0x03,
+            0x00,
+            0x00,
+            0x00, // size = 3
+            // remaining 20 bytes: zeros
+        };
+        mo_wbuf(f, cf, sizeof(cf));
+    }
+
+    cur = ftell(f);
 
     // --- Write symbol table ---
     // Null entry (nlist_64 = 16 bytes)
@@ -1147,9 +1263,16 @@ int link_macho(LinkState *s) {
         mo_wbuf(f, sym->name, strlen(sym->name) + 1);
     }
     mo_wbuf(f, dylib_path, strlen(dylib_path) + 1);
+    // Pad to next 8-byte boundary as computed above.
     cur = ftell(f);
     if (mo_align((uint64_t)cur, 8) > (uint64_t)cur)
         mo_wzeros(f, mo_align((uint64_t)cur, 8) - (uint64_t)cur);
+
+    // Write export trie: minimal terminal node (0 children, 0 info size).
+    cur = ftell(f);
+    if (export_off > (uint64_t)cur) mo_wzeros(f, (size_t)(export_off - (uint64_t)cur));
+    fputc(0, f);
+    fputc(0, f);
 
     // Pad to codesig_off (16-byte-aligned start of the signature blob).
     cur = ftell(f);
