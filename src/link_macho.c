@@ -824,6 +824,24 @@ int link_macho(LinkState *s) {
         mo_secs[n_mo].sec = sec;
         n_mo++;
     }
+    // dyld maps a segment's file range contiguously onto its VM range, so a
+    // section's file offset must track its vmaddr (offset-fileoff ==
+    // addr-vmaddr).  A zerofill __bss section has no file bytes, so it must
+    // sit at the tail of __DATA (segment vmsize > filesize); a __bss placed
+    // before a real section (e.g. __got) would desync every following
+    // section's file offset from its vmaddr and dyld would map __got's bytes
+    // onto __bss's address.  Stable-partition non-bss before bss (keeps
+    // __TEXT first, since it has no bss).
+    if (n_mo > 1) {
+        MOSec *ord = malloc((size_t)n_mo * sizeof(MOSec));
+        int w = 0;
+        for (int i = 0; i < n_mo; i++)
+            if (!mo_secs[i].sec->is_bss) ord[w++] = mo_secs[i];
+        for (int i = 0; i < n_mo; i++)
+            if (mo_secs[i].sec->is_bss) ord[w++] = mo_secs[i];
+        free(mo_secs);
+        mo_secs = ord;
+    }
 
 
     // Identify undefined symbols for dynamic linking
@@ -861,7 +879,6 @@ int link_macho(LinkState *s) {
     // plus the padded string "/usr/lib/dyld".
     uint32_t lc_dylinker = (uint32_t)mo_align(12 + strlen("/usr/lib/dyld") + 1, 8);
     uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
-    uint32_t lc_dyld_chained_fixups = 16;
     uint32_t lc_dyld_info = 48; // dyld_info_command
     // LC_DYLD_EXPORTS_TRIE: a tiny export trie with a single terminal node
     // (two zero bytes: \0 terminal-info-size \0).  dyld expects this.
@@ -871,7 +888,6 @@ int link_macho(LinkState *s) {
     bool has_data = nsects_data > 0;
     uint32_t ncmds = is_dylib ? 2 : 3; // TEXT, LINKEDIT (+PAGEZERO for exec)
     if (has_data) ncmds += 1; // DATA
-    ncmds += 1; // LC_DYLD_CHAINED_FIXUPS
     ncmds += 1; // LC_SYMTAB
     ncmds += 1; // LC_DYSYMTAB
     ncmds += 1; // LC_LOAD_DYLIB
@@ -901,7 +917,7 @@ int link_macho(LinkState *s) {
     uint32_t header_size = 32;
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
     if (has_data) total_lc += data_lc_size;
-    total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib + lc_dyld_chained_fixups;
+    total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib;
     total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
     total_lc += (is_dylib ? 0 : lc_dylinker) + lc_export_trie + lc_uuid + lc_id_dylib;
     total_lc += lc_dyld_info;
@@ -935,6 +951,65 @@ int link_macho(LinkState *s) {
         }
     }
 
+    // Build rebase opcodes for absolute in-image pointers stored in __DATA
+    // (file-scope initializers like `T *p = &g;`, encoded as RL_ABS64 relocs
+    // against a defined symbol).  A PIE executable / dylib is ASLR-slid at
+    // load, so dyld must add the slide to every such stored pointer; without
+    // a rebase entry the pointer keeps its unslid link-time value and
+    // dereferencing it faults.  (External data pointers, sym->sec < 0, would
+    // need a bind instead and are not emitted here.)
+    uint8_t *rebase_data = NULL;
+    uint32_t rebase_size = 0;
+    if (has_data) {
+        int n_reb = 0;
+        for (int si = 0; si < s->n_secs; si++) {
+            LinkSec *sec = &s->secs[si];
+            for (int rj = 0; rj < sec->n_relocs; rj++) {
+                LinkReloc *r = &sec->relocs[rj];
+                if (r->type != RL_ABS64 || r->sym < 0) continue;
+                if (s->syms[r->sym].sec < 0) continue; // external -> bind
+                if (sec->addr + r->offset < data_vmaddr) continue; // not __DATA
+                n_reb++;
+            }
+        }
+        if (n_reb > 0) {
+            uint64_t *offs = malloc((size_t)n_reb * sizeof(uint64_t));
+            int k = 0;
+            for (int si = 0; si < s->n_secs; si++) {
+                LinkSec *sec = &s->secs[si];
+                for (int rj = 0; rj < sec->n_relocs; rj++) {
+                    LinkReloc *r = &sec->relocs[rj];
+                    if (r->type != RL_ABS64 || r->sym < 0) continue;
+                    if (s->syms[r->sym].sec < 0) continue;
+                    uint64_t a = sec->addr + r->offset;
+                    if (a < data_vmaddr) continue;
+                    offs[k++] = a - data_vmaddr; // offset within __DATA segment
+                }
+            }
+            // sort ascending (simple insertion sort; counts are small)
+            for (int i = 1; i < n_reb; i++) {
+                uint64_t v = offs[i];
+                int j = i - 1;
+                while (j >= 0 && offs[j] > v) { offs[j + 1] = offs[j]; j--; }
+                offs[j + 1] = v;
+            }
+            // Worst case: 1 type + n*(1 seg op + 5 ULEB + 1 do) + 1 done.
+            rebase_data = malloc(2 + (size_t)n_reb * 7);
+            uint8_t *w = rebase_data;
+            *w++ = 0x11; // REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER
+            uint8_t seg = (uint8_t)(is_dylib ? 1 : 2); // TEXT(,PAGEZERO),DATA
+            for (int i = 0; i < n_reb; i++) {
+                *w++ = (uint8_t)(0x20 | seg); // SET_SEGMENT_AND_OFFSET_ULEB
+                uint64_t o = offs[i];
+                do { uint8_t b = (uint8_t)(o & 0x7f); o >>= 7; if (o) b |= 0x80; *w++ = b; } while (o);
+                *w++ = 0x51; // REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1
+            }
+            *w++ = 0x00; // REBASE_OPCODE_DONE
+            rebase_size = (uint32_t)(w - rebase_data);
+            free(offs);
+        }
+    }
+
     // Resolve GOT/PLT relocations to GOT entries and PLT stubs.
     {
         uint64_t got_addr = s->secs[got_sec].addr;
@@ -944,7 +1019,6 @@ int link_macho(LinkState *s) {
             for (int rj = 0; rj < sec->n_relocs; rj++) {
                 LinkReloc *r = &sec->relocs[rj];
                 if (r->sym < 0) continue;
-                LinkSym *sym = &s->syms[r->sym];
                 uint8_t *p = sec->data + r->offset;
                 uint64_t pc = sec->addr + r->offset;
                 if (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO) {
@@ -1071,15 +1145,15 @@ int link_macho(LinkState *s) {
         linkedit_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
     }
 
+    // Rebase opcodes come first in __LINKEDIT's dyld-info region, then bind.
+    uint64_t rebase_off = linkedit_fileoff;
     // Bind opcodes: tell dyld to fill GOT entries with imported symbol addresses.
-    uint64_t bind_off = linkedit_fileoff;
-    uint64_t chained_fixups_off = bind_off + bind_size;
-    uint32_t chained_fixups_size = 56;
+    uint64_t bind_off = rebase_off + rebase_size;
 
     // Symbol table: 1 null + undef externals (+ defined globals for dylibs).
     uint32_t nsyms = 1 + (uint32_t)n_undef;
     if (is_dylib) nsyms += (uint32_t)n_defsym;
-    uint64_t symtab_off = chained_fixups_off + chained_fixups_size;
+    uint64_t symtab_off = bind_off + bind_size;
     uint64_t strtab_off = symtab_off + nsyms * 16;
     // String table.
     size_t strtab_size = 1;
@@ -1172,10 +1246,18 @@ int link_macho(LinkState *s) {
     mo_w32(f, LC_SEGMENT_64);
     mo_w32(f, text_lc_size);
     mo_wbuf(f, "__TEXT\0\0\0\0\0\0\0\0\0\0", 16);
+    // vmsize/filesize page-aligned: __TEXT is the first mapped segment and
+    // dyld derives the whole image's contiguous VM layout from it; an
+    // unaligned vmsize left a sub-page dangling region before __DATA that
+    // made dyld apply a nonzero ASLR slide the unrebased absolute data
+    // pointers don't reflect.  The file already contains a full aligned page
+    // here (section-data write pads to the page-aligned DATA/LINKEDIT
+    // fileoff), so claiming the aligned size never runs past EOF.
+    uint64_t text_seg_size = mo_align(text_vmsize, 0x4000);
     mo_w64(f, text_vmaddr);
-    mo_w64(f, text_vmsize); // vmsize (covers headers + section data)
+    mo_w64(f, text_seg_size); // vmsize (covers headers + section data)
     mo_w64(f, text_fileoff); // fileoff = 0
-    mo_w64(f, text_vmsize); // filesize
+    mo_w64(f, text_seg_size); // filesize
     mo_w32(f, 5); // maxprot=r-x
     mo_w32(f, 5); // initprot=r-x
     mo_w32(f, nsects_text);
@@ -1221,10 +1303,19 @@ int link_macho(LinkState *s) {
         for (int i = 0; i < n_mo; i++)
             if (strcmp(mo_secs[i].segname, "__TEXT") != 0)
                 data_total_vmsize += mo_align(mo_secs[i].sec->len, 16);
+        // vmsize/filesize must be page-aligned: dyld maps/mprotects segments
+        // at page granularity, and linkedit_fileoff (below) already reserves
+        // a full aligned page of file space for this segment's content
+        // (mo_align(data_vmsize, 0x4000)) -- an unaligned, undersized vmsize
+        // here left dangling VM space between __DATA and __LINKEDIT that
+        // caused dyld to apply a nonzero ASLR slide the (unrebased) absolute
+        // data pointers written into __data don't reflect, corrupting any
+        // `T *p = &global;`-style initializer at runtime.
+        uint64_t data_seg_size = mo_align(data_total_vmsize, 0x4000);
         mo_w64(f, data_vmaddr);
-        mo_w64(f, data_total_vmsize);
+        mo_w64(f, data_seg_size);
         mo_w64(f, data_fileoff);
-        mo_w64(f, data_total_vmsize);
+        mo_w64(f, data_seg_size);
         mo_w32(f, 7);
         mo_w32(f, 3); // maxprot=rwx, initprot=rw-
         mo_w32(f, nsects_data);
@@ -1277,9 +1368,9 @@ int link_macho(LinkState *s) {
     // --- LC_DYLD_INFO_ONLY (bind opcodes for GOT entries) ---
     mo_w32(f, LC_DYLD_INFO_ONLY);
     mo_w32(f, lc_dyld_info);
-    // rebase_off=0, rebase_size=0
-    mo_w32(f, 0);
-    mo_w32(f, 0);
+    // rebase_off, rebase_size
+    mo_w32(f, rebase_size ? (uint32_t)rebase_off : 0);
+    mo_w32(f, rebase_size);
     // bind_off, bind_size
     mo_w32(f, (uint32_t)bind_off);
     mo_w32(f, bind_size);
@@ -1293,11 +1384,6 @@ int link_macho(LinkState *s) {
     mo_w32(f, 0);
     mo_w32(f, 0);
 
-    // --- LC_DYLD_CHAINED_FIXUPS ---
-    mo_w32(f, LC_DYLD_CHAINED_FIXUPS);
-    mo_w32(f, lc_dyld_chained_fixups);
-    mo_w32(f, (uint32_t)chained_fixups_off);
-    mo_w32(f, chained_fixups_size);
     // --- LC_SYMTAB ---
     mo_w32(f, LC_SYMTAB);
     mo_w32(f, 24);
@@ -1445,6 +1531,12 @@ int link_macho(LinkState *s) {
         if (padded > sec->len) mo_wzeros(f, (size_t)(padded - sec->len));
         cur_fo += padded;
     }
+    // --- Write rebase opcodes ---
+    cur = ftell(f);
+    if (rebase_off > (uint64_t)cur)
+        mo_wzeros(f, (size_t)(rebase_off - (uint64_t)cur));
+    if (rebase_size > 0) mo_wbuf(f, rebase_data, rebase_size);
+    free(rebase_data);
     // --- Write bind opcodes ---
     cur = ftell(f);
     if (bind_off > (uint64_t)cur)
@@ -1478,56 +1570,14 @@ int link_macho(LinkState *s) {
         }
         fputc(0x00, f); // BIND_OPCODE_DONE
     }
-    // Pad to chained fixups.
+    // Pad to symbol table (bind opcodes are the last __LINKEDIT bind data;
+    // no chained fixups are emitted -- LC_DYLD_INFO_ONLY's bind opcodes are
+    // sufficient and coexisting with a chained-fixups load command, even an
+    // empty/no-op one, made dyld mishandle rebasing of plain data-pointer
+    // initializers such as `int *p = &x;`).
     cur = ftell(f);
-    if (chained_fixups_off > (uint64_t)cur)
-        mo_wzeros(f, (size_t)(chained_fixups_off - (uint64_t)cur));
-
-    // --- Write chained fixups data (56 bytes) ---
-    // Minimal header: version=0, no starts, no imports, no symbols.
-    {
-        static const uint8_t cf[56] = {
-            0x00,
-            0x00,
-            0x00,
-            0x00, // fixups_version = 0
-            0x20,
-            0x00,
-            0x00,
-            0x00, // starts_offset = 32
-            0x30,
-            0x00,
-            0x00,
-            0x00, // imports_offset = 48
-            0x30,
-            0x00,
-            0x00,
-            0x00, // symbols_offset = 48
-            0x00,
-            0x00,
-            0x00,
-            0x00, // imports_count = 0
-            0x01,
-            0x00,
-            0x00,
-            0x00, // imports_format = 1 (DYLD_CHAINED_IMPORT)
-            0x00,
-            0x00,
-            0x00,
-            0x00, // symbols_format = 0
-            0x00,
-            0x00,
-            0x00,
-            0x00, // _pad
-            // dyld_chained_starts_in_segment (offset 32)
-            0x03,
-            0x00,
-            0x00,
-            0x00, // size = 3
-            // remaining 20 bytes: zeros
-        };
-        mo_wbuf(f, cf, sizeof(cf));
-    }
+    if (symtab_off > (uint64_t)cur)
+        mo_wzeros(f, (size_t)(symtab_off - (uint64_t)cur));
 
     cur = ftell(f);
 
