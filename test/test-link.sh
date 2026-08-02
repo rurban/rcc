@@ -1,9 +1,10 @@
 #!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# Link tests for the rcc driver: shared libraries (.so/.dll/.dylib) and
-# static archives (.a), plus a large real-world case (the sqlite3.c
-# amalgamation).  tinycc-tests-style: self-contained, prints PASS/FAIL per
-# case, exits non-zero if any case fails.
+# Link tests for the rcc driver: shared libraries (.so/.dll/.dylib),
+# static archives (.a), a Windows import library (.lib), plus a large
+# real-world case (the sqlite3.c amalgamation).  tinycc-tests-style:
+# self-contained, prints PASS/FAIL per case, exits non-zero if any case
+# fails.
 #
 # Each case builds artifacts with rcc and runs the resulting program,
 # checking its output/exit status -- so it validates the whole pipeline
@@ -155,6 +156,30 @@ EOF
     fi
 else
     printf '  %-44s SKIP (no sqlite3.c, no curl/wget)\n' "sqlite3 large case"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Windows import library (.lib): build a DLL together with a GNU-style
+#    import library via -Wl,--out-implib, then link the consumer against
+#    the .lib -- not the .dll directly, the normal way Windows code
+#    consumes a shared library.  This exercises a code path case 1 never
+#    touches: the driver's own ".lib" file-classification (main.c treats
+#    it as a link input only when built for Windows) and the linker's
+#    import-library symbol resolution, as opposed to case 1's direct
+#    linking against the .dll's export table.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dll ]; then
+    if "$RCC" -shared -fPIC "$TMP/greet.c" -o "$TMP/libgreet2.dll" \
+            -Wl,--out-implib,"$TMP/libgreet2.lib" 2>"$TMP/e5" \
+        && [ -f "$TMP/libgreet2.lib" ] \
+        && "$RCC" "$TMP/gmain.c" "$TMP/libgreet2.lib" -o "$TMP/gprog2" 2>>"$TMP/e5" \
+        && runlib "$TMP/gprog2"; then
+        pass "shared library + import lib link (.lib)"
+    else
+        fail "shared library + import lib link (.lib)" "$(tr '\n' ' ' < "$TMP/e5")"
+    fi
+else
+    printf '  %-44s SKIP (not a Windows target)\n' "shared library + import lib link (.lib)"
 fi
 
 echo ""
