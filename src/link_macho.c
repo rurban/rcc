@@ -990,7 +990,10 @@ int link_macho(LinkState *s) {
             for (int i = 1; i < n_reb; i++) {
                 uint64_t v = offs[i];
                 int j = i - 1;
-                while (j >= 0 && offs[j] > v) { offs[j + 1] = offs[j]; j--; }
+                while (j >= 0 && offs[j] > v) {
+                    offs[j + 1] = offs[j];
+                    j--;
+                }
                 offs[j + 1] = v;
             }
             // Worst case: 1 type + n*(1 seg op + 5 ULEB + 1 do) + 1 done.
@@ -1001,7 +1004,12 @@ int link_macho(LinkState *s) {
             for (int i = 0; i < n_reb; i++) {
                 *w++ = (uint8_t)(0x20 | seg); // SET_SEGMENT_AND_OFFSET_ULEB
                 uint64_t o = offs[i];
-                do { uint8_t b = (uint8_t)(o & 0x7f); o >>= 7; if (o) b |= 0x80; *w++ = b; } while (o);
+                do {
+                    uint8_t b = (uint8_t)(o & 0x7f);
+                    o >>= 7;
+                    if (o) b |= 0x80;
+                    *w++ = b;
+                } while (o);
                 *w++ = 0x51; // REBASE_OPCODE_DO_REBASE_IMM_TIMES | 1
             }
             *w++ = 0x00; // REBASE_OPCODE_DONE
@@ -1172,22 +1180,99 @@ int link_macho(LinkState *s) {
     // Export trie: compute size (minimal for exe, proper for dylib).
     uint64_t export_off = linkedit_end;
     uint32_t export_size;
+    uint8_t *export_data = NULL;
     if (is_dylib && n_defsym > 0) {
-        size_t est = 5; // root: 1+1+2+1 (termSz, childCnt, "_\0", offset)
-        est += 2; // "_" node base: termSz + childCnt
+        // Flat export trie: a root node with one edge per exported symbol
+        // (the full mangled name), each edge pointing to a terminal leaf that
+        // carries the export flags + address.  dyld's trieWalk matches the
+        // input symbol char-by-char against every edge, so a flat (non-
+        // prefix-compressed) trie is valid.  Two format rules the previous
+        // builder violated: child/terminal node offsets are ULEB128 from the
+        // TRIE START (not the parent node), and a terminal leaf still ends
+        // with a childCount=0 byte after its (flags,address) payload.  Build
+        // the bytes here (section addresses are already assigned) so the exact
+        // size feeds the linkedit/codesig layout below.  (Limitation: a node's
+        // childCount is one byte, so this flat form tops out at 255 exports.)
+        typedef struct {
+            uint64_t addr;
+            const char *name;
+            int len;
+        } ES;
+        ES *es = malloc((size_t)n_defsym * sizeof(ES));
+        int nx = 0;
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
-            if (sym->sec < 0 || sym->bind != 1 || !sym->name) continue;
-            const char *n = sym->name;
-            if (n[0] == '_') n++;
-            est += strlen(n) + 1 + 1; // name + null + offset byte
-            est += 1; // terminalSize byte
-            uint64_t a = s->secs[sym->sec].addr + sym->value;
-            int ulen = 1;
-            for (uint64_t t = a; t >= 128; t >>= 7) ulen++;
-            est += 1 + (size_t)ulen; // flags ULEB + address ULEB
+            if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
+                continue;
+            es[nx].addr = s->secs[sym->sec].addr + sym->value;
+            es[nx].name = sym->name;
+            es[nx].len = (int)strlen(sym->name);
+            nx++;
         }
-        export_size = (uint32_t)mo_align(est, 8);
+        // Terminal-leaf size is layout-independent:
+        //   termInfo = uleb(flags=0)=1 + uleb(addr);  leaf = uleb(termInfo) +
+        //   termInfo + 1 (childCount=0).
+        size_t *tsize = malloc((size_t)nx * sizeof(size_t));
+        size_t *toff = malloc((size_t)nx * sizeof(size_t));
+        int *clen = malloc((size_t)nx * sizeof(int));
+        for (int i = 0; i < nx; i++) {
+            int alen = 1;
+            for (uint64_t v = es[i].addr; v >= 128; v >>= 7) alen++;
+            int tinfo = 1 + alen;
+            int hlen = 1;
+            for (int v = tinfo; v >= 128; v >>= 7) hlen++;
+            tsize[i] = (size_t)hlen + (size_t)tinfo + 1;
+            clen[i] = 1; // initial child-offset ULEB length guess
+        }
+        // Fixed point: root size depends on each child-offset's ULEB length,
+        // which depends on the offset, which depends on root size.
+        size_t root_size = 2; // termSize=0 byte + childCount byte
+        for (int iter = 0; iter < 8; iter++) {
+            root_size = 2;
+            for (int i = 0; i < nx; i++)
+                root_size += (size_t)es[i].len + 1 + (size_t)clen[i];
+            size_t pos = root_size;
+            int changed = 0;
+            for (int i = 0; i < nx; i++) {
+                toff[i] = pos;
+                int nl = 1;
+                for (size_t v = pos; v >= 128; v >>= 7) nl++;
+                if (nl != clen[i]) {
+                    clen[i] = nl;
+                    changed = 1;
+                }
+                pos += tsize[i];
+            }
+            if (!changed) break;
+        }
+        size_t total = root_size;
+        for (int i = 0; i < nx; i++) total += tsize[i];
+        export_data = malloc(total);
+        size_t len = 0;
+#define TW(b) do { export_data[len++] = (uint8_t)(b); } while (0)
+#define TWU(v) do { uint64_t _v = (v); do { uint8_t _b = (uint8_t)(_v & 0x7f); _v >>= 7; if (_v) _b |= 0x80; export_data[len++] = _b; } while (_v); } while (0)
+        TW(0); // root terminalSize = 0 (not a terminal)
+        TW((uint8_t)nx); // root childCount
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < es[i].len; j++) TW(es[i].name[j]);
+            TW(0); // edge string null terminator
+            TWU(toff[i]); // child offset from trie start
+        }
+        for (int i = 0; i < nx; i++) {
+            int alen = 1;
+            for (uint64_t v = es[i].addr; v >= 128; v >>= 7) alen++;
+            TWU((uint64_t)(1 + alen)); // terminalSize = flags + addr uleb
+            TWU(0); // flags = 0 (regular export)
+            TWU(es[i].addr); // image-relative address (dylib base 0)
+            TW(0); // childCount = 0 (leaf)
+        }
+#undef TW
+#undef TWU
+        export_size = (uint32_t)len; // == total
+        free(tsize);
+        free(toff);
+        free(clen);
+        free(es);
     } else {
         export_size = 2;
     }
@@ -1647,83 +1732,13 @@ int link_macho(LinkState *s) {
     if (mo_align((uint64_t)cur, 8) > (uint64_t)cur)
         mo_wzeros(f, mo_align((uint64_t)cur, 8) - (uint64_t)cur);
 
-    // Write export trie.
+    // Write export trie (bytes were built during layout, above).
     fseek(f, (long)export_off, SEEK_SET);
-    if (is_dylib && n_defsym > 0) {
-        // Collect exported symbols (strip '_' prefix for trie).
-        typedef struct {
-            uint64_t addr;
-            const char *name;
-            int len;
-        } ES;
-        ES *es = malloc((size_t)n_defsym * sizeof(ES));
-        int nx = 0;
-        for (int i = 0; i < s->n_syms; i++) {
-            LinkSym *sym = &s->syms[i];
-            if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
-                continue;
-            const char *n = sym->name;
-            if (n[0] == '_') n++;
-            es[nx].addr = s->secs[sym->sec].addr + sym->value;
-            es[nx].name = n;
-            es[nx].len = (int)strlen(n);
-            nx++;
-        }
-        // Build trie in buffer.  terminalSize and childCount are single
-        // bytes (not ULEB).  Offsets are ULEB from node start.
-        size_t cap = 256;
-        uint8_t *t = malloc(cap);
-        size_t len = 0;
-#define W(b) do{if(len>=cap){cap*=2;t=realloc(t,cap);}t[len++]=(uint8_t)(b);}while(0)
-#define WU(v) do{uint64_t _v=(v);do{ \
-    if(len>=cap){cap*=2;t=realloc(t,cap);} \
-    uint8_t _b=(uint8_t)(_v&0x7f);_v>>=7;if(_v)_b|=0x80;t[len++]=_b; \
-}while(_v);}while(0)
-        // Root node: "_" edge
-        size_t root = len;
-        W(0);
-        W(1); // branch, 1 child
-        W('_');
-        W(0); // edge "_"
-        size_t root_off = len;
-        WU(0); // placeholder
-        // "_" node: one child per exported symbol
-        size_t under = len;
-        W(0);
-        W((uint8_t)nx); // branch, nx children
-        size_t *coff = malloc((size_t)nx * sizeof(size_t));
-        for (int i = 0; i < nx; i++) {
-            for (int j = 0; j < es[i].len; j++) W(es[i].name[j]);
-            W(0); // null terminator
-            coff[i] = len;
-            WU(0); // placeholder offset
-        }
-        // Terminals: write after "_" node, patch offsets
-        // Terminals: offsets are from the "_" node start (not trie start).
-        for (int i = 0; i < nx; i++) {
-            size_t off = len - under; // relative to "_" node
-            if (off < 128) t[coff[i]] = (uint8_t)off;
-            size_t ts_pos = len;
-            W(0); // placeholder terminalSize
-            WU(0); // flags = 0
-            WU(es[i].addr);
-            size_t ts = len - ts_pos - 1;
-            if (ts < 256) t[ts_pos] = (uint8_t)ts;
-        }
-        // Patch root -> "_" offset (relative to root node).
-        {
-            size_t off = under - root;
-            if (off < 128) t[root_off] = (uint8_t)off;
-        }
-        mo_wbuf(f, t, len);
-        // Use exact trie length, no padding needed.
-        export_size = (uint32_t)len;
-        free(coff);
-        free(es);
-        free(t);
-#undef WU
+    if (export_data) {
+        mo_wbuf(f, export_data, export_size);
+        free(export_data);
     } else {
-        fputc(0, f);
+        fputc(0, f); // empty trie: single terminal node with 0 children
         fputc(0, f);
     }
 
