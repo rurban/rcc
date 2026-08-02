@@ -914,10 +914,27 @@ int link_macho(LinkState *s) {
     strtab_size = mo_align(strtab_size, 8);
     uint64_t linkedit_end = strtab_off + strtab_size;
 
-    // Export trie: a minimal trie (single terminal node: \0\0 = 0 children,
-    // 0 terminal info size).  dyld expects this trie to exist.
+    // Export trie: compute size (minimal for exe, proper for dylib).
     uint64_t export_off = linkedit_end;
-    uint32_t export_size = 2;
+    uint32_t export_size;
+    if (is_dylib && n_defsym > 0) {
+        size_t est = 5; // root: 1+1+2+1 (termSz, childCnt, "_\0", offset)
+        est += 2;       // "_" node base: termSz + childCnt
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0 || sym->bind != 1 || !sym->name) continue;
+            const char *n = sym->name;
+            if (n[0] == '_') n++;
+            est += strlen(n) + 1 + 1; // name + null + offset byte
+            est += 1; // terminalSize byte
+            uint64_t a = s->secs[sym->sec].addr + sym->value;
+            int ulen = 1; for (uint64_t t = a; t >= 128; t >>= 7) ulen++;
+            est += 1 + (size_t)ulen; // flags ULEB + address ULEB
+        }
+        export_size = (uint32_t)mo_align(est, 8);
+    } else {
+        export_size = 2;
+    }
     linkedit_end = export_off + export_size;
 
     // Ad-hoc code signature: must start 16-byte aligned (matches what
@@ -1346,11 +1363,69 @@ int link_macho(LinkState *s) {
     if (mo_align((uint64_t)cur, 8) > (uint64_t)cur)
         mo_wzeros(f, mo_align((uint64_t)cur, 8) - (uint64_t)cur);
 
-    // Write export trie: minimal terminal node (0 children, 0 info size).
-    cur = ftell(f);
-    if (export_off > (uint64_t)cur) mo_wzeros(f, (size_t)(export_off - (uint64_t)cur));
-    fputc(0, f);
-    fputc(0, f);
+    // Write export trie.
+    fseek(f, (long)export_off, SEEK_SET);
+    if (is_dylib && n_defsym > 0) {
+        // Collect exported symbols (strip '_' prefix for trie).
+        typedef struct { uint64_t addr; const char *name; int len; } ES;
+        ES *es = malloc((size_t)n_defsym * sizeof(ES));
+        int nx = 0;
+        for (int i = 0; i < s->n_syms; i++) {
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
+                continue;
+            const char *n = sym->name;
+            if (n[0] == '_') n++;
+            es[nx].addr = s->secs[sym->sec].addr + sym->value;
+            es[nx].name = n; es[nx].len = (int)strlen(n);
+            nx++;
+        }
+        // Build trie in buffer.  terminalSize and childCount are single
+        // bytes (not ULEB).  Offsets are ULEB from node start.
+        size_t cap = 256;
+        uint8_t *t = malloc(cap); size_t len = 0;
+#define W(b) do{if(len>=cap){cap*=2;t=realloc(t,cap);}t[len++]=(uint8_t)(b);}while(0)
+#define WU(v) do{uint64_t _v=(v);do{ \
+    if(len>=cap){cap*=2;t=realloc(t,cap);} \
+    uint8_t _b=(uint8_t)(_v&0x7f);_v>>=7;if(_v)_b|=0x80;t[len++]=_b; \
+}while(_v);}while(0)
+        // Root node: "_" edge
+        size_t root = len;
+        W(0); W(1);             // branch, 1 child
+        W('_'); W(0);           // edge "_"
+        size_t root_off = len; WU(0); // placeholder
+        // "_" node: one child per exported symbol
+        size_t under = len;
+        W(0); W((uint8_t)nx);   // branch, nx children
+        size_t *coff = malloc((size_t)nx * sizeof(size_t));
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < es[i].len; j++) W(es[i].name[j]);
+            W(0); // null terminator
+            coff[i] = len; WU(0); // placeholder offset
+        }
+        // Terminals: write after "_" node, patch offsets
+        // Terminals: offsets are from the "_" node start (not trie start).
+        for (int i = 0; i < nx; i++) {
+            size_t off = len - under; // relative to "_" node
+            if (off < 128) t[coff[i]] = (uint8_t)off;
+            size_t ts_pos = len;
+            W(0); // placeholder terminalSize
+            WU(0); // flags = 0
+            WU(es[i].addr);
+            size_t ts = len - ts_pos - 1;
+            if (ts < 256) t[ts_pos] = (uint8_t)ts;
+        }
+        // Patch root -> "_" offset (relative to root node).
+        { size_t off = under - root; if (off < 128) t[root_off] = (uint8_t)off; }
+        mo_wbuf(f, t, len);
+        // Use exact trie length, no padding needed.
+        export_size = (uint32_t)len;
+        free(coff); free(es); free(t);
+#undef WU
+    } else {
+        fputc(0, f);
+        fputc(0, f);
+    }
 
     // Pad to codesig_off (16-byte-aligned start of the signature blob).
     cur = ftell(f);
