@@ -629,6 +629,47 @@ static bool var_needs_got(LVar *var) {
     if (var->is_static) return false;
     return opt_pic;
 }
+#ifdef _WIN32
+static bool var_needs_refptr(LVar *var) {
+    if (var->is_local || var->is_static || var->is_function || var->is_tls)
+        return false;
+    return var->is_extern;
+}
+
+static const char *cg_emit_refptr_slot(const char *sym_name) {
+    const char *refptr = format(".refptr.%s", sym_name);
+    if (objfile_find_sym(cg_obj, refptr) >= 0)
+        return refptr;
+    int sym_sidx = objfile_find_sym(cg_obj, sym_name);
+    if (sym_sidx < 0)
+        sym_sidx = objfile_add_sym(cg_obj, sym_name, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+    SecBuf *prev_sec = cg_sec;
+    cg_set_section(SEC_RODATA);
+    size_t off = cg_sec->len;
+    secbuf_emit64le(cg_sec, 0);
+    objfile_add_sym(cg_obj, refptr, SEC_RODATA, off, 8, SB_LOCAL, ST_NOTYPE);
+    objfile_add_reloc(cg_obj, SEC_RODATA, off, sym_sidx, R_X86_64_64, 0);
+    cg_sec = prev_sec;
+    return refptr;
+}
+
+#ifndef ARCH_ARM64
+static size_t asm_mov_refptr_rip_reg(SecBuf *s, int r, const char *sym_name) {
+    const char *refptr = cg_emit_refptr_slot(sym_name);
+    size_t off = s->len;
+    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+    x86_mov_rm(s, 8, REG(r), m);
+    if (!cg_dry_run) {
+        int sidx = objfile_find_sym(cg_obj, refptr);
+        if (sidx < 0) sidx = objfile_add_sym(cg_obj, refptr, SEC_UNDEF, 0, 0, SB_LOCAL, ST_NOTYPE);
+        objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_PC32, -4);
+    }
+    asm_record(ASM_MOV_RRBP, off, s->len - off, r, -1, -1, 8, 0, 0, refptr, 0, -1, false);
+    return s->len - off;
+}
+#endif
+#endif
+
 
 #if 0
 static char *func_asm_name(char *name) {
@@ -4153,10 +4194,17 @@ static VReg gen_addr(Node *node) {
                 asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
                 free_reg(base);
 #endif
-            } else if (node->var->is_weak || var_needs_got(node->var))
-                asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
-            else
-                asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
+            } else {
+#ifdef _WIN32
+                if (var_needs_refptr(node->var))
+                    asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                else
+#endif
+                    if (node->var->is_weak || var_needs_got(node->var))
+                    asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
+                else
+                    asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var)); // lea rip, rr
+            }
 #endif
         }
         return r;
@@ -6259,7 +6307,13 @@ static VReg gen(Node *node) {
                     emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
                 asm_ldr_reg_off(cg_sec, r, r, 8, 0); // ldr x{r}, [x{r}]
 #else
-                if (var_needs_got(node->var)) {
+#ifdef _WIN32
+                if (var_needs_refptr(node->var)) {
+                    asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                    asm_mov_mem_reg(cg_sec, r, r, 8); // movq (%r), rr
+                } else
+#endif
+                    if (var_needs_got(node->var)) {
                     asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
                     asm_mov_mem_reg(cg_sec, r, r, 8); // movq (%r), rr
                 } else {
@@ -6308,7 +6362,13 @@ static VReg gen(Node *node) {
                     asm_lea_tpoff_base_reg(cg_sec, r, base, var_sym_label(node->var));
                     free_reg(base);
 #endif
-                } else if (var_needs_got(node->var))
+                } else
+#ifdef _WIN32
+                    if (var_needs_refptr(node->var))
+                    asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                else
+#endif
+                    if (var_needs_got(node->var))
                     asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var));
                 else
                     asm_lea_rip_reg(cg_sec, r, var_sym_label(node->var));
@@ -6456,7 +6516,13 @@ static VReg gen(Node *node) {
                         asm_ldr_fp(cg_sec, 0, r, 4); // ldr s0, [x{r}]
                         asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0
 #else
-                        if (var_needs_got(node->var)) {
+#ifdef _WIN32
+                        if (var_needs_refptr(node->var)) {
+                            asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                            asm_ldr_fp(cg_sec, 0, r, 4); // movss (r), %xmm0
+                        } else
+#endif
+                            if (var_needs_got(node->var)) {
                             asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
                             asm_ldr_fp(cg_sec, 0, r, 4); // movss (r), %xmm0
                         } else {
@@ -6475,7 +6541,13 @@ static VReg gen(Node *node) {
                             emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
                         asm_ldr_fp(cg_sec, 0, r, 8); // ldr d0, [x{r}]
 #else
-                        if (var_needs_got(node->var)) {
+#ifdef _WIN32
+                        if (var_needs_refptr(node->var)) {
+                            asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                            asm_ldr_fp(cg_sec, 0, r, 8); // movsd (r), %xmm0
+                        } else
+#endif
+                            if (var_needs_got(node->var)) {
                             asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
                             asm_ldr_fp(cg_sec, 0, r, 8); // movsd (r), %xmm0
                         } else {
@@ -6535,7 +6607,14 @@ static VReg gen(Node *node) {
                     free_reg(base);
 #endif
                     emit_load(node->ty, r, r, 0);
-                } else if (var_needs_got(node->var)) {
+                } else
+#ifdef _WIN32
+                    if (var_needs_refptr(node->var)) {
+                    asm_mov_refptr_rip_reg(cg_sec, r, var_sym_label(node->var));
+                    emit_load(node->ty, r, r, 0);
+                } else
+#endif
+                    if (var_needs_got(node->var)) {
                     asm_mov_got_rip_reg(cg_sec, r, var_sym_label(node->var)); // mov sym@GOTPCREL(%rip), r
                     emit_load(node->ty, r, r, 0);
                 } else {
