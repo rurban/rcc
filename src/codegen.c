@@ -1143,6 +1143,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // are elided at -O1 (see the ND_BLOCK loop).
     if (call_target && call_target == bi_unreachable)
         return -1;
+    /*
     if (0 && opt_O1 && call_target && nargs >= 2) {
         if ((strcmp(call_target, "__printf_chk") == 0 && nargs >= 2) ||
             (strcmp(call_target, "__vprintf_chk") == 0 && nargs == 3)) {
@@ -1164,6 +1165,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 node->args = argv[0];
         }
     }
+    */
 
     // Optimize // Optimize hint; // %s
     //          (void)fprintf(fp, "%s", arg) → fputs(arg, fp)

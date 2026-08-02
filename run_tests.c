@@ -427,12 +427,14 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
         r.timed_out = true; /* gave up waiting */
 
     if (w == pid) {
-        if (WIFEXITED(status)) r.exit_code = WEXITSTATUS(status);
+        if (WIFEXITED(status))
+            r.exit_code = WEXITSTATUS(status);
         else if (WIFSIGNALED(status))
             r.exit_code = 128 + WTERMSIG(status);
     }
 
-    if (!r.out) r.out = strdup("");
+    if (!r.out)
+        r.out = strdup("");
     else {
         r.out = xrealloc(r.out, r.out_len + 1);
         r.out[r.out_len] = '\0';
@@ -579,7 +581,8 @@ static ProcResult proc_run_once(char *const argv[], int timeout_sec, int capture
 
     r.out = ctx.out;
     r.out_len = ctx.out_len;
-    if (!r.out) r.out = strdup("");
+    if (!r.out)
+        r.out = strdup("");
     else {
         r.out = xrealloc(r.out, r.out_len + 1);
         r.out[r.out_len] = '\0';
@@ -2720,7 +2723,8 @@ static void compile_and_exec(const char *src_path, const char *base,
 
     char expect_file[512], local_expect[512];
     snprintf(local_expect, sizeof(local_expect), "%s/test/tinycc-%s.expect", SCRIPT_DIR, base);
-    if (file_exists(local_expect)) snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
+    if (file_exists(local_expect))
+        snprintf(expect_file, sizeof(expect_file), "%s", local_expect);
     else
         snprintf(expect_file, sizeof(expect_file), "%s/%s.expect", TEST_DIR, base);
 
@@ -3988,7 +3992,8 @@ static int run_tcc_suite(void) {
             p_src = NULL;
             for (char **f = files; *f; f++) {
                 const char *fname = strrchr(*f, '/');
-                if (!fname) fname = *f;
+                if (!fname)
+                    fname = *f;
                 else
                     fname++;
                 char base[256];
