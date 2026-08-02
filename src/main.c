@@ -969,6 +969,29 @@ int main(int argc, char **argv) {
         if (libs_len)
             xappendf(&cmd, &cmd_len, &cmd_cap, "%s", libs);
 
+        // RCC's own codegen emits a genuine external call for math.h
+        // functions (fabs/sqrt/pow/...) rather than inlining the simple
+        // ones to native FP instructions the way GCC/Clang do, so a
+        // fallback link needs libm even for programs whose *user*
+        // command line never mentioned -lm (an equivalent GCC-compiled
+        // build wouldn't reference libm at all, since e.g. its fabs()
+        // call never survives past codegen). Matches the native ELF
+        // linker's own unconditional libm.so.6 DT_NEEDED addition.
+        // Only add it when the user didn't already pass -lm: a duplicate
+        // makes recent macOS ld warn "ignoring duplicate libraries:
+        // '-lm'", which pollutes callers that capture the link output.
+        bool have_lm = false;
+        for (const char *p = libs; p && (p = strstr(p, "-lm")); p += 3) {
+            bool start_ok = (p == libs) || p[-1] == ' ';
+            bool end_ok = (p[3] == '\0' || p[3] == ' ');
+            if (start_ok && end_ok) {
+                have_lm = true;
+                break;
+            }
+        }
+        if (!have_lm)
+            xappendf(&cmd, &cmd_len, &cmd_cap, " -lm");
+
         if (opt_dryrun) {
             puts(cmd);
             free(libs);

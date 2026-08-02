@@ -38,8 +38,11 @@
 #define SHT_INIT_ARRAY 14
 #define SHT_FINI_ARRAY 15
 #define SHT_DYNSYM 11
+#define SHT_HASH 5
+#define SHT_DYNAMIC 6
 #define SHT_GNU_verdef 0x6ffffffd
 #define SHT_GNU_versym 0x6fffffff
+#define SHT_GNU_verneed 0x6ffffffe
 
 #define SHF_WRITE 0x1
 #define SHF_ALLOC 0x2
@@ -646,7 +649,22 @@ static int load_archive(LinkState *s, const char *path) {
         round++;
         for (uint32_t i = 0; i < nsym; i++) {
             if (used[i] || !symnames[i]) continue;
-            if (link_find_sym(s, symnames[i]) < 0) continue;
+            // link_find_sym returning >= 0 only means a symbol by this
+            // name exists in the table AT ALL -- it says nothing about
+            // whether it's still an outstanding, undefined reference.
+            // Loading an earlier member in this SAME round routinely
+            // *defines* other names this archive's own symbol index
+            // also lists (a single .o commonly exports many symbols):
+            // checking existence alone made every one of them look
+            // "needed" again the moment the first pulled the member in,
+            // reloading -- and thus redefining -- the identical member
+            // for each additional name it happened to export, which
+            // link_add_sym correctly rejects as a duplicate definition.
+            // Gate on "referenced but not yet defined" (sec < 0)
+            // instead, matching a real archive linker: once a name is
+            // defined, every later index for that same name is done.
+            int fsym = link_find_sym(s, symnames[i]);
+            if (fsym < 0 || s->syms[fsym].sec >= 0) continue;
             // symoffs[i] is the target member header's absolute file
             // offset (including the archive-wide magic); off tracks the
             // same convention while scanning member headers below.
@@ -770,6 +788,36 @@ static int resolve_archives(LinkState *s) {
             while (*lp && *lp != ' ') lp++;
         }
     }
+
+    // A .a given directly as a positional link input (not via -l<name>)
+    // -- e.g. `rcc main.c libmath.a -o prog` -- was previously never
+    // routed through load_archive() at all: the -l/-L scan above only
+    // recognizes "-l"-prefixed tokens, so a bare archive path sat in
+    // s->libs unread. Any symbol only that archive defines then stayed
+    // permanently undefined, silently exported as an unresolvable
+    // DT_NEEDED-style import (native linking still "succeeds", but the
+    // resulting binary fails at load/run time with a dynamic-loader
+    // "undefined symbol" error instead of a link-time one). Load every
+    // bare *.a token here directly by its given path -- no name-based
+    // search needed, the path is already exact.
+    {
+        const char *ap = s->libs;
+        while (ap && *ap) {
+            while (*ap == ' ') ap++;
+            if (!*ap) break;
+            const char *aend = ap;
+            while (*aend && *aend != ' ') aend++;
+            size_t alen = (size_t)(aend - ap);
+            if (ap[0] != '-' && alen > 2 && alen < 600 &&
+                strncmp(aend - 2, ".a", 2) == 0) {
+                char apath[600];
+                memcpy(apath, ap, alen);
+                apath[alen] = '\0';
+                if (load_archive(s, apath) != 0) return -1;
+            }
+            ap = aend;
+        }
+    }
     return 0;
 }
 
@@ -778,7 +826,7 @@ static int resolve_archives(LinkState *s) {
 // ---------------------------------------------------------------------------
 
 static void write_ehdr(FILE *f, uint16_t e_type, uint16_t machine, uint64_t entry, uint64_t phoff,
-                       uint16_t phnum) {
+                       uint16_t phnum, uint64_t shoff, uint16_t shnum, uint16_t shstrndx) {
     uint8_t ident[16] = {
         0x7f, 'E', 'L', 'F', 2, 1, 1, 0,
         0, 0, 0, 0, 0, 0, 0, 0};
@@ -788,14 +836,14 @@ static void write_ehdr(FILE *f, uint16_t e_type, uint16_t machine, uint64_t entr
     w32le(f, 1);
     w64le(f, entry);
     w64le(f, phoff);
-    w64le(f, 0);
+    w64le(f, shoff);
     w32le(f, 0);
     w16le(f, 64);
     w16le(f, 56);
     w16le(f, phnum);
     w16le(f, 64);
-    w16le(f, 0);
-    w16le(f, 0);
+    w16le(f, shnum);
+    w16le(f, shstrndx);
 }
 
 static void write_phdr(FILE *f, uint32_t type, uint32_t flags, uint64_t offset,
@@ -1210,6 +1258,108 @@ static void lookup_lib_symbol_versions(const char *path, const char **names,
     elf_close(&ef);
 }
 
+// Extract DT_SONAME from an arbitrary ELF shared object by walking its
+// PROGRAM headers (PT_DYNAMIC) directly, the same way ld.so itself finds
+// it at load time -- unlike lookup_lib_symbol_versions() above, this
+// works even against a .so this linker itself produced (which currently
+// carries no section headers at all: PT_DYNAMIC/program headers are the
+// only structure ld.so ever actually needs). Returns false (caller falls
+// back to the file's own basename, matching how ld.so treats a
+// soname-less object) if the file has no PT_DYNAMIC or no DT_SONAME tag.
+static bool read_soname(const char *path, char *out, size_t out_sz) {
+    ElfFile ef;
+    if (elf_open(path, &ef) != 0) return false;
+    if (ef.size < 64 || memcmp(ef.image, "\x7f"
+                                         "ELF",
+                               4) != 0) {
+        elf_close(&ef);
+        return false;
+    }
+    uint64_t e_phoff = r64le(ef.image + 32);
+    uint16_t e_phnum = r16le(ef.image + 56);
+    if (!e_phoff || e_phnum == 0) {
+        elf_close(&ef);
+        return false;
+    }
+
+    typedef struct {
+        uint64_t vaddr, offset, filesz;
+    } LoadSeg;
+    LoadSeg loads[16];
+    int n_loads = 0;
+    uint64_t dyn_off = 0, dyn_filesz = 0;
+    bool have_dyn = false;
+    for (int i = 0; i < e_phnum; i++) {
+        uint64_t ph_off = e_phoff + (uint64_t)i * 56;
+        if (ph_off + 56 > ef.size) break;
+        const uint8_t *ph = ef.image + ph_off;
+        uint32_t p_type = r32le(ph);
+        if (p_type == PT_DYNAMIC) {
+            dyn_off = r64le(ph + 8); // p_offset
+            dyn_filesz = r64le(ph + 32); // p_filesz
+            have_dyn = true;
+        } else if (p_type == PT_LOAD && n_loads < 16) {
+            loads[n_loads].offset = r64le(ph + 8);
+            loads[n_loads].vaddr = r64le(ph + 16);
+            loads[n_loads].filesz = r64le(ph + 32);
+            n_loads++;
+        }
+    }
+    if (!have_dyn || dyn_off + dyn_filesz > ef.size) {
+        elf_close(&ef);
+        return false;
+    }
+
+    uint64_t strtab_vaddr = 0, soname_val = 0;
+    bool have_strtab = false, have_soname = false;
+    for (uint64_t off = dyn_off; off + 16 <= dyn_off + dyn_filesz; off += 16) {
+        uint64_t tag = r64le(ef.image + off);
+        uint64_t val = r64le(ef.image + off + 8);
+        if (tag == DT_NULL) break;
+        if (tag == DT_STRTAB) {
+            strtab_vaddr = val;
+            have_strtab = true;
+        } else if (tag == DT_SONAME) {
+            soname_val = val;
+            have_soname = true;
+        }
+    }
+    if (!have_strtab || !have_soname) {
+        elf_close(&ef);
+        return false;
+    }
+
+    uint64_t strtab_off = 0;
+    bool mapped = false;
+    for (int i = 0; i < n_loads; i++) {
+        if (strtab_vaddr >= loads[i].vaddr && strtab_vaddr < loads[i].vaddr + loads[i].filesz) {
+            strtab_off = loads[i].offset + (strtab_vaddr - loads[i].vaddr);
+            mapped = true;
+            break;
+        }
+    }
+    if (!mapped) {
+        elf_close(&ef);
+        return false;
+    }
+
+    uint64_t name_off = strtab_off + soname_val;
+    if (name_off >= ef.size) {
+        elf_close(&ef);
+        return false;
+    }
+    size_t maxlen = (size_t)(ef.size - name_off);
+    if (maxlen >= out_sz) maxlen = out_sz - 1;
+    size_t n = strnlen((const char *)(ef.image + name_off), maxlen);
+    bool ok = n > 0 && n < out_sz;
+    if (ok) {
+        memcpy(out, ef.image + name_off, n);
+        out[n] = '\0';
+    }
+    elf_close(&ef);
+    return ok;
+}
+
 static int try_load_crt(LinkState *s, const char *dir, const char *file) {
     char path[512];
     snprintf(path, sizeof(path), "%s/%s", dir, file);
@@ -1254,6 +1404,24 @@ static int load_crt_files(LinkState *s) {
         return -1;
     }
     return 0;
+}
+
+// Whether `sec` should get a real section-header-table entry. Every
+// alloc'd section qualifies except .gnu.version/.gnu.version_r when no
+// version info was ever found for this link (n_verneed_versions == 0):
+// both are unconditionally created via link_find_or_create_sec() up
+// front, but only ever populated with real bytes inside the
+// `n_verneed_versions > 0` branch below, matching the equally-gated
+// DT_VERSYM/DT_VERNEED dynamic tags. Declaring a *populated-looking*
+// SHT_GNU_versym header for an EMPTY section corrupts the 1:1
+// versym-per-dynsym-entry invariant BFD enforces: readelf/ld reject the
+// object outright ("invalid version offset 1 (max 0)") the moment
+// .dynsym has any real entries but .gnu.version has zero.
+static bool sec_wants_shdr(const LinkSec *sec, int n_verneed_versions) {
+    if (n_verneed_versions == 0 &&
+        (strcmp(sec->name, ".gnu.version") == 0 || strcmp(sec->name, ".gnu.version_r") == 0))
+        return false;
+    return true;
 }
 
 int link_elf(LinkState *s) {
@@ -1412,6 +1580,19 @@ int link_elf(LinkState *s) {
         int libgcc_off = (int)link_sec_append(s, dynstr_sec,
                                               (const uint8_t *)"libgcc_s.so.1", 14, 1);
 
+        // Add libm.so.6 unconditionally, matching libgcc_s above: RCC's
+        // codegen emits a genuine external call for math.h functions
+        // (fabs/sqrt/pow/...) rather than inlining them to native FP
+        // instructions the way GCC/Clang do for the simple ones -- so a
+        // program merely #including <math.h> and calling e.g. fabs()
+        // needs a real libm symbol at load time even though an
+        // equivalent GCC-compiled binary wouldn't reference libm at all
+        // (its fabs() call never survives past codegen). glibc >= 2.34
+        // ships libm.so.6 as an empty compatibility stub -- loading it
+        // when unused costs nothing beyond one extra DT_NEEDED entry.
+        int libm_off = (int)link_sec_append(s, dynstr_sec,
+                                            (const uint8_t *)"libm.so.6", 10, 1);
+
         // DT_SONAME: the name other objects' DT_NEEDED entries record
         // when they link against this library -- what the runtime loader
         // actually looks up at their load time, taking precedence over
@@ -1456,9 +1637,10 @@ int link_elf(LinkState *s) {
             }
         }
 
-        n_needed = 2;
+        n_needed = 3;
         needed_offs[0] = libc_off;
         needed_offs[1] = libgcc_off;
+        needed_offs[2] = libm_off;
         bool lib_lookup_failed = false;
         const char *lp = s->libs;
         while (lp && *lp) {
@@ -1545,6 +1727,49 @@ int link_elf(LinkState *s) {
             free(dyn_syms);
             free(dyn_idx);
             return -1;
+        }
+
+        // A .so given directly as a positional link input (not via
+        // -l<name>) -- e.g. `rcc main.c libsqlite3.so -o prog` -- was
+        // previously invisible to DT_NEEDED generation entirely: the -l
+        // scan above only recognizes "-l"-prefixed tokens. Any function
+        // this linker resolved through a PLT slot (any symbol undefined
+        // here is always treated as dynamically importable, above) then
+        // had no DT_NEEDED entry naming the library that actually
+        // defines it, and ld.so aborted at startup with "undefined
+        // symbol" the moment it tried to bind the (unfulfillable) PLT
+        // relocation -- the link itself "succeeded" with a broken
+        // binary instead of either working or falling back. Verify each
+        // bare *.so token is really an ELF shared object, read its real
+        // DT_SONAME (falling back to its basename, matching every
+        // DT_NEEDED consumer's own lookup key when no soname was
+        // recorded), and add a DT_NEEDED entry for it -- the exact same
+        // entry a real `ld prog.o /path/to/libsqlite3.so` would produce.
+        const char *sp = s->libs;
+        while (sp && *sp) {
+            while (*sp == ' ') sp++;
+            if (!*sp) break;
+            const char *send = sp;
+            while (*send && *send != ' ') send++;
+            size_t slen = (size_t)(send - sp);
+            if (sp[0] != '-' && slen > 3 && slen < 600 &&
+                strncmp(send - 3, ".so", 3) == 0 && n_needed < 16) {
+                char spath[600];
+                memcpy(spath, sp, slen);
+                spath[slen] = '\0';
+                if (is_real_elf_so(spath)) {
+                    char resolved_soname[64];
+                    if (!read_soname(spath, resolved_soname, sizeof(resolved_soname))) {
+                        const char *base = strrchr(spath, '/');
+                        base = base ? base + 1 : spath;
+                        snprintf(resolved_soname, sizeof(resolved_soname), "%s", base);
+                    }
+                    needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
+                                                                 (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
+                    n_needed++;
+                }
+            }
+            sp = send;
         }
 
         // .dynsym: null entry first.
@@ -1739,7 +1964,26 @@ int link_elf(LinkState *s) {
                             dyn_kind[si] = 1; // function reference
                     } else if (r->type == RL_ABS64 || r->type == RL_ABS32 ||
                                r->type == RL_ABS32U) {
-                        dyn_kind[si] = 2; // data reference
+                        // A symbol commonly has BOTH kinds of reference --
+                        // e.g. a libc function called directly somewhere
+                        // (PC32/PLT) and ALSO stored in a function-pointer
+                        // table elsewhere (ABS64/32/32U), as sqlite3's VFS
+                        // method tables do throughout. Since these two
+                        // loops run over every relocation in link order
+                        // with no guaranteed ordering between a symbol's
+                        // call sites and its address-taken sites, an
+                        // ABS64/32/32U hit seen *after* a PC32/PLT hit
+                        // must not downgrade dyn_kind back to "data
+                        // reference" -- that silently drops the PLT slot
+                        // apply_dynamic_relocs() requires for the call
+                        // site, which then fails link_elf() outright
+                        // (return -1, forcing a GCC fallback that doesn't
+                        // even reach this problem). The reverse direction
+                        // needs no such guard: the PC32/PLT branch above
+                        // always sets dyn_kind[si]=1 unconditionally, so a
+                        // function reference seen after a data reference
+                        // still correctly wins.
+                        if (dyn_kind[si] != 1) dyn_kind[si] = 2; // data reference
                     }
                 } else if ((r->type == RL_GOTPCREL || r->type == RL_ARM64_GOT_PG) &&
                            got_map[si] < 0) {
@@ -2238,9 +2482,80 @@ int link_elf(LinkState *s) {
         entry_addr = s->secs[s->syms[entry_sym].sec].addr + s->syms[entry_sym].value;
     }
 
+    // Build a real ELF section header table (SHT) + .shstrtab so the
+    // output is consumable by BFD-based tools -- readelf, objdump, and
+    // critically GNU ld itself when this file is later used as a link
+    // input (e.g. `gcc prog.c this.so`). This linker's own consumer
+    // (ld.so/dlopen) never needed one -- it walks PT_LOAD/PT_DYNAMIC
+    // exclusively -- so it was omitted entirely until now; BFD's ELF
+    // backend unconditionally rejects any object with e_shoff==0/
+    // e_shnum==0 as unrecognized ("file in wrong format"), even though
+    // the kernel/ld.so loader has no such requirement. Non-alloc'd
+    // sections (a stray .comment/.note from a system crt*.o) are
+    // deliberately left out: this linker's own layout pass never
+    // assigns them a real fileoff/addr, so describing one here would
+    // be describing bytes that were never actually written.
+    int n_shdr_secs = 0;
+    for (int i = 0; i < s->n_secs; i++)
+        if (s->secs[i].alloc && sec_wants_shdr(&s->secs[i], n_verneed_versions)) n_shdr_secs++;
+    uint16_t shnum = (uint16_t)(1 + n_shdr_secs + 1); // NULL + real secs + .shstrtab
+    uint16_t shstrndx = (uint16_t)(shnum - 1);
+
+    int *sec_to_shidx = malloc((size_t)s->n_secs * sizeof(int));
+    for (int i = 0; i < s->n_secs; i++) sec_to_shidx[i] = 0;
+    size_t shstrtab_cap = 64, shstrtab_len = 1;
+    char *shstrtab_buf = malloc(shstrtab_cap);
+    shstrtab_buf[0] = '\0'; // index 0: the NULL section's empty name
+    uint32_t *shdr_name_off = malloc((size_t)(n_shdr_secs > 0 ? n_shdr_secs : 1) * sizeof(uint32_t));
+    {
+        int k = 0;
+        for (int i = 0; i < s->n_secs; i++) {
+            if (!s->secs[i].alloc || !sec_wants_shdr(&s->secs[i], n_verneed_versions)) continue;
+            sec_to_shidx[i] = k + 1; // header index 0 is NULL
+            const char *nm = s->secs[i].name;
+            size_t nl = strlen(nm) + 1;
+            if (shstrtab_len + nl > shstrtab_cap) {
+                while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
+                shstrtab_buf = realloc(shstrtab_buf, shstrtab_cap);
+            }
+            shdr_name_off[k] = (uint32_t)shstrtab_len;
+            memcpy(shstrtab_buf + shstrtab_len, nm, nl);
+            shstrtab_len += nl;
+            k++;
+        }
+    }
+    uint32_t shstrtab_self_name_off = (uint32_t)shstrtab_len;
+    {
+        const char *nm = ".shstrtab";
+        size_t nl = strlen(nm) + 1;
+        if (shstrtab_len + nl > shstrtab_cap) {
+            while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
+            shstrtab_buf = realloc(shstrtab_buf, shstrtab_cap);
+        }
+        memcpy(shstrtab_buf + shstrtab_len, nm, nl);
+        shstrtab_len += nl;
+    }
+
+    // Where .shstrtab's bytes and the header array will physically land:
+    // right after every other section's real file data -- the exact
+    // same `written` position the data-write loop below independently
+    // arrives at, computed here ahead of time since write_ehdr() (which
+    // needs the final e_shoff) runs before that loop.
+    uint64_t shstrtab_file_off = file_off;
+    for (int i = 0; i < s->n_secs; i++) {
+        LinkSec *sec = &s->secs[i];
+        if (!sec->alloc || sec->is_bss || sec->len == 0) continue;
+        uint64_t end = sec->fileoff + sec->len;
+        if (end > shstrtab_file_off) shstrtab_file_off = end;
+    }
+    uint64_t shoff = align_up(shstrtab_file_off + shstrtab_len, 8);
+
     FILE *f = fopen(s->out_path, "wb");
     if (!f) {
         fprintf(stderr, "rcc: link: cannot create %s: %s\n", s->out_path, strerror(errno));
+        free(sec_to_shidx);
+        free(shdr_name_off);
+        free(shstrtab_buf);
         free(dyn_syms);
         free(dyn_idx);
         free(dyn_kind);
@@ -2251,7 +2566,8 @@ int link_elf(LinkState *s) {
     }
 
     uint16_t machine = (s->arch == ARCH_AARCH64) ? EM_AARCH64 : EM_X86_64;
-    write_ehdr(f, s->opt_shared ? ET_DYN : ET_EXEC, machine, entry_addr, ehdr_size, (uint16_t)phnum);
+    write_ehdr(f, s->opt_shared ? ET_DYN : ET_EXEC, machine, entry_addr, ehdr_size, (uint16_t)phnum,
+               shoff, shnum, shstrndx);
 
     // Write program headers.
     uint64_t cur = ehdr_size;
@@ -2349,6 +2665,100 @@ int link_elf(LinkState *s) {
         written = sec->fileoff + sec->len;
     }
     free(wsecs);
+
+    // .shstrtab bytes, then the section header array -- both physically
+    // land exactly where shoff/e_shstrndx above assumed they would.
+    if (written < shstrtab_file_off) wzeros(f, shstrtab_file_off - written);
+    wbuf(f, shstrtab_buf, shstrtab_len);
+    written = shstrtab_file_off + shstrtab_len;
+    if (shoff > written) wzeros(f, shoff - written);
+
+    // Section header 0: the mandatory all-zero NULL entry.
+    {
+        uint8_t z[64] = {0};
+        wbuf(f, z, 64);
+    }
+    {
+        int k = 0;
+        for (int i = 0; i < s->n_secs; i++) {
+            LinkSec *sec = &s->secs[i];
+            if (!sec->alloc || !sec_wants_shdr(sec, n_verneed_versions)) continue;
+            uint32_t sh_type = sec->is_bss ? SHT_NOBITS : SHT_PROGBITS;
+            uint32_t sh_link = 0, sh_info = 0;
+            uint64_t sh_entsize = 0;
+            // This linker only ever creates a fixed, known set of
+            // dynamic-linking section names (see the do_dynamic block
+            // above); anything else -- .text/.data/.rodata/.bss/
+            // .init_array/user .o sections passed through by
+            // map_input_sec_to_output() -- is plain SHT_PROGBITS/
+            // NOBITS, already the default set above.
+            if (strcmp(sec->name, ".dynsym") == 0) {
+                sh_type = SHT_DYNSYM;
+                sh_link = (uint32_t)sec_to_shidx[dynstr_sec];
+                sh_info = 1; // first non-local symbol: every entry we emit is global/weak
+                sh_entsize = 24;
+            } else if (strcmp(sec->name, ".dynstr") == 0) {
+                sh_type = SHT_STRTAB;
+            } else if (strcmp(sec->name, ".hash") == 0) {
+                sh_type = SHT_HASH;
+                sh_link = (uint32_t)sec_to_shidx[dynsym_sec];
+                sh_entsize = 4;
+            } else if (strcmp(sec->name, ".dynamic") == 0) {
+                sh_type = SHT_DYNAMIC;
+                sh_link = (uint32_t)sec_to_shidx[dynstr_sec];
+                sh_entsize = 16;
+            } else if (strcmp(sec->name, ".rela.plt") == 0 ||
+                       strcmp(sec->name, ".rela.dyn") == 0) {
+                sh_type = SHT_RELA;
+                sh_link = (uint32_t)sec_to_shidx[dynsym_sec];
+                sh_entsize = 24;
+            } else if (strcmp(sec->name, ".gnu.version") == 0) {
+                sh_type = SHT_GNU_versym;
+                sh_link = (uint32_t)sec_to_shidx[dynsym_sec];
+                sh_entsize = 2;
+            } else if (strcmp(sec->name, ".gnu.version_r") == 0) {
+                sh_type = SHT_GNU_verneed;
+                sh_link = (uint32_t)sec_to_shidx[dynstr_sec];
+                sh_info = n_verneed_versions > 0 ? 1 : 0; // one Verneed record (libc.so.6)
+            } else if (strcmp(sec->name, ".init_array") == 0) {
+                sh_type = SHT_INIT_ARRAY;
+            }
+            uint32_t sh_flags = SHF_ALLOC;
+            if (sec->write) sh_flags |= SHF_WRITE;
+            if (sec->exec) sh_flags |= SHF_EXECINSTR;
+            if (sec->is_tls) sh_flags |= SHF_TLS;
+
+            uint8_t sh[64];
+            memset(sh, 0, sizeof(sh));
+            w32le_m(sh + 0, shdr_name_off[k]);
+            w32le_m(sh + 4, sh_type);
+            w64le_m(sh + 8, sh_flags);
+            w64le_m(sh + 16, sec->addr);
+            w64le_m(sh + 24, sec->fileoff);
+            w64le_m(sh + 32, sec->len);
+            w32le_m(sh + 40, sh_link);
+            w32le_m(sh + 44, sh_info);
+            w64le_m(sh + 48, (uint64_t)(sec->align ? sec->align : 1));
+            w64le_m(sh + 56, sh_entsize);
+            wbuf(f, sh, 64);
+            k++;
+        }
+    }
+    // .shstrtab's own section header, last (index shstrndx).
+    {
+        uint8_t sh[64];
+        memset(sh, 0, sizeof(sh));
+        w32le_m(sh + 0, shstrtab_self_name_off);
+        w32le_m(sh + 4, SHT_STRTAB);
+        w64le_m(sh + 24, shstrtab_file_off);
+        w64le_m(sh + 32, shstrtab_len);
+        w64le_m(sh + 48, 1);
+        wbuf(f, sh, 64);
+    }
+    free(sec_to_shidx);
+    free(shdr_name_off);
+    free(shstrtab_buf);
+
     fclose(f);
     chmod(s->out_path, 0755);
 

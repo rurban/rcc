@@ -3932,6 +3932,7 @@ static void arm64_validate_asm_template(const char *tmpl, Token *tok) {
 // since the address is a link-time constant, emitted as "$symbol" (an
 // immediate holding the symbol's address) the same way a numeric
 // immediate is emitted as "$N".
+#ifndef ARCH_ARM64 // only used by the x86-64 inline-asm "i"/"n" operand path
 static bool try_const_addr_sym(Node *n, const char **sym_out) {
     while (n && n->kind == ND_CAST)
         n = n->lhs;
@@ -3941,6 +3942,7 @@ static bool try_const_addr_sym(Node *n, const char **sym_out) {
     }
     return false;
 }
+#endif // !ARCH_ARM64
 // Try to extract an integer constant from a node (traversing casts).
 // Returns true and sets *val if the node reduces to a compile-time constant.
 static bool try_const_int(Node *n, int64_t *val) {
@@ -12273,7 +12275,22 @@ struct ObjFile *codegen(Program *prog) {
                             continue;
                         }
                         secbuf_emit64le(cg_sec, (uint64_t)rel->addend); // .quad addend (reloc addend embedded in data)
-                        const char *rel_label = sym_name(rel->label);
+                        // A reloc label that exactly matches a declared
+                        // symbol's __asm__ name is already the final linker
+                        // name (the parser stored var->asm_name verbatim);
+                        // re-applying sym_name() would double the platform
+                        // prefix -- e.g. macOS __DARWIN_ALIAS'd `close`
+                        // (declared `int close(int) __asm("_close")`) taken
+                        // as a function pointer in a static table would emit
+                        // "__close" and fault at load.
+                        const char *rel_label = rel->label;
+                        bool rel_is_asm = false;
+                        for (LVar *g = prog->globals; g; g = g->next)
+                            if (g->asm_name && strcmp(g->asm_name, rel->label) == 0) {
+                                rel_is_asm = true;
+                                break;
+                            }
+                        if (!rel_is_asm) rel_label = sym_name(rel->label);
                         int sidx;
                         // .L. labels are local text labels; use SB_LOCAL SEC_TEXT for section-relative reloc
                         bool is_local_label = (rel_label[0] == '.' && rel_label[1] == 'L' && rel_label[2] == '.');

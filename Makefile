@@ -321,10 +321,22 @@ TEST_RUNNER = ./run_tests ./rcc
 TEST_RUNNER_O2 = ./run_tests "./rcc -O2"
 BENCH_RUNNER = ./bench/run_bench.sh ./$(TARGET)
 endif
+
+# Shell-driven link test (shared libs + static archives, incl. sqlite3.c).
+# Native builds only: a cross-built rcc.exe/darwin binary can't run here.
+ifeq ($(EXE_EXT),)
+LINK_TEST = ./test/test-link.sh ./$(TARGET)
+else
+LINK_TEST = true
+endif
 test check: $(TARGET) $(RUN_TESTS)
 	rm -f bash.log; ulimit -f 1048576; $(TEST_RUNNER) --parallel
+	$(LINK_TEST)
 test-all check-all: $(TARGET) $(RUN_TESTS) lint-changed
 	ulimit -f 2097152; $(TEST_RUNNER) --all --parallel
+	$(LINK_TEST)
+test-link check-link: $(TARGET)
+	$(LINK_TEST)
 test-unit check-unit: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --unit-tests --parallel
 test-compliance check-compliance: $(TARGET) $(RUN_TESTS)
@@ -430,6 +442,6 @@ TAGS: $(SRCS) src/rcc.h
 	etags -a --language=c src/*.c src/*.h
 
 .PHONY: clean leanclean test check check-full check-torture check-all test-all \
-	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest \
+	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link \
         lint lint-changed bench install dist bench prof FORCE
 FORCE:
