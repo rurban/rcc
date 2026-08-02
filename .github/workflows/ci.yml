@@ -51,6 +51,8 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-gdb
             make
+            curl
+            unzip
 
       - name: Disable Windows Error Reporting UI
         if: matrix.os == 'windows-latest'
@@ -144,6 +146,15 @@ jobs:
           make check || FAIL=1
           make test-torture || FAIL=1
           test -z "$FAIL"
+
+      # Shell-driven link tests, incl. the Windows-specific cases
+      # (DLL + --out-implib import library): the Makefile's LINK_TEST
+      # gate skips them on EXE_EXT builds, so run the script directly.
+      - name: Link tests (Windows) - DLL + import lib
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        timeout-minutes: 10
+        run: ./test/test-link.sh ./rcc.exe
 
       - name: Check for source, bench or test changes
         id: changed
