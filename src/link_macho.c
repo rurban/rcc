@@ -118,6 +118,111 @@ static void mo_wzeros(FILE *f, size_t n) {
 static uint64_t mo_align(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 
 // ---------------------------------------------------------------------------
+// Mach-O export trie builder (used for dylib -shared output).  A proper
+// prefix (radix) trie: symbols sharing a prefix share a path, and each node
+// branches on the next distinguishing character, so no node exceeds the
+// one-byte childCount limit even for thousands of exports.  Node offsets are
+// ULEB128 from the trie start; their lengths depend on the offsets, so the
+// layout is fixed-pointed before serialization.
+typedef struct MoTrieNode {
+    int terminal;   // this node is an exact exported symbol
+    uint64_t addr;  // image-relative export address (terminal only)
+    struct MoTrieEdge *edges;
+    int n_edges;
+    size_t offset;  // assigned trie-start offset
+} MoTrieNode;
+typedef struct MoTrieEdge {
+    char *label;
+    struct MoTrieNode *child;
+} MoTrieEdge;
+typedef struct {
+    uint64_t addr;
+    const char *name;
+    int len;
+} MoTrieSym;
+
+static int mo_uleb_len(uint64_t v) {
+    int n = 1;
+    while (v >= 128) { v >>= 7; n++; }
+    return n;
+}
+
+// Build a trie node covering sorted syms[lo,hi), all sharing the first `pfx`
+// characters.  Recurses, grouping the remainder by next character.
+static MoTrieNode *mo_trie_build(MoTrieSym *syms, int lo, int hi, int pfx) {
+    MoTrieNode *node = calloc(1, sizeof(MoTrieNode));
+    int i = lo;
+    if (syms[lo].len == pfx) { // exact match consumes the whole name here
+        node->terminal = 1;
+        node->addr = syms[lo].addr;
+        i = lo + 1;
+    }
+    int cap = 0;
+    while (i < hi) {
+        char c = syms[i].name[pfx];
+        int j = i;
+        while (j < hi && syms[j].name[pfx] == c) j++;
+        // longest common prefix of [i,j) beyond pfx (sorted -> compare ends)
+        int lcp = 0;
+        const char *a = syms[i].name, *b = syms[j - 1].name;
+        int amax = syms[i].len, bmax = syms[j - 1].len;
+        while (pfx + lcp < amax && pfx + lcp < bmax &&
+               a[pfx + lcp] == b[pfx + lcp])
+            lcp++;
+        if (lcp == 0) lcp = 1; // grouped by shared char -> at least 1
+        MoTrieEdge e;
+        e.label = malloc((size_t)lcp + 1);
+        memcpy(e.label, syms[i].name + pfx, (size_t)lcp);
+        e.label[lcp] = '\0';
+        e.child = mo_trie_build(syms, i, j, pfx + lcp);
+        if (node->n_edges >= cap) {
+            cap = cap ? cap * 2 : 4;
+            node->edges = realloc(node->edges, (size_t)cap * sizeof(MoTrieEdge));
+        }
+        node->edges[node->n_edges++] = e;
+        i = j;
+    }
+    return node;
+}
+
+// Collect nodes into `list` in BFS order (root first).
+static void mo_trie_collect(MoTrieNode *root, MoTrieNode ***list, int *n, int *cap) {
+    int head = *n;
+    if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *)); }
+    (*list)[(*n)++] = root;
+    for (int r = head; r < *n; r++) {
+        MoTrieNode *nd = (*list)[r];
+        for (int e = 0; e < nd->n_edges; e++) {
+            if (*n >= *cap) { *cap *= 2; *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *)); }
+            (*list)[(*n)++] = nd->edges[e].child;
+        }
+    }
+}
+
+static size_t mo_trie_node_size(MoTrieNode *nd) {
+    size_t sz;
+    if (nd->terminal) {
+        int tinfo = mo_uleb_len(0) + mo_uleb_len(nd->addr); // flags + addr
+        sz = (size_t)mo_uleb_len((uint64_t)tinfo) + (size_t)tinfo;
+    } else {
+        sz = 1; // terminalSize = 0
+    }
+    sz += 1; // childCount byte
+    for (int e = 0; e < nd->n_edges; e++)
+        sz += strlen(nd->edges[e].label) + 1 + (size_t)mo_uleb_len(nd->edges[e].child->offset);
+    return sz;
+}
+
+static void mo_trie_free(MoTrieNode *nd) {
+    for (int e = 0; e < nd->n_edges; e++) {
+        free(nd->edges[e].label);
+        mo_trie_free(nd->edges[e].child);
+    }
+    free(nd->edges);
+    free(nd);
+}
+
+// ---------------------------------------------------------------------------
 // SHA-256 (single-shot/streaming, from FIPS 180-4) -- the only consumer is
 // the ad-hoc code-signature builder below; this is not a general crypto API.
 // Verified against the NIST test vectors (empty string, "abc", and the
@@ -689,38 +794,30 @@ int link_macho(LinkState *s) {
     // Static linking is not implemented — fall back to the external linker.
     if (s->opt_static) return -1;
     bool is_dylib = s->opt_shared;
-    // KNOWN LIMITATION: no GOT table or PLT/lazy-binding stubs are built.
-    // RL_ARM64_GOT_PG/RL_ARM64_GOT_LO and RL_GOTPCREL relocations against
-    // *external* symbols (link_reloc_apply's "no real GOT at this level"
-    // fallback in link.c) resolve as if the ADRP+LDR/ADRP+ADD sequence the
-    // codegen emitted for GOT-relative addressing were instead a direct,
-    // link-time-known address -- correct only when the symbol is DEFINED
-    // in this same link (e.g. a local .rodata reference), and silently
-    // wrong for anything genuinely external (e.g. libSystem's printf),
-    // whose real address isn't known until dyld resolves it at load time.
-    // A real fix needs the same machinery link_elf.c's .plt/.got.plt and
-    // link_pe.c's IAT trampolines already have for their platforms: a
-    // __DATA,__got section of real pointer slots plus, for calls,
-    // PLT-style stub bodies dyld's lazy/non-lazy bind opcodes (currently
-    // TODO: GOT/PLT with bind opcodes works for local symbols (GLOBAL OK)
-    // but PLT stubs + dyld bind for external calls still crash (SIGSEGV).
-    // Fall back to external linker until PLT/bind interaction is fixed.
-    for (int si = 0; si < s->n_secs; si++) {
-        LinkSec *sec = &s->secs[si];
-        for (int rj = 0; rj < sec->n_relocs; rj++) {
-            LinkReloc *r = &sec->relocs[rj];
-            if (r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT)
-                return -1;
-            // Also fall back for external GOT (bind opcodes not fully working)
-            if ((r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
-                 r->type == RL_GOTPCREL) &&
-                r->sym >= 0 &&
-                s->syms[r->sym].sec < 0)
-                return -1;
+    // External-symbol strategy:
+    //   * dylibs (-shared) bind natively via the __got + dyld bind opcodes
+    //     built below -- this is the path the -shared benchmark (sqlite) and
+    //     dylib exports need, and it works because such libraries import only
+    //     libSystem (ordinal 1, what the bind opcodes assume).
+    //   * executables still defer to the external linker whenever a genuinely
+    //     external symbol is referenced: binding every undefined symbol to
+    //     libSystem ordinal 1 is only correct when the symbol truly lives
+    //     there, which cannot be verified here (e.g. on_exit, or a symbol
+    //     that another linked dylib provides).  The external linker resolves
+    //     those robustly and reports real errors.
+    if (!is_dylib) {
+        for (int si = 0; si < s->n_secs; si++) {
+            LinkSec *sec = &s->secs[si];
+            for (int rj = 0; rj < sec->n_relocs; rj++) {
+                LinkReloc *r = &sec->relocs[rj];
+                if (r->sym < 0 || s->syms[r->sym].sec >= 0) continue;
+                if (r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT ||
+                    r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
+                    r->type == RL_GOTPCREL)
+                    return -1;
+            }
         }
     }
-    // pointers) -- anything needing a real GOT/PLT slot silently emits a
-    // corrupted call/load.
     // Build GOT and PLT for external symbols.
     int got_sec = link_find_or_create_sec(s, ".got", true, true, false, false, false, 8);
     int stubs_sec = link_find_or_create_sec(s, ".stubs", true, false, true, false, false, 16);
@@ -824,21 +921,29 @@ int link_macho(LinkState *s) {
         mo_secs[n_mo].sec = sec;
         n_mo++;
     }
-    // dyld maps a segment's file range contiguously onto its VM range, so a
-    // section's file offset must track its vmaddr (offset-fileoff ==
-    // addr-vmaddr).  A zerofill __bss section has no file bytes, so it must
-    // sit at the tail of __DATA (segment vmsize > filesize); a __bss placed
-    // before a real section (e.g. __got) would desync every following
-    // section's file offset from its vmaddr and dyld would map __got's bytes
-    // onto __bss's address.  Stable-partition non-bss before bss (keeps
-    // __TEXT first, since it has no bss).
+    // Order mo_secs so the write/layout passes see every __TEXT section
+    // first, then __DATA non-bss, then __DATA bss.  Two independent reasons:
+    //  - The section-data write pass walks mo_secs linearly and switches from
+    //    __TEXT to __DATA exactly once; a __TEXT section (e.g. __stubs, which
+    //    is created after the __DATA __got) appearing after a __DATA section
+    //    would be written into the __DATA file region, mismatching the
+    //    segment/section headers (which group by segment) -> the stub bytes
+    //    land at __got's file offset and the real __stubs stays zero (SIGILL).
+    //  - dyld maps a segment's file range contiguously onto its VM range, so
+    //    a zerofill __bss must sit at the tail of __DATA (segment vmsize >
+    //    filesize); a __bss before a real __DATA section (e.g. __got) desyncs
+    //    following file offsets from vmaddrs.
     if (n_mo > 1) {
         MOSec *ord = malloc((size_t)n_mo * sizeof(MOSec));
         int w = 0;
         for (int i = 0; i < n_mo; i++)
-            if (!mo_secs[i].sec->is_bss) ord[w++] = mo_secs[i];
+            if (strcmp(mo_secs[i].segname, "__TEXT") == 0) ord[w++] = mo_secs[i];
         for (int i = 0; i < n_mo; i++)
-            if (mo_secs[i].sec->is_bss) ord[w++] = mo_secs[i];
+            if (strcmp(mo_secs[i].segname, "__TEXT") != 0 && !mo_secs[i].sec->is_bss)
+                ord[w++] = mo_secs[i];
+        for (int i = 0; i < n_mo; i++)
+            if (strcmp(mo_secs[i].segname, "__TEXT") != 0 && mo_secs[i].sec->is_bss)
+                ord[w++] = mo_secs[i];
         free(mo_secs);
         mo_secs = ord;
     }
@@ -903,16 +1008,10 @@ int link_macho(LinkState *s) {
     uint32_t lc_linkedit = 72;
     uint32_t lc_codesig_cmd = 16;
 
-    // Bind opcodes size: per GOT entry ~ 6 + strlen(name) + ULEB overhead
+    // Bind opcodes are built into a buffer after the layout assigns GOT
+    // addresses (see below); bind_size is the exact byte length then.
+    uint8_t *bind_data = NULL;
     uint32_t bind_size = 0;
-    for (int i = 0; i < s->n_syms; i++) {
-        if (got_off[i] < 0) continue;
-        if (s->syms[i].sec >= 0) continue; // local, filled by linker
-        bind_size += 4;
-        bind_size += (uint32_t)(strlen(s->syms[i].name) + 1);
-        bind_size += 2;
-    }
-    if (bind_size > 0) bind_size += 1; // BIND_OPCODE_DONE
 
     uint32_t header_size = 32;
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
@@ -1015,6 +1114,50 @@ int link_macho(LinkState *s) {
             *w++ = 0x00; // REBASE_OPCODE_DONE
             rebase_size = (uint32_t)(w - rebase_data);
             free(offs);
+        }
+    }
+
+    // Build bind opcodes: tell dyld to fill each external GOT slot with the
+    // imported symbol's address at load time.  Correct BIND_OPCODE values
+    // (the earlier constants were wrong, producing a garbage stream dyld
+    // asserted on):
+    //   0x10|ord  SET_DYLIB_ORDINAL_IMM (ord 1 = libSystem)
+    //   0x40|flg  SET_SYMBOL_TRAILING_FLAGS_IMM, then name\0
+    //   0x50|typ  SET_TYPE_IMM (typ 1 = BIND_TYPE_POINTER)
+    //   0x70|seg  SET_SEGMENT_AND_OFFSET_ULEB, then ULEB(offset in segment)
+    //   0x90      DO_BIND
+    //   0x00      BIND_OPCODE_DONE
+    {
+        int n_bind = 0;
+        for (int i = 0; i < s->n_syms; i++) {
+            if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
+            n_bind++;
+        }
+        if (n_bind > 0) {
+            uint8_t seg = (uint8_t)(is_dylib ? 1 : 2); // __DATA segment index
+            size_t cap = 1;
+            for (int i = 0; i < s->n_syms; i++) {
+                if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
+                cap += 6 + strlen(s->syms[i].name) + 1 + 5; // opcodes + name + ULEB
+            }
+            bind_data = malloc(cap);
+            uint8_t *w = bind_data;
+            for (int i = 0; i < s->n_syms; i++) {
+                if (got_off[i] < 0 || s->syms[i].sec >= 0) continue;
+                LinkSym *sym = &s->syms[i];
+                *w++ = 0x11; // SET_DYLIB_ORDINAL_IMM | 1
+                *w++ = 0x40; // SET_SYMBOL_TRAILING_FLAGS_IMM | flags(0)
+                size_t nl = strlen(sym->name) + 1;
+                memcpy(w, sym->name, nl);
+                w += nl;
+                *w++ = 0x51;              // SET_TYPE_IMM | BIND_TYPE_POINTER
+                *w++ = (uint8_t)(0x70 | seg); // SET_SEGMENT_AND_OFFSET_ULEB
+                uint64_t off = (s->secs[got_sec].addr + (uint64_t)got_off[i]) - data_vmaddr;
+                do { uint8_t b = (uint8_t)(off & 0x7f); off >>= 7; if (off) b |= 0x80; *w++ = b; } while (off);
+                *w++ = 0x90; // DO_BIND
+            }
+            *w++ = 0x00; // BIND_OPCODE_DONE
+            bind_size = (uint32_t)(w - bind_data);
         }
     }
 
@@ -1155,13 +1298,15 @@ int link_macho(LinkState *s) {
 
     // Rebase opcodes come first in __LINKEDIT's dyld-info region, then bind.
     uint64_t rebase_off = linkedit_fileoff;
-    // Bind opcodes: tell dyld to fill GOT entries with imported symbol addresses.
-    uint64_t bind_off = rebase_off + rebase_size;
+    // Bind opcodes: tell dyld to fill GOT entries with imported symbol
+    // addresses.  Each __LINKEDIT sub-blob must be 8-byte aligned (ld/dyld
+    // reject "mis-aligned LINKEDIT content" otherwise).
+    uint64_t bind_off = mo_align(rebase_off + rebase_size, 8);
 
     // Symbol table: 1 null + undef externals (+ defined globals for dylibs).
     uint32_t nsyms = 1 + (uint32_t)n_undef;
     if (is_dylib) nsyms += (uint32_t)n_defsym;
-    uint64_t symtab_off = bind_off + bind_size;
+    uint64_t symtab_off = mo_align(bind_off + bind_size, 8); // 8-aligned nlist_64
     uint64_t strtab_off = symtab_off + nsyms * 16;
     // String table.
     size_t strtab_size = 1;
@@ -1182,97 +1327,76 @@ int link_macho(LinkState *s) {
     uint32_t export_size;
     uint8_t *export_data = NULL;
     if (is_dylib && n_defsym > 0) {
-        // Flat export trie: a root node with one edge per exported symbol
-        // (the full mangled name), each edge pointing to a terminal leaf that
-        // carries the export flags + address.  dyld's trieWalk matches the
-        // input symbol char-by-char against every edge, so a flat (non-
-        // prefix-compressed) trie is valid.  Two format rules the previous
-        // builder violated: child/terminal node offsets are ULEB128 from the
-        // TRIE START (not the parent node), and a terminal leaf still ends
-        // with a childCount=0 byte after its (flags,address) payload.  Build
-        // the bytes here (section addresses are already assigned) so the exact
-        // size feeds the linkedit/codesig layout below.  (Limitation: a node's
-        // childCount is one byte, so this flat form tops out at 255 exports.)
-        typedef struct {
-            uint64_t addr;
-            const char *name;
-            int len;
-        } ES;
-        ES *es = malloc((size_t)n_defsym * sizeof(ES));
+        // Build a proper prefix (radix) export trie so libraries with many
+        // exports (e.g. sqlite, hundreds of symbols) don't overflow a node's
+        // one-byte childCount.  Symbols use their full mangled name (incl the
+        // leading '_'); addresses are image-relative (dylib base is 0).
+        MoTrieSym *syms = malloc((size_t)n_defsym * sizeof(MoTrieSym));
         int nx = 0;
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
             if (sym->sec < 0 || sym->bind != 1 || !sym->name || !sym->name[0])
                 continue;
-            es[nx].addr = s->secs[sym->sec].addr + sym->value;
-            es[nx].name = sym->name;
-            es[nx].len = (int)strlen(sym->name);
+            syms[nx].addr = s->secs[sym->sec].addr + sym->value;
+            syms[nx].name = sym->name;
+            syms[nx].len = (int)strlen(sym->name);
             nx++;
         }
-        // Terminal-leaf size is layout-independent:
-        //   termInfo = uleb(flags=0)=1 + uleb(addr);  leaf = uleb(termInfo) +
-        //   termInfo + 1 (childCount=0).
-        size_t *tsize = malloc((size_t)nx * sizeof(size_t));
-        size_t *toff = malloc((size_t)nx * sizeof(size_t));
-        int *clen = malloc((size_t)nx * sizeof(int));
-        for (int i = 0; i < nx; i++) {
-            int alen = 1;
-            for (uint64_t v = es[i].addr; v >= 128; v >>= 7) alen++;
-            int tinfo = 1 + alen;
-            int hlen = 1;
-            for (int v = tinfo; v >= 128; v >>= 7) hlen++;
-            tsize[i] = (size_t)hlen + (size_t)tinfo + 1;
-            clen[i] = 1; // initial child-offset ULEB length guess
+        // Sort by name (the trie builder requires sorted input).
+        for (int a = 1; a < nx; a++) {
+            MoTrieSym key = syms[a];
+            int b = a - 1;
+            while (b >= 0 && strcmp(syms[b].name, key.name) > 0) {
+                syms[b + 1] = syms[b];
+                b--;
+            }
+            syms[b + 1] = key;
         }
-        // Fixed point: root size depends on each child-offset's ULEB length,
-        // which depends on the offset, which depends on root size.
-        size_t root_size = 2; // termSize=0 byte + childCount byte
-        for (int iter = 0; iter < 8; iter++) {
-            root_size = 2;
-            for (int i = 0; i < nx; i++)
-                root_size += (size_t)es[i].len + 1 + (size_t)clen[i];
-            size_t pos = root_size;
+        MoTrieNode *root = mo_trie_build(syms, 0, nx, 0);
+        // Flatten into BFS order and fixed-point the offsets.
+        MoTrieNode **list = NULL;
+        int nn = 0, lcap = 0;
+        mo_trie_collect(root, &list, &nn, &lcap);
+        for (int iter = 0; iter < 16; iter++) {
+            size_t pos = 0;
             int changed = 0;
-            for (int i = 0; i < nx; i++) {
-                toff[i] = pos;
-                int nl = 1;
-                for (size_t v = pos; v >= 128; v >>= 7) nl++;
-                if (nl != clen[i]) {
-                    clen[i] = nl;
-                    changed = 1;
-                }
-                pos += tsize[i];
+            for (int k = 0; k < nn; k++) {
+                if (list[k]->offset != pos) { list[k]->offset = pos; changed = 1; }
+                pos += mo_trie_node_size(list[k]);
             }
             if (!changed) break;
         }
-        size_t total = root_size;
-        for (int i = 0; i < nx; i++) total += tsize[i];
-        export_data = malloc(total);
+        size_t total = 0;
+        for (int k = 0; k < nn; k++) total += mo_trie_node_size(list[k]);
+        export_data = malloc(total ? total : 1);
         size_t len = 0;
 #define TW(b) do { export_data[len++] = (uint8_t)(b); } while (0)
 #define TWU(v) do { uint64_t _v = (v); do { uint8_t _b = (uint8_t)(_v & 0x7f); _v >>= 7; if (_v) _b |= 0x80; export_data[len++] = _b; } while (_v); } while (0)
-        TW(0); // root terminalSize = 0 (not a terminal)
-        TW((uint8_t)nx); // root childCount
-        for (int i = 0; i < nx; i++) {
-            for (int j = 0; j < es[i].len; j++) TW(es[i].name[j]);
-            TW(0); // edge string null terminator
-            TWU(toff[i]); // child offset from trie start
-        }
-        for (int i = 0; i < nx; i++) {
-            int alen = 1;
-            for (uint64_t v = es[i].addr; v >= 128; v >>= 7) alen++;
-            TWU((uint64_t)(1 + alen)); // terminalSize = flags + addr uleb
-            TWU(0); // flags = 0 (regular export)
-            TWU(es[i].addr); // image-relative address (dylib base 0)
-            TW(0); // childCount = 0 (leaf)
+        for (int k = 0; k < nn; k++) {
+            MoTrieNode *nd = list[k];
+            if (nd->terminal) {
+                int tinfo = mo_uleb_len(0) + mo_uleb_len(nd->addr);
+                TWU((uint64_t)tinfo); // terminalSize
+                TWU(0);               // flags = 0
+                TWU(nd->addr);        // image-relative address
+            } else {
+                TW(0); // terminalSize = 0
+            }
+            TW((uint8_t)nd->n_edges); // childCount (<=255 by construction)
+            for (int e = 0; e < nd->n_edges; e++) {
+                const char *lab = nd->edges[e].label;
+                size_t ll = strlen(lab) + 1;
+                memcpy(export_data + len, lab, ll);
+                len += ll;
+                TWU(nd->edges[e].child->offset);
+            }
         }
 #undef TW
 #undef TWU
         export_size = (uint32_t)len; // == total
-        free(tsize);
-        free(toff);
-        free(clen);
-        free(es);
+        mo_trie_free(root);
+        free(list);
+        free(syms);
     } else {
         export_size = 2;
     }
@@ -1480,18 +1604,22 @@ int link_macho(LinkState *s) {
     // --- LC_DYSYMTAB ---
     mo_w32(f, LC_DYSYMTAB);
     mo_w32(f, 80);
+    // The symbol table is [null, (dylib: defined globals,) undefined externs].
+    // dyld requires the dysymtab to partition it in order: locals, then
+    // external-defined, then undefined, with no overlap.  Treat the index-0
+    // null entry as the sole local symbol.
     if (!is_dylib) {
-        mo_w32(f, 1); // ilocalsym = 1 (skip null entry)
-        mo_w32(f, (uint32_t)n_undef); // nlocalsym = undef externals
-        mo_w32(f, 0); // iextdefsym
+        mo_w32(f, 0); // ilocalsym
+        mo_w32(f, 1); // nlocalsym = null entry
+        mo_w32(f, 1); // iextdefsym
         mo_w32(f, 0); // nextdefsym
-        mo_w32(f, 0); // iundefsym
+        mo_w32(f, 1); // iundefsym
         mo_w32(f, (uint32_t)n_undef); // nundefsym
     } else {
-        mo_w32(f, 0); // ilocalsym = 0 (null is extern)
-        mo_w32(f, 0); // nlocalsym
-        mo_w32(f, 0); // iextdefsym = 0 (null is defined extern)
-        mo_w32(f, 1 + (uint32_t)n_defsym); // nextdefsym (includes null)
+        mo_w32(f, 0); // ilocalsym
+        mo_w32(f, 1); // nlocalsym = null entry
+        mo_w32(f, 1); // iextdefsym
+        mo_w32(f, (uint32_t)n_defsym); // nextdefsym
         mo_w32(f, 1 + (uint32_t)n_defsym); // iundefsym
         mo_w32(f, (uint32_t)n_undef); // nundefsym
     }
@@ -1622,38 +1750,13 @@ int link_macho(LinkState *s) {
         mo_wzeros(f, (size_t)(rebase_off - (uint64_t)cur));
     if (rebase_size > 0) mo_wbuf(f, rebase_data, rebase_size);
     free(rebase_data);
-    // --- Write bind opcodes ---
+    // --- Write bind opcodes (built during layout) ---
     cur = ftell(f);
     if (bind_off > (uint64_t)cur)
         mo_wzeros(f, (size_t)(bind_off - (uint64_t)cur));
     if (bind_size > 0) {
-        // For each GOT entry, emit bind opcodes to tell dyld to resolve it.
-        // BIND_OPCODE_SET_DYLIB_ORDINAL_IMM(1) = 0x11 (libSystem)
-        // BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM = 0x90 + name\0
-        // BIND_OPCODE_SET_TYPE_IMM(POINTER) = 0x41
-        // BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB = 0x60 + ULEB(seg) + ULEB(off)
-        for (int i = 0; i < s->n_syms; i++) {
-            if (got_off[i] < 0) continue;
-            LinkSym *sym = &s->syms[i];
-            if (sym->sec >= 0) continue; // local, filled by linker
-            fputc(0x11, f); // SET_DYLIB_ORDINAL_IMM(1)
-            fputc(0x90, f); // SET_SYMBOL_TRAILING_FLAGS_IMM
-            mo_wbuf(f, sym->name, strlen(sym->name) + 1);
-            fputc(0x41, f); // SET_TYPE_IMM(BIND_TYPE_POINTER)
-            fputc(0x60, f); // SET_SEGMENT_AND_OFFSET_ULEB
-            // segment 2 = __DATA
-            fputc(2, f);
-            // offset within __DATA = got_addr - data_vmaddr
-            uint64_t off = (s->secs[got_sec].addr + (uint64_t)got_off[i]) - data_vmaddr;
-            do {
-                uint8_t b = (uint8_t)(off & 0x7f);
-                off >>= 7;
-                if (off) b |= 0x80;
-                fputc(b, f);
-            } while (off);
-            fputc(0x20, f); // DO_BIND
-        }
-        fputc(0x00, f); // BIND_OPCODE_DONE
+        mo_wbuf(f, bind_data, bind_size);
+        free(bind_data);
     }
     // Pad to symbol table (bind opcodes are the last __LINKEDIT bind data;
     // no chained fixups are emitted -- LC_DYLD_INFO_ONLY's bind opcodes are

@@ -6286,10 +6286,12 @@ static VReg gen(Node *node) {
 #endif
             else {
 #ifdef ARCH_ARM64
+                // Array/complex decays to its ADDRESS, not a loaded value.
+                // emit_adrp_add already yields the address (via GOT on Darwin,
+                // adrp+add on ELF); emit_adrp_got would add a spurious deref
+                // (returning the first bytes of the array as a pointer).
                 if (node->var->is_tls)
                     emit_tls_addr(r, node->var);
-                else if (var_needs_got(node->var))
-                    emit_adrp_got(r, asm_sym_name(var_sym_label(node->var)));
                 else
                     emit_adrp_add(r, asm_sym_name(var_sym_label(node->var)));
 #else
