@@ -702,8 +702,8 @@ int link_macho(LinkState *s) {
     // link_pe.c's IAT trampolines already have for their platforms: a
     // __DATA,__got section of real pointer slots plus, for calls,
     // PLT-style stub bodies dyld's lazy/non-lazy bind opcodes (currently
-    // TODO: GOT/PLT infrastructure is below but dyld bind opcodes are
-    // not yet generated. Fall back to external linker for now.
+    // TODO: GOT/PLT infrastructure and bind opcodes are implemented below
+    // but still unstable. Fall back to external linker for now.
     for (int si = 0; si < s->n_secs; si++) {
         LinkSec *sec = &s->secs[si];
         for (int rj = 0; rj < sec->n_relocs; rj++) {
@@ -713,7 +713,6 @@ int link_macho(LinkState *s) {
                 return -1;
         }
     }
-    // external reference resolves through relocations we do apply
     // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
     // pointers) -- anything needing a real GOT/PLT slot silently emits a
     // corrupted call/load.
@@ -731,16 +730,17 @@ int link_macho(LinkState *s) {
         for (int rj = 0; rj < sec->n_relocs; rj++) {
             LinkReloc *r = &sec->relocs[rj];
             if (r->sym < 0) continue;
-            LinkSym *sym = &s->syms[r->sym];
-            if (sym->sec >= 0) continue; // local symbol, skip
-            // GOT entry needed for GOT_PG/GOT_LO or as PLT target
-            if (got_off[r->sym] < 0) {
+            // GOT entry needed for ANY symbol referenced via GOT_PG/GOT_LO.
+            if ((r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
+                 r->type == RL_GOTPCREL) && got_off[r->sym] < 0) {
                 got_off[r->sym] = n_got * 8;
                 uint8_t z[8] = {0};
                 link_sec_append(s, got_sec, z, 8, 8);
                 n_got++;
             }
-            // PLT stub for external BRANCH26
+            // PLT stub for external BRANCH26 only.
+            LinkSym *sym = &s->syms[r->sym];
+            if (sym->sec >= 0) continue;
             if ((r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT) &&
                 stub_off[r->sym] < 0) {
                 stub_off[r->sym] = n_stubs * 12;
@@ -848,7 +848,8 @@ int link_macho(LinkState *s) {
     // plus the padded string "/usr/lib/dyld".
     uint32_t lc_dylinker = (uint32_t)mo_align(12 + strlen("/usr/lib/dyld") + 1, 8);
     uint32_t lc_dylib = (uint32_t)mo_align(24 + strlen("/usr/lib/libSystem.B.dylib") + 1, 8);
-    uint32_t lc_dyld_chained_fixups = 16; // linkedit_data_command (not the data itself)
+    uint32_t lc_dyld_chained_fixups = 16;
+    uint32_t lc_dyld_info = 48; // dyld_info_command
     // LC_DYLD_EXPORTS_TRIE: a tiny export trie with a single terminal node
     // (two zero bytes: \0 terminal-info-size \0).  dyld expects this.
     uint32_t lc_export_trie = 16; // linkedit_data_command
@@ -867,10 +868,22 @@ int link_macho(LinkState *s) {
     ncmds += 1; // LC_BUILD_VERSION
     if (!is_dylib) ncmds += 1; // LC_MAIN
     ncmds += 1; // LC_DYLD_EXPORTS_TRIE
+    ncmds += 1; // LC_DYLD_INFO_ONLY
     ncmds += 1; // LC_CODE_SIGNATURE
     uint32_t lc_pagezero = is_dylib ? 0 : 72;
     uint32_t lc_linkedit = 72;
     uint32_t lc_codesig_cmd = 16;
+
+    // Bind opcodes size: per GOT entry ~ 6 + strlen(name) + ULEB overhead
+    uint32_t bind_size = 0;
+    for (int i = 0; i < s->n_syms; i++) {
+        if (got_off[i] < 0) continue;
+        if (s->syms[i].sec >= 0) continue; // local, filled by linker
+        bind_size += 4;
+        bind_size += (uint32_t)(strlen(s->syms[i].name) + 1);
+        bind_size += 2;
+    }
+    if (bind_size > 0) bind_size += 1; // BIND_OPCODE_DONE
 
     uint32_t header_size = 32;
     uint32_t total_lc = lc_pagezero + lc_linkedit + text_lc_size;
@@ -878,6 +891,7 @@ int link_macho(LinkState *s) {
     total_lc += lc_build_version + (is_dylib ? 0 : lc_main) + lc_dylib + lc_dyld_chained_fixups;
     total_lc += lc_symtab + lc_dysymtab + lc_codesig_cmd;
     total_lc += (is_dylib ? 0 : lc_dylinker) + lc_export_trie + lc_uuid + lc_id_dylib;
+    total_lc += lc_dyld_info;
 
     // --- Layout: assign vm addresses ---
     uint64_t text_vmaddr = base; // encompass headers in __TEXT
@@ -918,7 +932,6 @@ int link_macho(LinkState *s) {
                 LinkReloc *r = &sec->relocs[rj];
                 if (r->sym < 0) continue;
                 LinkSym *sym = &s->syms[r->sym];
-                if (sym->sec >= 0) continue; // local
                 uint8_t *p = sec->data + r->offset;
                 uint64_t pc = sec->addr + r->offset;
                 if (got_off[r->sym] >= 0 &&
@@ -980,6 +993,26 @@ int link_macho(LinkState *s) {
         }
     }
 
+    // Fill local GOT entries with symbol addresses (dyld handles external ones).
+    {
+        uint8_t *gd = s->secs[got_sec].data;
+        for (int i = 0; i < s->n_syms; i++) {
+            if (got_off[i] < 0) continue;
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec < 0) continue; // external, dyld handles
+            uint64_t addr = s->secs[sym->sec].addr + sym->value;
+            uint8_t *p = gd + got_off[i];
+            p[0] = (uint8_t)(addr);
+            p[1] = (uint8_t)(addr >> 8);
+            p[2] = (uint8_t)(addr >> 16);
+            p[3] = (uint8_t)(addr >> 24);
+            p[4] = (uint8_t)(addr >> 32);
+            p[5] = (uint8_t)(addr >> 40);
+            p[6] = (uint8_t)(addr >> 48);
+            p[7] = (uint8_t)(addr >> 56);
+        }
+    }
+
     // Entry point
     int entry_sym = link_find_sym(s, "_main");
     if (entry_sym < 0) entry_sym = link_find_sym(s, "main");
@@ -1000,10 +1033,9 @@ int link_macho(LinkState *s) {
         linkedit_fileoff = mo_align(text_fileoff + text_vmsize, 0x4000);
     }
 
-    // Chained fixups: modern dyld requires this instead of LC_DYLD_INFO_ONLY.
-    // Minimal 56-byte payload with no actual fixups (matching what ld64 emits
-    // for a binary with zero dynamic fixups).
-    uint64_t chained_fixups_off = linkedit_fileoff;
+    // Bind opcodes: tell dyld to fill GOT entries with imported symbol addresses.
+    uint64_t bind_off = linkedit_fileoff;
+    uint64_t chained_fixups_off = bind_off + bind_size;
     uint32_t chained_fixups_size = 56;
 
     // Symbol table: 1 null + undef externals (+ defined globals for dylibs).
@@ -1011,14 +1043,13 @@ int link_macho(LinkState *s) {
     if (is_dylib) nsyms += (uint32_t)n_defsym;
     uint64_t symtab_off = chained_fixups_off + chained_fixups_size;
     uint64_t strtab_off = symtab_off + nsyms * 16;
-    // String table: "\0" + undef names + dylib path + (for dylibs) defined global names
-    size_t strtab_size = 1; // leading \0
+    // String table.
+    size_t strtab_size = 1;
     for (int i = 0; i < s->n_syms; i++) {
         LinkSym *sym = &s->syms[i];
         if (!sym->name || !sym->name[0]) continue;
         if (sym->sec < 0) strtab_size += strlen(sym->name) + 1;
-        else if (is_dylib && sym->bind == 1)
-            strtab_size += strlen(sym->name) + 1;
+        else if (is_dylib && sym->bind == 1) strtab_size += strlen(sym->name) + 1;
     }
     const char *dylib_path = "/usr/lib/libSystem.B.dylib";
     strtab_size += strlen(dylib_path) + 1;
@@ -1203,12 +1234,30 @@ int link_macho(LinkState *s) {
     mo_w32(f, 0); // nsects
     mo_w32(f, 0); // flags
 
+    // --- LC_DYLD_INFO_ONLY (bind opcodes for GOT entries) ---
+    mo_w32(f, LC_DYLD_INFO_ONLY);
+    mo_w32(f, lc_dyld_info);
+    // rebase_off=0, rebase_size=0
+    mo_w32(f, 0);
+    mo_w32(f, 0);
+    // bind_off, bind_size
+    mo_w32(f, (uint32_t)bind_off);
+    mo_w32(f, bind_size);
+    // lazy_bind_off=0, lazy_bind_size=0
+    mo_w32(f, 0);
+    mo_w32(f, 0);
+    // weak_bind_off=0, weak_bind_size=0
+    mo_w32(f, 0);
+    mo_w32(f, 0);
+    // export_off=0, export_size=0
+    mo_w32(f, 0);
+    mo_w32(f, 0);
+
     // --- LC_DYLD_CHAINED_FIXUPS ---
     mo_w32(f, LC_DYLD_CHAINED_FIXUPS);
     mo_w32(f, lc_dyld_chained_fixups);
     mo_w32(f, (uint32_t)chained_fixups_off);
     mo_w32(f, chained_fixups_size);
-
     // --- LC_SYMTAB ---
     mo_w32(f, LC_SYMTAB);
     mo_w32(f, 24);
@@ -1356,11 +1405,40 @@ int link_macho(LinkState *s) {
         if (padded > sec->len) mo_wzeros(f, (size_t)(padded - sec->len));
         cur_fo += padded;
     }
+    // --- Write bind opcodes ---
+    cur = ftell(f);
+    if (bind_off > (uint64_t)cur)
+        mo_wzeros(f, (size_t)(bind_off - (uint64_t)cur));
+    if (bind_size > 0) {
+        // For each GOT entry, emit bind opcodes to tell dyld to resolve it.
+        // BIND_OPCODE_SET_DYLIB_ORDINAL_IMM(1) = 0x11 (libSystem)
+        // BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM = 0x90 + name\0
+        // BIND_OPCODE_SET_TYPE_IMM(POINTER) = 0x41
+        // BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB = 0x60 + ULEB(seg) + ULEB(off)
+        for (int i = 0; i < s->n_syms; i++) {
+            if (got_off[i] < 0) continue;
+            LinkSym *sym = &s->syms[i];
+            if (sym->sec >= 0) continue; // local, filled by linker
+            fputc(0x11, f); // SET_DYLIB_ORDINAL_IMM(1)
+            fputc(0x90, f); // SET_SYMBOL_TRAILING_FLAGS_IMM
+            mo_wbuf(f, sym->name, strlen(sym->name) + 1);
+            fputc(0x41, f); // SET_TYPE_IMM(BIND_TYPE_POINTER)
+            fputc(0x60, f); // SET_SEGMENT_AND_OFFSET_ULEB
+            // segment 2 = __DATA
+            fputc(2, f);
+            // offset within __DATA = got_addr - data_vmaddr
+            uint64_t off = (s->secs[got_sec].addr + (uint64_t)got_off[i]) - data_vmaddr;
+            do { uint8_t b = (uint8_t)(off & 0x7f); off >>= 7; if (off) b |= 0x80; fputc(b, f); } while (off);
+            fputc(0x20, f); // DO_BIND
+        }
+        fputc(0x00, f); // BIND_OPCODE_DONE
+    }
+    // Pad to chained fixups.
     cur = ftell(f);
     if (chained_fixups_off > (uint64_t)cur)
         mo_wzeros(f, (size_t)(chained_fixups_off - (uint64_t)cur));
 
-    // --- Write chained fixups data (56 bytes, matches ld64 output) ---
+    // --- Write chained fixups data (56 bytes) ---
     // Minimal header: version=0, no starts, no imports, no symbols.
     {
         static const uint8_t cf[56] = {

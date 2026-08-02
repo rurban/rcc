@@ -452,6 +452,7 @@ void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
         w32le(p, ins);
         break;
     }
+    case 0: break; // already handled by platform-specific GOT/PLT pass
     default:
         fprintf(stderr, "rcc: link warning: unhandled relocation %u\n", r->type);
         break;
