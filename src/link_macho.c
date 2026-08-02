@@ -90,6 +90,12 @@ static uint32_t mo_r32(const uint8_t *p) {
 static uint64_t mo_r64(const uint8_t *p) {
     return (uint64_t)mo_r32(p) | ((uint64_t)mo_r32(p + 4) << 32);
 }
+static void mo_w32le(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v);
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
 static void mo_w32(FILE *f, uint32_t v) {
     fputc(v & 0xFF, f);
     fputc((v >> 8) & 0xFF, f);
@@ -696,21 +702,52 @@ int link_macho(LinkState *s) {
     // link_pe.c's IAT trampolines already have for their platforms: a
     // __DATA,__got section of real pointer slots plus, for calls,
     // PLT-style stub bodies dyld's lazy/non-lazy bind opcodes (currently
-    // hardcoded empty in LC_DYLD_INFO_ONLY below) can bind into. Until
-    // then this linker only actually works for programs whose every
-    // external reference resolves through relocations we do apply
-    // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
-    // pointers) -- anything needing a real GOT/PLT slot silently emits a
-    // corrupted call/load.
-    // Fall back to the external linker when GOT/PLT indirection is needed.
+    // TODO: GOT/PLT infrastructure is below but dyld bind opcodes are
+    // not yet generated. Fall back to external linker for now.
     for (int si = 0; si < s->n_secs; si++) {
         LinkSec *sec = &s->secs[si];
         for (int rj = 0; rj < sec->n_relocs; rj++) {
             LinkReloc *r = &sec->relocs[rj];
-            // GOT/PLT relocations are not yet supported — fall back.
             if (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
                 r->type == RL_GOTPCREL || r->type == RL_ARM64_B26)
                 return -1;
+        }
+    }
+    // external reference resolves through relocations we do apply
+    // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
+    // pointers) -- anything needing a real GOT/PLT slot silently emits a
+    // corrupted call/load.
+    // Build GOT and PLT for external symbols.
+    int got_sec = link_find_or_create_sec(s, ".got", true, true, false, false, false, 8);
+    int stubs_sec = link_find_or_create_sec(s, ".stubs", true, false, true, false, false, 16);
+    // got_off[sym_idx] = offset in .got, or -1. stub_off[sym_idx] = offset in .stubs.
+    int *got_off = calloc((size_t)s->n_syms, sizeof(int));
+    int *stub_off = calloc((size_t)s->n_syms, sizeof(int));
+    for (int i = 0; i < s->n_syms; i++) got_off[i] = -1;
+    for (int i = 0; i < s->n_syms; i++) stub_off[i] = -1;
+    int n_got = 0, n_stubs = 0;
+    for (int si = 0; si < s->n_secs; si++) {
+        LinkSec *sec = &s->secs[si];
+        for (int rj = 0; rj < sec->n_relocs; rj++) {
+            LinkReloc *r = &sec->relocs[rj];
+            if (r->sym < 0) continue;
+            LinkSym *sym = &s->syms[r->sym];
+            if (sym->sec >= 0) continue; // local symbol, skip
+            // GOT entry needed for GOT_PG/GOT_LO or as PLT target
+            if (got_off[r->sym] < 0) {
+                got_off[r->sym] = n_got * 8;
+                uint8_t z[8] = {0};
+                link_sec_append(s, got_sec, z, 8, 8);
+                n_got++;
+            }
+            // PLT stub for external BRANCH26
+            if ((r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT) &&
+                stub_off[r->sym] < 0) {
+                stub_off[r->sym] = n_stubs * 12;
+                uint8_t z[16] = {0};
+                link_sec_append(s, stubs_sec, z, 12, 16);
+                n_stubs++;
+            }
         }
     }
     // Create standard sections
@@ -718,7 +755,6 @@ int link_macho(LinkState *s) {
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 8);
     link_find_or_create_sec(s, ".rodata", true, false, false, false, false, 8);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 8);
-    // .init_array for ctors
     link_find_or_create_sec(s, ".init_array", true, true, false, false, false, 8);
 
     uint64_t base = is_dylib ? 0 : 0x100000000ULL;
@@ -749,7 +785,13 @@ int link_macho(LinkState *s) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->len == 0) continue;
         mo_secs = realloc(mo_secs, (size_t)(n_mo + 1) * sizeof(MOSec));
-        if (sec->exec) {
+        if (strcmp(sec->name, ".got") == 0) {
+            mo_secs[n_mo].segname = "__DATA";
+            mo_secs[n_mo].sectname = "__got";
+        } else if (strcmp(sec->name, ".stubs") == 0) {
+            mo_secs[n_mo].segname = "__TEXT";
+            mo_secs[n_mo].sectname = "__stubs";
+        } else if (sec->exec) {
             mo_secs[n_mo].segname = "__TEXT";
             mo_secs[n_mo].sectname = "__text";
         } else if (strcmp(sec->name, ".rodata") == 0 ||
@@ -866,8 +908,77 @@ int link_macho(LinkState *s) {
         }
     }
 
-    // Apply relocations now that every section has its real address.
+    // Resolve GOT/PLT relocations to GOT entries and PLT stubs.
+    {
+        uint64_t got_addr = s->secs[got_sec].addr;
+        uint64_t stubs_addr = s->secs[stubs_sec].addr;
+        for (int si = 0; si < s->n_secs; si++) {
+            LinkSec *sec = &s->secs[si];
+            for (int rj = 0; rj < sec->n_relocs; rj++) {
+                LinkReloc *r = &sec->relocs[rj];
+                if (r->sym < 0) continue;
+                LinkSym *sym = &s->syms[r->sym];
+                if (sym->sec >= 0) continue; // local
+                uint8_t *p = sec->data + r->offset;
+                uint64_t pc = sec->addr + r->offset;
+                if (got_off[r->sym] >= 0 &&
+                    (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO)) {
+                    uint64_t tgt = got_addr + (uint64_t)got_off[r->sym];
+                    if (r->type == RL_ARM64_GOT_PG) {
+                        uint32_t ins = mo_r32(p);
+                        int64_t d = (int64_t)(tgt - (pc & ~(uint64_t)0xfff));
+                        int64_t imm = d >> 12;
+                        ins = (ins & 0x9f00001f) |
+                            ((uint32_t)(imm & 3) << 29) |
+                            ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+                        mo_w32le(p, ins);
+                    } else {
+                        uint32_t ins = mo_r32(p);
+                        ins = (ins & 0xffc003ff) |
+                            ((uint32_t)((tgt & 0xfff) >> 3) << 10);
+                        mo_w32le(p, ins);
+                    }
+                    r->type = 0; // handled
+                } else if (stub_off[r->sym] >= 0 && r->type == RL_ARM64_B26) {
+                    uint64_t tgt = stubs_addr + (uint64_t)stub_off[r->sym];
+                    uint32_t ins = mo_r32(p);
+                    int64_t d = (int64_t)(tgt - pc);
+                    d >>= 2;
+                    ins = (ins & ~0x03ffffffu) | ((uint32_t)(d & 0x03ffffffu));
+                    mo_w32le(p, ins);
+                    r->type = 0; // handled
+                }
+            }
+        }
+    }
+
     link_apply_relocs(s, 0);
+
+    // Write PLT stub bodies now that GOT entry addresses are known.
+    // Each stub: adrp x16, GOT_page; ldr x16, [x16, #off]; br x16
+    {
+        uint64_t got_addr = s->secs[got_sec].addr;
+        uint64_t stubs_addr = s->secs[stubs_sec].addr;
+        uint8_t *sd = s->secs[stubs_sec].data;
+        for (int i = 0; i < s->n_syms; i++) {
+            if (stub_off[i] < 0 || got_off[i] < 0) continue;
+            uint64_t tgt = got_addr + (uint64_t)got_off[i];
+            uint8_t *sp = sd + stub_off[i];
+            // adrp x16, page_of(tgt)
+            int64_t delta = (int64_t)(tgt - (stubs_addr & ~(uint64_t)0xfff));
+            int64_t imm = delta >> 12;
+            uint32_t adrp = 0x90000010u |
+                ((uint32_t)(imm & 3) << 29) |
+                ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+            mo_w32le(sp, adrp);
+            // ldr x16, [x16, #(tgt & 0xfff)]
+            uint32_t ldr = 0xF9400210u |
+                ((uint32_t)((tgt & 0xfff) >> 3) << 10);
+            mo_w32le(sp + 4, ldr);
+            // br x16
+            mo_w32le(sp + 8, 0xD61F0200u);
+        }
+    }
 
     // Entry point
     int entry_sym = link_find_sym(s, "_main");
