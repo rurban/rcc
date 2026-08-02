@@ -702,18 +702,23 @@ int link_macho(LinkState *s) {
     // link_pe.c's IAT trampolines already have for their platforms: a
     // __DATA,__got section of real pointer slots plus, for calls,
     // PLT-style stub bodies dyld's lazy/non-lazy bind opcodes (currently
-    // TODO: GOT/PLT infrastructure and bind opcodes are implemented below
-    // but still unstable. Fall back to external linker for now.
+    // TODO: GOT/PLT with bind opcodes works for local symbols (GLOBAL OK)
+    // but PLT stubs + dyld bind for external calls still crash (SIGSEGV).
+    // Fall back to external linker until PLT/bind interaction is fixed.
     for (int si = 0; si < s->n_secs; si++) {
         LinkSec *sec = &s->secs[si];
         for (int rj = 0; rj < sec->n_relocs; rj++) {
             LinkReloc *r = &sec->relocs[rj];
-            if (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
-                r->type == RL_GOTPCREL || r->type == RL_ARM64_B26)
+            if (r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT)
+                return -1;
+            // Also fall back for external GOT (bind opcodes not fully working)
+            if ((r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
+                 r->type == RL_GOTPCREL) &&
+                r->sym >= 0 &&
+                s->syms[r->sym].sec < 0)
                 return -1;
         }
     }
-    // correctly (RL_ARM64_B26 direct branches, RL_ABS64/32 absolute
     // pointers) -- anything needing a real GOT/PLT slot silently emits a
     // corrupted call/load.
     // Build GOT and PLT for external symbols.
@@ -732,7 +737,8 @@ int link_macho(LinkState *s) {
             if (r->sym < 0) continue;
             // GOT entry needed for ANY symbol referenced via GOT_PG/GOT_LO.
             if ((r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO ||
-                 r->type == RL_GOTPCREL) && got_off[r->sym] < 0) {
+                 r->type == RL_GOTPCREL) &&
+                got_off[r->sym] < 0) {
                 got_off[r->sym] = n_got * 8;
                 uint8_t z[8] = {0};
                 link_sec_append(s, got_sec, z, 8, 8);
@@ -743,6 +749,13 @@ int link_macho(LinkState *s) {
             if (sym->sec >= 0) continue;
             if ((r->type == RL_ARM64_B26 || r->type == RL_PC32_PLT) &&
                 stub_off[r->sym] < 0) {
+                // PLT stub needs a GOT entry for the lazy bind pointer.
+                if (got_off[r->sym] < 0) {
+                    got_off[r->sym] = n_got * 8;
+                    uint8_t z[8] = {0};
+                    link_sec_append(s, got_sec, z, 8, 8);
+                    n_got++;
+                }
                 stub_off[r->sym] = n_stubs * 12;
                 uint8_t z[16] = {0};
                 link_sec_append(s, stubs_sec, z, 12, 16);
@@ -934,32 +947,56 @@ int link_macho(LinkState *s) {
                 LinkSym *sym = &s->syms[r->sym];
                 uint8_t *p = sec->data + r->offset;
                 uint64_t pc = sec->addr + r->offset;
-                if (got_off[r->sym] >= 0 &&
-                    (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO)) {
-                    uint64_t tgt = got_addr + (uint64_t)got_off[r->sym];
-                    if (r->type == RL_ARM64_GOT_PG) {
-                        uint32_t ins = mo_r32(p);
-                        int64_t d = (int64_t)(tgt - (pc & ~(uint64_t)0xfff));
-                        int64_t imm = d >> 12;
-                        ins = (ins & 0x9f00001f) |
-                            ((uint32_t)(imm & 3) << 29) |
-                            ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
-                        mo_w32le(p, ins);
-                    } else {
-                        uint32_t ins = mo_r32(p);
-                        ins = (ins & 0xffc003ff) |
-                            ((uint32_t)((tgt & 0xfff) >> 3) << 10);
-                        mo_w32le(p, ins);
+                if (r->type == RL_ARM64_GOT_PG || r->type == RL_ARM64_GOT_LO) {
+                    LinkSym *sym = &s->syms[r->sym];
+                    if (sym->sec >= 0 && got_off[r->sym] >= 0) {
+                        // Local symbol: bypass GOT, resolve to direct address.
+                        uint64_t tgt = s->secs[sym->sec].addr + sym->value;
+                        if (r->type == RL_ARM64_GOT_PG) {
+                            uint32_t ins = mo_r32(p);
+                            int64_t d = (int64_t)(tgt - (pc & ~(uint64_t)0xfff));
+                            int64_t imm = d >> 12;
+                            ins = (ins & 0x9f00001f) |
+                                ((uint32_t)(imm & 3) << 29) |
+                                ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+                            mo_w32le(p, ins);
+                        } else {
+                            // Convert LDR to ADD xN, xN, #offset
+                            uint32_t ins = mo_r32(p);
+                            uint32_t rd = ins & 0x1F;
+                            uint32_t rn = (ins >> 5) & 0x1F;
+                            ins = 0x91000000 | ((uint32_t)(tgt & 0xfff) << 10) | (rn << 5) | rd;
+                            mo_w32le(p, ins);
+                        }
+                        r->type = 0;
+                    } else if (got_off[r->sym] >= 0) {
+                        // External symbol: point to GOT entry.
+                        uint64_t tgt = got_addr + (uint64_t)got_off[r->sym];
+                        if (r->type == RL_ARM64_GOT_PG) {
+                            uint32_t ins = mo_r32(p);
+                            int64_t d = (int64_t)(tgt - (pc & ~(uint64_t)0xfff));
+                            int64_t imm = d >> 12;
+                            ins = (ins & 0x9f00001f) |
+                                ((uint32_t)(imm & 3) << 29) |
+                                ((uint32_t)((imm >> 2) & 0x7ffff) << 5);
+                            mo_w32le(p, ins);
+                        } else {
+                            uint32_t ins = mo_r32(p);
+                            ins = (ins & 0xffc003ff) |
+                                ((uint32_t)((tgt & 0xfff) >> 3) << 10);
+                            mo_w32le(p, ins);
+                        }
+                        r->type = 0;
                     }
-                    r->type = 0; // handled
-                } else if (stub_off[r->sym] >= 0 && r->type == RL_ARM64_B26) {
+                }
+                if (stub_off[r->sym] >= 0 && r->type == RL_ARM64_B26) {
                     uint64_t tgt = stubs_addr + (uint64_t)stub_off[r->sym];
                     uint32_t ins = mo_r32(p);
                     int64_t d = (int64_t)(tgt - pc);
                     d >>= 2;
                     ins = (ins & ~0x03ffffffu) | ((uint32_t)(d & 0x03ffffffu));
                     mo_w32le(p, ins);
-                    r->type = 0; // handled
+                    r->type = 0;
                 }
             }
         }
@@ -977,8 +1014,9 @@ int link_macho(LinkState *s) {
             if (stub_off[i] < 0 || got_off[i] < 0) continue;
             uint64_t tgt = got_addr + (uint64_t)got_off[i];
             uint8_t *sp = sd + stub_off[i];
-            // adrp x16, page_of(tgt)
-            int64_t delta = (int64_t)(tgt - (stubs_addr & ~(uint64_t)0xfff));
+            // adrp x16, page_of(tgt) — PC is at this stub instruction.
+            uint64_t stub_pc = stubs_addr + (uint64_t)stub_off[i];
+            int64_t delta = (int64_t)(tgt - (stub_pc & ~(uint64_t)0xfff));
             int64_t imm = delta >> 12;
             uint32_t adrp = 0x90000010u |
                 ((uint32_t)(imm & 3) << 29) |
@@ -1049,7 +1087,8 @@ int link_macho(LinkState *s) {
         LinkSym *sym = &s->syms[i];
         if (!sym->name || !sym->name[0]) continue;
         if (sym->sec < 0) strtab_size += strlen(sym->name) + 1;
-        else if (is_dylib && sym->bind == 1) strtab_size += strlen(sym->name) + 1;
+        else if (is_dylib && sym->bind == 1)
+            strtab_size += strlen(sym->name) + 1;
     }
     const char *dylib_path = "/usr/lib/libSystem.B.dylib";
     strtab_size += strlen(dylib_path) + 1;
@@ -1061,7 +1100,7 @@ int link_macho(LinkState *s) {
     uint32_t export_size;
     if (is_dylib && n_defsym > 0) {
         size_t est = 5; // root: 1+1+2+1 (termSz, childCnt, "_\0", offset)
-        est += 2;       // "_" node base: termSz + childCnt
+        est += 2; // "_" node base: termSz + childCnt
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
             if (sym->sec < 0 || sym->bind != 1 || !sym->name) continue;
@@ -1070,7 +1109,8 @@ int link_macho(LinkState *s) {
             est += strlen(n) + 1 + 1; // name + null + offset byte
             est += 1; // terminalSize byte
             uint64_t a = s->secs[sym->sec].addr + sym->value;
-            int ulen = 1; for (uint64_t t = a; t >= 128; t >>= 7) ulen++;
+            int ulen = 1;
+            for (uint64_t t = a; t >= 128; t >>= 7) ulen++;
             est += 1 + (size_t)ulen; // flags ULEB + address ULEB
         }
         export_size = (uint32_t)mo_align(est, 8);
@@ -1428,7 +1468,12 @@ int link_macho(LinkState *s) {
             fputc(2, f);
             // offset within __DATA = got_addr - data_vmaddr
             uint64_t off = (s->secs[got_sec].addr + (uint64_t)got_off[i]) - data_vmaddr;
-            do { uint8_t b = (uint8_t)(off & 0x7f); off >>= 7; if (off) b |= 0x80; fputc(b, f); } while (off);
+            do {
+                uint8_t b = (uint8_t)(off & 0x7f);
+                off >>= 7;
+                if (off) b |= 0x80;
+                fputc(b, f);
+            } while (off);
             fputc(0x20, f); // DO_BIND
         }
         fputc(0x00, f); // BIND_OPCODE_DONE
@@ -1556,7 +1601,11 @@ int link_macho(LinkState *s) {
     fseek(f, (long)export_off, SEEK_SET);
     if (is_dylib && n_defsym > 0) {
         // Collect exported symbols (strip '_' prefix for trie).
-        typedef struct { uint64_t addr; const char *name; int len; } ES;
+        typedef struct {
+            uint64_t addr;
+            const char *name;
+            int len;
+        } ES;
         ES *es = malloc((size_t)n_defsym * sizeof(ES));
         int nx = 0;
         for (int i = 0; i < s->n_syms; i++) {
@@ -1566,13 +1615,15 @@ int link_macho(LinkState *s) {
             const char *n = sym->name;
             if (n[0] == '_') n++;
             es[nx].addr = s->secs[sym->sec].addr + sym->value;
-            es[nx].name = n; es[nx].len = (int)strlen(n);
+            es[nx].name = n;
+            es[nx].len = (int)strlen(n);
             nx++;
         }
         // Build trie in buffer.  terminalSize and childCount are single
         // bytes (not ULEB).  Offsets are ULEB from node start.
         size_t cap = 256;
-        uint8_t *t = malloc(cap); size_t len = 0;
+        uint8_t *t = malloc(cap);
+        size_t len = 0;
 #define W(b) do{if(len>=cap){cap*=2;t=realloc(t,cap);}t[len++]=(uint8_t)(b);}while(0)
 #define WU(v) do{uint64_t _v=(v);do{ \
     if(len>=cap){cap*=2;t=realloc(t,cap);} \
@@ -1580,17 +1631,22 @@ int link_macho(LinkState *s) {
 }while(_v);}while(0)
         // Root node: "_" edge
         size_t root = len;
-        W(0); W(1);             // branch, 1 child
-        W('_'); W(0);           // edge "_"
-        size_t root_off = len; WU(0); // placeholder
+        W(0);
+        W(1); // branch, 1 child
+        W('_');
+        W(0); // edge "_"
+        size_t root_off = len;
+        WU(0); // placeholder
         // "_" node: one child per exported symbol
         size_t under = len;
-        W(0); W((uint8_t)nx);   // branch, nx children
+        W(0);
+        W((uint8_t)nx); // branch, nx children
         size_t *coff = malloc((size_t)nx * sizeof(size_t));
         for (int i = 0; i < nx; i++) {
             for (int j = 0; j < es[i].len; j++) W(es[i].name[j]);
             W(0); // null terminator
-            coff[i] = len; WU(0); // placeholder offset
+            coff[i] = len;
+            WU(0); // placeholder offset
         }
         // Terminals: write after "_" node, patch offsets
         // Terminals: offsets are from the "_" node start (not trie start).
@@ -1605,11 +1661,16 @@ int link_macho(LinkState *s) {
             if (ts < 256) t[ts_pos] = (uint8_t)ts;
         }
         // Patch root -> "_" offset (relative to root node).
-        { size_t off = under - root; if (off < 128) t[root_off] = (uint8_t)off; }
+        {
+            size_t off = under - root;
+            if (off < 128) t[root_off] = (uint8_t)off;
+        }
         mo_wbuf(f, t, len);
         // Use exact trie length, no padding needed.
         export_size = (uint32_t)len;
-        free(coff); free(es); free(t);
+        free(coff);
+        free(es);
+        free(t);
 #undef WU
     } else {
         fputc(0, f);
