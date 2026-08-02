@@ -69,14 +69,14 @@ didn't report every expected error line, `r` = runtime failure.
 
 | Compiler | Passed | Failed | Skipped | Notes                      |
 | -------- | ------ | ------ | ------- | -------------------------- |
-| rcc      | 4085   | 4      | 355     | 99%, 4e failures           |
-| gcc      | 4154   | 74     | 215     | 98%, 38c/1r failures       |
-| ccc      | 3811   | 199    | 432     | 94%, 133c/31r failures     |
-| clang    | 3615   | 617    | 210     | 85%, 512c/39e/15r failures |
-| tcc      | 2605   | 423    | 1414    | 85%, 364c/17r failures     |
-| kefir    | 2911   | 946    | 585     | 75%, 873c/15r failures     |
-| slimcc   | 1993   | 1353   | 1096    | 59%, 1305c/7r failures     |
-| xcc      | 719    | 2448   | 1274    | 22%, 2105c failures        |
+| rcc      | 4088   | 4      | 354     | 99%, 4e failures           |
+| gcc      | 4175   | 74     | 196     | 98%, 38c/1r failures       |
+| ccc      | 3814   | 217    | 413     | 94%, 151c/31r failures     |
+| clang    | 3618   | 635    | 191     | 85%, 530c/39e/15r failures |
+| tcc      | 2607   | 442    | 1395    | 85%, 383c/17r failures     |
+| kefir    | 2913   | 965    | 566     | 75%, 892c/15r failures     |
+| slimcc   | 1995   | 1372   | 1077    | 59%, 1324c/7r failures     |
+| xcc      | 719    | 2468   | 1256    | 22%, 2123c failures        |
 
 <!-- TEST_RESULTS_TABLE_END -->
 
