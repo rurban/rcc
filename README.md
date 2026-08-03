@@ -76,7 +76,10 @@ didn't report every expected error line, `r` = runtime failure.
 | tcc      | 2607   | 442    | 1395    | 85%, 383c/17r failures     |
 | kefir    | 2913   | 965    | 566     | 75%, 892c/15r failures     |
 | slimcc   | 1995   | 1372   | 1077    | 59%, 1324c/7r failures     |
+| lacc     | 1403   | 1967   | 1073    | 41%, 1771c/14r failures    |
+| scc      | 1430   | 2569   | 444     | 35%, 2389c/31r failures    |
 | xcc      | 719    | 2468   | 1256    | 22%, 2123c failures        |
+| cproc    | 332    | 3707   | 404     | 8%, 3347c failures         |
 
 <!-- TEST_RESULTS_TABLE_END -->
 

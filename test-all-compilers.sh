@@ -57,6 +57,22 @@ CCC="$(resolve_bin ccc)"
 if [ -z "$CCC" ] && [ -x ../claudes-c-compiler/target/release/ccc ]; then
 	CCC="../claudes-c-compiler/target/release/ccc"
 fi
+CPROC="$(resolve_bin cproc)"
+if [ -z "$CPROC" ] && [ -x ../cproc/cproc ]; then
+	CPROC="../cproc/cproc"
+fi
+SCC="$(resolve_bin scc)"
+if [ -z "$SCC" ] && [ -x ../scc/bin/scc ]; then
+	CPROC="../scc/bin/scc"
+fi
+LACC="$(resolve_bin lacc)"
+if [ -z "$LACC" ] && [ -x ../lacc/bin/lacc ]; then
+	CPROC="../lacc/bin/lacc"
+fi
+CHIBICC="$(resolve_bin chibicc)"
+if [ -z "$CHIBICC" ] && [ -x ../chibicc/chibicc ]; then
+	CPROC="../chibicc/chibicc"
+fi
 
 echo "Building rcc + run_tests..."
 make -s rcc run_tests
@@ -64,7 +80,7 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir slimcc xcc"
+ROW_NAMES="rcc gcc ccc clang tcc kefir slimcc lacc xcc cproc scc chibicc"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
@@ -75,6 +91,10 @@ bin_for() {
 	kefir) echo "$KEFIR" ;;
 	slimcc) echo "$SLIMCC" ;;
 	xcc) echo "$XCC" ;;
+	cproc) echo "$CPROC" ;;
+	lacc) echo "$LACC" ;;
+	scc) echo "$SCC" ;;
+	chibicc) echo "$CHIBICC" ;;
 	esac
 }
 suffix_for() {
