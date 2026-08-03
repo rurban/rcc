@@ -2855,6 +2855,18 @@ Token *preprocess(char *filename, char *p) {
             define_pre("__builtin___pread_chk", "pread");
             define_pre("__builtin___readlink_chk", "readlink");
             define_pre("__builtin___readlinkat_chk", "readlinkat");
+            define_pre("__read_chk", "read");
+            define_pre("__pread_chk", "pread");
+            define_pre("__readlink_chk", "readlink");
+            define_pre("__readlinkat_chk", "readlinkat");
+            define_pre("__getcwd_chk", "getcwd");
+            define_pre("__getwd_chk", "getwd");
+            define_pre("__confstr_chk", "confstr");
+            define_pre("__getgroups_chk", "getgroups");
+            define_pre("__ttyname_r_chk", "ttyname_r");
+            define_pre("__getlogin_r_chk", "getlogin_r");
+            define_pre("__gethostname_chk", "gethostname");
+            define_pre("__getdomainname_chk", "getdomainname");
             define_pre("__builtin___getcwd_chk", "getcwd");
             define_pre("__builtin___getwd_chk", "getwd");
             define_pre("__builtin___confstr_chk", "confstr");

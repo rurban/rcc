@@ -1125,6 +1125,16 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         call_target = node->lhs->var->asm_name;
         is_asm_call = true;
     }
+    // glibc __REDIRECT: extern readlink(...) __asm__("__readlink_chk")
+    // adds a trailing buflen arg.  The call site has the right arity
+    // for the C-level name, so use that instead of the asm label.
+    // (Bare _chk calls from inlined fortify bodies are already rewritten
+    //  to the base function by the preprocessor.)
+    if (is_asm_call && call_target) {
+        size_t tlen = strlen(call_target);
+        if (tlen > 4 && !strcmp(call_target + tlen - 4, "_chk"))
+            call_target = node->lhs->var->name;
+    }
 
     // Rename __builtin_* math functions to their library counterparts.
     // The type signature was set by declare_builtin_on_demand() in the parser.
