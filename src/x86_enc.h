@@ -462,6 +462,8 @@ void x86_orps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_sqrtps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_sqrtss(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_rsqrtps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_sqrtpd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_sqrtsd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_rcpps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_unpcklps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_unpckhps(SecBuf *s, X86XmmReg dst, X86XmmReg src);

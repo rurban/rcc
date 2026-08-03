@@ -721,8 +721,8 @@ void arm64_fneg_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
 }
 // FSQRT:   U=1, size=2, opcode=0x1F → 0x6EA1F800
 void arm64_fsqrt_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {
-    secbuf_emit32le(s, simd2(1, 1, 2, 0x1F, rd, rn)); // fsqrt vd.4S, vn.4S
-    (void)size;
+    // size 0 -> .4S (fp32), size 1 -> .2D (fp64)
+    secbuf_emit32le(s, simd2(1, 1, size ? 3 : 2, 0x1F, rd, rn)); // fsqrt vd.4S/.2D, vn
 }
 // FRSQRTE: U=1, size=2, opcode=0x1D → 0x6EA1D800
 void arm64_frsqrte_simd(SecBuf *s, int size, Arm64Reg rd, Arm64Reg rn) {

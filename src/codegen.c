@@ -1159,11 +1159,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             call_target = "cimagf";
     }
 
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps/sqrtpd/sqrtsd — packed SSE/NEON dispatch.
     if (call_target &&
         (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
          !strcmp(call_target, "__builtin_ia32_sqrtss") ||
-         !strcmp(call_target, "__builtin_ia32_rsqrtps"))) {
+         !strcmp(call_target, "__builtin_ia32_rsqrtps") ||
+         !strcmp(call_target, "__builtin_ia32_sqrtpd") ||
+         !strcmp(call_target, "__builtin_ia32_sqrtsd"))) {
         return gen_vector_unary_builtin(node);
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
@@ -6096,6 +6098,13 @@ static VReg gen_vector_unary_builtin(Node *node) {
             secbuf_emit32le(cg_sec, 0x1E204002u); // fmov s2, s0  (copy lane 0 to s2, leaves V0 intact)
             secbuf_emit32le(cg_sec, 0x1E21C042u); // fsqrt s2, s2  (scalar sqrt, zeros V2 upper bits)
             secbuf_emit32le(cg_sec, 0x6E040440u); // mov.s v0[0], v2[0]  (insert sqrt result into lane 0)
+        } else if (!strcmp(name, "__builtin_ia32_sqrtpd")) {
+            asm_fsqrt_v2d(cg_sec, ASM_Q0, ASM_Q0); // fsqrt v0.2d, v0.2d
+        } else if (!strcmp(name, "__builtin_ia32_sqrtsd")) {
+            // Scalar double sqrt of lane 0; preserve lane 1 via scratch V2.
+            secbuf_emit32le(cg_sec, 0x1E604002u); // fmov d2, d0  (copy lane 0 to d2)
+            secbuf_emit32le(cg_sec, 0x1E61C042u); // fsqrt d2, d2  (scalar double sqrt)
+            secbuf_emit32le(cg_sec, 0x6E080440u); // ins v0.d[0], v2.d[0]  (write result to lane 0)
         } else if (!strcmp(name, "__builtin_ia32_rsqrtps")) {
             // FRSQRTE alone gives ~8-bit precision; one Newton step gets ~16 bits
             // (matching Intel RSQRTPS precision).  Formula:
@@ -6121,6 +6130,10 @@ static VReg gen_vector_unary_builtin(Node *node) {
             x86_sqrtss(cg_sec, X86_XMM0, X86_XMM0);
         else if (!strcmp(name, "__builtin_ia32_rsqrtps"))
             x86_rsqrtps(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_sqrtpd"))
+            x86_sqrtpd(cg_sec, X86_XMM0, X86_XMM0);
+        else if (!strcmp(name, "__builtin_ia32_sqrtsd"))
+            x86_sqrtsd(cg_sec, X86_XMM0, X86_XMM0);
     }
     x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
     return dst;
@@ -6161,11 +6174,13 @@ static VReg gen(Node *node) {
             break;
         }
     }
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps — packed SSE/NEON dispatch.
+    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps/sqrtpd/sqrtsd — packed SSE/NEON dispatch.
     if (node->kind == ND_FUNCALL && node->funcname &&
         (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
          !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
-         !strcmp(node->funcname, "__builtin_ia32_rsqrtps"))) {
+         !strcmp(node->funcname, "__builtin_ia32_rsqrtps") ||
+         !strcmp(node->funcname, "__builtin_ia32_sqrtpd") ||
+         !strcmp(node->funcname, "__builtin_ia32_sqrtsd"))) {
         return gen_vector_unary_builtin(node);
     }
     // Cast from int128 to a smaller type: extract value from 16-byte slot

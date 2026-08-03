@@ -157,5 +157,25 @@ __rcc_inline int _mm_movemask_ps(__m128 __a) {
                  ((__m.__u[2] >> 31) << 2) | ((__m.__u[3] >> 31) << 3));
 }
 
+// --- Prefetch / fences / streaming stores ----------------------------------
+// <winnt.h> (via <windows.h>) references these through StoreFence/_mm_sfence
+// and PreFetchCacheLine; mingw's <intrin.h> only declares them, so the
+// definitions must live here.  rcc has no MXCSR (stmxcsr/ldmxcsr) support, so
+// _mm_getcsr/_mm_setcsr are intentionally left to mingw's extern declaration.
+#ifndef _MM_HINT_T0
+#define _MM_HINT_T0 3
+#define _MM_HINT_T1 2
+#define _MM_HINT_T2 1
+#define _MM_HINT_NTA 0
+#endif
+__rcc_inline void _mm_prefetch(const void *__p, int __sel) {
+    (void)__sel;
+    __builtin_prefetch(__p);
+}
+__rcc_inline void _mm_sfence(void) { __asm__ __volatile__("sfence" ::: "memory"); }
+// Non-temporal stores: rcc has no movntps, so these lower to ordinary stores
+// (the non-temporal hint is dropped, which is semantically valid).
+__rcc_inline void _mm_stream_ps(float *__p, __m128 __a) { *(__m128 *)__p = __a; }
+
 #undef __rcc_inline
 #endif // _XMMINTRIN_H_INCLUDED

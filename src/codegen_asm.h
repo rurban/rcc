@@ -4010,6 +4010,9 @@ static inline void asm_fneg_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
 static inline void asm_fsqrt_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
     arm64_fsqrt_simd(s, 0, qd, qn); // fsqrt v{qd}.4s, v{qn}.4s
 }
+static inline void asm_fsqrt_v2d(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
+    arm64_fsqrt_simd(s, 1, qd, qn); // fsqrt v{qd}.2d, v{qn}.2d
+}
 static inline void asm_frsqrte_v4s(SecBuf *s, Arm64Reg qd, Arm64Reg qn) {
     arm64_frsqrte_simd(s, 0, qd, qn); // frsqrte v{qd}.4s, v{qn}.4s
 }
