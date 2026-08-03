@@ -146,6 +146,29 @@ int main(void) {
     assert_eq(__builtin_fpclassifyl(1.0L/0.0L), FP_INFINITE, "fpclassifyl(inf)");
     assert_eq(__builtin_fpclassifyl(0.0L/0.0L), FP_NAN, "fpclassifyl(NaN)");
 
+    /* Regression: a conditional operator whose branches are void-typed
+     * (e.g. `(void)0`, __builtin_unreachable()) yields no value register.
+     * Codegen used to move the (nonexistent) branch result into the result
+     * register and abort with "Invalid register -1" (perl's Perl_yyparse
+     * ASSUME/UNREACHABLE macro triggered this). */
+    {
+        volatile int sel = 8;
+        int hits = 0;
+        switch (sel) {
+        case 8: hits++; break;
+        default:
+            /* constant-false condition: always takes the `(void)0` arm */
+            ((!"UNREACHABLE") ? (void)0 : __builtin_unreachable());
+            __builtin_unreachable();
+        }
+        assert_eq(hits, 1, "void ternary in switch");
+
+        /* ASSUME-style guard: condition true, unreachable arm not taken */
+        int x = sel;
+        (x == 8) ? (void)0 : __builtin_unreachable();
+        assert_eq(x, 8, "void ternary assume guard");
+    }
+
     if (failures)
         printf("%d FAILURES\n", failures);
     else

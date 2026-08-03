@@ -56,7 +56,7 @@ static char *kw_defined;
 static char *kw_true;
 static char *kw_false;
 
-static char *dn_define, *dn_undef, *dn_include, *dn_line, *dn_error, *dn_warning;
+static char *dn_define, *dn_undef, *dn_include, *dn_include_next, *dn_line, *dn_error, *dn_warning;
 static char *dn_if, *dn_ifdef, *dn_ifndef, *dn_elif, *dn_elifdef, *dn_elifndef;
 static char *dn_else, *dn_endif, *dn_pragma, *dn_embed;
 
@@ -568,6 +568,26 @@ static bool file_exists(const char *path);
 static char *canonical_path(char *path);
 static char *full_path(char *path);
 
+#ifndef RCC_INCDIR
+#define RCC_INCDIR "include"
+#endif
+
+// Build the ordered list of directories searched for <angle> includes:
+// bundled rcc include dir, then user -I paths, then system paths.
+// Quoted includes additionally probe the current file's directory first
+// (handled directly in resolve_include), so it is not part of this list.
+static int build_search_dirs(const char **dirs, int max) {
+    int n = 0;
+    if (n < max) dirs[n++] = RCC_INCDIR;
+    if (strcmp(RCC_INCDIR, "include") != 0 && n < max) dirs[n++] = "include";
+    for (int i = 0; i < nb_user_include_paths && n < max; i++)
+        dirs[n++] = user_include_paths[i];
+    if (!opt_nostdinc)
+        for (int i = 0; sys_include_paths[i] && n < max; i++)
+            dirs[n++] = sys_include_paths[i];
+    return n;
+}
+
 static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
     char *path;
     if (!is_angle) {
@@ -575,26 +595,36 @@ static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
         path = path_join(dir, spec);
         if (file_exists(path)) return canonical_path(path);
     }
-#ifndef RCC_INCDIR
-#define RCC_INCDIR "include"
-#endif
-    path = path_join(RCC_INCDIR, spec);
-    if (file_exists(path)) return canonical_path(path);
-    if (strcmp(RCC_INCDIR, "include") != 0) {
-        path = path_join("include", spec);
+    const char *dirs[128];
+    int nd = build_search_dirs(dirs, 128);
+    for (int i = 0; i < nd; i++) {
+        path = path_join(dirs[i], spec);
         if (file_exists(path)) return canonical_path(path);
-    }
-    for (int i = 0; i < nb_user_include_paths; i++) {
-        path = path_join(user_include_paths[i], spec);
-        if (file_exists(path)) return canonical_path(path);
-    }
-    if (!opt_nostdinc) {
-        for (int i = 0; sys_include_paths[i]; i++) {
-            path = path_join(sys_include_paths[i], spec);
-            if (file_exists(path)) return canonical_path(path);
-        }
     }
     if (file_exists(spec)) return canonical_path(spec);
+    return NULL;
+}
+
+// #include_next: search the same ordered list, but start *after* the directory
+// that supplied curr_file. Lets a bundled header (e.g. include/wchar.h) fall
+// through to the system header of the same name.
+static char *resolve_include_next(char *curr_file, char *spec) {
+    const char *dirs[128];
+    int nd = build_search_dirs(dirs, 128);
+    char *cur_dir = full_path(path_dirname(curr_file));
+    int start = 0;
+    // Start after the LAST search entry that names the current file's
+    // directory: RCC_INCDIR and the "include" fallback can resolve to the same
+    // physical directory, and stopping at the first would re-find this very
+    // header (its include guard then hides the real system header).
+    for (int i = 0; i < nd; i++) {
+        if (!strcmp(cur_dir, full_path((char *)dirs[i])))
+            start = i + 1;
+    }
+    for (int i = start; i < nd; i++) {
+        char *path = path_join(dirs[i], spec);
+        if (file_exists(path)) return canonical_path(path);
+    }
     return NULL;
 }
 
@@ -2159,7 +2189,7 @@ static void do_directive(void) {
         }
         return;
     }
-    if (dn == dn_include) {
+    if (dn == dn_include || dn == dn_include_next) {
         Token *first = name->next;
         char *spec = NULL;
         bool is_angle = false;
@@ -2177,7 +2207,8 @@ static void do_directive(void) {
             }
         }
         if (!spec) return;
-        char *path = resolve_include(lvl->fpath, spec, is_angle);
+        char *path = dn == dn_include_next ? resolve_include_next(lvl->fpath, spec)
+                                           : resolve_include(lvl->fpath, spec, is_angle);
         if (!path) {
             fprintf(stderr, "%s:%d: error: include file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
             exit(1);
@@ -2883,6 +2914,7 @@ Token *preprocess(char *filename, char *p) {
         kw_false = str_intern("false", 5);
         dn_define = str_intern("define", 6);
         dn_undef = str_intern("undef", 5);
+        dn_include_next = str_intern("include_next", 12);
         dn_include = str_intern("include", 7);
         dn_line = str_intern("line", 4);
         dn_error = str_intern("error", 5);

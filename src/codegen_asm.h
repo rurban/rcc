@@ -27,13 +27,19 @@ void *arena_alloc(size_t size);
 // The encoder functions use physical register numbers.
 // ============================================================================
 
+// Diagnostic context for the REG() range check, set by codegen.c as it walks
+// each function/node. Turns an otherwise opaque "Invalid register -1" into a
+// message that names the offending function and source line.
+extern const char *cg_dbg_fn;
+extern int cg_dbg_line;
+
 #ifdef ARCH_ARM64
 // 12 free virtual registers
 static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
                                         ARM64_X13, ARM64_X14, ARM64_X15,
                                         ARM64_X19, ARM64_X20, ARM64_X21,
                                         ARM64_X22, ARM64_X23, ARM64_X24};
-#define REG(r)  (((r) < 0 || (r) >= 12) ? (error("Invalid register %d", r),0) : cg_arm_reg[(r)])
+#define REG(r)  (((r) < 0 || (r) >= 12) ? (error("Invalid register %d in %s (near line %d)", r, cg_dbg_fn, cg_dbg_line),0) : cg_arm_reg[(r)])
 #define CG_ARM_FP      ARM64_X29
 #define CG_ARM_LR      ARM64_X30
 #define CG_ARM_SP      ARM64_X31
@@ -41,7 +47,7 @@ static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
 static const X86Reg cg_x86_reg[8] = {X86_R10, X86_R11, X86_RBX, X86_R12,
                                      X86_R13, X86_R14, X86_R15, X86_RSI};
 // convert VReg => X8664Reg
-#define REG(r)  (((r) < 0 || (r) >= 8) ? (error("Invalid register %d", r),0) : cg_x86_reg[r])
+#define REG(r)  (((r) < 0 || (r) >= 8) ? (error("Invalid register %d in %s (near line %d)", r, cg_dbg_fn, cg_dbg_line),0) : cg_x86_reg[r])
 #define CG_X86_FP      X86_RBP
 #define CG_X86_SP      X86_RSP
 #endif

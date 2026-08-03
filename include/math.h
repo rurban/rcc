@@ -48,12 +48,27 @@ double scalbn(double, int);
 double ldexp(double, int);
 double frexp(double, int *);
 double modf(double, double *);
-int isinf(double);
-int isnan(double);
-int isfinite(double);
-int signbit(double);
-int isnormal(double);
-int fpclassify(double);
+/* Classification: standard C requires these to be type-generic and they have
+ * no backing libc symbols (fpclassify/isfinite/isnormal are macros-only in
+ * glibc). Map them to rcc's runtime builtins, dispatched on operand size.
+ * signbit is already provided as a builtin macro by the preprocessor. */
+#define fpclassify(x) \
+    (sizeof(x) == sizeof(float)  ? __builtin_fpclassifyf(x) : \
+     sizeof(x) == sizeof(double) ? __builtin_fpclassify(x)  : \
+                                   __builtin_fpclassifyl(x))
+#define isinf(x) \
+    (sizeof(x) == sizeof(float)  ? __builtin_isinff(x) : \
+     sizeof(x) == sizeof(double) ? __builtin_isinf(x)  : \
+                                   __builtin_isinfl(x))
+#define isnan(x) ((x) != (x))
+#define isfinite(x) \
+    (sizeof(x) == sizeof(float)  ? __builtin_isfinitef(x) : \
+     sizeof(x) == sizeof(double) ? __builtin_isfinite(x)  : \
+                                   __builtin_isfinitel(x))
+#define isnormal(x) \
+    (sizeof(x) == sizeof(float)  ? __builtin_isnormalf(x) : \
+     sizeof(x) == sizeof(double) ? __builtin_isnormal(x)  : \
+                                   __builtin_isnormall(x))
 
 float sinf(float);
 float cosf(float);

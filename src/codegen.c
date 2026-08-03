@@ -445,6 +445,8 @@ static uint32_t func_hash_name(const char *s) {
 }
 
 static char *current_fn;
+const char *cg_dbg_fn = "?";
+int cg_dbg_line = 0;
 static int current_fn_stack_size = 0; // fn->stack_size of the function being generated
 
 // Debug info (DWARF .loc directives, enabled by -g)
@@ -458,6 +460,8 @@ static int get_debug_file_idx(char *filename) {
 }
 
 static void emit_loc(Node *node) {
+    if (node->tok && node->tok->filename && node->tok->lineno > 0)
+        cg_dbg_line = node->tok->lineno;
     if (cg_dry_run) return; // Pass 1 uses a throwaway buffer; offsets are not real
     if (!node->tok || !node->tok->filename)
         return;
@@ -6143,6 +6147,7 @@ static VReg gen_vector_unary_builtin(Node *node) {
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
+    if (node->tok && node->tok->lineno > 0) cg_dbg_line = node->tok->lineno;
 
     if (opt_g)
         emit_loc(node);
@@ -8933,28 +8938,40 @@ static VReg gen(Node *node) {
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
         VReg then_r = gen(node->then);
-        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-        free_reg(then_r);
+        // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
+        // no value register; there is nothing to move into the result.
+        if (then_r != R_NONE) {
+            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
+            free_reg(then_r);
+        }
         size_t cj2 = asm_jmp_label(cg_sec); // .L.end.%d:
         asm_fixup_add(cg_sec, cj2, end_label, 0); // fixup add for forward branch
         cg_def_label(else_label); // mov %s, #0
         VReg else_r = gen(node->els);
-        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-        free_reg(else_r);
+        if (else_r != R_NONE) {
+            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
+            free_reg(else_r);
+        }
 #else
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
         free_reg(cond);
         VReg then_r = gen(node->then);
-        asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-        free_reg(then_r);
+        // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
+        // no value register; there is nothing to move into the result.
+        if (then_r != R_NONE) {
+            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
+            free_reg(then_r);
+        }
         size_t cj2 = asm_jmp_label(cg_sec); // je .L.end.%d
         asm_fixup_add(cg_sec, cj2, end_label, 0); // fixup add for forward branch
         cg_def_label(else_label); // setne %%al
         VReg else_r = gen(node->els);
-        asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-        free_reg(else_r);
+        if (else_r != R_NONE) {
+            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
+            free_reg(else_r);
+        }
 #endif
         cg_def_label(end_label); // .L.end.%d:
         return r;
@@ -12530,6 +12547,7 @@ struct ObjFile *codegen(Program *prog) {
         if (fn->is_inline && fn->is_extern && fn->is_gnu_inline)
             continue;
         current_fn = fn->name;
+        cg_dbg_fn = fn->name;
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
         memset(spill_slot, 0, sizeof(spill_slot));
