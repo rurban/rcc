@@ -677,8 +677,12 @@ static int load_archive(LinkState *s, const char *path) {
                     char tmp[] = "/tmp/rcc_link_ar_XXXXXX";
                     int tfd = mkstemp(tmp);
                     if (tfd >= 0) {
-                        write(tfd, data + off + 60, (size_t)msize);
+                        size_t written = write(tfd, data + off + 60, (size_t)msize);
                         close(tfd);
+                        if (written != msize) {
+                            perror("write rcc_link_ar");
+                            abort();
+                        }
                         elf_load_object(s, tmp);
                         unlink(tmp);
                         used[i] = 1;

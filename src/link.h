@@ -177,8 +177,9 @@ void link_apply_relocs(LinkState *s, uint64_t image_base);
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
                       uint64_t sym_addr, uint64_t pc, uint64_t image_base);
 
-// Search a library name in the configured paths and load it.
-int link_load_archive(LinkState *s, const char *name, const char *lib_paths);
+// TODO Search a library name in the configured paths and load it.
+// See arch-specific implementations
+// int link_load_archive(LinkState *s, const char *name, const char *lib_paths);
 
 // Format-specific object loader.  Implemented in the active link_*.c file.
 int link_load_object(LinkState *s, const char *path);

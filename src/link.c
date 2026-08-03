@@ -14,7 +14,6 @@
 // Low-level I/O helpers
 // ---------------------------------------------------------------------------
 
-static uint8_t r8(const uint8_t *p) { return p[0]; }
 static uint16_t r16le(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
@@ -23,35 +22,6 @@ static uint32_t r32le(const uint8_t *p) {
 }
 static uint64_t r64le(const uint8_t *p) {
     return (uint64_t)r32le(p) | ((uint64_t)r32le(p + 4) << 32);
-}
-
-static uint8_t *read_file(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    long sz = ftell(f);
-    if (sz < 0) {
-        fclose(f);
-        return NULL;
-    }
-    rewind(f);
-    uint8_t *buf = malloc((size_t)sz + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (n != (size_t)sz) {
-        free(buf);
-        return NULL;
-    }
-    buf[sz] = '\0';
-    *out_size = (size_t)sz;
-    return buf;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,11 +325,6 @@ static void w32le(uint8_t *p, uint32_t v) {
 static uint64_t r64le_m(uint8_t *p) { return r64le(p); }
 static uint32_t r32le_m(uint8_t *p) { return r32le(p); }
 
-static int64_t sign_extend(uint64_t v, int bits) {
-    uint64_t mask = 1ULL << (bits - 1);
-    return (int64_t)((v ^ mask) - mask);
-}
-
 void link_reloc_apply(LinkArch arch, LinkSec *sec, LinkReloc *r,
                       uint64_t sym_addr, uint64_t pc, uint64_t image_base) {
     uint8_t *p = sec->data + r->offset;
@@ -478,32 +443,6 @@ void link_apply_relocs(LinkState *s, uint64_t image_base) {
             link_reloc_apply(s->arch, sec, r, sym_addr, pc, image_base);
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Archive loading (simple ar format reader)
-// ---------------------------------------------------------------------------
-
-static int link_try_load_archive(LinkState *s, const char *path) {
-    size_t sz;
-    uint8_t *data = read_file(path, &sz);
-    if (!data) return -1;
-    if (sz < 8 || memcmp(data, "!<arch>\n", 8) != 0) {
-        free(data);
-        return -1;
-    }
-    // Minimal ar parser: we only handle the GNU/SVR4 variant with long names.
-    // For now, leave this as a hook.  Real archive loading is format-specific.
-    (void)s;
-    free(data);
-    return 0;
-}
-
-int link_load_archive(LinkState *s, const char *name, const char *lib_paths) {
-    (void)s;
-    (void)name;
-    (void)lib_paths;
-    return -1; // TODO: implement real archive search
 }
 
 // ---------------------------------------------------------------------------
