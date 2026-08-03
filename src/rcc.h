@@ -66,6 +66,14 @@ struct Token {
     // freshly lexed buffer with no real adjacency to the following token's
     // original source pointer.
     bool no_space_after;
+    // C99 6.10.3.4p2 "blue paint": the macro whose expansion produced this
+    // token. That macro must never be re-expanded from this token, even
+    // after the expansion frame that painted it has been popped and the
+    // token is rescanned as part of an outer macro's argument or
+    // replacement list (e.g. glibc's `#define si_uid _sifields._kill.si_uid`
+    // used inside nested macros). First paint wins: a token keeps the paint
+    // of the innermost macro that produced it.
+    struct Macro *blue;
 };
 
 // Error reporting

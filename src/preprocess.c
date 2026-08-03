@@ -985,6 +985,15 @@ static Token *frame_pull(void) {
         }
         top->pos = t->next;
         Token *c = copy_token(t);
+        // C99 6.10.3.4p2 blue paint: tokens produced by a macro's expansion
+        // carry that macro's name so it is never re-expanded from them,
+        // even after this frame is popped and the token is rescanned as
+        // part of an outer macro's argument or replacement list. First
+        // paint wins: a token keeps the paint of the innermost macro that
+        // produced it (the one whose replacement list textually contains
+        // it), which is the macro most likely to re-trigger on it.
+        if (top->mac && !c->blue)
+            c->blue = top->mac;
         if (top->stamp) {
             c->filename = top->exp_file;
             c->lineno = top->exp_line;
@@ -1509,7 +1518,7 @@ static void expand_token(Token *t) {
         return;
     }
     Macro *m = find_macro_interned(name);
-    if (!m || m->disabled) {
+    if (!m || m->disabled || t->blue == m) {
         out_append(t);
         return;
     }
