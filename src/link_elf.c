@@ -1129,10 +1129,18 @@ static int apply_dynamic_relocs(LinkState *s, const int *dyn_idx, const int *plt
 static int find_shared_lib(const char *libname, char *out_path, size_t out_sz,
                            char *out_soname, size_t out_soname_sz) {
     static const char *dirs[] = {
+#ifdef __aarch64__
+        "/usr/lib64",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/aarch64-linux-gnu/lib",
+        "/lib/aarch64-linux-gnu",
+        "/lib64",
+#else
         "/usr/lib64",
         "/usr/lib/x86_64-linux-gnu",
         "/lib/x86_64-linux-gnu",
         "/lib64",
+#endif
         NULL,
     };
     for (int i = 0; dirs[i]; i++) {
@@ -1373,21 +1381,21 @@ static int try_load_crt(LinkState *s, const char *dir, const char *file) {
 }
 
 static int load_crt_files(LinkState *s) {
-    static const char *dirs_x86_64[] = {
+    static const char *dirs[] = {
+#ifdef __aarch64__
+        "/usr/lib64",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/aarch64-linux-gnu/lib",
+        "/lib/aarch64-linux-gnu",
+        "/lib64",
+#else
         "/usr/lib64",
         "/usr/lib/x86_64-linux-gnu",
         "/lib/x86_64-linux-gnu",
         "/lib64",
+#endif
         NULL,
     };
-    static const char *dirs_aarch64[] = {
-        "/usr/lib64",
-        "/usr/lib/aarch64-linux-gnu",
-        "/lib/aarch64-linux-gnu",
-        "/lib64",
-        NULL,
-    };
-    const char **dirs = s->arch == ARCH_AARCH64 ? dirs_aarch64 : dirs_x86_64;
     const char *crt_dir = NULL;
     for (int i = 0; dirs[i]; i++) {
         if (try_load_crt(s, dirs[i], "crt1.o") == 0) {
