@@ -28,6 +28,26 @@ CCC="$(which ccc 2>/dev/null || true)"
 if [ -z "$CCC" ] && [ -e "../claudes-c-compiler/target/release/ccc" ]; then
    CCC="../claudes-c-compiler/target/release/ccc"
 fi
+CPROC="$(which cproc 2>/dev/null || true)"
+if [ -z "$CPROC" ] && [ -x ../cproc/cproc ]; then
+	CPROC="../cproc/cproc"
+fi
+SCC="$(which scc 2>/dev/null || true)"
+if [ -z "$SCC" ] && [ -x ../scc/bin/scc ]; then
+	SCC="../scc/bin/scc"
+fi
+LACC="$(which lacc 2>/dev/null || true)"
+if [ -z "$LACC" ] && [ -x ../lacc/bin/lacc ]; then
+	LACC="../lacc/bin/lacc"
+fi
+ANTCC="$(which antcc 2>/dev/null || true)"
+if [ -z "$ANTCC" ] && [ -x ../antcc/antcc ]; then
+	ANTCC="../antcc/antcc"
+fi
+CHIBICC="$(which chibicc 2>/dev/null || true)"
+if [ -z "$CHIBICC" ] && [ -x ../chibicc/chibicc ]; then
+	CHIBICC="../chibicc/chibicc"
+fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
@@ -71,6 +91,10 @@ SLIMCC_EXE="bench/bench_slimcc"
 XCC_EXE="bench/bench_xcc"
 KEFIR_EXE="bench/bench_kefir"
 KEFIR_O1_EXE="bench/bench_kefir_o1"
+CPROC_EXE="bench/bench_cproc"
+SCC_EXE="bench/bench_scc"
+LACC_EXE="bench/bench_lacc"
+ANTCC_EXE="bench/bench_antcc"
 CCC_EXE="bench/bench_ccc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
@@ -108,7 +132,8 @@ resume_gortex() {
 }
 
 cleanup() {
-	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE"
+	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE"
+
 	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
 	# noisy benchmark.
@@ -264,6 +289,18 @@ if [ -n "$KEFIR" ]; then
    run_bench "KEFIR" "$KEFIR" "$SRC -o $KEFIR_EXE" "$KEFIR_EXE" || true
    run_bench "KEFIR -O1" "$KEFIR" "-O1 $SRC -o $KEFIR_O1_EXE" "$KEFIR_O1_EXE" || true
 fi
+if [ -n "$SCC" ]; then
+   run_bench "SCC" "$CCC" "$SRC -o $SCC_EXE" "$SCC_EXE" || true
+fi
+if [ -n "$LACC" ]; then
+   run_bench "LACC" "$LACC" "$SRC -o $LACC_EXE" "$LACC_EXE" || true
+fi
+if [ -n "$CPROC" ]; then
+   run_bench "CPROC" "$CPROC" "$SRC -o $CPROC_EXE" "$CPROC_EXE" || true
+fi
+if [ -n "$ANTCC" ]; then
+   run_bench "CANTCC" "$ANTCC" "$SRC -o $ANTCC_EXE" "$ANTCC_EXE" || true
+fi
 if [ -n "$CCC" ]; then
    run_bench "CCC" "$CCC" "$SRC -o $CCC_EXE" "$CCC_EXE" || true
 fi
@@ -349,11 +386,27 @@ if [ -f "$LARGE_SRC" ]; then
         # shellcheck disable=SC2086
 	_compile_large "KEFIR -O1" "$KEFIR" -O1 $LARGE_CFLAGS
     fi
+    if [ -n "$CPROC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "CPROC" "$CPROC" $LARGE_CFLAGS
+    fi
+    if [ -n "$SCC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "SCC" "$SCC" $LARGE_CFLAGS
+    fi
+    if [ -n "$LACC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "LACC" "$LACC" $LARGE_CFLAGS
+    fi
+    if [ -n "$ANTCC" ]; then
+        # shellcheck disable=SC2086
+	_compile_large "ANTCC" "$ANTCC" $LARGE_CFLAGS
+    fi
     if [ -n "$CCC" ]; then
         # shellcheck disable=SC2086
 	_compile_large "CCC" "$CCC" $LARGE_CFLAGS
     fi
-        # shellcheck disable=SC2086
+    # shellcheck disable=SC2086
     _compile_large "GCC -O0" "$GCC" -O0 $LARGE_CFLAGS
         # shellcheck disable=SC2086
     _compile_large "GCC -O2" "$GCC" -O2 $LARGE_CFLAGS

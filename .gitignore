@@ -43,6 +43,7 @@ test_report_linux_xcc.md
 test_report_linux_lacc.md
 test_report_linux_scc.md
 test_report_linux_cproc.md
+test_report_linux_antcc.md
 test/tcc_test_linux_ccc.md
 test/tcc_test_linux_tcc.md
 test/tcc_test_linux_gcc.md
@@ -53,6 +54,7 @@ test/tcc_test_linux_xcc.md
 test/tcc_test_linux_lacc.md
 test/tcc_test_linux_scc.md
 test/tcc_test_linux_cproc.md
+test/tcc_test_linux_antcc.md
 rcc-*-src/
 rcc-*.tar.*
 c-testsuite.tap.txt
