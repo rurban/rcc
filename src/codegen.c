@@ -13436,11 +13436,17 @@ struct ObjFile *codegen(Program *prog) {
         // Reserve space for register spill slots
         if (need < next_spill_slot)
             need = next_spill_slot;
+        // Callee-saved registers are stored in a dedicated save area BELOW
+        // the locals/spill region, at [rbp - need - 8 .. rbp - need -
+        // push_bytes]. They must NOT be pushed at [rbp-8..]: locals and
+        // spill slots are addressed downwards from rbp starting at offset
+        // 8, so pushed registers would overlap them and any local/spill
+        // store would corrupt a saved register, returning garbage to the
+        // caller when the epilogue restores it.
         int push_bytes = n_pushes * 8;
-        int sub_amount = need - push_bytes;
-        if (sub_amount < 32) sub_amount = 32;
-        // Fix 16-byte alignment
-        if ((push_bytes + sub_amount) % 16 != 0) sub_amount += 8;
+        int sub_amount = need + push_bytes;
+        // Fix 16-byte alignment (rsp is 16-aligned after push rbp)
+        if (sub_amount % 16 != 0) sub_amount += 8;
 
         // Emit prologue - handle is_weak, inline, and static linkage.
         // For inline functions, check:
@@ -13485,15 +13491,9 @@ struct ObjFile *codegen(Program *prog) {
         uw_set_fpreg(X86_RBP); // .seh_setframe %rbp, 0
 #endif
 
-        // Only push callee-saved registers that were actually used
-        for (int j = 0; j < callee_count; j++) {
-            if (callee_mask & (1 << j)) {
-                asm_push(cg_sec, REG(j + 2)); // push rREG(j + 2)
-#ifdef _WIN32
-                uw_pushreg(REG(j + 2)); // .seh_pushreg %s
-#endif
-            }
-        }
+        // Callee-saved registers are NOT pushed here; they are saved into
+        // dedicated slots below the locals/spill region right after the
+        // stack allocation (see the push_bytes comment above).
 #ifdef _WIN32
         // Windows requires probing the stack one page at a time when growing
         // it by more than a page: a single large `sub %rsp` can jump over the
@@ -13510,6 +13510,14 @@ struct ObjFile *codegen(Program *prog) {
         uw_stackalloc(sub_amount); // .seh_stackalloc sub_amount
         uw_endprologue(); // .seh_endprologue
 #endif
+
+        // Save the callee-saved registers that were actually used into
+        // their dedicated slots below the locals/spill region.
+        for (int j = 0, slot = need; j < callee_count; j++)
+            if (callee_mask & (1 << j)) {
+                slot += 8;
+                asm_mov_phyreg_rbp(cg_sec, REG(j + 2), 8, slot); // movq %reg, -slot(%rbp)
+            }
 
         // GNU nested function: spill the incoming static-chain pointer
         // (physical %r10, the SysV convention this codebase reuses) to its
@@ -13851,7 +13859,6 @@ struct ObjFile *codegen(Program *prog) {
             asm_peep_node_end(cg_sec); // .L.return.%s:
             if (r != -1) free_reg(r);
         }
-
         // Emit epilogue
         cg_def_label(format(".L.return.%s", fn->name)); // mov %s, -%d(%rbp)
 
@@ -13870,16 +13877,15 @@ struct ObjFile *codegen(Program *prog) {
         }
         if (has_cleanup)
             asm_mov_rbp(cg_sec, X86_RAX, 8, spill_offset(0)); // mov [rbp-spill_offset(0], RAX)
-        if (fn->dealloc_vla)
-            asm_lea_rbp(cg_sec, X86_RSP, 8, n_pushes * 8); // lea [rbp-8], %rsp
-        else if (fn_uses_alloca)
-            asm_lea_rbp(cg_sec, X86_RSP, 8, n_pushes * 8); // lea [rbp-8], %rsp
-        else
-            asm_add_rsp_imm(cg_sec, sub_amount); // addq $sub_amount, %rsp
-        for (int j = callee_count - 1; j >= 0; j--) {
-            if (callee_mask & (1 << j))
-                asm_pop(cg_sec, REG(j + 2)); // pop rREG(j + 2)
-        }
+        // Restore rsp from rbp (uniform for VLA/alloca/normal frames), then
+        // reload the callee-saved registers from their dedicated slots
+        // below the locals/spill region (mirrors the prologue saves).
+        asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
+        for (int j = 0, slot = need; j < callee_count; j++)
+            if (callee_mask & (1 << j)) {
+                slot += 8;
+                asm_mov_rbp(cg_sec, REG(j + 2), 8, slot); // movq -slot(%rbp), %reg
+            }
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
         cg_patch_fn_size(fn_sym_name, fn_sym_start);

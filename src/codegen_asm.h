@@ -1657,6 +1657,12 @@ static inline void asm_mov_rsp_rbp(SecBuf *s) {
     x86_mov_rr(s, 8, X86_RBP, X86_RSP); // movq %rsp, %rbp
     asm_record(ASM_MOV_RR, off, s->len - off, (int)X86_RBP, (int)X86_RSP, -1, 8, 0, 0, NULL, 0, -1, false);
 }
+// movq %rbp, %rsp  (function epilogue stack restore)
+static inline void asm_mov_rbp_rsp(SecBuf *s) {
+    size_t off = s->len;
+    x86_mov_rr(s, 8, X86_RSP, X86_RBP); // movq %rbp, %rsp
+    asm_record(ASM_MOV_RR, off, s->len - off, (int)X86_RSP, (int)X86_RBP, -1, 8, 0, 0, NULL, 0, -1, false);
+}
 // subq $imm, %rsp  (function prologue stack allocation)
 static inline void asm_sub_rsp_imm(SecBuf *s, int32_t imm) {
     size_t off = s->len;
