@@ -11624,6 +11624,23 @@ Program *parse(Token *tok) {
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
                     tok = tok->next;
+                    // Prototype only (no body): undo the tentative
+                    // function-scope state set up above (parser_current_fn,
+                    // current_fn_scope_locals, ...) for a possible
+                    // definition — this declarator turned out to be just a
+                    // declaration. Leaving parser_current_fn dangling here
+                    // means the *next* top-level global (e.g. a static
+                    // array right after `static T f(int x);`) inherits this
+                    // function's name as its LVar.decl_fn_name, so if `f`
+                    // is later found unused and DCE-omitted, opt.c's
+                    // "drop globals owned by an omitted function" pass
+                    // wrongly drops that unrelated global too (e.g. rcc
+                    // demoted a live `static const char *const arr[]` used
+                    // by other functions to an undefined extern symbol).
+                    current_fn_scope_locals = NULL;
+                    current_block_depth = 0;
+                    suppress_fn_scope_update = false;
+                    parser_current_fn = NULL;
                     break;
                 }
                 if (equalc(tok, ",")) {
