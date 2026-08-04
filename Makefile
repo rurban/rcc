@@ -345,6 +345,8 @@ test-ctest check-ctest: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --ctest --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
+test-gcc-bugs check-gcc-bugs: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER) --gcc-bugs --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all
