@@ -51,7 +51,7 @@ fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
-LARGE_SO="bench/libsqlite3.so"
+LARGE_SO="bench/sqlite3.so"
 LARGE_CFLAGS="-shared -fPIC $LARGE_SRC -o $LARGE_SO"
 
 # download_sqlite: fetch sqlite3.c amalgamation if missing (cached)
@@ -84,8 +84,8 @@ if ! command -v "$TCC" >/dev/null 2>&1; then
 fi
 
 RCC_EXE="bench/bench_rcc"
-RCC_O1_EXE="bench/bench_rcc_o1"
-RCC_O2_EXE="bench/bench_rcc_o2"
+RCC_O1_EXE="bench/bench_o1"
+RCC_O2_EXE="bench/bench_o2"
 TCC_EXE="bench/bench_tcc"
 SLIMCC_EXE="bench/bench_slimcc"
 XCC_EXE="bench/bench_xcc"
@@ -466,6 +466,9 @@ if [ -n "${large_results:-}" ]; then
 	printf '%s' "$large_results"
 fi
 } > "$REPORT"
+if command -v prettier >/dev/null 2>&1; then
+	prettier --write "$REPORT" >/dev/null 2>&1 || true
+fi
 printf "Report: %s\n" "$REPORT"
 
 echo ""

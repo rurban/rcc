@@ -635,7 +635,7 @@ int main(int argc, char **argv) {
         lex_asm_cpp_mode = false;
         if (is_asm_input) remove_cmdline_define("__ASSEMBLER__");
         if (opt_time)
-            fprintf(stderr, "  preprocess  %s: %6llu us\n", cur_path,
+            fprintf(stderr, "  preprocess  %-20s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
         // Write Make dependency file (-Wp,-MMD,<file>)
         write_dep_file(out_path, cur_path);
@@ -696,7 +696,7 @@ int main(int argc, char **argv) {
         Program *prog = parse(tok);
         prog->in_path = cur_path;
         if (opt_time)
-            fprintf(stderr, "  parse       %s: %6llu us\n", cur_path,
+            fprintf(stderr, "  parse       %-20s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
 
         if (opt_fdump_ast)
@@ -718,7 +718,7 @@ int main(int argc, char **argv) {
             }
         }
         if (opt_time)
-            fprintf(stderr, "  typecheck   %s: %6llu us\n", cur_path,
+            fprintf(stderr, "  typecheck   %-20s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
 
         // CTFE runs only with -O1; peephole skipped with -O0.
@@ -726,7 +726,7 @@ int main(int argc, char **argv) {
             t0 = opt_time ? now_us() : 0;
             optimize(prog);
             if (opt_time)
-                fprintf(stderr, "  opt         %s: %6llu us\n", cur_path,
+                fprintf(stderr, "  opt         %-20s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
         }
 
@@ -739,7 +739,7 @@ int main(int argc, char **argv) {
             t0 = opt_time ? now_us() : 0;
             struct ObjFile *obj = codegen(prog);
             if (opt_time) {
-                fprintf(stderr, "  codegen     %s: %6llu us\n", cur_path,
+                fprintf(stderr, "  codegen     %-20s: %6llu us\n", cur_path,
                         (unsigned long long)(now_us() - t0));
             }
             // Write binary .o file
@@ -893,8 +893,8 @@ int main(int argc, char **argv) {
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
                                       libs, opt_pie, opt_pic, opt_shared, opt_static);
                 if (opt_time)
-                    fprintf(stderr, "  link %s: %6lu us\n", out_path,
-                            (unsigned long)(now_us() - t_link));
+                    fprintf(stderr, "  link        %-20s: %6llu us\n", out_path,
+                            (unsigned long long)(now_us() - t_link));
                 if (native == 0) {
                     if (opt_stdout) {
                         FILE *f = fopen(stdout_tmp, "rb");
@@ -1002,8 +1002,8 @@ int main(int argc, char **argv) {
             uint64_t t_link = opt_time ? now_us() : 0;
             status = system(cmd);
             if (opt_time)
-                fprintf(stderr, "  link        %s: %6lu us\n", out_path,
-                        (unsigned long)(now_us() - t_link));
+                fprintf(stderr, "  link        %-20s: %6llu us\n", out_path,
+                        (unsigned long long)(now_us() - t_link));
             if (status != 0)
                 fprintf(stderr, "rcc: error: linker %s failed with code %d\n", cmd, status);
         }
