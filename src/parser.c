@@ -1940,9 +1940,27 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_MUL:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs * rhs), true);
     case ND_DIV:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = rhs == -1 ? -lhs : lhs / rhs), true);
+        if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs) || rhs == 0)
+            return false;
+        if (node->lhs->ty && node->lhs->ty->is_unsigned) {
+            unsigned long long ulhs = (unsigned long long)lhs;
+            unsigned long long urhs = (unsigned long long)rhs;
+            *val = (long long)(ulhs / urhs);
+        } else {
+            *val = rhs == -1 ? -lhs : lhs / rhs;
+        }
+        return true;
     case ND_MOD:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && rhs != 0 && ((*val = rhs == -1 ? 0 : lhs % rhs), true);
+        if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs) || rhs == 0)
+            return false;
+        if (node->lhs->ty && node->lhs->ty->is_unsigned) {
+            unsigned long long ulhs = (unsigned long long)lhs;
+            unsigned long long urhs = (unsigned long long)rhs;
+            *val = (long long)(ulhs % urhs);
+        } else {
+            *val = rhs == -1 ? 0 : lhs % rhs;
+        }
+        return true;
     case ND_SHL:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs << rhs), true);
     case ND_SHR:
