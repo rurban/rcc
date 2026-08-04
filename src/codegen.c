@@ -4691,6 +4691,15 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             free_reg(r_lhs);
             return;
         }
+        // Commute a constant-lhs equality so the constant uses the immediate
+        // compare path (see the matching comment in the value path); avoids a
+        // self-compare when the rhs reuses the spilled lhs register.
+        if ((cond->kind == ND_EQ || cond->kind == ND_NE)
+            && cond->lhs->kind == ND_NUM && cond->rhs->kind != ND_NUM) {
+            Node *swap_tmp = cond->lhs;
+            cond->lhs = cond->rhs;
+            cond->rhs = swap_tmp;
+        }
         VReg r_lhs = gen(cond->lhs);
         int sz = op_size(cond->lhs->ty);
         if (sz < op_size(cond->rhs->ty))
@@ -4722,7 +4731,16 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
 #endif
         } else {
             VReg r_rhs = gen(cond->rhs);
-            asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
+#ifndef ARCH_ARM64
+            // When r_lhs was spilled during gen(rhs) and rhs reused the same
+            // physical register, a plain reg-reg cmp would self-compare.
+            // Compare against the spilled lhs slot instead (flags: lhs - rhs).
+            if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                asm_cmp_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                spilled_regs &= ~(1 << r_lhs);
+            } else
+#endif
+                asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz); // cmp rr_rhs, rr_lhs
             free_reg(r_rhs);
         }
         free_reg(r_lhs);
@@ -11543,6 +11561,19 @@ static VReg gen(Node *node) {
         return result;
     }
 
+    // Commute a constant-lhs equality (C == x / C != x) so the constant lands
+    // on the rhs and uses the immediate compare path.  Otherwise gen(lhs)
+    // materialises the constant into a register that is then spilled while the
+    // rhs address is computed; if the rhs reuses that register the compare
+    // degenerates to a self-compare (and the spill slot can be clobbered).
+    // EQ/NE are commutative so this is a pure win; LT/LE cannot be flipped
+    // without a GT/GE opcode (the parser already normalises those away).
+    if ((node->kind == ND_EQ || node->kind == ND_NE)
+        && node->lhs->kind == ND_NUM && node->rhs->kind != ND_NUM) {
+        Node *swap_tmp = node->lhs;
+        node->lhs = node->rhs;
+        node->rhs = swap_tmp;
+    }
     VReg r_lhs = gen(node->lhs);
 
 
