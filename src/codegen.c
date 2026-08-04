@@ -10218,7 +10218,8 @@ static VReg gen(Node *node) {
 #endif
         return -1;
     }
-    case ND_VA_ARG_PACK: {
+    case ND_VA_ARG_PACK:
+    case ND_VA_ARG_PACK_LEN: {
         // Only valid inside a function inlined by the call-site
         // __builtin_va_arg_pack expander in the parser; if one reaches
         // codegen (e.g. unused inline-pack function), emit a harmless 0.

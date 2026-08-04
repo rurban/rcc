@@ -558,6 +558,7 @@ typedef enum {
     ND_VA_COPY, // "va_copy"
     ND_VA_ARG, // "va_arg"
     ND_VA_ARG_PACK, // "__builtin_va_arg_pack" placeholder
+    ND_VA_ARG_PACK_LEN, // "__builtin_va_arg_pack_len" placeholder
     ND_ALLOCA, // VLA stack allocation
     ND_ALLOCA_ZINIT, // VLA stack allocation + zero init
     ND_CHAIN, // Chain expressions (evaluate lhs, result is rhs)

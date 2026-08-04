@@ -766,11 +766,11 @@ static Node *declare_builtin_on_demand(Token *tok) {
     return node;
 }
 
-// Does this AST (sub)tree contain a __builtin_va_arg_pack() placeholder?
+// Does this AST (sub)tree contain a __builtin_va_arg_pack[_len]() placeholder?
 static bool node_uses_va_arg_pack(Node *n) {
     if (!n)
         return false;
-    if (n->kind == ND_VA_ARG_PACK)
+    if (n->kind == ND_VA_ARG_PACK || n->kind == ND_VA_ARG_PACK_LEN)
         return true;
     return node_uses_va_arg_pack(n->lhs) || node_uses_va_arg_pack(n->rhs) ||
         node_uses_va_arg_pack(n->cond) || node_uses_va_arg_pack(n->then) ||
@@ -845,6 +845,17 @@ static Node *clone_inline_node(Node *n, InlineCloneCtx *ctx) {
             if (n->var == ctx->old_params[i])
                 return new_var_node(ctx->new_params[i], n->tok);
         break;
+    case ND_VA_ARG_PACK_LEN: {
+        // __builtin_va_arg_pack_len() -> number of the call site's trailing
+        // variadic args. glibc's fortify open()/openat() inlines test this
+        // (e.g. `__va_arg_pack_len() < 1`) to decide whether a mode argument
+        // was supplied; a hardcoded 0 wrongly routed open(...,O_CREAT,mode)
+        // to __open_2, dropping the mode.
+        int n_pack = 0;
+        for (Node *p = ctx->pack_args; p; p = p->next)
+            n_pack++;
+        return new_num(n_pack, n->tok);
+    }
     case ND_RETURN: {
         // return EXPR; -> { __pack_ret = EXPR; goto __pack_end; }
         // return;      -> { goto __pack_end; }
@@ -8842,7 +8853,12 @@ static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_va_arg_pack_len")) {
         tok = skip(tok->next, "(");
         *rest = skip(tok, ")");
-        return new_num(0, tok);
+        // Expanded by the call-site inliner into the *count* of the caller's
+        // trailing variadic args (see clone_inline_node). If it survives to
+        // codegen (unused inline-pack function), emits a harmless 0.
+        Node *node = new_node(ND_VA_ARG_PACK_LEN, tok);
+        node->ty = ty_int;
+        return node;
     }
     if (equalc(tok, "__builtin_apply_args")) {
         tok = skip(tok->next, "(");
