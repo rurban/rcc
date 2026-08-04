@@ -340,6 +340,8 @@ test-torture check-torture: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
 test-musl check-musl:
 	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
+test-gcc-bugs check-gcc-bugs: $(TARGET) $(RUN_TESTS)
+	ulimit -f 2097152; $(TEST_RUNNER) --gcc-bugs --parallel
 test-full check-full:
 	$(MAKE) clean && $(MAKE) check-all && $(MAKE) check-musl
 	ulimit -f 2097152; $(TEST_RUNNER_O1) --parallel && $(TEST_RUNNER_O2) --parallel

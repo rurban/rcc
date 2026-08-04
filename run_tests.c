@@ -2003,10 +2003,12 @@ typedef struct {
 } ParallelResult;
 
 typedef enum { SUITE_TCC,
-               SUITE_TORTURE,
                SUITE_UNIT,
                SUITE_COMPLIANCE,
-               SUITE_CTEST } SuiteType;
+               SUITE_CTEST,
+               SUITE_TORTURE,
+               SUITE_GCC_BUGS
+} SuiteType;
 
 // Forward declarations for per-suite compile+exec functions
 static void compile_and_exec(const char *src_path, const char *base,
@@ -2059,6 +2061,7 @@ static void *worker_compile_exec(void *arg) {
         compile_and_exec(job->src_path, job->base, job->p_src, job->ldflags, job->is_mingw,
                          &job->result, job->index);
         break;
+    case SUITE_GCC_BUGS:
     case SUITE_TORTURE:
         tort_compile_exec(job->src_path, job->base, job->summary_only, &job->result, job->index);
         break;
@@ -2121,10 +2124,11 @@ static void *pool_worker(void *arg) {
             const char *sname = "???";
             switch (job->suite) {
             case SUITE_TCC: sname = "tcc"; break;
-            case SUITE_TORTURE: sname = "torture"; break;
             case SUITE_UNIT: sname = "unit"; break;
             case SUITE_COMPLIANCE: sname = "compliance"; break;
             case SUITE_CTEST: sname = "ctest"; break;
+            case SUITE_TORTURE: sname = "torture"; break;
+            case SUITE_GCC_BUGS: sname = "gcc-bugs"; break;
             }
             vlog("[T%d] job %d/%d: %s %s\n", tid, idx + 1, g_pool_count, sname, job->base);
         }
@@ -5189,6 +5193,145 @@ static int run_torture_suite(bool summary_only) {
     return fail > max_fail ? 1 : 0;
 }
 
+/* ── gcc-bugs: compile+exec C bug reproducers ─────────────────────── */
+
+static int run_gcc_bugs_suite(bool summary_only) {
+    g_tort_pass = g_tort_fail_compile = g_tort_fail_runtime = g_tort_skip = g_tort_total = 0;
+    g_tort_error_pass = g_tort_error_fail = 0;
+    free(g_tort_compile_errors);
+    g_tort_compile_errors = NULL;
+    free(g_tort_runtime_errors);
+    g_tort_runtime_errors = NULL;
+
+    char bugs_dir[PATH_MAX];
+    snprintf(bugs_dir, sizeof(bugs_dir), "%s/test/gcc-bugs", SCRIPT_DIR);
+    if (!file_exists(bugs_dir)) {
+        fprintf(stderr, "GCC bugs directory not found: %s\n", bugs_dir);
+        return 1;
+    }
+
+    /* open log file for gcc-bugs output */
+    if (only_test_count == 0 && !summary_only) {
+        char lp[PATH_MAX];
+        snprintf(lp, sizeof(lp), "%s/test/gcc_bugs_report_%s.log", SCRIPT_DIR, platform_suffix);
+        open_log(lp);
+    }
+
+    snprintf(g_tort_dir, sizeof(g_tort_dir), "%s", bugs_dir);
+    logprintf("\n%sGCC bug reproducers (test/gcc-bugs/)%s\n", COL_CYAN, COL_RESET);
+
+    char save_cwd[PATH_MAX];
+    if (!getcwd(save_cwd, sizeof(save_cwd))) save_cwd[0] = '\0';
+    if (chdir(bugs_dir) != 0) {
+        perror("chdir gcc-bugs");
+        close_log();
+        return 1;
+    }
+
+    if (only_test_count > 0) {
+        for (int ti = 0; ti < only_test_count; ti++) {
+            const char *ot = only_tests[ti];
+            char sp[512];
+            if (strstr(ot, ".c"))
+                snprintf(sp, sizeof(sp), "%s", ot);
+            else
+                snprintf(sp, sizeof(sp), "%s.c", ot);
+            if (file_exists(sp)) {
+                only_test_found = true;
+                run_torture_test(sp, summary_only);
+            }
+        }
+    } else {
+        char **files = list_c_files_sorted(".");
+        if (files) {
+            int n_files = 0;
+            while (files[n_files]) n_files++;
+            if (g_num_workers > 1 && !summary_only) {
+                ParallelJob *jobs = calloc((size_t)n_files, sizeof(ParallelJob));
+                for (int i = 0; i < n_files; i++) {
+                    const char *rel = files[i];
+                    const char *fn = strrchr(rel, '/');
+                    if (!fn) fn = rel;
+                    else
+                        fn++;
+                    char *abs_path = malloc(2 * PATH_MAX);
+                    const char *prefix = rel[0] == '.' && rel[1] == '/' ? rel + 2 : rel;
+                    snprintf(abs_path, 2 * PATH_MAX, "%s/%s", g_tort_dir, prefix);
+                    char nbuf[256];
+                    strncpy(nbuf, rel, sizeof(nbuf) - 1);
+                    nbuf[sizeof(nbuf) - 1] = '\0';
+                    char *dot = strrchr(nbuf, '.');
+                    if (dot) *dot = '\0';
+                    char *base = nbuf[0] == '.' && nbuf[1] == '/' ? nbuf + 2 : nbuf;
+                    jobs[i].suite = SUITE_GCC_BUGS;
+                    jobs[i].src_path = abs_path;
+                    jobs[i].base = strdup(base);
+                    jobs[i].summary_only = summary_only;
+                    jobs[i].index = i;
+                }
+                parallel_dispatch(jobs, n_files);
+                for (int i = 0; i < n_files; i++) {
+                    tort_evaluate_report(jobs[i].base, &jobs[i].result, summary_only);
+                    free(files[i]);
+                    free((void *)jobs[i].src_path);
+                    free((void *)jobs[i].base);
+                }
+                free(jobs);
+            } else {
+                for (int i = 0; i < n_files; i++) {
+                    run_torture_test(files[i], summary_only);
+                    free(files[i]);
+                }
+            }
+            free(files);
+        }
+    }
+
+    if (save_cwd[0] && chdir(save_cwd) != 0) perror("chdir");
+
+    int fail = g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime;
+    if (only_test_count == 0) {
+        int eff = g_tort_total - g_tort_skip;
+        int pct = eff > 0 ? (g_tort_pass * 100 + eff / 2) / eff : 0;
+        printf("\nGCC Bugs: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
+        if (fail)
+            printf("%d fail (%d compile/%d error/%d runtime), %d skipped.\n",
+                   fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, g_tort_skip);
+        else
+            printf("0 failed, %d skipped.\n", g_tort_skip);
+        if (g_log_fp) {
+            fprintf(g_log_fp, "\nGCC Bugs: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
+            if (fail)
+                fprintf(g_log_fp, "%d failed (%d compile/%d error/%d runtime), %d skipped.\n",
+                        fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, g_tort_skip);
+            else
+                fprintf(g_log_fp, "0 failed, %d skipped.\n", g_tort_skip);
+        }
+        if (g_tort_compile_errors && *g_tort_compile_errors)
+            logprintf("\nCompile failures: %s\n", g_tort_compile_errors);
+        if (g_tort_runtime_errors && *g_tort_runtime_errors)
+            logprintf("\nRuntime failures: %s\n", g_tort_runtime_errors);
+        if (g_tort_error_pass + g_tort_error_fail > 0)
+            logprintf("\nDg-error tests: %d/%d passed (caught expected error), %d failed.\n",
+                      g_tort_error_pass, g_tort_error_pass + g_tort_error_fail,
+                      g_tort_error_fail);
+
+        char sp[256];
+        char sc[512];
+        snprintf(sp, sizeof(sp), "test-gcc-bugs-%s.summary", platform_suffix);
+        snprintf(sc, sizeof(sc),
+                 "SUITE=gcc-bugs\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n"
+                 "ERROR_PASS=%d\nERROR_FAIL=%d\n",
+                 g_tort_total, g_tort_pass, fail,
+                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip,
+                 g_tort_error_pass, g_tort_error_fail);
+        write_summary(sp, sc);
+    }
+
+    close_log();
+    return fail > 0 ? 1 : 0;
+}
+
 /* ── compliance: parallel compile+exec ───────────────────────────── */
 static void comp_compile_exec(const char *src_path, const char *base,
                               const char *gcc_path, ParallelResult *r, int index) {
@@ -6045,6 +6188,7 @@ static void generate_report(void) {
         {"ctest", "c-testsuite"},
         {"compliance", "NCC Compliance Tests (vs GCC)"},
         {"torture", "GCC Torture Tests"},
+        {"gcc-bugs", "GCC Bugs"},
     };
 #define NSUITE sizeof(suite_meta)/sizeof(*suite_meta)
 
@@ -6202,9 +6346,9 @@ int main(int argc, char **argv) {
         }
         free(dir);
     }
-
     rccflags = "-O1";
     bool run_tcc = false, run_units = false, run_torture = false;
+    bool run_gcc_bugs = false;
     bool run_compliance = false, run_ctest = false;
     bool summary_only = false;
 
@@ -6216,12 +6360,14 @@ int main(int argc, char **argv) {
             run_tcc = true;
         else if (streq(a, "--unit-tests") || streq(a, "--units"))
             run_units = true;
-        else if (streq(a, "--torture"))
-            run_torture = true;
         else if (streq(a, "--compliance"))
             run_compliance = true;
         else if (streq(a, "--ctest"))
             run_ctest = true;
+        else if (streq(a, "--torture"))
+            run_torture = true;
+        else if (streq(a, "--gcc-bugs"))
+            run_gcc_bugs = true;
         else if (streq(a, "--summary"))
             summary_only = true;
         else if (streq(a, "-v") || streq(a, "--verbose"))
@@ -6244,14 +6390,15 @@ int main(int argc, char **argv) {
             g_timeout_override = atoi(argv[++i]);
             if (g_timeout_override < 1) g_timeout_override = 0;
         } else if (streq(a, "--help") || streq(a, "-h")) {
-            printf("Usage: ./run_tests [rcc-binary] [options] [test-names...]\n\n");
+            printf("Usage: ./run_tests [cc-binary] [options] [test-names...]\n\n");
             printf("Options (default: --tcc --unit-tests --compliance --ctest):\n");
             printf("  --tcc         TCC compatibility tests (tinycc/tests/tests2/)\n");
             printf("  --unit-tests  RCC Unit tests (test/test_*.c)\n");
-            printf("  --torture     GCC torture tests (test/torture/)\n");
             printf("  --compliance  NCC Compliance tests (gcc vs rcc output comparison)\n");
             printf("  --ctest       C-testsuite (native C runner)\n");
-            printf("  --all         All test suites\n");
+            printf("  --torture     GCC torture tests (test/torture/)\n");
+            printf("  --gcc-bugs    GCC C open bugs (test/gcc-bugs/)\n");
+            printf("  --all         All test suites but gcc-bugs\n");
             printf("  -v, --verbose Show compile/run command lines and output for each test\n");
             printf("  --summary     Torture summary-only (no per-test output)\n");
             printf("  --no-color    Disable ANSI color output\n");
@@ -6261,7 +6408,7 @@ int main(int argc, char **argv) {
             printf("                seconds (also raises the 120s hard ceiling if N>120).\n");
             printf("                Use a larger N for a slow-but-working compiler, or a\n");
             printf("                smaller N to fail fast against one that hangs/loops.\n\n");
-            printf("rcc-binary      cc, with optional options (in-proc or auto if not given)\n");
+            printf("cc-binary       cc, with optional options (in-proc or auto if not given)\n");
             printf("test-names...   Run only these tests\n");
             return 0;
         }
@@ -6404,11 +6551,11 @@ int main(int argc, char **argv) {
 #endif
 
     /* for cross-compilers, suites that require native execution don't apply */
-    if (!run_tcc && !run_units && !run_torture && !run_compliance && !run_ctest) {
+    if (!run_tcc && !run_units && !run_torture && !run_gcc_bugs && !run_compliance && !run_ctest) {
         if (only_test_count > 0) {
             /* single-test mode: search the filterable suites in order and
              * stop at the first one containing the test */
-            run_tcc = run_units = run_compliance = run_ctest = run_torture = true;
+            run_tcc = run_units = run_compliance = run_ctest = run_torture = run_gcc_bugs = true;
         } else if (has_runner || streq(platform, "darwin_cross")) {
             run_tcc = run_torture = true;
         } else {
@@ -6435,6 +6582,17 @@ int main(int argc, char **argv) {
         return exit_code;
     if (run_torture && run_torture_suite(summary_only) != 0)
         exit_code = 1;
+    if (run_gcc_bugs) {
+        // The gcc-bugs suite tracks open GCC bugs, most of which are
+        // gcc optimizer/codegen bugs or gcc-only extensions that rcc
+        // cannot (and should not) reproduce; the failures are
+        // informational and must not gate CI or `make check-*`.  An
+        // explicit single-test run (./run_tests --gcc-bugs prNNNN) still
+        // reports failure so a specific reproducer can be checked.
+        int gb = run_gcc_bugs_suite(summary_only);
+        if (gb != 0 && only_test_count > 0)
+            exit_code = 1;
+    }
 
     if (only_test_count > 0) {
         if (!only_test_found) {

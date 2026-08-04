@@ -1,0 +1,47 @@
+
+Marking local functions:
+
+
+Marking externally visible functions: reference/2
+
+
+Marking externally visible variables:
+
+Clearing variable flags:
+
+Reclaiming functions:
+Reclaiming variables:
+Clearing address taken flags:
+Symbol table:
+
+reference/2 (reference)
+  Type: function definition analyzed
+  Visibility: externally_visible semantic_interposition public
+  References: x/1 (read) x/1 (write) 
+  Referring: 
+  Availability: available
+  Function flags: count:1073741824 (estimated locally) body
+  Called by: 
+  Calls: 
+x/1 (x)
+  Type: variable
+  Body removed by symtab_remove_unreachable_nodes
+  Visibility: semantic_interposition external public visibility_specified visibility:hidden
+  References: 
+  Referring: reference/2 (read) reference/2 (write) 
+  Availability: not_available
+  Varpool flags: tls-local-exec
+void reference ()
+{
+  int x.0_1;
+  int _2;
+
+  <bb 2> [local count: 1073741824]:
+  x.0_1 = x;
+  _2 = x.0_1 + 1;
+  x = _2;
+  return;
+
+}
+
+
