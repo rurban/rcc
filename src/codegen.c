@@ -617,6 +617,7 @@ static void emit_jmp_fixup(SecBuf *s, const char *label) {
 
 
 static char *reg(VReg r, int size);
+static void materialize_reg(VReg r);
 static VReg gen(Node *node);
 static VReg gen_addr(Node *node);
 static bool is_asm_reserved(const char *name);
@@ -2381,13 +2382,35 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             nreg_args_count++;
     // Registers already live here (hidden retbuf address, indirect-call
     // target, outer expression temps) shrink the budget, and the stack-arg
-    // pass below needs a scratch register of its own. Without headroom the
+    // pass below needs scratch registers of its own. Without headroom the
     // per-register spill slots collide (two borrows of the same register
     // share one slot) and a staged value is silently lost.
+    //
+    // A single scratch register is NOT always enough: a stack argument
+    // that is itself a non-trivial expression — e.g. `flags | (cond ? A :
+    // B)`, a binary op whose rhs is a ternary — needs 2 registers live at
+    // once at its peak (the binary op's own result register, held across
+    // evaluating its rhs, plus the ternary's own result register, held
+    // across evaluating its cond/then/else). Budgeting only 1 leaves the
+    // computation exactly at NUM_REGS with zero headroom: alloc_reg() must
+    // spill a register that's still logically owned by an earlier
+    // register-passed argument (reg_arg_mask only reasserts protection
+    // once per whole argument, not around every nested alloc/free inside
+    // one), and a subsequent *fresh* (non-spilling) allocation can then
+    // silently reclaim that same "temporarily free" register before its
+    // true owner ever reads it back — no spill/restore involved, so
+    // nothing notices. Observed for real via Perl's `pp_regcomp`: the
+    // register-passed `&is_bare_re` argument got overwritten by the very
+    // next stack argument's ternary, and the callee wrote through the
+    // resulting garbage pointer and segfaulted. Budgeting 2 keeps this
+    // exact case (and the many one-level-deeper-than-trivial expressions
+    // like it) off the knife's edge; deeper nesting than that is the
+    // allocator's pre-existing single-slot-per-register limitation, not
+    // something this fix set out to solve.
     int live_now = 0;
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
-    int stack_scratch = (nreg_args_count < nargs) ? 1 : 0;
+    int stack_scratch = (nreg_args_count < nargs) ? 2 : 0;
     bool use_staging = (live_now + nreg_args_count + stack_scratch > NUM_REGS);
 
     for (int i = 0; i < nargs; i++) {
@@ -2547,6 +2570,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #ifdef _WIN32
     for (int i = 0; i < reg_nargs; i++) {
         int argi = i + (has_hidden_retbuf ? 1 : 0);
+        materialize_reg(arg_regs[i]); // see the SysV placement loop below
         if (arg_is_float[i]) {
             asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %xmm{fp_idx}
             // Narrow float args for builtin calls that map to float
@@ -2592,6 +2616,18 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 arg_regs[i] = alloc_reg();
                 asm_mov_rbp_reg(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq -arg_stage[i](%rbp), arg_regs[i]
             }
+            // A register argument computed earlier (args 0..5 above) can have
+            // been spilled by alloc_reg() while evaluating a LATER argument
+            // under register pressure (e.g. a stack argument's own ternary
+            // needing a scratch register) — nothing frees/reloads it in
+            // between, since its owner (this placement loop) hasn't touched
+            // it yet. Materialize it before reading REG(arg_regs[i]) below,
+            // or a stolen register silently hands the wrong value to the
+            // callee. Observed for real via Perl's `pp_regcomp`: the 6th
+            // (register) argument `&is_bare_re` got clobbered to whatever a
+            // sibling stack argument's ternary last left in that register,
+            // so the callee wrote through a garbage pointer and segfaulted.
+            materialize_reg(arg_regs[i]);
             if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // movq (%s), %s
@@ -2673,6 +2709,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             emit_direct_call(call_target, is_asm_call);
         }
     } else {
+        // callee_reg was computed before any argument (register or stack)
+        // was evaluated and is held live across all of it; the same
+        // register-stolen-by-a-later-alloc_reg() hazard fixed above for
+        // arg_regs[] applies here too.
+        materialize_reg(callee_reg);
         asm_call_reg(cg_sec, callee_reg); // call rcallee_reg
         free_reg(callee_reg);
     }
@@ -3679,6 +3720,56 @@ VReg alloc_reg(void) {
     }
     // All registers are in use. Spill the register with the highest index
     // (least likely to be referenced by outer callers right now).
+    //
+    // Must skip a register that is ALREADY spilled: spill_offset(i) is a
+    // single fixed slot per index, and spilled_regs is a single bit — there
+    // is no room to stack a second pending spill for the same index. Picking
+    // an already-spilled index as a victim again overwrites its one spill
+    // slot with the new value, permanently losing whatever the FIRST spill
+    // was holding for its (still-live) owner. The owner is typically an
+    // enclosing VReg — e.g. a ternary's result register, alloc'd before its
+    // cond/then/else are generated — that has not been freed yet and has no
+    // idea its backing slot was just reused a second time. Worse, when the
+    // register that stole it a second time is later free_reg()'d, the
+    // restore-on-free logic unconditionally clears spilled_regs for that
+    // index — so code further out that still expects "this index is
+    // spilled, read its operand from the spill slot" (e.g. the r_lhs==r_rhs
+    // combining checks in the binary-op codegen below) sees a false
+    // "not spilled" state and reads the live (wrong) register value instead
+    // of the spilled one, silently corrupting the result. Observed via a
+    // real-world case: `fnptr(...six register args..., flags, flags | (cond
+    // ? A : B))` compiled the trailing OR as a self-`or %reg,%reg` no-op
+    // because the ternary's own alloc_reg() had re-spilled the already-
+    // spilled register holding `flags`.
+    //
+    // First pass: prefer a used-but-not-yet-spilled register so the single
+    // spill slot per index is never double-booked.
+    for (int i = NUM_REGS - 1; i >= 0; i--) {
+        if ((used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
+            if (opt_W) {
+                if (reg_owner[i])
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
+                else
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            }
+#ifdef ARCH_ARM64
+            asm_stur_fp(cg_sec, i, spill_offset(i)); // str x(i), [x29, #-spill_offset(i)]
+#else
+            asm_mov_reg_rbp(cg_sec, i, 8, spill_offset(i)); // mov ri, [rbp-8]
+#endif
+            spilled_regs |= (1 << i);
+            spill_count++;
+            used_regs &= ~(1 << i);
+            used_regs |= (1 << i); // reclaim for new value
+            ever_used_regs |= (1 << i);
+            return (VReg)i;
+        }
+    }
+    // Fallback: every used register is already spilled (the single-slot
+    // scheme is exhausted). Re-spilling one here still clobbers its slot —
+    // a pre-existing limitation of this allocator, not introduced by the
+    // fix above — but this is a strictly rarer last resort than the common
+    // cascading case the first pass now avoids.
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if (used_regs & (1 << i)) {
             if (opt_W) {
@@ -3715,6 +3806,28 @@ void free_reg(VReg i) {
     }
     used_regs &= ~(1 << i);
     reg_owner[i] = NULL;
+}
+
+// Ensure a VReg's value is actually sitting in its physical register,
+// reloading from its spill slot first if a later alloc_reg() call stole
+// the register out from under it. Needed anywhere a VReg is computed once
+// (e.g. a call's register-passed argument, evaluated before the call's
+// other arguments) and then read again after intervening codegen — the
+// intervening code may run alloc_reg() under register pressure and spill
+// this VReg's register to make room, and unlike free_reg() (which is only
+// called when the VReg's owner is actually done with it), nothing else
+// notices that this VReg's physical register now holds someone else's
+// value. A plain `REG(r)` read at that point returns a stranger's data,
+// not r's. Idempotent: a no-op when r isn't currently spilled.
+static void materialize_reg(VReg r) {
+    if (spilled_regs & (1 << r)) {
+#ifdef ARCH_ARM64
+        asm_ldur_fp(cg_sec, r, spill_offset(r)); // ldr x(r), [x29, #-spill_offset(r)]
+#else
+        asm_mov_rbp_reg(cg_sec, r, 8, spill_offset(r)); // mov [rbp-spill_offset(r)], rr
+#endif
+        spilled_regs &= ~(1 << r);
+    }
 }
 
 #ifndef ARCH_ARM64
