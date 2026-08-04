@@ -588,12 +588,35 @@ static int build_search_dirs(const char **dirs, int max) {
     return n;
 }
 
-static char *resolve_include(char *curr_file, char *spec, bool is_angle) {
+// `curr_file`/`curr_display` are the including file's absolute-identity
+// path and its as-given display name respectively (see push_level()'s
+// display/fpath split). The return value is always the absolute path
+// used to actually open/track the file. `out_display`, when non-NULL,
+// additionally receives a "nice" name for #line markers: real cpp shows
+// a quoted include resolved next to the including file using a path
+// relative to how *that* file was itself named (e.g. util.c including
+// "vutil.c" shows as bare "vutil.c", not an absolute path) — GCC never
+// absolutizes same-directory quoted includes. rcc used to always return
+// (and display) the fully canonicalized absolute path here, which is
+// harmless for compilation but corrupts `makedepend`-style dependency
+// scanners: Perl's makedependfile.SH greps the preprocessor's own #line
+// output and treats any dependency path containing '/' as "this .c is
+// independently compilable", so an absolute "/…/vutil.c" marker made it
+// wrongly attach a standalone build recipe to vutil.c — a file that is
+// only ever #include-d into util.c and cannot be compiled on its own.
+// Left NULL for angle includes and search-path/system hits, which really
+// do warrant an absolute display name (matching gcc there too).
+static char *resolve_include(char *curr_file, char *curr_display, char *spec, bool is_angle,
+                             char **out_display) {
     char *path;
     if (!is_angle) {
         char *dir = path_dirname(curr_file);
         path = path_join(dir, spec);
-        if (file_exists(path)) return canonical_path(path);
+        if (file_exists(path)) {
+            if (out_display)
+                *out_display = path_join(path_dirname(curr_display), spec);
+            return canonical_path(path);
+        }
     }
     const char *dirs[128];
     int nd = build_search_dirs(dirs, 128);
@@ -1794,7 +1817,7 @@ static int64_t eval_primary_tok(Token **pp) {
             }
             if (ptok(t, ")")) t = t->next;
             *pp = t;
-            return spec ? resolve_include(lvl->filename, spec, is_angle) != NULL : 0;
+            return spec ? resolve_include(lvl->filename, lvl->filename, spec, is_angle, NULL) != NULL : 0;
         }
         if (nm == kw_has_c_attribute) {
             t = t->next;
@@ -2216,8 +2239,9 @@ static void do_directive(void) {
             }
         }
         if (!spec) return;
+        char *disp = NULL;
         char *path = dn == dn_include_next ? resolve_include_next(lvl->fpath, spec)
-                                           : resolve_include(lvl->fpath, spec, is_angle);
+                                           : resolve_include(lvl->fpath, lvl->filename, spec, is_angle, &disp);
         if (!path) {
             fprintf(stderr, "%s:%d: error: include file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
             exit(1);
@@ -2229,7 +2253,7 @@ static void do_directive(void) {
             fprintf(stderr, "%s:%d: error: cannot read include file '%s'\n", lvl->fpath, lvl->reported_line, path);
             exit(1);
         }
-        push_level(inc_fpath, inc_fpath, contents);
+        push_level(disp ? disp : inc_fpath, inc_fpath, contents);
         dep_add(inc_fpath);
         return;
     }
@@ -2265,7 +2289,7 @@ static void do_directive(void) {
             }
             parm = parm->next;
         }
-        char *path = resolve_include(lvl->fpath, spec, is_angle);
+        char *path = resolve_include(lvl->fpath, lvl->filename, spec, is_angle, NULL);
         if (!path) {
             fprintf(stderr, "%s:%d: error: #embed file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
             exit(1);
