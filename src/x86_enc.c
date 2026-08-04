@@ -49,9 +49,11 @@ static uint8_t sib(int scale, int index, int base) {
     return (uint8_t)((ss << 6) | ((index & 7) << 3) | (base & 7));
 }
 
-// Emit REX if any of R,X,B > X86_RDI or force W=1
+// Emit REX if any register is >= 4 (RSP) — needed for both the 8-bit
+// register remap (SPL/BPL/SIL/DIL vs. AH/CH/DH/BH) and for extended
+// registers R8-R15.
 static void maybe_rex(SecBuf *s, int W, int R, int X, int B) {
-    if (W || R > X86_RDI || X > X86_RDI || B > X86_RDI)
+    if (W || R >= X86_RSP || X >= X86_RSP || B >= X86_RSP)
         emit1(s, rex(W, R > X86_RDI, X > X86_RDI, B > X86_RDI));
 }
 
