@@ -35,5 +35,5 @@ else
     echo "==> Running full test suite sequentially via run_tests_arm64 under qemu..."
     echo ""
     export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
-    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 ./rcc-arm64 --all
+    qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 ./rcc-arm64 --all --parallel
 fi
