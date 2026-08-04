@@ -9,6 +9,7 @@ FILE *__acrt_iob_func(unsigned idx);
 #define stdin (__acrt_iob_func(0))
 #define stdout (__acrt_iob_func(1))
 #define stderr (__acrt_iob_func(2))
+
 #elif defined(__APPLE__)
 typedef struct _rcc_FILE FILE;
 extern FILE *__stdinp;
@@ -17,22 +18,20 @@ extern FILE *__stderrp;
 #define stdin __stdinp
 #define stdout __stdoutp
 #define stderr __stderrp
+
 #else
-#include <features.h>
-#ifdef __GLIBC__
-// FILE objects come from the installed glibc at runtime, and code
-// guarded by __GLIBC__ (e.g. safeclib) pokes members like _fileno
-// directly, so pull the layout from glibc's own header instead of
-// hand-copying it, to track whatever glibc version is installed.
-#include <bits/types/struct_FILE.h>
-typedef struct _IO_FILE FILE;
-#else
-typedef struct _rcc_FILE FILE;
+// Pull in the platform <stdio.h> for the full FILE layout, every stdio
+// function, and the __USE_POSIX/__USE_XOPEN-guarded constants (L_ctermid,
+// L_cuserid, etc.) that this bundled copy doesn't track. Mirrors wchar.h's
+// include_next pattern (and the removed ctype.h stub before it): a thin
+// bundled header shadowing the SDK one silently drops whatever feature-
+// macro-guarded content the real header has, so once include_next is
+// available it's strictly worse than resolving straight to the system
+// header.
+#include_next <stdio.h>
 #endif
-extern FILE *stdin;
-extern FILE *stdout;
-extern FILE *stderr;
-#endif
+
+#if defined(_WIN32) || defined(__APPLE__)
 #define EOF (-1)
 #define BUFSIZ 1024
 #define FILENAME_MAX 1024
@@ -55,5 +54,6 @@ int fgetc(FILE *stream);
 int getc(FILE *stream);
 char *fgets(char *buf, int size, FILE *stream);
 int fflush(FILE *stream);
+#endif
 
 #endif
