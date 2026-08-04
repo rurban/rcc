@@ -9163,8 +9163,10 @@ static VReg gen(Node *node) {
         return r;
     }
     case ND_IF: {
-        if (node->init) {
-            VReg r = gen(node->init);
+        // Same multi-declarator chain issue as ND_FOR's init (see below):
+        // C23 `if (init-statement; cond)` also reuses declaration().
+        for (Node *n = node->init; n; n = n->next) {
+            VReg r = gen(n);
             if (r != -1) free_reg(r);
         }
         // Fold constant integer conditions to avoid dead code emission,
@@ -9266,8 +9268,17 @@ static VReg gen(Node *node) {
         const char *cont_label = format(".L.continue.%d", c);
         const char *end_label = format(".L.end.%d", c);
 
-        if (node->init) {
-            VReg r = gen(node->init);
+        // node->init is head.next from declaration(): a multi-declarator
+        // init clause (`for (T a = x, b = y; ...)`) chains one ND_EXPR_STMT
+        // per declarator via ->next, exactly like a compound statement's
+        // body. gen() on a single ND_EXPR_STMT only generates that node's
+        // own ->lhs and never walks ->next, so calling gen() once on just
+        // the head silently dropped every declarator after the first —
+        // e.g. `for (size_t i = 0, copied = 0; ...)` left `copied`
+        // uninitialized. Walk the whole chain, mirroring how function/
+        // block bodies are generated elsewhere in this file.
+        for (Node *n = node->init; n; n = n->next) {
+            VReg r = gen(n);
             if (r != -1) free_reg(r);
         }
         size_t begin_pos = cg_sec->len; // begin label
@@ -9317,8 +9328,10 @@ static VReg gen(Node *node) {
         return -1;
     }
     case ND_SWITCH: {
-        if (node->init) {
-            VReg r = gen(node->init);
+        // Same multi-declarator chain issue as ND_FOR's init above (C23
+        // `switch (init-statement; cond)` reuses declaration()).
+        for (Node *n = node->init; n; n = n->next) {
+            VReg r = gen(n);
             if (r != -1) free_reg(r);
         }
         int c = ++rcc_label_count;
