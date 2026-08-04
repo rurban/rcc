@@ -1128,10 +1128,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     }
     // glibc __REDIRECT: extern readlink(...) __asm__("__readlink_chk")
     // adds a trailing buflen arg.  The call site has the right arity
-    // for the C-level name, so use that instead of the asm label.
+    // for the C-level name, so use that instead of the asm label -- but
+    // only when the C-level name is itself a real, directly-linkable
+    // public symbol (glibc's convention: never starts with "__"). Names
+    // like __poll_chk_warn/__vsnprintf_chk_warn are themselves internal
+    // _chk-suffixed redirect-only declarations whose asm_name (e.g.
+    // __poll_chk) is the ONLY real symbol -- also ends in "_chk", so this
+    // heuristic used to fire for them too and discarded the correct
+    // asm_name in favor of the literal (unlinkable) C name, producing an
+    // undefined-symbol link error. Two glibc __REDIRECT chains sharing a
+    // "_chk" suffix on both ends must be told apart by more than just the
+    // suffix.
     // (Bare _chk calls from inlined fortify bodies are already rewritten
     //  to the base function by the preprocessor.)
-    if (is_asm_call && call_target) {
+    if (is_asm_call && call_target && node->lhs->var->name &&
+        !(node->lhs->var->name[0] == '_' && node->lhs->var->name[1] == '_')) {
         size_t tlen = strlen(call_target);
         if (tlen > 4 && !strcmp(call_target + tlen - 4, "_chk"))
             call_target = node->lhs->var->name;
