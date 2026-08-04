@@ -2386,36 +2386,70 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // per-register spill slots collide (two borrows of the same register
     // share one slot) and a staged value is silently lost.
     //
-    // A single scratch register is NOT always enough: a stack argument
-    // that is itself a non-trivial expression — e.g. `flags | (cond ? A :
-    // B)`, a binary op whose rhs is a ternary — needs 2 registers live at
-    // once at its peak (the binary op's own result register, held across
-    // evaluating its rhs, plus the ternary's own result register, held
-    // across evaluating its cond/then/else). Budgeting only 1 leaves the
+    // A single scratch register is NOT always enough: an argument that is
+    // itself a non-trivial expression — e.g. `flags | (cond ? A : B)`, a
+    // binary op whose rhs is a ternary, or a call whose own argument is
+    // itself a nested function call — needs 2+ registers live at once at
+    // its peak (its own result register, held across evaluating its
+    // operands, plus a nested sub-expression's own result register).
+    // Budgeting only 1 (or, when every argument happens to be register-
+    // passed with none spilled to the stack, budgeting 0) leaves the
     // computation exactly at NUM_REGS with zero headroom: alloc_reg() must
     // spill a register that's still logically owned by an earlier
-    // register-passed argument (reg_arg_mask only reasserts protection
-    // once per whole argument, not around every nested alloc/free inside
-    // one), and a subsequent *fresh* (non-spilling) allocation can then
-    // silently reclaim that same "temporarily free" register before its
-    // true owner ever reads it back — no spill/restore involved, so
-    // nothing notices. Observed for real via Perl's `pp_regcomp`: the
-    // register-passed `&is_bare_re` argument got overwritten by the very
-    // next stack argument's ternary, and the callee wrote through the
-    // resulting garbage pointer and segfaulted. Budgeting 2 keeps this
-    // exact case (and the many one-level-deeper-than-trivial expressions
-    // like it) off the knife's edge; deeper nesting than that is the
+    // register-passed argument, and a subsequent *fresh* (non-spilling)
+    // allocation elsewhere in that later argument's own nested evaluation
+    // can then silently reclaim that same "temporarily free" register
+    // before its true owner ever reads it back — no spill/restore
+    // involved, so nothing notices. This is not limited to calls with
+    // trailing stack arguments: reserving scratch only when
+    // `nreg_args_count < nargs` misses calls where every argument is
+    // register-passed (fits within the 6 GP argument registers) but a
+    // later one is still a deep nested-call chain. Observed for real via
+    // two distinct crashes: Perl's `pp_regcomp()` — an 8-argument
+    // indirect call, `flags` and a ternary spilled to the stack — losing
+    // its register-passed `&is_bare_re` argument; and Perl's
+    // `Perl_utilize()` — a 5-argument *direct* call, `newATTRSUB(floor,
+    // newSVOP(...), NULL, NULL, <deeply nested op_append_elem/newSTATEOP
+    // chain>)`, no stack arguments at all — losing its 2nd (register)
+    // argument while evaluating its 5th. Reserving scratch headroom
+    // whenever a call has more than one argument (so there is always a
+    // "later" argument whose own complexity could exceed a 1-register
+    // budget) keeps both off the knife's edge; deeper nesting still
+    // possible with 2+ live scratch registers of its own is the
     // allocator's pre-existing single-slot-per-register limitation, not
     // something this fix set out to solve.
     int live_now = 0;
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
-    int stack_scratch = (nreg_args_count < nargs) ? 2 : 0;
+    int stack_scratch = (nargs > 1) ? 2 : 0;
     bool use_staging = (live_now + nreg_args_count + stack_scratch > NUM_REGS);
+
+    // Bitmask of scratch registers holding already-computed register-passed
+    // arguments. Built up incrementally as each arg is evaluated below (an
+    // arg that gets staged to memory is NOT added: its register is legitimately
+    // free again once staged). Reasserted as `used_regs` before evaluating each
+    // subsequent argument — and again before the stack-arg pass further below —
+    // so a later argument's own nested alloc_reg()/free_reg() churn can never
+    // silently reclaim a register that an earlier argument is still holding.
+    //
+    // Without this, an earlier register argument's value can vanish with no
+    // spill/restore involved at all: evaluating a later argument that is
+    // itself a non-trivial call chain (or a stack argument's own ternary)
+    // may legitimately spill-then-restore the earlier register several times
+    // via alloc_reg()/free_reg() under pressure — each restore leaves it
+    // genuinely free again until this loop's owner comes back for it — and a
+    // subsequent *fresh* (non-spilling) allocation elsewhere in that same
+    // nested evaluation can then claim it first. Observed for real via
+    // Perl's Perl_utilize(): `newATTRSUB(floor, newSVOP(...), NULL, NULL,
+    // <deeply nested op_append_elem/newSTATEOP call chain>)` silently
+    // corrupted its 2nd argument (the BEGIN-name op returned by the earlier
+    // newSVOP() call) while evaluating its 5th, unrelated one.
+    int reg_arg_mask = 0;
 
     for (int i = 0; i < nargs; i++) {
         if (arg_stack_idx[i] >= 0)
             continue;
+        used_regs |= reg_arg_mask; // protect args already computed by earlier iterations
         if (is_complex(argv[i]->ty) || ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8)) {
             int addr = gen_addr(argv[i]);
             if (addr < 0) {
@@ -2459,17 +2493,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             used_regs &= ~(1 << arg_regs[i]);
             reg_owner[arg_regs[i]] = NULL;
             arg_regs[i] = -1;
+        } else {
+            reg_arg_mask |= (1 << arg_regs[i]);
         }
     }
-
-    // Bitmask of scratch registers still needed for register-passed args.
-    // Stack arg computation below may free and reuse these via the spill
-    // mechanism; re-marking them as in-use forces a proper spill/restore
-    // instead of a silent overwrite that would lose the pre-computed value.
-    int reg_arg_mask = 0;
-    for (int i = 0; i < nargs; i++)
-        if (arg_regs[i] >= 0 && arg_stack_idx[i] < 0)
-            reg_arg_mask |= (1 << arg_regs[i]);
 
     if (stack_reserve > 0 && (!call_target || call_target != bi_s_alloca))
         x86_sub_ri(cg_sec, 8, X86_RSP, stack_reserve); // subq $stack_reserve, %rsp
@@ -14116,15 +14143,21 @@ struct ObjFile *codegen(Program *prog) {
         }
         if (has_cleanup)
             asm_mov_rbp(cg_sec, X86_RAX, 8, spill_offset(0)); // mov [rbp-spill_offset(0], RAX)
-        // Restore rsp from rbp (uniform for VLA/alloca/normal frames), then
-        // reload the callee-saved registers from their dedicated slots
-        // below the locals/spill region (mirrors the prologue saves).
-        asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
+        // Reload the callee-saved registers from their dedicated slots below
+        // the locals/spill region (mirrors the prologue saves) BEFORE
+        // deallocating the frame. These are pure rbp-relative reads and
+        // never depend on rsp, so there is no need to drop rsp first — and
+        // doing so is actively wrong: it leaves the slots below the (now
+        // current) rsp, a region a signal handler or anything else touching
+        // sub-rsp memory is free to clobber before the reads execute,
+        // silently corrupting the restored registers. Restore first, then
+        // collapse rsp back to rbp (uniform for VLA/alloca/normal frames).
         for (int j = 0, slot = need; j < callee_count; j++)
             if (callee_mask & (1 << j)) {
                 slot += 8;
                 asm_mov_rbp(cg_sec, REG(j + 2), 8, slot); // movq -slot(%rbp), %reg
             }
+        asm_mov_rbp_rsp(cg_sec); // movq %rbp, %rsp
         asm_pop(cg_sec, X86_RBP); // popq %rbp
         asm_ret(cg_sec); // ret
         cg_patch_fn_size(fn_sym_name, fn_sym_start);
