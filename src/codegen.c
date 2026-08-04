@@ -11961,18 +11961,56 @@ static VReg gen(Node *node) {
                 } else {
                     asm_add_reg_reg(cg_sec, r_lhs, r_rhs, sz);
                 }
-            } else if (!strcmp(inst, "sub"))
-                asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "imul"))
-                asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "and"))
-                asm_and_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "xor"))
-                asm_eor_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "or"))
-                asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz);
-            else if (!strcmp(inst, "cmp"))
-                asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+            } else if (!strcmp(inst, "sub")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    // reg holds rhs, spill holds lhs: reg = rhs - lhs, then negate
+                    // to yield lhs - rhs.
+                    asm_sub_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    asm_neg(cg_sec, r_lhs, sz);
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_sub_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "imul")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    // reg holds rhs, spill holds lhs. imul is commutative:
+                    // load lhs into RAX scratch and multiply reg by it.
+                    x86_mov_rm(cg_sec, sz, X86_RAX,
+                               x86_mem(X86_RBP, -spill_offset(r_lhs))); // mov -off(%rbp), %rax
+                    x86_imul_rr(cg_sec, sz, REG(r_lhs), X86_RAX); // imul %rax, reg
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_mul_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "and")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_and_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_and_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "xor")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_xor_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_eor_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "or")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_or_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_or_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            } else if (!strcmp(inst, "cmp")) {
+                if (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs))) {
+                    asm_cmp_spill_reg(cg_sec, r_lhs, sz, spill_offset(r_lhs));
+                    spilled_regs &= ~(1 << r_lhs);
+                } else {
+                    asm_cmp_reg_reg(cg_sec, r_lhs, r_rhs, sz);
+                }
+            }
             // Pointer subtraction: divide byte difference by element size
             if (node->kind == ND_SUB && node->lhs->ty->base && node->rhs->ty->base) {
                 int elem_sz = node->lhs->ty->base->size;

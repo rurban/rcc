@@ -2437,6 +2437,34 @@ static inline void asm_add_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
     X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
     x86_add_rm(s, size, REG(r), m); // add -rbp_off(%rbp), reg
 }
+// Commutative bitwise/arith ops against a spill slot (mirrors asm_add_spill_reg):
+// reg = reg OP spill[r]. Valid because AND/OR/XOR are commutative, so when the
+// lhs was spilled and the rhs was computed into the lhs's reused register,
+// reg(rhs) OP spill(lhs) == lhs OP rhs.
+static inline void asm_and_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_and_rm(s, size, REG(r), m); // and -rbp_off(%rbp), reg
+}
+static inline void asm_or_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_or_rm(s, size, REG(r), m); // or -rbp_off(%rbp), reg
+}
+static inline void asm_xor_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_xor_rm(s, size, REG(r), m); // xor -rbp_off(%rbp), reg
+}
+// Non-commutative subtract: reg = reg - spill[r] = rhs - lhs; caller must negate
+// to obtain the desired lhs - rhs.
+static inline void asm_sub_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_sub_rm(s, size, REG(r), m); // sub -rbp_off(%rbp), reg
+}
+// Compare with spilled lhs: sets flags for spill[r] - reg == lhs - rhs (correct
+// order) using the r/m-source cmp form.
+static inline void asm_cmp_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    x86_cmp_mr(s, size, m, REG(r)); // cmp reg, -rbp_off(%rbp)  (flags: mem - reg)
+}
 #endif
 
 // ============================================================================
