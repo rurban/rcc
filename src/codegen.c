@@ -4695,9 +4695,20 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         int sz = op_size(cond->lhs->ty);
         if (sz < op_size(cond->rhs->ty))
             sz = op_size(cond->rhs->ty);
-        if (cond->rhs->kind == ND_NUM && cond->rhs->val == (int32_t)cond->rhs->val) {
+        // Fold small integer constants, including -C from ND_NEG(ND_NUM(C))
+        int64_t rhs_val;
+        bool rhs_is_imm = false;
+        if (cond->rhs->kind == ND_NUM) {
+            rhs_val = cond->rhs->val;
+            rhs_is_imm = true;
+        } else if (cond->rhs->kind == ND_NEG && cond->rhs->lhs &&
+                   cond->rhs->lhs->kind == ND_NUM) {
+            rhs_val = -(cond->rhs->lhs->val);
+            rhs_is_imm = true;
+        }
+        if (rhs_is_imm && rhs_val == (int32_t)rhs_val) {
 #ifdef ARCH_ARM64
-            int32_t imm = (int32_t)cond->rhs->val;
+            int32_t imm = (int32_t)rhs_val;
             if (imm >= 0 && imm <= 4095) {
                 asm_cmp_imm(cg_sec, r_lhs, sz, imm); // cmp $imm, rr_lhs
             } else if (imm < 0 && imm >= -4095) {
@@ -4707,7 +4718,7 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
                 asm_cmp_reg_phy(cg_sec, r_lhs, ARM64_X16, sz); // cmp r16, rr_lhs
             }
 #else
-            asm_cmp_imm(cg_sec, r_lhs, sz, (int32_t)cond->rhs->val); // cmp $(int32_t)cond->rhs->val, rr_lhs
+            asm_cmp_imm(cg_sec, r_lhs, sz, (int32_t)rhs_val); // cmp $imm, rr_lhs
 #endif
         } else {
             VReg r_rhs = gen(cond->rhs);
@@ -11800,9 +11811,20 @@ static VReg gen(Node *node) {
         if (sz < op_size(node->rhs->ty))
             sz = op_size(node->rhs->ty);
 
-        if (node->rhs->kind == ND_NUM && node->rhs->val == (int32_t)node->rhs->val) {
+        // Fold small integer constants, including -C from ND_NEG(ND_NUM(C))
+        int64_t rhs_imm_val;
+        bool rhs_use_imm = false;
+        if (node->rhs->kind == ND_NUM) {
+            rhs_imm_val = node->rhs->val;
+            rhs_use_imm = true;
+        } else if (node->rhs->kind == ND_NEG && node->rhs->lhs &&
+                   node->rhs->lhs->kind == ND_NUM) {
+            rhs_imm_val = -(node->rhs->lhs->val);
+            rhs_use_imm = true;
+        }
+        if (rhs_use_imm && rhs_imm_val == (int32_t)rhs_imm_val) {
             // Skip identity operations: add 0, sub 0, mul 1, and ~0, or 0, xor 0
-            int imm = (int)node->rhs->val;
+            int imm = (int)rhs_imm_val;
             if ((node->kind == ND_MUL && imm == 1) ||
                 ((node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_BITOR || node->kind == ND_BITXOR) && imm == 0)) {
                 // no-op, just return r_lhs
@@ -11866,7 +11888,7 @@ static VReg gen(Node *node) {
                     asm_sub_imm(cg_sec, r_lhs, sz, imm); // sub r_lhs, #imm
                 else if (!strcmp(inst, "imul")) {
                     // FIXME arm
-                    asm_imul_imm(cg_sec, r_lhs, r_lhs, sz, (int32_t)node->rhs->val); // imul $val, r_lhs, r_lhs
+                    asm_imul_imm(cg_sec, r_lhs, r_lhs, sz, (int32_t)rhs_imm_val); // imul $val, r_lhs, r_lhs
                 } else if (!strcmp(inst, "and"))
                     asm_and_imm(cg_sec, r_lhs, sz, imm); // and r_lhs, #imm
                 else if (!strcmp(inst, "or"))
