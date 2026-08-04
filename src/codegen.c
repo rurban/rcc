@@ -11777,7 +11777,18 @@ static VReg gen(Node *node) {
                 asm_sar_imm(cg_sec, r_lhs, sz, (uint8_t)(imm)); // sar $(uint8_t)(imm), rr_lhs
         } else {
             VReg r_rhs = gen(node->rhs);
+            // Save the shift count into CL before restoring a spilled lhs.
+            // If r_rhs landed on the same VReg as r_lhs (register pressure
+            // spilled r_lhs during gen(rhs) and alloc_reg returned it), the
+            // physical register now holds the rhs (shift count), not the
+            // lhs (value to shift).  We must capture the count in CL first,
+            // then restore the lhs from its spill slot.
             x86_mov_rr(cg_sec, 4, X86_RCX, REG(r_rhs)); // movl %s, %ecx
+            bool spilled_lhs = (r_lhs == r_rhs && (spilled_regs & (1 << r_lhs)));
+            if (spilled_lhs) {
+                asm_mov_rbp_reg(cg_sec, r_lhs, 8, spill_offset(r_lhs));
+                spilled_regs &= ~(1 << r_lhs);
+            }
             if (node->kind == ND_SHL)
                 asm_shl_cl(cg_sec, r_lhs, sz, r_rhs); // shl cl, rr_lhs
             else if (use_unsigned(node->ty))
@@ -11855,10 +11866,17 @@ static VReg gen(Node *node) {
         if (node->rhs->kind == ND_NUM) {
             rhs_imm_val = node->rhs->val;
             rhs_use_imm = true;
+        } else if (node->rhs->kind == ND_CAST && node->rhs->lhs &&
+                   node->rhs->lhs->kind == ND_NUM) {
+            // Cast of a constant (e.g. (U8)1ULL): peel the cast and use the
+            // underlying immediate.  Otherwise gen(rhs) allocates a VReg that
+            // may collide with r_lhs under register pressure in huge functions
+            // (>2000 labels), overwriting the lhs value with a mov-imm and
+            // degenerating the ALU reg-reg op (or/xor/and) into a no-op.
+            rhs_imm_val = node->rhs->lhs->val;
+            rhs_use_imm = true;
         } else if (node->rhs->kind == ND_NEG && node->rhs->lhs &&
                    node->rhs->lhs->kind == ND_NUM) {
-            rhs_imm_val = -(node->rhs->lhs->val);
-            rhs_use_imm = true;
         }
         if (rhs_use_imm && rhs_imm_val == (int32_t)rhs_imm_val) {
             // Skip identity operations: add 0, sub 0, mul 1, and ~0, or 0, xor 0

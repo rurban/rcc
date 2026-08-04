@@ -125,11 +125,11 @@ static uint64_t mo_align(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1)
 // ULEB128 from the trie start; their lengths depend on the offsets, so the
 // layout is fixed-pointed before serialization.
 typedef struct MoTrieNode {
-    int terminal;   // this node is an exact exported symbol
-    uint64_t addr;  // image-relative export address (terminal only)
+    int terminal; // this node is an exact exported symbol
+    uint64_t addr; // image-relative export address (terminal only)
     struct MoTrieEdge *edges;
     int n_edges;
-    size_t offset;  // assigned trie-start offset
+    size_t offset; // assigned trie-start offset
 } MoTrieNode;
 typedef struct MoTrieEdge {
     char *label;
@@ -143,7 +143,10 @@ typedef struct {
 
 static int mo_uleb_len(uint64_t v) {
     int n = 1;
-    while (v >= 128) { v >>= 7; n++; }
+    while (v >= 128) {
+        v >>= 7;
+        n++;
+    }
     return n;
 }
 
@@ -188,12 +191,18 @@ static MoTrieNode *mo_trie_build(MoTrieSym *syms, int lo, int hi, int pfx) {
 // Collect nodes into `list` in BFS order (root first).
 static void mo_trie_collect(MoTrieNode *root, MoTrieNode ***list, int *n, int *cap) {
     int head = *n;
-    if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *)); }
+    if (*n >= *cap) {
+        *cap = *cap ? *cap * 2 : 16;
+        *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
+    }
     (*list)[(*n)++] = root;
     for (int r = head; r < *n; r++) {
         MoTrieNode *nd = (*list)[r];
         for (int e = 0; e < nd->n_edges; e++) {
-            if (*n >= *cap) { *cap *= 2; *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *)); }
+            if (*n >= *cap) {
+                *cap *= 2;
+                *list = realloc(*list, (size_t)*cap * sizeof(MoTrieNode *));
+            }
             (*list)[(*n)++] = nd->edges[e].child;
         }
     }
@@ -1150,10 +1159,15 @@ int link_macho(LinkState *s) {
                 size_t nl = strlen(sym->name) + 1;
                 memcpy(w, sym->name, nl);
                 w += nl;
-                *w++ = 0x51;              // SET_TYPE_IMM | BIND_TYPE_POINTER
+                *w++ = 0x51; // SET_TYPE_IMM | BIND_TYPE_POINTER
                 *w++ = (uint8_t)(0x70 | seg); // SET_SEGMENT_AND_OFFSET_ULEB
                 uint64_t off = (s->secs[got_sec].addr + (uint64_t)got_off[i]) - data_vmaddr;
-                do { uint8_t b = (uint8_t)(off & 0x7f); off >>= 7; if (off) b |= 0x80; *w++ = b; } while (off);
+                do {
+                    uint8_t b = (uint8_t)(off & 0x7f);
+                    off >>= 7;
+                    if (off) b |= 0x80;
+                    *w++ = b;
+                } while (off);
                 *w++ = 0x90; // DO_BIND
             }
             *w++ = 0x00; // BIND_OPCODE_DONE
@@ -1361,7 +1375,10 @@ int link_macho(LinkState *s) {
             size_t pos = 0;
             int changed = 0;
             for (int k = 0; k < nn; k++) {
-                if (list[k]->offset != pos) { list[k]->offset = pos; changed = 1; }
+                if (list[k]->offset != pos) {
+                    list[k]->offset = pos;
+                    changed = 1;
+                }
                 pos += mo_trie_node_size(list[k]);
             }
             if (!changed) break;
@@ -1377,8 +1394,8 @@ int link_macho(LinkState *s) {
             if (nd->terminal) {
                 int tinfo = mo_uleb_len(0) + mo_uleb_len(nd->addr);
                 TWU((uint64_t)tinfo); // terminalSize
-                TWU(0);               // flags = 0
-                TWU(nd->addr);        // image-relative address
+                TWU(0); // flags = 0
+                TWU(nd->addr); // image-relative address
             } else {
                 TW(0); // terminalSize = 0
             }
