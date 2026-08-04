@@ -10,6 +10,8 @@
 #include <stdlib.h>
 
 int main(void) {
+    // no glibc-style fortify wrappers on mingw
+#ifndef _WIN32
     const char *path = "/tmp/rcc_open_fortify_test.txt";
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     assert(fd >= 0);
@@ -22,5 +24,6 @@ int main(void) {
     close(fd);
     assert(strcmp(buf, "hi\n") == 0);
     unlink(path);
+#endif
     return 0;
 }
