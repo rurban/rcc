@@ -2991,6 +2991,14 @@ static void emit_tls_addr(VReg r, LVar *var) {
 #endif
 
 static int op_size(Type *ty) {
+    // Arrays decay to pointers in rvalue context; the machine operand
+    // for pointer subtraction (and any pointer arithmetic) is pointer-width
+    // (8 on 64-bit).  Using the aggregate byte size (e.g. U8[6] → 6) as sz
+    // corrupts the arithmetic size, causing rex_for_size(6, ...) to emit no
+    // REX prefix, so the CPU decodes extended registers (r10/r11) as their
+    // low-byte aliases (edx/ebx) and the subtraction operates on garbage.
+    if (ty->kind == TY_ARRAY)
+        return 8;
     if (is_integer(ty) && ty->size < 4)
         return 4;
     if (ty->size > 8)
@@ -4694,8 +4702,7 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         // Commute a constant-lhs equality so the constant uses the immediate
         // compare path (see the matching comment in the value path); avoids a
         // self-compare when the rhs reuses the spilled lhs register.
-        if ((cond->kind == ND_EQ || cond->kind == ND_NE)
-            && cond->lhs->kind == ND_NUM && cond->rhs->kind != ND_NUM) {
+        if ((cond->kind == ND_EQ || cond->kind == ND_NE) && cond->lhs->kind == ND_NUM && cond->rhs->kind != ND_NUM) {
             Node *swap_tmp = cond->lhs;
             cond->lhs = cond->rhs;
             cond->rhs = swap_tmp;
@@ -11569,8 +11576,7 @@ static VReg gen(Node *node) {
     // degenerates to a self-compare (and the spill slot can be clobbered).
     // EQ/NE are commutative so this is a pure win; LT/LE cannot be flipped
     // without a GT/GE opcode (the parser already normalises those away).
-    if ((node->kind == ND_EQ || node->kind == ND_NE)
-        && node->lhs->kind == ND_NUM && node->rhs->kind != ND_NUM) {
+    if ((node->kind == ND_EQ || node->kind == ND_NE) && node->lhs->kind == ND_NUM && node->rhs->kind != ND_NUM) {
         Node *swap_tmp = node->lhs;
         node->lhs = node->rhs;
         node->rhs = swap_tmp;
