@@ -499,6 +499,24 @@ static void define_macro(char *name, bool is_function, char **params, int param_
     Token *btoks = lex_body_string(body, "<builtin>", 1);
     define_macro_tok(name, is_function, pc, param_len, btoks, false, false);
 }
+// Same as define_macro(), but for a variadic function-like macro: params
+// lists only the named leading parameters, and the body may reference
+// __VA_ARGS__ for whatever trailing arguments the call site supplies.
+// Needed because define_macro() unconditionally passes is_variadic=false
+// to define_macro_tok() — a call whose actual argument count exceeds a
+// non-variadic macro's declared param count is left completely
+// unexpanded (see the _FORTIFY_SOURCE sprintf-family macros below, whose
+// param counts didn't match glibc's real chk-function signatures).
+static void define_macro_va(char *name, char **params, int param_len, char *body) {
+    name = str_intern(name, strlen(name));
+    char **pc = NULL;
+    if (param_len > 0) {
+        pc = arena_alloc(sizeof(char *) * param_len);
+        for (int i = 0; i < param_len; i++) pc[i] = str_intern(params[i], strlen(params[i]));
+    }
+    Token *btoks = lex_body_string(body, "<builtin>", 1);
+    define_macro_tok(name, true, pc, param_len, btoks, true, false);
+}
 void add_define(char *def) {
     char *eq = strchr(def, '='), *name, *body;
     if (eq) {
@@ -1591,7 +1609,17 @@ static void expand_token(Token *t) {
             do_directive();
             continue;
         }
-        if (x == &mark_eof) {
+        // xp_next() returns bare NULL (not &mark_eof) when called with
+        // xp_no_raw set (i.e. from inside a nested expand_list() — see its
+        // frame_floor handling) and the current frame's tokens run out
+        // before a balancing ')' is found: a macro invocation whose
+        // arguments are themselves produced by another macro's expansion,
+        // and that expansion's token list ends mid-argument-list. Treat it
+        // exactly like &mark_eof (abandon the call, replay collected
+        // tokens verbatim) instead of falling through to dereference NULL
+        // as if it were an ordinary token.
+        if (x == &mark_eof || !x) {
+            if (!x) x = &mark_eof;
             xp_unget(x);
             int filled = argc + (any ? 1 : 0);
             Token *replay = NULL, *reptail = NULL;
@@ -2866,16 +2894,36 @@ Token *preprocess(char *filename, char *p) {
             define_macro("__builtin___strncat_chk", true, p4, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__dest)+(__len)+1)?(abort(),(__dest)):__builtin_strncat(__dest,__src,__len))");
             char *p2[] = {"__s", "__bos", NULL};
             define_macro("__builtin___strlen_chk", true, p2, 2, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__s)+1)?(abort(),0):__builtin_strlen(__s))");
-            char *p2f[] = {"__fmt", "__bos", NULL};
-            define_macro("__builtin___printf_chk", true, p2f, 2, "__builtin_printf");
-            define_macro("__builtin___fprintf_chk", true, p2f, 2, "__builtin_fprintf");
-            define_macro("__builtin___vfprintf_chk", true, p2f, 2, "__builtin_vfprintf");
-            char *p5f[] = {"__dest", "__flag", "__bos", "__fmt", "__va_args", NULL};
-            define_macro("__builtin___sprintf_chk", true, p5f, 5, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
-            define_macro("__builtin___vsprintf_chk", true, p5f, 5, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
-            char *p6f[] = {"__dest", "__len", "__flag", "__bos", "__fmt", "__va_args", NULL};
-            define_macro("__builtin___snprintf_chk", true, p6f, 6, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
-            define_macro("__builtin___vsnprintf_chk", true, p6f, 6, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
+            // These forward to glibc's own exported __printf_chk /
+            // __fprintf_chk / __vfprintf_chk / __sprintf_chk /
+            // __vsprintf_chk / __snprintf_chk / __vsnprintf_chk (real
+            // linkable symbols implementing the actual runtime bounds
+            // checking — see bits/stdio2-decl.h), simply dropping the
+            // "builtin_" infix to reach the real name. Previously these
+            // were declared with the wrong (too-short, non-variadic)
+            // parameter counts: a non-variadic function-like macro whose
+            // call site supplies MORE arguments than its declared param
+            // count is left completely unexpanded by this preprocessor
+            // (silently — no error), so e.g. glibc's real 5-argument
+            // __builtin___sprintf_chk(dest, flag, bos, fmt, ...) call
+            // never matched the old 3-param definition and every use
+            // (including __USE_FORTIFY_LEVEL embedded in the unexpanded
+            // argument list) survived as raw, uncompilable text.
+            define_macro_va("__builtin___printf_chk", (char *[]){"__flag", "__fmt"}, 2,
+                            "__printf_chk(__flag,__fmt,__VA_ARGS__)");
+            define_macro_va("__builtin___fprintf_chk", (char *[]){"__stream", "__flag", "__fmt"}, 3,
+                            "__fprintf_chk(__stream,__flag,__fmt,__VA_ARGS__)");
+            define_macro("__builtin___vfprintf_chk", true, (char *[]){"__stream", "__flag", "__fmt", "__ap"}, 4,
+                         "__vfprintf_chk(__stream,__flag,__fmt,__ap)");
+            define_macro_va("__builtin___sprintf_chk", (char *[]){"__dest", "__flag", "__bos", "__fmt"}, 4,
+                            "__sprintf_chk(__dest,__flag,__bos,__fmt,__VA_ARGS__)");
+            define_macro("__builtin___vsprintf_chk", true, (char *[]){"__dest", "__flag", "__bos", "__fmt", "__ap"}, 5,
+                         "__vsprintf_chk(__dest,__flag,__bos,__fmt,__ap)");
+            define_macro_va("__builtin___snprintf_chk", (char *[]){"__dest", "__len", "__flag", "__bos", "__fmt"}, 5,
+                            "__snprintf_chk(__dest,__len,__flag,__bos,__fmt,__VA_ARGS__)");
+            define_macro("__builtin___vsnprintf_chk", true,
+                         (char *[]){"__dest", "__len", "__flag", "__bos", "__fmt", "__ap"}, 6,
+                         "__vsnprintf_chk(__dest,__len,__flag,__bos,__fmt,__ap)");
             define_pre("__builtin___read_chk", "read");
             define_pre("__builtin___pread_chk", "pread");
             define_pre("__builtin___readlink_chk", "readlink");
