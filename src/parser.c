@@ -6144,7 +6144,14 @@ static Node *declaration(Token **rest, Token *tok) {
             return head.next;
         }
 
-        if (ty->kind == TY_FUNC) {
+        // A function-type TYPEDEF (`typedef int functype(int);`) must NOT
+        // take the nested-function-declaration path below: that path
+        // registers `name` as a local function symbol/prototype and never
+        // calls add_typedef, so a later `(functype *) fn` cast silently
+        // fails is_typename() and misparses as "expected an expression"
+        // (found via jimsh0.c's `typedef int (qsort_comparator)(const
+        // void*, const void*);` inside ListSort()).
+        if (ty->kind == TY_FUNC && !attr.is_typedef) {
             Type *fty = ty;
             LVar *fn_sym = find_global_name(name);
             if (!fn_sym) {
