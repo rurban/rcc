@@ -1876,6 +1876,13 @@ static int64_t eval_primary_tok(Token **pp) {
                 break;
         }
         if (t->string_literal_prefix && t->string_literal_prefix != 'L') pp_expr_unsigned = true;
+        // A hex/octal (or over-large decimal) constant whose value does not
+        // fit in intmax_t is unsigned even without a U suffix (C23 6.4.4.1).
+        // Without this, 0xFFFFFFFFFFFFFFFF was the signed value -1, so e.g.
+        // `#if SIZE_MAX % UINT_MAX` (0 mathematically) evaluated as signed
+        // -1 % 0xFFFFFFFF and came out non-zero (lmdb's mdb.c two's-
+        // complement sanity #if).
+        if ((uint64_t)t->val > (uint64_t)INT64_MAX) pp_expr_unsigned = true;
         *pp = t->next;
         return t->val;
     }
@@ -1931,11 +1938,21 @@ static int64_t eval_mul_tok(Token **pp) {
         } else if (ptok(t, "/")) {
             t = t->next;
             int64_t rhs = eval_primary_tok(&t);
-            val = rhs ? val / rhs : 0;
+            if (!rhs)
+                val = 0;
+            else if (pp_expr_unsigned)
+                val = (int64_t)((uint64_t)val / (uint64_t)rhs);
+            else
+                val = val / rhs;
         } else if (ptok(t, "%")) {
             t = t->next;
             int64_t rhs = eval_primary_tok(&t);
-            val = rhs ? val % rhs : 0;
+            if (!rhs)
+                val = 0;
+            else if (pp_expr_unsigned)
+                val = (int64_t)((uint64_t)val % (uint64_t)rhs);
+            else
+                val = val % rhs;
         } else
             break;
         *pp = t;
