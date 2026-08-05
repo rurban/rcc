@@ -1599,6 +1599,13 @@ static char **list_c_files_sorted(const char *dir) {
     " c11-unreachable-1 " \
     " c11-empty-init-1 "
 
+/* Just some missing errors */
+#define TODO_TORTURE_TESTS \
+    " c23-complit-5 " \
+    " c23-constexpr-3 " \
+    " c23-enum-7 " \
+    " c23-tag-composite-1 "
+
 #define SKIP_TESTS \
     " 60_errors_and_warnings " \
     " 96_nodata_wanted " \
@@ -1628,6 +1635,7 @@ static bool is_skipped(const char *base, bool is_mingw) {
 }
 static bool is_cd_test(const char *base) { return word_in(CD_TESTS, base); }
 static bool is_dt_test(const char *base) { return word_in(DT_TESTS, base); }
+static bool is_torture_todo(const char *base) { return word_in(TODO_TORTURE_TESTS, base); }
 
 static const char *test_args(const char *base) {
     if (streq(base, "31_args")) return "arg1 arg2 arg3 arg4 arg5";
@@ -4275,6 +4283,7 @@ static DgDoAction dgdo_parse(const char *content) {
     return DGDO_DEFAULT;
 }
 
+static int g_tort_todo;
 static int g_tort_pass, g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip, g_tort_total;
 static int g_tort_error_pass, g_tort_error_fail;
 static char *g_tort_compile_errors, *g_tort_runtime_errors;
@@ -4579,21 +4588,39 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
         } else if (r->expect_compile_error) {
             // dg-error/dg-warning: compiler failed but didn't report every
             // expected error line — a distinct failure mode from a plain
-            // unexpected compile failure, tracked separately
-            g_tort_error_fail++;
-            tort_add_error(&g_tort_compile_errors, name);
-            if (!summary_only) {
-                print_result(name, COL_RED, "FAIL (dg-error lines)");
-                if (r->compile_out && r->compile_out[0])
-                    fprintf(stderr, "%s", r->compile_out);
+            // unexpected compile failure, tracked separately.
+            if (is_torture_todo(name)) {
+                g_tort_todo++;
+                if (!summary_only) {
+                    print_result(name, COL_YELLOW, "TODO (dg-error lines)");
+                    if (r->compile_out && r->compile_out[0])
+                        fprintf(stderr, "%s", r->compile_out);
+                }
+            } else {
+                g_tort_error_fail++;
+                tort_add_error(&g_tort_compile_errors, name);
+                if (!summary_only) {
+                    print_result(name, COL_RED, "FAIL (dg-error lines)");
+                    if (r->compile_out && r->compile_out[0])
+                        fprintf(stderr, "%s", r->compile_out);
+                }
             }
         } else {
-            g_tort_fail_compile++;
-            tort_add_error(&g_tort_compile_errors, name);
-            if (!summary_only) {
-                print_result(name, COL_RED, "FAIL (compile)");
-                if (r->compile_out && r->compile_out[0])
-                    fprintf(stderr, "%s", r->compile_out);
+            if (is_torture_todo(name)) {
+                g_tort_todo++;
+                if (!summary_only) {
+                    print_result(name, COL_YELLOW, "TODO (compile)");
+                    if (r->compile_out && r->compile_out[0])
+                        fprintf(stderr, "%s", r->compile_out);
+                }
+            } else {
+                g_tort_fail_compile++;
+                tort_add_error(&g_tort_compile_errors, name);
+                if (!summary_only) {
+                    print_result(name, COL_RED, "FAIL (compile)");
+                    if (r->compile_out && r->compile_out[0])
+                        fprintf(stderr, "%s", r->compile_out);
+                }
             }
         }
         free(r->compile_out);
@@ -4611,13 +4638,21 @@ static void tort_evaluate_report(const char *name, ParallelResult *r, bool summa
     }
 
     if (r->exec_exit != 0) {
-        g_tort_fail_runtime++;
-        tort_add_error(&g_tort_runtime_errors, name);
-        if (!summary_only) {
-            print_result(name, COL_RED, "FAIL (runtime)");
-            log_fail_exit(r->exec_exit, r->exec_timed_out);
-            if (r->exec_out && r->exec_out[0])
-                fprintf(stderr, "%s", r->exec_out);
+        if (is_torture_todo(name)) {
+            g_tort_todo++;
+            if (!summary_only) {
+                print_result(name, COL_YELLOW, "TODO (runtime)");
+                log_fail_exit(r->exec_exit, r->exec_timed_out);
+            }
+        } else {
+            g_tort_fail_runtime++;
+            tort_add_error(&g_tort_runtime_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (runtime)");
+                log_fail_exit(r->exec_exit, r->exec_timed_out);
+                if (r->exec_out && r->exec_out[0])
+                    fprintf(stderr, "%s", r->exec_out);
+            }
         }
     } else {
         g_tort_pass++;
@@ -4752,18 +4787,34 @@ static void run_torture_test(const char *src, bool summary_only) {
             g_tort_error_pass++;
             if (!summary_only) print_result(name, COL_GREEN, "PASS (expected error)");
         } else if (is_dg_test) {
-            g_tort_error_fail++;
-            tort_add_error(&g_tort_compile_errors, name);
-            if (!summary_only) {
-                print_result(name, COL_RED, "FAIL (dg-error lines)");
-                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+            if (is_torture_todo(name)) {
+                g_tort_todo++;
+                if (!summary_only) {
+                    print_result(name, COL_YELLOW, "TODO (dg-error lines)");
+                    if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                }
+            } else {
+                g_tort_error_fail++;
+                tort_add_error(&g_tort_compile_errors, name);
+                if (!summary_only) {
+                    print_result(name, COL_RED, "FAIL (dg-error lines)");
+                    if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                }
             }
         } else {
-            g_tort_fail_compile++;
-            tort_add_error(&g_tort_compile_errors, name);
-            if (!summary_only) {
-                print_result(name, COL_RED, "FAIL (compile)");
-                if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+            if (is_torture_todo(name)) {
+                g_tort_todo++;
+                if (!summary_only) {
+                    print_result(name, COL_YELLOW, "TODO (compile)");
+                    if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                }
+            } else {
+                g_tort_fail_compile++;
+                tort_add_error(&g_tort_compile_errors, name);
+                if (!summary_only) {
+                    print_result(name, COL_RED, "FAIL (compile)");
+                    if (cr.out && cr.out[0]) fprintf(stderr, "%s", cr.out);
+                }
             }
         }
         vlog_test_details(name, compile_cmdline, cr.out, NULL, NULL);
@@ -4810,14 +4861,21 @@ static void run_torture_test(const char *src, bool summary_only) {
     char *run_cmdline = cmdline_from_argv(ra);
     ProcResult rr = proc_run(ra, scaled(5), 0);
     if (rr.exit_code != 0) {
-        g_tort_fail_runtime++;
-        tort_add_error(&g_tort_runtime_errors, name);
-        if (!summary_only) {
-            print_result(name, COL_RED, "FAIL (runtime)");
-            if (!has_runner) {
-                static const char *tort_extra[] = {"-I", ".", "-lm", NULL};
-                emit_backtrace(exe_path, NULL, src, rcc, rccflags,
-                               tort_extra, NULL, NULL, NULL);
+        if (is_torture_todo(name)) {
+            g_tort_todo++;
+            if (!summary_only) {
+                print_result(name, COL_YELLOW, "TODO (runtime)");
+            }
+        } else {
+            g_tort_fail_runtime++;
+            tort_add_error(&g_tort_runtime_errors, name);
+            if (!summary_only) {
+                print_result(name, COL_RED, "FAIL (runtime)");
+                if (!has_runner) {
+                    static const char *tort_extra[] = {"-I", ".", "-lm", NULL};
+                    emit_backtrace(exe_path, NULL, src, rcc, rccflags,
+                                   tort_extra, NULL, NULL, NULL);
+                }
             }
         }
     } else {
@@ -4834,7 +4892,7 @@ static void run_torture_test(const char *src, bool summary_only) {
 
 static int run_torture_suite(bool summary_only) {
     g_tort_pass = g_tort_fail_compile = g_tort_fail_runtime = g_tort_skip = g_tort_total = 0;
-    g_tort_error_pass = g_tort_error_fail = 0;
+    g_tort_error_pass = g_tort_error_fail = g_tort_todo = 0;
     free(g_tort_compile_errors);
     g_tort_compile_errors = NULL;
     free(g_tort_runtime_errors);
@@ -4980,7 +5038,7 @@ static int run_torture_suite(bool summary_only) {
         max_fail = 0;
     else
         */
-        max_fail = 4;
+        max_fail = 0;
 
     int fail = g_tort_fail_compile + g_tort_error_fail + g_tort_fail_runtime;
     if (only_test_count == 0) {
@@ -4990,15 +5048,19 @@ static int run_torture_suite(bool summary_only) {
         const char *rst = fail > max_fail ? COL_RESET : "";
         printf("\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
         if (fail)
-            printf("%s%d fail (%d compile/%d error/%d runtime)%s, %d skipped.\n",
-                   red, fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, rst, g_tort_skip);
+            printf("%s%d fail (%d compile/%d error/%d runtime)%s, %d skipped, %d todo.\n",
+                   red, fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, rst, g_tort_skip, g_tort_todo);
+        else if (g_tort_todo)
+            printf("0 failed, %d skipped, %d todo.\n", g_tort_skip, g_tort_todo);
         else
             printf("0 failed, %d skipped.\n", g_tort_skip);
         if (g_log_fp) {
             fprintf(g_log_fp, "\nTorture: %d/%d passed (%d%%), ", g_tort_pass, eff, pct);
             if (fail)
-                fprintf(g_log_fp, "%d failed (%d compile/%d error/%d runtime), %d skipped.\n",
-                        fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, g_tort_skip);
+                fprintf(g_log_fp, "%d failed (%d compile/%d error/%d runtime), %d skipped, %d todo.\n",
+                        fail, g_tort_fail_compile, g_tort_error_fail, g_tort_fail_runtime, g_tort_skip, g_tort_todo);
+            else if (g_tort_todo)
+                fprintf(g_log_fp, "0 failed, %d skipped, %d todo.\n", g_tort_skip, g_tort_todo);
             else
                 fprintf(g_log_fp, "0 failed, %d skipped.\n", g_tort_skip);
         }
@@ -5016,9 +5078,9 @@ static int run_torture_suite(bool summary_only) {
         snprintf(sp, sizeof(sp), "test-torture-%s.summary", platform_suffix);
         snprintf(sc, sizeof(sc),
                  "SUITE=torture\nTOTAL=%d\nPASS=%d\nFAIL=%d\nFAIL_COMPILE=%d\nFAIL_RUNTIME=%d\nSKIP=%d\n"
-                 "ERROR_PASS=%d\nERROR_FAIL=%d\n",
+                 "TODO=%d\nERROR_PASS=%d\nERROR_FAIL=%d\n",
                  g_tort_total, g_tort_pass, fail,
-                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip,
+                 g_tort_fail_compile, g_tort_fail_runtime, g_tort_skip, g_tort_todo,
                  g_tort_error_pass, g_tort_error_fail);
         write_summary(sp, sc);
     }

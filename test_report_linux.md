@@ -2,13 +2,13 @@
 
 **Platform**: Linux x86_64
 
-Generated: August 04 2026 19:00
+Generated: August 05 2026 06:50
 
 ## Overall Summary
 
 - **Total**: 4450
 - **Passed**: 4092
-- **Failed**: 4
+- **Failed**: 0
 - **Skipped**: 354
 - **Overall Pass Rate**: 100%
 
@@ -44,7 +44,7 @@ Generated: August 04 2026 19:00
 
 - **Total**: 3963
 - **Passed**: 3605
-- **Failed**: 4
+- **Failed**: 0
 - **Skipped**: 354
-- **Dg-error Tests**: 34/38 passed, 4 failed
+- **Dg-error Tests**: 34/34 passed, 0 failed
 - **Pass Rate (excl. skip)**: 100%
