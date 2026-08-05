@@ -53,6 +53,19 @@ int main(void) {
     buf[5] = '@';
     assert_ok(memcmp(buf, ref, 10) < 0, "memcmp lt");
     assert_eq(memcmp(buf, ref, 0), 0, "memcmp zero");
+    /* memcmp with bytes > 127: the inline expansion must use zero-extend
+     * (movzbl), not sign-extend (movsbl), on the differing bytes.  A signed
+     * load of 0xFF gives -1, flipping the sign of the difference.  Seen in
+     * rcc-compiled perl5: "\0" cmp "\xFF" returned 1 instead of -1. */
+    memset(buf, 0, 10);
+    memset(ref, 0xFF, 10);
+    assert_ok(memcmp(buf, ref, 10) < 0, "memcmp lt hi-byte: 0 < 0xFF");
+    assert_ok(memcmp(ref, buf, 10) > 0, "memcmp gt hi-byte: 0xFF > 0");
+    buf[0] = 0x80;
+    assert_ok(memcmp(buf, ref, 10) < 0, "memcmp lt hi-byte: 0x80 < 0xFF");
+    ref[0] = 0x7F;
+    assert_ok(memcmp(buf, ref, 10) > 0, "memcmp gt hi-byte: 0x80 > 0x7F");
+    assert_ok(memcmp(ref, buf, 10) < 0, "memcmp lt hi-byte: 0x7F < 0x80");
 
     /* --- strlen --- */
     memcpy(buf, "hello, world!", 14);

@@ -1406,8 +1406,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                     asm_fixup_add(cg_sec, o, format(".L.memcmp_end.%d", cl), 0);
                 }
                 cg_def_label(format(".L.memcmp_diff.%d", cl));
-                x86_movsx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(X86_RDI, -1)); // movsbl -1(%rdi),%eax
-                x86_movsx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(X86_RSI, -1)); // movsbl -1(%rsi),%ecx
+                x86_movzx_rm(cg_sec, 4, 1, X86_RAX, x86_mem(X86_RDI, -1)); // movsbl -1(%rdi),%eax
+                x86_movzx_rm(cg_sec, 4, 1, X86_RCX, x86_mem(X86_RSI, -1)); // movsbl -1(%rsi),%ecx
                 x86_sub_rr(cg_sec, 4, X86_RAX, X86_RCX); // subl %ecx, %eax
                 cg_def_label(format(".L.memcmp_end.%d", cl));
                 asm_pop(cg_sec, X86_RCX);
