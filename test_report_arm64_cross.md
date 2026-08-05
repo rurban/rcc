@@ -2,13 +2,13 @@
 
 **Platform**: Linux ARM64 (aarch64 cross)
 
-Generated: August 05 2026 19:19
+Generated: August 05 2026 21:12
 
 ## Overall Summary
 
-- **Total**: 4450
-- **Passed**: 4082
-- **Failed**: 9
+- **Total**: 4455
+- **Passed**: 4089
+- **Failed**: 7
 - **Skipped**: 354
 - **Overall Pass Rate**: 100%
 
@@ -21,8 +21,8 @@ Generated: August 05 2026 19:19
 
 ## RCC Unit Tests
 
-- **Total**: 132
-- **Passed**: 131
+- **Total**: 137
+- **Passed**: 136
 - **Failed**: 0
 - **Pass Rate**: 99%
 
@@ -43,9 +43,9 @@ Generated: August 05 2026 19:19
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 3596
-- **Failed**: 9
+- **Passed**: 3598
+- **Failed**: 7
 - **Skipped**: 354
-- **Fail Runtime**: 9
+- **Fail Runtime**: 7
 - **Dg-error Tests**: 34/34 passed, 0 failed
 - **Pass Rate (excl. skip)**: 100%

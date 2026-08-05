@@ -1837,6 +1837,26 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #endif
 
 #ifdef ARCH_ARM64
+    // Stage register-destined argument values through dedicated stack
+    // slots (instead of leaving them live in the VReg pool across further
+    // argument evaluation) only under real register pressure: alloc_reg()'s
+    // spill mechanism assumes strictly nested (LIFO) lifetimes, which a
+    // call with many simultaneously-live argument values violates -- see
+    // the staging loop below. Gating on pressure (mirroring x86-64's
+    // identical use_staging condition, including its >= and headroom
+    // terms -- see that condition's own comment for why `> NUM_REGS`
+    // alone is unsafe: hitting the limit exactly still leaves zero spare
+    // registers for a later argument's own nested evaluation) keeps
+    // ordinary low-arity calls (the overwhelming majority) on the
+    // untouched, well-exercised path; unconditional staging was tried
+    // first and regressed ordinary multi-statement functions.
+    int live_now_arm64 = 0;
+    for (int _li = 0; _li < NUM_REGS; _li++)
+        live_now_arm64 += (used_regs >> _li) & 1;
+    int stack_scratch_arm64 = (nargs > 1) ? 2 : 0;
+    bool use_staging_arm64 =
+        (live_now_arm64 + gp_reg_args + fp_reg_args + stack_scratch_arm64) >= NUM_REGS;
+
     // ARM64: evaluate args for register passing, track stack args
     for (int i = 0; i < nargs; i++) {
         // Skip regular stack args, but evaluate HFAs on stack for data copying
@@ -1891,6 +1911,34 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             }
         } else
             arg_regs[i] = gen(argv[i]);
+        // Relocate the just-computed value out of the register allocator's
+        // live pool immediately, into its own permanent stack slot -- but
+        // ONLY under real register pressure (use_staging_arm64). Left
+        // live in a VReg across further argument evaluation, it can be
+        // stolen by alloc_reg() while evaluating a LATER argument in this
+        // same loop: alloc_reg()'s spill victim selection only tracks ONE
+        // pending value per register index, so if this argument's value
+        // is written directly into a register that was already mid-spill
+        // (protecting some OTHER, still-live value), a later free_reg() on
+        // that register silently restores the OTHER value -- discarding
+        // this argument's value without it ever having gone through its
+        // own spill/restore cycle. Mirrors the x86-64 path's
+        // `use_staging`. Found via a variadic call mixing 7 named ints +
+        // 9 named doubles + int varargs: the first vararg silently read
+        // as 0 instead of 8.
+        if (use_staging_arm64 && arg_regs[i] >= 0) {
+            fn_struct_ret_off += 8;
+            if (fn_struct_ret_off > fn_struct_ret_total)
+                fn_struct_ret_total = fn_struct_ret_off;
+            arg_stage[i] = current_fn_stack_size + fn_struct_ret_off;
+            asm_stur_fp(cg_sec, arg_regs[i], arg_stage[i]); // str x{arg_regs[i]}, [x29, #-stage]
+            // Release without the normal restore-on-spilled-free path:
+            // the value is now safely archived in its own slot.
+            spilled_regs &= ~(1 << arg_regs[i]);
+            used_regs &= ~(1 << arg_regs[i]);
+            reg_owner[arg_regs[i]] = NULL;
+            arg_regs[i] = -1;
+        }
     }
 
     // Allocate one block for caller-saved regs + stack args.
@@ -2031,6 +2079,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (arg_stack_idx[i] >= 0)
             continue;
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
+            if (arg_regs[i] < 0 && arg_stage[i]) {
+                arg_regs[i] = alloc_reg();
+                asm_ldur_fp(cg_sec, arg_regs[i], arg_stage[i]); // ldr x{arg_regs[i]}, [x29, #-stage]
+            }
             asm_fmov_i2f(cg_sec, ASM_Q0, arg_regs[i], 1); // fmov d0, x{arg_regs[i]}
             free_reg(arg_regs[i]);
             emit_direct_call("__extenddftf2", false); // bl __extenddftf2 (d0 -> quad in v0)
@@ -2056,6 +2108,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (arg_gp_idx[i] < 0 && arg_fp_idx[i] < 0) {
             if (arg_regs[i] >= 0) free_reg(arg_regs[i]);
             continue;
+        }
+        // Reload from the staging slot (see the staging comment in the
+        // first-pass evaluation loop above) before any branch below reads
+        // arg_regs[i]. No-op for the long-double branch just below (its
+        // arg_regs[i] was already freshly set by the pre-pass loop, never
+        // staged) and for any arg that never went through staging.
+        if (arg_regs[i] < 0 && arg_stage[i]) {
+            arg_regs[i] = alloc_reg();
+            asm_ldur_fp(cg_sec, arg_regs[i], arg_stage[i]); // ldr x{arg_regs[i]}, [x29, #-stage]
         }
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
             continue;
