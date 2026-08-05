@@ -9303,9 +9303,29 @@ static VReg gen(Node *node) {
                 }
                 return -1;
             }
-            // if(0) with labels: skip dead non-label nodes before the
-            // first label (Duff device pattern where labels are reachable
-            // via switch/goto).  Plain if(1) with labels falls through.
+            // if(0) with labels: the labeled body is a Duff's-device
+            // target -- reachable ONLY via a switch/goto jumping directly
+            // to its label, NEVER via this if's own (always-false)
+            // condition. Normal SEQUENTIAL fall-through into this source
+            // position (from whatever precedes the if-statement) must
+            // still skip the body, exactly like a real `if(0) goto after;`
+            // would; a switch's own dispatch bypasses this skip-jump
+            // entirely by branching straight to the case label inside the
+            // body, past the jump instruction. Emitting the case node(s)
+            // directly with NO skip-jump (as this used to do) executed
+            // the "dead" body unconditionally on fall-through, corrupting
+            // any code reached by ordinary sequential execution before
+            // the first real switch dispatch into it. Found via LZ4's
+            // frame decompression state machine
+            // (`if (0) case dstage_storeCBlock: {...}`), which silently
+            // executed the storeCBlock body on every single call instead
+            // of only when explicitly dispatched there.
+            //
+            // Plain if(1) with labels (cond->val != 0) intentionally
+            // falls through to the general codegen path below instead:
+            // `if(1)` unconditionally enters its then-branch anyway, so a
+            // plain fall-through already has the right semantics with no
+            // special-casing needed.
             if (!node->cond->val) {
                 // Find outermost block body
                 Node *list = node->then;
@@ -9321,10 +9341,15 @@ static VReg gen(Node *node) {
                 // If the first label is a case (Duff), skip dead code before it.
                 // Otherwise generate full body to preserve goto labels.
                 if (n && n->kind == ND_CASE) {
+                    int duff_c = ++rcc_label_count;
+                    const char *duff_after = format(".L.duff_after.%d", duff_c);
+                    size_t skip_jmp = asm_jmp_label(cg_sec); // jmp duff_after (fall-through skips the dead body)
+                    asm_fixup_add(cg_sec, skip_jmp, duff_after, 0);
                     for (; n; n = n->next) {
                         VReg r = gen(n);
                         if (r != -1) free_reg(r);
                     }
+                    cg_def_label(duff_after);
                     return -1;
                 }
             }
