@@ -76,6 +76,19 @@ int main(void) {
     CHECK(veq(_mm_movelh_ps(a, b), 1, 2, 10, 20));
     CHECK(veq(_mm_movehl_ps(a, b), 30, 40, 3, 4));
 
+    /* 4x4 transpose macro (_MM_TRANSPOSE4_PS): columns become rows */
+    {
+        __m128 r0 = _mm_setr_ps(1, 2, 3, 4);
+        __m128 r1 = _mm_setr_ps(5, 6, 7, 8);
+        __m128 r2 = _mm_setr_ps(9, 10, 11, 12);
+        __m128 r3 = _mm_setr_ps(13, 14, 15, 16);
+        _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
+        CHECK(veq(r0, 1, 5, 9, 13));
+        CHECK(veq(r1, 2, 6, 10, 14));
+        CHECK(veq(r2, 3, 7, 11, 15));
+        CHECK(veq(r3, 4, 8, 12, 16));
+    }
+
     /* sqrt / rsqrt (native builtin, no -lm) */
     {
         __m128 x = _mm_set_ps(16.0f, 9.0f, 4.0f, 1.0f);

@@ -144,6 +144,19 @@ __rcc_inline __m128 _mm_movelh_ps(__m128 __a, __m128 __b) {
     return (__m128){__a[0], __a[1], __b[0], __b[1]};
 }
 
+// 4x4 single-precision transpose (SSE intrinsic macro, GCC/Clang-compatible).
+#define _MM_TRANSPOSE4_PS(row0, row1, row2, row3)                              \
+    do {                                                                       \
+        __m128 __t0 = _mm_unpacklo_ps((row0), (row1));                         \
+        __m128 __t1 = _mm_unpacklo_ps((row2), (row3));                         \
+        __m128 __t2 = _mm_unpackhi_ps((row0), (row1));                         \
+        __m128 __t3 = _mm_unpackhi_ps((row2), (row3));                         \
+        (row0) = _mm_movelh_ps(__t0, __t1);                                    \
+        (row1) = _mm_movehl_ps(__t1, __t0);                                    \
+        (row2) = _mm_movelh_ps(__t2, __t3);                                    \
+        (row3) = _mm_movehl_ps(__t3, __t2);                                    \
+    } while (0)
+
 // --- Conversions / extraction ----------------------------------------------
 __rcc_inline float _mm_cvtss_f32(__m128 __a) { return __a[0]; }
 
