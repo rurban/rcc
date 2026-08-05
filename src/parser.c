@@ -2652,7 +2652,12 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
                 vla_exprs[ndims] = vla_expr;
                 ndims++;
                 continue;
-            } else if (equalc(tok, "*")) {
+            } else if (equalc(tok, "*") && equalc(tok->next, "]")) {
+                // C99 [*] unspecified-size VLA marker (valid only in a
+                // function prototype). Only when the '*' is immediately
+                // followed by ']'; otherwise it starts a size expression
+                // such as [*n] (a VLA sized by a pointer dereference, e.g.
+                // `int p[*count]`), which must fall through to expr() below.
                 tok = tok->next;
             } else {
                 Node *node = expr(&tok, tok);
