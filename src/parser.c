@@ -4416,8 +4416,16 @@ static bool read_global_label_initializer(Token **rest, Token *tok, char **label
         // init/version-timestamp.c's init_uts_ns initializer selects its
         // .ops field's proc_ns_operations pointer via
         // _Generic((&init_uts_ns), struct foo *: &foo_operations, ...).
-        if (find_enum_const(tok) || equalc(tok, "true") || equalc(tok, "false") ||
-            equalc(tok, "NULL") || equalc(tok, "nullptr") || equalc(tok, "_Generic") ||
+        // Any C keyword/builtin token can never name a global object — in
+        // particular `sizeof` (and the true/false/NULL/nullptr/_Generic/
+        // __builtin_* cases listed below), which were previously taken as
+        // a label reference, so `var x = sizeof(struct T);` emitted a
+        // reloc to a nonexistent symbol named "sizeof" and then choked on
+        // the trailing "(...)" (cello's CelloObject initializes pointer
+        // fields with `(var)sizeof(struct T)`).
+        if (tok->kw != ID_NONE || find_enum_const(tok) || equalc(tok, "true") ||
+            equalc(tok, "false") || equalc(tok, "NULL") || equalc(tok, "nullptr") ||
+            equalc(tok, "_Generic") ||
             (tok->len > 10 && !memcmp(tok->ptr, "__builtin_", 10)))
             return false;
         // Use asm_name for static local variables (mangled labels)
@@ -4842,23 +4850,29 @@ static Type *infer_array_type(Type *ty, Token *tok) {
 // a pointer to the { token, or NULL if not a compound literal.
 static Token *find_compound_literal_start(Token *tok) {
     Token *t = tok;
-    while (equalc(t, "("))
-        t = t->next;
-    if (!is_typename(t))
-        return NULL;
-    // Lookahead for a compound-literal type name: _Alignas is allowed here
-    // (C23 6.5.2.5), so suppress the type-name alignment diagnostic.
-    bool saved_icl = in_compound_literal;
-    in_compound_literal = true;
-    Type *ty = type_name(&t, t);
-    in_compound_literal = saved_icl;
-    if (!ty)
-        return NULL;
-    while (equalc(t, ")"))
-        t = t->next;
-    if (equalc(t, "{"))
-        return t;
-    return NULL;
+    for (;;) {
+        while (equalc(t, "("))
+            t = t->next;
+        if (!is_typename(t))
+            return NULL;
+        // Lookahead for a compound-literal type name: _Alignas is allowed here
+        // (C23 6.5.2.5), so suppress the type-name alignment diagnostic.
+        bool saved_icl = in_compound_literal;
+        in_compound_literal = true;
+        Type *ty = type_name(&t, t);
+        in_compound_literal = saved_icl;
+        if (!ty)
+            return NULL;
+        while (equalc(t, ")"))
+            t = t->next;
+        if (equalc(t, "{"))
+            return t;
+        // A cast wrapping a compound literal -- "(T)(T2{...})", e.g. Cello's
+        // `(var)((var[]){ ... })` -- has another parenthesized type between
+        // the cast's ")" and the literal's "{". Parse that inner type too.
+        if (!equalc(t, "("))
+            return NULL;
+    }
 }
 
 // After "&(compound literal)" is folded into a reference to a materialized
@@ -10703,8 +10717,26 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
             while (kw_is(t, KW_STORAGE)) t = t->next;
             Type *compound_ty = type_name(&t, t);
             while (equalc(t, ")")) t = t->next;
+            // The compound literal may be wrapped in a cast:
+            // "(T)(T2{...})". The anonymous object must get the *literal's*
+            // type T2, not the cast target T -- so skip the cast layer and
+            // parse the inner type (e.g. Cello's `(var)((var[]){...})`).
+            while (equalc(t, "(")) {
+                // Skip ALL parens, not just one: "(T)(((T2){...}))" nests
+                // the literal's own paren around the type's parens, so a
+                // single t = t->next would land on the type's '(' and make
+                // type_name() default to int.
+                while (equalc(t, "(")) t = t->next;
+                while (kw_is(t, KW_STORAGE)) t = t->next;
+                compound_ty = type_name(&t, t);
+                while (equalc(t, ")")) t = t->next;
+            }
             static int anon_count2;
-            char *name = format(".Lanon.%d", anon_count2++);
+            // Distinct prefix from the other anon counters: this TU may
+            // also emit ".Lanon.N" objects from element-level
+            // "&(compound literal)" initializers (same file), and two
+            // local symbols sharing one name coalesce into one object.
+            char *name = format(".Lanoncast.%d", anon_count2++);
             LVar *anon_var = new_var(name, compound_ty, false);
             anon_var->is_static = true; // see the identical comment above
             global_initializer(rest, compound_start, anon_var);
@@ -10713,10 +10745,23 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
                 tok = tok->next;
             while (equalc(tok, ")"))
                 tok = tok->next;
+            // A constant pointer-addend after the literal, e.g. Cello's
+            // CelloObject(): "(char*)((var[]){ ... }) + sizeof(struct
+            // Header)". Fold it into the relocation offset; the enclosing
+            // cast's trailing ")" is consumed below.
+            long long addend = 0;
+            if (equalc(tok, "+")) {
+                tok = tok->next;
+                Node *add_node = assign(&tok, tok);
+                check_type(add_node);
+                eval_const_expr(add_node, &addend);
+            }
+            while (equalc(tok, ")"))
+                tok = tok->next;
             var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
             var->init_size = var->ty->size;
             var->has_init = true;
-            append_reloc(var, 0, name, 0);
+            append_reloc(var, 0, name, (int)addend);
             *rest = tok;
             return;
         }
