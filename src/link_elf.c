@@ -1270,6 +1270,72 @@ static void lookup_lib_symbol_versions(const char *path, const char **names,
     elf_close(&ef);
 }
 
+// Mark found[i]=true for every name in names[0..n) that the ELF shared
+// object at `path` defines: a .dynsym entry that is not SHN_UNDEF and
+// binds global or weak. Returns true iff the file was a readable ELF
+// whose .dynsym could actually be scanned -- so the caller can tell the
+// difference between "this library does not define the symbol" (real
+// evidence of absence) and "this library could not be inspected" (no
+// evidence either way). Unlike lookup_lib_symbol_versions() above this
+// needs only .dynsym, so it works against version-less libraries
+// (libgcc_s, a bare *.so input) too.
+static bool so_mark_defined(const char *path, const char **names,
+                            bool *found, int n) {
+    ElfFile ef;
+    if (elf_open(path, &ef) != 0) return false;
+    if (ef.size < 64 || memcmp(ef.image, "\x7f"
+                                         "ELF",
+                               4) != 0) {
+        elf_close(&ef);
+        return false;
+    }
+    uint64_t e_shoff = r64le(ef.image + 40);
+    uint16_t e_shnum = r16le(ef.image + 60);
+    if (!e_shoff || e_shnum == 0 || e_shoff + (uint64_t)e_shnum * 64 > ef.size) {
+        elf_close(&ef);
+        return false;
+    }
+    int dynsym_idx = -1;
+    for (int i = 0; i < e_shnum; i++) {
+        const uint8_t *sh = ef.image + e_shoff + (uint64_t)i * 64;
+        if (r32le(sh + 4) == SHT_DYNSYM) {
+            dynsym_idx = i;
+            break;
+        }
+    }
+    if (dynsym_idx < 0) {
+        elf_close(&ef);
+        return false;
+    }
+    const uint8_t *dynsym_sh = ef.image + e_shoff + (uint64_t)dynsym_idx * 64;
+    uint64_t sym_off = r64le(dynsym_sh + 24);
+    uint64_t sym_size = r64le(dynsym_sh + 32);
+    uint64_t sym_link = r32le(dynsym_sh + 40);
+    uint64_t sym_entsz = r64le(dynsym_sh + 56);
+    if (!sym_entsz || sym_off + sym_size > ef.size || sym_link >= e_shnum) {
+        elf_close(&ef);
+        return false;
+    }
+    const uint8_t *dynstr_sh = ef.image + e_shoff + sym_link * 64;
+    uint64_t dynstr_off = r64le(dynstr_sh + 24);
+    uint64_t n_syms = sym_size / sym_entsz;
+    for (uint64_t si = 0; si < n_syms; si++) {
+        const uint8_t *se = ef.image + sym_off + si * sym_entsz;
+        if (r16le(se + 6) == SHN_UNDEF) continue; // imported, not defined here
+        uint8_t bind = se[4] >> 4;
+        if (bind != STB_GLOBAL && bind != STB_WEAK) continue;
+        const char *sname = (const char *)(ef.image + dynstr_off + r32le(se));
+        for (int i = 0; i < n; i++) {
+            if (!found[i] && strcmp(sname, names[i]) == 0) {
+                found[i] = true;
+                break;
+            }
+        }
+    }
+    elf_close(&ef);
+    return true;
+}
+
 // Extract DT_SONAME from an arbitrary ELF shared object by walking its
 // PROGRAM headers (PT_DYNAMIC) directly, the same way ld.so itself finds
 // it at load time -- unlike lookup_lib_symbol_versions() above, this
@@ -1536,6 +1602,11 @@ int link_elf(LinkState *s) {
     int libc_off = 0;
     int n_needed = 1;
     int needed_offs[16];
+    // Filesystem paths of the DT_NEEDED shared objects this link resolves,
+    // captured as they are discovered so the undefined-symbol gate below
+    // can scan their .dynsym for genuine unresolved references.
+    char scan_paths[32][600];
+    int n_scan = 0;
 
     if (do_dynamic) {
         if (!s->opt_shared)
@@ -1725,6 +1796,10 @@ int link_elf(LinkState *s) {
                         lib_lookup_failed = true;
                         break;
                     }
+                    if (n_scan < 32) {
+                        snprintf(scan_paths[n_scan], sizeof(scan_paths[0]), "%s", found_path);
+                        n_scan++;
+                    }
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
                                                                  (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
                     n_needed++;
@@ -1776,12 +1851,82 @@ int link_elf(LinkState *s) {
                         base = base ? base + 1 : spath;
                         snprintf(resolved_soname, sizeof(resolved_soname), "%s", base);
                     }
+                    if (n_scan < 32) {
+                        snprintf(scan_paths[n_scan], sizeof(scan_paths[0]), "%s", spath);
+                        n_scan++;
+                    }
                     needed_offs[n_needed] = (int)link_sec_append(s, dynstr_sec,
                                                                  (const uint8_t *)resolved_soname, strlen(resolved_soname) + 1, 1);
                     n_needed++;
                 }
             }
             sp = send;
+        }
+
+        // Genuine-undefined-symbol gate (dynamic executables only).
+        //
+        // Every non-weak symbol left undefined at this point was collected
+        // above as a dynamic import and routed through a PLT/GOT slot,
+        // deferred to the runtime loader -- so a program referencing a
+        // function that lives in *no* linked library nonetheless "links"
+        // and only dies at exec with "symbol lookup error". That turns an
+        // autoconf-style feature probe (which decides a function exists iff
+        // the test program links) into a false positive -- e.g. detecting
+        // OpenBSD's pledge() on glibc. A real `ld` rejects such a symbol at
+        // link time instead.
+        //
+        // Prove absence rather than assume it: scan the .dynsym of every
+        // DT_NEEDED library this link actually resolved (libc / libm /
+        // libgcc_s plus each -l and bare-*.so input). A symbol defined by
+        // none of the libraries we could *read* is a genuine unresolved
+        // reference; hand the whole link to the system compiler (return -1),
+        // which does the authoritative crt/-L/-l/static-libgcc search and
+        // then either completes the link or emits the real, nonzero-exit
+        // "undefined reference" diagnostic. Only libraries we successfully
+        // open count as evidence, so an unreadable or unresolved library
+        // never fabricates a false error -- that case still defers exactly
+        // as before. Shared objects (-shared) are exempt: unresolved
+        // imports are legal and bound when the .so is loaded into a process.
+        if (!s->opt_shared && n_dyn > 0) {
+            const char **names = malloc((size_t)n_dyn * sizeof(char *));
+            bool *found = calloc((size_t)n_dyn, sizeof(bool));
+            if (names && found) {
+                for (int k = 0; k < n_dyn; k++)
+                    names[k] = s->syms[dyn_syms[k]].name;
+                bool scanned_any = false;
+                // The three libraries this linker adds to DT_NEEDED
+                // unconditionally (see above); resolve their real paths.
+                const char *core[3] = {"libc.so.6", "libgcc_s.so.1", "libm.so.6"};
+                for (int c = 0; c < 3; c++) {
+                    char cpath[600];
+                    if (find_shared_lib(core[c], cpath, sizeof(cpath), NULL, 0) == 0)
+                        scanned_any |= so_mark_defined(cpath, names, found, n_dyn);
+                }
+                for (int p = 0; p < n_scan; p++)
+                    scanned_any |= so_mark_defined(scan_paths[p], names, found, n_dyn);
+                int missing = -1;
+                if (scanned_any) {
+                    for (int k = 0; k < n_dyn; k++)
+                        if (!found[k]) {
+                            missing = k;
+                            break;
+                        }
+                }
+                if (missing >= 0) {
+                    if (getenv("RCC_LINK_DEBUG"))
+                        fprintf(stderr,
+                                "rcc: LINK_DEBUG undefined reference to '%s': "
+                                "provided by no linked library; deferring to system linker\n",
+                                names[missing]);
+                    free(names);
+                    free(found);
+                    free(dyn_syms);
+                    free(dyn_idx);
+                    return -1;
+                }
+            }
+            free(names);
+            free(found);
         }
 
         // .dynsym: null entry first.
