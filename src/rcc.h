@@ -648,6 +648,10 @@ struct Node {
     bool atomic_weak; // weak flag for CAS
     bool atomic_is_store; // true for __atomic_store (stores val, no return)
     bool atomic_signal_fence; // true for __atomic_signal_fence
+    // true for __sync_val_compare_and_swap: return the ORIGINAL *ptr
+    // value (always, success or failure), not the success/fail bool
+    // __sync_bool_compare_and_swap / __atomic_compare_exchange return.
+    bool atomic_cas_return_old;
 };
 
 typedef struct Function Function;

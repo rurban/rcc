@@ -10855,13 +10855,19 @@ static VReg gen(Node *node) {
             asm_record(ASM_JCC, _cj, 1, ARM64_X9, -1, -1, 4, 0, 0, NULL, ARM64_NE, -1, false);
             asm_fixup_add(cg_sec, _cj, format(".L.atom_cas.%d", lbl), 1);
         }
-        asm_mov_imm(cg_sec, r_result, 8, 1); // mov $1, rr_result
+        if (node->atomic_cas_return_old)
+            asm_mov_reg_reg(cg_sec, r_result, r_old, 8); // __sync_val_compare_and_swap: return the value we just compared against (success path)
+        else
+            asm_mov_imm(cg_sec, r_result, 8, 1); // mov $1, rr_result
         {
             size_t _jmp = asm_jmp_label(cg_sec);
             asm_fixup_add(cg_sec, _jmp, format(".L.atom_cas_done.%d", lbl), 0);
         }
         cg_def_label(format(".L.atom_cas_fail.%d", lbl));
-        asm_movq_zero(cg_sec, r_result); // xor rr_result, rr_result
+        if (node->atomic_cas_return_old)
+            asm_mov_reg_reg(cg_sec, r_result, r_old, 8); // __sync_val_compare_and_swap: return the actual current value (failure path)
+        else
+            asm_movq_zero(cg_sec, r_result); // xor rr_result, rr_result
         emit_store(elem_ty, r_old, r_expectedaddr, 0);
         cg_def_label(format(".L.atom_cas_done.%d", lbl));
         free_reg(r_old);
@@ -10880,8 +10886,17 @@ static VReg gen(Node *node) {
                 x86_mov_rm(cg_sec, 8, X86_RAX, mex); // movq (r_expectedaddr), %rax
         }
         asm_lock_cmpxchg_mem(cg_sec, r_addr, r_desired, sz); // lock cmpxchg (r_addr), r_desired
-        asm_sete(cg_sec, r_result); // sete r_result8
-        asm_movzx(cg_sec, r_result, r_result, 4, 1); // movzx rr_result -> rr_result
+        if (node->atomic_cas_return_old) {
+            // __sync_val_compare_and_swap returns the actual OLD *ptr
+            // value: cmpxchg leaves it in RAX either way (unchanged on
+            // success since it already matched; updated to the real
+            // current value on failure), unlike __sync_bool_/
+            // __atomic_compare_exchange's success/fail sete boolean.
+            asm_mov_retval(cg_sec, r_result, 8); // mov %rax, r_result
+        } else {
+            asm_sete(cg_sec, r_result); // sete r_result8
+            asm_movzx(cg_sec, r_result, r_result, 4, 1); // movzx rr_result -> rr_result
+        }
         x86_mov_mr(cg_sec, sz, x86_mem(REG(r_expectedaddr), 0), X86_RAX);
         free_reg(r_expected);
 #endif

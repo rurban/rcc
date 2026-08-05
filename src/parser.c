@@ -9428,7 +9428,8 @@ static Node *unary(Token **rest, Token *tok) {
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
     }
-    if (equalc(tok, "__sync_val_compare_and_swap")) {
+    if (equalc(tok, "__sync_val_compare_and_swap") || equalc(tok, "__sync_bool_compare_and_swap")) {
+        bool is_val = equalc(tok, "__sync_val_compare_and_swap");
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
@@ -9442,33 +9443,31 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = new_node(ND_ATOMIC_CAS, start);
         node->lhs = ptr;
         node->rhs = newval;
-        node->body = new_unary(ND_ADDR, oldval, start);
+        // Unlike __atomic_compare_exchange, GCC's __sync_*_compare_and_swap
+        // take `oldval` BY VALUE -- it may be any expression (a literal,
+        // a function call, ...), not necessarily addressable. The codegen
+        // needs an address (to load the comparand and, on failure, receive
+        // the actual old value), so materialize it into a compiler-
+        // synthesized local temp and address THAT instead of `oldval`
+        // itself (found via json-c's `__sync_val_compare_and_swap(&seed,
+        // -1, seed)`: taking the address of the literal -1 crashed
+        // codegen with "Invalid register -1").
+        Type *cas_ty = ptr->ty->base ? ptr->ty->base : (oldval->ty ? oldval->ty : ty_int);
+        LVar *tmp = new_var("", cas_ty, true);
+        Node *tmp_var = new_var_node(tmp, start);
+        Node *tmp_assign = new_binary(ND_ASSIGN, tmp_var, oldval, start);
+        check_type(tmp_assign);
+        node->body = new_unary(ND_ADDR, tmp_var, start);
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_ord2 = MEMORDER_SEQ_CST;
         *rest = skip(tok, ")");
-        node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
-        return node;
-    }
-    if (equalc(tok, "__sync_bool_compare_and_swap")) {
-        Token *start = tok;
-        tok = skip(tok->next, "(");
-        Node *ptr = assign(&tok, tok);
-        check_type(ptr);
-        tok = skip(tok, ",");
-        Node *oldval = assign(&tok, tok);
-        check_type(oldval);
-        tok = skip(tok, ",");
-        Node *newval = assign(&tok, tok);
-        check_type(newval);
-        Node *node = new_node(ND_ATOMIC_CAS, start);
-        node->lhs = ptr;
-        node->rhs = newval;
-        node->body = new_unary(ND_ADDR, oldval, start);
-        node->atomic_ord = MEMORDER_SEQ_CST;
-        node->atomic_ord2 = MEMORDER_SEQ_CST;
-        *rest = skip(tok, ")");
-        node->ty = ty_bool;
-        return node;
+        if (is_val) {
+            node->atomic_cas_return_old = true;
+            node->ty = cas_ty;
+        } else {
+            node->ty = ty_bool;
+        }
+        return new_binary(ND_COMMA, tmp_assign, node, start);
     }
     if (equalc(tok, "__builtin_constant_p")) {
         Token *start = tok;
