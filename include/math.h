@@ -103,8 +103,17 @@ float tanhf(float);
 #define M_1_PI  0.31830988618379067154
 #define M_2_PI  0.63661977236758134308
 
-#define INFINITY (1.0/0.0)
-#define NAN (0.0/0.0)
+// INFINITY / NAN are required by C11 7.12p3/p5 to be constant
+// expressions of type float (glibc: __builtin_inff() / __builtin_nanf
+// ("")). Do NOT define NAN as (0.0/0.0): on x86, hardware division's
+// invalid-operand fallback sets the sign bit, so 0.0/0.0 legitimately
+// evaluates to a NEGATIVE NaN at runtime -- observably different from
+// glibc's NAN and enough to break output-diff tests that print it
+// (json-c's test_cast: "nan" expected, "-nan" from a wrongly-signed
+// NAN macro). Matches float.h's NAN, so both headers agree when a
+// program includes both.
+#define INFINITY (__builtin_inff())
+#define NAN (__builtin_nanf(""))
 #define HUGE_VAL (1.0/0.0)
 #define HUGE_VALF ((float)(1.0/0.0))
 #define HUGE_VALL ((long double)(1.0/0.0))
