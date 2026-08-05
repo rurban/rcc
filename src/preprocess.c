@@ -2812,6 +2812,7 @@ Token *preprocess(char *filename, char *p) {
             if (!find_macro("__bool_true_false_are_defined")) define_pre("__bool_true_false_are_defined", "1");
         }
         if (opt_O1) define_pre("__OPTIMIZE__", "1");
+        if (!find_macro("__USE_FORTIFY_LEVEL")) define_pre("__USE_FORTIFY_LEVEL", "0");
 #ifdef __APPLE__
         if (!find_macro("__APPLE__")) define_macro("__APPLE__", false, NULL, 0, "1");
         if (!find_macro("__leading_underscore")) define_macro("__leading_underscore", false, NULL, 0, "1");
@@ -2869,12 +2870,12 @@ Token *preprocess(char *filename, char *p) {
             define_macro("__builtin___printf_chk", true, p2f, 2, "__builtin_printf");
             define_macro("__builtin___fprintf_chk", true, p2f, 2, "__builtin_fprintf");
             define_macro("__builtin___vfprintf_chk", true, p2f, 2, "__builtin_vfprintf");
-            char *p3f[] = {"__dest", "__fmt", "__bos", NULL};
-            define_macro("__builtin___sprintf_chk", true, p3f, 3, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
-            define_macro("__builtin___vsprintf_chk", true, p3f, 3, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
-            char *p4f[] = {"__dest", "__len", "__fmt", "__bos", NULL};
-            define_macro("__builtin___snprintf_chk", true, p4f, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
-            define_macro("__builtin___vsnprintf_chk", true, p4f, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
+            char *p5f[] = {"__dest", "__flag", "__bos", "__fmt", "__va_args", NULL};
+            define_macro("__builtin___sprintf_chk", true, p5f, 5, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_sprintf(__dest,__fmt))");
+            define_macro("__builtin___vsprintf_chk", true, p5f, 5, "((__bos)!=(unsigned long long)-1?(abort(),0):__builtin_vsprintf(__dest,__fmt))");
+            char *p6f[] = {"__dest", "__len", "__flag", "__bos", "__fmt", "__va_args", NULL};
+            define_macro("__builtin___snprintf_chk", true, p6f, 6, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_snprintf(__dest,__len,__fmt))");
+            define_macro("__builtin___vsnprintf_chk", true, p6f, 6, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_vsnprintf(__dest,__len,__fmt))");
             define_pre("__builtin___read_chk", "read");
             define_pre("__builtin___pread_chk", "pread");
             define_pre("__builtin___readlink_chk", "readlink");
