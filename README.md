@@ -194,6 +194,11 @@ compiler and tests, it is much faster now.
     -rpath path        => -Wl,-rpath,path
     -soname name       => -Wl,-soname,name
     -Wp,-MMD,file      write make dependency rules
+    -MD, -MMD          write make dependency rules to a .d file
+    -MF file           set the dependency output file
+    -MT target         set the dependency rule target
+    -MQ target         like -MT, quoting make metacharacters
+    -MP                add phony targets for each prerequisite
     -Wl,<opt>          pass option to linker
     -mms-bitfields     use MSVC bitfields (default on Windows)
     -mno-ms-bitfields  use GCC bitfields (default on non-Windows)

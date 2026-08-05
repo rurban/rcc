@@ -3082,28 +3082,60 @@ Token *preprocess(char *filename, char *p) {
     return result;
 }
 
-// Write Make dependency rules (-Wp,-MMD,<file>)
+// Write Make dependency rules. Driven by -Wp,-MMD,<file> (autotools) or
+// the bare -MD/-MMD/-MF/-MT/-MQ/-MP forms (CMake/ninja). The rule target
+// defaults to the -o object (or a.out); -MT/-MQ override it. The ".d"
+// filename comes from -MF, else is derived from the object path by
+// replacing its extension with ".d" (matching GCC's -MD-without-MF).
 void write_dep_file(const char *out_path, const char *main_fpath) {
-    if (!opt_depfile || !main_fpath) return;
+    if ((!opt_depfile && !opt_gen_deps) || !main_fpath) return;
+
+    // Resolve the output ".d" path.
+    char derived[4096];
+    const char *depfile = opt_depfile;
+    if (!depfile) {
+        const char *base = out_path ? out_path : "a.out";
+        const char *dot = strrchr(base, '.');
+        // Only treat a '.' in the basename (after the last '/') as an
+        // extension, so "dir.x/foo" (no ext) appends ".d" rather than
+        // clobbering the directory component.
+        const char *slash = strrchr(base, '/');
+        if (dot && (!slash || dot > slash))
+            snprintf(derived, sizeof(derived), "%.*s.d", (int)(dot - base), base);
+        else
+            snprintf(derived, sizeof(derived), "%s.d", base);
+        depfile = derived;
+    }
+
     // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
-    // opt_depfile is a compiler-output path (-Wp,-MMD,<file>), same
-    // trust model as -o.
-    FILE *f = fopen(opt_depfile, "w");
+    // depfile is a compiler-output path (-MF / -Wp,-MMD, / derived from
+    // -o), same trust model as -o.
+    FILE *f = fopen(depfile, "w");
     if (!f) {
-        fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", opt_depfile);
+        fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", depfile);
         return;
     }
-    // Target: output file depends on main source + all included files.
-    // Input read from stdin ("-") isn't a real path on disk — GCC omits it
-    // from the dependency list rather than emitting an unopenable "-"
-    // entry (which trips up kbuild's fixdep, e.g. scripts/checksyscalls.sh
-    // piping a generated source through `$(CC) ... -x c -`).
-    fprintf(f, "%s:", out_path ? out_path : "a.out");
+    // Target: the object (or -MT/-MQ override) depends on the main source
+    // plus every included file. Input read from stdin ("-") isn't a real
+    // path on disk — GCC omits it from the prerequisite list rather than
+    // emitting an unopenable "-" entry (which trips up kbuild's fixdep).
+    const char *target = opt_dep_target ? opt_dep_target
+                                        : (out_path ? out_path : "a.out");
+    fprintf(f, "%s:", target);
     if (strcmp(main_fpath, "-") != 0)
         fprintf(f, " %s", main_fpath);
     for (DepEntry *d = dep_files; d; d = d->next) {
         if (d->path) fprintf(f, " %s", d->path);
     }
     fprintf(f, "\n");
+    // -MP: emit an empty phony rule for each prerequisite so a deleted
+    // header doesn't break the build with "No rule to make target".
+    if (opt_dep_phony) {
+        if (strcmp(main_fpath, "-") != 0)
+            fprintf(f, "%s:\n", main_fpath);
+        for (DepEntry *d = dep_files; d; d = d->next) {
+            if (d->path) fprintf(f, "%s:\n", d->path);
+        }
+    }
     fclose(f);
 }

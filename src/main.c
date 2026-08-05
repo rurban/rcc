@@ -161,6 +161,11 @@ void help(void) {
            "-include file       pre-include file before main source\n"
            "-nostdinc           do not search system include directories\n"
            "-Wp,-MMD,file       write Make dependency rules\n"
+           "-MD / -MMD          write Make dependency rules to a .d file\n"
+           "-MF file            set the dependency output file\n"
+           "-MT target          set the dependency rule target\n"
+           "-MQ target          like -MT, quoting make metacharacters\n"
+           "-MP                 add phony targets for each prerequisite\n"
            "-fmacro-prefix-map=old=new  remap paths in diagnostics\n"
            "-E                  preprocessor-only\n"
            "-S                  assemble-only\n"
@@ -241,8 +246,16 @@ bool opt_ms_bitfields =
 
 // -nostdinc: skip system include paths
 bool opt_nostdinc = false;
-// -Wp,-MMD,<file>: write Make dependency rules
+// Make dependency generation. Set by -Wp,-MMD,<file> (autotools/depcomp)
+// and by the bare -MD/-MMD/-MF/-MT/-MQ/-MP forms (CMake/ninja pass these
+// directly to the compiler). opt_depfile is the output ".d" path (-MF or
+// derived from -o); opt_dep_target overrides the rule target (-MT/-MQ);
+// opt_gen_deps is set by -MD/-MMD when no explicit -MF filename was given
+// so write_dep_file() can derive one; opt_dep_phony adds -MP phony rules.
 const char *opt_depfile = NULL;
+const char *opt_dep_target = NULL;
+bool opt_gen_deps = false;
+bool opt_dep_phony = false;
 // -fmacro-prefix-map=old=new
 const char *opt_prefix_map_old = NULL;
 const char *opt_prefix_map_new = NULL;
@@ -521,6 +534,46 @@ int main(int argc, char **argv) {
             }
         } else if (!strncmp(argv[i], "-Wp,-MMD,", 9)) {
             opt_depfile = argv[i] + 9;
+            opt_gen_deps = true;
+        } else if (!strcmp(argv[i], "-MD") || !strcmp(argv[i], "-MMD")) {
+            // GCC/Clang: generate a Make .d as a side effect of compiling.
+            // (-MMD omits system headers; rcc does not track that split, so
+            // it lists every included header either way — over-listing only
+            // forces conservative rebuilds, never stale ones.) The output
+            // filename comes from a later -MF, else write_dep_file() derives
+            // it from -o. CMake and ninja drive dependency scanning this way.
+            opt_gen_deps = true;
+        } else if (!strncmp(argv[i], "-MF", 3)) {
+            char *v = argv[i][3] ? argv[i] + 3 : (++i < argc ? argv[i] : NULL);
+            if (!v) {
+                fprintf(stderr, "error: missing argument for -MF\n");
+                return 1;
+            }
+            opt_depfile = v;
+            opt_gen_deps = true;
+        } else if (!strncmp(argv[i], "-MT", 3) || !strncmp(argv[i], "-MQ", 3)) {
+            // Rule target override. Multiple -MT/-MQ accumulate, space-
+            // separated, exactly like GCC. (-MQ additionally quotes make
+            // metacharacters; targets here are plain object paths with no
+            // such characters, so the two are treated identically.)
+            char *v = argv[i][3] ? argv[i] + 3 : (++i < argc ? argv[i] : NULL);
+            if (!v) {
+                fprintf(stderr, "error: missing argument for %.3s\n", argv[i]);
+                return 1;
+            }
+            if (opt_dep_target) {
+                size_t n = strlen(opt_dep_target) + 1 + strlen(v) + 1;
+                char *merged = arena_alloc(n);
+                snprintf(merged, n, "%s %s", opt_dep_target, v);
+                opt_dep_target = merged;
+            } else {
+                opt_dep_target = v;
+            }
+            opt_gen_deps = true;
+        } else if (!strcmp(argv[i], "-MP")) {
+            opt_dep_phony = true;
+        } else if (!strcmp(argv[i], "-MG")) {
+            ; // accepted, no effect (rcc always resolves includes)
         } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
             opt_exec_charset = argv[i] + 15;
         } else if (!strncmp(argv[i], "-Wno-", 5) ||

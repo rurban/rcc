@@ -131,8 +131,11 @@ void remove_cmdline_define(const char *name);
 void add_include_path(const char *path);
 // -nostdinc: skip system include paths
 extern bool opt_nostdinc;
-// -Wp,-MMD,<file>: write Make dependency rules
+// Make dependency generation (-Wp,-MMD, / -MD / -MMD / -MF / -MT / -MQ / -MP)
 extern const char *opt_depfile;
+extern const char *opt_dep_target;
+extern bool opt_gen_deps;
+extern bool opt_dep_phony;
 // -fmacro-prefix-map=old=new
 extern const char *opt_prefix_map_old;
 extern const char *opt_prefix_map_new;
