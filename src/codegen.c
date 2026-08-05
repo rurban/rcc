@@ -618,6 +618,7 @@ static void emit_jmp_fixup(SecBuf *s, const char *label) {
 
 static char *reg(VReg r, int size);
 static void materialize_reg(VReg r);
+static int free_reg_count(void);
 static VReg gen(Node *node);
 static VReg gen_addr(Node *node);
 static bool is_asm_reserved(const char *name);
@@ -1343,7 +1344,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             Node *dst = node->args;
             Node *v2 = dst ? dst->next : NULL;
             Node *len = v2 ? v2->next : NULL;
-            if (dst && v2 && len && !len->next) {
+            if (dst && v2 && len && !len->next && free_reg_count() >= 4) {
                 VReg r = alloc_reg();
                 VReg dst_r = gen(dst);
                 VReg v2_r = gen(v2);
@@ -1381,7 +1382,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             Node *src1 = node->args;
             Node *src2 = src1 ? src1->next : NULL;
             Node *len = src2 ? src2->next : NULL;
-            if (src1 && src2 && len && !len->next) {
+            if (src1 && src2 && len && !len->next && free_reg_count() >= 3) {
                 VReg s1_r = gen(src1);
                 VReg s2_r = gen(src2);
                 VReg len_r = gen(len);
@@ -1424,7 +1425,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
         if (is_strlen) {
             Node *str = node->args;
-            if (str && !str->next) {
+            if (str && !str->next && free_reg_count() >= 1) {
                 VReg str_r = gen(str);
 
                 asm_cld(cg_sec); // cld
@@ -1452,7 +1453,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (is_strcmp) {
             Node *s1 = node->args;
             Node *s2 = s1 ? s1->next : NULL;
-            if (s1 && s2 && !s2->next) {
+            if (s1 && s2 && !s2->next && free_reg_count() >= 2) {
                 VReg r = gen(s1);
                 VReg r2 = gen(s2);
                 int cl = ++rcc_label_count;
@@ -1502,7 +1503,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (is_strchr) {
             Node *s = node->args;
             Node *c = s ? s->next : NULL;
-            if (s && c && !c->next) {
+            if (s && c && !c->next && free_reg_count() >= 2) {
                 VReg sr = gen(s);
                 VReg cr = gen(c);
                 int cl = ++rcc_label_count;
@@ -3746,6 +3747,23 @@ static void emit_load(Type *ty, VReg r, int base, int off) {
     if (sz == 8 && ty->size < 4)
         asm_movzx(cg_sec, r, r, 4, ty->size); // movzx4->r rr, rr
 #endif
+}
+
+// Number of currently-free allocatable registers. Used to decide whether an
+// inline builtin expansion (memcmp/memset/memcpy/str*) can hold all of its
+// operand VRegs live simultaneously WITHOUT alloc_reg() having to spill one
+// of them. alloc_reg() hands out the lowest free index and spills the highest
+// used index, so operand results (allocated first, at low indices) are never
+// spill victims as long as we entered the expansion with at least as many
+// free registers as operands held at once. When headroom is insufficient we
+// fall through to the generic call path, which stages arguments correctly
+// under arbitrary register pressure.
+static int free_reg_count(void) {
+    int n = 0;
+    for (int i = 0; i < NUM_REGS; i++)
+        if ((used_regs & (1 << i)) == 0)
+            n++;
+    return n;
 }
 
 VReg alloc_reg(void) {
