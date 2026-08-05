@@ -231,6 +231,19 @@ __rcc_inline __m128i _mm_sub_epi64(__m128i __a, __m128i __b) { return __a - __b;
 __rcc_inline __m128i _mm_mullo_epi16(__m128i __a, __m128i __b) {
     return (__m128i)((__v8hi)__a * (__v8hi)__b);
 }
+// Multiply the low unsigned 32-bit of each 64-bit lane, yielding
+// 64-bit unsigned products.
+__rcc_inline __m128i _mm_mul_epu32(__m128i __a, __m128i __b) {
+    __v4su __va = (__v4su)__a, __vb = (__v4su)__b;
+    return (__m128i)(__v2du){(unsigned long long)__va[0] * __vb[0],
+                             (unsigned long long)__va[2] * __vb[2]};
+}
+// Shuffle 32-bit lanes: imm is a 4x2-bit selector.
+__rcc_inline __m128i _mm_shuffle_epi32(__m128i __a, unsigned __imm) {
+    __v4si_e __v = (__v4si_e)__a;
+    return (__m128i)(__v4si_e){__v[__imm & 3], __v[(__imm >> 2) & 3],
+                               __v[(__imm >> 4) & 3], __v[(__imm >> 6) & 3]};
+}
 
 // --- Integer bitwise -------------------------------------------------------
 __rcc_inline __m128i _mm_and_si128(__m128i __a, __m128i __b) { return __a & __b; }
