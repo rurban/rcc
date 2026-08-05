@@ -1496,7 +1496,7 @@ int link_macho(LinkState *s) {
     for (int i = 0; i < n_mo; i++) {
         if (strcmp(mo_secs[i].segname, "__TEXT") != 0) continue;
         LinkSec *sec = mo_secs[i].sec;
-        char sn[16] = {0}, sg[16] = {0};
+        char sn[17] = {0}, sg[17] = {0};
         strncpy(sn, mo_secs[i].sectname, 16);
         strncpy(sg, "__TEXT", 16);
         mo_wbuf(f, sn, 16);
@@ -1549,7 +1549,7 @@ int link_macho(LinkState *s) {
         for (int i = 0; i < n_mo; i++) {
             if (strcmp(mo_secs[i].segname, "__TEXT") == 0) continue;
             LinkSec *sec = mo_secs[i].sec;
-            char sn[16] = {0}, sg[16] = {0};
+            char sn[17] = {0}, sg[17] = {0};
             strncpy(sn, mo_secs[i].sectname, 16);
             strncpy(sg, "__DATA", 16);
             mo_wbuf(f, sn, 16);

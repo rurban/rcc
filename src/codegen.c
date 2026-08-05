@@ -3857,6 +3857,7 @@ void free_reg(VReg i) {
 // notices that this VReg's physical register now holds someone else's
 // value. A plain `REG(r)` read at that point returns a stranger's data,
 // not r's. Idempotent: a no-op when r isn't currently spilled.
+
 static void materialize_reg(VReg r) {
     if (spilled_regs & (1 << r)) {
 #ifdef ARCH_ARM64
