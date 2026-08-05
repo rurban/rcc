@@ -2433,7 +2433,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
     int stack_scratch = (nargs > 1) ? 2 : 0;
-    bool use_staging = (live_now + nreg_args_count + stack_scratch > NUM_REGS);
+    bool use_staging = (live_now + nreg_args_count + stack_scratch >= NUM_REGS);
 
     // Bitmask of scratch registers holding already-computed register-passed
     // arguments. Built up incrementally as each arg is evaluated below (an
