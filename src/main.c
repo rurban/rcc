@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <assert.h>
+#include <ctype.h>
 
 static uint64_t now_us(void) {
     struct timespec ts;
@@ -109,6 +110,35 @@ static char *read_file(char *path) {
 #define MACHINE "unknown"
 #endif
 
+
+// Recognize a versioned shared-library filename (libfoo.so.1.2.3): the
+// dynamic linker's SONAME convention appends numeric version components
+// after ".so", so strrchr(path, '.') alone (which finds the LAST dot,
+// e.g. ".2") misses these entirely and rcc would try to compile the
+// binary .so as C source ("invalid token \x7fELF"). Accept a bare
+// ".so"/".dylib" suffix, or ".so"/".dylib" followed by one or more
+// ".<digits>" version components.
+static bool is_shared_lib_path(const char *path) {
+    const char *so = strstr(path, ".so");
+    if (!so) {
+#ifdef __APPLE__
+        so = strstr(path, ".dylib");
+        if (!so) return false;
+        so += 6;
+#else
+        return false;
+#endif
+    } else {
+        so += 3;
+    }
+    while (*so == '.') {
+        const char *p = so + 1;
+        if (!isdigit((unsigned char)*p)) return false;
+        while (isdigit((unsigned char)*p)) p++;
+        so = p;
+    }
+    return *so == '\0';
+}
 
 // Replace the extension of filename. Strips .c/.i/.s and appends new_ext.
 static char *replace_ext(char *filename, char *new_ext) {
@@ -620,13 +650,12 @@ int main(int argc, char **argv) {
             // argv order (interleaved with -Wl flags). They are caller
             // files: never delete them like our own temp objects.
             const char *ext = strrchr(argv[i], '.');
-            if (ext && (!strcmp(ext, ".o") || !strcmp(ext, ".lo") || !strcmp(ext, ".a") || !strcmp(ext, ".so")
+            if ((ext && (!strcmp(ext, ".o") || !strcmp(ext, ".lo") || !strcmp(ext, ".a")
 #ifdef _WIN32
-                        || !strcmp(ext, ".obj") || !strcmp(ext, ".dll") || !strcmp(ext, ".lib")
-#elif defined(__APPLE__)
-                        || !strcmp(ext, ".dylib")
+                         || !strcmp(ext, ".obj") || !strcmp(ext, ".dll") || !strcmp(ext, ".lib")
 #endif
-                            )) {
+                             )) ||
+                is_shared_lib_path(argv[i])) {
                 xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
                 have_link_inputs = true;
             } else if (n_inputs < 64) {
