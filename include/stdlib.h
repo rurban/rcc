@@ -3,6 +3,15 @@
 
 #include <stddef.h>
 
+/* Standard exit status macros (C89 7.20). */
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+
+/* Maximum value returned by rand(). Must match the glibc implementation
+ * this compiler links against (2**31 - 1), so that code scaling rand()
+ * by RAND_MAX (e.g. ((double)rand())/RAND_MAX) stays in range. */
+#define RAND_MAX 2147483647
+
 void abort(void);
 void exit(int status);
 void _Exit(int status);
