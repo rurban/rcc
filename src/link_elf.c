@@ -331,9 +331,24 @@ static int map_input_sec_to_output(const char *name, bool *alloc, bool *write,
     return 0;
 }
 
+// Elf64_Shdr layout: sh_name(0,4) sh_type(4,4) sh_flags(8,8) sh_addr(16,8)
+// sh_offset(24,8) sh_size(32,8) sh_link(40,4) sh_info(44,4)
+// sh_addralign(48,8) sh_entsize(56,8) -- the field this input section's
+// placement in the merged output section must actually align to is
+// sh_addralign at offset 48, NOT sh_size at offset 32. Reading sh_size
+// fed a completely unrelated value (the section's own byte length,
+// almost never a power of 2) into align_up()'s power-of-2-only bitmask
+// trick below, which for a non-power-of-2 "alignment" computes garbage
+// instead of a round-up -- silently splicing a few zero-filled padding
+// bytes into the middle of the merged section. For .init_array this
+// planted zero-valued constructor-pointer slots that the CRT then
+// calls unconditionally at startup, jumping to address 0 (SIGSEGV)
+// before main() ever runs; for any other alloc section it corrupts
+// data/code contents the same way, just less immediately visibly.
 static size_t sec_alignment(const ElfFile *ef, uint64_t shoff, int idx) {
     const uint8_t *sh = ef->image + shoff + idx * 64;
-    return (size_t)r64le(sh + 32);
+    uint64_t a = r64le(sh + 48);
+    return a ? (size_t)a : 1; // sh_addralign 0/1 both mean "no alignment constraint"
 }
 
 static int elf_load_object(LinkState *s, const char *path);
