@@ -546,9 +546,13 @@ static inline void asm_peep_try(void) {
         return;
     }
 
-    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur)
+    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur). Excludes a self-move prv
+    // (rd == rs): that shape is now emitted only as a truncating/
+    // zero-extending cast (see asm_mov_reg_reg) at prv->size, but this
+    // fold would re-emit the pending immediate at cur->size, discarding
+    // the truncation.
     if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd &&
+        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd &&
         prv->offset == peep_pend[0].offset + peep_pend[0].count &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = peep_pend[0].offset;
@@ -665,9 +669,13 @@ static inline void asm_peep_try(void) {
         return;
     }
 
-    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur)
+    // Pattern 1a: MOV_RI(pend) + MOV_RR(cur). Excludes a self-move prv
+    // (rd == rs): that shape is now emitted only as a truncating/
+    // zero-extending cast (see asm_mov_reg_reg) at prv->size, but this
+    // fold would re-emit the pending immediate at cur->size, discarding
+    // the truncation.
     if (peep_pend_op == ASM_MOV_RI && cur->op == ASM_MOV_RR &&
-        prv->op == ASM_MOV_RR && prv->rs == peep_pend[0].rd &&
+        prv->op == ASM_MOV_RR && prv->rd != prv->rs && prv->rs == peep_pend[0].rd &&
         prv->offset == peep_pend[0].offset + peep_pend[0].count &&
         cur->offset == prv->offset + prv->count) {
         cg_sec->len = peep_pend[0].offset;
@@ -736,7 +744,12 @@ static inline void asm_peep_node_end(SecBuf *s) {
 // ============================================================================
 
 static inline void asm_mov_reg_reg(SecBuf *s, VReg dst, VReg src, int size) {
-    if (dst == src) return;
+    // Same-register moves are no-ops ONLY at full width. With size < 8 the
+    // move is a truncation (u64 -> u32 cast) or zero-extension (u32 -> u64):
+    // on x86-64 `mov %r10d, %r10d` clears the upper 32 bits of %r10, and on
+    // ARM64 `mov w10, w10` does the same for x10. Skipping it leaves stale
+    // high bits in the register (xxHash XXH_mult32to64 miscompile).
+    if (dst == src && size >= 8) return;
     size_t off = s->len;
 #ifdef ARCH_ARM64
     int sf = (size == 8) ? 1 : 0;
