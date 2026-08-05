@@ -176,17 +176,17 @@ foreach ($r in $results) {
 
 # --- Head-to-head ---
 Write-Host ""
-$rcc_r = $results | Where-Object { $_.Label -eq "RCC (your compiler)" }
+$rcc_r = $results | Where-Object { $_.Label -eq "RCC -O1 (optimized)" }
 $tcc_r = $results | Where-Object { $_.Label -like "TCC*" }
 if ($rcc_r -and $tcc_r) {
-    Write-Host "--- RCC vs TCC Head-to-Head ---" -ForegroundColor Cyan
+    Write-Host "--- RCC -O1 vs TCC Head-to-Head ---" -ForegroundColor Cyan
     $compile_ratio = if ($rcc_r.Compile -gt 0 -and $tcc_r.Compile -gt 0) { [math]::Round($rcc_r.Compile / $tcc_r.Compile, 2) } else { "N/A" }
     $exec_ratio    = if ($tcc_r.Execute  -gt 0) { [math]::Round($rcc_r.Execute  / $tcc_r.Execute, 2)  } else { "N/A" }
     $total_ratio   = if ($tcc_r.Total    -gt 0) { [math]::Round($rcc_r.Total    / $tcc_r.Total, 2)    } else { "N/A" }
 
-    Write-Host "  Compile speed : RCC/TCC = ${compile_ratio}x"
-    Write-Host "  Execute speed : RCC/TCC = ${exec_ratio}x"
-    Write-Host "  Total         : RCC/TCC = ${total_ratio}x"
+    Write-Host "  Compile speed : RCC -O1/TCC = ${compile_ratio}x"
+    Write-Host "  Execute speed : RCC -O1/TCC = ${exec_ratio}x"
+    Write-Host "  Total         : RCC -O1/TCC = ${total_ratio}x"
     Write-Host ""
     if ($exec_ratio -ne "N/A" -and $exec_ratio -lt 1.0) {
         Write-Host "  >>> RCC generates FASTER code than TCC! <<<" -ForegroundColor Yellow
@@ -219,18 +219,18 @@ $reportLines += "# Windows RCC Benchmark Results"
 $reportLines += ""
 $reportLines += "_Generated: $(Get-Date)_"
 $reportLines += ""
-$reportLines += "| Compiler  | Compile (ms) | Execute (ms) | Total (ms) |"
-$reportLines += "| :-------- | -----------: | -----------: | ---------: |"
+$reportLines += "| Compiler                 | Compile (ms) | Execute (ms) | Total (ms) |"
+$reportLines += "| :----------------------- | -------------: | -------------: | ----------: |"
 foreach ($r in $results) {
-    $reportLines += ("| {0,-9} | {1,12} | {2,12} | {3,10} |" -f $r.Label, $r.Compile, $r.Execute, $r.Total)
+    $reportLines += ("| {0,-22} | {1,12} | {2,12} | {3,10} |" -f $r.Label, $r.Compile, $r.Execute, $r.Total)
 }
 $reportLines += ""
 if ($rcc_r -and $tcc_r) {
-    $reportLines += "## Windows RCC vs TCC Head-to-Head"
+    $reportLines += "## Windows RCC -O1 vs TCC Head-to-Head"
     $reportLines += ""
-    $reportLines += "- Compile speed : RCC/TCC = ${compile_ratio}x"
-    $reportLines += "- Execute speed : RCC/TCC = ${exec_ratio}x"
-    $reportLines += "- Total         : RCC/TCC = ${total_ratio}x"
+    $reportLines += "- Compile speed : RCC -O1/TCC = ${compile_ratio}x"
+    $reportLines += "- Execute speed : RCC -O1/TCC = ${exec_ratio}x"
+    $reportLines += "- Total         : RCC -O1/TCC = ${total_ratio}x"
     $reportLines += ""
 }
 $reportLines += "## Output Correctness"
@@ -245,4 +245,7 @@ $reportLines += ""
 $report = ($reportLines | Out-String) -replace "`r`n", "`n" -replace "`r", "`n"
 if (-not $report.EndsWith("`n")) { $report += "`n" }
 [System.IO.File]::WriteAllText($ReportFile, $report, [System.Text.UTF8Encoding]::new($false))
+if (Get-Command prettier -ErrorAction SilentlyContinue) {
+    prettier --write $ReportFile 2>&1 | Out-Null
+}
 Write-Host "Report saved to $ReportFile" -ForegroundColor Cyan

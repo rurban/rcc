@@ -299,7 +299,7 @@ if [ -n "$CPROC" ]; then
    run_bench "CPROC" "$CPROC" "$SRC -o $CPROC_EXE" "$CPROC_EXE" || true
 fi
 if [ -n "$ANTCC" ]; then
-   run_bench "CANTCC" "$ANTCC" "$SRC -o $ANTCC_EXE" "$ANTCC_EXE" || true
+   run_bench "ANTCC" "$ANTCC" "$SRC -o $ANTCC_EXE" "$ANTCC_EXE" || true
 fi
 if [ -n "$CCC" ]; then
    run_bench "CCC" "$CCC" "$SRC -o $CCC_EXE" "$CCC_EXE" || true
