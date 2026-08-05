@@ -1746,8 +1746,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     for (int i = 0; i < nargs; i++) {
         arg_regs[i] = -1;
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) ? 8 : argv[i]->ty->size;
-        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
-            arg_sizes[i] = 8; // old-style float -> double promotion
+        // C default argument promotion: a `float`-typed argument is
+        // promoted to `double` whenever there's no fixed prototype
+        // parameter for it to bind to -- either a K&R oldstyle
+        // (no-prototype) call, or the `...` portion of a genuine C99
+        // variadic call (i >= named_count covers both: is_oldstyle's
+        // named_count is always 0, so every arg qualifies there too).
+        // ARM64's argument-classification loop above already applies
+        // this (see "Linux AAPCS64: variadic floats promoted to
+        // double"); x86-64 only had the oldstyle half, so a genuine
+        // vararg float (e.g. `printf("%f", floatVar)`) fell through as
+        // if it were an ordinarily-typed `float` parameter -- landing
+        // on whichever narrow-vs-widen ABI convention that path uses,
+        // not the promoted double the real printf() expects to receive.
+        if ((is_oldstyle || (is_variadic && i >= named_count)) && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
+            arg_sizes[i] = 8; // oldstyle or C99 vararg: float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
@@ -2020,8 +2033,32 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else {
                 r = gen(argv[i]);
                 if (arg_is_float[i]) {
-                    asm_fmov_i2f(cg_sec, 0, r, 1);
-                    asm_str_fp_sp_off(cg_sec, 0, (uint32_t)off);
+                    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+                    // Same "narrow only if the callee's fixed prototype
+                    // parameter is genuinely `float`" logic as the
+                    // register-arg placement above (keep_double /
+                    // callee_expects_float): a stack-overflow float
+                    // argument crosses the ABI exactly like a register
+                    // one, just via memory instead of a v-register, and
+                    // needs the same distinction between a real `float`
+                    // parameter and a promoted (oldstyle/vararg) double.
+                    bool keep_double = (is_variadic && i >= named_count) ||
+                        is_oldstyle || (fn_type && !fn_type->param_types);
+                    bool callee_expects_float = false;
+                    if (!keep_double) {
+                        callee_expects_float = argv[i]->ty->size == 4;
+                        if (fn_type && fn_type->param_types && i < named_count) {
+                            Type *pt = fn_type->param_types;
+                            for (int j = 0; j < i && pt; j++) pt = pt->param_next;
+                            callee_expects_float = pt && pt->kind == TY_FLOAT;
+                        }
+                    }
+                    if (callee_expects_float) {
+                        asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double->single)
+                        arm64_str_fp(cg_sec, 2, 0, ARM64_SP, (uint32_t)off); // str s0, [sp, #off]
+                    } else {
+                        arm64_str_fp(cg_sec, 3, 0, ARM64_SP, (uint32_t)off); // str d0, [sp, #off]
+                    }
                 } else {
                     arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8));
                 }
@@ -2370,6 +2407,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         ? node->lhs->ty->base
         : NULL;
     bool is_oldstyle = !fn_type_w || (fn_type_w->kind == TY_FUNC && fn_type_w->is_oldstyle);
+    bool is_variadic = fn_type_w && fn_type_w->kind == TY_FUNC && fn_type_w->is_variadic;
+    int named_count = 0;
+    if (fn_type_w && fn_type_w->kind == TY_FUNC)
+        for (Type *t = fn_type_w->param_types; t; t = t->param_next)
+            named_count++;
     int reg_nargs = nargs < max_gp_args - (has_hidden_retbuf ? 1 : 0) ? nargs : max_gp_args - (has_hidden_retbuf ? 1 : 0);
     for (int i = 0; i < reg_nargs; i++) {
         if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION || is_complex(argv[i]->ty)) && argv[i]->ty->size > 8)
@@ -2396,8 +2438,12 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
 #endif
         arg_sizes[i] = (argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) ? 8 : argv[i]->ty->size;
-        if (is_oldstyle && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
-            arg_sizes[i] = 8; // old-style float -> double promotion
+        // C default argument promotion: see the matching SysV comment
+        // above -- a genuine C99 vararg float (e.g. printf("%f", f))
+        // must promote to double the same as an oldstyle no-prototype
+        // call's float argument does.
+        if ((is_oldstyle || (is_variadic && i >= named_count)) && arg_sizes[i] == 4 && is_flonum(argv[i]->ty))
+            arg_sizes[i] = 8; // oldstyle or C99 vararg: float -> double promotion
         arg_is_float[i] = is_flonum(argv[i]->ty);
         // Win64: XMM register N matches GP register N (rcx/xmm0, rdx/xmm1, r8/xmm2, r9/xmm3)
         arg_fp_idx[i] = i + (has_hidden_retbuf ? 1 : 0);
@@ -2424,7 +2470,20 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         } else
             r = gen(argv[i]);
         int off = shadow_space + (i - reg_nargs) * 8; // skip 32-byte home space
-        if (is_flonum(argv[i]->ty)) {
+        if (argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && argv[i]->ty->size == 4 &&
+            !((is_oldstyle || (is_variadic && i >= named_count)))) {
+            // ABI: same narrow-before-crossing requirement as the
+            // register-arg path above -- for a Win64 call where this
+            // float argument overflows past the 4 combined GP/XMM arg
+            // slots onto the stack, r still holds the value
+            // bit-reinterpreted as a double (rcc's internal GP-reg
+            // representation); narrow it to a genuine float before
+            // writing it to the stack slot the callee's prologue reads
+            // via a plain movss.
+            asm_movq_r_xmm(cg_sec, 0, r); // movq r, %xmm0
+            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
+            x86_movss_mr(cg_sec, x86_mem(X86_RSP, off), X86_XMM0); // movss %xmm0, off(%rsp)
+        } else if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
         } else if (argv[i]->ty && (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, off), REG(r)); // movq reg, off(%rsp)
@@ -2612,6 +2671,16 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(r), base_sz)); // movq base_sz(%s), %%rax
                 x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, shadow_space + (arg_stack_idx[i] + 1) * 8), X86_RAX); // movq %%rax, ...
             }
+        } else if (argv[i]->ty->kind == TY_FLOAT && arg_sizes[i] == 4) {
+            // ABI: same narrow-before-crossing requirement as the
+            // register-arg path above, for the >6-float-args (SysV) /
+            // >4-float-args (Win64) stack overflow case: r holds the
+            // value bit-reinterpreted as a double: narrow to a genuine
+            // float before writing it to the argument's stack slot, or
+            // the callee's movss read of the low 4 bytes gets garbage.
+            asm_movq_r_xmm(cg_sec, 0, r); // movq r, %xmm0
+            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
+            x86_movss_mr(cg_sec, x86_mem(X86_RSP, shadow_space + arg_stack_idx[i] * 8), X86_XMM0); // movss %xmm0, %d(%rsp)
         } else if (is_flonum(argv[i]->ty)) {
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, shadow_space + arg_stack_idx[i] * 8), REG(r)); // movq %s, %d(%rsp)
         } else if (argv[i]->ty->kind == TY_PTR || argv[i]->ty->kind == TY_ARRAY || argv[i]->ty->kind == TY_FUNC) {
@@ -2673,10 +2742,27 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         materialize_reg(arg_regs[i]); // see the SysV placement loop below
         if (arg_is_float[i]) {
             asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %xmm{fp_idx}
-            // Narrow float args for builtin calls that map to float
-            // variants (e.g. __builtin_fmaxf→fmaxf). Double variants
-            // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
-            if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
+            // ABI: a `float`-typed argument crosses into the callee as a
+            // genuine 32-bit value in the low bits of the XMM register,
+            // never rcc's internal double-widened representation (the GP
+            // register above holds the float value bit-reinterpreted as a
+            // double -- see "Float values are always stored as double in
+            // GP regs" below). This must narrow for EVERY float-typed
+            // argument, not just is_builtin_call cases lowered from a
+            // __builtin_*f -- any call whose callee may be non-rcc-compiled
+            // code (libm, any linked .so/.a) needs the real ABI's narrow
+            // float, or the callee reads the low 32 bits of a double bit
+            // pattern (garbage) instead of the intended value. Previously
+            // gated on is_builtin_call, this left every ordinary call with
+            // a `float`-typed parameter (sinf, cosf, sqrtf, any C API
+            // taking `float`) broken across the ABI boundary.
+            // arg_sizes[i] stays 4 for a genuine float parameter; the
+            // variadic-promotion logic above bumps it to 8 (promoting to
+            // double per C's default argument promotion) WITHOUT changing
+            // argv[i]->ty itself -- narrowing here would wrongly truncate
+            // an intentionally-promoted vararg float (e.g. printf("%f", f))
+            // back down to 32 bits.
+            if (argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && arg_sizes[i] == 4)
                 x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             x86_mov_rr(cg_sec, 8, cg_x86_argreg[argi], REG(arg_regs[i])); // movq %s, 0(%rsp)
         } else if (arg_sizes[i] == 1) {
@@ -2734,10 +2820,28 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8)); // movq 8(%s), %s
             } else if (arg_is_float[i]) {
                 asm_movq_r_xmm(cg_sec, arg_fp_idx[i], arg_regs[i]); // movq arg_regs[i], %%xmm{fp_idx}
-                // Narrow float args for builtin calls that map to float
-                // variants (e.g. __builtin_fmaxf→fmaxf).  Double variants
-                // (e.g. __builtin_fmax→fmax) must NOT be narrowed.
-                if (is_builtin_call && argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && call_target && call_target[strlen(call_target) - 1] == 'f')
+                // ABI: a `float`-typed argument crosses into the callee as
+                // a genuine 32-bit value in the low bits of the XMM
+                // register, never rcc's internal double-widened
+                // representation (the GP register above holds the float
+                // value bit-reinterpreted as a double -- see "Float values
+                // are always stored as double in GP regs" below). Narrow
+                // for EVERY float-typed argument, not just is_builtin_call
+                // cases lowered from a __builtin_*f -- any call whose
+                // callee may be non-rcc-compiled code (libm, any linked
+                // .so/.a) needs the real ABI's narrow float, or the callee
+                // reads the low 32 bits of a double bit pattern (garbage)
+                // instead of the intended value. Previously gated on
+                // is_builtin_call, this left every ordinary call with a
+                // `float`-typed parameter (sinf, cosf, sqrtf, any C API
+                // taking `float`) broken across the ABI boundary.
+                // arg_sizes[i] stays 4 for a genuine float parameter; the
+                // variadic-promotion logic above bumps it to 8 (promoting
+                // to double per C's default argument promotion) WITHOUT
+                // changing argv[i]->ty itself -- narrowing here would
+                // wrongly truncate an intentionally-promoted vararg float
+                // (e.g. printf("%f", f)) back down to 32 bits.
+                if (argv[i]->ty && argv[i]->ty->kind == TY_FLOAT && arg_sizes[i] == 4)
                     x86_cvtsd2ss(cg_sec, (X86XmmReg)arg_fp_idx[i], (X86XmmReg)arg_fp_idx[i]);
             } else if (argv[i]->ty && is_complex(argv[i]->ty)) {
                 bool cfloat = argv[i]->ty->base && is_flonum(argv[i]->ty->base);
@@ -13017,7 +13121,11 @@ struct ObjFile *codegen(Program *prog) {
             if (is_flonum(var->ty)) {
                 if (param_index < max_param_regs) {
                     if (var->ty->size == 4) {
-                        asm_cvtsd2ss_xmm_rbp(cg_sec, param_index, var->offset); // cvtsd2ss xmm_i, xmm0; movss xmm0, -(off)(%rbp)
+                        // ABI: the caller (per the call-site fix above) now
+                        // places a genuine narrow float in the low bits of
+                        // the incoming xmm register; store it directly, no
+                        // narrowing needed.
+                        asm_movss_mr_rbp(cg_sec, param_index, var->offset); // movss xmm_i, -(off)(%rbp)
                     } else {
                         asm_movsd_xmm_rbp(cg_sec, param_index, var->offset); // movsd xmm_i, -(off)(%rbp)
                     }
@@ -13027,8 +13135,10 @@ struct ObjFile *codegen(Program *prog) {
                     // Float on stack (arg position >= 4 in Win64)
                     int stack_off = 48 + stack_param_index * 8;
                     if (var->ty->size == 4) {
-                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
-                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
+                        // ABI: the caller (per the call-site stack-arg fix
+                        // above) now stores a genuine narrow float on the
+                        // stack; load it directly, no narrowing needed.
+                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -13072,8 +13182,10 @@ struct ObjFile *codegen(Program *prog) {
                 int stack_off = 48 + stack_param_index * 8;
                 if (is_flonum(var->ty)) {
                     if (var->ty->size == 4) {
-                        asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0 (load double, caller stores as double)
-                        x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
+                        // ABI: the caller (per the call-site stack-arg fix
+                        // above) now stores a genuine narrow float on the
+                        // stack; load it directly, no narrowing needed.
+                        asm_movss_rm_rbp(cg_sec, 0, stack_off); // movss stack_off(%rbp), xmm0
                         asm_movss_mr_rbp(cg_sec, 0, var->offset); // movss xmm0, -(off)(%rbp)
                     } else {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
@@ -13117,7 +13229,11 @@ struct ObjFile *codegen(Program *prog) {
             if (is_flonum(var->ty)) {
                 if (param_xmm_index < max_param_xmm) {
                     if (var->ty->size == 4) {
-                        asm_cvtsd2ss_xmm_rbp(cg_sec, param_xmm_index, var->offset); // cvtsd2ss xmm_i; movss xmm0, -(off)(%rbp)
+                        // ABI: the caller (per the call-site fix above) now
+                        // places a genuine narrow float in the low bits of
+                        // the incoming xmm register; store it directly, no
+                        // narrowing needed.
+                        asm_movss_mr_rbp(cg_sec, param_xmm_index, var->offset); // movss xmm_i, -(off)(%rbp)
                     } else {
                         asm_movsd_xmm_rbp(cg_sec, param_xmm_index, var->offset); // movsd xmm_i, -(off)(%rbp)
                     }
@@ -13645,6 +13761,30 @@ struct ObjFile *codegen(Program *prog) {
                         } else
                             asm_str_d_fp_neg(cg_sec, fp_param, var->offset); // str d{fp_param}, [x29, #-offset]
                         fp_param++;
+                    } else {
+                        // 9th+ named float/double parameter: the 8 V
+                        // argument registers (v0-v7) are exhausted, so
+                        // AAPCS64 places this on the stack exactly like an
+                        // overflowing integer parameter (see the general
+                        // "Stack argument" branch further below, whose
+                        // is_flonum handling this mirrors) -- this branch
+                        // was previously entirely missing: is_flonum
+                        // params are dispatched here BEFORE the generic
+                        // stack-argument branch ever sees them, so that
+                        // branch's own (correct) is_flonum handling was
+                        // unreachable dead code, and a 9th+ float/double
+                        // parameter's local slot was left uninitialized
+                        // (whatever was on the stack from a prior frame),
+                        // silently reading as garbage/zero.
+                        int spoff = 16 + stack_param * 8;
+                        if (var->ty->size == 4) {
+                            asm_ldr_s0_fp_off(cg_sec, spoff); // ldr s0, [x29, #spoff]
+                            asm_str_s0_fp_neg(cg_sec, var->offset); // str s0, [x29, #-offset]
+                        } else {
+                            asm_ldr_d0_fp_off(cg_sec, spoff); // ldr d0, [x29, #spoff]
+                            asm_str_d_fp_neg(cg_sec, 0, var->offset); // str d0, [x29, #-offset]
+                        }
+                        stack_param++;
                     }
                 } else if (var->ty->kind == TY_INT128) {
                     // int128: two consecutive GP registers
@@ -14160,8 +14300,25 @@ struct ObjFile *codegen(Program *prog) {
                     int xmm_idx = xfp;
 #endif
                     if (var->ty->size <= 4) {
-                        x86_cvtsd2ss(cg_sec, X86_XMM0, (X86XmmReg)xmm_idx); // cvtsd2ss %xmm{n}, %xmm0
-                        x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss %xmm0, -off(%rbp)
+                        if (fn->ty->is_oldstyle) {
+                            // K&R oldstyle definition: ANY caller (having
+                            // no prototype to bind against, by definition
+                            // of "oldstyle") applies C's default argument
+                            // promotion and sends a genuine DOUBLE here,
+                            // never a narrow float -- narrow it down to
+                            // match this parameter's declared `float`
+                            // storage, mirroring the modern-ABI callee's
+                            // widen-then-store for a `double` param below.
+                            x86_cvtsd2ss(cg_sec, X86_XMM0, (X86XmmReg)xmm_idx); // cvtsd2ss %xmm{n}, %xmm0
+                            x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss %xmm0, -off(%rbp)
+                        } else {
+                            // ABI: the caller (per the call-site fix in
+                            // gen_funcall) now places a genuine narrow
+                            // float in the low bits of the incoming xmm
+                            // register; store it directly, no narrowing
+                            // needed.
+                            x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xmm_idx); // movss %xmm{n}, -off(%rbp)
+                        }
                     } else {
                         x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), (X86XmmReg)xmm_idx); // movsd %xmm{n}, -off(%rbp)
                     }
@@ -14195,9 +14352,21 @@ struct ObjFile *codegen(Program *prog) {
 #endif
                     if (is_flonum(var->ty)) {
                         if (var->ty->size <= 4) {
-                            x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0 (load double)
-                            x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0 (double->float)
-                            x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss xmm0, -var->offset(%rbp)
+                            if (fn->ty->is_oldstyle) {
+                                // K&R oldstyle: caller always promotes to
+                                // double (see the register-arg branch's
+                                // comment above for why); narrow it.
+                                x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0
+                                x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
+                                x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss xmm0, -var->offset(%rbp)
+                            } else {
+                                // ABI: the caller (per the call-site
+                                // stack-arg fix in gen_funcall) now stores
+                                // a genuine narrow float on the stack; load
+                                // it directly, no narrowing needed.
+                                x86_movss_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movss stack_off2(%rbp), xmm0
+                                x86_movss_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movss xmm0, -var->offset(%rbp)
+                            }
                         } else {
                             x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(X86_RBP, stack_off2)); // movsd stack_off2(%rbp), xmm0
                             x86_movsd_mr(cg_sec, x86_mem(X86_RBP, -var->offset), X86_XMM0); // movsd xmm0, -var->offset(%rbp)
