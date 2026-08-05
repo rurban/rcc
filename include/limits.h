@@ -19,7 +19,13 @@
 #define LLONG_MIN (-9223372036854775807LL - 1LL)
 #define LLONG_MAX 9223372036854775807LL
 #define ULLONG_MAX 18446744073709551615ULL
-#define ULONG_LONG_MAX ULLONG_MAX
+#ifndef SSIZE_MAX
+#if __SIZEOF_POINTER__ == 8
+#define SSIZE_MAX 9223372036854775807LL
+#else
+#define SSIZE_MAX 2147483647
+#endif
+#endif
 
 #define MB_LEN_MAX 16
 
@@ -42,6 +48,19 @@
 /* C23 bool limits */
 #define BOOL_MAX 1
 #define BOOL_WIDTH 1
+#endif
+
+/* Chain onward to the platform's real <limits.h> (glibc's, on Linux):
+ * this header only defines the ISO C minimums above plus SSIZE_MAX,
+ * and must not shadow the system one. POSIX/XSI macros like PIPE_BUF,
+ * NL_ARGMAX and platform internals such as __WORDSIZE live in the
+ * system header. Same pattern as GCC's own fixed-include limits.h,
+ * which ends in `#include_next <limits.h>`. rcc's RCC_LIMITS_H guard
+ * keeps the recursion bounded (glibc defines _LIBC_LIMITS_H_ itself
+ * and never re-includes us).
+ */
+#ifndef _LIBC_LIMITS_H_
+#include_next <limits.h>
 #endif
 
 #endif
