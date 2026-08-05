@@ -2833,7 +2833,16 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__has_c_attribute", "1");
         define_pre("__has_include_next", "1");
 #include "gcc_predefined.h"
-        if (opt_std_version) define_pre("__STDC_VERSION__", (char *)opt_std_version);
+        // __STDC_VERSION__ is baked into gcc_predefined.h at the C23 value;
+        // reflect the -std= request instead. C89/C90 (opt_std_version==NULL)
+        // has no __STDC_VERSION__ at all, so the predefined one must be
+        // removed -- otherwise a -std=c89 build still sees 202311L and pulls
+        // in C23-only header branches (e.g. our own <stddef.h> nullptr_t via
+        // `typedef typeof(nullptr) nullptr_t;`), which then fail to parse.
+        if (opt_std_version)
+            define_pre("__STDC_VERSION__", (char *)opt_std_version);
+        else
+            add_undef("__STDC_VERSION__");
         if (!find_macro("__STDC_FENV_ACCESS__")) define_pre("__STDC_FENV_ACCESS__", "1");
         if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
             if (!find_macro("bool")) define_pre("bool", "_Bool");
