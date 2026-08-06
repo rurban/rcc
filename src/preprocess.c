@@ -652,7 +652,23 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
 static char *resolve_include_next(char *curr_file, char *spec) {
     const char *dirs[128];
     int nd = build_search_dirs(dirs, 128);
-    char *cur_dir = full_path(path_dirname(curr_file));
+    // curr_file resolved from a spec with a subdirectory component (e.g.
+    // <sys/stat.h>) lives at "<searchdir>/sys/stat.h": its directory is
+    // "<searchdir>/sys", not the search-path entry "<searchdir>" itself.
+    // Strip the spec's own subdirectory suffix first so the match below
+    // compares against the base search directory that was actually used
+    // -- otherwise no `dirs[]` entry ever matches, `start` stays 0, and the
+    // search restarts from the top and re-finds this very file, recursing
+    // through #include_next until the depth limit trips.
+    char *file_dir = path_dirname(curr_file);
+    char *spec_dir = path_dirname(spec);
+    size_t file_dir_len = strlen(file_dir);
+    size_t spec_dir_len = strlen(spec_dir);
+    if (spec_dir_len > 0 && spec_dir_len < file_dir_len &&
+        !strcmp(file_dir + file_dir_len - spec_dir_len, spec_dir)) {
+        file_dir[file_dir_len - spec_dir_len] = '\0';
+    }
+    char *cur_dir = full_path(file_dir);
     int start = 0;
     // Start after the LAST search entry that names the current file's
     // directory: RCC_INCDIR and the "include" fallback can resolve to the same
