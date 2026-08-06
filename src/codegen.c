@@ -964,7 +964,13 @@ static void emit_vla_dealloc(LVar *begin, LVar *end) {
    Use a unique name to avoid conflicts with CRT import stubs. */
 static void emit_alloca(void) {
     size_t alloca_sym_start = cg_sec->len;
-    cg_global_label("__rcc_alloca");
+    // Local: the helper is emitted into every TU that uses alloca(), and
+    // multiple TUs get linked together (e.g. bash: lib/glob/glob.o and
+    // redir.o both define it); a strong *global* definition in each fails
+    // the link with "multiple definition of `__rcc_alloca'". It is only ever
+    // called from within the same TU (emit_direct_call), so a private
+    // static copy per object is correct and avoids any cross-TU symbol.
+    cg_def_fn_label("__rcc_alloca");
 #ifdef ARCH_ARM64
     // alloca(size): x0=size → round up, sub sp, return new sp
     asm_add_self_imm(cg_sec, ARM64_X0, 15); // add x0, x0, #15
@@ -1552,8 +1558,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // Inline alloca: directly adjust sp without any register save/restore
     // (save/restore around a bl __rcc_alloca would use the stack, which alloca moves)
     if (call_target && call_target == bi_s_alloca) {
-        alloca_needed = true;
-        fn_uses_alloca = true;
+        fn_uses_alloca = true; // no alloca_needed: inlined, helper not emitted
         VReg ra = gen(node->args);
         // Round up to 16 bytes and adjust sp
         asm_add_imm(cg_sec, ra, 8, 15); // add ra, ra, #15
@@ -1564,6 +1569,39 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (node->args && node->args->ty) {
             // caller uses return value from ra
         }
+        return ra;
+    }
+#else
+    // Inline alloca on x86-64 when a register is free: avoids the call to
+    // the per-TU __rcc_alloca helper (and its emit) entirely. Falls back to
+    // the helper call under register pressure.
+    if (call_target && call_target == bi_s_alloca && free_reg_count() >= 1) {
+        fn_uses_alloca = true; // no alloca_needed: inlined, helper not emitted
+        VReg ra = gen(node->args);
+        // Round up to 16 bytes
+        x86_add_ri(cg_sec, 8, REG(ra), 15); // addq $15, ra
+        x86_and_ri(cg_sec, 8, REG(ra), -16); // andq $-16, ra
+        // Page-probe loop: touch each guard page before subtracting 4K so a
+        // single big alloca can't skip over the stack guard page.
+        int c1 = ++rcc_label_count;
+        int c2 = ++rcc_label_count;
+        cg_def_label(format(".Lalloca1.%d", c1));
+        x86_cmp_ri(cg_sec, 8, REG(ra), 4096); // cmpq $4096, ra
+        size_t jb_off = asm_jcc_label(cg_sec, X86_B); // jb .Lalloca2
+        // testq %rax, -4096(%rsp) — rax is a physical scratch, never a VReg
+        secbuf_emit8(cg_sec, 0x48); // REX.W
+        secbuf_emit8(cg_sec, 0x85); // TEST r/m64, r64
+        secbuf_emit8(cg_sec, 0x84); // ModRM: mod=10, reg=0(RAX), r/m=4(SIB)
+        secbuf_emit8(cg_sec, 0x24); // SIB: base=RSP
+        secbuf_emit32le(cg_sec, (uint32_t)-4096); // disp32 = -4096
+        x86_sub_ri(cg_sec, 8, X86_RSP, 4096); // subq $4096, %rsp
+        x86_sub_ri(cg_sec, 8, REG(ra), 4096); // subq $4096, ra
+        size_t jmp1 = asm_jmp_label(cg_sec); // jmp .Lalloca1
+        asm_fixup_add(cg_sec, jmp1, format(".Lalloca1.%d", c1), 0);
+        cg_def_label(format(".Lalloca2.%d", c2));
+        asm_fixup_add(cg_sec, jb_off, format(".Lalloca2.%d", c2), 1);
+        x86_sub_rr(cg_sec, 8, X86_RSP, REG(ra)); // subq ra, %rsp
+        x86_mov_rr(cg_sec, 8, REG(ra), X86_RSP); // movq %rsp, ra
         return ra;
     }
 #endif
@@ -1945,9 +1983,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 fn_struct_ret_total = fn_struct_ret_off;
             arg_stage[i] = current_fn_stack_size + fn_struct_ret_off;
             asm_stur_fp(cg_sec, arg_regs[i], arg_stage[i]); // str x{arg_regs[i]}, [x29, #-stage]
-            // Release without the normal restore-on-spilled-free path:
-            // the value is now safely archived in its own slot.
-            spilled_regs &= ~(1 << arg_regs[i]);
+            // The arg is safely archived in its staging slot.  Release the
+            // register so the marshal can reuse it, but do NOT clear the
+            // spilled_regs bit — an alloc_reg() that spilled an outer
+            // expression's live value to give us this register left its
+            // data in spill_offset(); clearing the bit orphans that data.
             used_regs &= ~(1 << arg_regs[i]);
             reg_owner[arg_regs[i]] = NULL;
             arg_regs[i] = -1;
@@ -2154,6 +2194,9 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         if (arg_regs[i] < 0 && arg_stage[i]) {
             arg_regs[i] = alloc_reg();
             asm_ldur_fp(cg_sec, arg_regs[i], arg_stage[i]); // ldr x{arg_regs[i]}, [x29, #-stage]
+            // Fresh alloc for the staging load — any spilled_regs bit is
+            // from a prior outer-expression spill, not from this arg.
+            // Keep it set so the outer value survives in the spill slot.
         }
         if (arg_is_float[i] && arg_sizes[i] > 8 && arg_fp_idx[i] >= 0) {
             continue;
@@ -2620,8 +2663,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 fn_struct_ret_total = fn_struct_ret_off;
             arg_stage[i] = current_fn_stack_size + fn_struct_ret_off;
             asm_mov_reg_rbp(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq arg_regs[i], -arg_stage[i](%rbp)
-            // Release without triggering spill restore; value is safe in staging slot.
-            spilled_regs &= ~(1 << arg_regs[i]);
+            // The arg is safely archived in its staging slot.  Release the
+            // register so the marshal can reuse it, but do NOT clear the
+            // spilled_regs bit — an alloc_reg() that spilled an outer
+            // expression's live value to give us this register left its
+            // data in spill_offset(); clearing the bit orphans that data.
             used_regs &= ~(1 << arg_regs[i]);
             reg_owner[arg_regs[i]] = NULL;
             arg_regs[i] = -1;
@@ -2793,27 +2839,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         for (int i = 0; i < nargs; i++) {
             if (arg_stack_idx[i] >= 0)
                 continue;
-            if (!use_staging) {
-                bool rsi_src = (!arg_is_float[i] && arg_regs[i] == 7);
-                if (pass == 0 && !rsi_src) continue;
-                if (pass == 1 && rsi_src) continue;
-            }
             if (use_staging && arg_stage[i]) {
                 arg_regs[i] = alloc_reg();
                 asm_mov_rbp_reg(cg_sec, arg_regs[i], 8, arg_stage[i]); // movq -arg_stage[i](%rbp), arg_regs[i]
+                // Value is fresh from the staging slot — skip
+                // materialize_reg: any spilled_regs bit the register
+                // carries is from an outer expression's spill, not from
+                // this argument's own pre-spill state.  Loading from the
+                // spill slot would overwrite the staging-loaded value.
+            } else {
+                // A register argument computed earlier can have been
+                // spilled by alloc_reg() while evaluating a later
+                // argument under register pressure — materialize it
+                // before reading REG(arg_regs[i]).
+                materialize_reg(arg_regs[i]);
             }
-            // A register argument computed earlier (args 0..5 above) can have
-            // been spilled by alloc_reg() while evaluating a LATER argument
-            // under register pressure (e.g. a stack argument's own ternary
-            // needing a scratch register) — nothing frees/reloads it in
-            // between, since its owner (this placement loop) hasn't touched
-            // it yet. Materialize it before reading REG(arg_regs[i]) below,
-            // or a stolen register silently hands the wrong value to the
-            // callee. Observed for real via Perl's `pp_regcomp`: the 6th
-            // (register) argument `&is_bare_re` got clobbered to whatever a
-            // sibling stack argument's ternary last left in that register,
-            // so the callee wrote through a garbage pointer and segfaulted.
-            materialize_reg(arg_regs[i]);
             if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // movq (%s), %s
@@ -2880,7 +2920,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             } else {
                 x86_mov_rr(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], REG(arg_regs[i])); // movslq %s, %s
             }
-            free_reg(arg_regs[i]);
+            // Release the staging-load register.  When it was a recycled
+            // outer VReg (spilled_regs still set from an earlier spill),
+            // don't restore — the outer expression needs its value in the
+            // spill slot so the binary-op same-register combining can
+            // recover it after the call.
+            if (spilled_regs & (1 << arg_regs[i])) {
+                used_regs &= ~(1 << arg_regs[i]);
+                reg_owner[arg_regs[i]] = NULL;
+            } else {
+                free_reg(arg_regs[i]);
+            }
         }
     } // end two-pass
 #endif

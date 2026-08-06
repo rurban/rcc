@@ -182,6 +182,72 @@ int main(void) {
         assert_eq(x, 8, "void ternary assume guard");
     }
 
+    /* --- alloca (inline expansion; helper-call fallback is unreachable
+     * in ordinary code because the allocator keeps >= 1 register free at
+     * the call site — max 6 held arg regs on x86-64, so free >= 2) --- */
+    {
+        /* basic: allocation returns 16-byte-aligned usable memory */
+        char *p = alloca(64);
+        for (int i = 0; i < 64; i++) p[i] = (char)i;
+        assert_eq(p[0], 0, "alloca basic write/read");
+        assert_eq(p[63], 63, "alloca basic last byte");
+        assert_eq((long)p % 16, 0, "alloca 16-byte aligned");
+    }
+    {
+        /* large allocation crossing the 4K page-probe loop: each 4K chunk
+         * must touch the guard page before subtracting, so a single big
+         * alloca can't skip over the stack guard page */
+        char *big = alloca(1 << 20); /* 1 MiB */
+        big[0] = 1;
+        big[(1 << 20) - 1] = 2;
+        assert_eq(big[0], 1, "alloca large first byte");
+        assert_eq(big[(1 << 20) - 1], 2, "alloca large last byte");
+    }
+    {
+        /* many live alloca results at once (register pressure): all are
+         * allocated before any is used, then all are written/read back */
+        char *a = alloca(16), *b = alloca(16), *c = alloca(16), *d = alloca(16);
+        char *e = alloca(16), *f = alloca(16), *g = alloca(16), *h = alloca(16);
+        a[0] = b[1] = c[2] = d[3] = e[4] = f[5] = g[6] = h[7] = 1;
+        assert_eq(a[0] + b[1] + c[2] + d[3] + e[4] + f[5] + g[6] + h[7], 8,
+                  "alloca many live");
+    }
+    {
+        /* alloca inside a loop body: each iteration gets fresh memory */
+        volatile int ok = 1;
+        for (int i = 0; i < 8; i++) {
+            char *q = alloca(32);
+            q[0] = (char)i;
+            if (q[0] != i) ok = 0;
+        }
+        assert_ok(ok, "alloca in loop");
+    }
+
+    /* --- alloca helper-call fallback: force free_reg_count()==0 by
+     * occupying all 8 x86-64 VRegs with live right-deep-expression
+     * values so the inline alloca path falls through to the per-TU
+     * __rcc_alloca helper call.  Verifies the use_staging spill-slot
+     * preservation (the outer values survive across the call via
+     * spilled_regs bits + same-register binary-op combining).
+     * Win64 lacks staging-reload in its marshal path (#ifdef _WIN32
+     * at the reg-args placement loop), so the spill-preservation fix
+     * can't work there yet; skip for now. */
+#ifndef _WIN32
+    {
+        volatile long v = 3;
+        char *p;
+        /* Right-deep: (v+1)+((v+2)+...+((v+8)+(long)(p=alloca(40))...).
+         * With all 8 VRegs busy, free_reg_count()==0, use_staging=1. */
+        long r = (v + 1) + ((v + 2) + ((v + 3) + ((v + 4) +
+                 ((v + 5) + ((v + 6) + ((v + 7) + ((v + 8) +
+                 (long)(p = alloca(40)))))))));
+        if (!p) return 2;
+        p[0] = 42; p[39] = 7;
+        assert_eq(r, 60 + (long)p, "alloca fallback sum = v-sum + ptr");
+        assert_eq(p[0], 42, "alloca fallback p[0]");
+        assert_eq(p[39], 7, "alloca fallback p[39]");
+    }
+#endif
     if (failures)
         printf("%d FAILURES\n", failures);
     else
