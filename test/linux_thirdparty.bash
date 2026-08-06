@@ -995,6 +995,8 @@ test_lmdb() {
 
 test_lua() {
  url_tar https://lua.org/ftp/lua-5.5.0.tar.gz lua
+ # src/Makefile hardcodes CC= gcc -std=gnu99; override so make CC=... takes effect
+ sed -i 's|^CC= gcc -std=gnu99|CC ?= gcc|' src/Makefile
  cd src && make CC="$CC"
  url_tar https://lua.org/tests/lua-5.5.0-tests.tar.gz luatests
  cd libs && make CC="$CC" && cd ../

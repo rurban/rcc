@@ -139,3 +139,6 @@ Top root causes identified:
 2. **flatcc `_Bool` keyword** (parser.c) — probably a token kind issue
 3. **test_lua debug.getinfo** — needs minimal repro; possible codegen issue
 4. **test_mruby crash** — test binary crashes; needs gdb investigation
+
+### Confirmed rcc bugs (not yet fixed)
+- **lua debug.getinfo**: rcc-compiled lua fails `db.lua:83` assertion; gcc-compiled passes.  `debug.getinfo(f).short_src` returns wrong value.  Likely codegen bug in lua's debug/string code.

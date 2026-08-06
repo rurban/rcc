@@ -1337,7 +1337,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 
     // Inline expansion for common libc builtins (x86_64 only for now)
 #ifndef ARCH_ARM64
-    if (call_target && !has_hidden_retbuf) {
+    if (opt_O1 && call_target && !has_hidden_retbuf) {
         // Inline expansion for common libc builtins
         bool is_memset = call_target == bi_s_memset || call_target == bi_memset;
         bool is_memcpy = call_target == bi_s_memcpy || call_target == bi_memcpy;
