@@ -8,6 +8,7 @@
 // macro bodies are lexed once at define time. There is no text round-trip
 // between preprocessing and parsing.
 #include "rcc.h"
+#include <time.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -47,6 +48,8 @@ static char *kw_counter;
 static char *kw_function;
 static char *kw_func;
 static char *kw_pretty_function;
+static char *kw_date;
+static char *kw_time;
 static char *kw_has_include;
 static char *kw_has_include_next;
 static char *kw_has_c_attribute;
@@ -1529,6 +1532,26 @@ static void expand_token(Token *t) {
     if (name == kw_file) {
         char *fn = pp_cur_file ? pp_cur_file : (t->filename ? t->filename : "");
         out_append(syn_str(fn, strlen(fn), t));
+        return;
+    }
+    if (name == kw_date) {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char buf[16];
+        static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        snprintf(buf, sizeof(buf), "%s %2d %d",
+                 months[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
+        out_append(syn_str(buf, strlen(buf), t));
+        return;
+    }
+    if (name == kw_time) {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%02d:%02d:%02d",
+                 tm->tm_hour, tm->tm_min, tm->tm_sec);
+        out_append(syn_str(buf, strlen(buf), t));
         return;
     }
     if (name == kw_base_file) {
@@ -3042,6 +3065,8 @@ Token *preprocess(char *filename, char *p) {
 #undef define_pre
         kw_line = str_intern("__LINE__", 8);
         kw_file = str_intern("__FILE__", 8);
+        kw_date = str_intern("__DATE__", 8);
+        kw_time = str_intern("__TIME__", 8);
         kw_base_file = str_intern("__BASE_FILE__", 13);
         kw_counter = str_intern("__COUNTER__", 11);
         kw_function = str_intern("__FUNCTION__", 12);
