@@ -12071,9 +12071,21 @@ static VReg gen(Node *node) {
             asm_setcc(cg_sec, X86_RCX, X86_P); // setp %%cl
             x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %%cl, %%al
         } else if (node->kind == ND_LT) {
+            // ucomisd sets CF=1 for both "lhs < rhs" AND unordered (either
+            // operand NaN), so a bare `setb` reports NaN comparisons as
+            // true. IEEE 754/C require every ordering comparison against
+            // NaN to be false, so gate on "ordered" (PF=0) same as EQ/NE
+            // above. `>` is parsed as a swapped `<` (see parser.c), so
+            // this single fix also corrects `a > b`.
             asm_setcc(cg_sec, X86_RAX, X86_B); // setb %%al
+            asm_setcc(cg_sec, X86_RCX, X86_NP); // setnp %%cl
+            x86_and_rr(cg_sec, 1, X86_RAX, X86_RCX); // andb %%cl, %%al
         } else if (node->kind == ND_LE) {
+            // Same unordered pitfall as LT: BE (CF=1 or ZF=1) is also true
+            // when unordered. `>=` is a swapped `<=` (see parser.c).
             asm_setcc(cg_sec, X86_RAX, X86_BE); // setbe %%al
+            asm_setcc(cg_sec, X86_RCX, X86_NP); // setnp %%cl
+            x86_and_rr(cg_sec, 1, X86_RAX, X86_RCX); // andb %%cl, %%al
         }
         asm_movzx_phys(cg_sec, r_lhs, X86_RAX, 4, 1); // movzbl %%al, %s
 #endif
