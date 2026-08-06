@@ -3,6 +3,8 @@
 
 #include <stddef.h>
 
+#if defined(_WIN32) || defined(__APPLE__)
+
 /* Standard exit status macros (C89 7.20). */
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
@@ -67,6 +69,20 @@ int system(const char *command);
 int mkstemp(char *template);
 char *mkdtemp(char *template);
 char *realpath(const char *path, char *resolved_path);
+#endif
+
+#else
+
+/* Pull in the platform <stdlib.h> for the full declaration set: every
+ * allocation/conversion/process function above plus everything this
+ * bundled copy doesn't track (ssize_t and friends are typedef'd here
+ * too, since glibc's stdlib.h transitively includes <sys/types.h>).
+ * Mirrors stdio.h/wchar.h's include_next pattern: a thin bundled header
+ * shadowing the SDK one silently drops feature-macro-guarded content,
+ * so once include_next is available it's strictly worse than resolving
+ * straight to the system header. */
+#include_next <stdlib.h>
+
 #endif
 
 #endif
