@@ -353,6 +353,15 @@ test-full check-full:
 	-./arm64-test.sh
 	-./darwin-test.sh
 
+# External project tests via test/linux_thirdparty.bash, built with rcc.
+# List of targets lives in test/third_party/targets.txt (regenerate with:
+#   grep -o '^test_[a-zA-Z0-9_]*' test/linux_thirdparty.bash | sort -u)
+THIRDPARTY_TARGETS := $(shell cat test/third_party/targets.txt 2>/dev/null)
+thirdparty-list:
+	@cat test/third_party/targets.txt
+test-thirdparty check-thirdparty: $(TARGET)
+	./test/third_party/run_batch.sh $(THIRDPARTY_TARGETS)
+
 lint:
 	if command -v prek; then prek run -a; \
         elif command -v pre-commit; then pre-commit run --all-files; fi
@@ -443,5 +452,6 @@ TAGS: $(SRCS) src/rcc.h
 
 .PHONY: clean leanclean test check check-full check-torture check-all test-all \
 	test-full test-torture test-unit check-unit test-compliance check-compliance test-ctest check-ctest test-link check-link \
+	test-thirdparty check-thirdparty thirdparty-list \
         lint lint-changed bench install dist bench prof FORCE
 FORCE:

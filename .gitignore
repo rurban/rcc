@@ -67,6 +67,8 @@ test-*.summary
 test/*.out
 /compile_commands.json
 /tools/__pycache__
+/muon
+/test/third_party/test_*
 
 # agents
 .claude/
