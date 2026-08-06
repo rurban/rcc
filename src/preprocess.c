@@ -1311,6 +1311,55 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         int is_hashhash = b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#';
         if (is_hashhash && b->next && b->next != end && b->next->kind != TK_EOF) {
             Token *n = b->next;
+            // C23: ## __VA_OPT__(content) — evaluate __VA_OPT__ first.
+            // If va_args is empty it expands to nothing and ## is a
+            // placemarker (deleted).  If non-empty, the content is
+            // substituted and ## pastes it with the preceding token.
+            if (m->is_variadic && n->kind == TK_IDENT && n->name == kw_va_opt) {
+                Token *o = n->next;
+                if (o && o != end && ptok(o, "(")) {
+                    int depth = 1;
+                    Token *c = o->next;
+                    while (c && c != end && c->kind != TK_EOF && depth > 0) {
+                        if (ptok(c, "(")) depth++;
+                        else if (ptok(c, ")"))
+                            depth--;
+                        if (depth > 0) c = c->next;
+                    }
+                    if (va_empty) {
+                        // placemarker: ## deleted
+                        b = c;
+                        continue;
+                    }
+                    // Substitute __VA_OPT__ content and paste with lhs
+                    Token *sub = subst_range(m, o->next, c, args, raw_args, argc);
+                    if (!sub) {
+                        b = c;
+                        continue;
+                    }
+                    if (!rtail) {
+                        rhead = sub;
+                        while (sub->next) sub = sub->next;
+                        rtail = sub;
+                        b = c;
+                        continue;
+                    }
+                    Token *lhs = pop_tail(&rhead, &rtail);
+                    int l1, l2;
+                    char *s1 = tok_spelling(lhs, &l1), *s2 = tok_spelling(sub, &l2);
+                    char *pasted = arena_alloc(l1 + l2 + 1);
+                    memcpy(pasted, s1, l1);
+                    memcpy(pasted + l1, s2, l2);
+                    pasted[l1 + l2] = '\0';
+                    Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
+                    if (sub->next)
+                        pt->no_space_after = sub->no_space_after;
+                    splice_tokens(&rhead, &rtail, pt);
+                    splice_tokens(&rhead, &rtail, sub->next);
+                    b = c;
+                    continue;
+                }
+            }
             if (m->is_variadic && n && n != end && n->kind == TK_IDENT && param_or_va(m, n->name) == vs &&
                 va_empty && rtail && ptok(rtail, ",")) {
                 pop_tail(&rhead, &rtail);
