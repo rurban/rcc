@@ -1711,7 +1711,11 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         }
                         if (pending_target_clones_n + 1 >= cap) {
                             cap *= 2;
-                            pending_target_clones = realloc(pending_target_clones, (size_t)cap * sizeof(char *));
+                            char **ntc = realloc(pending_target_clones, (size_t)cap * sizeof(char *));
+                            if (!ntc) {
+                                error("out of memory growing target_clones list");
+                            }
+                            pending_target_clones = ntc;
                         }
                         pending_target_clones[pending_target_clones_n++] = str_intern(s, len);
                         tok = tok->next;
@@ -7899,33 +7903,18 @@ static Node *primary(Token **rest, Token *tok) {
                     node = inline_pack_call(node, ipf, fn_tok);
             }
         } else {
-            EnumConst *ec = find_enum_const(tok);
-            if (ec) {
-                node = new_num(ec->val, tok);
-                if (ec->ty)
-                    node->ty = ec->ty; // C23 enumerator type (enum/uint/llong...)
-                tok = tok->next;
-            } else if (equalc(tok, "NULL")) {
-                node = new_num(0, tok);
-                tok = tok->next;
-            } else if (equalc(tok, "nullptr")) {
-                node = new_num(0, tok);
-                node->ty = ty_nullptr_t;
-                tok = tok->next;
-            } else if (equalc(tok, "true")) {
-                // C23 keyword: bool-typed constant 1
-                node = new_num(1, tok);
-                node->ty = ty_bool;
-                tok = tok->next;
-            } else if (equalc(tok, "false")) {
-                // C23 keyword: bool-typed constant 0
-                node = new_num(0, tok);
-                node->ty = ty_bool;
-                tok = tok->next;
-            } else {
-                LVar *var = find_var(tok);
-                if (!var)
-                    error_tok(tok, "undeclared variable");
+            // C11 6.2.1p4: identifiers with inner scope shadow outer ones.
+            // A variable in scope (locals, enclosing nested-function frames,
+            // then globals) must win over a global enum constant of the same
+            // name; consulting find_enum_const() first resolved e.g. the
+            // global `enum filetype` enumerator `directory` (readline's
+            // colors.h) in place of a local `static DIR *directory`, folding
+            // the variable to the enum's numeric value (3) and then crashing
+            // codegen with "Invalid register -1" when the non-lvalue was
+            // assigned to. Variables take precedence; the special keywords
+            // below stay as-is (they can never name a variable).
+            LVar *var = find_var(tok);
+            if (var) {
                 // C11 6.7.4p3: a non-static inline function may not reference
                 // a modifiable object with internal linkage.
                 if (current_fn_is_inline && var->is_static && !var->is_local &&
@@ -7936,6 +7925,33 @@ static Node *primary(Token **rest, Token *tok) {
                 node = new_var_node(var, tok);
                 node->chain_depth = last_find_var_chain_depth;
                 tok = tok->next;
+            } else {
+                EnumConst *ec = find_enum_const(tok);
+                if (ec) {
+                    node = new_num(ec->val, tok);
+                    if (ec->ty)
+                        node->ty = ec->ty; // C23 enumerator type (enum/uint/llong...)
+                    tok = tok->next;
+                } else if (equalc(tok, "NULL")) {
+                    node = new_num(0, tok);
+                    tok = tok->next;
+                } else if (equalc(tok, "nullptr")) {
+                    node = new_num(0, tok);
+                    node->ty = ty_nullptr_t;
+                    tok = tok->next;
+                } else if (equalc(tok, "true")) {
+                    // C23 keyword: bool-typed constant 1
+                    node = new_num(1, tok);
+                    node->ty = ty_bool;
+                    tok = tok->next;
+                } else if (equalc(tok, "false")) {
+                    // C23 keyword: bool-typed constant 0
+                    node = new_num(0, tok);
+                    node->ty = ty_bool;
+                    tok = tok->next;
+                } else {
+                    error_tok(tok, "undeclared variable");
+                }
             }
         }
     } else if (equalc(tok, "&&") && tok->next && tok->next->kind == TK_IDENT) {
