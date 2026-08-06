@@ -9034,6 +9034,20 @@ static Node *unary(Token **rest, Token *tok) {
         tok = skip(tok, ",");
         Node *val = assign(&tok, tok);
         check_type(val);
+        if (!equalc(start, "__atomic_store_n")) {
+            // __atomic_store(ptr, valptr, order): the 2nd argument is a
+            // *pointer to* the value to store, unlike __atomic_store_n
+            // where it's the value itself. Dereference it so codegen
+            // stores *valptr, not valptr's own address -- storing the raw
+            // pointer would corrupt the target with the argument's address
+            // (e.g. zlib-ng's FUNCTABLE_ASSIGN(VAR, FUNC_NAME) pattern:
+            // __atomic_store(&functable.FUNC_NAME, &VAR.FUNC_NAME, ...)
+            // must copy *&VAR.FUNC_NAME, not store &VAR.FUNC_NAME itself).
+            if (val->ty->kind != TY_PTR && val->ty->kind != TY_ARRAY)
+                error_tok_simple(start, "pointer expected");
+            val = new_unary(ND_DEREF, val, start);
+            check_type(val);
+        }
         if (ptr->ty->kind == TY_PTR || ptr->ty->kind == TY_ARRAY) {
             Type *base = ptr->ty->base;
             if (base) {
