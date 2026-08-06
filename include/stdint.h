@@ -59,6 +59,10 @@ typedef uint64_t uint_fast64_t;
 #define PTRDIFF_MIN INT64_MIN
 #define PTRDIFF_MAX INT64_MAX
 
+#define INTMAX_MIN INT64_MIN
+#define INTMAX_MAX INT64_MAX
+#define UINTMAX_MAX UINT64_MAX
+
 
 /* Integer constant macros (C99 7.18.4.1) */
 #define INT8_C(v)  v
