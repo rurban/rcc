@@ -7261,18 +7261,62 @@ static VReg gen(Node *node) {
                 return dst;
             }
 
-            // If RHS is a scalar (e.g. pointer/function) and LHS is a small struct/union,
-            // store the value directly instead of copying bytes from the address in the register.
-            if (node->rhs->ty && !(node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY || node->rhs->ty->kind == TY_COMPLEX) && node->lhs->ty->size <= 8) {
+            // If RHS is a scalar (e.g. pointer/function) and LHS is a struct/union,
+            // store the value directly instead of copying bytes from the address in
+            // the register. For aggregates larger than a register, zero-fill the
+            // destination first and store the value into the leading bytes (the
+            // scalar only initializes the first sub-object, e.g. `s = 0` or the
+            // `{ 0 }` compound-literal member init): the old byte-copy loop read
+            // from the scalar *value* register as if it were a source address.
+            if (node->rhs->ty && !(node->rhs->ty->kind == TY_STRUCT || node->rhs->ty->kind == TY_UNION || node->rhs->ty->kind == TY_ARRAY || node->rhs->ty->kind == TY_COMPLEX)) {
+                if (node->lhs->ty->size > 8) {
 #ifdef ARCH_ARM64
-                emit_store(node->lhs->ty, src, dst, 0);
+                    emit_mov_imm64(ARM64_X9, (uint64_t)node->lhs->ty->size); // mov x9, #size
+                    cg_def_label(format(".L.zero.%d", c));
+                    arm64_subs_imm(cg_sec, 1, ARM64_XZR, ARM64_X9, 0, 0); // cmp x9, #0
+                    {
+                        size_t zj1 = asm_jcc_label(cg_sec, ARM64_EQ);
+                        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
+                    }
+                    arm64_sub_imm(cg_sec, 1, ARM64_X9, ARM64_X9, 1, 0); // sub x9, x9, #1
+                    asm_strb_wzr_x9(cg_sec, dst); // strb wzr, [x{dst}, x9]
+                    {
+                        size_t zj2 = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
+                    }
+                    cg_def_label(format(".L.zero_end.%d", c));
+                    asm_mov_phy_reg(cg_sec, ARM64_X16, src, 1); // mov x16, x{src}
+                    arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(dst), 0); // str x16, [x{dst}]
 #else
-                {
-                    int st_sz = node->lhs->ty->size;
-                    if (st_sz < 4) st_sz = st_sz;
-                    asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movl/movq src, (%dst)
-                }
+                    VReg cnt = alloc_reg();
+                    asm_mov_imm(cg_sec, cnt, 8, node->lhs->ty->size); // movq $size, cnt
+                    cg_def_label(format(".L.zero.%d", c));
+                    x86_cmp_ri(cg_sec, 8, REG(cnt), 0); // cmpq $0, cnt
+                    {
+                        size_t zj1 = asm_jcc_label(cg_sec, X86_E);
+                        asm_fixup_add(cg_sec, zj1, format(".L.zero_end.%d", c), 1);
+                    }
+                    x86_mov_mi(cg_sec, 1, x86_mem_idx(REG(dst), REG(cnt), 1, -1), 0); // movb $0, -1(dst,cnt)
+                    x86_sub_ri(cg_sec, 8, REG(cnt), 1); // subq $1, cnt
+                    {
+                        size_t zj2 = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, zj2, format(".L.zero.%d", c), 0);
+                    }
+                    cg_def_label(format(".L.zero_end.%d", c));
+                    free_reg(cnt);
+                    asm_mov_reg_mem(cg_sec, src, dst, 8); // movq src, (%dst)
 #endif
+                } else {
+#ifdef ARCH_ARM64
+                    emit_store(node->lhs->ty, src, dst, 0);
+#else
+                    {
+                        int st_sz = node->lhs->ty->size;
+                        if (st_sz < 4) st_sz = st_sz;
+                        asm_mov_reg_mem(cg_sec, src, dst, st_sz); // movl/movq src, (%dst)
+                    }
+#endif
+                }
                 free_reg(src);
                 return dst;
             }
@@ -7734,10 +7778,10 @@ static VReg gen(Node *node) {
 #endif
         } else {
 #ifdef ARCH_ARM64
-            asm_cmp_zero(cg_sec, r, node->lhs->ty->size); // sete %%al
+            asm_cmp_zero(cg_sec, r, op_size(node->lhs->ty)); // sete %%al
             asm_cset(cg_sec, r, ARM64_EQ); // andb %%cl, %%al
 #else
-            asm_cmp_zero(cg_sec, r, node->lhs->ty->size); // cmp $0, %s
+            asm_cmp_zero(cg_sec, r, op_size(node->lhs->ty)); // cmp $0, %s
             asm_setcc(cg_sec, X86_RAX, X86_E); // sete %%al
             asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %%al, %s
 #endif
@@ -9197,7 +9241,7 @@ static VReg gen(Node *node) {
 #ifdef ARCH_ARM64
         VReg r = alloc_reg();
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
+        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
         asm_movq_zero(cg_sec, r);
         {
             size_t o = asm_jcc_label(cg_sec, ARM64_EQ);
@@ -9205,13 +9249,13 @@ static VReg gen(Node *node) {
         }
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
+        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
         asm_cset(cg_sec, r, ARM64_NE);
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
 #else
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size);
+        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 0); // movb $0, -spill_logand(%rbp)
         {
             size_t o = asm_jcc_label(cg_sec, X86_E);
@@ -9219,7 +9263,7 @@ static VReg gen(Node *node) {
         }
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size);
+        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
         asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
         asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
         free_reg(rhs);
@@ -9233,14 +9277,14 @@ static VReg gen(Node *node) {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size); // cmp $0, rlhs
+        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
         arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result in x16)
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.end.%d
         asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
         free_reg(lhs);
         // False path: evaluate rhs; x16 may be clobbered here, re-set after
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size); // cmp $0, rrhs
+        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
         arm64_cset(cg_sec, 0, ARM64_X16, ARM64_NE); // cset w16, ne (false-path result in x16)
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
@@ -9250,13 +9294,13 @@ static VReg gen(Node *node) {
         return r;
 #else
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, node->lhs->ty->size); // cmp $0, rlhs
+        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 1); // movb $1, -spill_logand(%rbp)
         size_t o = asm_jcc_label(cg_sec, X86_NE); // jne .L.end.%d
         asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, node->rhs->ty->size); // cmp $0, rrhs
+        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
         asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
         asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
         free_reg(rhs);
