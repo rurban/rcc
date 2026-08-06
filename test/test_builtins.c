@@ -248,6 +248,24 @@ int main(void) {
         assert_eq(p[39], 7, "alloca fallback p[39]");
     }
 #endif
+    /* --- __builtin_bswap16 as function designator in _Generic --- */
+    {
+        unsigned short x = 0x1234;
+        unsigned short y = _Generic(x,
+            unsigned short: __builtin_bswap16,
+            default: __builtin_bswap16
+        )(x);
+        assert_eq(y, 0x3412, "bswap16 in _Generic");
+    }
+    /* --- __builtin_bswap16,32,64 direct call --- */
+    {
+        assert_eq(__builtin_bswap16((unsigned short)0x1234), 0x3412,
+                  "bswap16 direct");
+        assert_eq((int)__builtin_bswap32(0x12345678U), (int)0x78563412U,
+                  "bswap32 direct");
+        assert_eq((long long)__builtin_bswap64(0x1234567812345678ULL),
+                  (long long)0x7856341278563412ULL, "bswap64 direct");
+    }
     if (failures)
         printf("%d FAILURES\n", failures);
     else

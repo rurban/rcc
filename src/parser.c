@@ -737,6 +737,18 @@ static Node *declare_builtin_on_demand(Token *tok) {
         ret_ty = ty_float;
         param_tys[0] = complex_type(ty_float);
         nparams = 1;
+    } else if (equalc(tok, "__builtin_bswap16")) {
+        ret_ty = ty_ushort;
+        param_tys[0] = ty_ushort;
+        nparams = 1;
+    } else if (equalc(tok, "__builtin_bswap32")) {
+        ret_ty = ty_uint;
+        param_tys[0] = ty_uint;
+        nparams = 1;
+    } else if (equalc(tok, "__builtin_bswap64")) {
+        ret_ty = ty_ullong;
+        param_tys[0] = ty_ullong;
+        nparams = 1;
     } else {
         return NULL;
     }
@@ -7939,7 +7951,12 @@ static Node *primary(Token **rest, Token *tok) {
                     node = new_num(0, tok);
                     node->ty = ty_nullptr_t;
                     tok = tok->next;
-                } else if (equalc(tok, "true")) {
+                } else if (tok->len > 10 && !memcmp(tok->ptr, "__builtin_", 10) &&
+                           (node = declare_builtin_on_demand(tok))) {
+                    tok = tok->next;
+                    node = new_var_node(node->var, tok);
+                    node->ty = node->var->ty;
+                 } else if (equalc(tok, "true")) {
                     // C23 keyword: bool-typed constant 1
                     node = new_num(1, tok);
                     node->ty = ty_bool;
