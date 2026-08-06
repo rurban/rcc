@@ -664,7 +664,22 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Allow link-only mode: object files from command line go to the linker
+    // Allow link-only mode: object files from command line go to the linker.
+    // `-v` with no inputs (`gcc -v`, no source/object args) is gcc's own
+    // "print verbose configuration and exit" invocation, used verbatim by
+    // countless autoconf/hand-rolled `configure` scripts to sniff whether
+    // $CC is gcc-compatible (they grep this output for the substring
+    // "gcc"/"clang" to decide whether to pass -fPIC, -fvisibility, etc.).
+    // Answering with a plain "no input files" error makes every such probe
+    // fail and silently drops those flags (see zlib-ng's SFLAGS reset).
+    if (n_inputs == 0 && !have_link_inputs && opt_v) {
+        fprintf(stderr, "Using built-in specs.\n");
+        fprintf(stderr, "Target: %s\n", MACHINE);
+        fprintf(stderr, "Configured with: rcc, a gcc-compatible C compiler\n");
+        fprintf(stderr, "Thread model: posix\n");
+        fprintf(stderr, "rcc version %s (gcc-compatible, __GNUC__=15) %s\n", VERSION, MACHINE);
+        return 0;
+    }
     if (n_inputs == 0 && !have_link_inputs) {
         fprintf(stderr, "rcc: fatal error: no input files\n");
         return 1;
