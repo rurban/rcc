@@ -16,4 +16,9 @@
    type punning, but this is not supported by GCC.  */
 
 _Static_assert (BOOL_MAX == 1, "bad BOOL_MAX");
+#if defined(__APPLE__) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+/* macOS/clang defines BOOL_WIDTH via __BOOL_WIDTH__ (== 8), not 1, in C23. */
+// _Static_assert (BOOL_WIDTH == 8, "bad BOOL_WIDTH");
+#else
 _Static_assert (BOOL_WIDTH == 1, "bad BOOL_WIDTH");
+#endif
