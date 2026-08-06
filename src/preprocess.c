@@ -2850,6 +2850,13 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__has_c_attribute", "1");
         define_pre("__has_include_next", "1");
 #include "gcc_predefined.h"
+        // rcc's own self-identification macro, matching every other
+        // compiler's practice of defining both a GCC-compat macro (for
+        // header portability -- see gcc_predefined.h's __GNUC__ etc.
+        // above) AND a compiler-specific one so user/build-system code
+        // can detect rcc specifically (`#ifdef __RCC__`), the same way
+        // `__clang__` or tcc's `__TINYC__` sit alongside `__GNUC__`.
+        define_pre("__RCC__", "1");
         // __STDC_VERSION__ is baked into gcc_predefined.h at the C23 value;
         // reflect the -std= request instead. C89/C90 (opt_std_version==NULL)
         // has no __STDC_VERSION__ at all, so the predefined one must be
