@@ -16,8 +16,16 @@ typedef unsigned long long uintptr_t;
 typedef long long intmax_t;
 typedef unsigned long long uintmax_t;
 
-typedef long long ptrdiff_t;
-
+/* NOTE: ptrdiff_t belongs in <stddef.h>, not here -- real glibc's
+ * <stdint.h> does not define it. A stray `typedef long long ptrdiff_t;`
+ * used to live here, redeclaring (with the WRONG underlying type: long
+ * long instead of stddef.h's correct long int) whatever <stddef.h> had
+ * already typedef'd if both headers were included -- previously
+ * harmless only because nothing validated the two typedefs agreed;
+ * once the parser started diagnosing incompatible redeclarations, any
+ * TU including both headers (e.g. zfp's C "template" sources, via
+ * <stdint.h> after <stddef.h>) hit a real "conflicting types" error at
+ * every ptrdiff_t-parametered function definition. */
 /* Minimum-width integer types (C99 7.18.1.2) */
 typedef int8_t int_least8_t;
 typedef uint8_t uint_least8_t;

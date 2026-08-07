@@ -28,6 +28,83 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-07, blosc2 session)
+
+- **Inline-asm multi-output register clobber** (codegen.c) — a
+  multi-output `asm()` using x86 fixed-register constraints (e.g.
+  `"=a"`/`"=b"`/`"=c"`/`"=d"` for `cpuid`) could silently lose one
+  output's value. codegen.c saves/restores an output's *address*
+  register around the asm to protect it from being clobbered by the
+  asm itself, but address-register allocation is independent per
+  operand — operand j's address can land in the exact physical
+  register operand i's own `"=b"` constraint targets. Popping
+  operand j's saved address back into `%rbx` after the asm executed
+  silently overwrote operand i's still-unread real result before the
+  store-back loop could read it, with no diagnostic. Fixed by
+  capturing every fixed-register output into a scratch vreg
+  immediately after the asm executes, before any address-register
+  restore runs.
+  → found via blosc2's `blosc_get_cpu_features()` (four-output
+  `cpuid` queries via `__builtin_cpu_supports()`)
+- **Function-declarator parameter names leaked into file scope**
+  (parser.c) — a function declarator's parameter names, from either
+  a bare prototype or a full definition, were pushed onto the
+  persistent file-scope `locals` list via `parse_params()`/`new_var()`
+  but never cleared once the declarator finished (only the transient
+  `current_fn_scope_locals` snapshot was reset). `find_var()` checks
+  `locals` before falling back to globals/enum constants (required
+  so a real local shadows a same-named global), so any later
+  top-level identifier sharing a name with an earlier parameter —
+  even a single letter like `f` — silently resolved to the stale,
+  wrongly typed phantom parameter instead of its own declaration.
+  Reproduced standalone with `int proto(const char *f); enum K { e,
+  f, g = f };` on the clean tree (pre-existing, not a regression from
+  this session's other changes). Caught by torture test
+  `c23-tag-enum-7` once a synthetic-prelude `__builtin_cpu_supports
+  (const char *f)` shadowed `enum K`'s own `f`.
+- **`__builtin_cpu_supports("feature")`** (parser.c synthetic
+  prelude, preprocess.c macro alias) — runtime CPU-dispatch compiler
+  builtin used by several perf-sensitive libraries' SIMD-path
+  selection. Implemented via a real `cpuid`-querying function
+  injected into the x86-64 synthetic prelude (`static
+  __always_inline__` to avoid multi-TU link collisions).
+- **SSE2 gaps**: `_mm_shufflelo_epi16`/`_mm_shufflehi_epi16`, the
+  full `_mm_unpacklo`/`_mm_unpackhi_epi{8,16,32,64}` interleave
+  family, `_mm_packs_epi16`/`_mm_packus_epi16`/`_mm_packs_epi32`
+  saturating packs (emmintrin.h); `__m64` support via
+  `_mm_storeh_pi`/`_mm_storel_pi` (xmmintrin.h).
+- **SSSE3**: new `include/tmmintrin.h` (rcc had none) — everything
+  expressible as plain lane-wise C arithmetic (abs/sign/hadd/hsub/
+  alignr/maddubs/mulhrs) implemented via
+  `__attribute__((vector_size))`; `_mm_shuffle_epi8` via a new
+  `__builtin_ia32_pshufb128` encoder + dispatch (x86-only,
+  x86_enc.c/h + codegen.c's `gen_vector_binary_builtin`).
+  → unblocks: bearssl, blosc2, libflac (`_mm_shuffle_epi8`)
+- **`stdint.h` `ptrdiff_t` typedef mismatch** — a pre-existing bug:
+  rcc's own `stdint.h` typedef'd `ptrdiff_t` as `long`, conflicting
+  with `<stddef.h>`'s correct `long long` once both got included in
+  the same TU ("conflicting types for `ptrdiff_t`").
+
+New regression tests: `test_asm_multi_output_clobber.c`,
+`test_proto_param_scope_leak.c`, `test_sse2_unpack_pack.c`,
+`test_m64_storehl_pi.c`, `test_ssse3_shuffle.c`,
+`test_stdint_ptrdiff_conflict.c` (the last two guard their x86-only
+portions with `#if !defined(__aarch64__) && !defined(_M_ARM64)`,
+matching `test_ia32_pause.c`'s existing convention, so ARM64/macOS CI
+keeps the portable coverage without failing on the x86-only bits).
+
+**Verified**: c-blosc2 configures, builds (blosc + all
+plugins/codecs), links, and its CTest suite runs cleanly (2100+
+tests, no crashes, no hangs). One residual gap: a handful of
+SSSE3-dispatch bitshuffle variants stay compiled out because CMake's
+`check_c_compiler_flag(-mssse3)` reports "unsupported" — rcc
+warns-and-ignores unrecognized `-m*` flags rather than erroring like
+GCC/Clang would, which is what `check_c_compiler_flag` relies on to
+detect support. This is a separate, deliberate rcc driver behavior
+(silently accepting instruction-set hints it doesn't need), not
+addressed this session. TCC 118/118, Unit 170/170, Torture 3605/3609
+(100%), Dg-error 34/34, Link 4/4.
+
 ### Fixed (2026-08-07, continued)
 
 - **Prototype/definition redeclaration not diagnosed** (parser.c) — rcc
@@ -210,11 +287,15 @@ Top root causes identified:
 
 ### Needs fixing
 
-1. **Missing x86 intrinsics** (~10+ projects) — partially fixed
-   (`__builtin_ia32_pause`/`mfence`/`lfence`/`sfence`, see above)
-   - `_mm_shuffle_epi8` (SSSE3) → test_bearssl, test_blosc2, test_libflac
+1. **Missing x86 intrinsics** (~10 projects remaining) — partially
+   fixed (`__builtin_ia32_pause`/`mfence`/`lfence`/`sfence`, SSSE3
+   `tmmintrin.h`/`_mm_shuffle_epi8`, see "Fixed (2026-08-07, blosc2
+   session)" above)
    - `__v8hi`, `__builtin_shufflevector` (GCC vector ext) → test_blake3, test_brotli, test_ffc, test_fftw, test_libwebp, ...
    - Root: rcc can't parse GCC's `<*mmintrin.h>` headers; these use `__v8hi` types and `__builtin_ia32_*` builtins
+   - blosc2 itself now builds/links/tests cleanly (see above); its
+     one residual gap is CMake's `check_c_compiler_flag(-mssse3)`
+     reporting unsupported (driver behavior, not an intrinsics gap)
 
 2. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
    - `_BitInt(total * 3)` → "expected specific operator"
@@ -256,6 +337,8 @@ Top root causes identified:
    with the actual mruby VM environment, see the detailed writeup
    above
 2. **Missing x86 intrinsics**: `__v8hi`/`__builtin_shufflevector` GCC
-   vector-extension surface — affects ~10 projects (blake3, brotli,
-   bearssl, blosc2, fftw, libflac, libwebp, ...)
+   vector-extension surface — affects ~10 remaining projects (blake3,
+   brotli, fftw, libwebp, ...). bearssl and blosc2 unblocked
+   (SSSE3/`tmmintrin.h` now available, see "Fixed (2026-08-07, blosc2
+   session)" above).
 3. **C23 `_BitInt(N)`** — test_cproc, test_c23doku

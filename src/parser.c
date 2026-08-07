@@ -11244,6 +11244,32 @@ Program *parse(Token *tok) {
                            "  void *overflow_arg_area;"
                            "  void *reg_save_area;"
                            "} __builtin_va_list[1];"
+                           // __builtin_cpu_supports(feature): real GCC compiles this to
+                           // a call into libgcc's __cpu_indicator_init()-populated
+                           // __cpu_model bitmask; rcc instead queries CPUID directly at
+                           // each call site (correct, just not cached/hoisted). Manual
+                           // per-character comparison instead of strcmp() avoids any
+                           // dependency on <string.h> having been included yet -- this
+                           // prelude runs before the real source, so no user header has
+                           // been seen. Covers the feature names actually probed by
+                           // this project's third-party test suite (sse2, avx, avx2,
+                           // avx512f, avx512bw); add more leaf-7/leaf-1 bits here if a
+                           // future project needs a name not yet covered.
+                           "static __inline__ __attribute__((__always_inline__, __unused__)) "
+                           "int __rcc_cpu_supports(const char *f) {"
+                           "  unsigned a, b, c, d;"
+                           "  __asm__(\"cpuid\" : \"=a\"(a), \"=b\"(b), \"=c\"(c), \"=d\"(d) : \"a\"(1), \"c\"(0));"
+                           "  if (f[0]=='s'&&f[1]=='s'&&f[2]=='e'&&f[3]=='2'&&f[4]==0) return (d>>26)&1;"
+                           "  if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]==0) return (c>>28)&1;"
+                           "  {"
+                           "    unsigned a2, b2, c2, d2;"
+                           "    __asm__(\"cpuid\" : \"=a\"(a2), \"=b\"(b2), \"=c\"(c2), \"=d\"(d2) : \"a\"(7), \"c\"(0));"
+                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='2'&&f[4]==0) return (b2>>5)&1;"
+                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='5'&&f[4]=='1'&&f[5]=='2'&&f[6]=='f'&&f[7]==0) return (b2>>16)&1;"
+                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='5'&&f[4]=='1'&&f[5]=='2'&&f[6]=='b'&&f[7]=='w'&&f[8]==0) return (b2>>30)&1;"
+                           "  }"
+                           "  return 0;"
+                           "}"
 #endif
     );
     current_input = saved_input;
@@ -11839,6 +11865,17 @@ Program *parse(Token *tok) {
                         item->fn = fn;
                         tl_item_cur = tl_item_cur->next = item;
                     }
+                    // Clear `locals`: it still holds this function's
+                    // params/locals (fn->locals already captured the
+                    // real list via compound_stmt_ex's fn_locals out
+                    // param above). Left dangling, the next top-level
+                    // item — if not itself a function definition, which
+                    // is the only other site that resets `locals` — sees
+                    // this function's stale symbols in find_var()'s
+                    // locals-before-globals lookup order (same bug as
+                    // the prototype-only ";" case below, just triggered
+                    // by a function *definition* instead).
+                    locals = NULL;
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;
@@ -11863,6 +11900,19 @@ Program *parse(Token *tok) {
                     // wrongly drops that unrelated global too (e.g. rcc
                     // demoted a live `static const char *const arr[]` used
                     // by other functions to an undefined extern symbol).
+                    // Also clear `locals` itself (not just the
+                    // current_fn_scope_locals snapshot): parse_params()/
+                    // declarator_params() populate `locals` with each
+                    // parameter's LVar as a side effect while tentatively
+                    // preparing for a possible definition. Left in place
+                    // for a prototype-only declarator, a parameter name
+                    // (e.g. a single-letter `f`) permanently shadows any
+                    // later file-scope identifier of the same name in
+                    // find_var()'s locals-before-globals lookup order —
+                    // e.g. a subsequent `enum K { ..., f, ... }`'s `f`
+                    // silently resolved to this phantom parameter instead
+                    // of the enum constant.
+                    locals = NULL;
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
                     suppress_fn_scope_update = false;

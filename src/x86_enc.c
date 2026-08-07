@@ -1410,6 +1410,14 @@ void x86_pand(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xdb, d, sr);
 void x86_por(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xeb, d, sr); }
 void x86_pcmpeqd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x76, d, sr); }
 void x86_pcmpgtd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x66, d, sr); }
+// PSHUFB xmm, xmm (SSSE3, 66 0F 38 00 /r): byte-lane shuffle/permute —
+// dst[i] = (src[i] & 0x80) ? 0 : dst[src[i] & 0x0f], per byte lane.
+void x86_pshufb(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0x00);
+    emit1(s, modrxmm(3, d, sr));
+}
 
 // x87
 void x86_fldl_m(SecBuf *s, X86Mem m) {

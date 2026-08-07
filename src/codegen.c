@@ -627,6 +627,7 @@ static void zero_extend_to(VReg r, int from_size, int to_size);
 static VReg alloc_int128_addr(void);
 static VReg gen_vector(Node *node);
 static VReg gen_vector_unary_builtin(Node *node);
+static VReg gen_vector_binary_builtin(Node *node);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
 
@@ -1200,6 +1201,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
          !strcmp(call_target, "__builtin_ia32_sqrtpd") ||
          !strcmp(call_target, "__builtin_ia32_sqrtsd"))) {
         return gen_vector_unary_builtin(node);
+    }
+    // Two-arg vector builtin: __builtin_ia32_pshufb128 — _mm_shuffle_epi8.
+    if (call_target && !strcmp(call_target, "__builtin_ia32_pshufb128")) {
+        return gen_vector_binary_builtin(node);
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -6580,6 +6585,29 @@ static VReg gen_vector_unary_builtin(Node *node) {
 #endif
 }
 
+// Two-arg vector builtins: __builtin_ia32_pshufb128 (x86 SSSE3 only —
+// _mm_shuffle_epi8's real implementation; ARM64's NEON TBL equivalent
+// isn't wired up, matching several other x86-only builtins in this file).
+static VReg gen_vector_binary_builtin(Node *node) {
+#ifdef ARCH_ARM64
+    (void)node;
+    return R_NONE;
+#else
+    Node *arg0 = node->args;
+    Node *arg1 = arg0 ? arg0->next : NULL;
+    VReg a = gen_addr(arg0);
+    VReg b = gen_addr(arg1);
+    x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(a), 0));
+    free_reg(a);
+    x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
+    free_reg(b);
+    x86_pshufb(cg_sec, X86_XMM0, X86_XMM1); // xmm0 = pshufb(xmm0, xmm1)
+    VReg dst = alloc_int128_addr();
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+#endif
+}
+
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -6623,6 +6651,11 @@ static VReg gen(Node *node) {
          !strcmp(node->funcname, "__builtin_ia32_sqrtpd") ||
          !strcmp(node->funcname, "__builtin_ia32_sqrtsd"))) {
         return gen_vector_unary_builtin(node);
+    }
+    // Two-arg vector builtin: __builtin_ia32_pshufb128 — _mm_shuffle_epi8.
+    if (node->kind == ND_FUNCALL && node->funcname &&
+        !strcmp(node->funcname, "__builtin_ia32_pshufb128")) {
+        return gen_vector_binary_builtin(node);
     }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&
@@ -10567,6 +10600,32 @@ static VReg gen(Node *node) {
             assemble_inline(cg_obj, out, cg_inline_fixup_cb, NULL);
         }
 
+        // Capture x86-physical-register outputs (eax/ebx/ecx/edx/...) into
+        // scratch vregs *before* restoring any address registers below.
+        // Bug this guards against: op_addr[j] (the address of some OTHER
+        // output variable) can be allocated to the very same physical
+        // register as this operand's fixed-register constraint (e.g. a
+        // "=c" operand's address register happens to land in %rbx, while a
+        // *different* operand uses "=b"). The address-register save/restore
+        // below exists to protect op_addr[j] from being clobbered by the
+        // asm itself (cpuid always writes eax/ebx/ecx/edx); but popping
+        // that address back into %rbx would overwrite the still-unread
+        // "=b" result first. Reading every fixed-register output out to a
+        // scratch vreg here, while the hardware register still holds the
+        // asm's real result, makes the store-back below immune to whatever
+        // the address-register restore does to those same registers.
+        VReg op_saved[MAX_ASM_OPERANDS];
+        for (int i = 0; i < node->asm_noperands; i++) {
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i])) {
+                X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
+                int sz = node->asm_ops[i].expr->ty ? node->asm_ops[i].expr->ty->size : 4;
+                VReg tmp = alloc_reg();
+                x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), REG(tmp), xreg);
+                op_saved[i] = tmp;
+            } else {
+                op_saved[i] = -1;
+            }
+        }
 
         // Restore saved address registers (reverse order) so that
         // the store-back below uses the correct address values.
@@ -10580,9 +10639,11 @@ static VReg gen(Node *node) {
             AsmOperand *op = &node->asm_ops[i];
             int sz = op->expr->ty ? op->expr->ty->size : 4;
             if (ASM_IS_X86_REG(op_regs[i])) {
-                // Store x86 physical register to output address
-                X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
-                x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), xreg);
+                // Store the value captured above, not the live physical
+                // register (which the address-register pop may have
+                // overwritten with an unrelated operand's address).
+                x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), REG(op_saved[i]));
+                free_reg(op_saved[i]);
             } else if (sz == 1)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 1); // movb op_regs[i], (%op_addr[i])
             else if (sz == 2)
