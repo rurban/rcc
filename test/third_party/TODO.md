@@ -5,38 +5,40 @@ Binary: rcc HEAD (third_party branch)
 
 ## Summary
 
-| rc  | count | meaning                             |
-| --- | ----- | ----------------------------------- |
-| 0   | 54    | pass                                |
-| 2   | 101   | build/compile failure               |
-| 1   | 18    | runtime/test failure                |
-| 124 | 12    | timeout (420 s)                     |
-| 127 | 10    | missing tool (muon, lzip, etc.)     |
-| 139 | 1     | SIGSEGV (box2d C++ binary, not rcc) |
-| 8   | 2     | test failure (blake3)               |
-| 6   | 1     | —                                   |
+| rc  | count | meaning                                                        |
+| --- | ----- | -------------------------------------------------------------- |
+| 0   | 54    | pass                                                           |
+| 2   | 101   | build/compile failure                                          |
+| 1   | 18    | runtime/test failure                                           |
+| 124 | 12    | timeout (420 s)                                                |
+| 127 | 10    | missing tool (muon, lzip, etc.)                                |
+| 139 | 1     | SIGSEGV (box2d C++ binary, not rcc)                            |
+| 8   | 2     | test failure (blake3)                                          |
+| 6   | 1     | —                                                              |
 | 1   | 18    | runtime/test failure (many are build-system: CC not respected) |
-| 124 | 12    | timeout (420 s)                     |
-| 127 | 10    | missing tool (muon, lzip, etc.)     |
+| 124 | 12    | timeout (420 s)                                                |
+| 127 | 10    | missing tool (muon, lzip, etc.)                                |
 
 ## File Layout
 
-**⚠ False positives**: Many projects (lua, mruby, most autotools/cmake projects)
-hardcode `CC=gcc` in their Makefiles and ignore the environment.  The test
-harness sets `CC=rcc` but the build system overrides it.  Verify by checking
+**⚠ False positives**: Many projects (lua, mruby, many cmake projects)
+hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
+harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
 **Genuine rcc bugs found so far**:
 
-### Fixed (2026-08-06)
+### Fixed (2026-08-07)
+
 - **use_staging spill-preservation** — 8 VRegs live across call silently corrupted values
-- **stdint.h**: missing INT_FAST*_MAX/MIN, INT_LEAST*_MAX/MIN, UINT_FAST*_MAX (24 macros)
-- **preprocess**: __DATE__ / __TIME__ predefined macros missing
+- **stdint.h**: missing INT_FAST*\_MAX/MIN, INT_LEAST*\_MAX/MIN, UINT_FAST\*\_MAX (24 macros)
+- **preprocess**: **DATE** / **TIME** predefined macros missing
+- **memcmp**: with empty string failed
 
 ### Known rcc limitations (not yet fixed)
-- **x86 intrinsics**: SSE/SSSE3/AVX headers (__v8hi, __builtin_shufflevector, _mm_*) — ~10+ projects
-- **__VA_OPT__**: C23 variadic macro (bfs) — keyword registered but not expanded
-- **_BitInt(N)**: C23 bit-precise integers (cproc, c23doku)
+
+- **x86 intrinsics**: SSE/SSSE3/AVX headers (**v8hi, **builtin*shufflevector, \_mm*\*) — ~10+ projects
+- **\_BitInt(N)**: C23 bit-precise integers (cproc, c23doku)
 - **bool as macro vs keyword**: flatcc — `#define bool _Bool` breaks ## paste; should be keyword like gcc
 
 - `test/third_party/results.txt` — tab-separated: `rc\ttest_name\tduration`
@@ -83,6 +85,10 @@ Top root causes identified:
   → unblocks: coreutils, diffutils, gpatch, gsed, gtar
 - `__DATE__` / `__TIME__` undeclared — **fixed** (preprocess.c: added C89 predefined macros)
   → unblocks: mimalloc
+- **memcmp**: with empty string
+  → unblocks: lua
+- **VA_OPT**: C23 variadic macro (bfs) — keyword registered but not expanded
+  → unblocks: bfs
 
 ### Needs fixing
 
@@ -91,25 +97,22 @@ Top root causes identified:
    - `__v8hi`, `__builtin_shufflevector` (GCC vector ext) → test_blake3, test_brotli, test_ffc, test_fftw, test_libwebp, ...
    - Root: rcc can't parse GCC's `<*mmintrin.h>` headers; these use `__v8hi` types and `__builtin_ia32_*` builtins
 
-2. **C23 `__VA_OPT__`** — test_bfs
-   - `__VA_OPT__` recognized as keyword but not expanded; `## __VA_OPT__(C)` fails
-
-3. **Prototype mismatch not diagnosed** — test_curl configure
+2. **Prototype mismatch not diagnosed** — test_curl configure
    - `int f(int); int f(char x) {}` compiles silently; gcc errors
    - curl's configure expects compiler to halt on mismatch → configure fails
 
-4. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
+3. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
    - `_BitInt(total * 3)` → "expected specific operator"
 
-5. **lib/tempname.c pattern** (now partially fixed)
+4. **lib/tempname.c pattern** (now partially fixed)
    - `SIZE_WIDTH` undeclared in test_diffutils (project-specific macro, not stdint)
 
-6. **Object file passed as source** — test_heatshrink
+5. **Object file passed as source** — test_heatshrink
    - `.os` file compiled as C source (build system issue, not rcc)
 
-7. **flatcc keywords.h** — `tok_kw__Bool` undeclared (C99 `_Bool` keyword issue)
+6. **flatcc keywords.h** — `tok_kw__Bool` undeclared (C99 `_Bool` keyword issue)
 
-8. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
+7. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
    - Missing system libs: libseccomp, libzstd, etc.
 
 ---
@@ -137,8 +140,6 @@ Top root causes identified:
 
 1. **Prototype mismatch error** (parser.c) — tiny change, unblocks curl configure
 2. **flatcc `_Bool` keyword** (parser.c) — probably a token kind issue
-3. **test_lua debug.getinfo** — needs minimal repro; possible codegen issue
-4. **test_mruby crash** — test binary crashes; needs gdb investigation
+3. **test_mruby crash** — test binary crashes; needs gdb investigation
 
 ### Confirmed rcc bugs (not yet fixed)
-- **lua debug.getinfo**: rcc-compiled lua fails `db.lua:83` assertion; gcc-compiled passes.  `debug.getinfo(f).short_src` returns wrong value.  Likely codegen bug in lua's debug/string code.

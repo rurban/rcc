@@ -1401,6 +1401,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 x86_mov_rr(cg_sec, 8, X86_RDI, REG(s1_r));
                 x86_mov_rr(cg_sec, 8, X86_RSI, REG(s2_r));
                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(len_r));
+                // Set ZF=1 before repz cmpsb: with rcx=0 the repz is a
+                // no-op that leaves flags untouched, making the jne below
+                // branch on garbage.  Observed as Lua empty-string
+                // memcmp("", "", 0) returning non-zero with rcc -O2.
+                x86_xor_rr(cg_sec, 4, X86_RAX, X86_RAX); // ZF=1
                 x86_rep_prefix(cg_sec);
                 x86_cmpsb(cg_sec); // repe cmpsb
                 {
