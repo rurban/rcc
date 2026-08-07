@@ -2,7 +2,6 @@
 #define RCC_ASSERT_H
 
 #include <stdlib.h>
-#include <stdbool.h>
 
 #ifdef NDEBUG
 #define assert(expr) ((void)0)

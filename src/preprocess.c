@@ -3045,58 +3045,87 @@ Token *preprocess(char *filename, char *p) {
             define_macro("__builtin___vsnprintf_chk", true,
                          (char *[]){"__dest", "__len", "__flag", "__bos", "__fmt", "__ap"}, 6,
                          "__vsnprintf_chk(__dest,__len,__flag,__bos,__fmt,__ap)");
-            define_pre("__builtin___read_chk", "read");
-            define_pre("__builtin___pread_chk", "pread");
-            define_pre("__builtin___readlink_chk", "readlink");
-            define_pre("__builtin___readlinkat_chk", "readlinkat");
-            define_pre("__read_chk", "read");
-            define_pre("__pread_chk", "pread");
-            define_pre("__readlink_chk", "readlink");
-            define_pre("__readlinkat_chk", "readlinkat");
-            define_pre("__getcwd_chk", "getcwd");
-            define_pre("__getwd_chk", "getwd");
-            define_pre("__confstr_chk", "confstr");
-            define_pre("__getgroups_chk", "getgroups");
-            define_pre("__ttyname_r_chk", "ttyname_r");
-            define_pre("__getlogin_r_chk", "getlogin_r");
-            define_pre("__gethostname_chk", "gethostname");
-            define_pre("__getdomainname_chk", "getdomainname");
-            define_pre("__builtin___getcwd_chk", "getcwd");
-            define_pre("__builtin___getwd_chk", "getwd");
-            define_pre("__builtin___confstr_chk", "confstr");
-            define_pre("__builtin___getgroups_chk", "getgroups");
-            define_pre("__builtin___ttyname_r_chk", "ttyname_r");
-            define_pre("__builtin___getlogin_r_chk", "getlogin_r");
-            define_pre("__builtin___gethostname_chk", "gethostname");
-            define_pre("__builtin___getdomainname_chk", "getdomainname");
-            define_pre("__read_chk_warn", "read");
-            define_pre("__pread_chk_warn", "pread");
-            define_pre("__readlink_chk_warn", "readlink");
-            define_pre("__readlinkat_chk_warn", "readlinkat");
-            define_pre("__getcwd_chk_warn", "getcwd");
-            define_pre("__getwd_warn", "getcwd");
-            define_pre("__confstr_chk_warn", "confstr");
-            define_pre("__getgroups_chk_warn", "getgroups");
-            define_pre("__ttyname_r_chk_warn", "ttyname_r");
-            define_pre("__getlogin_r_chk_warn", "getlogin_r");
-            define_pre("__gethostname_chk_warn", "gethostname");
-            define_pre("__getdomainname_chk_warn", "getdomainname");
-            define_pre("__builtin___read_chk_warn", "read");
-            define_pre("__builtin___pread_chk_warn", "pread");
-            define_pre("__builtin___readlink_chk_warn", "readlink");
-            define_pre("__builtin___readlinkat_chk_warn", "readlinkat");
-            define_pre("__builtin___getcwd_chk_warn", "getcwd");
-            define_pre("__builtin___getwd_warn", "getcwd");
-            define_pre("__builtin___confstr_chk_warn", "confstr");
-            define_pre("__builtin___getgroups_chk_warn", "getgroups");
-            define_pre("__builtin___ttyname_r_chk_warn", "ttyname_r");
-            define_pre("__builtin___getlogin_r_chk_warn", "getlogin_r");
-            define_pre("__builtin___gethostname_chk_warn", "gethostname");
-            define_pre("__builtin___getdomainname_chk_warn", "getdomainname");
+            // `__foo_chk`/`__foo_chk_warn` (bare and __builtin_-prefixed)
+            // forward to the plain, unchecked function, dropping the
+            // trailing bufsize/buflen bounds argument -- same behavior
+            // as before this comment. Using a FUNCTION-LIKE macro here
+            // (not a bare object-macro alias to the plain name) matters
+            // even for call sites that never fire: <bits/unistd-decl.h>
+            // et al. also *declare* these names with a real prototype,
+            // e.g. `__read_chk(int, void*, size_t, size_t)` (4 params).
+            // An object macro substitutes the identifier "read" straight
+            // into that declaration text, producing
+            // `extern ssize_t read(int, void*, size_t, size_t);` --
+            // 4 params, conflicting with <unistd.h>'s real 3-param
+            // `read` prototype. A function-like macro instead
+            // substitutes per matched *parameter*, so dropping the
+            // trailing param from the replacement body drops the same
+            // slot from the declaration's parameter list too, keeping
+            // both forms' arity in sync automatically.
+            define_macro("__builtin___read_chk", true, (char *[]){"fd", "buf", "n", "bufsize"}, 4, "read(fd,buf,n)");
+            define_macro("__builtin___pread_chk", true, (char *[]){"fd", "buf", "n", "off", "bufsize"}, 5, "pread(fd,buf,n,off)");
+            define_macro("__builtin___readlink_chk", true, (char *[]){"path", "buf", "len", "buflen"}, 4, "readlink(path,buf,len)");
+            define_macro("__builtin___readlinkat_chk", true, (char *[]){"fd", "path", "buf", "len", "buflen"}, 5, "readlinkat(fd,path,buf,len)");
+            define_macro("__read_chk", true, (char *[]){"fd", "buf", "n", "bufsize"}, 4, "read(fd,buf,n)");
+            define_macro("__pread_chk", true, (char *[]){"fd", "buf", "n", "off", "bufsize"}, 5, "pread(fd,buf,n,off)");
+            define_macro("__readlink_chk", true, (char *[]){"path", "buf", "len", "buflen"}, 4, "readlink(path,buf,len)");
+            define_macro("__readlinkat_chk", true, (char *[]){"fd", "path", "buf", "len", "buflen"}, 5, "readlinkat(fd,path,buf,len)");
+            define_macro("__getcwd_chk", true, (char *[]){"buf", "size", "buflen"}, 3, "getcwd(buf,size)");
+            define_macro("__getwd_chk", true, (char *[]){"buf", "buflen"}, 2, "getwd(buf)");
+            define_macro("__confstr_chk", true, (char *[]){"name", "buf", "len", "buflen"}, 4, "confstr(name,buf,len)");
+            define_macro("__getgroups_chk", true, (char *[]){"size", "list", "listlen"}, 3, "getgroups(size,list)");
+            define_macro("__ttyname_r_chk", true, (char *[]){"fd", "buf", "buflen", "nreal"}, 4, "ttyname_r(fd,buf,buflen)");
+            define_macro("__getlogin_r_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getlogin_r(buf,buflen)");
+            define_macro("__gethostname_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "gethostname(buf,buflen)");
+            define_macro("__getdomainname_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getdomainname(buf,buflen)");
+            define_macro("__builtin___getcwd_chk", true, (char *[]){"buf", "size", "buflen"}, 3, "getcwd(buf,size)");
+            define_macro("__builtin___getwd_chk", true, (char *[]){"buf", "buflen"}, 2, "getwd(buf)");
+            define_macro("__builtin___confstr_chk", true, (char *[]){"name", "buf", "len", "buflen"}, 4, "confstr(name,buf,len)");
+            define_macro("__builtin___getgroups_chk", true, (char *[]){"size", "list", "listlen"}, 3, "getgroups(size,list)");
+            define_macro("__builtin___ttyname_r_chk", true, (char *[]){"fd", "buf", "buflen", "nreal"}, 4, "ttyname_r(fd,buf,buflen)");
+            define_macro("__builtin___getlogin_r_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getlogin_r(buf,buflen)");
+            define_macro("__builtin___gethostname_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "gethostname(buf,buflen)");
+            define_macro("__builtin___getdomainname_chk", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getdomainname(buf,buflen)");
+            define_macro("__read_chk_warn", true, (char *[]){"fd", "buf", "n", "bufsize"}, 4, "read(fd,buf,n)");
+            define_macro("__pread_chk_warn", true, (char *[]){"fd", "buf", "n", "off", "bufsize"}, 5, "pread(fd,buf,n,off)");
+            define_macro("__readlink_chk_warn", true, (char *[]){"path", "buf", "len", "buflen"}, 4, "readlink(path,buf,len)");
+            define_macro("__readlinkat_chk_warn", true, (char *[]){"fd", "path", "buf", "len", "buflen"}, 5, "readlinkat(fd,path,buf,len)");
+            define_macro("__getcwd_chk_warn", true, (char *[]){"buf", "size", "buflen"}, 3, "getcwd(buf,size)");
+            define_macro("__getwd_warn", true, (char *[]){"buf", "buflen"}, 2, "getwd(buf)");
+            define_macro("__confstr_chk_warn", true, (char *[]){"name", "buf", "len", "buflen"}, 4, "confstr(name,buf,len)");
+            define_macro("__getgroups_chk_warn", true, (char *[]){"size", "list", "listlen"}, 3, "getgroups(size,list)");
+            define_macro("__ttyname_r_chk_warn", true, (char *[]){"fd", "buf", "buflen", "nreal"}, 4, "ttyname_r(fd,buf,buflen)");
+            define_macro("__getlogin_r_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getlogin_r(buf,buflen)");
+            define_macro("__gethostname_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "gethostname(buf,buflen)");
+            define_macro("__getdomainname_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getdomainname(buf,buflen)");
+            define_macro("__builtin___read_chk_warn", true, (char *[]){"fd", "buf", "n", "bufsize"}, 4, "read(fd,buf,n)");
+            define_macro("__builtin___pread_chk_warn", true, (char *[]){"fd", "buf", "n", "off", "bufsize"}, 5, "pread(fd,buf,n,off)");
+            define_macro("__builtin___readlink_chk_warn", true, (char *[]){"path", "buf", "len", "buflen"}, 4, "readlink(path,buf,len)");
+            define_macro("__builtin___readlinkat_chk_warn", true, (char *[]){"fd", "path", "buf", "len", "buflen"}, 5, "readlinkat(fd,path,buf,len)");
+            define_macro("__builtin___getcwd_chk_warn", true, (char *[]){"buf", "size", "buflen"}, 3, "getcwd(buf,size)");
+            define_macro("__builtin___getwd_warn", true, (char *[]){"buf", "buflen"}, 2, "getwd(buf)");
+            define_macro("__builtin___confstr_chk_warn", true, (char *[]){"name", "buf", "len", "buflen"}, 4, "confstr(name,buf,len)");
+            define_macro("__builtin___getgroups_chk_warn", true, (char *[]){"size", "list", "listlen"}, 3, "getgroups(size,list)");
+            define_macro("__builtin___ttyname_r_chk_warn", true, (char *[]){"fd", "buf", "buflen", "nreal"}, 4, "ttyname_r(fd,buf,buflen)");
+            define_macro("__builtin___getlogin_r_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getlogin_r(buf,buflen)");
+            define_macro("__builtin___gethostname_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "gethostname(buf,buflen)");
+            define_macro("__builtin___getdomainname_chk_warn", true, (char *[]){"buf", "buflen", "nreal"}, 3, "getdomainname(buf,buflen)");
         }
         define_pre("signbit", "__builtin_signbit");
         define_pre("__builtin_trap", "abort");
         define_macro("__builtin_clear_padding", true, (char *[]){"ptr"}, 1, "__builtin_memset(ptr, 0, sizeof(*(ptr)))");
+        // x86 spin-wait / fence intrinsics: real GCC/clang implement
+        // these as genuine compiler builtins (no header, no linkable
+        // symbol). glibc/kernel spinlock code calls them directly, e.g.
+        // curl's lib/curlx bundles a copy of a header that does so
+        // without going through <emmintrin.h>'s _mm_pause(), which left
+        // an unresolved `__builtin_ia32_pause` at link time.
+#ifndef ARCH_ARM64
+        define_macro("__builtin_ia32_pause", true, NULL, 0, "__asm__ __volatile__(\"pause\")");
+        define_macro("__builtin_ia32_mfence", true, NULL, 0, "__asm__ __volatile__(\"mfence\":::\"memory\")");
+        define_macro("__builtin_ia32_lfence", true, NULL, 0, "__asm__ __volatile__(\"lfence\":::\"memory\")");
+        define_macro("__builtin_ia32_sfence", true, NULL, 0, "__asm__ __volatile__(\"sfence\":::\"memory\")");
+#endif
 #ifdef _WIN32
         define_pre("isinf", "__builtin_isinf");
         define_pre("isinff", "__builtin_isinff");
