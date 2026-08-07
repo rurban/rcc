@@ -277,6 +277,11 @@ struct Type {
     Type *param_next; // next in parameter type list
     bool is_variadic; // for function
     bool is_oldstyle; // old-style (K&R) function definition / non-prototype ABI
+    bool is_void_params; // explicit `(void)` parameter list: a real
+    // zero-parameter prototype, distinct from an old-style/K&R empty `()`
+    // (unspecified parameters, compatible with any definition). Both leave
+    // param_types NULL, so this flag is what lets a redeclaration check
+    // tell "genuinely no parameters" apart from "not yet specified".
     bool is_reproducible; // C23 [[reproducible]] function type attribute
     bool is_unsequenced; // C23 [[unsequenced]] function type attribute
     int pack_align; // #pragma pack(n) alignment, 0 = default
@@ -441,6 +446,16 @@ struct LVar {
     // undefined-symbol references otherwise, even though the enclosing
     // function was correctly recognized as dead.
     char *decl_fn_name;
+    // True for the compiler-injected ARM64/Apple synthetic prelude
+    // declarations (parser.c's parse(): a handful of well-known libc
+    // functions predeclared with the correct return type ahead of the
+    // real source, working around an ABI issue). User code re-declaring
+    // one of these more specifically (e.g. `extern int memcmp(const
+    // char *, const char *, size_t);` vs the prelude's `const void *`)
+    // is a long-tolerated, harmless pattern for well-known standard
+    // functions, not a real conflict — the prototype-redeclaration
+    // check must not compare against these.
+    bool is_synthetic_prelude;
 };
 
 // GNU nested functions: fixed frame offset (from rbp/x29) where every

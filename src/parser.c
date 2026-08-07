@@ -1344,6 +1344,7 @@ static bool is_typename(Token *tok) {
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Node *expr(Token **rest, Token *tok);
 bool eval_const_expr(Node *node, long long *val);
+static bool eval_const_fexpr(Node *node, long double *val);
 static bool eval_const_addr_expr(Node *node, long long *val);
 static void global_initializer(Token **rest, Token *tok, LVar *var);
 
@@ -1934,6 +1935,67 @@ static bool eval_const_addr_expr(Node *node, long long *val) {
 // false (val untouched) for anything not statically foldable (e.g. a
 // runtime variable read). Used throughout for array sizes, enum values,
 // case labels, static-storage initializers, and _Static_assert.
+// Float-aware sibling of eval_const_expr(): evaluates a compile-time
+// constant subexpression whose OWN type is a floating type, keeping
+// every intermediate result in floating point. eval_const_expr()
+// delegates to this whenever it meets a floating-typed node — most
+// commonly the operand of an integer cast, e.g. `(size_t)(0.7f *
+// 256.0f)`. Without this, eval_const_expr()'s ND_FNUM case truncated
+// each float literal to an integer *before* combining them (0.7f -> 0,
+// 256.0f -> 256), so `0.7f * 256.0f` folded to 0 instead of 179 --
+// found via flatcc's refmap load-factor constant, which made
+// `_flatcc_refmap_above_load_factor()`'s `n` compile-time constant
+// always 0, so its resize loop's exit condition could never be met and
+// `buckets` doubled forever (wrapping to 0 and spinning) the first time
+// the hash table actually needed to grow.
+static bool eval_const_fexpr(Node *node, long double *val) {
+    if (!node)
+        return false;
+    long double lhs, rhs;
+    switch (node->kind) {
+    case ND_FNUM:
+        *val = node->fval;
+        return true;
+    case ND_NUM:
+        *val = (long double)node->val;
+        return true;
+    case ND_ADD:
+        return eval_const_fexpr(node->lhs, &lhs) && eval_const_fexpr(node->rhs, &rhs) && ((*val = lhs + rhs), true);
+    case ND_SUB:
+        return eval_const_fexpr(node->lhs, &lhs) && eval_const_fexpr(node->rhs, &rhs) && ((*val = lhs - rhs), true);
+    case ND_MUL:
+        return eval_const_fexpr(node->lhs, &lhs) && eval_const_fexpr(node->rhs, &rhs) && ((*val = lhs * rhs), true);
+    case ND_DIV:
+        if (!eval_const_fexpr(node->lhs, &lhs) || !eval_const_fexpr(node->rhs, &rhs) || rhs == 0)
+            return false;
+        *val = lhs / rhs;
+        return true;
+    case ND_NEG:
+        return eval_const_fexpr(node->lhs, &lhs) && ((*val = -lhs), true);
+    case ND_CAST:
+        if (node->lhs && node->lhs->ty && is_flonum(node->lhs->ty))
+            return eval_const_fexpr(node->lhs, val);
+        {
+            // Integer (or other non-float) operand cast to a float type:
+            // evaluate the integer side and convert, respecting its
+            // signedness so e.g. `(float)(unsigned)-1` doesn't sign-extend.
+            long long iv;
+            if (!eval_const_expr(node->lhs, &iv))
+                return false;
+            *val = (node->lhs->ty && node->lhs->ty->is_unsigned) ? (long double)(unsigned long long)iv : (long double)iv;
+            return true;
+        }
+    case ND_COMMA:
+        return eval_const_fexpr(node->rhs, val);
+    case ND_COND: {
+        long long c;
+        return eval_const_expr(node->cond, &c) && eval_const_fexpr(c ? node->then : node->els, val);
+    }
+    default:
+        return false;
+    }
+}
+
 bool eval_const_expr(Node *node, long long *val) {
     long long lhs;
     long long rhs;
@@ -1941,8 +2003,20 @@ bool eval_const_expr(Node *node, long long *val) {
     if (!node)
         return false;
 
+    // A floating-typed subexpression (e.g. the operand of an integer
+    // cast) must be folded entirely in floating point and converted to
+    // an integer only here, at the boundary -- see eval_const_fexpr().
+    if (node->ty && is_flonum(node->ty)) {
+        long double fv;
+        if (!eval_const_fexpr(node, &fv))
+            return false;
+        *val = (long long)fv;
+        return true;
+    }
+
     // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
+
     case ND_NUM:
         *val = node->val;
         return true;
@@ -2545,6 +2619,7 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
         ty = func_type(ty);
         ty->param_types = NULL;
         ty->is_variadic = false;
+        ty->is_void_params = true;
         return ty;
     } else {
         while (!equalc(tok, ")")) {
@@ -7641,7 +7716,18 @@ static bool type_equal(Type *a, Type *b) {
         }
     case TY_STRUCT:
     case TY_UNION:
-        return a == b;
+        // Parameter-list nodes are shallow copies (`*pt = *pty` in
+        // declarator_params) of the canonical tag's Type, so a struct/union
+        // parameter re-parsed from a second declaration (e.g. the function
+        // definition) is never pointer-identical to the first — even more
+        // so when nested inside a function-pointer parameter's own param
+        // list, which is copied again. `members` is preserved unmodified
+        // by the shallow copy and is set once, when the tag is defined, so
+        // comparing it is stable across copies while still distinguishing
+        // different tags (e.g. two same-shaped anonymous structs used as
+        // distinct _Generic selectors). A bare incomplete struct/union
+        // can't appear here: parameters require complete types.
+        return a->members == b->members;
     default:
         return true;
     }
@@ -11582,6 +11668,8 @@ Program *parse(Token *tok) {
                     LVar *fn_lvar = existing;
                     if (!existing) {
                         fn_lvar = new_var(name, fn_symbol_ty, false);
+                        fn_lvar->is_synthetic_prelude = rec_iter_tok && rec_iter_tok->filename &&
+                            !strcmp(rec_iter_tok->filename, "rcc_builtins");
                         fn_lvar->is_extern = attr.is_extern || (!attr.is_inline && !attr.is_static);
                         fn_lvar->is_function = true;
                         fn_lvar->is_inline = attr.is_inline;
@@ -11603,11 +11691,16 @@ Program *parse(Token *tok) {
                         if (!attr.is_inline && !attr.is_static)
                             fn_lvar->has_init = true; // reuse has_init as "has non-inline decl"
                     } else {
-                        if (equalc(tok, "{") && !(attr.is_extern && attr.is_inline) &&
+                        if (!existing->is_synthetic_prelude &&
+                            !(attr.is_extern && attr.is_inline) &&
                             existing->ty && existing->ty->base && !was_oldstyle) {
                             Type *prev_fty = existing->ty->base;
-                            if (prev_fty->param_types && fty->param_types &&
-                                !prev_fty->is_oldstyle) {
+                            if (!prev_fty->is_oldstyle &&
+                                ((prev_fty->is_void_params && fty->param_types) ||
+                                 (fty->is_void_params && prev_fty->param_types))) {
+                                error_tok(tok, "conflicting types for '%s'", name);
+                            } else if (prev_fty->param_types && fty->param_types &&
+                                       !prev_fty->is_oldstyle) {
                                 if (prev_fty->is_variadic != fty->is_variadic) {
                                     error_tok(tok, "conflicting types for '%s'", name);
                                 } else {
