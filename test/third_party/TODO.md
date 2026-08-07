@@ -89,6 +89,10 @@ Top root causes identified:
   → unblocks: lua
 - **VA_OPT**: C23 variadic macro (bfs) — keyword registered but not expanded
   → unblocks: bfs
+- **Prototype mismatch not diagnosed**
+  - `int f(int); int f(char x) {}` compiles silently; gcc errors
+  - curl's configure expects compiler to halt on mismatch → configure fails
+    → unblocks: curl
 
 ### Needs fixing
 
@@ -97,22 +101,18 @@ Top root causes identified:
    - `__v8hi`, `__builtin_shufflevector` (GCC vector ext) → test_blake3, test_brotli, test_ffc, test_fftw, test_libwebp, ...
    - Root: rcc can't parse GCC's `<*mmintrin.h>` headers; these use `__v8hi` types and `__builtin_ia32_*` builtins
 
-2. **Prototype mismatch not diagnosed** — test_curl configure
-   - `int f(int); int f(char x) {}` compiles silently; gcc errors
-   - curl's configure expects compiler to halt on mismatch → configure fails
-
-3. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
+2. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
    - `_BitInt(total * 3)` → "expected specific operator"
 
-4. **lib/tempname.c pattern** (now partially fixed)
+3. **lib/tempname.c pattern** (now partially fixed)
    - `SIZE_WIDTH` undeclared in test_diffutils (project-specific macro, not stdint)
 
-5. **Object file passed as source** — test_heatshrink
+4. **Object file passed as source** — test_heatshrink
    - `.os` file compiled as C source (build system issue, not rcc)
 
-6. **flatcc keywords.h** — `tok_kw__Bool` undeclared (C99 `_Bool` keyword issue)
+5. **flatcc keywords.h** — `tok_kw__Bool` undeclared (C99 `_Bool` keyword issue)
 
-7. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
+6. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
    - Missing system libs: libseccomp, libzstd, etc.
 
 ---
