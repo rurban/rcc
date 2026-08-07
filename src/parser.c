@@ -7956,7 +7956,7 @@ static Node *primary(Token **rest, Token *tok) {
                     tok = tok->next;
                     node = new_var_node(node->var, tok);
                     node->ty = node->var->ty;
-                 } else if (equalc(tok, "true")) {
+                } else if (equalc(tok, "true")) {
                     // C23 keyword: bool-typed constant 1
                     node = new_num(1, tok);
                     node->ty = ty_bool;
@@ -11549,7 +11549,7 @@ Program *parse(Token *tok) {
                 parser_current_fn = name;
                 current_fn_scope_locals = params;
                 current_block_depth = 0;
-                suppress_fn_scope_update = false;
+                bool was_oldstyle = fty->is_oldstyle;
 
                 // Preserve alignment from prior declaration
                 if (!top_decl_align) {
@@ -11603,6 +11603,36 @@ Program *parse(Token *tok) {
                         if (!attr.is_inline && !attr.is_static)
                             fn_lvar->has_init = true; // reuse has_init as "has non-inline decl"
                     } else {
+                        if (equalc(tok, "{") && !(attr.is_extern && attr.is_inline) &&
+                            existing->ty && existing->ty->base && !was_oldstyle) {
+                            Type *prev_fty = existing->ty->base;
+                            if (prev_fty->param_types && fty->param_types &&
+                                !prev_fty->is_oldstyle) {
+                                if (prev_fty->is_variadic != fty->is_variadic) {
+                                    error_tok(tok, "conflicting types for '%s'", name);
+                                } else {
+                                    Type *pa = prev_fty->param_types;
+                                    Type *pb = fty->param_types;
+                                    while (pa && pb) {
+                                        if (pa->kind != TY_STRUCT && pa->kind != TY_UNION &&
+                                            pb->kind != TY_STRUCT && pb->kind != TY_UNION) {
+                                            Type ta = *pa, tb = *pb;
+                                            ta.qual = tb.qual = 0;
+                                            if (!type_equal(&ta, &tb)) {
+                                                error_tok(tok, "conflicting types for '%s'", name);
+                                                break;
+                                            }
+                                            if (opt_W && pa->qual != pb->qual)
+                                                warn_tok(tok, "conflicting type qualifiers for '%s'", name);
+                                        }
+                                        pa = pa->param_next;
+                                        pb = pb->param_next;
+                                    }
+                                    if ((pa != NULL) != (pb != NULL))
+                                        error_tok(tok, "conflicting types for '%s'", name);
+                                }
+                            }
+                        }
                         existing->ty = fn_symbol_ty;
                         // Update flags on redeclaration
                         if (attr.is_inline)

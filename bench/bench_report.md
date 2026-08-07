@@ -14,7 +14,7 @@ _Generated: August 2026_
 | KEFIR -O1 |          197 |          316 |        513 |
 | SCC       |           37 |          550 |        587 |
 | LACC      |           26 |          775 |        801 |
-| CANTCC    |           29 |          422 |        451 |
+| ANTCC     |           29 |          422 |        451 |
 | CCC       |           37 |          549 |        586 |
 | GCC -O0   |           59 |          488 |        547 |
 | GCC -O2   |          152 |          198 |        350 |
@@ -84,8 +84,11 @@ RCC -O2:
 | RCC -O2   |      1114 ms |
 | TCC       |       107 ms |
 | SLIMCC    |       712 ms |
+| XCC       |         FAIL |
 | KEFIR     |     19440 ms |
 | KEFIR -O1 |     34548 ms |
+| SCC       |         FAIL |
+| LACC      |         FAIL |
 | ANTCC     |       408 ms |
 | CCC       |     13063 ms |
 | GCC -O0   |      4130 ms |
