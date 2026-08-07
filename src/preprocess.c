@@ -3125,6 +3125,13 @@ Token *preprocess(char *filename, char *p) {
         define_macro("__builtin_ia32_mfence", true, NULL, 0, "__asm__ __volatile__(\"mfence\":::\"memory\")");
         define_macro("__builtin_ia32_lfence", true, NULL, 0, "__asm__ __volatile__(\"lfence\":::\"memory\")");
         define_macro("__builtin_ia32_sfence", true, NULL, 0, "__asm__ __volatile__(\"sfence\":::\"memory\")");
+        // __builtin_cpu_supports("feature"): real GCC/clang compiler builtin
+        // used for runtime CPU-feature dispatch (e.g. blosc2's
+        // blosc_get_cpu_features(), picking an SSE2/AVX2/AVX512 code path).
+        // __rcc_cpu_supports is a real function injected into every parse
+        // via parser.c's synthetic prelude (see parse()'s x86-64 branch),
+        // doing the actual CPUID query.
+        define_pre("__builtin_cpu_supports", "__rcc_cpu_supports");
 #endif
 #ifdef _WIN32
         define_pre("isinf", "__builtin_isinf");

@@ -244,6 +244,20 @@ __rcc_inline __m128i _mm_shuffle_epi32(__m128i __a, unsigned __imm) {
     return (__m128i)(__v4si_e){__v[__imm & 3], __v[(__imm >> 2) & 3],
                                __v[(__imm >> 4) & 3], __v[(__imm >> 6) & 3]};
 }
+// Shuffle the low/high four 16-bit lanes independently: imm is a
+// 4x2-bit selector for the shuffled half; the other half passes
+// through unchanged.
+__rcc_inline __m128i _mm_shufflelo_epi16(__m128i __a, unsigned __imm) {
+    __v8hi __v = (__v8hi)__a;
+    return (__m128i)(__v8hi){__v[__imm & 3], __v[(__imm >> 2) & 3], __v[(__imm >> 4) & 3],
+                             __v[(__imm >> 6) & 3], __v[4], __v[5], __v[6], __v[7]};
+}
+__rcc_inline __m128i _mm_shufflehi_epi16(__m128i __a, unsigned __imm) {
+    __v8hi __v = (__v8hi)__a;
+    return (__m128i)(__v8hi){__v[0], __v[1], __v[2], __v[3],
+                             __v[4 + (__imm & 3)], __v[4 + ((__imm >> 2) & 3)],
+                             __v[4 + ((__imm >> 4) & 3)], __v[4 + ((__imm >> 6) & 3)]};
+}
 
 // --- Integer bitwise -------------------------------------------------------
 __rcc_inline __m128i _mm_and_si128(__m128i __a, __m128i __b) { return __a & __b; }
@@ -340,6 +354,101 @@ __rcc_inline int _mm_movemask_epi8(__m128i __a) {
     int __r = 0;
     for (int __i = 0; __i < 16; __i++) __r |= (int)(__x[__i] >> 7) << __i;
     return __r;
+}
+
+// --- Interleave (unpack) low/high lanes -------------------------------------
+__rcc_inline __m128i _mm_unpacklo_epi8(__m128i __a, __m128i __b) {
+    __v16qi __x = (__v16qi)__a, __y = (__v16qi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        __r[__i * 2] = __x[__i];
+        __r[__i * 2 + 1] = __y[__i];
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_unpackhi_epi8(__m128i __a, __m128i __b) {
+    __v16qi __x = (__v16qi)__a, __y = (__v16qi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        __r[__i * 2] = __x[__i + 8];
+        __r[__i * 2 + 1] = __y[__i + 8];
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_unpacklo_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b;
+    return (__m128i)(__v8hi){__x[0], __y[0], __x[1], __y[1], __x[2], __y[2], __x[3], __y[3]};
+}
+__rcc_inline __m128i _mm_unpackhi_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b;
+    return (__m128i)(__v8hi){__x[4], __y[4], __x[5], __y[5], __x[6], __y[6], __x[7], __y[7]};
+}
+__rcc_inline __m128i _mm_unpacklo_epi32(__m128i __a, __m128i __b) {
+    __v4si_e __x = (__v4si_e)__a, __y = (__v4si_e)__b;
+    return (__m128i)(__v4si_e){__x[0], __y[0], __x[1], __y[1]};
+}
+__rcc_inline __m128i _mm_unpackhi_epi32(__m128i __a, __m128i __b) {
+    __v4si_e __x = (__v4si_e)__a, __y = (__v4si_e)__b;
+    return (__m128i)(__v4si_e){__x[2], __y[2], __x[3], __y[3]};
+}
+__rcc_inline __m128i _mm_unpacklo_epi64(__m128i __a, __m128i __b) {
+    return (__m128i){__a[0], __b[0]};
+}
+__rcc_inline __m128i _mm_unpackhi_epi64(__m128i __a, __m128i __b) {
+    return (__m128i){__a[1], __b[1]};
+}
+
+// --- Saturating pack (two vectors' worth of wider lanes -> one narrower) ---
+__rcc_inline __m128i _mm_packs_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b;
+    __v16qs __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = __x[__i];
+        __r[__i] = (signed char)(__v > 127 ? 127 : __v < -128 ? -128
+                                                              : __v);
+    }
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = __y[__i];
+        __r[__i + 8] = (signed char)(__v > 127 ? 127 : __v < -128 ? -128
+                                                                  : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_packus_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b;
+    __v16qu __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = __x[__i];
+        __r[__i] = (unsigned char)(__v > 255 ? 255 : __v < 0 ? 0
+                                                             : __v);
+    }
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = __y[__i];
+        __r[__i + 8] = (unsigned char)(__v > 255 ? 255 : __v < 0 ? 0
+                                                                 : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_packs_epi32(__m128i __a, __m128i __b) {
+    __v4si_e __x = (__v4si_e)__a, __y = (__v4si_e)__b;
+    __v8hi __r;
+    for (int __i = 0; __i < 4; __i++) {
+        int __v = __x[__i];
+        __r[__i] = (short)(__v > 32767 ? 32767 : __v < -32768 ? -32768
+                                                              : __v);
+    }
+    for (int __i = 0; __i < 4; __i++) {
+        int __v = __y[__i];
+        __r[__i + 4] = (short)(__v > 32767 ? 32767 : __v < -32768 ? -32768
+                                                                  : __v);
+    }
+    return (__m128i)__r;
+}
+
+// --- Masked store: store only the lanes whose mask byte's high bit is set --
+__rcc_inline void _mm_maskmoveu_si128(__m128i __a, __m128i __mask, char *__p) {
+    __v16qi __x = (__v16qi)__a;
+    __v16qu __m = (__v16qu)__mask;
+    for (int __i = 0; __i < 16; __i++)
+        if (__m[__i] & 0x80) __p[__i] = __x[__i];
 }
 
 // --- Integer <-> scalar conversions ----------------------------------------

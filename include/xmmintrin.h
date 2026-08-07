@@ -144,6 +144,25 @@ __rcc_inline __m128 _mm_movelh_ps(__m128 __a, __m128 __b) {
     return (__m128){__a[0], __a[1], __b[0], __b[1]};
 }
 
+// Minimal __m64 support: just enough to store the low/high 64 bits (two
+// packed floats) of an __m128 through a `__m64 *` pointer, matching real
+// GCC/Clang's <xmmintrin.h> _mm_storeh_pi/_mm_storel_pi signatures. This is
+// NOT a general MMX implementation (no <mmintrin.h>, no __m64 arithmetic) --
+// rcc has no need for MMX beyond this narrow float-pair-store use, seen in
+// third-party SSE2 shuffle code that still spells its 64-bit float-pair
+// stores this (pre-SSE2, `movlps`/`movhps`-era) way.
+typedef long long __m64 __attribute__((__vector_size__(8), __may_alias__));
+__rcc_inline void _mm_storel_pi(__m64 *__p, __m128 __a) {
+    float *__fp = (float *)__p;
+    __fp[0] = __a[0];
+    __fp[1] = __a[1];
+}
+__rcc_inline void _mm_storeh_pi(__m64 *__p, __m128 __a) {
+    float *__fp = (float *)__p;
+    __fp[0] = __a[2];
+    __fp[1] = __a[3];
+}
+
 // 4x4 single-precision transpose (SSE intrinsic macro, GCC/Clang-compatible).
 #define _MM_TRANSPOSE4_PS(row0, row1, row2, row3)                              \
     do {                                                                       \

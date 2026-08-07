@@ -491,6 +491,8 @@ void x86_pand(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_por(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_pcmpeqd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_pcmpgtd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+// PSHUFB xmm, xmm (SSSE3): byte-lane shuffle/permute, dst = shuffle(dst, src)
+void x86_pshufb(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 
 // x87 (legacy, for long double)
 void x86_fldl_m(SecBuf *s, X86Mem srcm);
