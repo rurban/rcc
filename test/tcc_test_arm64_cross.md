@@ -5,9 +5,9 @@ Generated: August 2026
 ## Summary
 
 - **Total**: 120
-- **Passed**: 118
-- **Failed**: 2
-- **Pass Rate**: 98%
+- **Passed**: 119
+- **Failed**: 1
+- **Pass Rate**: 99%
 
 ## Detailed Results
 
@@ -112,7 +112,7 @@ Generated: August 2026
 | 95_bitfields                | PASS      | Output matches |
 | 97_utf8_string_literal      | PASS      | Output matches |
 | 100_c99array-decls          | PASS      | Output matches |
-| 101_cleanup                 | EXEC_FAIL | non-zero exit  |
+| 101_cleanup                 | PASS      | Output matches |
 | 102_alignas                 | PASS      | Output matches |
 | 103_implicit_memmove        | PASS      | Output matches |
 | 104_inline                  | PASS      | Output matches |

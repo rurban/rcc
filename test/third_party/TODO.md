@@ -33,7 +33,7 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 - **Inline-asm multi-output register clobber** (codegen.c) — a
   multi-output `asm()` using x86 fixed-register constraints (e.g.
   `"=a"`/`"=b"`/`"=c"`/`"=d"` for `cpuid`) could silently lose one
-  output's value. codegen.c saves/restores an output's *address*
+  output's value. codegen.c saves/restores an output's _address_
   register around the asm to protect it from being clobbered by the
   asm itself, but address-register allocation is independent per
   operand — operand j's address can land in the exact physical
@@ -58,16 +58,16 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   even a single letter like `f` — silently resolved to the stale,
   wrongly typed phantom parameter instead of its own declaration.
   Reproduced standalone with `int proto(const char *f); enum K { e,
-  f, g = f };` on the clean tree (pre-existing, not a regression from
+f, g = f };` on the clean tree (pre-existing, not a regression from
   this session's other changes). Caught by torture test
   `c23-tag-enum-7` once a synthetic-prelude `__builtin_cpu_supports
-  (const char *f)` shadowed `enum K`'s own `f`.
+(const char *f)` shadowed `enum K`'s own `f`.
 - **`__builtin_cpu_supports("feature")`** (parser.c synthetic
   prelude, preprocess.c macro alias) — runtime CPU-dispatch compiler
   builtin used by several perf-sensitive libraries' SIMD-path
   selection. Implemented via a real `cpuid`-querying function
   injected into the x86-64 synthetic prelude (`static
-  __always_inline__` to avoid multi-TU link collisions).
+__always_inline__` to avoid multi-TU link collisions).
 - **SSE2 gaps**: `_mm_shufflelo_epi16`/`_mm_shufflehi_epi16`, the
   full `_mm_unpacklo`/`_mm_unpackhi_epi{8,16,32,64}` interleave
   family, `_mm_packs_epi16`/`_mm_packus_epi16`/`_mm_packs_epi32`
@@ -195,6 +195,46 @@ Regression tests: `test/test_err_proto_conflict.c`,
 118/118, Unit tests 163/163, Torture 3605/3609 (100% of non-skipped),
 Dg-error 34/34, Link 4/4.
 
+### Fixed (2026-08-08, httpparser session)
+
+- **`-funroll` (opt.c) aliased duplicated labels across unrolled loop
+  copies** — a `for` loop with a constant trip count and a `goto`/label
+  pair in its body (e.g. `for (type_both = 0; type_both < 2;
+type_both++) { ...; if (parser.upgrade) goto test; ...; test: ...; }`)
+  got unrolled into N independent code copies via `clone_expr()`, a
+  shallow per-field AST copy that left every copy's `ND_LABEL` with the
+  _same_ `label_name`. codegen.c resolves both `goto` and `&&label` by
+  formatting one symbolic name, `.L.label.<enclosing-fn>.<label_name>`
+  — since every unrolled copy lives in the same enclosing function, all
+  copies collided on that one symbol, so a later copy's `goto` bound to
+  an _earlier_ copy's already-emitted address instead of its own,
+  not-yet-emitted one. Taking that branch resumed execution mid an
+  earlier copy with the later copy's live registers/stack state, which
+  fed back into the earlier copy's own loop-continue path — corrupting
+  the _enclosing_ scan's own induction variables and turning a bounded
+  double loop into one that ran roughly 25x too many iterations before
+  the test harness's 60s timeout caught it. Reproducible at any `-O2`+
+  `-funroll` build regardless of target OS (identical AST-level bug,
+  not codegen-backend-specific). Fixed by collecting the label names a
+  loop body defines before unrolling and suffixing each unrolled copy's
+  matching `ND_LABEL`/`ND_GOTO`/`ND_LABEL_VAL` nodes with a per-copy
+  tag, so each copy's `goto`/`&&label` only ever binds to that same
+  copy's own `label:` — labels the body merely jumps to _outside_ the
+  loop (e.g. a shared `error:`) are left untouched since only names the
+  loop itself defines are collected.
+  → unblocks: test_httpparser (`test_scan()`'s `for (type_both =
+0; type_both < 2; ...)`, found via the request-scan phase's upgrade
+  test messages)
+
+New regression test: `test/test_unroll_label_alias.c` — a bounded,
+non-hanging reproduction (an escape-hatch counter breaks out after 20
+bounces instead of spinning like the real bug) that fails fast
+(`assert`) on the unfixed compiler at `-O2`/`-O3` and passes at every
+optimization level once fixed. Full suite verified: TCC 118/118, Unit
+tests 171/171 (also verified separately at `-O2`), Torture 3605/3609
+(100% of non-skipped), Dg-error 34/34 — identical to baseline, plus
+confirmed clean on the mingw and arm64 cross targets.
+
 ### Confirmed rcc bug, not yet fixed: test_mruby crash
 
 `mrbtest` SIGSEGVs (stack overflow) during `mrb_mruby_objectspace_gem_init`,
@@ -313,20 +353,20 @@ Top root causes identified:
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                      |
-| ----------------- | ---------------------------------------------------------- |
-| test_bash         | rcc-compiled bash spins on alias4.sub — likely codegen bug |
-| test_perl         | —                                                          |
-| test_go           | —                                                          |
-| test_nginx        | —                                                          |
-| test_groff        | —                                                          |
-| test_argtable3    | —                                                          |
-| test_httpparser   | —                                                          |
-| test_libarchive   | —                                                          |
-| test_liblz4       | —                                                          |
-| test_libpng       | —                                                          |
-| test_libressl     | —                                                          |
-| test_qbe_simplecc | —                                                          |
+| test              | notes                                                                                              |
+| ----------------- | -------------------------------------------------------------------------------------------------- |
+| test_bash         | rcc-compiled bash spins on alias4.sub — likely codegen bug                                         |
+| test_perl         | —                                                                                                  |
+| test_go           | —                                                                                                  |
+| test_nginx        | —                                                                                                  |
+| test_groff        | —                                                                                                  |
+| test_argtable3    | —                                                                                                  |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above |
+| test_libarchive   | —                                                                                                  |
+| test_liblz4       | —                                                                                                  |
+| test_libpng       | —                                                                                                  |
+| test_libressl     | —                                                                                                  |
+| test_qbe_simplecc | —                                                                                                  |
 
 ---
 

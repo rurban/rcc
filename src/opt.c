@@ -708,6 +708,80 @@ static int loop_iteration_count(Node *node) {
     if (count <= 0 || count > MAX_UNROLL_ITERS) return -1;
     return (int)count;
 }
+// Loop-unrolling clones the body N times; a `goto`/label pair *inside*
+// the body (e.g. `for (...) { if (x) goto done; ...; done: ...; }`) gets
+// duplicated into N independent copies. clone_expr() is a shallow-field
+// copy, so every copy's ND_LABEL keeps the *same* label_name — and
+// codegen resolves gotos by formatting ".L.label.<fn>.<label_name>" and
+// binding to whichever same-named definition it resolves first (real
+// bug, found via httpparser's test_scan(): a `for (type_both=0;...;...)`
+// loop containing `goto test;`/`test:` got unrolled to 2 copies sharing
+// one ".L.label.test_scan.test" symbol; copy 1's `goto test` bound to
+// copy 0's `test:` address, so taking that branch in copy 1 resumed
+// execution inside copy 0's tail with copy 1's live state — corrupting
+// the loop induction variables and running the body far more times than
+// its bound allows). Fixed by giving each copy's locally-defined labels
+// a unique per-copy suffix, so a copy's `goto`/`&&label` only ever binds
+// to that same copy's own `label:` — labels defined *outside* the loop
+// (e.g. a shared `error:` reached via `goto error;`) are untouched,
+// since only names the body itself defines are collected below.
+#define MAX_UNROLL_LABELS 32
+typedef struct {
+    char *names[MAX_UNROLL_LABELS];
+    int count;
+} LabelNameSet;
+
+// Collect the label_name of every ND_LABEL defined directly within `n`.
+static void collect_local_labels(Node *n, LabelNameSet *set) {
+    if (!n) return;
+    if (n->kind == ND_LABEL && n->label_name) {
+        bool dup = false;
+        for (int i = 0; i < set->count; i++)
+            if (!strcmp(set->names[i], n->label_name)) {
+                dup = true;
+                break;
+            }
+        if (!dup && set->count < MAX_UNROLL_LABELS)
+            set->names[set->count++] = n->label_name;
+    }
+    collect_local_labels(n->lhs, set);
+    collect_local_labels(n->rhs, set);
+    collect_local_labels(n->cond, set);
+    collect_local_labels(n->then, set);
+    collect_local_labels(n->els, set);
+    collect_local_labels(n->init, set);
+    collect_local_labels(n->inc, set);
+    for (Node *c = n->body; c; c = c->next)
+        collect_local_labels(c, set);
+    for (Node *c = n->args; c; c = c->next)
+        collect_local_labels(c, set);
+}
+
+// Suffix every ND_LABEL/ND_GOTO/ND_LABEL_VAL reference to a name in
+// `set` with a per-clone-copy tag, so copy `suffix`'s labels/gotos bind
+// only to each other.
+static void rename_local_labels(Node *n, LabelNameSet *set, int suffix) {
+    if (!n) return;
+    if ((n->kind == ND_LABEL || n->kind == ND_GOTO || n->kind == ND_LABEL_VAL) && n->label_name) {
+        for (int i = 0; i < set->count; i++) {
+            if (!strcmp(set->names[i], n->label_name)) {
+                n->label_name = format("%s$u%d", n->label_name, suffix);
+                break;
+            }
+        }
+    }
+    rename_local_labels(n->lhs, set, suffix);
+    rename_local_labels(n->rhs, set, suffix);
+    rename_local_labels(n->cond, set, suffix);
+    rename_local_labels(n->then, set, suffix);
+    rename_local_labels(n->els, set, suffix);
+    rename_local_labels(n->init, set, suffix);
+    rename_local_labels(n->inc, set, suffix);
+    for (Node *c = n->body; c; c = c->next)
+        rename_local_labels(c, set, suffix);
+    for (Node *c = n->args; c; c = c->next)
+        rename_local_labels(c, set, suffix);
+}
 
 // Try to unroll a const-sized for-loop. On success returns an ND_BLOCK
 // containing the init followed by N copies of the body (with the induction
@@ -729,6 +803,14 @@ static Node *try_unroll(Node *node) {
     // subst_lvar() below can't distinguish a read from a write.
     if (writes_to_var(node->then, ivar)) return NULL;
 
+    // Collect labels the body itself defines, so each unrolled copy's
+    // goto/label pairs can be given a unique per-copy name below (see
+    // rename_local_labels()'s comment). Labels the body merely jumps to
+    // (e.g. a shared `error:` outside the loop) are never collected, so
+    // those gotos are left pointing at the one real, un-duplicated target.
+    LabelNameSet labelset = {0};
+    collect_local_labels(node->then, &labelset);
+
     // tag the init so it isn't freed when node is replaced
     node->init->next = NULL;
 
@@ -748,6 +830,7 @@ static Node *try_unroll(Node *node) {
             for (Node *s = node->then->body; s; s = s->next) {
                 Node *copy = clone_expr(s);
                 subst_lvar(copy, ivar, start_val + k);
+                if (labelset.count) rename_local_labels(copy, &labelset, k);
                 tail->next = copy;
                 tail = copy;
             }
@@ -755,6 +838,7 @@ static Node *try_unroll(Node *node) {
             // Single-statement body
             Node *copy = clone_expr(node->then);
             subst_lvar(copy, ivar, start_val + k);
+            if (labelset.count) rename_local_labels(copy, &labelset, k);
             tail->next = copy;
             tail = copy;
         }
