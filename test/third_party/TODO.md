@@ -267,9 +267,7 @@ eval 'command true'` spun forever (`test/third_party/test_bash`'s own
   `constexpr` declarations and constant-valued compound literals), or a
   non-local variable that is _also_ `const`-qualified — a plain mutable
   global with a literal initializer no longer qualifies.
-  → unblocks: test_bash's `run-alias` (was hanging; `run-appendop` and
-  `run-arith` also exercise `dstack`-adjacent parser state and pass or
-  regress independently, see below)
+  → unblocks: test_bash's `run-alias` (was hanging)
 
 New regression test: `test/test_const_fold_mutable_global.c` — a
 mutable global struct read through an `if` before and after a runtime
@@ -281,36 +279,113 @@ passes at every level once fixed. Full suite verified: 0 failed
 (Linux native `--all`, Torture 3605/3609 = 100% of non-skipped); Unit
 tests 172/172, also verified separately at `-O2`.
 
-### Confirmed rcc bug, not yet fixed: test_bash `run-arith`/`run-arith-for`
+### Fixed (2026-08-08, continued — small-struct return ABI)
 
-While fixing `run-alias` above, bash's own `make test` (run to
-completion for the first time) surfaced a second, unrelated failure
-further into the suite: `run-arith` prints wrong numeric results (values
-matching neither expected small integers nor an obviously-corrupt
-pattern — e.g. `76`, `1070722096`, `4655621`, `140737478876000`) and
-`run-arith-for` hangs. Minimal repro (`tests/arith-for.tests`'s own
-post-bash-4.2 case):
+- **SysV x86-64 small-aggregate return: rcc always used a hidden return
+  pointer for every struct/union return, regardless of size** (codegen.c)
+  — `has_hidden_retbuf` / the prologue's `param_index` / `has_retbuf`
+  (three near-duplicated classification sites) all treated _any_
+  `TY_STRUCT`/`TY_UNION` return type as needing a hidden pointer
+  argument. The real ABI only requires that for aggregates >16 bytes (or
+  ones that don't classify as all-INTEGER/all-SSE eightbytes); a struct
+  ≤16 bytes with no floating member returns in RAX (first eightbyte) and
+  RDX (second eightbyte, if >8 bytes) with **no** hidden pointer at all.
+  Every rcc-compiled caller and callee agreed with each other (so pure
+  rcc-to-rcc code, single- or multi-TU, never showed a symptom), but
+  calling any _external_ (non-rcc-compiled) function with this return
+  shape silently passed a phantom hidden-pointer argument the real
+  callee never expects — shifting every real argument into the wrong
+  register — and then read the "return value" out of a buffer the
+  callee never wrote to.
+  → found via bash's own arithmetic evaluator (`expr.c`), which computes
+  every `%`/`/` inside `$(( ))` via glibc's `imaxdiv()` (`intmax_t
+quot, rem;`, 16 bytes, all-integer): confirmed in isolation first —
+  `div()`/`ldiv()`/`lldiv()`/`imaxdiv()` all returned `{0, 0}`
+  regardless of arguments — then traced back to bash: `run-arith`
+  printed wrong numbers and `run-arith-for` hung
+  (`tests/arith-for.tests`'s post-bash-4.2 case, a `for ((...))` whose
+  termination depends on `i % 9`, never terminated once `%` always
+  returned 0). Root-caused with a minimal `imaxdiv()`-calling
+  reproduction once the earlier `-O0` bisection (which ruled out
+  `y.tab.c`/`expr.c`/`execute_cmd.c`/`subst.c` optimization artifacts,
+  since this bug fires at _every_ optimization level including `-O0`)
+  pointed away from a CTFE-style miscompile and toward a calling-
+  convention issue instead. Confirmed cross-architecture: rcc-arm64 has
+  the identical bug (AAPCS64 has the same ≤16-byte no-hidden-pointer
+  rule via X0:X1) — **only the x86-64 SysV path is fixed this session**;
+  ARM64 is untouched (still always hidden-pointer for structs) to avoid
+  shipping a half-implemented AAPCS64 register-return path, and is
+  tracked as a follow-up below.
+  Fixed by classifying struct/union return types ≤16 bytes with no
+  float/double/long-double/`_Complex` member anywhere (recursively
+  through nested structs/unions/arrays) as GP-register returns, and
+  wiring that classification into all three x86-64 SysV decision sites
+  plus the actual RAX/RDX value transfer at both the call site
+  (`gen_funcall`) and the function definition (`ND_RETURN`). A second,
+  subtler bug surfaced while fixing this: the function epilogue already
+  saved/restored RAX around `__attribute__((cleanup(...)))` handler
+  calls (so a pending scalar return value survives a cleanup handler's
+  own function calls, which clobber caller-saved registers) but never
+  did the same for RDX — so a >8-byte register-returned struct whose
+  local had a cleanup attribute lost its upper eightbyte the moment the
+  cleanup handler made any call of its own (regressed the TCC suite's
+  `101_cleanup` mid-fix: `test_cleanup3`'s 16-byte `tsti` came back `42
+43 0 0` instead of `42 43 44 45`). Fixed by saving/restoring RDX
+  around cleanup calls exactly like RAX, gated on the function actually
+  returning a >8-byte GP-register struct.
+  → unblocks: test*bash's `run-arith`/`run-arith-for` (both now pass),
+  plus nine \_other* bash test suites that looked unrelated at first
+  glance but turned out to depend on correct internal arithmetic too
+  (`run-assoc`, `run-comsub2`, `run-coproc`, `run-extglob`,
+  `run-heredoc`, `run-histexpand`, `run-jobs`, `run-lastpipe`,
+  `run-nameref` — all diffed against real bash before this fix, all
+  match after)
 
-```sh
-for (( i = j = k = 1; i % 9 || (j *= -1, $( ((i%9)) || printf " " >&2; echo 0), k++ <= 10); i += j ))
-do printf "$i"; done
-```
+New regression test: `test/test_struct_return_gpregs.c` — calls the
+libc div-family functions directly (the real-world trigger) plus a set
+of user-defined struct shapes (16-byte all-integer, struct with a
+pointer member, nested small struct, through a function pointer, direct
+assignment) that must return correctly, alongside a >16-byte struct and
+a struct with a float member that must still take the (unchanged)
+hidden-pointer path. Fails (`assert` abort) on the unfixed compiler at
+every optimization level (including `-O0` — this bug is a calling-
+convention defect, not an optimizer artifact); passes at every level
+once fixed. Full suite verified: 0 failed (Linux native `--all`,
+Torture 3605/3609 = 100% of non-skipped); Unit tests 173/173, also
+verified separately at `-O2`. Real-world repro: bash's own `make test`
+now runs to completion (previously hung); comparing which of its 86
+test scripts diff against a real-bash baseline run in the same sandbox
+dropped from 19 to 1 (the one remaining, `run-glob-bracket`, is an
+unrelated dynamic-loadable-builtin symbol-visibility issue — see
+"Confirmed rcc bug, not yet fixed" below).
 
-Real bash prints a 5-cycle zigzag (`12345678 987654321 0123...`) and
-halts; rcc-built bash counts `i` up linearly forever (`j *= -1` never
-seems to take effect, or `i % 9` never re-evaluates true), never
-satisfying the loop's own termination condition.
-**Not the same root cause as the `dstack` fix above** — confirmed by
-rebuilding `y.tab.c` (parse.y, where the `for ((...))` grammar action
-lives) at `-O0` and even `expr.c` + `execute_cmd.c` + `subst.c`
-together at `-O0` (arithmetic evaluation, command execution, and
-command substitution — the three subsystems this one-liner exercises):
-the hang persists either way, so it isn't a CTFE/dead-branch artifact
-like `dstack` and needs its own bisection (likely something in how
-`$(...)` command substitution's side effects interact with `((...))`'s
-comma-operator/short-circuit evaluation, or a register/stack-state bug
-specific to that nesting) starting from a `-O0`-vs-`-O1` compare across
-the remaining untried files, not yet attempted.
+### Fixed rcc bug: ARM64 small-struct return ABI
+
+AAPCS64 has the same "small aggregate returns in registers, no hidden
+pointer" rule as x86-64 SysV (≤16 bytes, non-HFA composite types return
+raw bits in X0:X1) — rcc-arm64 has the identical always-hidden-pointer
+bug fixed above for x86-64 (confirmed: `div()`/`ldiv()`/`lldiv()` all
+return `{0, 0}` under `qemu-aarch64` too). Not fixed this session to
+avoid shipping a half-verified AAPCS64 register-return path; needs the
+same three-site classification change plus X0/X1 value-transfer logic
+at the ARM64 call site and `ND_RETURN`, and the equivalent of the RDX
+cleanup-preservation fix (X1, if ARM64's epilogue has an analogous
+X0-only cleanup save/restore — not yet checked).
+
+### Confirmed rcc bug, not yet fixed: test_bash `run-glob-bracket` (dynamic loadable builtin)
+
+`tests/run-glob-bracket` fails immediately: `./bash: symbol lookup
+error: ./strmatch.so: undefined symbol: strmatch`. bash's test loads a
+small shared-library "loadable builtin" (`enable -f ./strmatch.so
+strmatch`) that calls back into a `strmatch` symbol the main `bash`
+binary is expected to export; rcc's `bash` binary apparently doesn't
+export (or `.so` loader doesn't resolve) that symbol the same way a
+glibc/gcc-linked `bash` does. Unrelated to the arithmetic/ABI fix above
+(confirmed: this is the _only_ one of bash's 86 test scripts that still
+diffs against a real-bash baseline run in the same sandbox). Needs
+investigation into rcc's ELF symbol export defaults for the main
+executable (dynamic symbol table / `-rdynamic`-equivalent) versus
+`dlopen()`+`dlsym()` resolution against it — not yet started.
 
 ### Confirmed rcc bug, not yet fixed: test_mruby crash
 
@@ -430,20 +505,20 @@ Top root causes identified:
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                                                                                                       |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| test_bash         | `run-alias` **fixed** — was: `dstack` const-fold bug, see "Fixed (2026-08-08, test_bash session)" above; `run-arith`/`run-arith-for` still broken (separate bug, see below) |
-| test_perl         | —                                                                                                                                                                           |
-| test_go           | —                                                                                                                                                                           |
-| test_nginx        | —                                                                                                                                                                           |
-| test_groff        | —                                                                                                                                                                           |
-| test_argtable3    | —                                                                                                                                                                           |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                          |
-| test_libarchive   | —                                                                                                                                                                           |
-| test_liblz4       | —                                                                                                                                                                           |
-| test_libpng       | —                                                                                                                                                                           |
-| test_libressl     | —                                                                                                                                                                           |
-| test_qbe_simplecc | —                                                                                                                                                                           |
+| test              | notes                                                                                                                                                                                                                             |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` (unrelated dynamic-loadable-builtin issue) still open |
+| test_perl         | —                                                                                                                                                                                                                                 |
+| test_go           | —                                                                                                                                                                                                                                 |
+| test_nginx        | —                                                                                                                                                                                                                                 |
+| test_groff        | —                                                                                                                                                                                                                                 |
+| test_argtable3    | —                                                                                                                                                                                                                                 |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                |
+| test_libarchive   | —                                                                                                                                                                                                                                 |
+| test_liblz4       | —                                                                                                                                                                                                                                 |
+| test_libpng       | —                                                                                                                                                                                                                                 |
+| test_libressl     | —                                                                                                                                                                                                                                 |
+| test_qbe_simplecc | —                                                                                                                                                                                                                                 |
 
 ---
 

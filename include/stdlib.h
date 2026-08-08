@@ -53,6 +53,29 @@ int abs(int j);
 long labs(long j);
 long long llabs(long long j);
 
+/* C89 7.10.6.2/6.2/6.3: div()/ldiv()/lldiv() return a small struct by
+ * value ({quot, rem}, same type as the arguments, quot first). Layout is
+ * standard-mandated, so these are safe to declare portably here even
+ * though this bundled header doesn't track the platform's full <stdlib.h> —
+ * omitting them made any call an implicit-int "undeclared variable",
+ * which (for a struct-returning function) reads the result out of the
+ * wrong registers entirely rather than just losing a prototype warning. */
+typedef struct {
+    int quot;
+    int rem;
+} div_t;
+typedef struct {
+    long quot;
+    long rem;
+} ldiv_t;
+typedef struct {
+    long long quot;
+    long long rem;
+} lldiv_t;
+div_t div(int numer, int denom);
+ldiv_t ldiv(long numer, long denom);
+lldiv_t lldiv(long long numer, long long denom);
+
 void qsort(void *base, size_t nmemb, size_t size,
            int (*compar)(const void *, const void *));
 void *bsearch(const void *key, void *base, size_t nmemb, size_t size,
