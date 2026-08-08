@@ -235,6 +235,83 @@ tests 171/171 (also verified separately at `-O2`), Torture 3605/3609
 (100% of non-skipped), Dg-error 34/34 — identical to baseline, plus
 confirmed clean on the mingw and arm64 cross targets.
 
+### Fixed (2026-08-08, test_bash session)
+
+- **`eval_const_expr()`'s `ND_MEMBER` fold treated any _global_ with a
+  literal initializer as compile-time-constant forever** (parser.c) — the
+  fold's guard was `root_var->is_constexpr || !root_var->is_local`: for
+  a plain (non-`const`) global struct/union, `!is_local` is true and a
+  static initializer sets `has_init`, so a `global.member` read folded
+  to the value baked into the _initializer_ — permanently, for every
+  later read in the translation unit — even though an ordinary mutable
+  global is written to at runtime throughout the program. Once a branch
+  like this folds away, no later write can ever bring it back.
+  Found via bash's `struct dstack dstack = { NULL, 0, 0 };` (parse.y):
+  `current_delimiter(dstack)` (`dstack.delimiter_depth ? ... : 0`) folded
+  to a permanent `0`, so every `if (current_delimiter(dstack) ==
+'\'') ...`-style quote-tracking check throughout the hand-written
+  parser always took the "not quoted" branch. That broke the alias-
+  recursion guard in `shell_getc()` badly enough that alias expansion
+  never terminated: `shopt -s expand_aliases; alias command=command;
+eval 'command true'` spun forever (`test/third_party/test_bash`'s own
+  `tests/alias4.sub`, run by its `make test`). Reproducible at any
+  `-O1`+ build (CTFE only runs there); `-O0` passed, which is what made
+  this a genuine miscompile rather than a bash logic bug — confirmed by
+  diffing rcc-built bash's `alias4.sub` output against real bash's
+  (identical after the fix). Root-caused by tracing which `ND_IF`s
+  opt.c's dead-branch elimination actually folded during bash's build
+  (a temporary `getenv("RCC_TRACE_FOLD")`-gated trace in the fold site)
+  and finding `current_delimiter(dstack) == '\''` folding to a constant
+  `0` despite `dstack` never being declared `const`.
+  Fixed by requiring genuine immutability: `is_constexpr` (real
+  `constexpr` declarations and constant-valued compound literals), or a
+  non-local variable that is _also_ `const`-qualified — a plain mutable
+  global with a literal initializer no longer qualifies.
+  → unblocks: test_bash's `run-alias` (was hanging; `run-appendop` and
+  `run-arith` also exercise `dstack`-adjacent parser state and pass or
+  regress independently, see below)
+
+New regression test: `test/test_const_fold_mutable_global.c` — a
+mutable global struct read through an `if` before and after a runtime
+write (must observe the write), plus a genuinely-`const` global struct
+read the same way (must still constant-fold, guarding against
+regressing the legitimate case). Fails on the unfixed compiler at
+`-O1`/`-O2`/`-O3` (passes at `-O0`, where CTFE doesn't run at all);
+passes at every level once fixed. Full suite verified: 0 failed
+(Linux native `--all`, Torture 3605/3609 = 100% of non-skipped); Unit
+tests 172/172, also verified separately at `-O2`.
+
+### Confirmed rcc bug, not yet fixed: test_bash `run-arith`/`run-arith-for`
+
+While fixing `run-alias` above, bash's own `make test` (run to
+completion for the first time) surfaced a second, unrelated failure
+further into the suite: `run-arith` prints wrong numeric results (values
+matching neither expected small integers nor an obviously-corrupt
+pattern — e.g. `76`, `1070722096`, `4655621`, `140737478876000`) and
+`run-arith-for` hangs. Minimal repro (`tests/arith-for.tests`'s own
+post-bash-4.2 case):
+
+```sh
+for (( i = j = k = 1; i % 9 || (j *= -1, $( ((i%9)) || printf " " >&2; echo 0), k++ <= 10); i += j ))
+do printf "$i"; done
+```
+
+Real bash prints a 5-cycle zigzag (`12345678 987654321 0123...`) and
+halts; rcc-built bash counts `i` up linearly forever (`j *= -1` never
+seems to take effect, or `i % 9` never re-evaluates true), never
+satisfying the loop's own termination condition.
+**Not the same root cause as the `dstack` fix above** — confirmed by
+rebuilding `y.tab.c` (parse.y, where the `for ((...))` grammar action
+lives) at `-O0` and even `expr.c` + `execute_cmd.c` + `subst.c`
+together at `-O0` (arithmetic evaluation, command execution, and
+command substitution — the three subsystems this one-liner exercises):
+the hang persists either way, so it isn't a CTFE/dead-branch artifact
+like `dstack` and needs its own bisection (likely something in how
+`$(...)` command substitution's side effects interact with `((...))`'s
+comma-operator/short-circuit evaluation, or a register/stack-state bug
+specific to that nesting) starting from a `-O0`-vs-`-O1` compare across
+the remaining untried files, not yet attempted.
+
 ### Confirmed rcc bug, not yet fixed: test_mruby crash
 
 `mrbtest` SIGSEGVs (stack overflow) during `mrb_mruby_objectspace_gem_init`,
@@ -353,20 +430,20 @@ Top root causes identified:
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                              |
-| ----------------- | -------------------------------------------------------------------------------------------------- |
-| test_bash         | rcc-compiled bash spins on alias4.sub — likely codegen bug                                         |
-| test_perl         | —                                                                                                  |
-| test_go           | —                                                                                                  |
-| test_nginx        | —                                                                                                  |
-| test_groff        | —                                                                                                  |
-| test_argtable3    | —                                                                                                  |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above |
-| test_libarchive   | —                                                                                                  |
-| test_liblz4       | —                                                                                                  |
-| test_libpng       | —                                                                                                  |
-| test_libressl     | —                                                                                                  |
-| test_qbe_simplecc | —                                                                                                  |
+| test              | notes                                                                                                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_bash         | `run-alias` **fixed** — was: `dstack` const-fold bug, see "Fixed (2026-08-08, test_bash session)" above; `run-arith`/`run-arith-for` still broken (separate bug, see below) |
+| test_perl         | —                                                                                                                                                                           |
+| test_go           | —                                                                                                                                                                           |
+| test_nginx        | —                                                                                                                                                                           |
+| test_groff        | —                                                                                                                                                                           |
+| test_argtable3    | —                                                                                                                                                                           |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                          |
+| test_libarchive   | —                                                                                                                                                                           |
+| test_liblz4       | —                                                                                                                                                                           |
+| test_libpng       | —                                                                                                                                                                           |
+| test_libressl     | —                                                                                                                                                                           |
+| test_qbe_simplecc | —                                                                                                                                                                           |
 
 ---
 
