@@ -506,28 +506,85 @@ Top root causes identified:
   (2026-08-07, continued)" above for the full writeup
   → unblocks: curl
 
+### Fixed (2026-08-08, shufflevector/SSE2-baseline session)
+
+- **`__builtin_shufflevector` unimplemented** (parser.c) — a Clang
+  builtin (`vec1, vec2, i0, i1, ..., iN-1`, all indices compile-time
+  constants, output lane count = however many indices were given) that
+  GCC 15's own `<avxintrin.h>`/`<avx2intrin.h>` now also use
+  unconditionally in several `_mm_reduce_*`/`_mm256_reduce_*` function
+  bodies. rcc has no bundled AVX/AVX2 headers, so any project that
+  merely does `#include <immintrin.h>` (regardless of whether it calls
+  any AVX function) falls through to the real system headers and hits
+  this — the whole TU failed to parse ("expected an expression") at
+  every one of those reduce-macro call sites, and a syntax error in
+  the middle of a declaration list cascaded into spurious errors on
+  every subsequent statement.
+  Implemented generically at parse time (like the existing
+  `__builtin_shuffle`, but with immediate indices instead of a runtime
+  mask vector, and independent output length): binds both operand
+  vectors to temps once, then for each index either gathers
+  `vec1[idx]` (idx < N1), `vec2[idx - N1]` (N1 <= idx < N1+N2), or an
+  arbitrary lane (idx < 0, Clang's "don't care" convention) into a
+  freshly-sized result vector built via the existing
+  `make_vector_type()`. Portable — no architecture-specific codegen,
+  works identically on ARM64.
+  → unblocks: test_blake3's `blake3_dispatch.c` (parses past the
+  `<immintrin.h>` chain; blake3 itself still needs real AVX-512
+  codegen it doesn't get from rcc, see below)
+- **Large baseline-SSE2 gap in `include/emmintrin.h`** — once
+  `__builtin_shufflevector` no longer aborted the parse early, GCC's
+  own `avx2intrin.h` reduce macros went on to call `_mm_min_epi16`/
+  `_mm_max_epi16` by name, which don't exist in rcc's _own_
+  (deliberately minimal, hand-written) `emmintrin.h` — found to be
+  missing an entire tier of plain SSE2 (no SSSE3+) intrinsics that
+  real programs call directly too: `_mm_min_epi16`/`_mm_max_epi16`/
+  `_mm_min_epu8`/`_mm_max_epu8`, the saturating `_mm_adds_`/`_mm_subs_`
+  family (epi8/epi16/epu8/epu16), `_mm_avg_epu8`/`_mm_avg_epu16`,
+  `_mm_mulhi_epi16`/`_mm_mulhi_epu16`, `_mm_madd_epi16`,
+  `_mm_sad_epu8`, and the whole-_register_ byte shifts
+  `_mm_srli_si128`/`_mm_slli_si128`/`_mm_bsrli_si128`/`_mm_bslli_si128`
+  (distinct from the per-lane `_mm_s{r,l}li_epi{16,32,64}` that did
+  exist). All implemented as plain lane-wise C loops (matching the
+  file's existing style), every result cross-checked against real
+  gcc's `<emmintrin.h>` output.
+  → unblocks: test_libwebp (`sharpyuv_sse2.c` calls `_mm_max_epi16`/
+  `_mm_min_epi16`/`_mm_madd_epi16` directly; `dec_sse2.c` calls
+  `_mm_srli_si128`/`_mm_slli_si128` directly) — now builds, links, and
+  its `cwebp`/`dwebp` tools successfully decode a real `.webp` image
+
+New regression tests: `test/test_builtin_shufflevector.c` (portable,
+no arch guard — exercises cross-operand selection, output-length
+narrowing, single-vector reversal, and a non-`short` element type),
+`test/test_sse2_minmax_madd_sat.c` (x86-only guarded like
+`test_ia32_pause.c`'s convention). Full suite verified: Torture
+3605/3609 (100% of non-skipped), Dg-error 34/34, Unit tests 175/175,
+Link tests 5/5, 0 failed overall; confirmed clean (both new tests
+PASS) on the mingw and arm64 cross-compile targets.
+
+**Still blocked** (much larger undertakings, not attempted this
+session): test*blake3 needs real AVX-512 (`avx512fintrin.h` pulls in
+`__mmask8`/`_CMP_EQ_OQ`-style predicates and hundreds of
+`\_\_builtin_ia32*\*` AVX-512 builtins rcc has no codegen for at all);
+test_brotli needs real AVX2 codegen similarly; test_fftw's failure
+(`fftw3.h:483`, `\_\_float128`/`FFTW_DEFINE_API`quad-precision) is
+unrelated to SIMD entirely. A genuine fix for blake3/brotli would mean
+rcc shipping its own`<immintrin.h>`/`<avxintrin.h>`/`<avx2intrin.h>`(the way it already does for`<emmintrin.h>`/`<tmmintrin.h>`) instead
+of falling through to GCC's real, AVX-512-chaining system headers —
+a multi-session effort, not a quick win.
+
 ### Needs fixing
 
-1. **Missing x86 intrinsics** (~10 projects remaining) — partially
-   fixed (`__builtin_ia32_pause`/`mfence`/`lfence`/`sfence`, SSSE3
-   `tmmintrin.h`/`_mm_shuffle_epi8`, see "Fixed (2026-08-07, blosc2
-   session)" above)
-   - `__v8hi`, `__builtin_shufflevector` (GCC vector ext) → test_blake3, test_brotli, test_ffc, test_fftw, test_libwebp, ...
-   - Root: rcc can't parse GCC's `<*mmintrin.h>` headers; these use `__v8hi` types and `__builtin_ia32_*` builtins
-   - blosc2 itself now builds/links/tests cleanly (see above); its
-     one residual gap is CMake's `check_c_compiler_flag(-mssse3)`
-     reporting unsupported (driver behavior, not an intrinsics gap)
-
-2. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
+1. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
    - `_BitInt(total * 3)` → "expected specific operator"
 
-3. **lib/tempname.c pattern** (now partially fixed)
+2. **lib/tempname.c pattern** (now partially fixed)
    - `SIZE_WIDTH` undeclared in test_diffutils (project-specific macro, not stdint)
 
-4. **Object file passed as source** — test_heatshrink
+3. **Object file passed as source** — test_heatshrink
    - `.os` file compiled as C source (build system issue, not rcc)
 
-5. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
+4. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
    - Missing system libs: libseccomp, libzstd, etc.
 
 ---
@@ -557,9 +614,12 @@ Top root causes identified:
    infinite recursion in error formatting); needs gdb investigation
    with the actual mruby VM environment, see the detailed writeup
    above
-2. **Missing x86 intrinsics**: `__v8hi`/`__builtin_shufflevector` GCC
-   vector-extension surface — affects ~10 remaining projects (blake3,
-   brotli, fftw, libwebp, ...). bearssl and blosc2 unblocked
-   (SSSE3/`tmmintrin.h` now available, see "Fixed (2026-08-07, blosc2
-   session)" above).
+2. **AVX2/AVX-512 codegen** — test_blake3 (AVX-512), test_brotli (AVX2)
+   need rcc to ship its own `<immintrin.h>`/`<avxintrin.h>`/
+   `<avx2intrin.h>` (and, for blake3, AVX-512 mask-register codegen)
+   instead of falling through to GCC's real system headers; a
+   multi-session effort, see "Fixed (2026-08-08,
+   shufflevector/SSE2-baseline session)" above for what's already
+   covered (`__builtin_shufflevector`, the missing baseline-SSE2 tier —
+   both unblocked test_libwebp).
 3. **C23 `_BitInt(N)`** — test_cproc, test_c23doku

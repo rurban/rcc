@@ -238,6 +238,147 @@ __rcc_inline __m128i _mm_mul_epu32(__m128i __a, __m128i __b) {
     return (__m128i)(__v2du){(unsigned long long)__va[0] * __vb[0],
                              (unsigned long long)__va[2] * __vb[2]};
 }
+
+// --- Saturating add/sub -----------------------------------------------------
+__rcc_inline __m128i _mm_adds_epi8(__m128i __a, __m128i __b) {
+    __v16qs __x = (__v16qs)__a, __y = (__v16qs)__b, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __v = (int)__x[__i] + (int)__y[__i];
+        __r[__i] = (signed char)(__v > 127 ? 127 : __v < -128 ? -128
+                                                              : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_adds_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = (int)__x[__i] + (int)__y[__i];
+        __r[__i] = (short)(__v > 32767 ? 32767 : __v < -32768 ? -32768
+                                                              : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_adds_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __v = (int)__x[__i] + (int)__y[__i];
+        __r[__i] = (unsigned char)(__v > 255 ? 255 : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_adds_epu16(__m128i __a, __m128i __b) {
+    __v8hu __x = (__v8hu)__a, __y = (__v8hu)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = (int)__x[__i] + (int)__y[__i];
+        __r[__i] = (unsigned short)(__v > 65535 ? 65535 : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_subs_epi8(__m128i __a, __m128i __b) {
+    __v16qs __x = (__v16qs)__a, __y = (__v16qs)__b, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __v = (int)__x[__i] - (int)__y[__i];
+        __r[__i] = (signed char)(__v > 127 ? 127 : __v < -128 ? -128
+                                                              : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_subs_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = (int)__x[__i] - (int)__y[__i];
+        __r[__i] = (short)(__v > 32767 ? 32767 : __v < -32768 ? -32768
+                                                              : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_subs_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __v = (int)__x[__i] - (int)__y[__i];
+        __r[__i] = (unsigned char)(__v < 0 ? 0 : __v);
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_subs_epu16(__m128i __a, __m128i __b) {
+    __v8hu __x = (__v8hu)__a, __y = (__v8hu)__b, __r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __v = (int)__x[__i] - (int)__y[__i];
+        __r[__i] = (unsigned short)(__v < 0 ? 0 : __v);
+    }
+    return (__m128i)__r;
+}
+
+// --- Min / max (integer) -----------------------------------------------------
+__rcc_inline __m128i _mm_min_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) __r[__i] = __x[__i] < __y[__i] ? __x[__i] : __y[__i];
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_max_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) __r[__i] = __x[__i] > __y[__i] ? __x[__i] : __y[__i];
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_min_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b, __r;
+    for (int __i = 0; __i < 16; __i++) __r[__i] = __x[__i] < __y[__i] ? __x[__i] : __y[__i];
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_max_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b, __r;
+    for (int __i = 0; __i < 16; __i++) __r[__i] = __x[__i] > __y[__i] ? __x[__i] : __y[__i];
+    return (__m128i)__r;
+}
+
+// --- Rounded unsigned average ------------------------------------------------
+__rcc_inline __m128i _mm_avg_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b, __r;
+    for (int __i = 0; __i < 16; __i++)
+        __r[__i] = (unsigned char)(((unsigned)__x[__i] + (unsigned)__y[__i] + 1) >> 1);
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_avg_epu16(__m128i __a, __m128i __b) {
+    __v8hu __x = (__v8hu)__a, __y = (__v8hu)__b, __r;
+    for (int __i = 0; __i < 8; __i++)
+        __r[__i] = (unsigned short)(((unsigned)__x[__i] + (unsigned)__y[__i] + 1) >> 1);
+    return (__m128i)__r;
+}
+
+// --- High 16 bits of a 16x16->32 multiply ------------------------------------
+__rcc_inline __m128i _mm_mulhi_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b, __r;
+    for (int __i = 0; __i < 8; __i++) __r[__i] = (short)(((int)__x[__i] * (int)__y[__i]) >> 16);
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_mulhi_epu16(__m128i __a, __m128i __b) {
+    __v8hu __x = (__v8hu)__a, __y = (__v8hu)__b, __r;
+    for (int __i = 0; __i < 8; __i++)
+        __r[__i] = (unsigned short)(((unsigned)__x[__i] * (unsigned)__y[__i]) >> 16);
+    return (__m128i)__r;
+}
+
+// --- Multiply-add pairs of signed 16-bit lanes into 32-bit sums -------------
+__rcc_inline __m128i _mm_madd_epi16(__m128i __a, __m128i __b) {
+    __v8hi __x = (__v8hi)__a, __y = (__v8hi)__b;
+    __v4si_e __r;
+    for (int __i = 0; __i < 4; __i++)
+        __r[__i] = (int)__x[__i * 2] * (int)__y[__i * 2] +
+            (int)__x[__i * 2 + 1] * (int)__y[__i * 2 + 1];
+    return (__m128i)__r;
+}
+
+// --- Sum of absolute byte differences, two 8-byte groups --------------------
+__rcc_inline __m128i _mm_sad_epu8(__m128i __a, __m128i __b) {
+    __v16qu __x = (__v16qu)__a, __y = (__v16qu)__b;
+    unsigned __s0 = 0, __s1 = 0;
+    for (int __i = 0; __i < 8; __i++)
+        __s0 += (unsigned)(__x[__i] > __y[__i] ? __x[__i] - __y[__i] : __y[__i] - __x[__i]);
+    for (int __i = 8; __i < 16; __i++)
+        __s1 += (unsigned)(__x[__i] > __y[__i] ? __x[__i] - __y[__i] : __y[__i] - __x[__i]);
+    return (__m128i){(long long)__s0, (long long)__s1};
+}
+
 // Shuffle 32-bit lanes: imm is a 4x2-bit selector.
 __rcc_inline __m128i _mm_shuffle_epi32(__m128i __a, unsigned __imm) {
     __v4si_e __v = (__v4si_e)__a;
@@ -339,6 +480,28 @@ __rcc_inline __m128i _mm_srai_epi32(__m128i __a, int __c) {
     for (int __i = 0; __i < 4; __i++) __x[__i] = __x[__i] >> __s;
     return (__m128i)__x;
 }
+
+// Whole-register byte shift (not per-lane): shift the 16-byte vector right
+// (srli) or left (slli) by __imm BYTES, zero-filling the vacated end.
+// __imm outside [0,15] yields an all-zero result (matches PSRLDQ/PSLLDQ).
+__rcc_inline __m128i _mm_srli_si128(__m128i __a, int __imm) {
+    __v16qu __x = (__v16qu)__a, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __src = __i + __imm;
+        __r[__i] = (__imm < 0 || __src >= 16) ? 0 : __x[__src];
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_slli_si128(__m128i __a, int __imm) {
+    __v16qu __x = (__v16qu)__a, __r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __src = __i - __imm;
+        __r[__i] = (__imm < 0 || __src < 0) ? 0 : __x[__src];
+    }
+    return (__m128i)__r;
+}
+__rcc_inline __m128i _mm_bsrli_si128(__m128i __a, int __imm) { return _mm_srli_si128(__a, __imm); }
+__rcc_inline __m128i _mm_bslli_si128(__m128i __a, int __imm) { return _mm_slli_si128(__a, __imm); }
 
 // --- Extract / insert / movemask -------------------------------------------
 __rcc_inline int _mm_extract_epi16(__m128i __a, int __imm) {
