@@ -9690,6 +9690,67 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(chain);
         return chain;
     }
+    // Clang/GCC __builtin_shufflevector(vec1, vec2, i0, i1, ..., iN-1):
+    // compile-time-constant-index shuffle. Unlike __builtin_shuffle (a
+    // runtime mask vector, output shape == input shape), every index here
+    // is a literal constant expression and the output lane count is simply
+    // however many indices were given (may differ from either input's lane
+    // count). Index i selects vec1[i] for i in [0, N1), or vec2[i - N1] for
+    // i in [N1, N1+N2); GCC's own x86 intrinsic headers (avx2intrin.h's
+    // _mm_reduce_*/_mm256_reduce_* macros) use this unconditionally on
+    // every #include, so it must be parsed even by TUs that never call
+    // those functions.
+    if (equalc(tok, "__builtin_shufflevector")) {
+        Token *start = tok;
+        tok = skip(tok->next, "(");
+        Node *a1 = assign(&tok, tok);
+        tok = skip(tok, ",");
+        Node *a2 = assign(&tok, tok);
+        check_type(a1);
+        check_type(a2);
+        if (!a1->ty || !a1->ty->is_vector || !a2->ty || !a2->ty->is_vector)
+            error_tok(start, "__builtin_shufflevector requires vector arguments");
+        Type *vt1 = a1->ty, *vt2 = a2->ty;
+        int n1 = (int)(vt1->size / vt1->base->size);
+        int n2 = (int)(vt2->size / vt2->base->size);
+        long long idxs[64];
+        int nidx = 0;
+        while (equalc(tok, ",")) {
+            if (nidx >= 64)
+                error_tok(start, "__builtin_shufflevector: too many indices");
+            Node *ie = assign(&tok, tok->next);
+            check_type(ie);
+            long long v;
+            if (!eval_const_expr(ie, &v))
+                error_tok(start, "__builtin_shufflevector indices must be constant expressions");
+            idxs[nidx++] = v;
+        }
+        *rest = skip(tok, ")");
+        if (nidx == 0)
+            error_tok(start, "__builtin_shufflevector requires at least one index");
+        Type *rty = make_vector_type(vt1->base, nidx * (int)vt1->base->size);
+        Node *chain = NULL;
+        LVar *ta = vec_bind(&chain, a1, vt1, start);
+        LVar *tb = vec_bind(&chain, a2, vt2, start);
+        LVar *tr = new_var("", rty, true);
+        for (int i = 0; i < nidx; i++) {
+            long long idx = idxs[i];
+            Node *val;
+            if (idx < 0)
+                val = vec_lane(ta, vt1, 0, start); // "don't care" lane; any value is conformant
+            else if (idx < n1)
+                val = vec_lane(ta, vt1, (int)idx, start);
+            else if (idx < n1 + n2)
+                val = vec_lane(tb, vt2, (int)(idx - n1), start);
+            else
+                error_tok(start, "__builtin_shufflevector index out of range");
+            Node *st = new_binary(ND_ASSIGN, vec_lane(tr, rty, i, start), val, start);
+            chain = new_binary(ND_COMMA, chain, st, start);
+        }
+        chain = new_binary(ND_COMMA, chain, new_var_node(tr, start), start);
+        check_type(chain);
+        return chain;
+    }
     if (equalc(tok, "__builtin_choose_expr")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
