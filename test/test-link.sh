@@ -182,6 +182,44 @@ else
     printf '  %-44s SKIP (not a Windows target)\n' "shared library + import lib link (.lib)"
 fi
 
+# ---------------------------------------------------------------------------
+# 6. -rdynamic: a dlopen()'d plugin calling back into a symbol *defined in
+#    the main executable* -- the shape bash's loadable builtins use
+#    (enable -f ./strmatch.so strmatch, which calls back into bash's own
+#    lib/glob/strmatch.c strmatch()). Without -rdynamic, a plain
+#    executable's .dynsym holds only the imports needed to bind against
+#    shared libraries -- none of its own definitions -- so dlopen()'s
+#    lazy binding of the plugin's undefined reference fails at load time.
+#    ELF/Linux-specific (real gcc's -rdynamic has no equivalent effect on
+#    Windows/macOS import/export models).
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = so ]; then
+    cat > "$TMP/rdmain.c" <<'EOF'
+#include <dlfcn.h>
+int exported_value(void) { return 42; }
+int main(void) {
+    void *h = dlopen("./rdplugin.so", RTLD_NOW);
+    if (!h) return 1;
+    int (*fn)(void) = (int (*)(void))dlsym(h, "call_exported");
+    if (!fn) return 2;
+    return fn() == 43 ? 0 : 3;
+}
+EOF
+    cat > "$TMP/rdplugin.c" <<'EOF'
+extern int exported_value(void);
+int call_exported(void) { return exported_value() + 1; }
+EOF
+    if "$RCC" -rdynamic "$TMP/rdmain.c" -ldl -o "$TMP/rdmain" 2>"$TMP/e6" \
+        && "$RCC" -shared -fPIC "$TMP/rdplugin.c" -o "$TMP/rdplugin.$SOEXT" 2>>"$TMP/e6" \
+        && ( cd "$TMP" && ./rdmain ); then
+        pass "-rdynamic dlopen callback (.$SOEXT)"
+    else
+        fail "-rdynamic dlopen callback (.$SOEXT)" "$(tr '\n' ' ' < "$TMP/e6")"
+    fi
+else
+    printf '  %-44s SKIP (Linux/ELF-only)\n' "-rdynamic dlopen callback"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

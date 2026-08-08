@@ -355,9 +355,9 @@ Torture 3605/3609 = 100% of non-skipped); Unit tests 173/173, also
 verified separately at `-O2`. Real-world repro: bash's own `make test`
 now runs to completion (previously hung); comparing which of its 86
 test scripts diff against a real-bash baseline run in the same sandbox
-dropped from 19 to 1 (the one remaining, `run-glob-bracket`, is an
-unrelated dynamic-loadable-builtin symbol-visibility issue — see
-"Confirmed rcc bug, not yet fixed" below).
+dropped from 19 to 1 (the one remaining, `run-glob-bracket`, was an
+unrelated `-rdynamic`/dynamic-loadable-builtin symbol-visibility
+issue — since fixed, see "Fixed: test_bash `run-glob-bracket`" below).
 
 ### Fixed rcc bug: ARM64 small-struct return ABI
 
@@ -372,20 +372,49 @@ at the ARM64 call site and `ND_RETURN`, and the equivalent of the RDX
 cleanup-preservation fix (X1, if ARM64's epilogue has an analogous
 X0-only cleanup save/restore — not yet checked).
 
-### Confirmed rcc bug, not yet fixed: test_bash `run-glob-bracket` (dynamic loadable builtin)
+### Fixed: test_bash `run-glob-bracket` (`-rdynamic` not implemented)
 
-`tests/run-glob-bracket` fails immediately: `./bash: symbol lookup
-error: ./strmatch.so: undefined symbol: strmatch`. bash's test loads a
+`tests/run-glob-bracket` failed: `./bash: symbol lookup error:
+./strmatch.so: undefined symbol: strmatch`. bash's test loads a
 small shared-library "loadable builtin" (`enable -f ./strmatch.so
 strmatch`) that calls back into a `strmatch` symbol the main `bash`
-binary is expected to export; rcc's `bash` binary apparently doesn't
-export (or `.so` loader doesn't resolve) that symbol the same way a
-glibc/gcc-linked `bash` does. Unrelated to the arithmetic/ABI fix above
-(confirmed: this is the _only_ one of bash's 86 test scripts that still
-diffs against a real-bash baseline run in the same sandbox). Needs
-investigation into rcc's ELF symbol export defaults for the main
-executable (dynamic symbol table / `-rdynamic`-equivalent) versus
-`dlopen()`+`dlsym()` resolution against it — not yet started.
+binary is expected to export. Root cause: `-rdynamic` (bash's own
+`LOCAL_LDFLAGS`) wasn't recognized by rcc's driver at all — it fell
+through the generic "ignored unknown option" catch-all (main.c) and
+was silently dropped before ever reaching the linker command line, so
+neither rcc's native ELF linker nor its GCC fallback ever saw it.
+Even where rcc's native ELF linker successfully handles the whole
+link (which this bash invocation doesn't reach — an all-`.o`
+"link-only" invocation with no freshly-compiled source always falls
+through to the GCC fallback today, a separate pre-existing gap, not
+addressed here), its own dynamic-symbol-table builder (link_elf.c)
+only ever collected an executable's imported (undefined) dynamic
+symbols, never its own definitions — real `-rdynamic`/
+`--export-dynamic` additionally exports every globally visible
+defined symbol so a later `dlopen()`'d object can resolve back into
+the main program.
+Fixed by: (1) recognizing bare `-rdynamic` and `-Wl,-E`/
+`-Wl,--export-dynamic` in main.c, threading a new `opt_export_dynamic`
+flag through `rcc_link`/`LinkState` (and still appending the flag
+verbatim to the `libs` string so the GCC fallback path also receives
+it); (2) extending link_elf.c's existing `-shared` "collect every
+global symbol" export path (previously `if (s->opt_shared)`) to also
+fire for `opt_export_dynamic` on a plain executable, appending those
+symbols to `.dynsym`/`.gnu.version`/`.hash` alongside the imports at
+their final patched addresses.
+→ unblocks: test_bash's `run-glob-bracket` (rebuilt bash now exports
+`strmatch`, matching gcc's `-rdynamic` `.dynsym`; the plugin's dlopen
+resolves and the test's output matches `glob-bracket.right`).
+
+New regression test: `test/test-link.sh` case 6 ("-rdynamic dlopen
+callback") — a main program built with `-rdynamic` that `dlopen()`s a
+separately-built plugin `.so` calling back into a symbol defined in
+the main program, mirroring bash's `strmatch.so` shape; fails to even
+load (`dlopen`/`dlsym` return NULL) without the fix, passes with it.
+Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link tests 5/5 (incl. the new case), 0 failed overall; also
+confirmed clean on the mingw and arm64 cross-compile targets (compile
+only — `-rdynamic`'s native-ELF-linker effect is Linux-specific).
 
 ### Confirmed rcc bug, not yet fixed: test_mruby crash
 
@@ -505,20 +534,20 @@ Top root causes identified:
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                                                                                                                                                             |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` (unrelated dynamic-loadable-builtin issue) still open |
-| test_perl         | —                                                                                                                                                                                                                                 |
-| test_go           | —                                                                                                                                                                                                                                 |
-| test_nginx        | —                                                                                                                                                                                                                                 |
-| test_groff        | —                                                                                                                                                                                                                                 |
-| test_argtable3    | —                                                                                                                                                                                                                                 |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                |
-| test_libarchive   | —                                                                                                                                                                                                                                 |
-| test_liblz4       | —                                                                                                                                                                                                                                 |
-| test_libpng       | —                                                                                                                                                                                                                                 |
-| test_libressl     | —                                                                                                                                                                                                                                 |
-| test_qbe_simplecc | —                                                                                                                                                                                                                                 |
+| test              | notes                                                                                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes |
+| test_perl         | —                                                                                                                                                                                                                     |
+| test_go           | —                                                                                                                                                                                                                     |
+| test_nginx        | —                                                                                                                                                                                                                     |
+| test_groff        | —                                                                                                                                                                                                                     |
+| test_argtable3    | —                                                                                                                                                                                                                     |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                    |
+| test_libarchive   | —                                                                                                                                                                                                                     |
+| test_liblz4       | —                                                                                                                                                                                                                     |
+| test_libpng       | —                                                                                                                                                                                                                     |
+| test_libressl     | —                                                                                                                                                                                                                     |
+| test_qbe_simplecc | —                                                                                                                                                                                                                     |
 
 ---
 

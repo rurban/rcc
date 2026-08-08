@@ -190,6 +190,7 @@ compiler and tests, it is much faster now.
     -pthread           link with pthreads library
     -shared            create shared library
     -static            link statically
+    -rdynamic          export all symbols to the dynamic symbol table (=> -Wl,-E)
     -nodefaultlibs     no libc
     -rpath path        => -Wl,-rpath,path
     -soname name       => -Wl,-soname,name

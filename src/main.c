@@ -221,6 +221,7 @@ void help(void) {
            "-pthread            link with pthreads library\n"
            "-shared             create shared library\n"
            "-static             link statically\n"
+           "-rdynamic           export all symbols to the dynamic symbol table (=> -Wl,-E)\n"
            "-nodefaultlibs      do not link default libraries (libc, libgcc, ...)\n"
            "-rpath path         => -Wl,-rpath,path\n"
            "-soname name        => -Wl,-soname,name\n"
@@ -264,6 +265,7 @@ bool opt_pie = false;
 bool opt_pic = false;
 bool opt_shared = false;
 bool opt_static = false;
+bool opt_export_dynamic = false;
 bool opt_time = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
@@ -291,6 +293,23 @@ const char *opt_prefix_map_old = NULL;
 const char *opt_prefix_map_new = NULL;
 
 bool sse42_available = false;
+
+// Scan a "-Wl,a,b,c" argument's comma-separated sub-options for an exact
+// match to `tok` (e.g. "-E" or "--export-dynamic"), the same way a real
+// linker driver splits -Wl, before forwarding to ld.
+static bool wl_has_token(const char *arg, const char *tok) {
+    const char *p = arg + 4; // skip "-Wl,"
+    size_t tok_len = strlen(tok);
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len == tok_len && !strncmp(p, tok, tok_len))
+            return true;
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return false;
+}
 
 int main(int argc, char **argv) {
 #ifdef __x86_64__
@@ -468,9 +487,15 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-static")) {
             opt_static = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+        } else if (!strcmp(argv[i], "-rdynamic")) {
+            opt_export_dynamic = true;
+            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
                    !strcmp(argv[i], "-nodefaultlibs") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
+            if (!strncmp(argv[i], "-Wl,", 4) &&
+                (wl_has_token(argv[i], "-E") || wl_has_token(argv[i], "--export-dynamic")))
+                opt_export_dynamic = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
@@ -1006,7 +1031,8 @@ int main(int argc, char **argv) {
                     link_objs[i++] = p->path;
                 uint64_t t_link = opt_time ? now_us() : 0;
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
-                                      libs, opt_pie, opt_pic, opt_shared, opt_static);
+                                      libs, opt_pie, opt_pic, opt_shared, opt_static,
+                                      opt_export_dynamic);
                 if (opt_time)
                     fprintf(stderr, "  link        %-20s: %6llu us\n", out_path,
                             (unsigned long long)(now_us() - t_link));
