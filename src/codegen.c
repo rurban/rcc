@@ -4934,9 +4934,25 @@ static VReg gen_addr(Node *node) {
             return gen_funcall(node, -1);
         error_tok(node->tok, "lvalue required as left operand of assignment");
         return -1;
-    case ND_ASSIGN:
-        // Assignment expression used as lvalue: return address of lhs
+    case ND_ASSIGN: {
+        // Assignment expression used as an lvalue (e.g. (a = b).member,
+        // &(a = b), or an outer struct-assign whose RHS is itself an
+        // assignment): the store must actually happen here, not just the
+        // address of its target -- returning gen_addr(node->lhs) alone
+        // (the old behavior) silently dropped the assignment's side effect,
+        // leaving `lhs` unmodified/uninitialized while callers read through
+        // its address as if the store had occurred. For struct/union/array/
+        // complex targets, gen() already performs the copy and returns the
+        // destination address directly, so use that; for scalar targets
+        // gen() returns the assigned *value*, so discard it and take the
+        // (side-effect-free re-read of the) target's address afterward.
+        Type *lt = node->lhs->ty;
+        if (lt && (lt->kind == TY_STRUCT || lt->kind == TY_UNION || lt->kind == TY_ARRAY || lt->kind == TY_COMPLEX))
+            return gen(node);
+        VReg r = gen(node);
+        if (r != -1) free_reg(r);
         return gen_addr(node->lhs);
+    }
     case ND_STMT_EXPR: {
         // Statement expression used as lvalue (e.g. d = ({ bar(); }))
         // Evaluate the block and return address of the last expression
