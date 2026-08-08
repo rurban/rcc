@@ -2172,7 +2172,24 @@ bool eval_const_expr(Node *node, long long *val) {
             if (cur && cur->kind == ND_LVAR) {
                 root_var = cur->var;
             }
-            if (!is_bitfield && root_var && (root_var->is_constexpr || !root_var->is_local) && root_var->has_init) {
+            // A plain (non-`const`) global with a literal initializer, like
+            // bash's `struct dstack dstack = { NULL, 0, 0 };`, is NOT a
+            // compile-time constant just because it *starts* one — it's an
+            // ordinary mutable object the rest of the program writes to at
+            // runtime (`dstack.delimiter_depth++` and friends). Folding a
+            // `dstack.delimiter_depth`-style member read to the *static
+            // initializer's* value here permanently blinds every such read,
+            // anywhere in the translation unit, to every later write —
+            // `!root_var->is_local` alone must never stand in for "provably
+            // never written again"; require real const-qualification (or an
+            // explicit `constexpr`/compound-literal `is_constexpr`) instead.
+            // Real bug: this let `current_delimiter(dstack) == '\''`-style
+            // checks throughout bash's hand-written parser (parse.y) fold to
+            // a permanent `false`, breaking quote-state tracking badly
+            // enough that alias-expansion recursion no longer terminated —
+            // hung test/third_party/test_httpparser's sibling
+            // test/third_party/test_bash at any `-O1`+ build.
+            if (!is_bitfield && root_var && (root_var->is_constexpr || (!root_var->is_local && ty_const(root_var->ty))) && root_var->has_init) {
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
