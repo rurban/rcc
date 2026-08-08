@@ -1587,9 +1587,17 @@ int link_elf(LinkState *s) {
     // stays untouched by them since dyn_idx marks *imports* specifically
     // (apply_dynamic_relocs uses it to route a reference through the
     // PLT/GOT instead of resolving it directly).
+    //
+    // -rdynamic (opt_export_dynamic) requests the identical treatment for
+    // an ordinary executable: real ld's --export-dynamic/-E adds every
+    // global symbol to .dynsym so a later dlopen()'d shared object (e.g.
+    // bash's loadable builtins) can dlsym()/resolve back into the main
+    // program's own symbols, which a plain executable's .dynsym would
+    // otherwise omit (it normally holds only the imports needed to bind
+    // against libraries, not the executable's own definitions).
     int n_exp = 0, cap_exp = 0;
     int *exp_syms = NULL;
-    if (s->opt_shared) {
+    if (s->opt_shared || s->opt_export_dynamic) {
         for (int i = 0; i < s->n_syms; i++) {
             LinkSym *sym = &s->syms[i];
             if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0]) {

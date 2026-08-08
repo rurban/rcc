@@ -30,13 +30,14 @@ static uint64_t r64le(const uint8_t *p) {
 
 void link_state_init(LinkState *s, LinkArch arch, const char *out_path,
                      bool opt_static, bool opt_pie, bool opt_shared,
-                     const char *libs) {
+                     bool opt_export_dynamic, const char *libs) {
     memset(s, 0, sizeof(*s));
     s->arch = arch;
     s->out_path = out_path;
     s->opt_static = opt_static;
     s->libs = libs;
     s->opt_shared = opt_shared;
+    s->opt_export_dynamic = opt_export_dynamic;
     s->opt_pie = opt_pie;
 }
 
@@ -451,7 +452,7 @@ void link_apply_relocs(LinkState *s, uint64_t image_base) {
 
 int rcc_link(const char *out_path, char **obj_paths, int n_objs,
              const char *libs, bool opt_pie, bool opt_pic, bool opt_shared,
-             bool opt_static) {
+             bool opt_static, bool opt_export_dynamic) {
     // Native linker only handles host-native ELF; fall back for cross targets.
     // On Windows/mingw hosts, .exe is the normal extension for native binaries.
 #if !defined(_WIN32) && !defined(__MINGW32__)
@@ -469,7 +470,8 @@ int rcc_link(const char *out_path, char **obj_paths, int n_objs,
 #endif
 
     LinkState state;
-    link_state_init(&state, arch, out_path, opt_static, opt_pie || opt_pic, opt_shared, libs);
+    link_state_init(&state, arch, out_path, opt_static, opt_pie || opt_pic, opt_shared,
+                    opt_export_dynamic, libs);
 
     for (int i = 0; i < n_objs; i++) {
         if (link_load_object(&state, obj_paths[i]) != 0) {
