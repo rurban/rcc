@@ -115,8 +115,7 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, computed goto (`&&label`, including label-address differences `&&a - &&b` in `static` initializers), `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, `vector_size`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, `target_clones` (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, `#embed`.
 
-TODO: full \_Decimal/Float/Binary support (still aliased to float), C23
-`_BitInt` + `<stdbit.h>`, decimal float types.
+TODO: full \_Decimal/Float/Binary support (still aliased to float), decimal float types.
 
 Unsupported (skipped in torture tests):
 

@@ -930,7 +930,9 @@ Token *lex_one(char **pp, int *plineno) {
                     cur->val = (int64_t)val;
                 } else if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
                     uint64_t val = 0;
-                    for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+                    for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L' &&
+                         !((*rp == 'w' || *rp == 'W') && (rp[1] == 'b' || rp[1] == 'B'));
+                         rp++)
                         if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
                     cur->val = (int64_t)val;
                 } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {

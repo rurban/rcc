@@ -227,6 +227,7 @@ typedef enum {
     TY_UNION,
     TY_FUNC,
     TY_NULLPTR_T, // C23 nullptr_t
+    TY_BITINT, // C23 _BitInt(N) / unsigned _BitInt(N)
 } TypeKind;
 
 typedef struct Node Node;
@@ -262,6 +263,14 @@ struct Type {
     bool is_unsigned;
     bool is_enum; // enum type — treated as unsigned for bitfield extraction
     bool is_enum_fixed; // C23 enum with fixed underlying type
+    // Identity anchor for two distinct `enum` declarations that happen to
+    // share size/signedness/kind (e.g. two int-sized enums, or a fixed-
+    // underlying-type enum matching its own underlying type by chance).
+    // Set to the completed enum Type's own address, and preserved across
+    // the plain-struct copies used for bare `enum tag` type-name lookups,
+    // so __builtin_types_compatible_p can tell "same enum" from "same
+    // representation" — plain (non-enum) types leave this NULL.
+    Type *enum_id;
     bool is_signed_char; // signed char vs plain char (both have is_unsigned=false)
     bool is_vector; // GCC __attribute__((vector_size(N))): TY_STRUCT of N scalar
     // element-members, base = element type, align = total size
@@ -291,6 +300,7 @@ struct Type {
     Node *vla_len_expr; // VLA dimension expression (NULL = constant)
     void *vla_len_val; // LVar temporary for evaluated VLA dimension
     int64_t array_len; // array size (for both TY_ARRAY and TY_VLA constant fallback)
+    int bitint_width; // N in _BitInt(N) (for TY_BITINT only)
 };
 
 static inline bool ty_const(const Type *t) { return t->qual & QUAL_CONST; }
@@ -359,6 +369,7 @@ Type *get_integer_type(int size, bool is_unsigned);
 Type *pointer_to(Type *base);
 Type *array_of(Type *base, int64_t len);
 Type *complex_type(Type *base);
+Type *bitint_type(int width, bool is_unsigned);
 
 typedef struct Reloc Reloc;
 struct Reloc {

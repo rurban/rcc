@@ -67,6 +67,7 @@ enum {
     ID___INT128,
     ID___INT64,
     ID__BOOL,
+    ID__BITINT,
     ID__COMPLEX,
     ID___COMPLEX__,
     ID__DECIMAL32,

@@ -434,6 +434,18 @@ static void cast_funcall_args(Node *call) {
     }
 }
 
+// C23 6.4.4.1: the minimal _BitInt(N) width able to represent `v` (which is
+// always >= 0 here - literal tokens never carry a sign, that's a separate
+// unary operator applied afterward): the magnitude's bit-length, plus one
+// more bit for the sign unless unsigned, floored at the type's minimum
+// legal width (1 for unsigned, 2 for signed).
+static int bitint_literal_width(uint64_t v, bool is_unsigned) {
+    int bits = v ? (64 - __builtin_clzll(v)) : 0;
+    if (is_unsigned)
+        return bits < 1 ? 1 : bits;
+    return bits + 1 < 2 ? 2 : bits + 1;
+}
+
 static Node *new_num(int64_t val, Token *tok) {
     Node *node = new_node(ND_NUM, tok);
     node->val = val;
@@ -441,27 +453,80 @@ static Node *new_num(int64_t val, Token *tok) {
     char *end = tok->ptr + tok->len;
     bool is_u = false;
     int l_count = 0;
-    for (char *s = end - 1; s >= tok->ptr; s--) {
+    bool is_bitint = false;
+    char *s = end - 1;
+    while (s >= tok->ptr) {
         char c = *s;
         if (c == 'u' || c == 'U') {
             is_u = true;
+            s--;
         } else if (c == 'l' || c == 'L') {
             l_count++;
+            s--;
+        } else if ((c == 'b' || c == 'B') && s > tok->ptr &&
+                   (s[-1] == 'w' || s[-1] == 'W')) {
+            // C23 wb/WB suffix (optionally combined with u/U in either
+            // order: 42wb, 42uwb, 42wbu, 42WB, 42UWB, 42WBu, ...).
+            is_bitint = true;
+            s -= 2;
         } else
             break;
     }
-    if (l_count >= 2)
-        node->ty = is_u ? ty_ullong : ty_llong;
-    else if (l_count == 1)
-        node->ty = is_u ? ty_ulong : ty_long;
-    else if (is_u)
-        node->ty = (val >= 0 && val <= 0xFFFFFFFFLL) ? ty_uint : ty_ullong;
-    else if (val >= -2147483648LL && val <= 2147483647LL)
+    if (is_bitint) {
+        node->ty = bitint_type(bitint_literal_width((uint64_t)val, is_u), is_u);
+        return node;
+    }
+    // C11 6.4.4.1 Table 6 / C23 6.4.4.1p5: every magnitude comparison below
+    // MUST use the literal's unsigned bit pattern (uval), never the raw
+    // signed `val` — a literal token is never negative by construction
+    // (unary minus is a separate later operator), so a huge hex/octal
+    // constant whose top bit is set (e.g. 0xffffffffffffffff) is a valid
+    // magnitude that merely LOOKS like -1 once reinterpreted as int64_t.
+    // Comparing that signed reinterpretation against INT_MIN/INT_MAX (as
+    // this ladder used to) makes such a constant spuriously "fit" in
+    // `int`, truncating its true width to 4 bytes. A decimal constant's
+    // candidate list is signed-only (int, long, long long); octal/hex/C23
+    // binary constants (all lexed with a leading '0') additionally offer
+    // the unsigned type of the same rank once the signed one overflows,
+    // without needing a 'u' suffix.
+    bool non_decimal = tok->ptr[0] == '0' && tok->len > 1;
+    uint64_t uval = (uint64_t)val;
+    bool long_is_32 = ty_long->size == 4; // _WIN32 LLP64; else LP64
+    uint64_t long_max = long_is_32 ? 0x7FFFFFFFULL : 0x7FFFFFFFFFFFFFFFULL;
+    uint64_t ulong_max = long_is_32 ? 0xFFFFFFFFULL : 0xFFFFFFFFFFFFFFFFULL;
+    const uint64_t llong_max = 0x7FFFFFFFFFFFFFFFULL;
+    if (l_count >= 2) {
+        node->ty = is_u                           ? ty_ullong
+            : (uval <= llong_max || !non_decimal) ? ty_llong
+                                                  : ty_ullong;
+    } else if (l_count == 1) {
+        if (is_u)
+            node->ty = uval <= ulong_max ? ty_ulong : ty_ullong;
+        else if (uval <= long_max)
+            node->ty = ty_long;
+        else if (non_decimal && uval <= ulong_max)
+            node->ty = ty_ulong;
+        else if (uval <= llong_max || !non_decimal)
+            node->ty = ty_llong;
+        else
+            node->ty = ty_ullong;
+    } else if (is_u) {
+        node->ty = uval <= 0xFFFFFFFFULL ? ty_uint
+            : uval <= ulong_max          ? ty_ulong
+                                         : ty_ullong;
+    } else if (uval <= 0x7FFFFFFFULL) {
         node->ty = ty_int;
-    else if (tok->ptr[0] == '0' && tok->len > 1 && val >= 0 && val <= 4294967295LL)
+    } else if (non_decimal && uval <= 0xFFFFFFFFULL) {
         node->ty = ty_uint;
-    else
+    } else if (uval <= long_max) {
+        node->ty = ty_long;
+    } else if (non_decimal && uval <= ulong_max) {
+        node->ty = ty_ulong;
+    } else if (uval <= llong_max || !non_decimal) {
         node->ty = ty_llong;
+    } else {
+        node->ty = ty_ullong;
+    }
     return node;
 }
 
@@ -1343,6 +1408,7 @@ static bool is_typename(Token *tok) {
 
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Node *expr(Token **rest, Token *tok);
+static Node *assign(Token **rest, Token *tok);
 bool eval_const_expr(Node *node, long long *val);
 static bool eval_const_fexpr(Node *node, long double *val);
 static bool eval_const_addr_expr(Node *node, long long *val);
@@ -1407,6 +1473,20 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     Token *c1 = tok->next;
                     if (c1->next && equalc(c1->next, ":") &&
                         c1->ptr + c1->len == c1->next->ptr) {
+                        // gnu::packed / __gnu__::packed alias the legacy
+                        // __attribute__((packed)) — same packing effect.
+                        bool is_gnu_ns = equalc(tok, "gnu") || equalc(tok, "__gnu__");
+                        Token *ns_name = c1->next->next;
+                        if (is_gnu_ns && ns_name &&
+                            (equalc(ns_name, "packed") || equalc(ns_name, "__packed__"))) {
+                            if (attr)
+                                attr->is_packed = true;
+                            maybe_update_align(align, 1);
+                            tok = ns_name->next;
+                            if (equalc(tok, "("))
+                                tok = skip_balanced(tok);
+                            continue;
+                        }
                         tok = c1->next->next; // skip ident ::
                         continue;
                     }
@@ -1985,8 +2065,10 @@ static bool eval_const_fexpr(Node *node, long double *val) {
             *val = (node->lhs->ty && node->lhs->ty->is_unsigned) ? (long double)(unsigned long long)iv : (long double)iv;
             return true;
         }
-    case ND_COMMA:
-        return eval_const_fexpr(node->rhs, val);
+    case ND_COMMA: {
+        long long discard;
+        return eval_const_expr(node->lhs, &discard) && eval_const_fexpr(node->rhs, val);
+    }
     case ND_COND: {
         long long c;
         return eval_const_expr(node->cond, &c) && eval_const_fexpr(c ? node->then : node->els, val);
@@ -1994,6 +2076,25 @@ static bool eval_const_fexpr(Node *node, long double *val) {
     default:
         return false;
     }
+}
+
+// Reinterpret `v` (already the properly sign/zero-extended 64-bit value of
+// an operand whose own declared width is `width_bytes`) as the unsigned
+// value it represents once truncated to the common comparison width -
+// i.e. C's usual-arithmetic-conversion "convert the signed operand to
+// unsigned" step, at the CORRECT bit width rather than raw 64-bit
+// reinterpretation. Needed for constant-folding an unsigned comparison
+// between two differently-signed narrower-than-64-bit operands: e.g.
+// (unsigned)0x80000000u == (int)0x80000000 must be true (both represent
+// the 32-bit pattern 0x80000000), but plain `(unsigned long long)lhs ==
+// (unsigned long long)rhs` gets 0x80000000 vs 0xFFFFFFFF80000000 (the
+// `int` operand's value, -2147483648, sign-extended to 64 bits) - two
+// different 64-bit patterns - unless first re-truncated to the 32-bit
+// width the comparison actually happens at.
+static unsigned long long uval_at_width(long long v, int width_bytes) {
+    if (width_bytes <= 0 || width_bytes >= 8)
+        return (unsigned long long)v;
+    return (unsigned long long)v & ((1ULL << (width_bytes * 8)) - 1);
 }
 
 bool eval_const_expr(Node *node, long long *val) {
@@ -2062,13 +2163,44 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_BITOR:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs | rhs), true);
     case ND_EQ:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs == rhs), true);
     case ND_NE:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs != rhs), true);
     case ND_LT:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = (node->lhs->ty && node->lhs->ty->is_unsigned) || (node->rhs->ty && node->rhs->ty->is_unsigned) ? (unsigned long long)lhs < (unsigned long long)rhs : lhs < rhs), true);
-    case ND_LE:
-        return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = (node->lhs->ty && node->lhs->ty->is_unsigned) || (node->rhs->ty && node->rhs->ty->is_unsigned) ? (unsigned long long)lhs <= (unsigned long long)rhs : lhs <= rhs), true);
+    case ND_LE: {
+        if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs))
+            return false;
+        bool uns = (node->lhs->ty && node->lhs->ty->is_unsigned) ||
+            (node->rhs->ty && node->rhs->ty->is_unsigned);
+        if (uns) {
+            // Usual arithmetic conversions compare at the WIDER operand's
+            // width, not raw 64-bit - a narrower signed value's sign-
+            // extended 64-bit pattern must be re-truncated to that common
+            // width before reinterpreting as unsigned, or e.g. (int)
+            // 0x80000000 (== -2147483648, sign-extended to
+            // 0xFFFFFFFF80000000 in `rhs`) never compares equal to the
+            // unsigned 32-bit value 0x80000000 it's bit-identical to.
+            int lw = (node->lhs->ty && node->lhs->ty->size > 0) ? (int)node->lhs->ty->size : 8;
+            int rw = (node->rhs->ty && node->rhs->ty->size > 0) ? (int)node->rhs->ty->size : 8;
+            int w = lw > rw ? lw : rw;
+            unsigned long long ul = uval_at_width(lhs, w);
+            unsigned long long ur = uval_at_width(rhs, w);
+            if (node->kind == ND_EQ) *val = ul == ur;
+            else if (node->kind == ND_NE)
+                *val = ul != ur;
+            else if (node->kind == ND_LT)
+                *val = ul < ur;
+            else
+                *val = ul <= ur;
+        } else {
+            if (node->kind == ND_EQ) *val = lhs == rhs;
+            else if (node->kind == ND_NE)
+                *val = lhs != rhs;
+            else if (node->kind == ND_LT)
+                *val = lhs < rhs;
+            else
+                *val = lhs <= rhs;
+        }
+        return true;
+    }
     case ND_LOGAND:
         return eval_const_expr(node->lhs, &lhs) && eval_const_expr(node->rhs, &rhs) && ((*val = lhs && rhs), true);
     case ND_LOGOR:
@@ -2131,8 +2263,15 @@ bool eval_const_expr(Node *node, long long *val) {
             return eval_const_expr(node->lhs->lhs, val);
         // offsetof: &((struct S*)0)->member
         return eval_const_addr_expr(node->lhs, val);
-    case ND_COMMA:
-        return eval_const_expr(node->rhs, val);
+    case ND_COMMA: {
+        // A comma expr is only foldable (no runtime evaluation needed)
+        // when BOTH operands are themselves constant; if lhs has side
+        // effects (e.g. `c++`), the comma as a whole must stay a live
+        // expression node so those side effects still run, even though
+        // its *value* is always rhs's value.
+        long long discard;
+        return eval_const_expr(node->lhs, &discard) && eval_const_expr(node->rhs, val);
+    }
     case ND_COND:
         if (!eval_const_expr(node->cond, &lhs))
             return false;
@@ -2666,11 +2805,22 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             // Preserve VLA dim expression from single-dimension VLA param (e.g. b[a++])
             // so side effects can be emitted at function entry.
             Node *vla_dim_expr = NULL;
+            // C11 6.7.6.3p7: a qualifier inside the [] of the outermost
+            // array derivation qualifies the decayed pointer PARAMETER
+            // itself (`int a[const]` -> `int *const a`), stashed by
+            // type_suffix() on the array/VLA type's own ->qual (arrays
+            // otherwise never use it) — apply it to the pointer, not the
+            // pointee, which already carries its own (possibly qualified)
+            // element type via pty->base.
             if (pty->kind == TY_VLA) {
                 vla_dim_expr = pty->vla_len_expr;
+                unsigned char pqual = pty->qual;
                 pty = pointer_to(pty->base);
+                pty->qual |= pqual;
             } else if (pty->kind == TY_ARRAY) {
+                unsigned char pqual = pty->qual;
                 pty = pointer_to(pty->base);
+                pty->qual |= pqual;
             } else if (pty->kind == TY_FUNC) {
                 pty = pointer_to(pty);
             }
@@ -2731,16 +2881,36 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
     int64_t dims[16];
     Node *vla_exprs[16] = {0};
     int ndims = 0;
+    // C11 6.7.6.3p4/p7: type qualifiers (and 'static') inside the []
+    // of a parameter's array declarator apply only in the OUTERMOST
+    // array derivation (the first bracket in source order — see the
+    // "apply dimensions" comment below for why dims[0] is outermost),
+    // and mean the DECAYED POINTER PARAMETER ITSELF is so-qualified
+    // (`int a[const]` -> `int *const a`), not its pointee. Recorded
+    // here and consumed by declarator_params()'s array/VLA decay.
+    unsigned char dim0_qual = 0;
     while (equalc(tok, "[") && !(equalc(tok->next, "[") && tok->ptr + tok->len == tok->next->ptr)) {
         tok = tok->next;
         int64_t len = 0;
         Node *vla_expr = NULL;
-        while (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__") ||
-               equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__") ||
-               equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__") ||
-               equalc(tok, "_Atomic") || equalc(tok, "__Atomic") ||
-               equalc(tok, "static"))
+        unsigned char dim_qual = 0;
+        for (;;) {
+            if (equalc(tok, "const") || equalc(tok, "__const") || equalc(tok, "__const__"))
+                dim_qual |= QUAL_CONST;
+            else if (equalc(tok, "volatile") || equalc(tok, "__volatile") || equalc(tok, "__volatile__"))
+                dim_qual |= QUAL_VOLATILE;
+            else if (equalc(tok, "restrict") || equalc(tok, "__restrict") || equalc(tok, "__restrict__"))
+                dim_qual |= QUAL_RESTRICT;
+            else if (equalc(tok, "_Atomic") || equalc(tok, "__Atomic"))
+                dim_qual |= QUAL_ATOMIC;
+            else if (equalc(tok, "static"))
+                /* nothing to record for typing purposes */;
+            else
+                break;
             tok = tok->next;
+        }
+        if (ndims == 0)
+            dim0_qual = dim_qual;
         if (!equalc(tok, "]")) {
             if (equalc(tok, "[")) {
                 // nested array declarator [ [ ] ] — skip to matching outer ]
@@ -2800,6 +2970,12 @@ static Type *type_suffix(Token **rest, Token *tok, Type *ty, char *decl_name) {
         else
             ty = array_of(ty, dims[i]);
     }
+    // The outermost array/VLA type (built last above, from dims[0]) is
+    // exactly what declarator_params() decays to a pointer — stash the
+    // parameter-array qualifier on it (arrays otherwise never use ->qual)
+    // so the decay step can apply it to the pointer itself.
+    if (dim0_qual && ndims > 0)
+        ty->qual |= dim0_qual;
 
     if (equalc(tok, "(")) {
         Token *next = tok->next;
@@ -3007,6 +3183,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         ety->qual = 0; // qualifiers on the underlying type don't apply
         ety->is_enum = true;
         ety->is_enum_fixed = (fixed_underlying != NULL);
+        ety->enum_id = ety;
         // C23 `enum tag : type;` declares the tag with a fixed underlying
         // type — register it so sizeof(enum tag) sees the right size.
         if (tag_name && fixed_underlying) {
@@ -3023,7 +3200,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
 
     tok = tok->next;
     int64_t val = 0;
-    int64_t min_val = 0, max_val = 0;
+    __int128 min_val = 0, max_val = 0;
     bool first = true;
     EnumConst *before_consts = enum_consts; // consts list head before this enum
     Type *prev_ty = NULL; // during-definition type of the previous enumerator
@@ -3044,6 +3221,35 @@ static Type *enum_specifier(Token **rest, Token *tok) {
                 }
                 break;
             }
+    // C23 (N3030): an enum with a fixed underlying type is complete
+    // immediately after the underlying-type specifier — before any
+    // enumerator is parsed — and every enumerator constant has exactly
+    // that type from the start (not a provisional int/expr type only
+    // fixed up at the end). Build the completed type and register its
+    // tag now so self-referential uses inside the body (typeof(),
+    // sizeof(enum X), another enumerator's initializer) already see it.
+    Type *fixed_ret = NULL;
+    if (fixed_underlying) {
+        if (existing_ty) {
+            fixed_ret = existing_ty;
+        } else {
+            fixed_ret = arena_alloc(sizeof(Type));
+            *fixed_ret = *fixed_underlying;
+            fixed_ret->qual = 0; // qualifiers on a fixed underlying type don't apply
+            fixed_ret->is_enum = true;
+            fixed_ret->is_enum_fixed = true;
+            fixed_ret->enum_id = fixed_ret;
+            if (tag_name) {
+                EnumTag *et = arena_alloc(sizeof(EnumTag));
+                et->name = tag_name;
+                et->ty = fixed_ret;
+                et->depth = current_block_depth;
+                et->members_int = false; // fixed underlying: members get enum type
+                et->next = enum_tags;
+                enum_tags = et;
+            }
+        }
+    }
     while (!equalc(tok, "}")) {
         if (tok->kind != TK_IDENT)
             error_tok(tok, "expected enum constant");
@@ -3070,40 +3276,55 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         }
 
         ec->val = val++;
-        // C23 6.7.2.2: during definition an enumerator has type int when its
-        // value is representable as int; otherwise the type of its defining
-        // expression, or (for an implicit prev+1 value) the previous
-        // enumerator's type widened on overflow, preserving signedness.
-        bool fits_int = ec->val >= INT32_MIN && ec->val <= INT32_MAX &&
-            !(explicit_val && expr_ty && expr_ty->is_unsigned && expr_ty->size > 4 && (uint64_t)ec->val > INT32_MAX);
-        if (explicit_val) {
-            if (fits_int)
-                ec->ty = ty_int;
-            else
-                ec->ty = (expr_ty && is_integer(expr_ty)) ? expr_ty : ty_llong;
-        } else if (fits_int && (!prev_ty || !prev_ty->is_unsigned || (uint64_t)ec->val <= INT32_MAX)) {
-            ec->ty = (prev_ty && prev_ty != ty_int) ? prev_ty : ty_int;
-        } else if (prev_ty && prev_ty->is_unsigned) {
-            // unsigned progression: uint -> unsigned long -> unsigned long long
-            if (prev_ty->size <= 4 && (uint64_t)ec->val <= 0xFFFFFFFFULL)
-                ec->ty = prev_ty;
-            else
-                ec->ty = prev_ty->size <= 4 ? ty_ulong : ty_ullong;
+        if (fixed_underlying) {
+            // C23: enumerators of a fixed-underlying-type enum always have
+            // the enum type itself, regardless of whether their value fits
+            // int — no int/expr-type ladder applies.
+            ec->ty = fixed_ret;
         } else {
-            // signed progression: int -> long -> long long
-            ec->ty = (prev_ty && prev_ty->size > 4) ? ty_llong : ty_long;
+            // C23 6.7.2.2: during definition an enumerator has type int when its
+            // value is representable as int; otherwise the type of its defining
+            // expression, or (for an implicit prev+1 value) the previous
+            // enumerator's type widened on overflow, preserving signedness.
+            bool fits_int = ec->val >= INT32_MIN && ec->val <= INT32_MAX &&
+                !(explicit_val && expr_ty && expr_ty->is_unsigned && expr_ty->size > 4 && (uint64_t)ec->val > INT32_MAX);
+            if (explicit_val) {
+                if (fits_int)
+                    ec->ty = ty_int;
+                else
+                    ec->ty = (expr_ty && is_integer(expr_ty)) ? expr_ty : ty_llong;
+            } else if (fits_int && (!prev_ty || !prev_ty->is_unsigned || (uint64_t)ec->val <= INT32_MAX)) {
+                ec->ty = (prev_ty && prev_ty != ty_int) ? prev_ty : ty_int;
+            } else if (prev_ty && prev_ty->is_unsigned) {
+                // unsigned progression: uint -> unsigned long -> unsigned long long
+                if (prev_ty->size <= 4 && (uint64_t)ec->val <= 0xFFFFFFFFULL)
+                    ec->ty = prev_ty;
+                else
+                    ec->ty = prev_ty->size <= 4 ? ty_ulong : ty_ullong;
+            } else {
+                // signed progression: int -> long -> long long
+                ec->ty = (prev_ty && prev_ty->size > 4) ? ty_llong : ty_long;
+            }
+            if (existing_ty)
+                ec->ty = existing_members_int ? ty_int : existing_ty;
         }
-        if (existing_ty)
-            ec->ty = existing_members_int ? ty_int : existing_ty;
         if (ec->ty != ty_int)
             any_outside_int = true;
         prev_ty = ec->ty;
+        // Widen this enumerator's raw 64-bit value into its true
+        // mathematical value under its OWN signedness before tracking
+        // min/max — a huge unsigned value (e.g. -1ull == UINT64_MAX) must
+        // never compare as "less than" a small positive one just because
+        // its int64_t bit pattern looks negative.
+        __int128 ec_val128 = ec->ty->is_unsigned
+            ? (__int128)(unsigned __int128)(uint64_t)ec->val
+            : (__int128)ec->val;
         if (first) {
-            min_val = max_val = ec->val;
+            min_val = max_val = ec_val128;
             first = false;
         } else {
-            if (ec->val < min_val) min_val = ec->val;
-            if (ec->val > max_val) max_val = ec->val;
+            if (ec_val128 < min_val) min_val = ec_val128;
+            if (ec_val128 > max_val) max_val = ec_val128;
         }
         ec->next = enum_consts;
         enum_consts = ec;
@@ -3121,53 +3342,73 @@ static Type *enum_specifier(Token **rest, Token *tok) {
     bool is_packed = trailing_attr.is_packed;
     *rest = after_attrs;
     // C23: with a fixed underlying type, the enum uses exactly that type;
-    // otherwise choose the narrowest integer type >= int that fits all values
-    // (or the narrowest type period, when __packed forces a tight layout).
+    // otherwise choose the narrowest integer type >= int that fits all
+    // values — int/unsigned int, then long/unsigned long, then (only if
+    // still too narrow) long long/unsigned long long — matching GCC's own
+    // enum finalization (or the narrowest type period, when __packed
+    // forces a tight layout).
     Type *ety;
+    // ty_long/ty_ulong's actual size is platform-dependent (8 bytes on
+    // LP64 Linux/macOS, 4 bytes on LLP64 Windows/mingw, where `long` has
+    // the same range as `int`) - the "long" tier's bounds must reflect
+    // that, not a hardcoded LP64 assumption, or a value needing genuine
+    // 64-bit range (e.g. LLONG_MIN) wrongly satisfies an INT64_MAX-based
+    // check on a platform where `long` itself is only 32 bits, picking a
+    // 4-byte enum type that then truncates every value outside int range.
     if (fixed_underlying) {
         ety = fixed_underlying;
     } else if (min_val >= 0) {
-        uint64_t umax = (uint64_t)max_val;
-        if (is_packed && umax <= 0xFFULL)
+        uint64_t ulong_max = ty_ulong->size == 4 ? 0xFFFFFFFFULL : UINT64_MAX;
+        if (is_packed && max_val <= 0xFF)
             ety = ty_uchar;
-        else if (is_packed && umax <= 0xFFFFULL)
+        else if (is_packed && max_val <= 0xFFFF)
             ety = ty_ushort;
-        else if (umax <= 0xFFFFFFFFULL)
+        else if (max_val <= 0xFFFFFFFFLL)
             ety = ty_uint;
+        else if (max_val <= (__int128)ulong_max)
+            ety = ty_ulong;
         else
             ety = ty_ullong;
     } else {
+        int64_t long_min = ty_long->size == 4 ? -2147483648LL : INT64_MIN;
+        int64_t long_max = ty_long->size == 4 ? 2147483647LL : INT64_MAX;
         if (is_packed && min_val >= -128 && max_val <= 127)
             ety = ty_char;
         else if (is_packed && min_val >= -32768 && max_val <= 32767)
             ety = ty_short;
         else if (min_val >= -2147483648LL && max_val <= 2147483647LL)
             ety = ty_int;
+        else if (min_val >= (__int128)long_min && max_val <= (__int128)long_max)
+            ety = ty_long;
         else
             ety = ty_llong;
     }
     Type *ret;
-    if (existing_ty) {
+    if (fixed_underlying) {
+        ret = fixed_ret; // already completed before the body was parsed
+    } else if (existing_ty) {
         ret = existing_ty; // redefinition: keep the completed type's identity
     } else {
         ret = arena_alloc(sizeof(Type));
         *ret = *ety;
         ret->qual = 0; // qualifiers on a fixed underlying type don't apply
         ret->is_enum = true;
+        ret->enum_id = ret;
     }
     // C23 6.7.2.2: upon completion the enumerators get the enumerated type,
     // unless all values are representable as int (then they keep type int).
-    // With a fixed underlying type they always get the enum type.
+    // With a fixed underlying type they already have the enum type.
     if (fixed_underlying || any_outside_int)
         for (EnumConst *ec = enum_consts; ec && ec != before_consts; ec = ec->next)
             ec->ty = ret;
-    // Push tag so subsequent references find the correct type
-    if (tag_name) {
+    // Push tag so subsequent references find the correct type (already
+    // done up front above for the fixed-underlying-type case).
+    if (tag_name && !fixed_underlying) {
         EnumTag *et = arena_alloc(sizeof(EnumTag));
         et->name = tag_name;
         et->ty = ret;
         et->depth = current_block_depth;
-        et->members_int = !(fixed_underlying || any_outside_int);
+        et->members_int = !any_outside_int;
         et->next = enum_tags;
         enum_tags = et;
     }
@@ -3219,7 +3460,22 @@ static Node *vla_capture(Node *expr, Token *tok) {
 // returned type references the frozen values, so a later sizeof(*p)
 // reads them without re-running side effects.
 static Type *vla_freeze_dims(Type *ty, Node **pre, Token *tok) {
-    if (!ty || (ty->kind != TY_PTR && ty->kind != TY_VLA))
+    if (!ty)
+        return ty;
+    if (ty->kind == TY_FUNC) {
+        // A pointer chain may pass through a function type on its way to
+        // a VM array, e.g. `int (*(*)(void))[++l]` (pointer to function
+        // returning pointer to VLA). Parameter types aren't reachable
+        // from a cast/typeof's abstract-declarator, so only the return
+        // type needs walking.
+        Type *nr = vla_freeze_dims(ty->return_ty, pre, tok);
+        if (nr == ty->return_ty)
+            return ty;
+        ty = copy_type(ty);
+        ty->return_ty = nr;
+        return ty;
+    }
+    if (ty->kind != TY_PTR && ty->kind != TY_VLA)
         return ty;
     Type *nb = vla_freeze_dims(ty->base, pre, tok);
     Node *cap_ref = NULL;
@@ -3916,6 +4172,29 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     return ty;
 }
 
+// C11 6.7.3p9: "If the specification of an array type includes any type
+// qualifiers, the element type is so-qualified, not the array type." This
+// applies not just when an array is declared directly with a qualified
+// element specifier (`const int a[]` already builds array-of(const int)
+// naturally, since the qualifier attaches to `int` before type_suffix()
+// wraps it) but also when a qualifier prefixes a typedef name that is
+// ITSELF an array type (`typedef int T[]; const T c;` — the qualifier
+// must still land on the element, not on the array as a whole, or the
+// array would incorrectly decay to a const POINTER instead of a pointer
+// to const element). Recurses through multi-dimensional arrays/VLAs to
+// the innermost element type.
+static Type *qualify_array_elem(Type *ty, unsigned char quals) {
+    if (ty->kind == TY_ARRAY) {
+        int64_t len = ty->base->size ? ty->size / ty->base->size : 0;
+        return array_of(qualify_array_elem(ty->base, quals), len);
+    }
+    if (ty->kind == TY_VLA)
+        return vla_of(qualify_array_elem(ty->base, quals), ty->vla_len_expr, ty->array_len);
+    ty = copy_type(ty);
+    ty->qual |= quals;
+    return ty;
+}
+
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     Type *ty = NULL;
     bool is_signed = false;
@@ -3930,6 +4209,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     bool is_void = false;
     bool is_int128 = false;
     bool is_complex = false;
+    bool is_bitint = false;
+    int bitint_width = 0;
     int attr_align = 0;
     unsigned char quals = 0;
     memset(attr, 0, sizeof(*attr));
@@ -4145,6 +4426,20 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "_BitInt")) {
+            tok = skip(tok->next, "(");
+            Node *width_node = assign(&tok, tok);
+            check_type(width_node);
+            long long w;
+            if (!eval_const_expr(width_node, &w))
+                error_tok(tok, "_BitInt width must be a constant expression");
+            if (w < 1)
+                error_tok(tok, "_BitInt width must be positive");
+            bitint_width = (int)w;
+            is_bitint = true;
+            tok = skip(tok, ")");
+            continue;
+        }
         if (equalc(tok, "_Complex") || equalc(tok, "__complex__")) {
             is_complex = true;
             tok = tok->next;
@@ -4255,7 +4550,9 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             attr->is_auto_type = true;
     }
     if (!ty) {
-        if (is_void) {
+        if (is_bitint) {
+            ty = bitint_type(bitint_width, is_unsigned);
+        } else if (is_void) {
             ty = ty_void;
         } else if (is_bool) {
             ty = ty_bool;
@@ -4306,8 +4603,11 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     tok = skip_attributes(tok);
     quals |= collect_type_quals(&tok, tok);
     if (quals) {
-        ty = copy_type(ty);
-        ty->qual |= quals;
+        ty = (ty->kind == TY_ARRAY || ty->kind == TY_VLA)
+            ? qualify_array_elem(ty, quals)
+            : copy_type(ty);
+        if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
+            ty->qual |= quals;
     }
     // Apply a type-level vector_size attribute to the base type here, not in
     // declarator(), so every declarator of a multi-declarator declaration
@@ -4940,6 +5240,20 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
 static Type *infer_array_type(Type *ty, Token *tok) {
     if (!ty || ty->kind != TY_ARRAY || ty->size != 0)
         return ty;
+    // "{ STRLIT }" / "{ STRLIT, }" is a superfluous-but-legal single-element
+    // brace around a string literal (C11 6.7.9p14) — exactly equivalent to
+    // the bare STRLIT form handled just below. Unwrap it first so the size
+    // is computed from the string's own length, not from
+    // count_array_initializer()'s generic per-element count (which would
+    // see one initializer-list element and infer length 1 — global_init_one()
+    // below already unwraps this same shape before writing the actual
+    // bytes; this function must agree on the array's size).
+    if (equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
+        Token *after = tok->next->next;
+        if (equalc(after, ",")) after = after->next;
+        if (equalc(after, "}"))
+            tok = tok->next; // unwrap: point straight at the string literal
+    }
     if (tok->kind == TK_STR) {
         if (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')
             return array_of(ty->base, tok->len + 1);
@@ -5129,7 +5443,7 @@ static Token *global_init_member(Token *tok, LVar *var, Member *mem, int base_of
         }
         return tok;
     }
-    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && !(mem->ty->base->kind == TY_CHAR && tok->kind == TK_STR)) {
+    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR) {
         return global_init_flat_array(tok, var, mem->ty, base_offset + mem->offset);
     }
     return global_init_one(tok, var, mem->ty, base_offset + mem->offset);
@@ -5856,7 +6170,7 @@ static Token *local_init_member(Token *tok, Node *lhs, Member *mem, Node **cur) 
     Node *mem_node = new_unary(ND_MEMBER, lhs, tok);
     mem_node->member = mem;
     check_type(mem_node);
-    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && !(mem->ty->base->kind == TY_CHAR && tok->kind == TK_STR)) {
+    if (mem->ty->kind == TY_ARRAY && !equalc(tok, "{") && tok->kind != TK_STR) {
         return local_init_flat_array(tok, mem_node, mem->ty, cur);
     }
     return local_init_one(tok, mem_node, mem->ty, cur);
@@ -6585,9 +6899,14 @@ static Node *declaration(Token **rest, Token *tok) {
                 ty = infer_array_type(ty, tok->next);
             }
             // Freeze pointer-to-VLA dimensions (e.g. `typeof (int (*)[++i]) p`)
-            // so the side effect runs once at the declaration (C11 6.7.6.2p5).
+            // and, for a VLA-kind declarator itself (e.g. `int (*p[f(2)])[f(3)]`,
+            // an array of pointers to a VLA-array), every dimension expression
+            // reachable through the pointer/VLA chain - so each dim's side
+            // effect runs exactly once at the declaration (C11 6.7.6.2p5)
+            // rather than being re-evaluated later by e.g. `sizeof p` /
+            // `sizeof *p` reusing the same unevaluated expression node.
             Node *vla_pre = NULL;
-            if (parser_current_fn && ty->kind == TY_PTR)
+            if (parser_current_fn && (ty->kind == TY_PTR || ty->kind == TY_VLA))
                 ty = vla_freeze_dims(ty, &vla_pre, tok);
             LVar *var = new_var(name, ty, true);
             // Flush queued typeof(VM expr) evaluations and struct-size
@@ -6897,7 +7216,28 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
             }
             continue;
         }
-        cur = cur->next = stmt(&tok, tok);
+        {
+            // A bare statement (expression statement, if/while/etc.) can
+            // also queue a VM-typeof side-effect evaluation while parsing
+            // (e.g. `(typeof(c++, p))0;` or a bare
+            // `__builtin_va_arg(ap, typeof(out--, p));`) - the declaration()
+            // path above already flushes pending_vla_struct_capture, but
+            // this fallback previously dropped it silently. Splice the
+            // queued captures in ahead of the statement, same ordering
+            // convention as the declaration path.
+            Node *s = stmt(&tok, tok);
+            if (pending_vla_struct_capture) {
+                cur->next = pending_vla_struct_capture;
+                while (cur->next)
+                    cur = cur->next;
+                pending_vla_struct_capture = NULL;
+                cur = cur->next = s;
+            } else {
+                cur = cur->next = s;
+            }
+            while (cur->next)
+                cur = cur->next;
+        }
     }
 
     // Hand recovery back to the enclosing block (or none at file scope).
@@ -7532,7 +7872,16 @@ static Node *stmt(Token **rest, Token *tok) {
             node->is_case_range = true;
         }
         tok = skip(tok, ":");
-        node->lhs = stmt(&tok, tok);
+        // C23: a label may be immediately followed by a declaration or the
+        // end of the enclosing compound statement, with an empty (null)
+        // statement body - see the identical exception for plain
+        // identifier labels above.
+        if (equalc(tok, "}") || equalc(tok, "__auto_type") ||
+            equalc(tok, "_Static_assert") || equalc(tok, "static_assert") ||
+            is_typename(tok))
+            node->lhs = new_node(ND_NULL, tok);
+        else
+            node->lhs = stmt(&tok, tok);
         node->case_next = current_switch->case_next;
         current_switch->case_next = node;
         *rest = tok;
@@ -7545,11 +7894,17 @@ static Node *stmt(Token **rest, Token *tok) {
         Node *node = new_node(ND_CASE, tok);
         node->case_val = -1;
         tok = skip(tok->next, ":");
-        node->lhs = stmt(&tok, tok);
+        if (equalc(tok, "}") || equalc(tok, "__auto_type") ||
+            equalc(tok, "_Static_assert") || equalc(tok, "static_assert") ||
+            is_typename(tok))
+            node->lhs = new_node(ND_NULL, tok);
+        else
+            node->lhs = stmt(&tok, tok);
         current_switch->default_case = node;
         *rest = tok;
         return node;
     }
+
 
     if (equalc(tok, "break")) {
         Node *node = new_node(ND_BREAK, tok);
@@ -7724,13 +8079,31 @@ static bool type_equal(Type *a, Type *b) {
             if (!pa || !pb)
                 return true;
             while (pa && pb) {
-                if (!type_equal(pa, pb))
+                // C11 6.7.6.3p15: a parameter's own top-level qualifiers
+                // don't affect function-type compatibility (they only
+                // constrain the callee's local copy) - unlike qualifiers
+                // nested deeper (e.g. a `const char *` parameter, where the
+                // qualifier is on what's pointed to, not the parameter
+                // itself). Compare unqualified shallow copies so `const
+                // double` and `double` parameters - and nested cases like
+                // `int(const double)` vs `int(*)(double)`, where this
+                // param comparison recurses into the inner function type's
+                // own parameter list - are recognized as compatible.
+                if (pa->qual != pb->qual) {
+                    Type qa = *pa, qb = *pb;
+                    qa.qual = 0;
+                    qb.qual = 0;
+                    if (!type_equal(&qa, &qb))
+                        return false;
+                } else if (!type_equal(pa, pb))
                     return false;
                 pa = pa->param_next;
                 pb = pb->param_next;
             }
             return !pa && !pb;
         }
+    case TY_BITINT:
+        return a->bitint_width == b->bitint_width;
     case TY_STRUCT:
     case TY_UNION:
         // Parameter-list nodes are shallow copies (`*pt = *pty` in
@@ -7748,6 +8121,102 @@ static bool type_equal(Type *a, Type *b) {
     default:
         return true;
     }
+}
+
+// Qualifier-aware structural type compatibility, used recursively by
+// types_compatible_p() below for everything EXCEPT the two top-level
+// argument types themselves (whose own qualifiers GCC's
+// __builtin_types_compatible_p explicitly disregards - "const int" and
+// "int" are compatible). Nested qualifiers (what a pointer points to, an
+// array's element, a struct member) still count normally.
+static bool types_compatible_p_qual(Type *a, Type *b) {
+    if (!a || !b) return false;
+    if (a->qual != b->qual) return false;
+    // C11 6.7.6.2p6-7: array types (including VLAs) are compatible if
+    // their element types are compatible and, when both size specifiers
+    // are present AND both are compile-time constants, they have the same
+    // value. A VLA's runtime length is never a compile-time compatibility
+    // criterion, so either side being TY_VLA (or an unspecified-length
+    // array, size 0) makes length irrelevant. Handle TY_ARRAY/TY_VLA here,
+    // before the strict a->kind != b->kind check below, so a fixed array
+    // is comparable against a VLA of the same element type.
+    bool a_arr = a->kind == TY_ARRAY || a->kind == TY_VLA;
+    bool b_arr = b->kind == TY_ARRAY || b->kind == TY_VLA;
+    if (a_arr || b_arr) {
+        if (!a_arr || !b_arr) return false;
+        if (!types_compatible_p_qual(a->base, b->base)) return false;
+        if (a->kind == TY_VLA || b->kind == TY_VLA) return true;
+        // Both TY_ARRAY: array_of() never populates ->array_len (only
+        // vla_of()'s constant-VLA fallback does), so the real element
+        // count comes from ->size / ->base->size.
+        int64_t la = a->base->size ? a->size / a->base->size : 0;
+        int64_t lb = b->base->size ? b->size / b->base->size : 0;
+        return la == 0 || lb == 0 || la == lb;
+    }
+    if (a->kind != b->kind) return false;
+    if (a->is_unsigned != b->is_unsigned) return false;
+    if (a->kind == TY_CHAR && a->is_signed_char != b->is_signed_char) return false;
+    if (a->is_variadic != b->is_variadic) return false;
+    // Two `enum` types are only compatible if they're literally the same
+    // declaration (C 6.2.7): identical size/signedness is not enough — two
+    // separately declared enums (even with identical enumerator values, or
+    // an anonymous `enum {...}` structurally matching a named one) are
+    // always incompatible. An enum compared against a *non*-enum integer
+    // type of matching kind/size/signedness (e.g. `enum E1 : short` vs
+    // plain `short`) still falls through to the representation-only checks
+    // below — only enum-vs-enum needs the identity check.
+    if (a->is_enum && b->is_enum)
+        return a->enum_id && a->enum_id == b->enum_id;
+    switch (a->kind) {
+    case TY_PTR:
+    case TY_COMPLEX:
+        return types_compatible_p_qual(a->base, b->base);
+    case TY_FUNC: {
+        if (!types_compatible_p_qual(a->return_ty, b->return_ty)) return false;
+        Type *pa = a->param_types, *pb = b->param_types;
+        // Unlike type_equal() (used for real prototype/definition
+        // redeclaration merging, where "no parameter info" genuinely means
+        // a K&R old-style declarator compatible with anything), a bare
+        // "()" reaching this function is always a type-NAME - there is no
+        // way to write actual K&R syntax without parameter names, which a
+        // type name never has - so it's treated as exactly zero
+        // parameters, matching GCC's __builtin_types_compatible_p(void(),
+        // void(int)) => incompatible.
+        while (pa && pb) {
+            // C11 6.7.6.3p15: a parameter's own top-level qualifiers don't
+            // affect function-type compatibility.
+            Type qa = *pa, qb = *pb;
+            qa.qual = 0;
+            qb.qual = 0;
+            if (!types_compatible_p_qual(&qa, &qb)) return false;
+            pa = pa->param_next;
+            pb = pb->param_next;
+        }
+        return !pa && !pb;
+    }
+    case TY_STRUCT:
+    case TY_UNION:
+        // See type_equal()'s identical case above for why pointer/member-
+        // list identity (not qual/size) is the right comparison here.
+        return (a == b) || (a->members && a->members == b->members);
+    case TY_BITINT:
+        return a->bitint_width == b->bitint_width;
+    default:
+        return a->size == b->size;
+    }
+}
+
+// __builtin_types_compatible_p(t1, t2): GCC/Clang builtin used throughout
+// real-world C (container_of()-style static_assert(__same_type(...)) checks,
+// _Generic-less type dispatch). Disregards qualifiers on the two top-level
+// argument types only; everything nested is qualifier-aware structural
+// compatibility via types_compatible_p_qual() above.
+static bool types_compatible_p(Type *a, Type *b) {
+    if (!a || !b) return false;
+    Type qa = *a, qb = *b;
+    qa.qual = 0;
+    qb.qual = 0;
+    return types_compatible_p_qual(&qa, &qb);
 }
 
 static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok);
@@ -8134,39 +8603,60 @@ static Node *primary(Token **rest, Token *tok) {
         case 0: // Regular string
             node->ty = array_of(ty_char, tok->len + 1);
             break;
-        case 'L': // Wide string
+        case 'L': { // Wide string
+            Type *wchar_ty =
 #ifdef _WIN32
-            node->ty = pointer_to(ty_ushort);
+                ty_ushort;
 #else
-            node->ty = pointer_to(ty_uint);
+                ty_uint;
 #endif
-            break;
-        case 'u': // char16_t string
-        {
-            Type *char16_t_type = typedef_find_name("char16_t");
-            if (!char16_t_type) {
-                // Fallback to unsigned short if not defined
-                char16_t_type = ty_ushort;
+            // A string literal's expression type is an array of N+1
+            // elements (the trailing NUL), matching how the plain-char
+            // case above always worked - it decays to a pointer only in
+            // rvalue contexts (handled generically wherever TY_ARRAY
+            // decays), never pre-decayed here. Getting this wrong breaks
+            // typeof()/sizeof()/__builtin_types_compatible_p, which must
+            // see the un-decayed array (e.g. typeof(u8"abc") ==
+            // unsigned char[4], not unsigned char*). Element count is the
+            // decoded codepoint count, not the raw UTF-8 byte length.
+            int n = 0;
+            for (char *p = tok->str, *end = p + tok->len; p < end; n++) {
+                char *next_p;
+                decode_utf8(&next_p, p);
+                p = next_p;
             }
-            node->ty = pointer_to(char16_t_type);
+            node->ty = array_of(wchar_ty, n + 1);
+        } break;
+        case 'u': { // char16_t string
+            Type *char16_t_type = typedef_find_name("char16_t");
+            if (!char16_t_type) char16_t_type = ty_ushort;
+            int n = 0;
+            for (char *p = tok->str, *end = p + tok->len; p < end; n++) {
+                char *next_p;
+                decode_utf8(&next_p, p);
+                p = next_p;
+            }
+            node->ty = array_of(char16_t_type, n + 1);
         } break;
         case '8': // u8 string => char8_t (unsigned char) in C23, char before
             if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0)
-                node->ty = pointer_to(ty_uchar);
+                node->ty = array_of(ty_uchar, tok->len + 1);
             else
                 node->ty = array_of(ty_char, tok->len + 1);
             break;
-        case 'U': // char32_t string
-        {
+        case 'U': { // char32_t string
             Type *char32_t_type = typedef_find_name("char32_t");
-            if (!char32_t_type) {
-                // Fallback to unsigned int if not defined
-                char32_t_type = ty_uint;
+            if (!char32_t_type) char32_t_type = ty_uint;
+            int n = 0;
+            for (char *p = tok->str, *end = p + tok->len; p < end; n++) {
+                char *next_p;
+                decode_utf8(&next_p, p);
+                p = next_p;
             }
-            node->ty = pointer_to(char32_t_type);
+            node->ty = array_of(char32_t_type, n + 1);
         } break;
         default: // Fallback to regular string
-            node->ty = pointer_to(ty_char);
+            node->ty = array_of(ty_char, tok->len + 1);
             break;
         }
         StrLit *s = new_str_lit(tok->str, tok->len, tok->string_literal_prefix, node->ty->base->size);
@@ -9078,8 +9568,25 @@ static Node *unary(Token **rest, Token *tok) {
         (void)attr;
         *rest = skip(tok, ")");
 
+        // C11 6.7.6.2p5 (as extended to __builtin_va_arg's type-name, same
+        // class as a VM-typed cast - see vla_freeze_dims): a variably
+        // modified type embedded in the requested type (e.g.
+        // `int (*)[++i]`) must have its dimension side effects evaluated
+        // exactly once, here, not silently dropped.
+        Node *vla_pre = NULL;
+        if (parser_current_fn && is_vm_type(ty))
+            ty = vla_freeze_dims(ty, &vla_pre, tok);
+
         node->ty = pointer_to(ty);
         node = new_unary(ND_DEREF, node, tok);
+        if (vla_pre) {
+            check_type(node);
+            Node *chain = new_node(ND_COMMA, tok);
+            chain->lhs = vla_pre;
+            chain->rhs = node;
+            check_type(chain);
+            return chain;
+        }
         return node;
     }
     if (equalc(tok, "__atomic_is_lock_free")) {
@@ -9785,57 +10292,7 @@ static Node *unary(Token **rest, Token *tok) {
         tok = skip(tok, ",");
         Type *t2 = type_name(&tok, tok);
         *rest = skip(tok, ")");
-        int compat = 0;
-        if (t1->kind == t2->kind) {
-            switch (t1->kind) {
-            case TY_VOID:
-            case TY_BOOL: compat = 1; break;
-            case TY_CHAR:
-            case TY_SHORT:
-            case TY_INT:
-            case TY_LONG:
-            case TY_LLONG:
-                compat = t1->size == t2->size && t1->is_unsigned == t2->is_unsigned;
-                break;
-            case TY_FLOAT:
-            case TY_DOUBLE:
-            case TY_LDOUBLE:
-                compat = t1->size == t2->size;
-                break;
-            case TY_PTR:
-                compat = t1->base && t2->base &&
-                    t1->base->kind == t2->base->kind &&
-                    t1->base->size == t2->base->size &&
-                    t1->base->is_unsigned == t2->base->is_unsigned &&
-                    t1->base->qual == t2->base->qual;
-                break;
-            case TY_ARRAY:
-                if (t1->base && t2->base && t1->base->kind == t2->base->kind &&
-                    t1->base->size == t2->base->size)
-                    compat = t1->array_len == 0 || t2->array_len == 0 ||
-                        t1->array_len == t2->array_len;
-                break;
-            case TY_STRUCT:
-            case TY_UNION:
-                // Not a plain `t1 == t2`: apply_type_align() intentionally
-                // clones a *complete* struct/union's Type to raise one
-                // particular declaration's alignment (e.g. a struct member
-                // with `__attribute__((aligned(N)))`) without mutating the
-                // shared original in place — see its own comment. That
-                // clone is still the same struct, just a different Type
-                // object, and shares the identical Member list (the clone
-                // is a shallow `*ret = *ty` copy that only overwrites
-                // ->align) — real GCC's container_of()-style
-                // static_assert(__same_type(...)) checks must not treat it
-                // as a mismatch. NULL ->members (still-incomplete types)
-                // never counts as a match, or two distinct incomplete
-                // structs would wrongly compare compatible.
-                compat = (t1 == t2) || (t1->members && t1->members == t2->members);
-                break;
-            default: compat = t1->size == t2->size && t1->is_unsigned == t2->is_unsigned;
-            }
-        }
-        return new_num(compat, start);
+        return new_num(types_compatible_p(t1, t2), start);
     }
     if (equalc(tok, "__builtin_classify_type")) {
         Token *start = tok;
@@ -9943,12 +10400,20 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(node);
         *rest = tok;
         if (node->ty->kind == TY_VLA) {
-            // Runtime sizeof for VLA: len * base_size
+            // C11 6.5.3.4p2: sizeof evaluates its operand when the
+            // operand's type is itself a VLA (not merely a pointer/array
+            // chain reaching one - that's the coarser "variably modified"
+            // check typeof/casts use). The runtime size still comes from
+            // the *type's* captured length expr, but the operand node
+            // itself must also run for its side effects (e.g. sizeof(*p)
+            // where p was advanced via a comma operator).
             Node *len = node->ty->vla_len_expr ? node->ty->vla_len_expr : new_num(node->ty->array_len, tok);
             Node *base_sz = new_num(node->ty->base->size, tok);
             Node *result = new_binary(ND_MUL, len, base_sz, tok);
             check_type(result);
-            return result;
+            Node *seq = new_binary(ND_COMMA, node, result, tok);
+            check_type(seq);
+            return seq;
         }
         if ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->vla_len_expr) {
             check_type(node->ty->vla_len_expr);
@@ -11576,6 +12041,8 @@ Program *parse(Token *tok) {
         }
 
         for (;;) {
+            EnumConst *top_enum_consts_cp = enum_consts;
+            EnumLog *top_enum_log_cp = enum_scope_checkpoint();
             int top_decl_align = 0;
             char *name = NULL;
             Type *ty = declarator(&tok, tok, copy_type(base), &name);
@@ -11611,6 +12078,8 @@ Program *parse(Token *tok) {
             pending_transparent_union = false;
 
             if (!name) {
+                enum_scope_restore(top_enum_log_cp);
+                enum_consts = top_enum_consts_cp;
                 tok = skip(tok, ";");
                 break;
             }
@@ -11953,6 +12422,8 @@ Program *parse(Token *tok) {
                     // locals-before-globals lookup order (same bug as
                     // the prototype-only ";" case below, just triggered
                     // by a function *definition* instead).
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     locals = NULL;
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
@@ -11990,6 +12461,8 @@ Program *parse(Token *tok) {
                     // e.g. a subsequent `enum K { ..., f, ... }`'s `f`
                     // silently resolved to this phantom parameter instead
                     // of the enum constant.
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     locals = NULL;
                     current_fn_scope_locals = NULL;
                     current_block_depth = 0;
@@ -11998,6 +12471,8 @@ Program *parse(Token *tok) {
                     break;
                 }
                 if (equalc(tok, ",")) {
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     tok = tok->next;
                     continue;
                 }
@@ -12015,8 +12490,11 @@ Program *parse(Token *tok) {
                     if (equalc(tok, ","))
                         tok = tok->next;
                 }
-                if (equalc(tok, ";") || equalc(tok, "{") || equalc(tok, ","))
+                if (equalc(tok, ";") || equalc(tok, "{") || equalc(tok, ",")) {
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     break;
+                }
                 error_tok(tok, "expected ';', ',', or '{'");
             } else {
                 // C11 6.7.4p2: _Noreturn only on function declarations
@@ -12122,10 +12600,14 @@ Program *parse(Token *tok) {
                 }
 
                 if (equalc(tok, ";")) {
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     tok = tok->next;
                     break;
                 }
                 if (equalc(tok, ",")) {
+                    enum_scope_restore(top_enum_log_cp);
+                    enum_consts = top_enum_consts_cp;
                     if (attr.is_auto_type || attr.is_auto)
                         error_tok(tok, "only a single declarator allowed with `auto`");
                     tok = tok->next;

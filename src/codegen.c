@@ -6701,6 +6701,355 @@ static VReg gen_vector_binary_builtin(Node *node) {
 #endif
 }
 
+static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
+    if (to->kind == TY_BOOL && !is_complex(from)) {
+        // C11 6.3.1.2: converting any scalar value to _Bool yields 0 if
+        // the value compares equal to 0, 1 otherwise. This must produce
+        // an actual 0/1 normalization, not a truncating bit-copy.
+        if (is_flonum(from)) {
+#ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+            asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
+            asm_fcmp(cg_sec, 1); // fcmp d0, d1
+            asm_cset(cg_sec, r, ARM64_NE); // cset r, ne (NaN is unordered/"ne")
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+            x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+            asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al (ordered, unequal)
+            asm_setcc(cg_sec, X86_RCX, X86_P); // setp %cl (unordered: NaN)
+            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
+            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+        } else {
+#ifdef ARCH_ARM64
+            asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
+            asm_cset(cg_sec, r, ARM64_NE);
+#else
+            asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
+            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+        }
+        return r;
+    }
+    if (is_flonum(from) && is_integer(to)) {
+#ifdef ARCH_ARM64
+        asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+        {
+            if (to->is_unsigned)
+                asm_fcvtzu(cg_sec, r, to->size); // fcvtzu w/x{r}, d0
+            else
+                asm_cvttsd2si(cg_sec, r, to->size); // fcvtzs w/x{r}, d0
+        }
+#else
+        asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+        if (to->size == 8 && to->is_unsigned) {
+            int c = ++rcc_label_count;
+            asm_movabs_phy(cg_sec, X86_RAX, 0x43e0000000000000ULL); // movabs $0x43e0000000000000, %rax (2^63 as double)
+            x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
+            asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast.c
+                asm_fixup_add(cg_sec, o, format(".L.ucast.%d", c), 1);
+            }
+            asm_subsd(cg_sec); // subsd %xmm1, %xmm0
+            asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
+            x86_movabs(cg_sec, X86_RCX, 1ULL << 63); // movabs $0x8000000000000000, %rcx
+            x86_or_rr(cg_sec, 8, REG(r), X86_RCX); // orq %rcx, rr
+            {
+                size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast_end.c
+                asm_fixup_add(cg_sec, o, format(".L.ucast_end.%d", c), 0);
+            }
+            cg_def_label(format(".L.ucast.%d", c)); // .L.ucast.c:
+            asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
+            cg_def_label(format(".L.ucast_end.%d", c)); // .L.ucast_end.c:
+        } else if (to->size <= 4 && to->is_unsigned) {
+            // float-to-unsigned-int: cvttsd2si is signed, so handle [2^31, 2^32) range.
+            int c = ++rcc_label_count;
+            asm_movabs_phy(cg_sec, X86_RAX, 0x41e0000000000000ULL); // movabs $0x41e0000000000000, %rax (2^31 as double)
+            x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
+            asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast32.c
+                asm_fixup_add(cg_sec, o, format(".L.ucast32.%d", c), 1);
+            }
+            asm_subsd(cg_sec); // subsd %xmm1, %xmm0
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
+            asm_add_imm(cg_sec, r, 4, (int)(1U << 31)); // addl $0x80000000, rr
+            {
+                size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast32_end.c
+                asm_fixup_add(cg_sec, o, format(".L.ucast32_end.%d", c), 0);
+            }
+            cg_def_label(format(".L.ucast32.%d", c)); // .L.ucast32.c:
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
+            cg_def_label(format(".L.ucast32_end.%d", c)); // .L.ucast32_end.c:
+        } else if (to->size <= 4 && !to->is_unsigned) {
+            int c = ++rcc_label_count;
+            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si xmm0, rr
+            asm_cmp_imm(cg_sec, r, 4, (int32_t)0x80000000); // cmpl $0x80000000, rr
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
+                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
+            }
+            x86_xorpd(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+            asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.sat_end.c
+                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
+            }
+            asm_mov_imm(cg_sec, r, 4, 0x7fffffff); // movl $0x7fffffff, rr
+            cg_def_label(format(".L.saturate.%d", c)); // (saturate value)
+            cg_def_label(format(".L.u2f.end.%d", c));
+        } else {
+            asm_cvttsd2si(cg_sec, r, to->size); // cvttsd2si %xmm0, rr
+        }
+#endif
+    } else if (is_integer(from) && is_flonum(to)) {
+#ifdef ARCH_ARM64
+        int sf = (from->size == 8) ? 1 : 0;
+        if (from->is_unsigned)
+            asm_ucvtf(cg_sec, 0, r, sf); // ucvtf d0, w/x{r}
+        else
+            asm_scvtf(cg_sec, 0, r, sf); // scvtf d0, w/x{r}
+        if (to->kind == TY_FLOAT) {
+            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double→single, round to float)
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (single→double, back to GP-friendly)
+        }
+        asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (store as int bits)
+#else
+        if (from->is_unsigned && from->size == 8) {
+            int c = ++rcc_label_count;
+            asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
+                asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
+            }
+            asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r, xmm0
+            {
+                size_t o = asm_jmp_label(cg_sec); // cvttsd2si %%xmm0, %s
+                asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.u2f.high.%d", c)); // ucvtf d0, %s
+            x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+            x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+            x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
+            x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
+            cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
+        } else if (from->is_unsigned && from->size == 4) {
+            asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd rr, %xmm0
+        } else {
+            asm_cvtsi2sd(cg_sec, r, from->size); // cvtsi2sd rr, %xmm0
+        }
+        if (to->kind == TY_FLOAT) {
+            asm_cvtsd2ss(cg_sec); // jmp .L.u2f.end.%d
+            asm_cvtss2sd(cg_sec); // .L.u2f.high.%d:
+        }
+        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+#endif
+    } else if (is_flonum(from) && is_flonum(to)) {
+#ifdef ARCH_ARM64
+        if (to->kind == TY_FLOAT && from->kind != TY_FLOAT) {
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest, ftype=1=double src)
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (opc=1=d, ftype=0=s)
+            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
+        }
+#else
+        if (to->kind == TY_FLOAT && from->kind != TY_FLOAT) {
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+            asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+        }
+#endif
+    } else if ((is_flonum(from) || is_integer(from)) && is_complex(to)) {
+        int alloc = (to->size + 7) & ~7;
+        fn_struct_ret_off += alloc;
+        if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+        int result_off = current_fn_stack_size + fn_struct_ret_off;
+        int result = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
+#else
+        asm_lea_rbp_reg(cg_sec, result, 8, result_off);
+#endif
+        emit_scalar_to_complex(r, from, to->base, result);
+        free_reg(r); // the scalar source register is dead; the value lives at (result)
+        return result;
+    } else if (is_complex(from) && (is_flonum(to) || is_integer(to))) {
+        // complex → float/int: load real part from address
+        if (is_flonum(to)) {
+            if (is_integer(from->base)) {
+                // int complex → float: convert via cvtsi2ss/cvtsi2sd
+#ifndef ARCH_ARM64
+                if (from->base->size <= 4) {
+                    x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
+                    asm_cvtsi2ss(cg_sec, REG(r), 4); // cvtsi2ss r32, %xmm0
+                } else {
+                    x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
+                    asm_cvtsi2sd(cg_sec, r, 4); // cvtsi2sd r32, %xmm0
+                }
+                if (to->size == 4)
+                    asm_cvtsd2ss(cg_sec);
+                asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+#else
+                // ARM64: load real part, convert to float
+                if (from->base->size <= 4)
+                    arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(r), 0); // ldr w0, [r]
+                else
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(r), 0); // ldr x0, [r]
+                if (from->is_unsigned)
+                    arm64_ucvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // ucvtf d0, w0/x0
+                else
+                    arm64_scvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // scvtf d0, w0/x0
+                if (to->size == 4)
+                    arm64_fcvt(cg_sec, 1, 2, ARM64_S0, ARM64_D0); // fcvt s0, d0
+                arm64_fmov_f2i(cg_sec, (to->size == 4 ? 0 : 1), REG(r), (to->size == 4 ? ARM64_S0 : ARM64_D0)); // fmov r, s0/d0
+#endif
+            } else {
+#ifndef ARCH_ARM64
+                if (from->base->size == 4 && to->size == 8) {
+                    // float complex → double: promote via cvtss2sd
+                    asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    asm_cvtss2sd(cg_sec);
+                    asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+                } else if (to->size == 4) {
+                    asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+                } else {
+                    asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                    asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+                }
+#else
+                if (from->base->size == 4 && to->size == 8) {
+                    arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                    arm64_fcvt(cg_sec, 1, 2, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                    arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                } else if (to->size == 4) {
+                    arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                    arm64_fmov_f2i(cg_sec, 0, REG(r), ARM64_S0); // fmov r, s0
+                } else {
+                    arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
+                    arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                }
+#endif
+            }
+        } else {
+            // integer: convert from float or load directly
+            if (is_flonum(from->base)) {
+#ifndef ARCH_ARM64
+                if (from->base->size == 4) {
+                    asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    asm_cvttsd2si(cg_sec, r, 4); // cvttss2si %xmm0, r
+                } else {
+                    asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
+                    asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, r
+                }
+#else
+                if (from->base->size == 4) {
+                    arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                    if (to->is_unsigned)
+                        arm64_fcvtzu(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzu w{r}, s0
+                    else
+                        arm64_fcvtzs(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzs w{r}, s0
+                } else {
+                    arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
+                    if (to->is_unsigned)
+                        arm64_fcvtzu(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzu x{r}, d0
+                    else
+                        arm64_fcvtzs(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzs x{r}, d0
+                }
+#endif
+            } else {
+#ifdef ARCH_ARM64
+                emit_load(to, r, r, 0);
+#else
+                emit_load(to, r, r, 0);
+#endif
+            }
+        }
+    } else if (is_complex(from) && is_complex(to) && from->size != to->size) {
+        // Complex type promotion/demotion (e.g., _Complex float → _Complex double)
+        int alloc = (to->size + 7) & ~7;
+        fn_struct_ret_off += alloc;
+        if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+        int result_off = current_fn_stack_size + fn_struct_ret_off;
+        int result = alloc_reg();
+        int base_to = to->base ? to->base->size : 8;
+        int base_from = from->base ? from->base->size : 4;
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
+        if (base_from == 4 && base_to == 8) {
+            if (is_flonum(from->base)) {
+                // _Complex float → _Complex double
+                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0);
+                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4);
+                arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8);
+            } else {
+                // _Complex int → _Complex double
+                arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(r), 0);
+                arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(r), 1);
+                arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
+                arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
+                arm64_str_fp(cg_sec, 3, ARM64_D1, REG(result), 8);
+            }
+        }
+#else
+        asm_lea_rbp_reg(cg_sec, result, 8, result_off);
+        if (base_from == 4 && base_to == 8) {
+            // float complex → double complex
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            x86_movsd_mr(cg_sec, x86_mem(REG(result), 0), X86_XMM0); // movsd %xmm0, (result)
+            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 4)); // movss 4(r), %xmm0
+            asm_cvtss2sd(cg_sec);
+            x86_movsd_mr(cg_sec, x86_mem(REG(result), 8), X86_XMM0); // movsd %xmm0, 8(result)
+        }
+#endif
+        free_reg(r);
+        return result;
+    } else if (to->size == 1) {
+#ifdef ARCH_ARM64
+        if (to->is_unsigned)
+            asm_and_imm(cg_sec, r, 4, 0xff); // and w{r}, w{r}, #0xff
+        else
+            asm_movsx(cg_sec, r, r, 4, 1); // sxtb w{r}, w{r}
+#else
+        if (to->is_unsigned)
+            asm_movzx(cg_sec, r, r, 4, 1); // movzbl r, r
+        else
+            asm_movsx(cg_sec, r, r, 4, 1); // movsbl r, r
+#endif
+    } else if (to->size == 2) {
+#ifdef ARCH_ARM64
+        if (to->is_unsigned)
+            asm_and_imm(cg_sec, r, 4, 0xffff); // and w{r}, w{r}, #0xffff
+        else
+            asm_movsx(cg_sec, r, r, 4, 2); // sxth w{r}, w{r}
+#else
+        if (to->is_unsigned)
+            asm_movzx(cg_sec, r, r, 4, 2); // movzx4->r rr, rr
+        else
+            asm_movsx(cg_sec, r, r, 4, 2); // cvtsd2ss %%xmm0, %%xmm0
+#endif
+    } else if (to->size == 4 && from->size == 8) {
+        asm_mov_reg_reg(cg_sec, r, r, 4); // cvtss2sd %%xmm0, %%xmm0
+    } else if (to->size == 8 && from->size < 8) {
+        if (from->kind == TY_ARRAY || from->kind == TY_VLA) {
+            // Array/VLA decayed to pointer; already 8-byte address in reg
+        } else if (from->is_unsigned)
+            zero_extend_to(r, from->size, 8);
+        else
+            sign_extend_to(r, from->size, 8);
+    }
+    return r;
+}
+
 // Generate code for a given node.
 static VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -8449,354 +8798,7 @@ static VReg gen(Node *node) {
         return gen_addr(node->lhs);
     case ND_CAST: {
         VReg r = gen(node->lhs);
-        Type *from = node->lhs->ty;
-        Type *to = node->ty;
-        if (to->kind == TY_BOOL && !is_complex(from)) {
-            // C11 6.3.1.2: converting any scalar value to _Bool yields 0 if
-            // the value compares equal to 0, 1 otherwise. This must produce
-            // an actual 0/1 normalization, not a truncating bit-copy.
-            if (is_flonum(from)) {
-#ifdef ARCH_ARM64
-                asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
-                asm_fcmp(cg_sec, 1); // fcmp d0, d1
-                asm_cset(cg_sec, r, ARM64_NE); // cset r, ne (NaN is unordered/"ne")
-#else
-                asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-                x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
-                asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
-                asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al (ordered, unequal)
-                asm_setcc(cg_sec, X86_RCX, X86_P); // setp %cl (unordered: NaN)
-                x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
-                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
-#endif
-            } else {
-#ifdef ARCH_ARM64
-                asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
-                asm_cset(cg_sec, r, ARM64_NE);
-#else
-                asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
-                asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
-#endif
-            }
-            return r;
-        }
-        if (is_flonum(from) && is_integer(to)) {
-#ifdef ARCH_ARM64
-            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-            {
-                if (to->is_unsigned)
-                    asm_fcvtzu(cg_sec, r, to->size); // fcvtzu w/x{r}, d0
-                else
-                    asm_cvttsd2si(cg_sec, r, to->size); // fcvtzs w/x{r}, d0
-            }
-#else
-            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-            if (to->size == 8 && to->is_unsigned) {
-                int c = ++rcc_label_count;
-                asm_movabs_phy(cg_sec, X86_RAX, 0x43e0000000000000ULL); // movabs $0x43e0000000000000, %rax (2^63 as double)
-                x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
-                asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast.c
-                    asm_fixup_add(cg_sec, o, format(".L.ucast.%d", c), 1);
-                }
-                asm_subsd(cg_sec); // subsd %xmm1, %xmm0
-                asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
-                x86_movabs(cg_sec, X86_RCX, 1ULL << 63); // movabs $0x8000000000000000, %rcx
-                x86_or_rr(cg_sec, 8, REG(r), X86_RCX); // orq %rcx, rr
-                {
-                    size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast_end.c
-                    asm_fixup_add(cg_sec, o, format(".L.ucast_end.%d", c), 0);
-                }
-                cg_def_label(format(".L.ucast.%d", c)); // .L.ucast.c:
-                asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, rr
-                cg_def_label(format(".L.ucast_end.%d", c)); // .L.ucast_end.c:
-            } else if (to->size <= 4 && to->is_unsigned) {
-                // float-to-unsigned-int: cvttsd2si is signed, so handle [2^31, 2^32) range.
-                int c = ++rcc_label_count;
-                asm_movabs_phy(cg_sec, X86_RAX, 0x41e0000000000000ULL); // movabs $0x41e0000000000000, %rax (2^31 as double)
-                x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX); // movq %rax, %xmm1
-                asm_ucomisd(cg_sec); // comisd %xmm1, %xmm0
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.ucast32.c
-                    asm_fixup_add(cg_sec, o, format(".L.ucast32.%d", c), 1);
-                }
-                asm_subsd(cg_sec); // subsd %xmm1, %xmm0
-                asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
-                asm_add_imm(cg_sec, r, 4, (int)(1U << 31)); // addl $0x80000000, rr
-                {
-                    size_t o = asm_jmp_label(cg_sec); // jmp .L.ucast32_end.c
-                    asm_fixup_add(cg_sec, o, format(".L.ucast32_end.%d", c), 0);
-                }
-                cg_def_label(format(".L.ucast32.%d", c)); // .L.ucast32.c:
-                asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, rr
-                cg_def_label(format(".L.ucast32_end.%d", c)); // .L.ucast32_end.c:
-            } else if (to->size <= 4 && !to->is_unsigned) {
-                int c = ++rcc_label_count;
-                asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si xmm0, rr
-                asm_cmp_imm(cg_sec, r, 4, (int32_t)0x80000000); // cmpl $0x80000000, rr
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_NE); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
-                }
-                x86_xorpd(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
-                asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_B); // jb .L.sat_end.c
-                    asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 1);
-                }
-                asm_mov_imm(cg_sec, r, 4, 0x7fffffff); // movl $0x7fffffff, rr
-                cg_def_label(format(".L.saturate.%d", c)); // (saturate value)
-                cg_def_label(format(".L.u2f.end.%d", c));
-            } else {
-                asm_cvttsd2si(cg_sec, r, to->size); // cvttsd2si %xmm0, rr
-            }
-#endif
-        } else if (is_integer(from) && is_flonum(to)) {
-#ifdef ARCH_ARM64
-            int sf = (from->size == 8) ? 1 : 0;
-            if (from->is_unsigned)
-                asm_ucvtf(cg_sec, 0, r, sf); // ucvtf d0, w/x{r}
-            else
-                asm_scvtf(cg_sec, 0, r, sf); // scvtf d0, w/x{r}
-            if (to->kind == TY_FLOAT) {
-                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double→single, round to float)
-                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (single→double, back to GP-friendly)
-            }
-            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (store as int bits)
-#else
-            if (from->is_unsigned && from->size == 8) {
-                int c = ++rcc_label_count;
-                asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
-                {
-                    size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
-                    asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
-                }
-                asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r, xmm0
-                {
-                    size_t o = asm_jmp_label(cg_sec); // cvttsd2si %%xmm0, %s
-                    asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
-                }
-                cg_def_label(format(".L.u2f.high.%d", c)); // ucvtf d0, %s
-                x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
-                x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
-                x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
-                x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
-                cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
-            } else if (from->is_unsigned && from->size == 4) {
-                asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd rr, %xmm0
-            } else {
-                asm_cvtsi2sd(cg_sec, r, from->size); // cvtsi2sd rr, %xmm0
-            }
-            if (to->kind == TY_FLOAT) {
-                asm_cvtsd2ss(cg_sec); // jmp .L.u2f.end.%d
-                asm_cvtss2sd(cg_sec); // .L.u2f.high.%d:
-            }
-            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-#endif
-        } else if (is_flonum(from) && is_flonum(to)) {
-#ifdef ARCH_ARM64
-            if (to->kind == TY_FLOAT && from->kind != TY_FLOAT) {
-                asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest, ftype=1=double src)
-                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (opc=1=d, ftype=0=s)
-                asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
-            }
-#else
-            if (to->kind == TY_FLOAT && from->kind != TY_FLOAT) {
-                asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-                asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0
-                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
-                asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-            }
-#endif
-        } else if ((is_flonum(from) || is_integer(from)) && is_complex(to)) {
-            int alloc = (to->size + 7) & ~7;
-            fn_struct_ret_off += alloc;
-            if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
-            int result_off = current_fn_stack_size + fn_struct_ret_off;
-            int result = alloc_reg();
-#ifdef ARCH_ARM64
-            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
-#else
-            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
-#endif
-            emit_scalar_to_complex(r, from, to->base, result);
-            free_reg(r); // the scalar source register is dead; the value lives at (result)
-            return result;
-        } else if (is_complex(from) && (is_flonum(to) || is_integer(to))) {
-            // complex → float/int: load real part from address
-            if (is_flonum(to)) {
-                if (is_integer(from->base)) {
-                    // int complex → float: convert via cvtsi2ss/cvtsi2sd
-#ifndef ARCH_ARM64
-                    if (from->base->size <= 4) {
-                        x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
-                        asm_cvtsi2ss(cg_sec, REG(r), 4); // cvtsi2ss r32, %xmm0
-                    } else {
-                        x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
-                        asm_cvtsi2sd(cg_sec, r, 4); // cvtsi2sd r32, %xmm0
-                    }
-                    if (to->size == 4)
-                        asm_cvtsd2ss(cg_sec);
-                    asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-#else
-                    // ARM64: load real part, convert to float
-                    if (from->base->size <= 4)
-                        arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(r), 0); // ldr w0, [r]
-                    else
-                        arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(r), 0); // ldr x0, [r]
-                    if (from->is_unsigned)
-                        arm64_ucvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // ucvtf d0, w0/x0
-                    else
-                        arm64_scvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // scvtf d0, w0/x0
-                    if (to->size == 4)
-                        arm64_fcvt(cg_sec, 1, 2, ARM64_S0, ARM64_D0); // fcvt s0, d0
-                    arm64_fmov_f2i(cg_sec, (to->size == 4 ? 0 : 1), REG(r), (to->size == 4 ? ARM64_S0 : ARM64_D0)); // fmov r, s0/d0
-#endif
-                } else {
-#ifndef ARCH_ARM64
-                    if (from->base->size == 4 && to->size == 8) {
-                        // float complex → double: promote via cvtss2sd
-                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
-                        asm_cvtss2sd(cg_sec);
-                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-                    } else if (to->size == 4) {
-                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
-                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-                    } else {
-                        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
-                        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
-                    }
-#else
-                    if (from->base->size == 4 && to->size == 8) {
-                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
-                        arm64_fcvt(cg_sec, 1, 2, ARM64_D0, ARM64_S0); // fcvt d0, s0
-                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
-                    } else if (to->size == 4) {
-                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
-                        arm64_fmov_f2i(cg_sec, 0, REG(r), ARM64_S0); // fmov r, s0
-                    } else {
-                        arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
-                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
-                    }
-#endif
-                }
-            } else {
-                // integer: convert from float or load directly
-                if (is_flonum(from->base)) {
-#ifndef ARCH_ARM64
-                    if (from->base->size == 4) {
-                        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
-                        asm_cvttsd2si(cg_sec, r, 4); // cvttss2si %xmm0, r
-                    } else {
-                        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
-                        asm_cvttsd2si(cg_sec, r, 8); // cvttsd2si %xmm0, r
-                    }
-#else
-                    if (from->base->size == 4) {
-                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
-                        if (to->is_unsigned)
-                            arm64_fcvtzu(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzu w{r}, s0
-                        else
-                            arm64_fcvtzs(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzs w{r}, s0
-                    } else {
-                        arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
-                        if (to->is_unsigned)
-                            arm64_fcvtzu(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzu x{r}, d0
-                        else
-                            arm64_fcvtzs(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzs x{r}, d0
-                    }
-#endif
-                } else {
-#ifdef ARCH_ARM64
-                    emit_load(to, r, r, 0);
-#else
-                    emit_load(to, r, r, 0);
-#endif
-                }
-            }
-        } else if (is_complex(from) && is_complex(to) && from->size != to->size) {
-            // Complex type promotion/demotion (e.g., _Complex float → _Complex double)
-            int alloc = (to->size + 7) & ~7;
-            fn_struct_ret_off += alloc;
-            if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
-            int result_off = current_fn_stack_size + fn_struct_ret_off;
-            int result = alloc_reg();
-            int base_to = to->base ? to->base->size : 8;
-            int base_from = from->base ? from->base->size : 4;
-#ifdef ARCH_ARM64
-            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
-            if (base_from == 4 && base_to == 8) {
-                if (is_flonum(from->base)) {
-                    // _Complex float → _Complex double
-                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 0);
-                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
-                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
-                    arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(r), 4);
-                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0);
-                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 8);
-                } else {
-                    // _Complex int → _Complex double
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(r), 0);
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(r), 1);
-                    arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
-                    arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
-                    arm64_str_fp(cg_sec, 3, ARM64_D0, REG(result), 0);
-                    arm64_str_fp(cg_sec, 3, ARM64_D1, REG(result), 8);
-                }
-            }
-#else
-            asm_lea_rbp_reg(cg_sec, result, 8, result_off);
-            if (base_from == 4 && base_to == 8) {
-                // float complex → double complex
-                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
-                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
-                x86_movsd_mr(cg_sec, x86_mem(REG(result), 0), X86_XMM0); // movsd %xmm0, (result)
-                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 4)); // movss 4(r), %xmm0
-                asm_cvtss2sd(cg_sec);
-                x86_movsd_mr(cg_sec, x86_mem(REG(result), 8), X86_XMM0); // movsd %xmm0, 8(result)
-            }
-#endif
-            free_reg(r);
-            return result;
-        } else if (to->size == 1) {
-#ifdef ARCH_ARM64
-            if (to->is_unsigned)
-                asm_and_imm(cg_sec, r, 4, 0xff); // and w{r}, w{r}, #0xff
-            else
-                asm_movsx(cg_sec, r, r, 4, 1); // sxtb w{r}, w{r}
-#else
-            if (to->is_unsigned)
-                asm_movzx(cg_sec, r, r, 4, 1); // movzbl r, r
-            else
-                asm_movsx(cg_sec, r, r, 4, 1); // movsbl r, r
-#endif
-        } else if (to->size == 2) {
-#ifdef ARCH_ARM64
-            if (to->is_unsigned)
-                asm_and_imm(cg_sec, r, 4, 0xffff); // and w{r}, w{r}, #0xffff
-            else
-                asm_movsx(cg_sec, r, r, 4, 2); // sxth w{r}, w{r}
-#else
-            if (to->is_unsigned)
-                asm_movzx(cg_sec, r, r, 4, 2); // movzx4->r rr, rr
-            else
-                asm_movsx(cg_sec, r, r, 4, 2); // cvtsd2ss %%xmm0, %%xmm0
-#endif
-        } else if (to->size == 4 && from->size == 8) {
-            asm_mov_reg_reg(cg_sec, r, r, 4); // cvtss2sd %%xmm0, %%xmm0
-        } else if (to->size == 8 && from->size < 8) {
-            if (from->kind == TY_ARRAY || from->kind == TY_VLA) {
-                // Array/VLA decayed to pointer; already 8-byte address in reg
-            } else if (from->is_unsigned)
-                zero_extend_to(r, from->size, 8);
-            else
-                sign_extend_to(r, from->size, 8);
-        }
-        return r;
+        return gen_cast_reg(r, node->lhs->ty, node->ty);
     }
     case ND_BITNOT: {
 #ifndef ARCH_ARM64
@@ -9573,12 +9575,27 @@ static VReg gen(Node *node) {
         VReg r = alloc_reg();
         int cond = gen(node->cond);
         int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
+        // GNU `a ?: b` (omitted then-operand): node->then is either literally
+        // node->cond, or a cast wrapping it (inserted by check_type's usual
+        // arithmetic conversion to the ND_COND's promoted result type) —
+        // either way it is the SAME subexpression as node->cond and must not
+        // be re-evaluated (side effects like `++x` would otherwise fire
+        // twice). Reuse the already-computed `cond` register instead.
+        bool gnu_omitted = node->then == node->cond ||
+            (node->then->kind == ND_CAST && node->then->lhs == node->cond);
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
-        free_reg(cond);
-        VReg then_r = gen(node->then);
+        VReg then_r;
+        if (gnu_omitted) {
+            then_r = (node->then->kind == ND_CAST)
+                ? gen_cast_reg(cond, node->cond->ty, node->then->ty)
+                : cond;
+        } else {
+            free_reg(cond);
+            then_r = gen(node->then);
+        }
         // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
         // no value register; there is nothing to move into the result.
         if (then_r != R_NONE) {
@@ -9597,8 +9614,15 @@ static VReg gen(Node *node) {
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
         asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
-        free_reg(cond);
-        VReg then_r = gen(node->then);
+        VReg then_r;
+        if (gnu_omitted) {
+            then_r = (node->then->kind == ND_CAST)
+                ? gen_cast_reg(cond, node->cond->ty, node->then->ty)
+                : cond;
+        } else {
+            free_reg(cond);
+            then_r = gen(node->then);
+        }
         // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
         // no value register; there is nothing to move into the result.
         if (then_r != R_NONE) {

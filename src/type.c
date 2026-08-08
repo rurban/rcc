@@ -41,7 +41,7 @@ Type *ty_nullptr_t = &(Type){.kind=TY_NULLPTR_T, .size=8, .align=8};
 bool is_integer(Type *ty) {
     return ty->kind == TY_BOOL || ty->kind == TY_CHAR || ty->kind == TY_SHORT ||
         ty->kind == TY_INT || ty->kind == TY_LONG || ty->kind == TY_LLONG ||
-        ty->kind == TY_INT128;
+        ty->kind == TY_INT128 || ty->kind == TY_BITINT;
 }
 
 bool is_flonum(Type *ty) {
@@ -76,6 +76,49 @@ Type *get_integer_type(int size, bool is_unsigned) {
     if (size <= 8)
         return is_unsigned ? ty_ullong : ty_llong;
     return is_unsigned ? ty_uint128 : ty_int128;
+}
+
+// C23 6.2.5p20 / 6.7.3.3: a _BitInt(N)'s storage follows the SysV x86-64
+// psABI's _BitInt extension - N<=8/16/32/64 uses the same size/align as the
+// equal-width plain integer type (so it participates in ordinary GP-register
+// codegen unmodified); wider N is rounded up to a whole number of 8-byte
+// "legs" (size = align = 8*ceil(N/64)), stored little-endian with the
+// padding bits above N in the top leg left unspecified by the ABI (rcc
+// always keeps them sign/zero-extended - see the wide-BitInt codegen
+// helpers). Interned per (width, is_unsigned) pair so type_equal's pointer-
+// identity fast path (and _Generic/typeof matching) sees two spellings of
+// the same width - e.g. an explicit `_BitInt(7)` and a `typeof(42wb)` - as
+// the identical Type.
+#define BITINT_MAXWIDTH 512 // cache limit; wider types are still correctly
+                            // constructed (see type_equal's TY_BITINT case),
+                            // just allocated fresh instead of interned
+Type *bitint_type(int width, bool is_unsigned) {
+    static Type *cache[2][BITINT_MAXWIDTH + 1];
+    if (width < 1) width = 1;
+    Type **slot = (width <= BITINT_MAXWIDTH) ? &cache[is_unsigned ? 1 : 0][width] : NULL;
+    if (slot && *slot) return *slot;
+    Type *ty = calloc(1, sizeof(Type));
+    ty->kind = TY_BITINT;
+    ty->is_unsigned = is_unsigned;
+    ty->bitint_width = width;
+    if (width <= 8) {
+        ty->size = 1;
+        ty->align = 1;
+    } else if (width <= 16) {
+        ty->size = 2;
+        ty->align = 2;
+    } else if (width <= 32) {
+        ty->size = 4;
+        ty->align = 4;
+    } else if (width <= 64) {
+        ty->size = 8;
+        ty->align = 8;
+    } else {
+        ty->size = 8 * ((width + 63) / 64);
+        ty->align = 8;
+    }
+    if (slot) *slot = ty;
+    return ty;
 }
 
 Type *pointer_to(Type *base) {
@@ -142,6 +185,12 @@ static Node *vla_size_node(Type *ty) {
 static Type *integer_promotion(Type *ty) {
     if (!is_integer(ty))
         return ty;
+    // C23 6.3.1.1p2: _BitInt types are never subject to the usual integer
+    // promotions - a _BitInt(N) rvalue keeps its exact declared width and
+    // signedness through every operation (unlike char/short, which widen to
+    // int). Only the standard-rank types promote below int's width.
+    if (ty->kind == TY_BITINT)
+        return ty;
     if (ty->size < 4)
         return ty_int;
     return ty;
@@ -164,6 +213,13 @@ static int int_rank(Type *ty) {
     case TY_LONG: return 4;
     case TY_LLONG: return 5;
     case TY_INT128: return 6;
+    // C23 6.3.1.1p1: a _BitInt(N)'s rank is strictly greater than that of
+    // any standard integer type of lesser or equal width and strictly less
+    // than any standard type wider than it - approximated here by ranking
+    // purely on width, which places it correctly relative to every
+    // standard type this compiler ever mixes it with (max standard width
+    // is __int128 = 128 bits, well under this offset).
+    case TY_BITINT: return 1000 + ty->bitint_width;
     default: return 3;
     }
 }
@@ -198,6 +254,13 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
     Type *higher = int_rank(lhs) >= int_rank(rhs) ? lhs : rhs;
     if (is_unsigned == higher->is_unsigned)
         return higher;
+    // Signedness mismatch at equal-or-higher rank: rebuild the winning
+    // width as unsigned/signed. get_integer_type() only knows the fixed
+    // standard-type ladder, so a _BitInt winner must stay a _BitInt - going
+    // through get_integer_type() would silently truncate/widen it to the
+    // nearest standard type of the same byte size, corrupting its exact N.
+    if (higher->kind == TY_BITINT)
+        return bitint_type(higher->bitint_width, is_unsigned);
     return get_integer_type(higher->size, is_unsigned);
 }
 
@@ -391,6 +454,8 @@ static bool same_type(Type *a, Type *b) {
         return same_type(a->base, b->base);
     case TY_ARRAY:
         return a->size == b->size && same_type(a->base, b->base);
+    case TY_BITINT:
+        return a->bitint_width == b->bitint_width && a->is_unsigned == b->is_unsigned;
     case TY_FUNC:
         if (a->is_variadic != b->is_variadic) return false;
         if (!same_type(a->return_ty, b->return_ty)) return false;
@@ -894,6 +959,19 @@ static void add_type_internal(Node *node) {
         return;
     }
     case ND_DEREF:
+        // Function-designator decay: an expression of function type
+        // implicitly converts to pointer-to-function as an rvalue before
+        // any operator sees it (the same "decay" arrays undergo), so
+        // dereferencing an already-function-typed operand just yields the
+        // function type back unchanged. Without this, repeated `*` on a
+        // function name (idempotent per C11 6.5.3.2p4 - e.g.
+        // "(***f)()" == "f()") fails after the first deref: *f is TY_FUNC,
+        // and the plain pointer/array/VLA check below would then reject
+        // the second dereference outright.
+        if (node->lhs->ty->kind == TY_FUNC) {
+            node->ty = node->lhs->ty;
+            return;
+        }
         if (node->lhs->ty->kind != TY_PTR && node->lhs->ty->kind != TY_ARRAY && node->lhs->ty->kind != TY_VLA) {
             error_tok(node->tok, "invalid pointer dereference\n\033[1;36mnote\033[0m: cannot apply '*' to a non-pointer type");
         }
