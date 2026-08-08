@@ -1028,6 +1028,51 @@ bool va_arg_need_copy(Type *ty) {
     }
     return false;
 }
+// True if `ty` (a struct/union/array/scalar) contains no floating-point
+// leaf anywhere in its (recursive) layout -- every scalar is
+// integer/pointer-class. Used to decide SysV/AAPCS64 small-aggregate
+// register return (see struct_returns_in_gp_regs below).
+static bool type_is_all_integer(Type *ty) {
+    if (!ty) return true;
+    switch (ty->kind) {
+    case TY_FLOAT:
+    case TY_DOUBLE:
+    case TY_LDOUBLE:
+    case TY_COMPLEX:
+        return false;
+    case TY_ARRAY:
+        return type_is_all_integer(ty->base);
+    case TY_STRUCT:
+    case TY_UNION:
+        for (Member *m = ty->members; m; m = m->next)
+            if (!type_is_all_integer(m->ty)) return false;
+        return true;
+    default:
+        return true;
+    }
+}
+
+// True if `ty` is a struct/union <=16 bytes, entirely INTEGER-class (no
+// float/double/long-double/_Complex leaf anywhere) -- the common
+// SysV/AAPCS64 shape (div_t, ldiv_t, lldiv_t, imaxdiv_t, and most small
+// integer-only PODs) that the real ABI returns in two GP registers
+// (RAX:RDX on x86-64, X0:X1 on ARM64) with NO hidden return pointer.
+// Real bug: rcc unconditionally used a hidden return pointer for every
+// struct/union return regardless of size, so calling any *external*
+// (non-rcc-compiled) function with this return shape silently
+// corrupted every argument after the phantom hidden-pointer arg and
+// read garbage/zero out of the (unwritten) buffer instead of RAX:RDX —
+// found via bash's `imaxdiv()`/`div()`/`ldiv()`/`lldiv()` calls in its
+// own arithmetic evaluator (expr.c), which made every `%`/`/` inside
+// `$(( ))` return 0 or a fixed garbage value. Anything else (>16 bytes,
+// or containing a float/double/_Complex member anywhere) keeps using
+// the pre-existing hidden-pointer path unchanged -- full SSE/HFA-class
+// register return isn't implemented here.
+static bool struct_returns_in_gp_regs(Type *ty) {
+    return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+        ty->size > 0 && ty->size <= 16 && type_is_all_integer(ty);
+}
+
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
@@ -1325,11 +1370,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         (
 #ifdef _WIN32
                                  ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->size > 8) || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
+#elif defined(ARCH_ARM64)
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty)) || node->ty->kind == TY_COMPLEX
 #else
-                                 node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION
-#endif
-#ifdef ARCH_ARM64
-                                 || node->ty->kind == TY_COMPLEX
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty))
 #endif
         );
 
@@ -2406,6 +2450,23 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
         return temp_ret_reg != R_NONE ? temp_ret_reg : hidden_ret_reg;
     }
+    // AAPCS64: a struct/union <=16 bytes with no floating member anywhere
+    // (struct_returns_in_gp_regs) returns raw bits in X0 (first eightbyte)
+    // and, if bigger than 8 bytes, X1 (second eightbyte) -- no indirect
+    // result register (X8) involved. Mirrors the has_hidden_retbuf
+    // classification above. Must precede the generic scalar fallback below
+    // (the has_hidden_retbuf branch above already returned for this
+    // function, so this is the actual reachable ARM64 call-site path).
+    if (node->ty && struct_returns_in_gp_regs(node->ty)) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        int lo_sz = node->ty->size <= 4 ? 4 : 8;
+        asm_str_reg_off_phy(cg_sec, ARM64_X0, addr, lo_sz, 0); // str x0, [addr]
+        if (node->ty->size > 8) {
+            int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
+            asm_str_reg_off_phy(cg_sec, ARM64_X1, addr, hi_sz, 8); // str x1, [addr, #8]
+        }
+        return addr;
+    }
     // int128 return: spill x0:x1 to a 16-byte slot
     if (node->ty && node->ty->kind == TY_INT128) {
         int addr = alloc_int128_addr();
@@ -3026,6 +3087,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
         int sz = node->ty->size <= 4 ? 4 : 8;
         x86_mov_mr(cg_sec, sz, x86_mem(REG(addr), 0), X86_RAX); // mov rax, (addr)
+        return addr;
+    }
+#endif
+#if !defined(_WIN32) && !defined(ARCH_ARM64)
+    // Linux/SysV x86-64: a struct/union <=16 bytes with no floating member
+    // anywhere (struct_returns_in_gp_regs) returns in RAX (first eightbyte)
+    // and, if bigger than 8 bytes, RDX (second eightbyte) -- no hidden
+    // pointer. Mirrors the has_hidden_retbuf classification above.
+    if (node->ty && struct_returns_in_gp_regs(node->ty)) {
+        int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
+        int lo_sz = node->ty->size <= 4 ? 4 : 8;
+        x86_mov_mr(cg_sec, lo_sz, x86_mem(REG(addr), 0), X86_RAX); // mov %rax, (addr)
+        if (node->ty->size > 8) {
+            int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
+            x86_mov_mr(cg_sec, hi_sz, x86_mem(REG(addr), 8), X86_RDX); // mov %rdx, 8(addr)
+        }
         return addr;
     }
 #endif
@@ -8923,6 +9000,41 @@ static VReg gen(Node *node) {
                 }
                 free_reg(src);
 #endif
+#if !defined(_WIN32) && !defined(ARCH_ARM64)
+            } else if (current_fn_def && current_fn_def->ty && struct_returns_in_gp_regs(current_fn_def->ty->return_ty)) {
+                // Linux/SysV x86-64: a struct/union <=16 bytes with no
+                // floating member (struct_returns_in_gp_regs) returns in
+                // RAX (first eightbyte) and, if bigger than 8 bytes, RDX
+                // (second eightbyte) -- no hidden return pointer. Mirrors
+                // the has_retbuf/param_index classification in the
+                // function prologue and gen_funcall's call-site handling.
+                int src = gen_addr(node->lhs);
+                if (src < 0) src = gen(node->lhs);
+                int64_t sz = current_fn_def->ty->return_ty->size;
+                x86_mov_rm(cg_sec, sz <= 4 ? 4 : 8, X86_RAX, x86_mem(REG(src), 0)); // mov (src), %rax
+                if (sz > 8)
+                    x86_mov_rm(cg_sec, sz - 8 <= 4 ? 4 : 8, X86_RDX, x86_mem(REG(src), 8)); // mov 8(src), %rdx
+                free_reg(src);
+#endif
+#ifdef ARCH_ARM64
+            } else if (current_fn_def && current_fn_def->ty && struct_returns_in_gp_regs(current_fn_def->ty->return_ty)) {
+                // AAPCS64: a struct/union <=16 bytes with no floating
+                // member (struct_returns_in_gp_regs) returns raw bits in
+                // X0 (first eightbyte) and, if bigger than 8 bytes, X1
+                // (second eightbyte) -- no indirect result register (X8).
+                // Mirrors the has_hidden_retbuf/prologue classification
+                // and gen_funcall's call-site handling.
+                int src = gen_addr(node->lhs);
+                if (src < 0) src = gen(node->lhs);
+                int64_t sz = current_fn_def->ty->return_ty->size;
+                int lo_sz = sz <= 4 ? 4 : 8;
+                arm64_ldr_uoff(cg_sec, lo_sz <= 4 ? 2 : 3, ARM64_X0, REG(src), 0); // ldr x0, [src]
+                if (sz > 8) {
+                    int hi_sz = sz - 8 <= 4 ? 4 : 8;
+                    arm64_ldr_uoff(cg_sec, hi_sz <= 4 ? 2 : 3, ARM64_X1, REG(src), 8 / hi_sz); // ldr x1, [src, #8]
+                }
+                free_reg(src);
+#endif
             } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
@@ -13275,7 +13387,7 @@ struct ObjFile *codegen(Program *prog) {
 #ifdef _WIN32
                 (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8))
 #else
-                ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16))
+                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16))
 #endif
             ? 1
             : 0;
@@ -13693,10 +13805,13 @@ struct ObjFile *codegen(Program *prog) {
         // preserve the return value across cleanup calls; mark x19 as used now
         // so the prologue saves/restores it correctly.
         bool fn_ret_nonvoid = fn->ty->return_ty && fn->ty->return_ty->kind != TY_VOID;
+        bool fn_ret_gp_pair = fn->ty->return_ty && struct_returns_in_gp_regs(fn->ty->return_ty) && fn->ty->return_ty->size > 8;
         {
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var_has_cleanup(var) && fn_ret_nonvoid) {
                     ever_used_regs |= (1 << 6); // x19 will be used in cleanup section
+                    if (fn_ret_gp_pair)
+                        ever_used_regs |= (1 << 7); // x20 preserves x1 (2nd eightbyte) across cleanup calls too
                     break;
                 }
             }
@@ -13824,7 +13939,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Save hidden struct return pointer if needed
-        if (fn->ty->return_ty && (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION || fn->ty->return_ty->kind == TY_COMPLEX)) {
+        if (fn->ty->return_ty && (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || fn->ty->return_ty->kind == TY_COMPLEX)) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var->name && var->name == kw_retbuf) {
@@ -14096,6 +14211,8 @@ struct ObjFile *codegen(Program *prog) {
             // Save x0 (return value) to x19 (callee-saved) before cleanup calls.
             // x19 is guaranteed saved/restored by the prologue (see ever_used_regs |= above).
             asm_mov_phy_phy(cg_sec, ARM64_X19, ARM64_X0, 1); // mov x19, x0 (save return value)
+            if (fn_ret_gp_pair)
+                asm_mov_phy_phy(cg_sec, ARM64_X20, ARM64_X1, 1); // mov x20, x1 (save 2nd eightbyte too)
         }
         for (LVar *var = fn->locals; var; var = var->next)
             if (var_has_cleanup(var))
@@ -14103,6 +14220,8 @@ struct ObjFile *codegen(Program *prog) {
         if (has_cleanup && fn_ret_nonvoid) {
             // Restore x0 from x19 after cleanup calls
             asm_mov_phy_phy(cg_sec, ARM64_X0, ARM64_X19, 1); // mov x0, x19 (restore return value)
+            if (fn_ret_gp_pair)
+                asm_mov_phy_phy(cg_sec, ARM64_X1, ARM64_X20, 1); // mov x1, x20 (restore 2nd eightbyte)
         }
 
         // VLA or alloca may have moved sp; restore to fixed frame position
@@ -14316,7 +14435,7 @@ struct ObjFile *codegen(Program *prog) {
 #ifdef _WIN32
                          ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #else
-                         fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION
+                         (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)
 #endif
                              )
                 ? 1
@@ -14584,6 +14703,8 @@ struct ObjFile *codegen(Program *prog) {
                  )
 #ifdef _WIN32
             && fn->ty->return_ty->size > 8
+#else
+            && !struct_returns_in_gp_regs(fn->ty->return_ty)
 #endif
             ;
         if (has_retbuf) {
@@ -14620,14 +14741,23 @@ struct ObjFile *codegen(Program *prog) {
                 has_cleanup = true;
                 break;
             }
+#ifndef _WIN32
+        bool save_rdx_for_cleanup = has_cleanup && fn->ty->return_ty && struct_returns_in_gp_regs(fn->ty->return_ty) && fn->ty->return_ty->size > 8;
+#else
+        bool save_rdx_for_cleanup = false;
+#endif
         if (has_cleanup)
             asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, spill_offset(0)); // mov [rbp-spill_offset(0], X86_RAX)
+        if (save_rdx_for_cleanup)
+            asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, spill_offset(1)); // mov [rbp-spill_offset(1], X86_RDX)
         for (LVar *var = fn->locals; var; var = var->next) {
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
         }
         if (has_cleanup)
             asm_mov_rbp(cg_sec, X86_RAX, 8, spill_offset(0)); // mov [rbp-spill_offset(0], RAX)
+        if (save_rdx_for_cleanup)
+            asm_mov_rbp(cg_sec, X86_RDX, 8, spill_offset(1)); // mov [rbp-spill_offset(1], RDX)
         // Reload the callee-saved registers from their dedicated slots below
         // the locals/spill region (mirrors the prologue saves) BEFORE
         // deallocating the frame. These are pure rbp-relative reads and
