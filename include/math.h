@@ -33,6 +33,8 @@ double expm1(double);
 double log1p(double);
 double cbrt(double);
 double hypot(double, double);
+double erf(double);
+double erfc(double);
 double copysign(double, double);
 double remainder(double, double);
 double fdim(double, double);

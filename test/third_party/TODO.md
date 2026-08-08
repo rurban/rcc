@@ -416,7 +416,108 @@ Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 confirmed clean on the mingw and arm64 cross-compile targets (compile
 only — `-rdynamic`'s native-ELF-linker effect is Linux-specific).
 
-### Confirmed rcc bug, not yet fixed: test_mruby crash
+### Fixed (2026-08-08, continued — assignment-expression-as-lvalue)
+
+- **`gen_addr()`'s `ND_ASSIGN` case computed the address of an
+  assignment's target without ever emitting the assignment's store**
+  (codegen.c) — `(a = b).member`, `&(a = b)`, and chain assignments
+  through a struct RHS (`d = e = a[0]`) all route through `gen_addr()`
+  to get an lvalue address; its `ND_ASSIGN` case was simply `return
+gen_addr(node->lhs);` — the address of `a`, computed _without_ first
+  generating `a = b`'s actual store. Every read through that address
+  then saw `a`'s stale/uninitialized prior contents instead of `b`.
+  Reproducible with three lines of plain C, no mruby involved:
+  `struct { uintptr_t w; } a, b = {42}; uintptr_t r = (a = b).w;`
+  prints garbage instead of `42`; `gcc`/`clang` both print `42`
+  correctly. One call site already carried a matching comment ("For
+  chain assignments (d = e = a[0] = c), use gen() to trigger inner
+  assignment evaluation, not gen*addr() which skips it") for the
+  struct-assignment RHS case (parser.c:7386-7387) — this was the same
+  bug, just unfixed for the `gen_addr()` entry point itself (`.member`
+  access and `&`).
+  → found via mruby 4.0.0's VM: word-boxed `mrb_value` is `{ uintptr_t
+w; }`, and GCC-style macros like `WORDBOX_OBJ_TYPE_P(o,n)
+(!mrb_immediate_p(o) && mrb_val_union(o).bp->tt == n)` expand their
+  parameter `o` multiple times, so a real call site like
+  `mrb_hash_p(kdict = regs[kidx])` (`OP_KARG`'s keyword-argument
+  dispatch, `src/vm.c`) re-expands `kdict = regs[kidx]` textually
+  several times — this bug meant only the \_first* repetition's address
+  computation happened and the store into `kdict` never did, so every
+  `mrb_hash_p`/`mrb_hash_key_p` check downstream read `kdict` as
+  garbage. Confirmed real (not pre-existing/environment): the previous
+  session's investigation of this same test*mruby failure (see below,
+  formerly a full `mrbtest` SIGSEGV from infinite recursion in error
+  formatting) had already fully fixed the crash's proximate trigger via
+  the earlier small-struct-return-ABI session; what remained was this
+  bug, surfacing as 5 spurious `ArgumentError`s ("missing keyword: …",
+  wrong `Hash#key?`/`#==` results) that `mrbtest` itself catches and
+  counts as "Crash" (not an OS-level SIGSEGV, mruby's own VM-level
+  exception guard).
+  Fixed by actually generating the assignment (`gen(node)`, which
+  performs the store) before using its target's address: for
+  struct/union/array/complex targets `gen()` already returns the
+  destination address directly (reused as-is, matching the existing
+  chain-assignment fix's pattern); for scalar targets `gen()` returns
+  the assigned \_value*, discarded before re-taking the target's
+  address.
+  → unblocks: test_mruby's `mrbtest` — `Total: 1686, OK: 1677, KO: 0,
+Crash: 0` (was: full SIGSEGV, no summary at all, before the earlier
+  struct-return-ABI fix; `Crash: 5` after that fix; `KO: 2` after this
+  fix but before the `Math.erf`/`Math.erfc` fix below — `mrbtest` now
+  matches gcc-built mruby's own summary exactly, including its 9
+  environment-only `Skip`s). See "Fixed (2026-08-08, continued —
+  include/math.h erf/erfc)" below for the last 2 failures.
+
+New regression test: `test/test_assign_expr_lvalue.c` — struct member
+access on an assignment expression's result, the same assignment used
+twice within one `&&`-sequenced expression (the real macro-re-expansion
+shape), `&` on a scalar assignment result, and a struct chain
+assignment; all cross-checked against gcc. Full suite verified: Torture
+3605/3609 (100% of non-skipped), Dg-error 34/34, Unit tests 176/176,
+Link tests 5/5, 0 failed overall; confirmed clean (test PASSes) on the
+mingw and arm64 cross-compile targets.
+
+### Fixed (2026-08-08, continued — include/math.h erf/erfc)
+
+- **`include/math.h` (rcc's own bundled header, used in preference to
+  the system `<math.h>` the same way `emmintrin.h`/`tmmintrin.h` are)
+  had no declaration for `erf()`/`erfc()` at all** — most of ISO C99's
+  `<math.h>` surface was there (`sin`, `cos`, `tgamma`... no, not even
+  that far — just the commonly-used subset), but `erf`/`erfc` were
+  simply missing. Calling an undeclared external function silently
+  falls back to an implicit `int` return type (K&R legacy behavior,
+  accepted with no diagnostic even under `-W`): `double y = erf(x);`
+  treated the call's return value as arriving in `RAX` (the
+  integer-return register) and converted it to `double` via
+  `cvtsi2sd`, instead of reading the real `double` result glibc placed
+  in `XMM0` per the SysV ABI. The call itself succeeded and glibc
+  computed the mathematically correct value; only the _caller's_
+  interpretation of the return register was wrong — confirmed by
+  disassembling the call site (`call erf@plt` immediately followed by
+  `mov %rax,%r10; cvtsi2sd %r10d,%xmm0`, versus `sin`/`cos`/`sqrt`/
+  `exp`/`log`, all present in `include/math.h` and all reading `xmm0`
+  correctly).
+  Reproducible with three lines of plain C, no mruby involved:
+  `double y = erf(1.0);` prints `1072693248` (a plausible-_looking_
+  large-integer bit pattern, not obviously garbage — which is what
+  made this miscompile easy to spot in test _output_ but easy to miss
+  by code inspection) instead of `~0.8427`.
+  Fixed by adding `double erf(double);`/`double erfc(double);` to
+  `include/math.h`.
+  → unblocks: test_mruby's `mrbtest` — `Total: 1686, OK: 1677, KO: 0,
+Crash: 0, Skip: 9`, now byte-for-byte matching the reference
+  gcc-built mruby's own summary. **`test_mruby` is fully fixed.**
+
+New regression test: `test/test_math_erf.c` — checks `erf`/`erfc`
+against their true mathematical values (tight tolerance, not just "in
+some plausible range" — a wrong-but-plausible-looking value like the
+one this bug actually produced would trivially pass a loose bounds
+check) plus the `erf(x) + erfc(x) == 1` identity. Full suite verified:
+Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Unit tests
+177/177, Link tests 5/5, 0 failed overall; confirmed clean (test
+PASSes) on the mingw and arm64 cross-compile targets.
+
+### Historical: the original test_mruby crash writeup (superseded above)
 
 `mrbtest` SIGSEGVs (stack overflow) during `mrb_mruby_objectspace_gem_init`,
 deep inside infinite mutual recursion:
@@ -434,7 +535,7 @@ mruby 4.0.0 checkout built with real gcc instead of rcc passes cleanly
 generates makes an object's method dispatch (`mrb_respond_to`)
 incorrectly report "doesn't respond to :to_s" for a value that should.
 
-Investigated but NOT reproduced in isolation:
+Investigated but NOT reproduced in isolation (at the time):
 
 - `mrb_value` is `{ union { double f; void *p; mrb_int i; ...} value;
 enum mrb_vtype tt; }` (`boxing_no.h`) — a small struct passed BY
@@ -453,6 +554,9 @@ enum mrb_vtype tt; }` (`boxing_no.h`) — a small struct passed BY
   register pressure at `-O3`, or mruby's own symbol/method hash-table
   lookup) and needs the actual mruby VM environment (not a minimal
   repro) plus a `-O0`/`-O1` vs `-O3` bisection to isolate further.
+  (Superseded: this build's own `MRB_WORD_BOXING` default, not
+  `boxing_no.h`/`MRB_NO_BOXING`, was actually active — see the fix
+  above.)
 
 - `test/third_party/results.txt` — tab-separated: `rc\ttest_name\tduration`
 - `test/third_party/logs/test_*.log` — per-project build + test output
@@ -465,26 +569,26 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 
 ## rc=1 — Runtime Failures (builds OK, test fails)
 
-| test             | symptom                                                                   |
-| ---------------- | ------------------------------------------------------------------------- |
-| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                           |
-| test_mruby       | mrbtest binary crashes — confirmed real rcc bug, see above                |
-| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch" |
-| test_c23doku     | C23 \_BitInt(N) not supported                                             |
-| test_c3          | CMake: missing LLD_COFF                                                   |
-| test_coremarkpro | benchmark runner can't find perf logs                                     |
-| test_box3d       | C++ binary (g++ compiled, not rcc)                                        |
-| test_glib        | —                                                                         |
-| test_got         | configure: missing libbsd-overlay                                         |
-| test_ksh93       | —                                                                         |
-| test_libgmp      | configure: cannot determine 32-bit word directive                         |
-| test_muon        | muon self-tests (some pass, some fail)                                    |
-| test_neovim      | —                                                                         |
-| test_nob         | git checkout only (build not reached?)                                    |
-| test_rsync       | —                                                                         |
-| test_samba       | —                                                                         |
-| test_scrapscript | rcc compile fails (exit 1) during Python test harness                     |
-| test_tcpdump     | —                                                                         |
+| test             | symptom                                                                                                                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                                                                                                                                                                          |
+| test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly) |
+| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                |
+| test_c23doku     | C23 \_BitInt(N) not supported                                                                                                                                                                                            |
+| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                  |
+| test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                    |
+| test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                       |
+| test_glib        | —                                                                                                                                                                                                                        |
+| test_got         | configure: missing libbsd-overlay                                                                                                                                                                                        |
+| test_ksh93       | —                                                                                                                                                                                                                        |
+| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                        |
+| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                   |
+| test_neovim      | —                                                                                                                                                                                                                        |
+| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                   |
+| test_rsync       | —                                                                                                                                                                                                                        |
+| test_samba       | —                                                                                                                                                                                                                        |
+| test_scrapscript | rcc compile fails (exit 1) during Python test harness                                                                                                                                                                    |
+| test_tcpdump     | —                                                                                                                                                                                                                        |
 
 ---
 
@@ -610,11 +714,7 @@ a multi-session effort, not a quick win.
 
 ## Quick Wins (next to fix)
 
-1. **test_mruby crash** — confirmed real rcc bug (stack overflow via
-   infinite recursion in error formatting); needs gdb investigation
-   with the actual mruby VM environment, see the detailed writeup
-   above
-2. **AVX2/AVX-512 codegen** — test_blake3 (AVX-512), test_brotli (AVX2)
+1. **AVX2/AVX-512 codegen** — test_blake3 (AVX-512), test_brotli (AVX2)
    need rcc to ship its own `<immintrin.h>`/`<avxintrin.h>`/
    `<avx2intrin.h>` (and, for blake3, AVX-512 mask-register codegen)
    instead of falling through to GCC's real system headers; a
@@ -622,4 +722,4 @@ a multi-session effort, not a quick win.
    shufflevector/SSE2-baseline session)" above for what's already
    covered (`__builtin_shufflevector`, the missing baseline-SSE2 tier —
    both unblocked test_libwebp).
-3. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
+2. **C23 `_BitInt(N)`** — test_cproc, test_c23doku
