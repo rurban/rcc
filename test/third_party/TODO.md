@@ -1775,3 +1775,45 @@ all passing, 0 failed overall (native Linux x86-64).
 (test_samba itself still doesn't build end-to-end after this fix —
 waf's C-compiler bootstrap probe is only the first of many
 configure-time checks; not re-triaged further this session.)
+
+### Fixed (2026-08-09, continued — local char-array `{ STRLIT }` initializer corrupted)
+
+- **A local (function-scope, non-static, non-constexpr) char/wide-char
+  array initialized by a brace-wrapped single string literal —
+  `char arr[] = { "text" };`, C11 6.7.9p14's superfluous-but-legal
+  brace form — silently produced wrong, non-deterministic bytes**
+  (parser.c, `local_init_one`). `global_init_one` (globals/statics/
+  constexpr locals) and `infer_array_type` (array-declarator sizing)
+  both already unwrap this shape before dispatching; `local_init_one`
+  — the separate codegen path that builds runtime `ND_ASSIGN`
+  statements for an ordinary local's initializer — did not. It fell
+  into the generic "array with braces" per-element loop, saw exactly
+  one initializer-list element (the string literal), and treated it as
+  a single _scalar_ initializer for the array's `char` element type:
+  the string literal decays to `char*`, and assigning that pointer
+  value into a `char`-typed element silently truncated it to its low
+  byte — element 0 held an arbitrary, ASLR/link-layout-dependent byte,
+  and every other element was left at its zero-initialized default.
+  → found via test_liblz4's `programs/lz4io.c`:
+  `LZ4IO_toHuman()`'s `const char units[] = {"\0KMGTPEZY"};` followed
+  by `units[i]` (the KB/MB/GB/... unit-suffix lookup) — `lz4 -l`
+  (list mode) printed a bare number like `"3.00"` instead of `"3.00M"`
+  for any file needing a unit suffix, failing lz4's own
+  `test-lz4-list.py` test suite (`test_uncompressed_size`).
+  Fixed by giving `local_init_one` the identical unwrap
+  `global_init_one` already has, including its `brace_close` bookkeeping
+  so the loop correctly resumes past the closing `}` once unwrapped
+  (the first fix attempt omitted this and broke token-stream resync for
+  every caller, turning it into a hard parse error instead of silently
+  wrong bytes — caught immediately by the existing full-suite rebuild).
+
+New regression test: `test/test_local_char_array_brace_strlit.c` —
+the exact NUL-prefixed-string shape from the bug, plus a plain local
+char array, a trailing comma inside the brace, a wide-string local,
+and a regression guard for the sibling "one-pointer-array-of-`char*`"
+case (`const char *arr[] = {"vec_"}`, TY_PTR-excluded, must keep
+assigning the address rather than being treated as a char array).
+Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link 6/6, 0 failed overall (native Linux x86-64); confirmed
+clean (both the new test and `test_ptr_array_strlit_size` PASS) on
+the mingw cross target.

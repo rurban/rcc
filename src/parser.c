@@ -6265,6 +6265,30 @@ static Token *local_init_member(Token *tok, Node *lhs, Member *mem, Node **cur) 
 }
 
 static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
+    // "{ STRLIT }" / "{ STRLIT, }" for a char/wide-char array target is a
+    // superfluous-but-legal single-element brace (C11 6.7.9p14), exactly
+    // equivalent to the bare STRLIT form the check just below looks for.
+    // Unwrap it here so that check sees it either way -- otherwise it fell
+    // into the generic "Array with braces" per-element loop further down,
+    // which treated the whole string literal as ONE initializer for
+    // ty->base (a scalar char), assigning the string's decayed `char*`
+    // address (truncated to one byte) into element 0 and leaving every
+    // other element at its zero-initialized default. Mirrors
+    // global_init_one()'s identical unwrap (used for static/constexpr
+    // locals and true globals) and infer_array_type()'s sizing unwrap --
+    // all three must agree on this shape.
+    bool scalarish_base = ty->kind == TY_ARRAY && ty->base->kind != TY_ARRAY &&
+        ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION &&
+        ty->base->kind != TY_PTR;
+    Token *brace_close = NULL;
+    if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
+        Token *after = tok->next->next;
+        if (equalc(after, ",")) after = after->next;
+        if (equalc(after, "}")) {
+            brace_close = after->next;
+            tok = tok->next; // unwrap: point straight at the string literal
+        }
+    }
     // String literal for char or wide-char array
     if (ty->kind == TY_ARRAY && tok->kind == TK_STR &&
         (ty->base->kind == TY_CHAR || tok->string_literal_prefix != 0)) {
@@ -6272,7 +6296,7 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
         Node *assign_node = new_binary(ND_ASSIGN, lhs, rhs, tok);
         check_type(assign_node);
         *cur = (*cur)->next = new_unary(ND_EXPR_STMT, assign_node, tok);
-        return tok;
+        return brace_close ? brace_close : tok;
     }
 
     // Array with braces
