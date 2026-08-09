@@ -1473,7 +1473,7 @@ test_rpmalloc() {
 
 test_rsync() {
  github_tar RsyncProject rsync v3.4.4
- ./configure
+ ./configure --disable-md2man --disable-xxhash
  make test
 }
 

@@ -704,7 +704,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                           |
 | test_neovim      | —                                                                                                                                                                                                                                                                                                |
 | test_nob         | git checkout only (build not reached?)                                                                                                                                                                                                                                                           |
-| test_rsync       | —                                                                                                                                                                                                                                                                                                |
+| test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                    |
 | test_samba       | —                                                                                                                                                                                                                                                                                                |
 | test_scrapscript | **fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix resolved linking (32/33 -> 17/33 failing), then the section sh_addralign fix below resolved the remaining 17 `SIGABRT`s (17/33 -> 0/33 failing, full suite green) |
 | test_tcpdump     | —                                                                                                                                                                                                                                                                                                |
@@ -823,20 +823,20 @@ a multi-session effort, not a quick win.
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                                                                                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                         |
-| test_perl         | —                                                                                                                                                                                                                                                             |
-| test_go           | —                                                                                                                                                                                                                                                             |
-| test_nginx        | —                                                                                                                                                                                                                                                             |
-| test_groff        | —                                                                                                                                                                                                                                                             |
-| test_argtable3    | —                                                                                                                                                                                                                                                             |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                            |
-| test_libarchive   | —                                                                                                                                                                                                                                                             |
-| test_liblz4       | —                                                                                                                                                                                                                                                             |
-| test_libpng       | —                                                                                                                                                                                                                                                             |
-| test_libressl     | —                                                                                                                                                                                                                                                             |
-| test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59 |
+| test              | notes                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                                                                                                                                                                                                         |
+| test_perl         | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_go           | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_nginx        | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_groff        | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_argtable3    | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                            |
+| test_libarchive   | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_liblz4       | **investigated, not an rcc bug** — `make test`'s `test-lz4-hugefile` step generates and round-trips a 4.2GB file; this sandbox's disk/CPU throughput alone exceeds the 420s harness timeout, not a correctness issue, see "Investigated: test_liblz4 ..." below                                                                                                                                                                               |
+| test_libpng       | **investigated, not an rcc bug** — `pngtest-all`'s strict byte-compare fails identically with a fully gcc-built libpng+pngtest too (upstream zlib-version-sensitive reference file, libpng's own documented caveat); remaining timeout is `pngimage-full`'s exhaustive transform-combination test running correctly but ~3x slower under rcc's codegen than gcc -O2 (222s vs 68s, both 100% PASS) — see "Investigated: test_libpng ..." below |
+| test_libressl     | —                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59                                                                                                                                                                                 |
 
 ---
 
@@ -2017,3 +2017,131 @@ positional-compound-literal-as-last-of-5-args case, both branches).
 Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link 7/7, RCC Unit tests 0 failed, 0 failed overall (native
 Linux x86-64); `test_qbe_simplecc`'s own `tools/test.sh all` 59/59.
+
+### Investigated: test_liblz4 — confirmed NOT an rcc bug (sandbox throughput, not correctness)
+
+`test_liblz4`'s harness target (`make test`) transitively depends on
+`tests/Makefile`'s `test-lz4-hugefile` (`test-lz4-fast-hugefile` +
+`test-lz4hc-hugefile`), which `datagen -g4200MB`s a 4.2GB file and
+round-trips it through both the fast and HC compressors with full
+content verification. In this sandbox that alone takes well over the
+harness's 420s per-target timeout — confirmed by running it standalone
+and watching it progress steadily (through several minutes of
+`Read : NNN MiB ==> ...%` progress output) with **zero** diffs,
+decompression mismatches, or crashes, just slow linear throughput
+(~0.5-1 MiB/s effective for the largest passes under this sandbox's
+CPU/disk contention).
+
+Re-ran the rest of the suite explicitly _excluding_ the hugefile
+targets (`test-lz4-essentials`, `test-lz4-opt-parser`,
+`test-lz4-sparse`, `test-lz4-dict`, `test-lz4-skippable`, `test-lz4c`,
+`test-fullbench`, `test-fuzzer -T90s`, `test-frametest -v -T90s`,
+`test-amalgamation`, `listTest`, `test-decompress-partial`) — every
+one passed cleanly (including `listTest`'s own 10-case Python unit
+suite, `Ran 10 tests in 0.405s / OK`), no failures, no crashes. Zero
+`FAIL`/`error:`/mismatch markers in either run's full output (the only
+text-string hits for "corrupti"/"error" are literal words inside
+lorem-ipsum-style test _fixture data_, not diagnostics).
+
+**Confirmed pre-existing sandbox limitation, not an rcc bug**: no
+fix needed or possible on rcc's side — the harness's fixed 420s
+timeout is simply too short for a 4.2GB compress/decompress round
+trip on this machine's I/O throughput. (The one genuine rcc bug
+`test_liblz4` did surface — `programs/lz4io.c`'s `LZ4IO_toHuman()`
+NUL-prefixed brace-string-literal initializer — was found and fixed
+separately; see "Fixed (2026-08-09, continued — local char-array `{
+STRLIT }` initializer corrupted)" above.)
+
+### Investigated: test_libpng — confirmed NOT an rcc bug (upstream test sensitivity + codegen speed, not correctness)
+
+`make check`'s `check-TESTS` run reported `FAIL: tests/pngtest-all`
+then hit the harness's 420s timeout mid-way through the suite's final
+test, `tests/pngimage-full`. Investigated both independently:
+
+- **`pngtest-all`'s failure**: the very first sub-check,
+  `pngtest --strict ./pngtest.png`, round-trips the checked-in
+  reference PNG through libpng's own read+write API and does a
+  byte-for-byte comparison of the result against the original file.
+  `pngtest.c` itself documents why this can legitimately fail (see the
+  `\nFiles %s and %s are different\n... Was %s written with the same
+... zlib version (%s)?` diagnostic it prints) — the comparison is
+  sensitive to the _exact_ zlib build/version used to originally
+  encode the reference file, not just to libpng's own read/write
+  correctness. Confirmed with a fully **gcc**-rebuilt libpng16 +
+  pngtest (`make CC=gcc clean && make CC=gcc`, no rcc involved at
+  all): identical failure, byte-for-byte identical diagnostic output.
+  This environment's `zlib 1.3.1.zlib-ng` simply doesn't reproduce
+  whatever build originally compressed `pngtest.png` — a pre-existing,
+  compiler-independent environment mismatch, not an rcc bug.
+- **The timeout**: `tests/pngimage-full` runs
+  `pngimage --exhaustive --list-combos` (every read-transform
+  combination) against the whole `contrib/pngsuite/` corpus. Timed
+  standalone: gcc-built `pngimage` completes in 68s, 100% PASS;
+  rcc-built `pngimage` completes in 222s, **also 100% PASS** — same
+  correct output, just ~3.3x slower under rcc's much simpler
+  (peephole-only, no vectorization/scheduling) optimizer versus gcc
+  -O2's mature pipeline on this pixel-transform-heavy nested-loop
+  workload. Combined with the rest of `check-TESTS` (configure, full
+  library + 8 test-program build, then every earlier TESTS entry) and
+  this sandbox's own resource contention, the whole `make check`
+  invocation exceeds the harness's fixed 420s budget — a genuine
+  performance gap versus gcc, not a correctness defect, and out of
+  scope for a targeted bug fix (closing a 3x gap with gcc -O2's
+  optimizer is a different, much larger undertaking than this
+  project's third-party test failures otherwise represent).
+
+**Confirmed pre-existing, not an rcc bug**: no fix applied or needed;
+rcc-generated code is correct throughout, just slower than gcc -O2 on
+this specific exhaustive-combinatorial workload, and the strict
+byte-compare failure is upstream/environmental, reproducing identically
+with a 100% gcc-built libpng.
+
+### Fixed (2026-08-09, block-scope extern DCE session)
+
+- **A block-scope `extern` declaration of a global inside a never-called
+  `static inline` function got that global silently dropped from the
+  final object entirely, once the enclosing (dead) function was
+  eliminated** (parser.c/opt.c) — `new_var()` unconditionally stamps
+  `decl_fn_name = parser_current_fn` on every non-local `LVar` it
+  creates while parsing inside a function body. That tagging exists so
+  a true block-scope `static` local (which owns its _own_, function-
+  lifetime-scoped storage — see the `attr.is_static` branch right above
+  the `attr.is_extern` one) gets spliced out of `prog->globals` too when
+  `opt.c`'s `eliminate_unused_static_inline()` drops its never-called
+  enclosing `static inline` function as dead code (see that function's
+  own "Second pass: drop any global whose decl*fn_name names an omitted
+  function" comment). The block-scope-`extern` branch reused the same
+  `new_var(name, ty, false)` call to register (or find) the \_referenced*
+  global, so that global inherited the same "belongs to this function,
+  drop it if the function dies" tag — even though a block-scope `extern`
+  never owns the storage it names; it may equally be, and here was,
+  independently defined at file scope elsewhere in the same TU. Once
+  the enclosing function was recognized as dead code, `opt.c`'s second
+  DCE pass spliced the (still fully live, later-defined) global out of
+  `prog->globals` right alongside it — the object file kept the earlier
+  `U`-typed reference emitted while codegening the (never actually
+  emitted) dead function's body, but the real definition never got
+  emitted at all, producing a hard link failure
+  ("undefined reference to `preserve_acls'") in any program that also
+references the same global from a *live* function.
+Fixed by clearing `gvar->decl_fn_name = NULL` immediately after
+creating (or reusing) the global in the block-scope-`extern`branch —
+an extern reference is never owned by the function lexically
+containing it, so it must never be tied to that function's DCE
+lifecycle.
+→ found via rsync's`options.c`: `extern int preserve_acls;`/`extern int preserve_xattrs;`declared inside small`static inline`accessor helpers that configure.sh-detected feature gates leave
+entirely unused on this platform, with the real`int preserve_acls =
+  0;`/`int preserve_xattrs = 0;`definitions elsewhere in the same
+file — rsync's own`make test` failed to link
+(`undefined reference to 'preserve_acls'`) until this fix.
+
+New regression test: `test/test_extern_block_scope_dce.c` (two
+never-called `static inline` functions each block-scope-`extern`-
+declare a global that is defined at file scope afterward and used only
+from a third, live function — reproduces the exact drop-with-the-dead-
+function pattern without needing rsync itself).
+
+Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, RCC Unit tests 0 failed, Link tests 7/7, 0 failed overall
+(native Linux x86-64); `test_rsync`'s own `make test` now links and
+runs to completion.

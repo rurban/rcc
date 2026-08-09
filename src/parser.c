@@ -6855,6 +6855,18 @@ static Node *declaration(Token **rest, Token *tok) {
             if (!gvar) {
                 gvar = new_var(name, ty, false);
                 gvar->is_extern = true;
+                // A block-scope `extern` only *references* file-scope
+                // storage - it does not own it the way a block-scope
+                // `static` does. new_var() unconditionally stamps
+                // decl_fn_name = parser_current_fn for any non-local var
+                // created while inside a function body, so without this
+                // reset, opt.c's eliminate_unused_static_inline() would
+                // treat this global as if it belonged to (and must be
+                // dropped alongside) the enclosing function whenever that
+                // function is itself unused dead code - even though a
+                // later file-scope definition of the same name reuses
+                // this exact LVar and legitimately needs to survive.
+                gvar->decl_fn_name = NULL;
             } else if (gvar->ty->kind == TY_ARRAY && ty->kind == TY_ARRAY && ty->size > 0 && gvar->ty->size == 0) {
                 gvar->ty = ty;
             }
