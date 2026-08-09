@@ -1584,3 +1584,104 @@ regression check from the fix above -- is shared and unconditional.
   of any of those three builds).
 - Pushed to CI; the macos-latest job is the authoritative check for
   this change and needs to be watched explicitly.
+
+### Fixed (2026-08-09, issue #4 continuation — 7 bugs via scout-parallel triage)
+
+Continued triaging remaining test/third_party/TODO.md failures (GitHub
+issue #4's checklist) by running a fresh batch of previously-unchecked
+small/medium projects and dispatching parallel read-only scout
+investigations into the most promising leads. Six genuine rcc bugs
+found and fixed, all with regression tests, full suite verified after
+each:
+
+1. **declarator() SIGSEGV on an unclosed `(`** (parser.c) — the C11
+   6.7.6p3 nested-paren disambiguation recursed into declarator() with
+   the terminal TK_EOF token once its matching-paren scan ran out of
+   input; TK_EOF's own `->next` is NULL (the lexer's genuine
+   end-of-list sentinel), and the immediately following `tok->next`
+   dereference flowed that NULL into skip_attributes()/
+   read_type_attrs(), segfaulting on `tok->kw`. Found via ksh93's own
+   AT&T ast-open build probe (`src/cmd/INIT/C+probe`), which
+   deliberately compiles a bare `(` as a negative-compilation-check.
+   Fixed by diagnosing "expected ')'" instead of recursing into an
+   exhausted token stream.
+2. **CRLF backslash-newline macro continuation never spliced**
+   (preprocess.c) — `splice_lines_with_counts()` only matched `\`
+   immediately followed by `\n`, missing the `\` `\r` `\n` form used by
+   CRLF-terminated third-party sources. Found via test_unqlite's
+   CRLF-terminated amalgamated `unqlite.c`.
+3. **`__attribute__((mode(TI)))` unrecognized, plus a broader trailing-
+   mode()-attribute leak** (parser.c) — TI (128-bit) was missing from
+   the QI/HI/SI/DI mode table; fixing it surfaced a pre-existing bug
+   where a _trailing_ mode() attribute (GCC's own convention, written
+   after the identifier) was parsed but never applied in that
+   declarator() call, leaking the pending_mode flag into whatever
+   declarator() ran next and silently retyping an unrelated
+   declaration. Factored a shared apply_pending_mode() helper called
+   from every declarator() exit path. Found via test_libtommath's
+   `typedef unsigned long mp_word __attribute__((mode(TI)));`.
+4. **`__builtin_cpu_init()` unimplemented** (preprocess.c + parser.c) —
+   GCC/clang's companion to the already-implemented
+   `__builtin_cpu_supports()`; added as a true no-op stub (rcc's
+   `__rcc_cpu_supports` re-queries cpuid directly every call, no cache
+   to populate) mirroring the existing wiring exactly. Found via
+   test_libucl's bundled mum.h.
+5. **`infer_array_type()` sized a pointer array by a string literal's
+   length** (parser.c) — `T *arr[] = { "literal" }` (a correctly-typed
+   ONE-pointer array) was misclassified as C11 6.7.9p14's char-array-
+   sized-by-string-literal case, with no check that the element type
+   was actually scalar/non-pointer, unlike every sibling STRLIT-sizes-
+   array call site in the file. Fixed with the same scalarish*base-
+   style guard (excludes ARRAY/STRUCT/UNION/PTR). Found via
+   test_flatcc's gperf-generated `fb_reserved_kw_vec_prefixes[] = {
+   "vec*" }`, which crashed calling strlen() on garbage 4 elements past
+   the array's real end.
+6. **Plain `gnu_inline` function export** (codegen.c) — `fn_exported`
+   implemented pure C99 inline linkage unconditionally; real GCC's
+   GNU89 semantics (what `__attribute__((gnu_inline))` explicitly opts
+   into) mean a plain (non-extern) gnu_inline function DOES get an
+   ordinary global-linkage definition. Missing this made gperf-
+   generated code using the common `#ifdef __GNUC_STDC_INLINE__
+__attribute__((gnu_inline)) #endif` portability idiom compile fine
+   per-TU but emit as a local symbol, invisible to any other TU — only
+   surfacing at final-executable link time (a shared-library link
+   tolerates the undefined symbol). Found via test_hoedown's gperf-
+   generated `html_blocks.c`'s `hoedown_find_block_tag`.
+7. **`int64_t`/`intptr_t`/`intmax_t` (+ unsigned) used `long long`
+   unconditionally** (include/stdint.h) — on LP64 targets (native
+   Linux/macOS x86-64 and arm64), these must be `long`/`unsigned long`
+   to match glibc's own convention (`bits/types.h`'s
+   `__int64_t`/`__intmax_t`, guarded on `__WORDSIZE == 64`) — the same
+   class of bug the file's existing `ptrdiff_t` note already documents,
+   just for four more names. A TU pulling in both this header and a
+   real glibc header re-declaring these names (very common — countless
+   system headers transitively include `<bits/stdint-intn.h>`) hit a
+   real "conflicting types" error at every int64_t/intmax_t/intptr_t-
+   parametered function once prototype/definition redeclaration
+   diagnostics were added. Kept `long long` on `_WIN32` (LLP64, where
+   `long` is only 4 bytes; matches MSVC/mingw's own convention there —
+   this branch is unchanged from before, so mingw is unaffected by this
+   fix). Found via test_libtommath's `MP_INIT_INT(mp_init_i64,
+mp_set_i64, int64_t)`, whose macro-expanded definition disagreed
+   with its own header-declared prototype once glibc's transitively-
+   included `<bits/types.h>` re-typedef'd `int64_t` as `long`.
+
+5 of 5 deep-dived third-party targets are now confirmed fixed:
+test_unqlite, test_libucl, test_hoedown, test_flatcc, test_libtommath
+all build clean; the `gnu_inline` fix has no single-project home (found
+via test_hoedown but is a general codegen bug, verified via a dedicated
+two-TU link test instead).
+
+New regression tests: `test/test_err_unclosed_paren.c`,
+`test/test_crlf_line_continuation.c` (genuine CRLF file),
+`test/test_mode_ti_attribute.c`, `test/test_builtin_cpu_init.c`,
+`test/test_ptr_array_strlit_size.c`, `test/test_stdint_int64_glibc_abi.c`,
+plus `test/test-link.sh` case 7 (gnu*inline needs real two-TU linking,
+which the single-file `test/test*\*.c` harness can't express).
+
+**Full suite verified after every fix**: TCC 118/118, Unit 197/197,
+Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link 6/6
+(native Linux x86-64); C-testsuite 220/220 on both mingw cross and
+arm64 cross, plus the specific new/affected unit tests confirmed
+passing on both cross targets (`_WIN32` branch of the stdint.h fix is
+behaviorally unchanged on mingw by construction).

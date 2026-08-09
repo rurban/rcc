@@ -7,14 +7,50 @@ typedef short int16_t;
 typedef unsigned short uint16_t;
 typedef int int32_t;
 typedef unsigned int uint32_t;
+// On LP64 targets (native Linux/macOS x86-64 and arm64, where `long` is
+// 8 bytes), these must be `long`/`unsigned long`, matching glibc's own
+// convention (bits/types.h's __int64_t/__intmax_t, guarded on
+// __WORDSIZE == 64) -- not merely "some 64-bit type", which the C
+// standard alone would allow. A typedef name that's re-typedef'd to a
+// DIFFERENT (if same-size) underlying type is not the same type per
+// C11 6.7p3, so any TU that pulls in both this header and a real
+// glibc header defining these names again (extremely common --
+// countless system headers indirectly include <bits/stdint-intn.h>
+// for __intN_t) hit a real "conflicting types" error at every
+// int64_t/intmax_t/intptr_t-parametered function once the parser
+// started diagnosing incompatible redeclarations -- the exact same
+// class of bug the ptrdiff_t note below already documents, just for
+// four more names. On LLP64 (Windows/mingw, where `long` is only 4
+// bytes), `long long` remains correct and matches MSVC/mingw's own
+// convention there.
+// found via test/third_party/test_libtommath: MP_INIT_INT(mp_init_i64,
+// mp_set_i64, int64_t)'s macro-expanded definition disagreed with its
+// own header-declared prototype once glibc's <bits/types.h> (pulled in
+// transitively) re-typedef'd int64_t as `long` right after this
+// header's own `long long` typedef had already taken effect.
+#ifdef _WIN32
 typedef long long int64_t;
 typedef unsigned long long uint64_t;
+#else
+typedef long int64_t;
+typedef unsigned long uint64_t;
+#endif
 
+#ifdef _WIN32
 typedef long long intptr_t;
 typedef unsigned long long uintptr_t;
+#else
+typedef long intptr_t;
+typedef unsigned long uintptr_t;
+#endif
 
+#ifdef _WIN32
 typedef long long intmax_t;
 typedef unsigned long long uintmax_t;
+#else
+typedef long intmax_t;
+typedef unsigned long uintmax_t;
+#endif
 
 /* NOTE: ptrdiff_t belongs in <stddef.h>, not here -- real glibc's
  * <stdint.h> does not define it. A stray `typedef long long ptrdiff_t;`
