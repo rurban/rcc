@@ -2092,7 +2092,13 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(vaddr);
                 continue;
             }
-            // HFA overflow: struct data goes on stack as value, not pointer
+#endif
+            // HFA overflow: an HFA/HVA argument that doesn't fit in the
+            // remaining SIMD/FP registers (Stage C.3) is passed entirely
+            // on the stack, by value -- never via a hidden pointer, on
+            // both Linux and Apple AAPCS64 (unlike the Apple-only "every
+            // variadic arg goes to stack" override just above, this is
+            // standard AAPCS64 and must not be Apple-gated).
             if (arg_hfa_count[i] > 0 && arg_fp_idx[i] < 0) {
                 int vaddr = gen_addr(argv[i]);
                 int vsz = argv[i]->ty->size;
@@ -2103,7 +2109,6 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 free_reg(vaddr);
                 continue;
             }
-#endif
             r = gen_addr(argv[i]);
             arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8)); // str x{r}, [sp, #off]
             free_reg(r);

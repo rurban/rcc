@@ -356,18 +356,98 @@ dropped from 19 to 1 (the one remaining, `run-glob-bracket`, was an
 unrelated `-rdynamic`/dynamic-loadable-builtin symbol-visibility
 issue — since fixed, see "Fixed: test_bash `run-glob-bracket`" below).
 
-### Fixed rcc bug: ARM64 small-struct return ABI
+### Fixed rcc bug: ARM64 `stur`/`ldur` frame-offset immediate overflow
 
-AAPCS64 has the same "small aggregate returns in registers, no hidden
-pointer" rule as x86-64 SysV (≤16 bytes, non-HFA composite types return
-raw bits in X0:X1) — rcc-arm64 has the identical always-hidden-pointer
-bug fixed above for x86-64 (confirmed: `div()`/`ldiv()`/`lldiv()` all
-return `{0, 0}` under `qemu-aarch64` too). Not fixed this session to
-avoid shipping a half-verified AAPCS64 register-return path; needs the
-same three-site classification change plus X0/X1 value-transfer logic
-at the ARM64 call site and `ND_RETURN`, and the equivalent of the RDX
-cleanup-preservation fix (X1, if ARM64's epilogue has an analogous
-X0-only cleanup save/restore — not yet checked).
+The previous TODO entry here ("ARM64 small-struct return ABI... not
+fixed this session") was **stale** — that classification (a struct/
+union ≤16 bytes with no floating member returns raw bits in X0:X1, no
+hidden pointer, mirroring the x86-64 fix above) is already fully wired
+for ARM64 throughout codegen.c (`struct_returns_in_gp_regs()`'s
+`ARCH_ARM64` branch in `has_hidden_retbuf`, the call-site X0/X1
+load, `ND_RETURN`'s X0/X1 store, and the prologue's `has_retbuf`/
+`save_rdx_for_cleanup`-equivalent X1 preservation) — confirmed working
+by re-running the exact `div()`/`ldiv()`/`lldiv()`/`imaxdiv()` repro
+that flagged the original x86-64 bug, cross-built for arm64 and run
+under `qemu-aarch64`: all four now return correct `{quot, rem}` pairs
+into external (non-rcc-compiled) glibc-called code, exactly like the
+x86-64 fix. The **actual** remaining rcc-arm64 bug that TODO entry's
+own regression evidence (c-testsuite's `00204.c`, an ARM64-specific
+HFA/small-struct calling-convention smoke test) was really pointing
+at turned out to be unrelated to struct-return classification at all:
+
+- **`asm_stur_fp()`/`asm_ldur_fp()` (codegen_asm.h) emitted `stur`/
+  `ldur` with no range check on the frame-pointer-relative offset** —
+  AArch64's unscaled-offset STUR/LDUR encode a signed 9-bit immediate
+  (`imm9`, range -256..255), and `arm64_stur()`/`arm64_ldur()`
+  (arm64*enc.c) mask the raw value with `& 0x1ff` unconditionally, with
+  no bounds validation. An offset whose magnitude exceeds that range
+  (e.g. requesting `[x29, #-264]`) silently wraps to a small
+  **positive** offset instead (`-264 & 0x1ff == +248`), addressing
+  memory \_above* the frame pointer — where the caller's own stack
+  content lives — instead of erroring or falling back to indirect
+  (scratch-register) addressing the way every other `x29`-relative
+  helper in this file already does (`arm64_load_from_fp_minus()`/
+  `arm64_store_to_fp_minus()`, `asm_sub_fp_imm()`, etc. all check the
+  offset and fall back to `sub x16/x17, x29, #offset; ldr/str`).
+  `asm_stur_fp`/`asm_ldur_fp` are used by `gen_funcall()`'s
+  register-pressure argument-staging path (parking an about-to-be-
+  called function's evaluated argument values in per-call temp slots
+  before the final register-loading pass), `spill_offset()` register
+  spills, and a couple of libgcc-helper call sites (128-bit shift/
+  divide, atomic RMW) — any of which can legitimately need an offset
+  beyond 255 bytes from `x29` once a function's own parameter/local
+  storage is deep enough. This stayed latent for small/shallow
+  functions and only manifested once a function had enough of its own
+  storage (several small struct parameters plus several multi-member
+  HFA struct parameters, each needing its own frame slot) that adding
+  a handful of staged call-argument temps for a _nested_ call (this
+  session's repro: a `printf()`/`snprintf()` call needing several
+  register-pressure temps of its own) pushed past the 255-byte
+  boundary — silently overwriting the region just above the frame,
+  up to and including the **caller's saved x29/x30** a few slots
+  further up, corrupting the return address itself with leftover
+  floating-point argument bit patterns (a SIGSEGV at a garbage PC that
+  happens to be a valid IEEE-754 double bit pattern, not a wrong-value
+  bug — confirmed via a `qemu-aarch64` gdbstub trace showing the fault
+  PC and X29/X30 holding the exact bit patterns of two of the crashing
+  function's own `long double` struct-member arguments).
+  Fixed by giving `asm_stur_fp()`/`asm_ldur_fp()` the same range check
+  and indirect-addressing fallback (via scratch `x16`, reusing the
+  already-range-safe `asm_sub_fp_imm()`/`asm_ldr_reg()`/`asm_str_reg()`
+  helpers) that the file's other `x29`-relative accessors already have.
+  → found via GCC c-testsuite's `00204.c` (ARM64-specific calling-
+  convention smoke test): `fa4()`'s exact parameter shape (three tiny
+  char-array structs interleaved with three float/double/long-double
+  HFA structs) still SIGSEGV'd after the struct-return-ABI
+  investigation above ruled that out, isolated via bisection down to a
+  minimal repro and a `qemu-aarch64` gdbstub trace of the exact
+  corrupting instruction.
+  A second, smaller side effect of the same fix: GCC torture's
+  `vect/pr88497-7` (a separate deep-enough-frame test that happened to
+  hit the same `stur`/`ldur` overflow) now also passes on arm64,
+  previously miscounted among the "genuine complex/imaginary-constant
+  gaps" torture failures.
+
+New regression test: `test/test_arm64_frame_call_stage.c` — the
+`00204.c`-shaped repro (three GP-passed structs interleaved with three
+HFA structs, calling `snprintf()` from inside a function with that much
+of its own parameter storage), asserting the exact expected formatted
+output; confirmed to SIGSEGV on the unfixed compiler (verified via a
+`git stash`-isolated pre-fix rebuild) and pass with the fix, on both
+arm64-cross and native Linux x86-64 (the bug is ARM64-specific by
+construction — the STUR/LDUR instruction only exists on that
+architecture — but the test's C source and expected output are
+portable).
+**Full suite re-verified after the fix (arm64 cross)**: c-testsuite
+220/220 (was 219/220 — `00204.c` now passes), Torture 3599/3609 (was
+3598/3609 — `vect/pr88497-7` also now passes) with 6 pre-existing,
+unrelated runtime failures remaining (c11-complex-1, c23-float-6,
+c23-imaginary-constants-1/5/9, pr92904 — all genuine complex-number/
+imaginary-constant gaps, unaffected by this fix), Dg-error 34/34, TCC
+Compatibility 119/120 (1 pre-existing, unrelated `__DECIMAL_BID_FORMAT__`
+gap) — 0 new failures, 2 additional tests fixed as a side effect.
+Native Linux x86-64 and mingw cross (both unaffected by an ARM64-only
+encoder bug) re-verified clean.
 
 ### Fixed: test_bash `run-glob-bracket` (`-rdynamic` not implemented)
 
@@ -1242,3 +1322,14 @@ bug), C-testsuite 220/220, NCC Compliance 15/15, Torture 3574/3574
 non-skipped (100%), Dg-error 34/34 — 0 failed. Native Linux x86-64 and
 arm64 cross (both LP64, unaffected by this LLP64-only bug) re-verified
 clean: Linux Torture 3605/3609 (100% non-skipped), 0 failed overall.
+
+### Session summary (2026-08-09, ARM64 stur/ldur frame-offset session)
+
+Picked the "ARM64 small-struct return ABI" TODO item as the next
+scoped, already-diagnosed bug to fix; found on investigation that the
+documented classification gap was already fixed (uncredited, in an
+earlier session) and the entry was stale, but the regression evidence
+behind it (`00204.c`) was still genuinely failing for an unrelated
+reason — see "Fixed rcc bug: ARM64 `stur`/`ldur` frame-offset immediate
+overflow" above for the real root cause and fix. `00204.c` now passes
+byte-for-byte at both `-O0` and `-O1`.

@@ -1912,10 +1912,32 @@ static inline void asm_sub_reg_fp_phy(SecBuf *s, VReg dst, Arm64Reg src, int siz
     arm64_sub_reg(s, sf, REG(dst), CG_ARM_FP, src, ARM64_LSL, 0);
 }
 static inline void asm_stur_fp(SecBuf *s, VReg r, int off) {
-    arm64_stur(s, 1, REG(r), CG_ARM_FP, -off); // stur x{r}, [x29, #-off]
+    if (off <= 255) {
+        arm64_stur(s, 1, REG(r), CG_ARM_FP, -off); // stur x{r}, [x29, #-off]
+    } else {
+        // -off doesn't fit STUR's 9-bit signed immediate (-256..255) --
+        // arm64_stur masks the raw immediate with & 0x1ff, silently
+        // wrapping an out-of-range offset (e.g. -264 -> +248) into a
+        // small POSITIVE offset above x29 instead of erroring. In a
+        // large enough frame (many staged call-argument temps stacked
+        // atop a function's own locals, e.g. marshaling several struct/
+        // long-double printf varargs inside a function with sizeable
+        // parameter storage) this silently clobbers whatever lives just
+        // above the frame -- up to and including the caller's saved
+        // x29/x30 a few slots further up -- corrupting the return
+        // address with leftover floating-point argument data.
+        asm_sub_fp_imm(s, ARM64_X16, off); // x16 = x29 - off
+        asm_str_reg(s, REG(r), ARM64_X16); // str x{r}, [x16]
+    }
 }
+
 __attribute__((unused)) static void asm_ldur_fp(SecBuf *s, VReg r, int off) {
-    arm64_ldur(s, 1, REG(r), CG_ARM_FP, -off); // ldur x{r}, [x29, #-off]
+    if (off <= 255) {
+        arm64_ldur(s, 1, REG(r), CG_ARM_FP, -off); // ldur x{r}, [x29, #-off]
+    } else {
+        asm_sub_fp_imm(s, ARM64_X16, off); // x16 = x29 - off
+        asm_ldr_reg(s, REG(r), ARM64_X16); // ldr x{r}, [x16]
+    }
 }
 
 static inline void asm_stur_phy(SecBuf *s, Arm64Reg rt, Arm64Reg rn, int sf, int32_t off) {
