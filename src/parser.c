@@ -10769,6 +10769,7 @@ static Node *unary(Token **rest, Token *tok) {
                     if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                         Member *found = NULL;
                         Type *cur_ty = ty;
+                        int chain_offset = 0;
                         Token *save = tok;
                         while (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
                             char *mname = tok->next->name;
@@ -10779,10 +10780,36 @@ static Node *unary(Token **rest, Token *tok) {
                             Member *m = find_member_by_name(cur_ty, mname);
                             if (!m) break;
                             found = m;
+                            chain_offset += m->offset;
                             cur_ty = m->ty;
                             tok = tok->next->next;
                         }
                         if (found) {
+                            // A multi-level EXPLICIT designator chain
+                            // (".bits.i", as opposed to
+                            // find_member_by_name()'s own single-step
+                            // anonymous-member recursion above) walks
+                            // through a NAMED intermediate member (e.g. a
+                            // struct's own named `union { ... } bits;`)
+                            // whose offset within the outer struct must be
+                            // added on top of the leaf member's own offset
+                            // within ITS immediate parent -- `found` alone
+                            // only ever carries that immediate-parent-
+                            // relative offset (here 0 for "bits.i", since
+                            // every union member sits at offset 0 within
+                            // the union), never `var`-relative. Without
+                            // this accumulation, ".bits.i = val" silently
+                            // wrote `val` at offset 0 of the WHOLE struct,
+                            // aliasing (and corrupting) any unrelated
+                            // member that happens to start there too --
+                            // e.g. qbe's `Con.type`, via
+                            // "(Con){.type = CBits, .bits.i = val}".
+                            if (chain_offset != found->offset) {
+                                Member *syn = arena_alloc(sizeof(Member));
+                                *syn = *found;
+                                syn->offset = chain_offset;
+                                found = syn;
+                            }
                             mem = found;
                             // A combined `.member[idx] = val` designator (C99
                             // 6.7.8p17) leaves `[idx]` unconsumed here for an

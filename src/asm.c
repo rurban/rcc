@@ -5744,6 +5744,63 @@ static char *asm_macro_pass(AsmState *as, const char *text) {
     return out.data;
 }
 
+// Strip GAS-style C `/* ... */` block comments from raw assembly text
+// as a lexer pre-pass, before macro expansion or the per-line
+// instruction loop ever see the text -- mirroring real GAS's own
+// pipeline order. Everything inside a comment is blanked to spaces
+// except embedded newlines (kept so line-number tracking below stays
+// accurate for a comment spanning multiple physical lines); a `"`
+// string literal is scanned but left untouched, so a directive like
+// `.ascii "/* not a comment */"` keeps its real content. The result is
+// always the same length as the input (spaces only ever replace
+// non-newline bytes), so this never needs to grow a buffer.
+//
+// The per-line loop already recognized `#`/`;`/`//` line comments and
+// (for the dead, unreachable assemble_file() path only) a bare leading
+// `/` as an ad hoc "whole line is an AT&T comment" special case, but
+// had no handling at all for `/* ... */` -- a block comment landed on
+// its own line was parsed as a real instruction whose mnemonic was
+// literally "/*" ("warning: unknown x86 instruction: /*"), and a
+// trailing block comment glued onto a real instruction's operands
+// (`movl $1, %eax /* comment */`) was fed straight into encode_x86()
+// as if it were part of the operand text, corrupting or dropping the
+// instruction entirely.
+// → found via test/third_party/test_qbe_simplecc: QBE's own generated
+// assembly annotates blocks with `/* end function NAME */`-style
+// comments; every function containing one silently lost or miscoded
+// the instruction(s) immediately following it.
+static char *strip_block_comments(const char *text) {
+    size_t n = strlen(text);
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    memcpy(out, text, n + 1);
+    bool in_string = false;
+    for (size_t i = 0; i < n; i++) {
+        if (in_string) {
+            if (out[i] == '\\' && i + 1 < n) {
+                i++;
+                continue;
+            }
+            if (out[i] == '"') in_string = false;
+            continue;
+        }
+        if (out[i] == '"') {
+            in_string = true;
+            continue;
+        }
+        if (out[i] == '/' && i + 1 < n && out[i + 1] == '*') {
+            size_t end = i + 2;
+            while (end + 1 < n && !(out[end] == '*' && out[end + 1] == '/'))
+                end++;
+            size_t stop = (end + 1 < n) ? end + 1 : n - 1;
+            for (size_t m = i; m <= stop; m++)
+                if (out[m] != '\n') out[m] = ' ';
+            i = stop;
+        }
+    }
+    return out;
+}
+
 // Insert `n` bytes of `fill` at `patch_off` within `section`'s buffer,
 // shifting everything already recorded after that point: the section's own
 // bytes, every local-label offset (and its mirror in obj->syms[]) at or
@@ -5814,10 +5871,15 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
     as.prev_sec = SEC_TEXT;
     as.filename = "<inline asm>";
 
-    // Expand .macro/.irp/.ifc/.if/.set (e.g. the kernel's
-    // _ASM_EXTABLE_TYPE_REG) into a flat sequence of plain lines first, so
-    // the per-line loop below never has to know these constructs exist.
-    char *buf = asm_macro_pass(&as, tmpl);
+    // Strip GAS-style `/* ... */` block comments first (real GAS's own
+    // lexer runs before macro expansion), then expand .macro/.irp/.ifc/
+    // .if/.set (e.g. the kernel's _ASM_EXTABLE_TYPE_REG) into a flat
+    // sequence of plain lines, so the per-line loop below never has to
+    // know either construct exists.
+    char *nocomment = strip_block_comments(tmpl);
+    if (!nocomment) return -1;
+    char *buf = asm_macro_pass(&as, nocomment);
+    free(nocomment);
     if (!buf) return -1;
     for (int mi = 0; mi < as.nmacros; mi++) {
         for (int b = 0; b < as.macros[mi].nbody; b++) free(as.macros[mi].body[b]);

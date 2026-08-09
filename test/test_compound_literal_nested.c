@@ -10,6 +10,18 @@
  *   skipped anonymous struct/union members, so a designator only
  *   reachable through an anonymous member (like .ubuf below, mirroring
  *   struct iov_iter) was never found.
+ *
+ * - An EXPLICIT multi-level designator chain through a NAMED (non-
+ *   anonymous) intermediate member -- e.g. ".bits.i" below, reaching a
+ *   union member through its own named "bits" field -- resolved to the
+ *   LEAF member's offset within its immediate parent (0, since every
+ *   union member sits at offset 0 within the union) instead of that
+ *   offset PLUS the intermediate "bits" member's own offset within the
+ *   outer struct. The write landed at the wrong absolute offset,
+ *   clobbering whichever earlier field (here ".type") happened to start
+ *   at that same offset -- found via qbe's own `(Con){.type = CBits,
+ *   .bits.i = val}` constant-table entries, which silently corrupted
+ *   every constant qbe's own x86-64 backend created this way.
  */
 
 struct inner { int val; };
@@ -23,6 +35,30 @@ struct iov_iter_like {
     };
     int flags;
 };
+
+/* Mirrors qbe's struct Con: an enum "type" tag followed by a NAMED
+ * (not anonymous) union "bits" -- ".bits.i" must resolve through the
+ * union member's own offset within Con, not just "i"'s offset (0)
+ * within the union itself. */
+enum { CUndef, CBits, CAddr };
+struct Con {
+    int type;
+    union { long long i; double d; } bits;
+    char flt;
+};
+
+/* Compound literal used as an initializer (local_init_one's designator
+ * chain) -- already correct before this fix; kept as a control case. */
+static struct Con con_init_form(long long v) {
+    struct Con c = { .type = CBits, .bits.i = v };
+    return c;
+}
+
+/* Compound literal used as a plain EXPRESSION (the buggy path: parser.c's
+ * unary()-level "(type){...}" designator-chain flattening). */
+static struct Con con_expr_form(long long v) {
+    return (struct Con){ .type = CBits, .bits.i = v };
+}
 
 int main(void)
 {
@@ -40,6 +76,19 @@ int main(void)
     struct iov_iter_like it = (struct iov_iter_like){ .ubuf = (void *)0x1234, .flags = 1 };
     if (it.ubuf != (void *)0x1234) return 4;
     if (it.flags != 1) return 5;
+
+    /* Explicit ".bits.i" designator through a NAMED union member: both
+     * the plain-initializer form and the expression-context compound
+     * literal must land the value at "bits"'s offset within Con, not
+     * offset 0 (aliasing "type"). */
+    struct Con c1 = con_init_form(-80);
+    if (c1.type != CBits) return 6;
+    if (c1.bits.i != -80) return 7;
+
+    struct Con c2 = con_expr_form(24);
+    if (c2.type != CBits) return 8;
+    if (c2.bits.i != 24) return 9;
+
 
     return 0;
 }

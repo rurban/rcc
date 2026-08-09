@@ -823,20 +823,20 @@ a multi-session effort, not a quick win.
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                                                                                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes |
-| test_perl         | —                                                                                                                                                                                                                     |
-| test_go           | —                                                                                                                                                                                                                     |
-| test_nginx        | —                                                                                                                                                                                                                     |
-| test_groff        | —                                                                                                                                                                                                                     |
-| test_argtable3    | —                                                                                                                                                                                                                     |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                    |
-| test_libarchive   | —                                                                                                                                                                                                                     |
-| test_liblz4       | —                                                                                                                                                                                                                     |
-| test_libpng       | —                                                                                                                                                                                                                     |
-| test_libressl     | —                                                                                                                                                                                                                     |
-| test_qbe_simplecc | —                                                                                                                                                                                                                     |
+| test              | notes                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                         |
+| test_perl         | —                                                                                                                                                                                                                                                             |
+| test_go           | —                                                                                                                                                                                                                                                             |
+| test_nginx        | —                                                                                                                                                                                                                                                             |
+| test_groff        | —                                                                                                                                                                                                                                                             |
+| test_argtable3    | —                                                                                                                                                                                                                                                             |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                            |
+| test_libarchive   | —                                                                                                                                                                                                                                                             |
+| test_liblz4       | —                                                                                                                                                                                                                                                             |
+| test_libpng       | —                                                                                                                                                                                                                                                             |
+| test_libressl     | —                                                                                                                                                                                                                                                             |
+| test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59 |
 
 ---
 
@@ -1912,3 +1912,108 @@ incompatible with (or the PPMd implementation itself has a pre-existing
 bug against) this specific libarchive 3.8.8 checkout, independent of
 which compiler builds it. Not investigated further — no rcc fix is
 possible or needed here; any fix belongs upstream in libarchive.
+
+### Fixed (2026-08-09, qbe_simplecc session)
+
+**test_qbe_simplecc now fully passes**: qbe's own `tools/test.sh all`
+(`qbe` itself, and `scc`, built with `CC=rcc`) went from 42/59 to
+59/59 once all three bugs below were fixed. All three are genuine,
+broadly-impactful rcc bugs — none specific to qbe — found by comparing
+a real-gcc-built `qbe` (which passed all 59 tests cleanly, ruling out
+a pre-existing qbe/test-corpus issue) against the rcc-built one.
+
+- **The inline assembler had no handling at all for GAS-style C
+  `/* ... */` block comments** (`src/asm.c`, `assemble_inline()`) —
+  only `#`/`;`/`//` line comments were recognized. A block comment on
+  its own physical line was parsed as a real instruction whose
+  mnemonic was literally the comment's opening `/*`
+  (`warning: unknown x86 instruction: /*`), silently dropping every
+  instruction after it in that inline-asm block; a trailing block
+  comment glued onto a real instruction's operands
+  (`movl $1, %eax /* comment */`) was fed straight into the operand
+  parser as if it were part of the operand text, corrupting or
+  dropping the instruction. Fixed by a new `strip_block_comments()`
+  lexer pre-pass, run before macro expansion (mirroring real GAS's own
+  pipeline order), that blanks commented bytes to spaces while
+  preserving embedded newlines so the per-line assembler's line-number
+  tracking stays accurate across a multi-line comment; a `"` string
+  literal is scanned but left untouched, so a directive like
+  `.ascii "/* not a comment */"` keeps its real content.
+  → found via QBE's own generated assembly, which annotates every
+  function with an `/* end function NAME */`-style trailing comment.
+- **A compound literal's designator-chain parser resolved a
+  multi-level EXPLICIT designator (e.g. `.bits.i`, reaching a union
+  member through its own NAMED — not anonymous — field) to the LEAF
+  member's offset within its immediate parent instead of that offset
+  PLUS every intermediate member's own offset within the outer struct**
+  (`parser.c`, the `(type){...}` expression-context struct-literal
+  handler). `find_member_by_name()`'s existing anonymous-member
+  recursion already returns a synthetic member with the correctly
+  combined offset for a designator reaching through an _unnamed_
+  struct/union — but a NAMED intermediate member (like a struct's own
+  `union { ... } bits;`) requires each step of the designator chain to
+  be resolved and its offset accumulated explicitly; the chain walker
+  only tracked the final `find_member_by_name()` result, discarding
+  every intermediate step's own offset. Since every union member sits
+  at offset 0 within its union, `.bits.i = val` silently wrote `val`
+  at offset 0 of the _whole_ struct instead of `bits`'s real offset —
+  aliasing (and corrupting) whichever earlier field happened to start
+  there too. Fixed by accumulating each step's `Member->offset` across
+  the chain and, when it differs from the leaf's own immediate-parent
+  offset, building a synthetic `Member` with the combined offset (the
+  same "synthetic member, combined offset" pattern
+  `find_member_by_name()` already uses for anonymous chains).
+  → found via qbe's own `struct Con { enum {...} type; Sym sym; union
+{ int64_t i; double d; float s; } bits; char flt; };`, constructed
+  throughout `amd64/sysv.c`/`isel.c` as `(Con){.type = CBits, .bits.i =
+val}` — every constant qbe's own x86-64 backend created this way had
+  its `.type` tag silently overwritten with the low bits of the
+  intended `.bits.i` value, later crashing `noimm()`'s classification
+  switch (`die("invalid constant")`) or `amd64/emit.c`
+  (`die("unreachable")`) on a garbage `.type`.
+- **The register allocator's spill mechanism could alias two
+  concurrently-live virtual registers onto the same physical register**
+  (`codegen.c`, `alloc_reg()`) — under register pressure (e.g. a
+  bitfield read-modify-write's "old value, masked" register and its
+  "new value, masked+shifted" register, needed simultaneously right
+  before being ORed together, nested inside evaluating the LAST of 5
+  register-class call arguments), `alloc_reg()` could legitimately pick
+  an already-allocated-but-not-yet-freed VReg's own physical register
+  as the spill victim for a brand new allocation. Since `VReg` identity
+  IS the physical register index in this allocator, the new allocation
+  then returned the EXACT SAME index as the VReg it just evicted — the
+  two "different" VRegs aliased one physical register while the caller
+  still believed both were independently live. A second, related bug:
+  even without that specific aliasing, the allocator tracked only ONE
+  spill slot per register index; a register spilled a second time
+  while an earlier spill of the same index was still outstanding
+  clobbered the first spill's saved bytes. Fixed in two parts: (1) the
+  single spill slot per register index became a per-index stack
+  (`push_spill_slot()`/`pop_spill_slot()`), so a re-spill of the same
+  physical register while an earlier spill is still outstanding pushes
+  a fresh slot instead of clobbering it; (2) a new `alloc_reg_avoid2()`
+  entry point, used by the bitfield read-modify-write's second register
+  allocation, that never returns either of two explicitly-named
+  already-live registers, forcing the allocator to spill a genuinely
+  outer/enclosing value instead of aliasing onto a register the
+  immediate caller still needs.
+  → found via qbe's own `(Ref){RCon, 1}`-shaped positional compound
+  literal (`#define CON_Z (Ref){RCon, 1}` in `all.h`, `struct Ref {
+uint type:3; uint val:29; }`) used as the last of 5 register-class
+  call arguments in `amd64/sysv.c`'s `selvaarg()`/`selcall()`: the
+  bitfield merge degenerated into a self-`or reg,reg` no-op that
+  silently dropped `CON_Z`'s `.type = RCon` tag (leaving it `0`,
+  `RTmp`, so the constant printed as a bogus register reference `R1`
+  instead of the literal `0`), and a narrower reproduction (no
+  intervening struct args) instead corrupted the read-modify-write's
+  own address register and segfaulted on the write-through.
+
+New regression tests: `test/test_asm_block_comment.c` (own-line,
+trailing, and multi-line-spanning block comments in inline asm);
+`test/test_compound_literal_nested.c` (new `.bits.i`-through-a-named-
+union cases, both as a plain local initializer and as an expression-
+context compound literal); `test/test_bitfields.c` (new ternary +
+positional-compound-literal-as-last-of-5-args case, both branches).
+Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link 7/7, RCC Unit tests 0 failed, 0 failed overall (native
+Linux x86-64); `test_qbe_simplecc`'s own `tools/test.sh all` 59/59.

@@ -546,20 +546,64 @@ static int ever_used_regs = 0;
 #ifdef ARCH_ARM64
 void emit_mov_imm64(Arm64Reg reg, uint64_t val);
 
-// Arm64: spill to [x29, #-N]; offsets grown from frame base
-static int spill_slot[NUM_REGS];
+// Arm64: spill to [x29, #-N]; offsets grown from frame base.
+//
+// A register index can have MULTIPLE outstanding spills at once: under
+// heavy register pressure, alloc_reg()'s spill-victim search can pick a
+// register that is already mid-spill (protecting some outer, still-live
+// VReg) as the victim for a second, unrelated borrower -- e.g. evaluating
+// a bitfield read-modify-write nested inside a ternary that is itself the
+// last argument of a 5+-argument call. Tracking only ONE slot per index
+// (the original scheme) makes the second spill overwrite the first
+// spill's bytes: when the first (outer) value is finally restored, it
+// reads back the SECOND spill's data instead of its own, silently
+// corrupting whichever VReg the physical register was standing in for at
+// the time. Found via a qbe-style `(Con){.type=CBits, .bits.i=val}`
+// nested-designator compound literal as the last of 5 call arguments: an
+// inner `or %reg,%reg` (base ORed with itself instead of the shifted new
+// bits) silently dropped the just-computed bitfield write and clobbered
+// an already-spilled sibling temporary.
+//
+// spill_offset(r) keeps its original "lazily create, then always return
+// the SAME (topmost/current) slot" contract for the many read-only call
+// sites elsewhere in this file (comparisons/arithmetic operating directly
+// on a still-outstanding spill's backing memory) -- those never push or
+// pop. Only alloc_reg()'s spill-victim selection (push_spill_slot, a
+// FRESH slot every call) and free_reg()/materialize_reg()'s restore
+// (pop_spill_slot, consuming the current top) touch stack depth.
+#define MAX_SPILL_DEPTH 32
+static int spill_slot[NUM_REGS][MAX_SPILL_DEPTH];
+static int spill_depth[NUM_REGS];
 static int next_spill_slot;
 
+static int push_spill_slot(int r) {
+    next_spill_slot += 8;
+    if (spill_depth[r] < MAX_SPILL_DEPTH)
+        spill_slot[r][spill_depth[r]++] = next_spill_slot;
+    return next_spill_slot;
+}
+
+static int pop_spill_slot(int r) {
+    if (spill_depth[r] > 0)
+        return spill_slot[r][--spill_depth[r]];
+    return spill_slot[r][0]; // shouldn't happen; degrade rather than crash
+}
+
 static int spill_offset(int r) {
-    if (!spill_slot[r]) {
-        next_spill_slot += 8;
-        spill_slot[r] = next_spill_slot;
-    }
-    return spill_slot[r];
+    if (spill_depth[r] == 0)
+        return push_spill_slot(r);
+    return spill_slot[r][spill_depth[r] - 1];
 }
 #else
-// Spill slot offsets from rbp for register spilling (dynamic, grows from 8)
-static int spill_slot[NUM_REGS];
+// Spill slot offsets from rbp for register spilling (dynamic, grows from 8).
+// See the ARM64 branch above for why this is a per-register STACK, not a
+// single slot: a physical register can be re-spilled (borrowed a second
+// time) while an earlier spill of the same index is still outstanding,
+// under heavy register pressure (e.g. a bitfield read-modify-write nested
+// inside a ternary that is the last of 5+ call arguments).
+#define MAX_SPILL_DEPTH 32
+static int spill_slot[NUM_REGS][MAX_SPILL_DEPTH];
+static int spill_depth[NUM_REGS];
 static int next_spill_slot;
 static int spill_logand, spill_atomic_old;
 #define ALL_REGS_MASK ((1 << NUM_REGS) - 1)
@@ -568,6 +612,7 @@ static int alloc_spill_slot(void);
 
 static void init_spill_slots(void) {
     memset(spill_slot, 0, sizeof(spill_slot));
+    memset(spill_depth, 0, sizeof(spill_depth));
     next_spill_slot = 8;
     spill_logand = alloc_spill_slot();
     spill_atomic_old = alloc_spill_slot();
@@ -579,11 +624,23 @@ static int alloc_spill_slot(void) {
     return slot;
 }
 
+static int push_spill_slot(int r) {
+    int slot = alloc_spill_slot();
+    if (spill_depth[r] < MAX_SPILL_DEPTH)
+        spill_slot[r][spill_depth[r]++] = slot;
+    return slot;
+}
+
+static int pop_spill_slot(int r) {
+    if (spill_depth[r] > 0)
+        return spill_slot[r][--spill_depth[r]];
+    return spill_slot[r][0]; // shouldn't happen; degrade rather than crash
+}
+
 static int spill_offset(int r) {
-    if (!spill_slot[r]) {
-        spill_slot[r] = alloc_spill_slot();
-    }
-    return spill_slot[r];
+    if (spill_depth[r] == 0)
+        return push_spill_slot(r);
+    return spill_slot[r][spill_depth[r] - 1];
 }
 #endif
 
@@ -4091,29 +4148,19 @@ VReg alloc_reg(void) {
     // All registers are in use. Spill the register with the highest index
     // (least likely to be referenced by outer callers right now).
     //
-    // Must skip a register that is ALREADY spilled: spill_offset(i) is a
-    // single fixed slot per index, and spilled_regs is a single bit — there
-    // is no room to stack a second pending spill for the same index. Picking
-    // an already-spilled index as a victim again overwrites its one spill
-    // slot with the new value, permanently losing whatever the FIRST spill
-    // was holding for its (still-live) owner. The owner is typically an
-    // enclosing VReg — e.g. a ternary's result register, alloc'd before its
-    // cond/then/else are generated — that has not been freed yet and has no
-    // idea its backing slot was just reused a second time. Worse, when the
-    // register that stole it a second time is later free_reg()'d, the
-    // restore-on-free logic unconditionally clears spilled_regs for that
-    // index — so code further out that still expects "this index is
-    // spilled, read its operand from the spill slot" (e.g. the r_lhs==r_rhs
-    // combining checks in the binary-op codegen below) sees a false
-    // "not spilled" state and reads the live (wrong) register value instead
-    // of the spilled one, silently corrupting the result. Observed via a
-    // real-world case: `fnptr(...six register args..., flags, flags | (cond
-    // ? A : B))` compiled the trailing OR as a self-`or %reg,%reg` no-op
-    // because the ternary's own alloc_reg() had re-spilled the already-
-    // spilled register holding `flags`.
+    // Must skip a register that is ALREADY spilled in the first pass: a
+    // still-outstanding spill's slot address (spill_offset(i)) must not
+    // change out from under any read-only call site elsewhere in this
+    // file that reads it directly (comparisons/arithmetic operating on a
+    // spilled operand's backing memory without going through free_reg()/
+    // materialize_reg() first) -- picking one of those as a victim here
+    // would still be correct now that spills are a per-index STACK
+    // (push_spill_slot() below never clobbers an outstanding spill), but
+    // preferring a not-yet-spilled register first keeps the common case
+    // spill-free-with-headroom fast path unchanged and the generated code
+    // no noisier than before.
     //
-    // First pass: prefer a used-but-not-yet-spilled register so the single
-    // spill slot per index is never double-booked.
+    // First pass: prefer a used-but-not-yet-spilled register.
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if ((used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
             if (opt_W) {
@@ -4123,9 +4170,9 @@ VReg alloc_reg(void) {
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
             }
 #ifdef ARCH_ARM64
-            asm_stur_fp(cg_sec, i, spill_offset(i)); // str x(i), [x29, #-spill_offset(i)]
+            asm_stur_fp(cg_sec, i, push_spill_slot(i)); // str x(i), [x29, #-push_spill_slot(i)]
 #else
-            asm_mov_reg_rbp(cg_sec, i, 8, spill_offset(i)); // mov ri, [rbp-8]
+            asm_mov_reg_rbp(cg_sec, i, 8, push_spill_slot(i)); // mov ri, [rbp-8]
 #endif
             spilled_regs |= (1 << i);
             spill_count++;
@@ -4135,11 +4182,12 @@ VReg alloc_reg(void) {
             return (VReg)i;
         }
     }
-    // Fallback: every used register is already spilled (the single-slot
-    // scheme is exhausted). Re-spilling one here still clobbers its slot —
-    // a pre-existing limitation of this allocator, not introduced by the
-    // fix above — but this is a strictly rarer last resort than the common
-    // cascading case the first pass now avoids.
+    // Fallback: every used register is already spilled. With a per-index
+    // spill STACK (push_spill_slot() below), re-spilling one here is safe
+    // -- it pushes a fresh slot rather than clobbering the outstanding
+    // one -- so this is purely a "pick a victim" tier, not a correctness
+    // hazard; it only differs from the first pass in also considering
+    // already-spilled registers as candidates.
     for (int i = NUM_REGS - 1; i >= 0; i--) {
         if (used_regs & (1 << i)) {
             if (opt_W) {
@@ -4149,9 +4197,9 @@ VReg alloc_reg(void) {
                     fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
             }
 #ifdef ARCH_ARM64
-            asm_stur_fp(cg_sec, i, spill_offset(i)); // str x(i), [x29, #-spill_offset(i)]
+            asm_stur_fp(cg_sec, i, push_spill_slot(i)); // str x(i), [x29, #-push_spill_slot(i)]
 #else
-            asm_mov_reg_rbp(cg_sec, i, 8, spill_offset(i)); // mov ri, [rbp-8]
+            asm_mov_reg_rbp(cg_sec, i, 8, push_spill_slot(i)); // mov ri, [rbp-8]
 #endif
             spilled_regs |= (1 << i);
             spill_count++;
@@ -4165,12 +4213,101 @@ VReg alloc_reg(void) {
     return 0;
 }
 
+// Like alloc_reg(), but never returns `avoid1` or `avoid2` (pass -1 for
+// either slot to not exclude it). Needed wherever a VReg is computed
+// once and then a SECOND VReg is allocated that must remain
+// concurrently live with one or more earlier ones -- e.g. a bitfield
+// read-modify-write's "old value, masked" register (`rt`) and its
+// address register (`ra`, still needed for the final store) both have
+// to survive allocating the "new value, masked+shifted" register
+// (`rv`) that gets ORed into `rt` and written back through `ra`.
+// alloc_reg()'s ordinary spill selection has no notion of "this used
+// register is needed again in a few instructions, don't touch it", so
+// under register pressure it can legitimately pick either one as the
+// spill victim for the new allocation. That doesn't just move the
+// victim's value to memory the way it does for a genuinely outer/
+// enclosing VReg -- since VReg identity IS the physical register
+// index, the new allocation then returns the exact same index as the
+// victim, so the two "different" VRegs alias the same physical
+// register while both are supposedly independently live. Every
+// subsequent instruction issued against either one hits the same 8
+// bytes: `asm_or_reg_reg(rt, rv, ...)` degenerates into a self-`or
+// reg,reg` no-op that silently drops the just-computed value, or a
+// `mov rv,ra`-style clobber corrupts the address the final store
+// writes through. materialize_reg() can't fix this after the fact --
+// reloading the victim back into its slot would just as destructively
+// clobber whatever the new VReg (which now shares that same slot) had
+// already computed into it. Found via a qbe-style `(Ref){RCon, 1}`-
+// shaped positional compound literal (two sibling bitfields packed
+// into one word) used as the last of 5 register-class call arguments:
+// rcc's own `noimm()` classification read back `.type` as `.val`'s bit
+// pattern because the bitfield merge OR'd a register with itself; a
+// second, narrower repro (no intervening struct args before the
+// literal) instead clobbered the store's own address register and
+// segfaulted on the write-through.
+VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (i == avoid1 || i == avoid2) continue;
+        if ((used_regs & (1 << i)) == 0) {
+            used_regs |= (1 << i);
+            ever_used_regs |= (1 << i);
+            return (VReg)i;
+        }
+    }
+    for (int i = NUM_REGS - 1; i >= 0; i--) {
+        if (i == avoid1 || i == avoid2) continue;
+        if ((used_regs & (1 << i)) && !(spilled_regs & (1 << i))) {
+            if (opt_W) {
+                if (reg_owner[i])
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
+                else
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            }
+#ifdef ARCH_ARM64
+            asm_stur_fp(cg_sec, i, push_spill_slot(i));
+#else
+            asm_mov_reg_rbp(cg_sec, i, 8, push_spill_slot(i));
+#endif
+            spilled_regs |= (1 << i);
+            spill_count++;
+            ever_used_regs |= (1 << i);
+            return (VReg)i;
+        }
+    }
+    for (int i = NUM_REGS - 1; i >= 0; i--) {
+        if (i == avoid1 || i == avoid2) continue;
+        if (used_regs & (1 << i)) {
+            if (opt_W) {
+                if (reg_owner[i])
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s (%s) to stack in %s\n", reg64[i], reg_owner[i], current_fn);
+                else
+                    fprintf(stderr, "\033[1;33mwarning:\033[0m spilling %s to stack in %s\n", reg64[i], current_fn);
+            }
+#ifdef ARCH_ARM64
+            asm_stur_fp(cg_sec, i, push_spill_slot(i));
+#else
+            asm_mov_reg_rbp(cg_sec, i, 8, push_spill_slot(i));
+#endif
+            spilled_regs |= (1 << i);
+            spill_count++;
+            ever_used_regs |= (1 << i);
+            return (VReg)i;
+        }
+    }
+    // Every OTHER register is exhausted too (needs >= NUM_REGS
+    // concurrently-live values beyond the two avoided ones) -- fall
+    // back to the ordinary allocator; a self-aliasing collision is
+    // still better than an outright crash, and this is far beyond any
+    // register pressure real call sites of this helper produce today.
+    return alloc_reg();
+}
+
 void free_reg(VReg i) {
     if (spilled_regs & (1 << i)) {
 #ifdef ARCH_ARM64
-        asm_ldur_fp(cg_sec, i, spill_offset(i)); // ldr x(i), [x29, #-spill_offset(i)]
+        asm_ldur_fp(cg_sec, i, pop_spill_slot(i)); // ldr x(i), [x29, #-pop_spill_slot(i)]
 #else
-        asm_mov_rbp_reg(cg_sec, i, 8, spill_offset(i)); // mov [rbp-8], ri
+        asm_mov_rbp_reg(cg_sec, i, 8, pop_spill_slot(i)); // mov [rbp-8], ri
 #endif
         spilled_regs &= ~(1 << i);
     }
@@ -4193,9 +4330,9 @@ void free_reg(VReg i) {
 static void materialize_reg(VReg r) {
     if (spilled_regs & (1 << r)) {
 #ifdef ARCH_ARM64
-        asm_ldur_fp(cg_sec, r, spill_offset(r)); // ldr x(r), [x29, #-spill_offset(r)]
+        asm_ldur_fp(cg_sec, r, pop_spill_slot(r)); // ldr x(r), [x29, #-pop_spill_slot(r)]
 #else
-        asm_mov_rbp_reg(cg_sec, r, 8, spill_offset(r)); // mov [rbp-spill_offset(r)], rr
+        asm_mov_rbp_reg(cg_sec, r, 8, pop_spill_slot(r)); // mov [rbp-pop_spill_slot(r)], rr
 #endif
         spilled_regs &= ~(1 << r);
     }
@@ -8054,7 +8191,7 @@ static VReg gen(Node *node) {
                 emit_mov_imm64(ARM64_X16, ~mask);
                 asm_and_reg_phy(cg_sec, rt, ARM64_X16, 8); // and rrt, r16
                 emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
-                VReg rv = alloc_reg();
+                VReg rv = alloc_reg_avoid2(rt, ra);
                 asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
                 asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
                 if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(bo)); // lsl x{rv}, x{rv}, #bo
@@ -8100,7 +8237,7 @@ static VReg gen(Node *node) {
             emit_mov_imm64(ARM64_X16, ~mask);
             asm_and_reg_phy(cg_sec, rt, ARM64_X16, 8); // and rrt, r16
             emit_mov_imm64(ARM64_X16, (1ULL << bw) - 1);
-            VReg rv = alloc_reg();
+            VReg rv = alloc_reg_avoid2(rt, ra);
             asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
             asm_and_reg_phy(cg_sec, rv, ARM64_X16, 8); // and rrv, r16
             if (bo > 0) asm_shl_imm(cg_sec, rv, 8, (uint8_t)(bo)); // lsl x{rv}, x{rv}, #bo
@@ -8129,7 +8266,7 @@ static VReg gen(Node *node) {
                 BF_LOAD(unit_sz, ra, rt);
                 asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)(~mask)); // movabs $(uint64_t)(~mask), rX86_RAX
                 asm_and_rax(cg_sec, rt, 8); // andq %rax, rrt
-                VReg rv = alloc_reg();
+                VReg rv = alloc_reg_avoid2(rt, ra);
                 asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
                 asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs $(uint64_t)((1ULL << bw) - 1), rX86_RAX
                 asm_and_rax(cg_sec, rv, 8); // andq %rax, rrv
@@ -8169,7 +8306,7 @@ static VReg gen(Node *node) {
             BF_LOAD(eff_sz, ra, rt);
             asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)(~mask)); // movabs $(uint64_t)(~mask), rX86_RAX
             asm_and_rax(cg_sec, rt, 8); // andq %rax, rrt
-            VReg rv = alloc_reg();
+            VReg rv = alloc_reg_avoid2(rt, ra);
             asm_mov_reg_reg(cg_sec, rv, r2, 8); // mov rr2 -> rrv
             asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)((1ULL << bw) - 1)); // movabs $(uint64_t)((1ULL << bw) - 1), rX86_RAX
             asm_and_rax(cg_sec, rv, 8); // andq %rax, rrv
