@@ -1685,3 +1685,60 @@ Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link 6/6
 arm64 cross, plus the specific new/affected unit tests confirmed
 passing on both cross targets (`_WIN32` branch of the stdint.h fix is
 behaviorally unchanged on mingw by construction).
+
+### Fixed (2026-08-09, continued — `__builtin_cpu_supports`/`__builtin_cpu_init` broken on mingw)
+
+- **`__builtin_cpu_supports`/`__builtin_cpu_init` (added in the session
+  above via `test_libucl`) were silently unresolved on the mingw/Windows
+  cross target** — CI's `test (windows-latest)` job failed to link
+  `test_builtin_cpu_init` with `undefined reference to
+'__rcc_cpu_supports'`. Root cause: the two were implemented as real
+  functions injected into parser.c's per-TU synthetic prelude, but only
+  inside the `#else` (pure SysV x86-64) branch of that prelude's
+  va_list-ABI `#if`/`#elif` ladder — the sibling `#elif defined(_WIN32)`
+  branch never got them at all, so `__builtin_cpu_supports`/
+  `__builtin_cpu_init` calls survived `preprocess.c`'s `define_pre`
+  rename into `__rcc_cpu_supports`/`__rcc_cpu_init` but those symbols
+  were simply never defined on that target.
+- First fix attempt — hoisting the two functions out of the SysV-only
+  branch into a block shared by both non-ARM64 x86-64 targets (the raw
+  `cpuid` instruction is identical under both calling conventions) —
+  built clean and fixed the link error, but broke 4 unrelated existing
+  mingw unit tests (`test_asm_two_bugs_popcnt_alt`, `test_skip_maxdiff`,
+  `test_x86_priv_insns`, `test_x86_pushf_invlpg`: expected raw-asm byte
+  sequences went missing from `.text`). Bisected (confirmed absent
+  without the change, present with it): `opt.c`'s
+  `eliminate_unused_static_inline()` — the pass that would normally
+  drop these two never-called `static inline` functions back out again
+  — is unconditionally disabled on `_WIN32` (see that function's own
+  header comment: dropping unused `static inline` bodies there was
+  found to shift unrelated object-file layout enough to corrupt an
+  emulated-TLS access elsewhere, a separate pre-existing tradeoff).
+  Emitting two permanently-live dead functions into every mingw TU
+  shifted the affected tests' own code layout enough to break their
+  literal-byte-sequence assertions — real, but purely a landmine of
+  that already-disabled DCE pass, not of the ABI-sharing idea itself.
+- Actual fix: reimplemented both as pure preprocessor macros
+  (`preprocess.c`, `define_macro`) instead of real injected functions —
+  `__builtin_cpu_supports(f)` expands to a GNU statement expression
+  doing the CPUID query inline at the call site, and `__builtin_cpu_init`
+  expands to `((void)0)`. Removed the now-unused function-injection
+  block from parser.c's prelude entirely. A macro expands to zero bytes
+  unless a real call site invokes it, on every target uniformly, with no
+  dependency on DCE at all — categorically sidesteps the disabled-pass
+  landmine while fixing the same mingw link failure.
+  → unblocks: `__builtin_cpu_supports`/`__builtin_cpu_init` on the mingw
+  cross target (previously only worked on native Linux x86-64).
+
+**Full suite re-verified after this fix**: native Linux x86-64 —
+Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link 6/6, 0
+failed; mingw cross — `test_builtin_cpu_init` now PASSes (previously
+an unresolved-symbol link failure), all 4 previously-regressed tests
+(`test_asm_two_bugs_popcnt_alt`, `test_skip_maxdiff`,
+`test_x86_priv_insns`, `test_x86_pushf_invlpg`) confirmed passing, TCC
+118/118, Compliance 15/15 (`test_peep`'s intermittent TIMEOUT under
+this sandbox's qemu/emulation load is pre-existing and reproduces
+identically without this change — unrelated); arm64 cross —
+`test_builtin_cpu_init` PASSes, C-testsuite 220/220, Torture 3599/3609
+with the same 6 pre-existing unrelated complex-number/imaginary-
+constant runtime failures documented above, 0 new failures.

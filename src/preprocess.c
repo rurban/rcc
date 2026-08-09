@@ -3143,24 +3143,57 @@ Token *preprocess(char *filename, char *p) {
         define_macro("__builtin_ia32_mfence", true, NULL, 0, "__asm__ __volatile__(\"mfence\":::\"memory\")");
         define_macro("__builtin_ia32_lfence", true, NULL, 0, "__asm__ __volatile__(\"lfence\":::\"memory\")");
         define_macro("__builtin_ia32_sfence", true, NULL, 0, "__asm__ __volatile__(\"sfence\":::\"memory\")");
-        // __builtin_cpu_supports("feature"): real GCC/clang compiler builtin
-        // used for runtime CPU-feature dispatch (e.g. blosc2's
-        // blosc_get_cpu_features(), picking an SSE2/AVX2/AVX512 code path).
-        // __rcc_cpu_supports is a real function injected into every parse
-        // via parser.c's synthetic prelude (see parse()'s x86-64 branch),
-        // doing the actual CPUID query.
-        define_pre("__builtin_cpu_supports", "__rcc_cpu_supports");
-        // __builtin_cpu_init(): real GCC/clang's companion builtin, called
-        // once before any __builtin_cpu_supports() checks to lazily
-        // populate libgcc's own static __cpu_model cache (e.g. libucl's
-        // bundled mum.h: `if (!avx2_support) { __builtin_cpu_init();
-        // avx2_support = __builtin_cpu_supports("avx2") ? 1 : -1; }`).
-        // __rcc_cpu_supports above has no such cache -- it re-queries
-        // cpuid directly on every call -- so __rcc_cpu_init (parser.c
-        // prelude, same x86-64 branch) is a true no-op stub; it exists
-        // purely so the call site links instead of leaving an undefined
-        // reference to '__builtin_cpu_init'.
-        define_pre("__builtin_cpu_init", "__rcc_cpu_init");
+        // __builtin_cpu_supports("feature")/__builtin_cpu_init(): real
+        // GCC/clang compiler builtins used for runtime CPU-feature dispatch
+        // (e.g. blosc2's blosc_get_cpu_features(), picking an
+        // SSE2/AVX2/AVX512 code path; libucl's bundled mum.h: `if
+        // (!avx2_support) { __builtin_cpu_init(); avx2_support =
+        // __builtin_cpu_supports("avx2") ? 1 : -1; }`). Real GCC compiles
+        // __builtin_cpu_supports to a call into libgcc's
+        // __cpu_indicator_init()-populated __cpu_model bitmask; rcc instead
+        // expands both to statement-expression macros that query CPUID
+        // directly at each call site (correct, just not cached/hoisted;
+        // __builtin_cpu_init is a true no-op).
+        //
+        // Deliberately a macro, not a real function injected into every
+        // parse's synthetic prelude (as an earlier version of this fix
+        // did): a "static inline, never referenced" function body is only
+        // stripped by opt.c's eliminate_unused_static_inline() DCE pass,
+        // and that pass's own header comment documents it as disabled
+        // outright on the mingw/Windows target (a separate, unrelated
+        // object-layout/TLS-corruption risk under investigation there).
+        // Unconditionally injecting a real function would have left two
+        // dead functions bloating every mingw translation unit's .text
+        // and, worse, shifted unrelated code layout enough to break
+        // several raw-inline-asm byte-pattern regression tests
+        // (test_x86_priv_insns et al.) as a pure side effect of the extra,
+        // never-DCE'd function bodies. A macro sidesteps this
+        // categorically: it expands to zero bytes unless a real call site
+        // actually invokes it, on every target uniformly, with no DCE
+        // dependency at all.
+        //
+        // Manual per-character comparison instead of strcmp() avoids any
+        // dependency on <string.h> having been included yet. Covers the
+        // feature names actually probed by this project's third-party
+        // test suite (sse2, avx, avx2, avx512f, avx512bw); add more
+        // leaf-7/leaf-1 bits here if a future project needs a name not
+        // yet covered.
+        define_macro("__builtin_cpu_supports", true, (char *[]){"f"}, 1,
+                     "({"
+                     "  unsigned __rcc_a,__rcc_b,__rcc_c,__rcc_d,__rcc_r=0;"
+                     "  __asm__(\"cpuid\":\"=a\"(__rcc_a),\"=b\"(__rcc_b),\"=c\"(__rcc_c),\"=d\"(__rcc_d):\"a\"(1),\"c\"(0));"
+                     "  if ((f)[0]=='s'&&(f)[1]=='s'&&(f)[2]=='e'&&(f)[3]=='2'&&(f)[4]==0) __rcc_r=(__rcc_d>>26)&1;"
+                     "  else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]==0) __rcc_r=(__rcc_c>>28)&1;"
+                     "  else {"
+                     "    unsigned __rcc_a2,__rcc_b2,__rcc_c2,__rcc_d2;"
+                     "    __asm__(\"cpuid\":\"=a\"(__rcc_a2),\"=b\"(__rcc_b2),\"=c\"(__rcc_c2),\"=d\"(__rcc_d2):\"a\"(7),\"c\"(0));"
+                     "    if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='2'&&(f)[4]==0) __rcc_r=(__rcc_b2>>5)&1;"
+                     "    else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='5'&&(f)[4]=='1'&&(f)[5]=='2'&&(f)[6]=='f'&&(f)[7]==0) __rcc_r=(__rcc_b2>>16)&1;"
+                     "    else if ((f)[0]=='a'&&(f)[1]=='v'&&(f)[2]=='x'&&(f)[3]=='5'&&(f)[4]=='1'&&(f)[5]=='2'&&(f)[6]=='b'&&(f)[7]=='w'&&(f)[8]==0) __rcc_r=(__rcc_b2>>30)&1;"
+                     "  }"
+                     "  __rcc_r;"
+                     "})");
+        define_macro("__builtin_cpu_init", true, NULL, 0, "((void)0)");
 #endif
 #ifdef _WIN32
         define_pre("isinf", "__builtin_isinf");

@@ -11877,47 +11877,6 @@ Program *parse(Token *tok) {
                            "  void *overflow_arg_area;"
                            "  void *reg_save_area;"
                            "} __builtin_va_list[1];"
-                           // __builtin_cpu_supports(feature): real GCC compiles this to
-                           // a call into libgcc's __cpu_indicator_init()-populated
-                           // __cpu_model bitmask; rcc instead queries CPUID directly at
-                           // each call site (correct, just not cached/hoisted). Manual
-                           // per-character comparison instead of strcmp() avoids any
-                           // dependency on <string.h> having been included yet -- this
-                           // prelude runs before the real source, so no user header has
-                           // been seen. Covers the feature names actually probed by
-                           // this project's third-party test suite (sse2, avx, avx2,
-                           // avx512f, avx512bw); add more leaf-7/leaf-1 bits here if a
-                           // future project needs a name not yet covered.
-                           "static __inline__ __attribute__((__always_inline__, __unused__)) "
-                           "int __rcc_cpu_supports(const char *f) {"
-                           "  unsigned a, b, c, d;"
-                           "  __asm__(\"cpuid\" : \"=a\"(a), \"=b\"(b), \"=c\"(c), \"=d\"(d) : \"a\"(1), \"c\"(0));"
-                           "  if (f[0]=='s'&&f[1]=='s'&&f[2]=='e'&&f[3]=='2'&&f[4]==0) return (d>>26)&1;"
-                           "  if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]==0) return (c>>28)&1;"
-                           "  {"
-                           "    unsigned a2, b2, c2, d2;"
-                           "    __asm__(\"cpuid\" : \"=a\"(a2), \"=b\"(b2), \"=c\"(c2), \"=d\"(d2) : \"a\"(7), \"c\"(0));"
-                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='2'&&f[4]==0) return (b2>>5)&1;"
-                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='5'&&f[4]=='1'&&f[5]=='2'&&f[6]=='f'&&f[7]==0) return (b2>>16)&1;"
-                           "    if (f[0]=='a'&&f[1]=='v'&&f[2]=='x'&&f[3]=='5'&&f[4]=='1'&&f[5]=='2'&&f[6]=='b'&&f[7]=='w'&&f[8]==0) return (b2>>30)&1;"
-                           "  }"
-                           "  return 0;"
-                           "}"
-                           // __builtin_cpu_init(): real GCC/clang's companion
-                           // builtin, called once before any
-                           // __builtin_cpu_supports() checks to lazily
-                           // populate libgcc's own static __cpu_model cache
-                           // (e.g. libucl's bundled mum.h: `if
-                           // (!avx2_support) { __builtin_cpu_init();
-                           // avx2_support = __builtin_cpu_supports("avx2") ?
-                           // 1 : -1; }`). __rcc_cpu_supports above has no
-                           // such cache -- it re-queries cpuid directly on
-                           // every call -- so this is a true no-op stub; it
-                           // exists purely so the call site links instead of
-                           // leaving an undefined reference to
-                           // '__builtin_cpu_init'.
-                           "static __inline__ __attribute__((__always_inline__, __unused__)) "
-                           "void __rcc_cpu_init(void) {}"
 #endif
     );
     current_input = saved_input;
