@@ -16,6 +16,19 @@ struct SecBuf {
     uint8_t *data;
     size_t len;
     size_t cap;
+    // ELF sh_addralign: the max alignment any secbuf_align() call has ever
+    // requested for this section. Starts at 1 (no constraint), never
+    // lowered. Consumed by elf_write.c's .data/.rodata/.tdata section
+    // headers -- content within one compilation unit can be correctly
+    // self-padded to N bytes, but if the section header still claims
+    // sh_addralign=1, a linker merging this .o with others is free to
+    // start this section's bytes at any offset relative to a preceding
+    // object's section, silently destroying that intra-file padding
+    // (confirmed: a wide string literal's own 4-byte padding was correct
+    // per-object, but glibc's vectorized wcslen() still misread it once
+    // linked alongside other .rodata-bearing objects, because the final
+    // image's copy of this section didn't start 4-byte aligned).
+    uint32_t align;
 };
 
 void secbuf_init(SecBuf *s);

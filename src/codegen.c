@@ -13354,6 +13354,23 @@ struct ObjFile *codegen(Program *prog) {
         free(emitted_syms);
         cg_set_section(SEC_RODATA);
         for (StrLit *s = prog->strs; s; s = s->next) {
+            // Wide string literals (wchar_t[]/char16_t[]/char32_t[]) must
+            // start on a boundary matching their element size: glibc's
+            // wcslen()/wcscmp()/etc. are commonly vectorized (SSE2/AVX2),
+            // reading 16+ bytes at a time under the assumption that any
+            // wchar_t object -- an ordinary string literal included --
+            // satisfies _Alignof(wchar_t) (4 on Linux/macOS, 2 on
+            // Windows). Consecutive .rodata entries were packed back-to-
+            // back with no padding, so a wide literal immediately
+            // following a narrow one (or another wide literal whose byte
+            // length isn't a multiple of elem_size) could land at any
+            // byte offset. A misaligned literal fed to a vectorized
+            // wcslen() silently returned the wrong length (confirmed: a
+            // 12-wchar_t literal at a 1-mod-4 address read back as 11),
+            // corrupting every one of libarchive's archive_mstring
+            // wide-character setters built on it.
+            if (s->prefix != 0 && s->prefix != '8')
+                secbuf_align(cg_sec, s->elem_size);
             cg_def_label_sec(format(".LC%d", s->id), SEC_RODATA); // .zero %d
             if (s->prefix != 0 && s->prefix != '8') {
                 // Wide string: decode UTF-8 and emit wide characters

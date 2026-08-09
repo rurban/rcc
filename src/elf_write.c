@@ -639,13 +639,13 @@ int elf_write(ObjFile *obj, const char *path) {
     write_shdr(f, shn_text, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
                text_off, text_size, 0, 0, 16, 0);
     write_shdr(f, shn_data, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
-               data_off, data_size, 0, 0, 8, 0);
+               data_off, data_size, 0, 0, obj->data.align > 8 ? obj->data.align : 8, 0);
     write_shdr(f, shn_bss, SHT_NOBITS, SHF_ALLOC | SHF_WRITE,
                data_off + data_size, obj->bss_size, 0, 0, 8, 0);
     write_shdr(f, shn_rodata, SHT_PROGBITS, SHF_ALLOC,
-               rodata_off, rodata_size, 0, 0, 1, 0);
+               rodata_off, rodata_size, 0, 0, obj->rodata.align, 0);
     if (has_tdata)
-        write_shdr(f, shn_tdata, SHT_PROGBITS, SHF_TLS | SHF_WRITE | SHF_ALLOC, tdata_off, tdata_size, 0, 0, 1, 0);
+        write_shdr(f, shn_tdata, SHT_PROGBITS, SHF_TLS | SHF_WRITE | SHF_ALLOC, tdata_off, tdata_size, 0, 0, obj->data_tls.align, 0);
     write_shdr(f, shn_note, SHT_PROGBITS, obj->uses_trampoline ? SHF_EXECINSTR : 0, note_off, 0, 0, 0, 1, 0);
 
     if (has_debug) {

@@ -1817,3 +1817,76 @@ Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link 6/6, 0 failed overall (native Linux x86-64); confirmed
 clean (both the new test and `test_ptr_array_strlit_size` PASS) on
 the mingw cross target.
+
+### Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)
+
+- \*\*Wide string literals (`L"..."`) could land at any byte offset in
+  `.rodata`, misaligned for `wchar_t` — glibc's vectorized
+  `wcslen()`/`wcscmp()`/`wmemcmp()` read multiple `wchar_t` at once under
+  the assumption that any `wchar_t` object satisfies `_Alignof(wchar_t)`
+  (4 on Linux/macOS, 2 on Windows), true of every object a real compiler
+  emits, string literals included. Three separate, stacked bugs conspired
+  to break this:
+  1. **codegen.c's string-literal emission loop packed every literal
+     (narrow and wide) back-to-back with no padding** — a wide literal
+     landed at whatever odd byte offset the preceding literal's length
+     left behind. Fixed: `secbuf_align(cg_sec, s->elem_size)` before each
+     wide literal's bytes.
+  2. **Two call sites that register a string literal used purely for its
+     _address_ hardcoded `elem_size=1` regardless of the literal's real
+     prefix** — `read_global_label_initializer()` (a global/const pointer
+     initializer, e.g. `const wchar_t *p = L"text";`, the exact shape of
+     libarchive's `fileflags[]` flag-name table) and `extract_reloc()`'s
+     `ND_STR` case (an `&expr` reloc extraction), which additionally
+     re-registered a wholly redundant _second_ StrLit instead of reusing
+     the correctly-tagged one `primary()` already created for the same
+     token. Fixed: a new `str_lit_elem_size()` helper (mirroring
+     `primary()`'s own prefix→size switch) for the first; reusing
+     `node->str_id` for the second.
+  3. **elf_write.c hardcoded `.rodata`'s ELF `sh_addralign` to `1` in
+     every `.o` it wrote** — even after fixes #1/#2 correctly self-pad a
+     literal _within_ one compilation unit, the linker (rcc's own, or a
+     real system `ld`) reads `sh_addralign` to decide how to place one
+     object's section relative to another's once merged; declaring `1`
+     ("no constraint") let it concatenate this object's `.rodata`
+     immediately after another's at any offset, silently destroying the
+     intra-file padding. This is why the bug reproduced in libarchive's
+     real, multi-file build but not in any single-file minimal repro.
+     Fixed: `SecBuf` now tracks the max alignment any `secbuf_align()`
+     call has requested (mirroring the existing pattern already used for
+     `__attribute__((section("name")))` globals); `elf_write.c`'s
+     `.data`/`.rodata`/`.tdata` section headers use the tracked value
+     instead of a hardcoded constant. `link_elf.c` (rcc's own linker)
+     already correctly _consumed_ `sh_addralign` when merging sections —
+     it was only ever being fed the wrong (hardcoded) value.
+     A fourth, independently-discovered bug surfaced while writing the
+     regression test: **`infer_array_type()` sized a wide array declarator
+     using NUL-terminated `utf8_len()` instead of length-bounded UTF-8
+     codepoint counting** — `wchar_t units[] = L"\0KMGTPEZY";` (an embedded
+     NUL before the literal's true end, the exact `LZ4IO_toHuman()`/
+     `fileflags` table shape but as a top-level global) sized the array as
+     1 element (stopping at the leading NUL) instead of 10, leaving every
+     byte past the first uninitialized garbage. Fixed: replaced the
+     `utf8_len()` call with the same `tok->len`-bounded `decode_utf8()`
+     loop `primary()`/`global_initializer()`'s wide-string branches already
+     use.
+     → found via test_libarchive: `archive_entry_copy_symlink_w()`/
+     `archive_entry_symlink_w()` truncated every wide string by one
+     character (`archive_mstring_copy_wcs_len()`'s internal `wcslen()`
+     misread the misaligned literal); `ae_wcstofflags()`'s `fileflags[]`
+     table lookup silently dropped bits from the parsed flag set for the
+     same reason. Unblocked `test_entry`, `test_archive_match_path`,
+     `test_archive_match_time`, and `test_filter_count` (4 of libarchive's
+     10 originally-failing non-fuzz tests; the other 6 are an unrelated
+     PPMd-codec issue, not yet triaged).
+
+New regression tests: `test/test_wide_string_alignment.c` (all four
+fixed code paths: local pointer, global array with embedded NUL,
+struct-field pointer, `&L"literal"`); `test/test-link.sh` case 8
+(2-TU link, deliberately misaligning the second object's `.rodata` via
+an odd-length narrow literal in the first, guards the linker-level
+fix specifically — the one bug class no single-file test can catch).
+Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link 8/8 (incl. the new case), 0 failed overall (native Linux
+x86-64); confirmed clean (both new tests PASS) on the mingw and arm64
+cross targets.

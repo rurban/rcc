@@ -1257,6 +1257,31 @@ static StrLit *new_str_lit(char *str, int len, int prefix, int elem_size) {
     return s;
 }
 
+// Element size in bytes for a string literal of the given prefix -- must
+// agree with primary()'s TK_STR type-selection switch (and its
+// new_str_lit() call using node->ty->base->size) so a string used purely
+// for its ADDRESS (pointer-typed global/const initializer, "&expr" reloc
+// extraction) records the SAME element size as one used as a value
+// expression. codegen.c's wide-string emission pads each literal's start
+// to elem_size before writing its bytes (glibc's vectorized wcslen/wmemcmp
+// assume any wchar_t object satisfies _Alignof(wchar_t)); a call site that
+// under-reports elem_size (e.g. always 1) skips that padding, so the
+// literal can land misaligned and any libc wide-string function reading it
+// silently returns wrong results.
+static int str_lit_elem_size(int prefix) {
+    switch (prefix) {
+    case 'L':
+#ifdef _WIN32
+        return 2; // Windows wchar_t: UTF-16
+#else
+        return 4; // Linux/macOS wchar_t: UTF-32
+#endif
+    case 'u': return 2; // char16_t: always 16-bit
+    case 'U': return 4; // char32_t: always 32-bit
+    default: return 1; // plain / u8
+    }
+}
+
 static Node *make_cleanup_stmt(LVar *var, Token *tok) {
     Node *call = new_node(ND_FUNCALL, tok);
     call->funcname = var->cleanup_func;
@@ -4844,7 +4869,8 @@ static bool extract_label_diff(Node *node, char **label_hi, char **label_lo) {
 
 static bool read_global_label_initializer(Token **rest, Token *tok, char **label, int *addend) {
     if (tok->kind == TK_STR) {
-        StrLit *s = new_str_lit(tok->str, tok->len, tok->string_literal_prefix, 1);
+        StrLit *s = new_str_lit(tok->str, tok->len, tok->string_literal_prefix,
+                                str_lit_elem_size(tok->string_literal_prefix));
         *label = format(".LC%d", s->id);
         if (addend) *addend = 0;
         *rest = tok->next;
@@ -4987,12 +5013,21 @@ static bool extract_reloc(Node *node, char **label, int *addend) {
             return true;
         }
         return false;
-    case ND_STR: {
-        StrLit *s = new_str_lit(node->str, strlen(node->str) + 1, 0, 1);
-        *label = format(".LC%d", s->id);
+    case ND_STR:
+        // Reuse the StrLit already registered by primary() (node->str_id)
+        // instead of re-registering with the wrong, hardcoded prefix=0/
+        // elem_size=1 -- a wide/char16_t/char32_t string reached here
+        // (e.g. "&L\"text\"", or a wide literal as one array-of-pointers
+        // initializer element) would otherwise get a SECOND, WRONGLY-
+        // TAGGED StrLit: codegen.c's emission loop keys off elem_size to
+        // both align the literal (glibc's wcslen/wmemcmp assume
+        // _Alignof(wchar_t)) and choose the 2-or-4-byte-per-character
+        // encoding, so elem_size=1 for what's actually 4-byte-per-char
+        // data produced a misaligned, narrow-packed duplicate distinct
+        // from the correct one the plain (non-reloc) read path uses.
+        *label = format(".LC%d", node->str_id);
         *addend = 0;
         return true;
-    }
     case ND_NUM:
         *label = NULL;
         *addend = (int)node->val;
@@ -5345,8 +5380,20 @@ static Type *infer_array_type(Type *ty, Token *tok) {
     if (scalarish_base && tok->kind == TK_STR) {
         if (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')
             return array_of(ty->base, tok->len + 1);
-        // For wide strings, count UTF-8 characters (each becomes one wchar)
-        return array_of(ty->base, utf8_len(tok->str) + 1);
+        // For wide strings, count UTF-8 codepoints bounded by tok->len, NOT
+        // NUL-terminated utf8_len(): a wide literal's decoded byte buffer
+        // may legitimately contain an embedded NUL codepoint before its
+        // real end (e.g. lz4/libarchive-style "\0KMGTPEZY" lookup tables),
+        // and utf8_len()'s `while (*p)` loop stopped at the FIRST one,
+        // sizing the array as if the literal were empty (1 element instead
+        // of the true length).
+        int n = 0;
+        for (char *p = tok->str, *end = p + tok->len; p < end; n++) {
+            char *next_p;
+            decode_utf8(&next_p, p);
+            p = next_p;
+        }
+        return array_of(ty->base, n + 1);
     }
     if (equalc(tok, "{")) {
         Token *tmp = tok;

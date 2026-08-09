@@ -256,6 +256,39 @@ else
     fail "plain gnu_inline function export (2-TU link)" "$(tr '\n' ' ' < "$TMP/e7")"
 fi
 
+# ---------------------------------------------------------------------------
+# 8. Wide string literal alignment survives a 2-TU link. Each object's own
+#    .rodata can be internally self-padded so its wchar_t data starts on a
+#    4-byte boundary (Linux wchar_t is UTF-32), but elf_write.c used to
+#    hardcode .rodata's ELF sh_addralign to 1 in every .o it wrote -- so
+#    the linker (rcc's own, or a real system ld) was free to concatenate
+#    this object's .rodata immediately after another object's, at whatever
+#    odd byte offset that left, silently destroying the padding. glibc's
+#    vectorized wcslen()/wmemcmp() then read the misaligned literal wrong.
+#    a.o's .rodata deliberately ends on a non-multiple-of-4 byte count (a
+#    1-byte narrow string) so b.o's wide literal is forced off a 4-byte
+#    boundary once merged unless the fix holds.
+# ---------------------------------------------------------------------------
+cat > "$TMP/wa.c" <<'EOF'
+const char pad1[] = "1234567";  /* 8 bytes incl NUL */
+const char pad2 = 'Q';          /* 1 byte: forces b.o's rodata off a 4-byte boundary */
+EOF
+cat > "$TMP/wb.c" <<'EOF'
+#include <wchar.h>
+int main(void) {
+    const wchar_t *p = L"symlinkname2";
+    return wcslen(p) == 12 ? 0 : 1;
+}
+EOF
+if "$RCC" -c "$TMP/wa.c" -o "$TMP/wa.o" 2>"$TMP/e8" \
+    && "$RCC" -c "$TMP/wb.c" -o "$TMP/wb.o" 2>>"$TMP/e8" \
+    && "$RCC" "$TMP/wa.o" "$TMP/wb.o" -o "$TMP/wprog" 2>>"$TMP/e8" \
+    && "$TMP/wprog"; then
+    pass "wide string alignment survives 2-TU link"
+else
+    fail "wide string alignment survives 2-TU link" "$(tr '\n' ' ' < "$TMP/e8")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

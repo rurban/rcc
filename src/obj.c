@@ -22,6 +22,7 @@ void secbuf_init(SecBuf *s) {
     s->data = NULL;
     s->len = 0;
     s->cap = 0;
+    s->align = 1;
 }
 
 void secbuf_free(SecBuf *s) {
@@ -82,6 +83,7 @@ void secbuf_emitbuf(SecBuf *s, const void *buf, size_t n) {
 
 void secbuf_align(SecBuf *s, int align) {
     if (align <= 1) return;
+    if ((uint32_t)align > s->align) s->align = (uint32_t)align;
     size_t rem = s->len % (size_t)align;
     if (!rem) return;
     size_t pad = (size_t)align - rem;
