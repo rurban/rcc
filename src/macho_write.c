@@ -188,19 +188,43 @@ static uint8_t elf_reloc_to_macho(uint32_t elf_type, bool is_arm64) {
 // ---------------------------------------------------------------------------
 
 // Executable content goes in __TEXT, everything else in __DATA — the same
-// code/data split GAS's own section characteristics imply.
+// code/data split GAS's own section characteristics imply. Used only when
+// `name` has no explicit segment (see macho_seg_sect_name below).
 static const char *macho_segname_from_flags(uint32_t sh_flags) {
     return (sh_flags & SHF_EXECINSTR) ? "__TEXT" : "__DATA";
 }
 
-// Mach-O sectname is a fixed 16-byte field with no long-name escape (unlike
-// COFF's "/<stroff>"); truncate rather than fail on an overlong GAS section
-// name — real-world custom sections (.altinstructions, __ex_table, ...) fit.
-static void macho_section_name(char sectname[16], const char *name) {
+// A source-level `__attribute__((section("name")))` reaches here two ways:
+//  - Apple's own convention (required, not optional, on real Mach-O --
+//    clang rejects a single-component section() argument outright):
+//    "SEGMENT,SECTION", e.g. "__DATA,const_heap" -- split verbatim into
+//    the two fixed 16-byte segname/sectname fields Mach-O needs.
+//  - A raw GAS `.section NAME` with no segment at all (ported Linux
+//    kernel asm -- .altinstructions, __ex_table, ...), where segment is
+//    inferred from the section's own code/data characteristics instead.
+// Mach-O sectname/segname are fixed 16-byte fields with no long-name
+// escape (unlike COFF's "/<stroff>"); each half truncates rather than
+// fails on an overlong name.
+static void macho_seg_sect_name(char segname[16], char sectname[16],
+                                const char *name, uint32_t sh_flags) {
+    memset(segname, 0, 16);
     memset(sectname, 0, 16);
-    size_t n = strlen(name);
-    if (n > 16) n = 16;
-    memcpy(sectname, name, n);
+    const char *comma = strchr(name, ',');
+    if (comma) {
+        size_t seglen = (size_t)(comma - name);
+        if (seglen > 16) seglen = 16;
+        memcpy(segname, name, seglen);
+        const char *sect = comma + 1;
+        size_t sectlen = strlen(sect);
+        if (sectlen > 16) sectlen = 16;
+        memcpy(sectname, sect, sectlen);
+    } else {
+        const char *sg = macho_segname_from_flags(sh_flags);
+        memcpy(segname, sg, strlen(sg));
+        size_t n = strlen(name);
+        if (n > 16) n = 16;
+        memcpy(sectname, name, n);
+    }
 }
 
 // Map an ObjSym/ObjReloc section id (built-in SEC_TEXT..SEC_THREAD_VARS or a
@@ -682,11 +706,8 @@ int macho_write(ObjFile *obj, const char *path) {
     // no built-in slot above), one per registered section.
     for (int i = 0; i < obj->extra_sec_count; i++) {
         ExtraSection *es = &obj->extra_secs[i];
-        char sectname[16];
-        macho_section_name(sectname, es->name);
-        char segname[16] = {0};
-        const char *sg = macho_segname_from_flags(es->sh_flags);
-        memcpy(segname, sg, strlen(sg));
+        char sectname[16], segname[16];
+        macho_seg_sect_name(segname, sectname, es->name, es->sh_flags);
         wbuf(f, sectname, 16);
         wbuf(f, segname, 16);
         w64(f, 0); // addr

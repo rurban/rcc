@@ -669,9 +669,23 @@ int link_load_object(LinkState *s, const char *path) {
                 bool write = (strcmp(segname_s, "__DATA") == 0);
                 bool is_bss = (flags & S_ZEROFILL) != 0;
 
-                // Map section name to output section
-                char out_name[32];
+                // Map section name to output section. A section whose
+                // *sectname* half doesn't start with "__" is never one of
+                // Apple's own reserved system sections (__cstring,
+                // __common, __la_symbol_ptr, ...  -- all "__"-prefixed by
+                // convention) -- it can only be a user's own
+                // __attribute__((section("SEG,SECT"))) global (e.g.
+                // "__DATA,const_heap"). Keep that distinct instead of
+                // folding it into the generic .data/.rdata bucket below,
+                // so section$start$SEG$SECT/section$end$SEG$SECT
+                // (resolved in link_macho()) bracket only its own
+                // contribution -- not every other unrelated .data global.
+                bool is_custom_sect = !is_text &&
+                    (sectname[0] != '_' || sectname[1] != '_');
+                char out_name[34];
                 if (is_text) snprintf(out_name, sizeof(out_name), ".text");
+                else if (is_custom_sect)
+                    snprintf(out_name, sizeof(out_name), "%s,%s", segname_s, sectname);
                 else if (is_bss)
                     snprintf(out_name, sizeof(out_name), ".bss");
                 else if (strcmp(sectname, "__const") == 0)
@@ -803,6 +817,46 @@ int link_macho(LinkState *s) {
     // Static linking is not implemented — fall back to the external linker.
     if (s->opt_static) return -1;
     bool is_dylib = s->opt_shared;
+
+    // Synthesize section$start$SEG$SECT/section$end$SEG$SECT boundary
+    // symbols -- ld64/clang's own convention for `extern char x[]
+    // __asm("section$start$__DATA$const_heap")`-style boundary markers
+    // (see test/test_attribute_section.c's Apple branch), the Mach-O
+    // equivalent of ELF's __start_/__stop_ synthesis in link_elf.c.
+    // Must run before the external-symbol-strategy scan below: an
+    // unresolved section$start$/section$end$ reference is loaded via a
+    // GOT-relative instruction (extern char[] has no known size), which
+    // would otherwise look like a genuinely external symbol and bounce
+    // this whole link to the system linker.
+    for (int i = 0; i < s->n_syms; i++) {
+        LinkSym *sym = &s->syms[i];
+        if (sym->sec >= 0 || !sym->name) continue;
+        bool is_start = !strncmp(sym->name, "section$start$", 14);
+        bool is_stop = !is_start && !strncmp(sym->name, "section$end$", 12);
+        if (!is_start && !is_stop) continue;
+        const char *rest = sym->name + (is_start ? 14 : 12);
+        const char *dollar = strchr(rest, '$');
+        if (!dollar || !dollar[1]) continue;
+        size_t seglen = (size_t)(dollar - rest);
+        size_t sectlen = strlen(dollar + 1);
+        if (seglen > 16 || sectlen > 16) continue;
+        char segsect[34];
+        memcpy(segsect, rest, seglen);
+        segsect[seglen] = ',';
+        memcpy(segsect + seglen + 1, dollar + 1, sectlen);
+        segsect[seglen + 1 + sectlen] = '\0';
+        int target = -1;
+        for (int j = 0; j < s->n_secs; j++) {
+            if (!strcmp(s->secs[j].name, segsect)) {
+                target = j;
+                break;
+            }
+        }
+        if (target < 0) continue;
+        sym->sec = target;
+        sym->value = is_start ? 0 : s->secs[target].len;
+        sym->resolved = true;
+    }
     // External-symbol strategy:
     //   * dylibs (-shared) bind natively via the __got + dyld bind opcodes
     //     built below -- this is the path the -shared benchmark (sqlite) and
@@ -923,6 +977,23 @@ int link_macho(LinkState *s) {
         } else if (sec->is_bss) {
             mo_secs[n_mo].segname = "__DATA";
             mo_secs[n_mo].sectname = "__bss";
+        } else if (strchr(sec->name, ',')) {
+            // A user's own __attribute__((section("SEG,SECT"))) global,
+            // preserved verbatim from link_load_object()'s is_custom_sect
+            // branch above (macho_write.c emits the identical "SEG,SECT"
+            // internal section name for the same source construct) --
+            // keep it distinct instead of collapsing into __DATA,__data
+            // so section$start$SEG$SECT/section$end$SEG$SECT (resolved
+            // above) bracket only this section's own contribution.
+            const char *comma = strchr(sec->name, ',');
+            size_t seglen = (size_t)(comma - sec->name);
+            char *sg = calloc(1, 17);
+            memcpy(sg, sec->name, seglen > 16 ? 16 : seglen);
+            char *sn = calloc(1, 17);
+            size_t sectlen = strlen(comma + 1);
+            memcpy(sn, comma + 1, sectlen > 16 ? 16 : sectlen);
+            mo_secs[n_mo].segname = sg;
+            mo_secs[n_mo].sectname = sn;
         } else {
             mo_secs[n_mo].segname = "__DATA";
             mo_secs[n_mo].sectname = "__data";

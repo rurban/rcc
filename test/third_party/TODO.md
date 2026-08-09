@@ -1507,3 +1507,80 @@ skipped) now passes 100%, up from 17/33 failing.
 full `test_scrapscript` compiler_tests suite 32/32 passed (1 skipped);
 mingw cross and arm64 cross — `test_attribute_section` PASS via
 `mingw-test.sh`/`arm64-test.sh`.
+
+### Added: `__attribute__((section("SEG,SECT")))` support for Mach-O (macOS)
+
+The `section()` attribute fix above was ELF-only; the Apple branch of
+`test_attribute_section.c` was left as a stub (`(void)e1; ...; return
+0;`) because macho_write.c's custom-section support pre-dated this
+session and only handled a single flat name (no explicit segment),
+and link_macho.c had no concept of a boundary-symbol synthesis at
+all. Implemented properly this session, entirely from code review +
+local structural verification -- no real macOS available in this
+sandbox; both touched files (macho_write.c, link_macho.c) are only
+ever compiled by the project's own build when `$(CC) -dumpmachine`
+contains "apple" (see Makefile's `SRCS +=` split), so CI's
+macos-latest job is the only real test surface.
+
+- **macho_write.c** — `macho_seg_sect_name()` replaces the old
+  `macho_section_name()`/`macho_segname_from_flags()` pair: a
+  `section()` string containing a comma (Apple's required
+  "SEGMENT,SECTION" form, e.g. `"__DATA,const_heap"` -- a bare
+  single-component name is a real clang error on Mach-O) is split
+  verbatim into the two fixed 16-byte segname/sectname fields; a
+  comma-less name (ported GAS `.section` asm with no segment) keeps
+  the previous code/data-flags-based inference.
+- **link_macho.c** (`link_load_object`) — a loaded section whose
+  _sectname_ half doesn't start with `__` (Apple reserves that prefix
+  for its own system sections -- `__cstring`, `__common`,
+  `__la_symbol_ptr`, ...) is necessarily a user's own `section()`
+  global; kept as its own distinct internal `"SEG,SECT"`-named
+  section instead of folding into the generic `.data`/`.rdata`
+  bucket every _other_ non-well-known section still uses.
+- **link_macho.c** (`link_macho`) — two additions:
+  1. Boundary-symbol synthesis for ld64/clang's own
+     `section$start$SEG$SECT`/`section$end$SEG$SECT` linker-symbol
+     convention (the Mach-O equivalent of ELF's `__start_`/`__stop_`,
+     used via `extern char x[] __asm("section$start$__DATA$name")`
+     -- a plain `__start_name` has no meaning on Mach-O at all).
+     Runs _before_ the existing external-symbol-strategy scan: an
+     unresolved boundary reference is loaded via a GOT-relative
+     instruction and would otherwise look like a genuine external
+     symbol, bouncing the whole link to the system linker.
+  2. The `mo_secs` write-side classification recognizes an internal
+     `"SEG,SECT"` name (set by the loader change above) and emits
+     that exact segment/section pair instead of the generic
+     `__DATA,__data` fallback.
+
+`test/test_attribute_section.c` rewritten with a real (much smaller)
+`#ifdef __APPLE__` split instead of the old two-full-`main()`-bodies
+stub: only the `section()` argument string and the boundary-symbol
+`extern` declarations differ per platform (`__asm("section$start$...")`
+labels on Apple); the entire `main()` body -- including the alignment
+regression check from the fix above -- is shared and unconditional.
+
+**Verification** (no real macOS in this sandbox, see above):
+
+- `link_macho.c` compiles clean standalone on Linux (it has no
+  `#ifdef __APPLE__` file guard, unlike macho_write.c, so the
+  project's real build never exercises it here either -- confirmed
+  with a direct `gcc -c src/link_macho.c`).
+- `macho_write.c` (entirely `#ifdef __APPLE__`-gated, so _never_
+  compiled by this project's own native/mingw/arm64 builds) syntax-
+  checked clean with `gcc -fsyntax-only -D__APPLE__` -- safe since it
+  only uses portable `<stdio.h>`/`<string.h>`/`<stdint.h>`, no real
+  Apple SDK headers.
+- Compiled `test_attribute_section.c` through rcc itself with
+  `-D__APPLE__` forced (still targeting rcc's real ELF backend, since
+  this sandbox has no Mach-O target) to exercise the _parser/codegen_
+  side of the Apple branch: `readelf` on the result confirms the
+  section is correctly named `__DATA,my_registry` (8-byte aligned,
+  48 bytes = 3 \* 16-byte entries) and the two `extern char x[]`
+  declarations correctly emit as undefined symbols literally named
+  `section$start$__DATA$my_registry`/`section$end$__DATA$my_registry`
+  -- exactly the names link_macho.c's new synthesis pattern-matches.
+- `test_attribute_section` still PASSes on native Linux x86-64, mingw
+  cross, and arm64 cross (unaffected -- neither touched file is part
+  of any of those three builds).
+- Pushed to CI; the macos-latest job is the authoritative check for
+  this change and needs to be watched explicitly.

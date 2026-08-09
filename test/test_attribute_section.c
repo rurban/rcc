@@ -57,35 +57,43 @@ struct registry_entry {
 // now rcc's own native linker) places every input object's contribution
 // to a same-named section contiguously, so __start_/__stop_ bracket all
 // three regardless of declaration order -- not just a single lone marker.
-__attribute__((section("my_registry")))
+//
+// Apple's own convention differs on both ends, so both the section()
+// argument and the boundary-symbol externs are conditional:
+//  - section(): Mach-O requires the two-part "SEGMENT,SECTION" form
+//    (clang rejects a bare single-component name outright); everywhere
+//    else a plain name is the whole story.
+//  - boundary symbols: ELF's GNU ld automatically synthesizes plain
+//    __start_<name>/__stop_<name> globals (link_elf.c matches that).
+//    Mach-O has no such automatic name -- ld64/clang's own convention is
+//    an ordinary `extern char x[]` whose *linker* symbol name is
+//    reassigned via `__asm("section$start$SEGMENT$SECTION")` (rcc's own
+//    native Mach-O linker, link_macho.c, resolves that exact pattern).
+#ifdef __APPLE__
+#define REGISTRY_SECTION "__DATA,my_registry"
+#else
+#define REGISTRY_SECTION "my_registry"
+#endif
+
+__attribute__((section(REGISTRY_SECTION)))
 __attribute__((used))
 static const struct registry_entry e1 = { 1, "one" };
 
-__attribute__((__section__("my_registry")))
+__attribute__((__section__(REGISTRY_SECTION)))
 __attribute__((used))
 static const struct registry_entry e2 = { 2, "two" };
 
-__attribute__((section("my_registry")))
+__attribute__((section(REGISTRY_SECTION)))
 __attribute__((used))
 static const struct registry_entry e3 = { 3, "three" };
 
-// __start_<name>/__stop_<name> boundary-symbol synthesis is implemented
-// this session only for rcc's native ELF linker (link_elf.c); real GNU
-// ld's PE-COFF backend (used by the mingw cross build) already does the
-// identical thing on its own, unrelated to this fix. Mach-O linking
-// (link_macho.c, macOS) needs a different mechanism entirely -- the
-// segment-qualified section name (`"__DATA,name"`) plus per-symbol
-// `__asm("section$start$__DATA$name")`/`"section$end$..."` labels, per
-// Apple's own convention (matching the *_start_const_heap example this
-// fix was found through, whose own upstream source already carries this
-// exact `#ifdef __APPLE__` split) -- not implemented here. Keep the
-// section-attribute compiler support itself exercised everywhere (the
-// three globals above still get parsed, placed, and linked on every
-// platform), just skip the boundary-symbol-dependent runtime assertions
-// where nothing yet synthesizes them.
-
+#ifdef __APPLE__
+extern char __start_my_registry[] __asm("section$start$__DATA$my_registry");
+extern char __stop_my_registry[] __asm("section$end$__DATA$my_registry");
+#else
 extern char __start_my_registry[];
 extern char __stop_my_registry[];
+#endif
 
 int main(void) {
     // Regression check: `struct registry_entry` contains a `const char *`
