@@ -688,26 +688,26 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 
 ## rc=1 — Runtime Failures (builds OK, test fails)
 
-| test             | symptom                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                                                                                                                                                                                                                                                                                                                                                             |
-| test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly)                                                                                                                                                                                    |
-| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                                                                                                                                                                                                   |
-| test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                                                                                                                                                                                                            |
-| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                                                                                                                                                                                                     |
-| test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                                                                                                                                                                                                       |
-| test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                                                                                                                                                                                                          |
-| test_glib        | —                                                                                                                                                                                                                                                                                                                                                                                                           |
-| test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                           |
-| test_ksh93       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
-| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                                                                                                                                                                                                           |
-| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                                                                                                                                      |
-| test_neovim      | —                                                                                                                                                                                                                                                                                                                                                                                                           |
-| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                                                                                                                                                                                                      |
-| test_rsync       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
-| test_samba       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
-| test_scrapscript | **partially fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix below resolves that entirely (32/33 -> 17/33 failing). Remaining 17 are runtime `SIGABRT`s (an `assert()`/`abort()` firing very early in `scrap_main()`, before any output) in a different, unrelated part of the compiled runtime — not investigated this session |
-| test_tcpdump     | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test             | symptom                                                                                                                                                                                                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                                                                                                                                                                                                                                                  |
+| test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly)                                                                         |
+| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                                                                                        |
+| test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                                                                                                 |
+| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                                                                                          |
+| test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                                                                                            |
+| test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                                                                                               |
+| test_glib        | —                                                                                                                                                                                                                                                                                                |
+| test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                |
+| test_ksh93       | —                                                                                                                                                                                                                                                                                                |
+| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                                                                                                |
+| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                           |
+| test_neovim      | —                                                                                                                                                                                                                                                                                                |
+| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                                                                                           |
+| test_rsync       | —                                                                                                                                                                                                                                                                                                |
+| test_samba       | —                                                                                                                                                                                                                                                                                                |
+| test_scrapscript | **fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix resolved linking (32/33 -> 17/33 failing), then the section sh_addralign fix below resolved the remaining 17 `SIGABRT`s (17/33 -> 0/33 failing, full suite green) |
+| test_tcpdump     | —                                                                                                                                                                                                                                                                                                |
 
 ---
 
@@ -1427,3 +1427,83 @@ failed overall; arm64 cross — c-testsuite 220/220, Torture 3599/3609
 `stur`/`ldur` fix above), Dg-error 34/34, 0 new failures; mingw
 cross — Torture 3574/3578 (100% non-skipped) 0 failed, Dg-error 34/34,
 0 failed overall.
+
+### Fixed rcc bug: custom `section()` global had no ELF `sh_addralign`, corrupting scrapscript's GC
+
+The `section()` attribute fix above (committed same day) correctly
+placed each `__attribute__((section("name")))` global's _bytes_ — but
+`objfile_find_or_add_section()` always created the section with ELF
+`sh_addralign = 1` ("no constraint"), regardless of what was placed in
+it. rcc's own native ELF linker was then free to place that section's
+first byte at _any_ file offset — including one only 4-byte aligned —
+silently breaking the natural alignment every `uintptr_t`/pointer/
+`size_t` field inside the section's contents actually needs.
+
+scrapscript's GC uses a classic tagged-pointer scheme: a heap object's
+address always has its low 3 bits clear (`kObjectAlignment = 8`), and
+`ptrto()`/`as_heap_object()` set/clear a single low tag bit to mark
+"this is a heap pointer" vs "immediate small int". A `const_variant_0`
+global (`struct variant`, holding a `uintptr_t` tag + a `struct
+object*` value — both needing 8-byte alignment) placed via
+`__attribute__((section("const_heap")))` landed at `0x405514` in one
+run — only 4-byte aligned. The struct's own _bytes_ were still
+byte-perfect (verified with `readelf -x`/gdb: tag=`TAG_VARIANT`,
+`variant.tag=Tag_foo`, `variant.value` all correct) and the tagged
+pointer handed to `print()` was numerically correct too — but
+`is_heap_object()`'s `(uword)obj & kPrimaryTagMask(7) == 1` check
+silently failed on that misaligned address, so `print()` fell through
+every `is_*()` branch and hit its `abort()` "unknown tag" fallback —
+17/17 remaining `test_scrapscript` failures were exactly this SIGABRT,
+all originating in `scrap_main()`'s very first `print()` call.
+
+Fixed by threading a real per-section alignment through to the ELF
+writer:
+
+- **obj.h/obj.c** — `ExtraSection` gained an `align` field (default 1,
+  raised via the new `objfile_section_align()`, never lowered — a
+  section can receive multiple globals with different alignment
+  needs, so it tracks the max).
+- **codegen.c** — after resolving a `section()` global's target
+  section id, calls `objfile_section_align(cg_obj, data_sec,
+var->ty->align)` so the section's requirement reflects every global
+  ever placed into it.
+- **asm.c** — an explicit `.balign`/`.align`/`.p2align` directive
+  targeting a custom (inline-asm `.section`-declared) section now also
+  raises that section's `sh_addralign`, matching real GAS's own
+  behavior (previously only the byte offset _within_ the section's
+  buffer was aligned, not the section's own load-address requirement).
+- **elf_write.c** — the extra-section file-offset layout loop now
+  aligns each section's starting offset to `max(16, its own
+sh_addralign)` instead of a blanket 16, and the ELF section header
+  is written with the real alignment instead of a hardcoded `1`.
+  (rcc's own linker load address is `image_base + file_offset` with an
+  always-page-aligned `image_base`, so aligning the file offset is
+  equivalent to aligning the final virtual address for any alignment
+  up to a page.)
+
+Scoped to the ELF writer only (native Linux + arm64 cross) since that's
+where the actual failure lived; `macho_write.c`'s extra-section path
+already unconditionally uses 8-byte alignment (a `section()`-holding
+global that needs more than that on macOS is a pre-existing,
+unexercised gap, out of scope here), and `coff_write.c`/PE-COFF
+characteristics don't encode a per-section alignment at all yet (also
+pre-existing, not triggered by any current test).
+
+→ found by tracing `test_scrapscript`'s remaining 17 `SIGABRT`s (see
+the "partially fixed" note in the section() writeup above) with gdb:
+confirmed the tagged pointer and the underlying struct bytes were both
+correct at the point of failure, then `readelf -S` on the crashing
+binary showed `const_heap`'s `sh_addralign` was `1` and its actual
+load address only 4-byte aligned.
+
+Regression test: extended `test/test_attribute_section.c` with an
+explicit `(uintptr_t)__start_my_registry % _Alignof(struct
+registry_entry) == 0` assertion (`struct registry_entry` already
+contains a `const char *` field, so it requires 8-byte alignment).
+Confirmed this assertion fails (`exit 5`) on the pre-fix binary and
+passes on the fixed one. Full `test_scrapscript` suite (33 tests, 1
+skipped) now passes 100%, up from 17/33 failing.
+**Verified**: native Linux x86-64 — `test_attribute_section` PASS,
+full `test_scrapscript` compiler_tests suite 32/32 passed (1 skipped);
+mingw cross and arm64 cross — `test_attribute_section` PASS via
+`mingw-test.sh`/`arm64-test.sh`.

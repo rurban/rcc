@@ -1352,6 +1352,11 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
                 // always used) so alignment gaps in executable sections
                 // decode as real no-ops instead of arbitrary opcodes.
                 add_align_fixup(as, cur_off(as), as->cur_sec, a, fill, as->nlocals);
+                // Match real GAS: an explicit .balign/.align/.p2align
+                // inside a custom section also raises that section's own
+                // sh_addralign, so the linker's final placement honors
+                // it too — not just the byte offset within our buffer.
+                objfile_section_align(as->obj, as->cur_sec, (uint32_t)a);
             }
         }
     } else if (!strcmp(dir, "byte") || !strcmp(dir, "2byte") ||

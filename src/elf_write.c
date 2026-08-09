@@ -152,6 +152,12 @@ static void write_sym(FILE *f, uint32_t name, uint8_t info, uint8_t other,
 
 static uint64_t align16(uint64_t x) { return (x + 15) & ~(uint64_t)15; }
 
+// Align `x` up to `n` (n must be a power of two, matching ELF's
+// sh_addralign semantics -- 0/1 both mean "no constraint").
+static uint64_t align_n(uint64_t x, uint64_t n) {
+    return n > 1 ? (x + n - 1) & ~(n - 1) : x;
+}
+
 // ---------------------------------------------------------------------------
 // ELF symbol array builder (locals first, then globals/weaks)
 // ---------------------------------------------------------------------------
@@ -417,7 +423,14 @@ int elf_write(ObjFile *obj, const char *path) {
 
     uint64_t running = fini_arr_off + fini_arr_size;
     for (int i = 0; i < nextra; i++) {
-        extra_off[i] = align16(running);
+        // The section's own load-address alignment requirement (e.g. 8
+        // for a section() global holding pointers/size_t) can exceed the
+        // generic 16-byte file-layout padding every other section here
+        // uses -- align up to whichever is larger so extra_off[i] itself
+        // (which becomes this section's virtual address once relocated
+        // against the image base) actually satisfies it.
+        uint64_t a = obj->extra_secs[i].align > 16 ? obj->extra_secs[i].align : 16;
+        extra_off[i] = align_n(running, a);
         extra_size[i] = obj->extra_secs[i].buf.len;
         running = extra_off[i] + extra_size[i];
     }
@@ -655,7 +668,8 @@ int elf_write(ObjFile *obj, const char *path) {
 
     for (int i = 0; i < nextra; i++)
         write_shdr(f, shn_extra[i], SHT_PROGBITS, obj->extra_secs[i].sh_flags,
-                   extra_off[i], extra_size[i], 0, 0, 1, obj->extra_secs[i].sh_entsize);
+                   extra_off[i], extra_size[i], 0, 0, obj->extra_secs[i].align,
+                   obj->extra_secs[i].sh_entsize);
 
     if (has_rela_text)
         write_shdr(f, shn_rela_txt, SHT_RELA, SHF_INFO_LINK,

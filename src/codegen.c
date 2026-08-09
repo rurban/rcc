@@ -13164,6 +13164,13 @@ struct ObjFile *codegen(Program *prog) {
                 ? objfile_find_or_add_section(cg_obj, var->section_name,
                                               SHF_ALLOC | (ty_const(var->ty) ? 0 : SHF_WRITE), 0)
                 : (var->is_tls ? SEC_TDATA : SEC_DATA);
+            // A custom section defaults to sh_addralign=1 (no constraint);
+            // raise it to this global's own required alignment so the
+            // linker places the section itself (and thus every object in
+            // it, GC-tagged-pointer schemes especially) at an address
+            // whose low bits stay zero -- see obj.h's ExtraSection::align.
+            if (var->section_name)
+                objfile_section_align(cg_obj, data_sec, var->ty->align > 1 ? (uint32_t)var->ty->align : 1);
             const char *sym_name_str = asm_sym_name(sym_name(safe_label)); // .balign %d
             if (is_bss) {
                 size_t align = var->ty->align > 1 ? var->ty->align : 1;

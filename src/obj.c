@@ -418,7 +418,14 @@ int objfile_find_or_add_section(ObjFile *obj, const char *name,
     secbuf_init(&es->buf);
     es->sh_flags = sh_flags;
     es->sh_entsize = sh_entsize;
+    es->align = 1;
     return SEC_NUM + (obj->extra_sec_count - 1);
+}
+
+void objfile_section_align(ObjFile *obj, int section, uint32_t align) {
+    if (section < SEC_NUM || section - SEC_NUM >= obj->extra_sec_count) return;
+    ExtraSection *es = &obj->extra_secs[section - SEC_NUM];
+    if (align > es->align) es->align = align;
 }
 
 SecBuf *objfile_section_buf(ObjFile *obj, int section) {

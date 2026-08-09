@@ -68,6 +68,15 @@ struct ExtraSection {
     int reloc_count, reloc_cap;
     uint32_t sh_flags;
     uint32_t sh_entsize; // 0 if none (GAS ".pushsection NAME, FLAGS, @TYPE, ENTSIZE")
+    // ELF sh_addralign: the section's own load-address alignment
+    // requirement, i.e. the max alignment any global/`.balign` placed
+    // into it has ever requested. Starts at 1 (no constraint) and is
+    // raised via objfile_section_align() as content is added — never
+    // lowered. A `__attribute__((section("name")))` global with e.g.
+    // 8-byte-aligned fields (pointers, size_t) needs this to be >= 8, or
+    // the linker may place the section (and thus every object in it) at
+    // an address whose low tagged-pointer bits are no longer zero.
+    uint32_t align;
 };
 
 // ---------------------------------------------------------------------------
@@ -323,6 +332,11 @@ void objfile_shift_relocs(ObjFile *obj, int section, uint64_t patch_off, int64_t
 // id (>= SEC_NUM). sh_flags/sh_entsize are only applied on creation.
 int objfile_find_or_add_section(ObjFile *obj, const char *name,
                                 uint32_t sh_flags, uint32_t sh_entsize);
+
+// Raise `section`'s sh_addralign to at least `align` (no-op if `section`
+// isn't a dynamically-registered one, i.e. < SEC_NUM, or if `align` isn't
+// larger than the section's current requirement).
+void objfile_section_align(ObjFile *obj, int section, uint32_t align);
 
 // The growable byte buffer for any section id, built-in or dynamic.
 // Returns NULL for SEC_BSS (zero-initialized; track via obj->bss_size) and

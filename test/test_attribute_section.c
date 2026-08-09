@@ -26,7 +26,18 @@
 //    external-linker fallback path could resolve such references (via
 //    the real system `ld`), so this exact source only worked when rcc's
 //    native linker happened to bail out for some unrelated reason.
-//
+//  - obj.c/asm.c/codegen.c/elf_write.c: a custom section defaulted to
+//    ELF sh_addralign=1 (no constraint) regardless of what was placed in
+//    it -- the linker was then free to place the section at any file
+//    offset, e.g. one only 4-byte aligned, silently violating the
+//    natural 8-byte alignment every pointer/size_t-sized field inside
+//    `struct registry_entry` (or scrapscript's own GC object headers)
+//    requires. objfile_section_align() now raises the section's real
+//    sh_addralign to the max alignment any global (or explicit
+//    `.balign`/`.align`/`.p2align`) placed into it ever requested, and
+//    elf_write.c honors it both for the section's own file offset and
+//    its ELF section-header field.
+
 // Found via GCC c-testsuite's scrapscript upstream project, whose
 // generated runtime places a "const heap" marker object in a
 // `__attribute__((section("const_heap")))` global specifically so its
@@ -35,6 +46,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <string.h>
 struct registry_entry {
     int tag;
@@ -71,11 +83,28 @@ static const struct registry_entry e3 = { 3, "three" };
 // three globals above still get parsed, placed, and linked on every
 // platform), just skip the boundary-symbol-dependent runtime assertions
 // where nothing yet synthesizes them.
-#if !defined(__APPLE__)
+
 extern char __start_my_registry[];
 extern char __stop_my_registry[];
 
 int main(void) {
+    // Regression check: `struct registry_entry` contains a `const char *`
+    // field, so _Alignof(struct registry_entry) == 8 -- the custom
+    // section holding it must itself be at least 8-byte aligned
+    // (ELF sh_addralign), or the linker is free to place it at any file
+    // offset (rcc previously always emitted sh_addralign=1 for a
+    // section() global, regardless of what it held). A misaligned
+    // section here wouldn't necessarily crash this simple int/pointer
+    // struct, but it's exactly the bug that corrupted scrapscript's GC
+    // object headers (tagged pointers whose low 3 bits must be part of
+    // an 8-byte-aligned address) -- assert it explicitly so a regression
+    // is caught even when the misalignment happens not to crash.
+    if (((uintptr_t)__start_my_registry % _Alignof(struct registry_entry)) != 0) {
+        printf("__start_my_registry (%p) not %zu-byte aligned\n",
+               (void *)__start_my_registry, _Alignof(struct registry_entry));
+        return 5;
+    }
+
     long size = __stop_my_registry - __start_my_registry;
     long count = size / (long)sizeof(struct registry_entry);
     if (count != 3) {
@@ -115,11 +144,3 @@ int main(void) {
 
     return 0;
 }
-#else
-int main(void) {
-    (void)e1;
-    (void)e2;
-    (void)e3;
-    return 0;
-}
-#endif
