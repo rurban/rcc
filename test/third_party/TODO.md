@@ -1742,3 +1742,36 @@ identically without this change — unrelated); arm64 cross —
 `test_builtin_cpu_init` PASSes, C-testsuite 220/220, Torture 3599/3609
 with the same 6 pre-existing unrelated complex-number/imaginary-
 constant runtime failures documented above, 0 new failures.
+
+### Fixed (2026-08-09, continued — `-o` driver flag rejected the joined `-oFILE` form)
+
+- **`-o`'s argument was only ever accepted as a separate argv element**
+  (main.c) — every other rcc driver flag that takes a path argument
+  (`-I`, `-D`, `-U`, `-MF`, `-isystem`/`-iquote`/`-idirafter`) already
+  accepts both `-Xpath` (joined) and `-X path` (separate) via a
+  `strncmp` prefix check with an empty-remainder fallback to the next
+  argv; `-o` alone used a plain `!strcmp(argv[i], "-o")`, so a real
+  `-oFILE` invocation (no space — valid GCC/Clang syntax) fell through
+  to the generic "ignored unknown option" catch-all: both the flag and
+  its output path were silently discarded, and the compile proceeded
+  writing to whatever _other_ output rule applied instead of the
+  caller's chosen path.
+  → found via test_samba's waf-based configure: every "does this
+  construct compile" probe invokes `rcc ... test.c -c
+-o<hashed-tmpdir>/test.c.1.o`; each one silently produced no object
+  at the path waf checked for, cascading into bogus "header not
+  found"/"does not build" results throughout configure (including a
+  misleading "no such member" on `struct utsname`'s perfectly valid
+  `sysname` field, from the same broken `CHECK_CODE` probe).
+  Fixed by giving `-o` the exact same `strncmp`-prefix-with-fallback
+  handling every sibling path-argument flag already uses.
+
+New regression test: `test/test_opt_o_joined.c` — compiles with both
+`-oFILE` (joined) and `-o FILE` (separate), asserting the requested
+object file actually exists after each. Full suite verified: Torture
+3605/3609 (100% of non-skipped), Dg-error 34/34, Link 6/6, Unit tests
+all passing, 0 failed overall (native Linux x86-64).
+
+(test_samba itself still doesn't build end-to-end after this fix —
+waf's C-compiler bootstrap probe is only the first of many
+configure-time checks; not re-triaged further this session.)

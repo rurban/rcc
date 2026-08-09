@@ -454,12 +454,16 @@ int main(int argc, char **argv) {
             opt_time = true;
         } else if (!strcmp(argv[i], "-v")) {
             opt_v = true;
-        } else if (!strcmp(argv[i], "-o")) {
-            if (++i >= argc) {
-                fprintf(stderr, "error: missing argument for -o\n");
-                return 1;
+        } else if (!strncmp(argv[i], "-o", 2)) {
+            char *out = argv[i] + 2;
+            if (*out == '\0') {
+                if (++i >= argc) {
+                    fprintf(stderr, "error: missing argument for -o\n");
+                    return 1;
+                }
+                out = argv[i];
             }
-            out_path = argv[i];
+            out_path = out;
             opt_o = true;
             if (!strcmp(out_path, "-"))
                 opt_stdout = true;
