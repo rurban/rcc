@@ -1890,3 +1890,25 @@ Full suite verified: Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link 8/8 (incl. the new case), 0 failed overall (native Linux
 x86-64); confirmed clean (both new tests PASS) on the mingw and arm64
 cross targets.
+
+### Investigated: libarchive PPMd cluster (7zip/RAR/ZIP) — confirmed NOT an rcc bug
+
+The 6 remaining non-fuzz `test_libarchive` failures after the wide
+string alignment fix above — `test_read_format_7zip_ppmd`,
+`test_read_format_rar_compress_best`, `test_read_format_rar_multivolume`,
+`test_read_format_rar_ppmd_lzss_conversion`,
+`test_read_format_zip_ppmd_multi`(`_blockread`),
+`test_read_format_zip_ppmd_one_file`(`_blockread`),
+`test_read_format_zip_winzip_aes256_large_ppmd` — all fail with genuine
+PPMd arithmetic-decoder errors ("Invalid symbol", "Invalid PPMd
+sequence", "Invalid location to Huffman tree specified", "Truncated
+7z file data").
+
+**Confirmed pre-existing, not an rcc bug**: rebuilding `archive_ppmd7.c`/
+`archive_ppmd8.c` and `libarchive_test` with real `gcc` (not rcc)
+reproduces the identical failures against the same `.uu`-encoded
+reference archives. This checkout's PPMd-family test corpus is
+incompatible with (or the PPMd implementation itself has a pre-existing
+bug against) this specific libarchive 3.8.8 checkout, independent of
+which compiler builds it. Not investigated further — no rcc fix is
+possible or needed here; any fix belongs upstream in libarchive.
