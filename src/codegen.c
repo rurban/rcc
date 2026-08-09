@@ -13940,7 +13940,23 @@ struct ObjFile *codegen(Program *prog) {
         char *fn_label = fn->name;
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
-        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        // C99 inline semantics: a plain non-static, non-extern `inline`
+        // function has no external-linkage definition unless some other
+        // declaration in this TU forces one (has_noninline_decl/
+        // had_extern_decl). GNU89 inline semantics (real GCC's actual
+        // behavior, and what `__attribute__((gnu_inline))` explicitly
+        // opts into -- glibc/gperf's common `#ifdef __GNUC_STDC_INLINE__
+        // __attribute__((gnu_inline)) #endif` portability idiom) differ:
+        // a plain (non-extern) gnu_inline function DOES get an ordinary
+        // global-linkage definition -- only `extern inline` + gnu_inline
+        // (the declaration-only case, already special-cased earlier to
+        // skip body emission entirely) suppresses it. Missing this made
+        // e.g. gperf-generated hoedown_find_block_tag() in
+        // hoedown/src/html_blocks.c compile fine per-TU but emit as a
+        // local (non-.globl) symbol, leaving the final executable link
+        // with an unresolved reference despite every object file
+        // individually containing a full, correct definition.
+        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
         // A mangled asm_name (GNU nested function, or __asm__("name")
         // renaming) is already the exact final symbol text — used as-is,
         // matching how call sites resolve it (gen_funcall, codegen.c
@@ -14382,7 +14398,9 @@ struct ObjFile *codegen(Program *prog) {
         char *fn_label = fn->name;
         if (is_asm_reserved(fn->name))
             fn_label = format(".L_rcc_%s", fn->name);
-        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl);
+        // See the ARM64 fn_exported computation above for the GNU89
+        // gnu_inline rationale.
+        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
         const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
         size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {

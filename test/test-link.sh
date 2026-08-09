@@ -220,6 +220,42 @@ else
     printf '  %-44s SKIP (Linux/ELF-only)\n' "-rdynamic dlopen callback"
 fi
 
+# ---------------------------------------------------------------------------
+# 7. Plain (non-extern) GNU89 `inline` + `__attribute__((gnu_inline))`:
+#    a common glibc/gperf-generated-code portability idiom (`#ifdef
+#    __GNUC_STDC_INLINE__ __attribute__((gnu_inline)) #endif` right after
+#    an `inline` function definition, forcing GNU89 semantics regardless
+#    of the C99/C11 __GNUC_STDC_INLINE__ predefine) must still emit an
+#    ordinary global-linkage definition -- only `extern inline` +
+#    gnu_inline (a declaration-only stub) suppresses one. rcc's fn_exported
+#    computation implemented plain C99 inline linkage unconditionally,
+#    ignoring gnu_inline except in the already-handled extern+gnu_inline
+#    case, so a plain gnu_inline function's body compiled fine per-TU but
+#    was emitted as a local (non-.globl) symbol -- invisible to any other
+#    translation unit, exactly the shape of hoedown's gperf-generated
+#    html_blocks.c: html_blocks.o built without error, but the final
+#    executable link failed with an undefined reference.
+# ---------------------------------------------------------------------------
+cat > "$TMP/gi_def.c" <<'EOF'
+__inline
+#ifdef __GNUC_STDC_INLINE__
+__attribute__((__gnu_inline__))
+#endif
+int gnu_inline_answer(void) { return 42; }
+EOF
+cat > "$TMP/gi_main.c" <<'EOF'
+int gnu_inline_answer(void);
+int main(void) { return gnu_inline_answer() == 42 ? 0 : 1; }
+EOF
+if "$RCC" -c "$TMP/gi_def.c" -o "$TMP/gi_def.o" 2>"$TMP/e7" \
+    && "$RCC" -c "$TMP/gi_main.c" -o "$TMP/gi_main.o" 2>>"$TMP/e7" \
+    && "$RCC" "$TMP/gi_def.o" "$TMP/gi_main.o" -o "$TMP/giprog" 2>>"$TMP/e7" \
+    && "$TMP/giprog"; then
+    pass "plain gnu_inline function export (2-TU link)"
+else
+    fail "plain gnu_inline function export (2-TU link)" "$(tr '\n' ' ' < "$TMP/e7")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
