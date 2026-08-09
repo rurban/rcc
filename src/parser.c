@@ -206,7 +206,7 @@ static char *pending_cleanup_func;
 static Token *pending_cleanup_tok;
 static bool pending_constructor;
 static bool pending_destructor;
-static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
+static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI, 5=TI
 static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
@@ -1944,6 +1944,8 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                             pending_mode = 3;
                         else if (equalc(tok, "DI"))
                             pending_mode = 4;
+                        else if (equalc(tok, "TI"))
+                            pending_mode = 5;
                         tok = tok->next;
                     }
                     tok = skip(tok, ")");
@@ -3051,16 +3053,48 @@ static Type *make_vector_type(Type *elem, int total_size) {
     return ty;
 }
 
-static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
-    int decl_align = 0;
-    tok = read_type_attrs(tok, &decl_align, NULL);
-    if (pending_mode) {
+// Apply a pending GCC __attribute__((mode(...))) to `ty`, resetting the
+// global pending_mode flag. Must be called from every declarator() exit
+// path that can have consumed a mode() attribute -- read_type_attrs() can
+// set pending_mode from EITHER a leading position (`int
+// __attribute__((mode(DI))) x;`, checked at declarator()'s entry) OR a
+// trailing one right after the identifier (`typedef unsigned long
+// mp_word __attribute__((mode(TI)));`, GCC's own and libtommath's actual
+// convention). Only the entry-point call site used to consume it: a
+// trailing-position mode() was parsed (setting pending_mode as a side
+// effect) but never applied to `ty` in THIS declarator() call, so the
+// flag leaked, global and unreset, into whatever declarator() ran next --
+// silently resizing/retyping an unrelated, unattributed declaration
+// instead of the one that actually carried the attribute.
+static Type *apply_pending_mode(Type *ty) {
+    if (!pending_mode) return ty;
+    if (pending_mode == 5) {
+        // TI (128-bit): unlike QI/HI/SI/DI, this can't be handled by just
+        // resizing a copy of `ty` -- codegen dispatches 128-bit
+        // arithmetic on Type::kind == TY_INT128, not on size alone, so a
+        // copy that merely grew to size=16 while keeping e.g. TY_LONG's
+        // kind would still get 8-byte instructions/registers, silently
+        // truncating every operation instead of erroring. Route through
+        // the real, already-correct ty_int128/ty_uint128 singletons
+        // instead, preserving the base type's own signedness (e.g.
+        // libtommath's `typedef unsigned long mp_word
+        // __attribute__((mode(TI)));` must become unsigned __int128, not
+        // signed).
+        ty = ty->is_unsigned ? ty_uint128 : ty_int128;
+    } else {
         ty = copy_type(ty);
         int sizes[] = {0, 1, 2, 4, 8};
         ty->size = sizes[pending_mode];
         ty->align = ty->size;
-        pending_mode = 0;
     }
+    pending_mode = 0;
+    return ty;
+}
+
+static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
+    int decl_align = 0;
+    tok = read_type_attrs(tok, &decl_align, NULL);
+    ty = apply_pending_mode(ty);
     while (equalc(tok, "*")) {
         ty = pointer_to(ty);
         tok = tok->next;
@@ -3105,6 +3139,20 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
                 depth--;
             after_paren = after_paren->next;
         }
+        // An unclosed '(' — the loop above ran out of tokens (hit TK_EOF)
+        // before depth returned to 0. `start` (this declarator's would-be
+        // inner token, passed to the recursive declarator() call below)
+        // can then legitimately BE that terminal TK_EOF token, whose own
+        // `->next` is NULL (the lexer's genuine end-of-list sentinel,
+        // never explicitly linked further) -- the recursive call's own
+        // `tok->next` dereference two lines into declarator() then reads
+        // that NULL, and the resulting NULL token flows unchecked into
+        // skip_attributes()/read_type_attrs(), which dereferences
+        // `tok->kw` and segfaults. A lone '(' with nothing to close it is
+        // a genuine syntax error; diagnose it here instead of recursing
+        // into a token stream that has already run out.
+        if (depth > 0)
+            error_tok(tok, "expected ')'");
         tok = after_paren;
         Type *suffixed = type_suffix(&tok, tok, ty, NULL);
         *rest = tok;
@@ -3141,6 +3189,7 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     if (tok->kind != TK_IDENT) {
         if (name)
             *name = NULL;
+        ty = apply_pending_mode(ty);
         ty = type_suffix(rest, tok, ty, NULL);
         if (pending_vector_size) {
             ty = make_vector_type(ty, pending_vector_size);
@@ -3155,6 +3204,7 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     tok = tok->next;
     VarAttr trail_attr = {};
     tok = read_type_attrs(tok, &decl_align, &trail_attr);
+    ty = apply_pending_mode(ty);
     if (trail_attr.is_transparent_union)
         pending_transparent_union = true;
     ty = type_suffix(rest, tok, ty, decl_name);
@@ -4642,13 +4692,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         // mode(SI) etc. adjusts the ELEMENT type and must be folded in before
         // the vector is built, or declarator()'s pending_mode handling would
         // shrink the whole vector to the element size.
-        if (pending_mode) {
-            ty = copy_type(ty);
-            int sizes[] = {0, 1, 2, 4, 8};
-            ty->size = sizes[pending_mode];
-            ty->align = ty->size;
-            pending_mode = 0;
-        }
+        ty = apply_pending_mode(ty);
         ty = make_vector_type(ty, pending_vector_size);
         pending_vector_size = 0;
     }
@@ -5265,6 +5309,25 @@ static int count_array_initializer(Token **rest, Token *tok, Type *elem_ty) {
 static Type *infer_array_type(Type *ty, Token *tok) {
     if (!ty || ty->kind != TY_ARRAY || ty->size != 0)
         return ty;
+    // Only a character/wide-character ARRAY ELEMENT is ever sized by a
+    // string literal's own length (C11 6.7.9p14). An array of TY_PTR
+    // (e.g. `const char *arr[] = { "vec_" }`, a ONE-element array of
+    // pointers, each pointer-initialized FROM a string literal) has
+    // nothing to do with 6.7.9p14 and must fall through to
+    // count_array_initializer()'s per-element count instead. Mirrors
+    // global_init_one()'s own scalarish_base guard further below in
+    // this file, which excludes the same TY_ARRAY/TY_STRUCT/TY_UNION/
+    // TY_PTR kinds for the identical reason (TY_CHAR alone would be too
+    // narrow -- it would also wrongly exclude a wide-char array, whose
+    // base kind is an ordinary integer type like TY_SHORT/TY_INT, not
+    // TY_CHAR). Missing this guard let `const char *arr[] = { "vec_" }`
+    // get sized as strlen("vec_")+1 == 5 elements instead of the
+    // correct 1 (found via flatcc's fb_reserved_kw_vec_prefixes[] = {
+    // "vec_" }: the resulting 4 phantom trailing elements walked into
+    // adjacent .rodata/unmapped memory and crashed on garbage passed
+    // to strlen()).
+    bool scalarish_base = ty->base->kind != TY_ARRAY && ty->base->kind != TY_STRUCT &&
+        ty->base->kind != TY_UNION && ty->base->kind != TY_PTR;
     // "{ STRLIT }" / "{ STRLIT, }" is a superfluous-but-legal single-element
     // brace around a string literal (C11 6.7.9p14) — exactly equivalent to
     // the bare STRLIT form handled just below. Unwrap it first so the size
@@ -5273,13 +5336,13 @@ static Type *infer_array_type(Type *ty, Token *tok) {
     // see one initializer-list element and infer length 1 — global_init_one()
     // below already unwraps this same shape before writing the actual
     // bytes; this function must agree on the array's size).
-    if (equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
+    if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
         Token *after = tok->next->next;
         if (equalc(after, ",")) after = after->next;
         if (equalc(after, "}"))
             tok = tok->next; // unwrap: point straight at the string literal
     }
-    if (tok->kind == TK_STR) {
+    if (scalarish_base && tok->kind == TK_STR) {
         if (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')
             return array_of(ty->base, tok->len + 1);
         // For wide strings, count UTF-8 characters (each becomes one wchar)
@@ -11840,6 +11903,21 @@ Program *parse(Token *tok) {
                            "  }"
                            "  return 0;"
                            "}"
+                           // __builtin_cpu_init(): real GCC/clang's companion
+                           // builtin, called once before any
+                           // __builtin_cpu_supports() checks to lazily
+                           // populate libgcc's own static __cpu_model cache
+                           // (e.g. libucl's bundled mum.h: `if
+                           // (!avx2_support) { __builtin_cpu_init();
+                           // avx2_support = __builtin_cpu_supports("avx2") ?
+                           // 1 : -1; }`). __rcc_cpu_supports above has no
+                           // such cache -- it re-queries cpuid directly on
+                           // every call -- so this is a true no-op stub; it
+                           // exists purely so the call site links instead of
+                           // leaving an undefined reference to
+                           // '__builtin_cpu_init'.
+                           "static __inline__ __attribute__((__always_inline__, __unused__)) "
+                           "void __rcc_cpu_init(void) {}"
 #endif
     );
     current_input = saved_input;

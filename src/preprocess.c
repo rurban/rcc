@@ -699,7 +699,25 @@ static SplicedInput splice_lines_with_counts(char *input) {
     int j = 0, line_idx = 0, count = 1;
     // codeql[cpp/loop-variable-changed]: deliberate i++ to also consume the '\\n' continuation's newline as one spliced unit
     for (int i = 0; i < len; i++) {
-        if (input[i] == '\\' && input[i + 1] == '\n') {
+        // A line-continuation backslash immediately followed by a CRLF
+        // pair (not just bare LF) must splice too -- a CRLF-terminated
+        // source file (common on Windows-authored third-party sources,
+        // e.g. unqlite.c) left the '\r' sitting between the backslash and
+        // the '\n' this check alone was matching, so it silently never
+        // fired: the backslash stayed as literal text right before the
+        // physical newline, terminating the #define after only its first
+        // line and leaving the rest of the macro body to be mis-lexed as
+        // fresh top-level C ("type defaults to int" / "expected specific
+        // operator" on the orphaned `ptr->member = ...;` continuation
+        // lines). A stray '\r' immediately before an ordinary (non-
+        // continuation) '\n' elsewhere is harmless -- it falls through to
+        // the plain copy below and the lexer already treats it as
+        // whitespace -- so only the continuation match itself needs
+        // widening, not a general CRLF-to-LF normalization pass.
+        if (input[i] == '\\' && input[i + 1] == '\r' && input[i + 2] == '\n') {
+            i += 2;
+            count++;
+        } else if (input[i] == '\\' && input[i + 1] == '\n') {
             i++;
             count++;
         } else {
@@ -3132,6 +3150,17 @@ Token *preprocess(char *filename, char *p) {
         // via parser.c's synthetic prelude (see parse()'s x86-64 branch),
         // doing the actual CPUID query.
         define_pre("__builtin_cpu_supports", "__rcc_cpu_supports");
+        // __builtin_cpu_init(): real GCC/clang's companion builtin, called
+        // once before any __builtin_cpu_supports() checks to lazily
+        // populate libgcc's own static __cpu_model cache (e.g. libucl's
+        // bundled mum.h: `if (!avx2_support) { __builtin_cpu_init();
+        // avx2_support = __builtin_cpu_supports("avx2") ? 1 : -1; }`).
+        // __rcc_cpu_supports above has no such cache -- it re-queries
+        // cpuid directly on every call -- so __rcc_cpu_init (parser.c
+        // prelude, same x86-64 branch) is a true no-op stub; it exists
+        // purely so the call site links instead of leaving an undefined
+        // reference to '__builtin_cpu_init'.
+        define_pre("__builtin_cpu_init", "__rcc_cpu_init");
 #endif
 #ifdef _WIN32
         define_pre("isinf", "__builtin_isinf");
