@@ -210,6 +210,7 @@ static int pending_mode; // 0=none, 1=QI, 2=HI, 3=SI, 4=DI
 static int pending_vector_size; // GCC __attribute__((vector_size(N))): total bytes, 0=none
 static char *pending_asm_name;
 static char *pending_alias_target;
+static char *pending_section_name;
 static char *pending_target_attr; // __attribute__((target("...")))
 static char **pending_target_clones; // __attribute__((target_clones(...)))
 static int pending_target_clones_n;
@@ -1779,6 +1780,29 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         target[len] = '\0';
                         pending_alias_target = str_intern(target, len);
                         free(target);
+                    }
+                    tok = tok->next;
+                    tok = skip(tok, ")");
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "section") || equalc(tok, "__section__")) {
+                    tok = tok->next;
+                    tok = skip(tok, "(");
+                    if (tok->kind == TK_STR) {
+                        int len = tok->len;
+                        if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
+                            len -= 2;
+                        char *name = malloc(len + 1);
+                        if (len >= 2 && (tok->str[0] == '"' || tok->str[0] == '\''))
+                            memcpy(name, tok->str + 1, len);
+                        else
+                            memcpy(name, tok->str, len + 1);
+                        name[len] = '\0';
+                        pending_section_name = str_intern(name, len);
+                        free(name);
                     }
                     tok = tok->next;
                     tok = skip(tok, ")");
@@ -3703,6 +3727,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         pending_destructor = false;
         pending_asm_name = NULL;
         pending_alias_target = NULL;
+        pending_section_name = NULL;
         // C11 _Static_assert / C23 static_assert inside struct/union body
         if (equalc(tok, "_Static_assert") || equalc(tok, "static_assert")) {
             Token *st = tok;
@@ -6480,6 +6505,7 @@ static Node *declaration(Token **rest, Token *tok) {
     pending_destructor = false;
     pending_asm_name = NULL;
     pending_alias_target = NULL;
+    pending_section_name = NULL;
     if (pending_target_clones) {
         free(pending_target_clones);
         pending_target_clones = NULL;
@@ -6985,6 +7011,7 @@ static Node *declaration(Token **rest, Token *tok) {
 
     pending_asm_name = NULL;
     pending_alias_target = NULL;
+    pending_section_name = NULL;
     *rest = skip(tok, ";");
     return head.next ? head.next : new_node(ND_NULL, tok);
 }
@@ -11860,6 +11887,7 @@ Program *parse(Token *tok) {
         fn_uses_vla = false;
         pending_asm_name = NULL;
         pending_alias_target = NULL;
+        pending_section_name = NULL;
         pending_constructor = false;
         pending_destructor = false;
         pending_cleanup_func = NULL;
@@ -12390,6 +12418,7 @@ Program *parse(Token *tok) {
                     pending_weak = false;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
+                    pending_section_name = NULL;
                     fn->target_clones = pending_target_clones;
                     fn->n_target_clones = pending_target_clones_n;
                     fn->target_attr = pending_target_attr;
@@ -12435,6 +12464,7 @@ Program *parse(Token *tok) {
                 if (equalc(tok, ";")) {
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
+                    pending_section_name = NULL;
                     tok = tok->next;
                     // Prototype only (no body): undo the tentative
                     // function-scope state set up above (parser_current_fn,
@@ -12568,8 +12598,11 @@ Program *parse(Token *tok) {
                     }
                     if (pending_alias_target)
                         var->alias_target = pending_alias_target;
+                    if (pending_section_name)
+                        var->section_name = pending_section_name;
                     pending_asm_name = NULL;
                     pending_alias_target = NULL;
+                    pending_section_name = NULL;
                     if (equalc(tok, "=")) {
                         // C23 6.7.1p6: a 'constexpr' object of integer type
                         // needs an integer constant expression initializer;

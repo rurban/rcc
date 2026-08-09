@@ -28,7 +28,14 @@ static void cg_set_section(int sec) {
     case SEC_FINI_ARRAY: cg_sec = &cg_obj->fini_array; break;
     case SEC_TDATA: cg_sec = &cg_obj->data_tls; break;
     case SEC_THREAD_VARS: cg_sec = &cg_obj->thread_vars; break;
-    default: cg_sec = &cg_obj->text; break;
+    default: {
+        // A custom section id (>= SEC_NUM, e.g. a global with
+        // __attribute__((section("name")))) has its own growable SecBuf
+        // in obj->extra_secs rather than one of the fixed fields above.
+        SecBuf *custom = objfile_section_buf(cg_obj, sec);
+        cg_sec = custom ? custom : &cg_obj->text;
+        break;
+    }
     }
 }
 
@@ -13143,7 +13150,20 @@ struct ObjFile *codegen(Program *prog) {
             emitted_syms[emitted_count++] = (char *)canon;
             bool reserved = !var->asm_name && is_asm_reserved(var->name);
             char *safe_label = reserved ? format(".L_rcc_%s", var->name) : label;
-            int is_bss = (!var->init_data && !var->relocs && !var->has_init) && !var->is_tls;
+            int is_bss = (!var->init_data && !var->relocs && !var->has_init) && !var->is_tls && !var->section_name;
+            // __attribute__((section("name"))): place this global's data
+            // in its own custom section instead of .data, so the linker's
+            // __start_<name>/__stop_<name> boundary-symbol synthesis has
+            // something to bracket. Always routed through the "has data"
+            // path above (never BSS) even for a zero-initialized section()
+            // global -- a named section commonly holds a single marker
+            // object deliberately kept out of ordinary .bss/.data, and real
+            // GNU ld's own PROGBITS-vs-NOBITS choice for it isn't something
+            // this narrower feature needs to replicate.
+            int data_sec = var->section_name
+                ? objfile_find_or_add_section(cg_obj, var->section_name,
+                                              SHF_ALLOC | (ty_const(var->ty) ? 0 : SHF_WRITE), 0)
+                : (var->is_tls ? SEC_TDATA : SEC_DATA);
             const char *sym_name_str = asm_sym_name(sym_name(safe_label)); // .balign %d
             if (is_bss) {
                 size_t align = var->ty->align > 1 ? var->ty->align : 1;
@@ -13159,7 +13179,7 @@ struct ObjFile *codegen(Program *prog) {
                     objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // .globl %s
                 cg_obj->bss_size += var->ty->size;
             } else {
-                cg_set_section(var->is_tls ? SEC_TDATA : SEC_DATA);
+                cg_set_section(data_sec);
                 secbuf_align(cg_sec, var->ty->align > 1 ? var->ty->align : 1);
 #ifdef __APPLE__
                 // Apple ARM64: ensure at least 8-byte alignment for data symbols
@@ -13199,12 +13219,12 @@ struct ObjFile *codegen(Program *prog) {
 #endif
                 {
                     if (!var->is_static)
-                        objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                        objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
                     else
-                        objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                        objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
                     cg_label_ht_add(sym_name_str, off);
                     if (reserved)
-                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_DATA, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
+                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), data_sec, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
                 }
                 if (var->is_tls && !var->has_init && !var->init_data && !var->relocs) {
                     for (int _zi = 0; _zi < var->ty->size; _zi++) secbuf_emit8(cg_sec, 0);
@@ -13225,7 +13245,7 @@ struct ObjFile *codegen(Program *prog) {
                             // end of the function-body loop below).
                             for (int zi = 0; zi < rel->size; zi++)
                                 secbuf_emit8(cg_sec, 0);
-                            queue_label_diff_patch(var->is_tls ? SEC_TDATA : SEC_DATA, rel_off,
+                            queue_label_diff_patch(data_sec, rel_off,
                                                    rel->label, rel->label2, var->decl_fn_name, rel->size);
                             pos += rel->size;
                             continue;
@@ -13256,9 +13276,9 @@ struct ObjFile *codegen(Program *prog) {
                                                    is_local_label ? SEC_TEXT : SEC_UNDEF, 0, 0,
                                                    is_local_label ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
 #ifdef ARCH_ARM64
-                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
+                        objfile_add_reloc(cg_obj, data_sec, rel_off, sidx, R_AARCH64_ABS64, (int64_t)rel->addend);
 #else
-                        objfile_add_reloc(cg_obj, SEC_DATA, rel_off, sidx, R_X86_64_64, (int64_t)rel->addend);
+                        objfile_add_reloc(cg_obj, data_sec, rel_off, sidx, R_X86_64_64, (int64_t)rel->addend);
 #endif
                         pos += 8;
                     }

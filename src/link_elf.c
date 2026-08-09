@@ -1548,6 +1548,38 @@ int link_elf(LinkState *s) {
         }
     }
 
+    // Synthesize __start_<name>/__stop_<name> boundary symbols for any
+    // section whose name is a valid C identifier -- matches real GNU ld's
+    // automatic behavior (ld.bfd/ld.gold/lld all do this), used by source
+    // like `extern char __start_foo[]; extern char __stop_foo[];`
+    // bracketing data placed via `__attribute__((section("foo")))` (e.g.
+    // a GC's "const heap" boundary markers, a linker-collected registry
+    // array). All objects are already loaded at this point (link_elf()
+    // is only reached after every link_load_object() call in rcc_link()
+    // returns), so `sec->len` is final -- no later pass grows a
+    // user-object-derived section's *file* content further, only the
+    // handful of backend-created sections (.dynstr etc.) referenced by
+    // name explicitly below, never through this generic name match.
+    for (int i = 0; i < s->n_syms; i++) {
+        LinkSym *sym = &s->syms[i];
+        if (sym->sec >= 0 || !sym->name) continue;
+        bool is_start = !strncmp(sym->name, "__start_", 8);
+        bool is_stop = !is_start && !strncmp(sym->name, "__stop_", 7);
+        if (!is_start && !is_stop) continue;
+        const char *secname = sym->name + (is_start ? 8 : 7);
+        if (!*secname) continue;
+        int target = -1;
+        for (int j = 0; j < s->n_secs; j++) {
+            if (!strcmp(s->secs[j].name, secname)) {
+                target = j;
+                break;
+            }
+        }
+        if (target < 0) continue;
+        sym->sec = target;
+        sym->value = is_start ? 0 : s->secs[target].len;
+        sym->resolved = true;
+    }
     // Identify unresolved undefined symbols (excluding weak refs).
     int n_dyn = 0;
     int cap_dyn = 0;

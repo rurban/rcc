@@ -404,15 +404,13 @@ struct LVar {
     char *name;
     char *asm_name; // Assembly-level name (for static locals)
     char *alias_target; // __attribute__((alias("target")))
+    char *section_name; // __attribute__((section("name")))
     int offset;
     Type *ty;
     bool is_local;
     bool is_extern;
     bool is_function;
-    bool is_nested_fn; // this LVar's is_function target is a GNU nested
-    // function (Function.is_nested); a direct call through it needs a
-    // static-chain value (see Node.chain_depth) loaded into the chain
-    // register before the call — see codegen.c's call-site handling.
+    bool is_nested_fn;
     bool is_static; // static local variable
     bool is_inline;
     bool is_weak;

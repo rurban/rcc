@@ -688,26 +688,26 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 
 ## rc=1 — Runtime Failures (builds OK, test fails)
 
-| test             | symptom                                                                                                                                                                                                                  |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                                                                                                                                                                          |
-| test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly) |
-| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                |
-| test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                         |
-| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                  |
-| test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                    |
-| test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                       |
-| test_glib        | —                                                                                                                                                                                                                        |
-| test_got         | configure: missing libbsd-overlay                                                                                                                                                                                        |
-| test_ksh93       | —                                                                                                                                                                                                                        |
-| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                        |
-| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                   |
-| test_neovim      | —                                                                                                                                                                                                                        |
-| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                   |
-| test_rsync       | —                                                                                                                                                                                                                        |
-| test_samba       | —                                                                                                                                                                                                                        |
-| test_scrapscript | rcc compile fails (exit 1) during Python test harness                                                                                                                                                                    |
-| test_tcpdump     | —                                                                                                                                                                                                                        |
+| test             | symptom                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| test_lua         | db.lua:83 assertion: debug.getinfo(f).short_src                                                                                                                                                                                                                                                                                                                                                             |
+| test_mruby       | **fixed** — was: assignment-expr-as-lvalue bug + missing `erf`/`erfc` declarations, see "Fixed (2026-08-08, continued — ...)" sections above; `Total: 1686, OK: 1677, KO: 0, Crash: 0` (matches gcc-built mruby exactly)                                                                                                                                                                                    |
+| test_curl        | **fixed** — was: configure "compiler does not halt on prototype mismatch"                                                                                                                                                                                                                                                                                                                                   |
+| test_c23doku     | needs arbitrary-precision `_BitInt` codegen (up to 11163 bits) — see "Needs fixing" item 1 below                                                                                                                                                                                                                                                                                                            |
+| test_c3          | CMake: missing LLD_COFF                                                                                                                                                                                                                                                                                                                                                                                     |
+| test_coremarkpro | benchmark runner can't find perf logs                                                                                                                                                                                                                                                                                                                                                                       |
+| test_box3d       | C++ binary (g++ compiled, not rcc)                                                                                                                                                                                                                                                                                                                                                                          |
+| test_glib        | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                           |
+| test_ksh93       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                                                                                                                                                                                                           |
+| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                                                                                                                                      |
+| test_neovim      | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                                                                                                                                                                                                      |
+| test_rsync       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_samba       | —                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_scrapscript | **partially fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix below resolves that entirely (32/33 -> 17/33 failing). Remaining 17 are runtime `SIGABRT`s (an `assert()`/`abort()` firing very early in `scrap_main()`, before any output) in a different, unrelated part of the compiled runtime — not investigated this session |
+| test_tcpdump     | —                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ---
 
@@ -1333,3 +1333,97 @@ behind it (`00204.c`) was still genuinely failing for an unrelated
 reason — see "Fixed rcc bug: ARM64 `stur`/`ldur` frame-offset immediate
 overflow" above for the real root cause and fix. `00204.c` now passes
 byte-for-byte at both `-O0` and `-O1`.
+
+### Fixed rcc bug: `__attribute__((section("name")))` on a global was silently unparsed
+
+`read_type_attrs()` had no case at all for the `section`/`__section__`
+GCC attribute — it fell through to the generic "unrecognized attribute,
+skip its parenthesized argument" path, so a global declared with a
+`section("name")` attribute landed in the ordinary `.data`/`.rodata`/
+`.bss` like any other global, never in a section literally named
+`"name"`. Any code relying on the common linker-collected-array idiom
+(`extern char __start_name[]; extern char __stop_name[];` — real GNU
+ld automatically synthesizes those two symbols for any section whose
+name is a valid C identifier, bracketing every input object's
+contribution to it) failed at link time with "undefined reference to
+`\_\_start_name'": nothing had ever created a section by that name for
+the linker to synthesize boundaries around.
+
+Fixed in three places:
+
+- **parser.c** — `read_type_attrs()` now recognizes `section("name")`/
+  `__section__("name")` (mirroring the existing `alias("target")`
+  parsing exactly) and threads the name through a new
+  `pending_section_name` (matching `pending_alias_target`'s own
+  set-at-parse/consume-at-declaration/reset-at-every-declaration-
+  boundary pattern) onto the declared global's new `LVar::section_name`
+  field.
+- **codegen.c** — a global with a non-NULL `section_name` is now routed
+  to a custom ELF section via the existing (previously inline-asm-only)
+  `objfile_find_or_add_section()`, with `SHF_ALLOC` (plus `SHF_WRITE`
+  unless the variable is `const`-qualified) instead of the default
+  `.data`/`.bss`/`.rodata` placement — always through the "has
+  initializer data" emission path, even for a zero-initialized
+  section() global, since a named section is virtually always a
+  single deliberately-isolated marker object, not a candidate for the
+  NOBITS/BSS space optimization. Separately, `cg_set_section()`'s
+  `default:` case for any section id ≥ `SEC_NUM` (a custom section)
+  was silently defaulting to `.text` instead of resolving the section's
+  own growable buffer — a latent bug independent of this feature
+  (nothing previously routed a _global variable's data_ through a
+  custom section id at all, only inline-asm's own already-section-aware
+  emission path) that would have silently corrupted `.text` with
+  strayed variable bytes the moment anything did.
+- **link_elf.c** — rcc's own native ELF linker now synthesizes
+  `__start_<name>`/`__stop_<name>` for any section whose name is a
+  valid C identifier, matching real GNU ld, inserted right before the
+  existing "identify unresolved undefined symbols" pass (all input
+  objects are already loaded by this point, so every named section's
+  final size is already known — no second, post-layout pass needed).
+  Previously only the GCC/external-linker fallback path could resolve
+  such a reference at all (via the real system `ld`), so source using
+  this idiom only worked when rcc's native linker happened to bail out
+  to that fallback for some unrelated reason.
+
+→ found via GCC c-testsuite's `00204.c` investigation surfacing the
+underlying rcc-arm64 struct-return-ABI TODO item as already fixed (see
+above); chasing `00204.c`'s own remaining SIGSEGV (the real, unrelated
+`stur`/`ldur` bug documented above) led to picking the next open TODO
+item, `test_scrapscript`'s "rcc compile fails (exit 1) during Python
+test harness" — which turned out to actually be a **link** failure
+(`undefined reference to '__start_const_heap'`/`'__stop_const_heap'`)
+from scrapscript's own runtime GC placing a "const heap" boundary
+marker via `__attribute__((section("const_heap")))`, specifically so
+`in_const_heap()` can tell a constant, pre-allocated object apart from
+one living in the mutable GC heap.
+
+**Note**: while isolating a regression test for this fix, also found a
+separate, pre-existing, unrelated native-linker gap — any use of
+`fprintf(stderr, ...)` (confirmed with a three-line minimal repro, no
+`section()` involved at all) makes `rcc_link()`'s native ELF linker
+return -1 and silently fall back to the GCC/system-`ld` path. Not
+investigated further this session (the fallback itself works
+correctly, and this session's own regression test avoids the trigger
+by using `printf` instead so it still exercises the native-linker path
+being fixed here) — worth a future session's attention since it's
+presumably a very common pattern to trip over.
+
+New regression test: `test/test_attribute_section.c` — three
+separately-declared `section("name")`/`__section__("name")` globals
+(exercising both spellings), verifying `__stop_name - __start_name`
+correctly brackets all three contiguous entries (not just a single
+lone marker), every entry's data is intact and in the right place, and
+an ordinary global with no `section` attribute is unaffected. Compiles
+and links via rcc's own native linker on both x86-64 and arm64 Linux
+(confirmed by the _absence_ of an `RCC_LINK_DEBUG=1` fallback
+message — a stronger check than merely "the program produces the
+right answer somehow", which the GCC-fallback path alone could also
+satisfy) and via mingw cross (through mingw's own `ld`, which supports
+the identical `__start_`/`__stop_` PE-COFF convention).
+**Full suite verified after the fix**: native Linux x86-64 — Torture
+3605/3609 (100% non-skipped) 0 failed, Dg-error 34/34, Link 5/5, 0
+failed overall; arm64 cross — c-testsuite 220/220, Torture 3599/3609
+(6 pre-existing unrelated runtime failures, unchanged from the
+`stur`/`ldur` fix above), Dg-error 34/34, 0 new failures; mingw
+cross — Torture 3574/3578 (100% non-skipped) 0 failed, Dg-error 34/34,
+0 failed overall.
