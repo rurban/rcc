@@ -2558,3 +2558,73 @@ time this project has ever reached it; `alias`/`append` pass cleanly,
 `arith.sh` surfaces one further, unrelated lead (`cos*cos + sin*sin >
 1.01`, a floating-point precision question, not yet root-caused) —
 left for a future session rather than expanding this one's scope.
+
+### Fixed (2026-08-10, continued — ARM64 long double return value)
+
+While cross-checking the earlier x86-64 `long double` ABI fix (see
+"Fixed (2026-08-10, register-spill/locals-collision session)" test
+file above) against the arm64 cross target, `test_long_double_abi`
+SIGABRTed under qemu-aarch64 even though the x86-64-side bugs it
+targets don't apply to AAPCS64's classification at all. Two more,
+independent ARM64-only bugs (codegen.c), the mirror image of the
+x86-64 ST0/XMM0 gap fixed above:
+
+- **`gen_funcall`'s post-call return-value read treated a `long
+double`-returning call exactly like a plain `double` one** — a bare
+  `fmov x{r}, d0`. AAPCS64 returns `long double` as a genuine 128-bit
+  binary128 quad in v0, not a value narrowed into d0's low 64 bits;
+  reading only d0 silently reinterpreted binary128's mantissa/exponent
+  layout as binary64 garbage (confirmed via a 4-line
+  `fabsl(-2.5L)` repro compiled and disassembled directly: the callee's
+  real quad result in v0/q0 was there, but the caller only ever read
+  d0). Fixed by narrowing the quad via libgcc's `__trunctfdf2` (the
+  same routine `ND_VA_ARG`'s existing long-double narrowing already
+  uses) before treating the result as an ordinary double.
+- **A function's own `return` statement had the same bug in reverse**,
+  for both flonum-to-long-double and integer-to-long-double returns
+  (`long double f(long double x) { return x; }` and `long double
+g(int n) { return n; }`): the value was placed directly in d0 (a
+  plain double) instead of being widened onto the full v0 quad via
+  libgcc's `__extenddftf2` (the same routine the argument pre-pass in
+  `gen_funcall` already uses) — the caller's `fmov x{r}, d0`
+  return-value read (previous bug, once fixed) would then narrow back
+  down from an un-widened, garbage upper half.
+
+ARM64's argument classification and prologue parameter loading already
+handled `long double` correctly (a dedicated HFA/long-double path
+independent of the ordinary float classification) — only the two
+return-value sites above had the gap.
+
+**Apple ARM64 correction (caught by CI, not local testing)**: the
+first push of this fix unconditionally applied both `__trunctfdf2`/
+`__extenddftf2` calls under `#ifdef ARCH_ARM64`, which broke macOS
+CI's `test (macos-latest)` job (Torture regressed on `930622-2`,
+`conversion`, and 3 others — the exact long-double tests this fix
+targets). Root cause: Apple's arm64 ABI defines `long double` as
+_identical_ to `double` (see `type.c`'s `ty_ldouble`: `size=8` under
+`__APPLE__` vs `size=16` everywhere else) — Darwin has no 128-bit
+binary128 `long double` at all, so there is no widen/narrow step to
+do, and calling `__trunctfdf2`/`__extenddftf2` on an already-plain-
+double value corrupted it. Both call sites are now further guarded
+`#ifndef __APPLE__` (Linux ARM64 only); this repo has no local Darwin
+cross-toolchain to test-compile against directly (only mingw and
+Linux/arm64 cross are supported per this project's conventions), so
+the fix was verified via `gcc -D__APPLE__ -DARCH_ARM64 -fsyntax-only`
+(confirms the guarded block reduces to a no-op, restoring the
+pre-existing — already-correct — Apple codegen path exactly) plus
+CI's own macOS job on the follow-up push.
+
+Extended the existing `test/test_long_double_abi.c` (previously
+SysV-x86-64-only in scope) to also run on Linux/arm64 — it already had
+no arm64 guard in `main()`, so once both bugs above were fixed it
+passed unmodified; only its header comment was extended to document
+the two ARM64 bugs alongside the four x86-64 ones. Full suite verified
+clean on all three targets: native Linux x86-64 (TCC 118/118, Unit
+tests 209/209, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609
+— 100% of non-skipped, Dg-error 34/34, Link tests 7/7, 0 failed
+overall), mingw cross (`test_long_double_abi` cleanly skips via its
+existing `_WIN32` guard — Win64's long-double-by-hidden-pointer ABI
+remains a separate, out-of-scope gap, see above), and arm64 cross
+(Torture 3599/3609 — 6 pre-existing, unrelated complex-number/
+imaginary-constant failures documented above, unaffected by this fix;
+`test_long_double_abi` now passes where it previously SIGABRTed).

@@ -1925,10 +1925,24 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         arg_gp_idx[i] = -1;
         arg_fp_idx[i] = -1;
         arg_stack_idx[i] = -1;
-        bool is_named = (i < named_count);
 
         if (arg_is_float[i]) {
-            if (argv[i]->ty->kind == TY_LDOUBLE && is_variadic && !is_named) {
+            // SysV x86-64 ABI: `long double` (80-bit x87 extended
+            // precision) is ALWAYS classified MEMORY -- passed on the
+            // stack in a 16-byte-aligned, 2-eightbyte slot -- regardless
+            // of whether the parameter is variadic/unnamed or an
+            // ordinary named/fixed-prototype one (unlike `float`/
+            // `double`, x87 values never occupy an XMM register at
+            // all). The `is_variadic && !is_named` guard here used to
+            // gate this on only the vararg case, so a plain, fully
+            // prototyped call like `atanl(long double)`/`fabsl(long
+            // double)` fell through to the ordinary float path below and
+            // got assigned an XMM register slot instead -- silently
+            // corrupting every call into a real (non-rcc-compiled)
+            // libm `*l` function, which reads its argument from the
+            // stack location the ABI actually specifies and finds
+            // garbage there instead.
+            if (argv[i]->ty->kind == TY_LDOUBLE) {
                 if (stack_args & 1)
                     stack_args++;
                 arg_stack_idx[i] = stack_args;
@@ -2548,6 +2562,27 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         return addr;
     }
 
+#ifndef __APPLE__
+    // Linux AAPCS64 only: Apple's arm64 ABI defines `long double` as
+    // identical to `double` (see type.c's ty_ldouble, size=8 under
+    // __APPLE__ vs size=16 elsewhere) -- there's no widen/narrow step
+    // to do on Darwin at all, and calling __trunctfdf2 on an already-
+    // plain-double value would corrupt it.
+    if (node->ty && node->ty->kind == TY_LDOUBLE) {
+        // AAPCS64 returns a `long double` result as a genuine 128-bit
+        // binary128 quad in v0 (see the identical narrowing requirement
+        // already handled for ND_VA_ARG and the x86-64 prologue's
+        // variadic-float-narrowing comments above). rcc's own internal
+        // `long double` representation is a plain 64-bit double
+        // everywhere else, so narrow the just-returned quad via
+        // libgcc's __trunctfdf2 -- consuming the value already sitting
+        // in v0 and leaving the narrowed double in d0 -- *before*
+        // alloc_reg() below hands out a VReg, since __trunctfdf2 is a
+        // real `bl` that clobbers the same caller-saved physical
+        // registers rcc's allocator would otherwise be free to reuse.
+        emit_direct_call("__trunctfdf2", false); // bl __trunctfdf2 (quad in v0 -> d0)
+    }
+#endif
     int r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
         if (node->ty->kind == TY_FLOAT)
@@ -3209,9 +3244,27 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     VReg r = alloc_reg();
     if (node->ty && is_flonum(node->ty)) {
 #ifndef ARCH_ARM64
-        if (node->ty->kind == TY_FLOAT)
-            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
-        asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, rr
+        if (node->ty->kind == TY_LDOUBLE) {
+            // SysV x86-64 ABI: a `long double` (80-bit x87 extended)
+            // return value comes back in ST0, never XMM0/XMM1 like
+            // float/double -- the generic is_flonum path below (movq
+            // %xmm0, rr) silently read whatever stale/unrelated value
+            // happened to be sitting in XMM0 instead. Pop ST0 via
+            // `fstpl`, rounding to double precision and writing through
+            // a red-zone scratch slot -- matching rcc's own internal
+            // GP-register representation for long double values
+            // elsewhere (see the ND_ASSIGN long double store path,
+            // "Store long double as 64-bit double (truncated)" above),
+            // so the result composes correctly with every other
+            // long-double consumer.
+            X86Mem scratch = x86_mem(X86_RSP, -8);
+            x86_fstpl_m(cg_sec, scratch); // fstpl -8(%rsp)
+            x86_mov_rm(cg_sec, 8, REG(r), scratch); // movq -8(%rsp), rr
+        } else {
+            if (node->ty->kind == TY_FLOAT)
+                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, rr
+        }
 #endif
     } else {
         asm_mov_retval(cg_sec, r, 8); // movq %rax, rr
@@ -9298,12 +9351,53 @@ static VReg gen(Node *node) {
                     if (node->lhs->ty && is_flonum(node->lhs->ty)) {
 #ifdef ARCH_ARM64
                         asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-                        if (scalar_ret_ty->kind == TY_FLOAT)
+                        if (scalar_ret_ty->kind == TY_LDOUBLE) {
+#ifndef __APPLE__
+                            // Linux AAPCS64 only: Apple's arm64 ABI
+                            // defines `long double` as identical to
+                            // `double` (type.c's ty_ldouble, size=8
+                            // under __APPLE__) -- no widening needed,
+                            // and calling __extenddftf2 on an
+                            // already-plain-double value would corrupt
+                            // it. On Linux, AAPCS64 returns `long
+                            // double` as a genuine 128-bit binary128
+                            // quad in v0, not a plain double in d0
+                            // (mirrors the identical ND_CALL/gen_funcall
+                            // widening in the long-double argument
+                            // pre-pass above, and the narrowing
+                            // counterpart in gen_funcall's own
+                            // return-value read). Widen via libgcc's
+                            // __extenddftf2, consuming the double just
+                            // placed in d0 and leaving the widened quad
+                            // in v0 -- exactly where the caller expects
+                            // to find the return value.
+                            emit_direct_call("__extenddftf2", false); // bl __extenddftf2 (d0 -> quad in v0)
+#endif
+                        } else if (scalar_ret_ty->kind == TY_FLOAT)
                             asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (opc=0=single dest)
 #else
-                        asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-                        if (scalar_ret_ty->kind == TY_FLOAT)
-                            asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0
+                        if (scalar_ret_ty->kind == TY_LDOUBLE) {
+                            // SysV x86-64 ABI: a `long double` return
+                            // value goes back to the caller in ST0, not
+                            // XMM0 -- the generic movq-to-xmm0 path below
+                            // is only correct for float/double. Widen
+                            // rr's double bit pattern (rcc's internal
+                            // long-double representation) onto the x87
+                            // stack via a red-zone scratch round-trip:
+                            // `fldl` leaves it in ST0, exactly where the
+                            // `ret` instruction's caller expects to find
+                            // it (mirrors the call-site argument-passing
+                            // widen sequence in gen_funcall, and the
+                            // narrowing counterpart in gen_funcall's own
+                            // ST0-popping return-value read).
+                            X86Mem scratch = x86_mem(X86_RSP, -8);
+                            x86_mov_mr(cg_sec, 8, scratch, REG(r)); // movq rr, -8(%rsp)
+                            x86_fldl_m(cg_sec, scratch); // fldl -8(%rsp)
+                        } else {
+                            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+                            if (scalar_ret_ty->kind == TY_FLOAT)
+                                asm_cvtsd2ss(cg_sec); // cvtsd2ss %xmm0, %xmm0
+                        }
 #endif
                     } else if (scalar_ret_ty->size == 4) {
 #ifdef ARCH_ARM64
@@ -9355,6 +9449,19 @@ static VReg gen(Node *node) {
                                 asm_ucvtf(cg_sec, 0, r, src_sf); // ucvtf d0, w/x{r}
                             else
                                 asm_scvtf(cg_sec, 0, r, src_sf); // scvtf d0, w/x{r}
+                            // Integer-to-long-double return: the conversion
+                            // above always lands in d0 as a genuine double.
+#ifndef __APPLE__
+                            // On Linux, AAPCS64 returns `long double` as a
+                            // 128-bit binary128 quad in v0 -- widen via the
+                            // same __extenddftf2 call used by the
+                            // flonum-to-flonum branch above. Apple's arm64
+                            // ABI defines `long double` as identical to
+                            // `double` (size 8, see type.c's ty_ldouble) --
+                            // no widening needed there.
+                            if (scalar_ret_ty->kind == TY_LDOUBLE)
+                                emit_direct_call("__extenddftf2", false); // bl __extenddftf2 (d0 -> quad in v0)
+#endif
                         }
 #else
                         {
@@ -9385,6 +9492,18 @@ static VReg gen(Node *node) {
                             } else {
                                 int cssz = (src_sz >= 8) ? 8 : (src_sz < 4 ? 4 : src_sz);
                                 asm_cvtsi2sd(cg_sec, r, cssz); // cvtsi2sd rr, %xmm0
+                            }
+                            // Integer-to-long-double return: the conversion above
+                            // always lands in XMM0 (as a genuine double), but a
+                            // `long double` return value must go back to the
+                            // caller in ST0 -- widen it via the same red-zone
+                            // round-trip used by the flonum-to-flonum branch
+                            // above (movsd to scratch memory, then `fldl` onto
+                            // the x87 stack).
+                            if (scalar_ret_ty->kind == TY_LDOUBLE) {
+                                X86Mem scratch = x86_mem(X86_RSP, -8);
+                                x86_movsd_mr(cg_sec, scratch, X86_XMM0); // movsd %xmm0, -8(%rsp)
+                                x86_fldl_m(cg_sec, scratch); // fldl -8(%rsp)
                             }
                         }
 #endif
@@ -13741,7 +13860,33 @@ struct ObjFile *codegen(Program *prog) {
                 stack_param_index++;
             }
 #else
-            if (is_flonum(var->ty)) {
+            if (var->ty->kind == TY_LDOUBLE) {
+                // SysV x86-64 ABI: `long double` (80-bit x87 extended)
+                // is ALWAYS classified MEMORY -- passed on the stack in
+                // a 16-byte-aligned, 2-eightbyte slot, regardless of how
+                // many XMM registers are still free (unlike float/
+                // double, it never occupies an XMM register at all).
+                // Mirrors the call-site classification fix in
+                // gen_funcall's argument-passing loop; without this,
+                // the generic is_flonum branch below read an XMM
+                // parameter register no caller ever populates for a
+                // long double argument, reading garbage. `fldt` loads
+                // the genuine 80-bit value the caller wrote to the
+                // stack; `fstpl` narrows and pops it into the local
+                // slot as a double, matching rcc's own internal
+                // GP-register/memory representation for long double
+                // values everywhere else (see the ND_ASSIGN long
+                // double store path's "Store long double as 64-bit
+                // double (truncated)").
+                if (stack_param_index & 1)
+                    stack_param_index++;
+                int stack_off2 = 16 + stack_param_index * 8;
+                X86Mem ld_src = {CG_X86_FP, X86_NOREG, 1, -stack_off2};
+                X86Mem ld_dst = {CG_X86_FP, X86_NOREG, 1, -var->offset};
+                x86_fldt_m(cg_sec, ld_src); // fldt off2(%rbp)
+                x86_fstpl_m(cg_sec, ld_dst); // fstpl -(off)(%rbp)
+                stack_param_index += 2;
+            } else if (is_flonum(var->ty)) {
                 if (param_xmm_index < max_param_xmm) {
                     if (var->ty->size == 4) {
                         // ABI: the caller (per the call-site fix above) now
@@ -14719,6 +14864,37 @@ struct ObjFile *codegen(Program *prog) {
             int xfp = 0;
             int stack_param_index2 = 0;
             for (LVar *var = fn->params; var; var = var->param_next) {
+#ifndef _WIN32
+                // SysV x86-64 ABI: `long double` (80-bit x87 extended)
+                // is ALWAYS classified MEMORY -- passed on the stack in
+                // a 16-byte-aligned, 2-eightbyte slot, never in an XMM
+                // register. This is Pass 2's own real-emission copy of
+                // the identical fix applied to Pass 1's dry-run layout
+                // computation above (this function generates its
+                // prologue twice: once with cg_dry_run=true just to
+                // discover stack layout, once for real -- the two
+                // copies use entirely different local counter names,
+                // `xfp`/`stack_param_index2` here vs
+                // `param_xmm_index`/`stack_param_index` there, so both
+                // needed the fix independently). Without this, a
+                // `long double` parameter read its value from an XMM
+                // register no caller ever populates for it, reading
+                // garbage -- confirmed via `ldnear(long double x,
+                // long double y)` (gcc torture's conversion.c): with
+                // two long double parameters, only the one whose XMM
+                // register happened to still coincidentally hold the
+                // right bit pattern (register reuse in the caller's own
+                // prior computation) read correctly; the other did not.
+                if (var->ty->kind == TY_LDOUBLE) {
+                    if (stack_param_index2 & 1)
+                        stack_param_index2++;
+                    int stack_off2 = 16 + stack_param_index2 * 8;
+                    x86_fldt_m(cg_sec, x86_mem(X86_RBP, stack_off2)); // fldt stack_off2(%rbp)
+                    x86_fstpl_m(cg_sec, x86_mem(X86_RBP, -var->offset)); // fstpl -var->offset(%rbp)
+                    stack_param_index2 += 2;
+                    continue;
+                }
+#endif
 #ifndef _WIN32
                 // Linux SysV: _Complex float/double are passed in SSE regs,
                 // _Complex integer types in GP regs, matching the call-site
