@@ -707,7 +707,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_samba       | **two real rcc bugs found and fixed** (see "Fixed (2026-08-10, LONG_MAX/atomic-load session)" below) — configure now progresses far past its earlier `pyembed`/`Python.h` failure into unrelated dependency checks (pam, iconv, ncurses, readline, ...), currently blocked on `perl module "Parse::Yapp::Driver" not found` (missing build-time CPAN module in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | test_scrapscript | **fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix resolved linking (32/33 -> 17/33 failing), then the section sh_addralign fix below resolved the remaining 17 `SIGABRT`s (17/33 -> 0/33 failing, full suite green)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| test_tcpdump     | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find PCAP (missing: PCAP_INCLUDE_DIR PCAP_LIBRARY)` (missing `libpcap` dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| test_tcpdump     | **fixed** — real rcc register-allocator bug found and fixed (deeply nested ternary in the radiotap decoder's bit-scan macro), see "Fixed (2026-08-10, continued — nested-ternary register-allocator session)" below; own `make check` now 0 failed, 636 passed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 ---
 
@@ -2732,10 +2732,80 @@ checks (pam, iconv, ncurses, readline, ...), currently blocked on a
 missing build-time Perl CPAN module (`Parse::Yapp::Driver`) in this
 sandbox — an environment gap, not an rcc issue. `test_neovim` also now
 configures past its `Luv`/`Libuv` dependency checks (after installing
-`libluv-devel`/`libuv-devel`) but hits its own, unrelated build issues
-beyond this session's scope. `test_glib` and `test_tcpdump` progressed
-from configure-time failures (missing `libpcre`/`libpcap`) all the way
-to real compilation/test-execution; `test_tcpdump` in particular now
-builds and passes 634/636 of its own test suite (2 unrelated 802.11
-radiotap-decoding golden-file mismatches) — both left for a future
-session rather than expanding this one's scope.
+beyond this session's scope. `test_glib` progressed from a
+configure-time failure (missing `libpcre`) all the way to real
+compilation; `test_tcpdump` progressed from a configure-time failure
+(missing `libpcap`) all the way to a genuine rcc register-allocator
+bug in its own radiotap decoder, root-caused and fixed separately —
+see the next section.
+
+### Fixed (2026-08-10, continued — nested-ternary register-allocator session)
+
+Continuing the `test_tcpdump` investigation from above: once
+`libpcap-devel` was installed, tcpdump built and ran cleanly except
+for 2 of its own 636 tests (`802.11_exthdr`, `802.11_rx-stbc`) —
+_wrong output_, not a crash: real radiotap capture files decoded to a
+plausible-looking but incorrect frame summary (`[bit 17]` instead of
+the golden `[bit 32]`/`[bit 15]`, MCS/GI/RX-STBC fields silently
+missing).
+
+- **A deeply nested ternary expression, with a non-trivial
+  sub-expression re-embedded at every level, silently computed the
+  wrong result** (codegen.c, `ND_COND`) — root-caused to
+  `print-802_11.c`'s `BITNO_32`/`BITNO_16`/`BITNO_8`/`BITNO_4`/
+  `BITNO_2` macro chain (a classic bit-scan idiom: `((x) >> N) ? K +
+inner((x) >> N) : inner(x)`, 5 levels deep), used to find the lowest
+  set bit of radiotap's 32-bit "present flags" word
+  (`bitno = BITNO_32(present ^ next_present);`). rcc's own
+  preprocessor expansion of that macro chain was confirmed
+  byte-for-byte identical to gcc's (`-E` diff) — the bug was purely in
+  codegen, and only at 4+ levels of ternary nesting with a
+  multi-token argument (a bare-variable argument, or 3 levels of
+  nesting, were not enough to trigger it; isolated via a from-scratch
+  minimized C repro built independently of tcpdump's own source,
+  cross-checked against a `__builtin_ctz`-based oracle across all 32
+  bit positions).
+  Root cause: `ND_COND`'s result register was `alloc_reg()`'d up
+  front, before evaluating the condition or either branch, and held
+  reserved through the ENTIRE recursive evaluation of both. Harmless
+  for a single, non-nested ternary, but for a NESTED one -- each
+  branch itself another `ND_COND` -- every nesting level's own result
+  register stacked up simultaneously even though none of them held a
+  real value until the very end, exhausting the 12-GP-register x86-64
+  pool several levels sooner than an equivalent unnested computation
+  of the same total complexity would, forcing spills under pressure
+  that shouldn't have existed. The register allocator's spill/reload
+  bookkeeping under that specific pressure pattern then silently
+  corrupted one live value (confirmed via disassembly: a spilled
+  register was reloaded from its stack slot and immediately
+  overwritten by an unrelated store before ever being read back —
+  the exact "an alloc_reg() that spilled an outer expression's live
+  value... a subsequent fresh allocation... can then silently reclaim
+  it" failure mode already described in several other comments
+  throughout codegen.c, here triggered by `ND_COND`'s own avoidable
+  register-pressure overhead rather than genuine call-argument
+  complexity).
+  Fixed by deferring the result register's allocation until each
+  branch's own value is actually ready to be moved into it (right
+  before the first `asm_mov_reg_reg` that needs it), instead of
+  reserving it for the whole subtree up front -- cutting one
+  register's worth of artificial pressure per nesting level, on both
+  the x86-64 and ARM64 codegen paths. A `void`-typed branch (e.g.
+  `(void)0`) correctly yields no register at all now, rather than
+  wastefully allocating one that's never written.
+
+New regression test: `test/test_deep_nested_ternary_regalloc.c` — the
+exact `BITNO_32` chain applied to every one of the 32 possible single
+set bits, cross-checked against a boring/obviously-correct reference
+implementation, plus the precise tcpdump-derived
+`present ^ next_present` shape. Full suite verified: TCC 118/118, Unit
+tests 212/212, Compliance 15/15, C-testsuite 220/220, Torture
+3605/3609 (100% of non-skipped), Dg-error 34/34, Link tests 7/7, 0
+failed overall; confirmed clean (both the new test and the existing
+`test_gnu_ternary_omit_promote.c`, which exercises `ND_COND`'s other
+recent fix, PASS) on the mingw and arm64 cross-compile targets.
+`test_tcpdump`'s own `make check` now passes all 636 of its tests
+(rebuilt `print-802_11.c` and relinked against the fixed compiler,
+confirmed `802.11_exthdr`/`802.11_rx-stbc` now match their golden
+output exactly); a full fresh harness run (`test/linux_thirdparty.bash
+test_tcpdump`) confirms `rc=0`. **`test_tcpdump` is fully fixed.**

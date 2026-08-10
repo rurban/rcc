@@ -9844,7 +9844,18 @@ static VReg gen(Node *node) {
         int c = ++rcc_label_count;
         const char *else_label = format(".L.cond_else.%d", c);
         const char *end_label = format(".L.cond_end.%d", c);
-        VReg r = alloc_reg();
+        // Deferred: allocate the result register only once `then_r` is
+        // known (just before it's actually needed), not up front. An
+        // early alloc_reg() here would hold `r`'s slot reserved through
+        // the ENTIRE recursive evaluation of cond/then/els -- for a
+        // deeply nested ternary (each branch itself another ND_COND,
+        // e.g. radiotap's BITNO_32/16/8/4/2 bit-counting macro chain),
+        // every nesting level's own `r` stacks up simultaneously even
+        // though none of them holds a real value until the very end,
+        // exhausting the register pool several levels sooner than
+        // necessary and forcing spills under pressure that a plain,
+        // unnested expression of the same total complexity wouldn't hit.
+        VReg r;
         int cond = gen(node->cond);
         int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
         // GNU `a ?: b` (omitted then-operand): node->then is either literally
@@ -9870,7 +9881,9 @@ static VReg gen(Node *node) {
         }
         // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
         // no value register; there is nothing to move into the result.
+        r = R_NONE;
         if (then_r != R_NONE) {
+            r = alloc_reg();
             asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
             free_reg(then_r);
         }
@@ -9879,6 +9892,8 @@ static VReg gen(Node *node) {
         cg_def_label(else_label); // mov %s, #0
         VReg else_r = gen(node->els);
         if (else_r != R_NONE) {
+            if (r == R_NONE)
+                r = alloc_reg();
             asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
             free_reg(else_r);
         }
@@ -9897,7 +9912,9 @@ static VReg gen(Node *node) {
         }
         // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
         // no value register; there is nothing to move into the result.
+        r = R_NONE;
         if (then_r != R_NONE) {
+            r = alloc_reg();
             asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
             free_reg(then_r);
         }
@@ -9906,6 +9923,8 @@ static VReg gen(Node *node) {
         cg_def_label(else_label); // setne %%al
         VReg else_r = gen(node->els);
         if (else_r != R_NONE) {
+            if (r == R_NONE)
+                r = alloc_reg();
             asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
             free_reg(else_r);
         }
