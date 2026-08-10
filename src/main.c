@@ -140,10 +140,24 @@ static bool is_shared_lib_path(const char *path) {
     return *so == '\0';
 }
 
-// Replace the extension of filename. Strips .c/.i/.s and appends new_ext.
+// Replace the extension of filename with new_ext, matching every real
+// compiler driver's `-c`/`-S` default-output-name convention: strip
+// whatever the input's own trailing extension is (whatever it turns out
+// to be - rcc accepts any extension as a compilable input, see the input
+// classification loop above) and append new_ext, rather than special-
+// casing only a handful of "recognized" source extensions. Previously
+// this only stripped .c/.i/.s, so e.g. `rcc -c foo.cxx` produced
+// `foo.cxx.o` instead of the conventional `foo.o` - harmless for the
+// overwhelmingly common .c case, but broke any build-probe harness that
+// compiles a trial `.cxx`/`.cc`/`.C`/`.cpp` file (rcc has no separate
+// C++ front end and happily compiles plain-C-compatible content under
+// any of those extensions) and then looks for the resulting object file
+// under the name a real compiler would have produced.
+// A filename with no dot at all (dot == NULL) is untouched: new_ext is
+// simply appended, exactly as before.
 static char *replace_ext(char *filename, char *new_ext) {
     char *dot = strrchr(filename, '.');
-    if (dot && (strcmp(dot, ".c") == 0 || strcmp(dot, ".i") == 0 || strcmp(dot, ".s") == 0))
+    if (dot)
         return format("%.*s%s", (int)(dot - filename), filename, new_ext);
     return format("%s%s", filename, new_ext);
 }
