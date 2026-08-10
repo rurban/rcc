@@ -10551,7 +10551,18 @@ static Node *unary(Token **rest, Token *tok) {
             }
             if (equalc(t, "{"))
                 goto sizeof_expr;
+            Token *sty_tok = tok->next->next;
             Type *ty = parse_cast_type(&tok, tok->next);
+            // C11 6.5.3.4p1: sizeof shall not apply to an incomplete
+            // type. An opaque forward-declared struct/union (no `{...}`
+            // body ever seen -- size==0 and no members, distinct from a
+            // genuinely zero-sized completed type, which C doesn't have)
+            // must be a hard error, not silently sized as 0: iffe (ast/
+            // ksh93's own configure-time probe generator) relies on
+            // exactly this rejection to tell an opaque struct apart from
+            // a real one.
+            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members)
+                error_tok(sty_tok, "invalid application of 'sizeof' to incomplete type");
             *rest = tok;
             if (ty->kind == TY_VLA) {
                 // Runtime sizeof for VLA: len * base_size
@@ -10572,6 +10583,15 @@ static Node *unary(Token **rest, Token *tok) {
         Node *node = unary(&tok, tok->next);
         check_type(node);
         *rest = tok;
+        // Same incomplete-type rejection as the sizeof(type-name) form
+        // above, for `sizeof expr`/`sizeof(expr)` where expr's own type
+        // turns out to be an opaque struct/union (e.g. `sizeof(i)` where
+        // `i` was declared `static OPAQUE i;` — a declaration that is
+        // itself invalid for the same reason, but rcc doesn't yet reject
+        // that at declaration time, so this is the last line of defense).
+        if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) &&
+            node->ty->size == 0 && !node->ty->members)
+            error_tok(node->tok, "invalid application of 'sizeof' to incomplete type");
         if (node->ty->kind == TY_VLA) {
             // C11 6.5.3.4p2: sizeof evaluates its operand when the
             // operand's type is itself a VLA (not merely a pointer/array
@@ -11116,6 +11136,50 @@ static Node *unary(Token **rest, Token *tok) {
 
         Node *lhs = unary(rest, tok);
         check_type(lhs);
+        // C11 6.5.4p2: a cast's type name must specify void or a scalar
+        // type, and (unless the target is void) the operand must also
+        // have scalar type -- struct/union values are never castable to
+        // or from anything but void, with one GNU extension: a cast to a
+        // union type is allowed when the operand's type matches (is
+        // compatible with) one of the union's own member types --
+        // reinterpreting the scalar/aggregate bits as that member,
+        // exactly like an implicit union-member store would. An
+        // array-typed operand decays to a pointer before ever reaching a
+        // cast (same as any other array use), so it's exempt outright,
+        // not merely folded into the aggregate check. GCC's own
+        // vector-cast extensions reinterpret between vector
+        // representations of matching size (a distinct rule from either
+        // of these), so `is_vector` structs are exempted on both sides;
+        // `(void)expr` discarding an aggregate value is the other
+        // universally-supported exception.
+        // A cast to the SAME struct type as the operand is a GCC-
+        // tolerated no-op identity cast (unlike casting to a genuinely
+        // *different* struct type, or from/to any other aggregate,
+        // which stays rejected below) -- e.g. tinycc/c-testsuite's own
+        // `(struct S)w->t.s` where `w->t.s` already has type `struct
+        // S`, a pattern real-world code writes when a macro or
+        // generated table always wraps a value in a cast regardless of
+        // whether it happens to already match.
+        bool same_struct_cast = ty->kind == TY_STRUCT && !ty->is_vector &&
+            lhs->ty && types_compatible_p(ty, lhs->ty);
+        if (ty->kind != TY_VOID && !same_struct_cast) {
+            if (ty->kind == TY_STRUCT && !ty->is_vector)
+                error_tok(start, "conversion to non-scalar type requested");
+            if (ty->kind == TY_UNION && !ty->is_vector) {
+                bool member_match = false;
+                for (Member *m = ty->members; m; m = m->next) {
+                    if (types_compatible_p(m->ty, lhs->ty)) {
+                        member_match = true;
+                        break;
+                    }
+                }
+                if (!member_match)
+                    error_tok(start, "cast to union type from type not present in union");
+            }
+            if (lhs->ty && (lhs->ty->kind == TY_STRUCT || lhs->ty->kind == TY_UNION) &&
+                !lhs->ty->is_vector)
+                error_tok(start, "aggregate value used where a scalar was expected");
+        }
         Node *node = new_unary(ND_CAST, lhs, start);
         // Casts produce rvalues; top-level qualifiers are discarded (C99 6.5.4p5).
         // e.g. (float const)expr has type float, not float const.
