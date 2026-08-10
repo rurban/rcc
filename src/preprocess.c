@@ -649,28 +649,74 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
     return NULL;
 }
 
+// True if `path`'s entire content, once comments and blank lines are
+// skipped, reduces to a single `#include <X>`/`#include "X"` whose
+// resolved target is *already* active on the include stack (walking
+// `lvl`) -- a trivial one-line forwarding wrapper (a common ast/ksh93
+// idiom: e.g. its own std/wchar.h is just `#include <ast_wchar.h>`)
+// that would silently contribute nothing back into the very chain
+// #include_next is trying to escape, hiding whatever the real header
+// underneath it provides. Anything more complex (a real guard,
+// declarations of its own, ...) is left alone -- only this exact
+// narrow "does nothing but forward to something already open" shape is
+// special-cased, so resolve_include_next() below can skip past it and
+// keep searching instead of settling for a no-op match.
+static bool is_noop_forward_to_active(char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return false;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    char *p = buf;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (*p && !(p[0] == '*' && p[1] == '/')) p++;
+            if (*p) p += 2;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+        break;
+    }
+    if (*p != '#') return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "include", 7) != 0) return false;
+    p += 7;
+    if (*p != ' ' && *p != '\t' && *p != '<' && *p != '"') return false;
+    while (*p == ' ' || *p == '\t') p++;
+    char close;
+    bool angle;
+    if (*p == '<') {
+        close = '>';
+        angle = true;
+    } else if (*p == '"') {
+        close = '"';
+        angle = false;
+    } else
+        return false;
+    p++;
+    char *start = p;
+    while (*p && *p != close && *p != '\n') p++;
+    if (*p != close) return false;
+    char *target = pp_strndup(start, p - start);
+    char *resolved = resolve_include(path, path, target, angle, NULL);
+    if (!resolved) return false;
+    resolved = canonical_path(full_path(resolved));
+    for (PPLvl *l = lvl; l; l = l->next)
+        if (l->fpath && !strcmp(canonical_path(l->fpath), resolved))
+            return true;
+    return false;
+}
+
 // #include_next: search the same ordered list, but start *after* the directory
 // that supplied curr_file. Lets a bundled header (e.g. include/wchar.h) fall
 // through to the system header of the same name.
-//
-// A #include_next triggered from RCC_INCDIR (or its "include" fallback,
-// see build_search_dirs()) is always rcc's own bundled header reaching
-// past itself for the platform's real header of the same name (e.g.
-// include/wchar.h's `#include_next <wchar.h>` needing glibc's <wchar.h>
-// for wint_t/mbstate_t) - the exact purpose GCC's own private "fixed"
-// include directory uses #include_next for, and GCC never lets an
-// unrelated project's own -I search path shadow that with a same-named
-// header of its own. Continuing the ordinary way (linear i+1 through the
-// combined RCC_INCDIR/-I/system list) breaks that: a project that adds
-// its own same-named header via -I between RCC_INCDIR and the system
-// dirs (e.g. ksh93's own `src/lib/libast/std/wchar.h`, a wrapper that
-// merely `#include`s back into the very ast_wchar.h that triggered this
-// chain, guarded to a silent no-op by that header's own include guard)
-// gets found first, and the real system header - along with every
-// typedef only it provides - is never reached. So: skip every user -I
-// directory entirely when continuing from RCC_INCDIR, landing directly
-// in the real system include chain, same as any other #include_next
-// continuation would from a directory further down the list.
 static char *resolve_include_next(char *curr_file, char *spec) {
     const char *dirs[128];
     int nd = build_search_dirs(dirs, 128);
@@ -690,32 +736,24 @@ static char *resolve_include_next(char *curr_file, char *spec) {
         !strcmp(file_dir + file_dir_len - spec_dir_len, spec_dir)) {
         file_dir[file_dir_len - spec_dir_len] = '\0';
     }
-    char *cur_dir = full_path(file_dir);
-    // Index where the system include chain begins in build_search_dirs()'s
-    // combined list: RCC_INCDIR, optionally "include", then every user -I
-    // directory, then sys_include_paths[] - mirrors that function's own
-    // construction exactly so the skip-to-system jump below lands on the
-    // same entry build_search_dirs() would call sys_include_paths[0].
-    int sys_start = 1;
-    if (strcmp(RCC_INCDIR, "include") != 0) sys_start++;
-    sys_start += nb_user_include_paths;
+    char *cur_dir = canonical_path(full_path(file_dir));
     int start = 0;
     // Start after the LAST search entry that names the current file's
     // directory: RCC_INCDIR and the "include" fallback can resolve to the same
     // physical directory, and stopping at the first would re-find this very
     // header (its include guard then hides the real system header).
-    bool has_include_fallback = strcmp(RCC_INCDIR, "include") != 0;
     for (int i = 0; i < nd; i++) {
-        if (!strcmp(cur_dir, full_path((char *)dirs[i]))) {
-            // RCC_INCDIR is always dirs[0]; the "include" fallback, when
-            // it exists as a separate entry, is always dirs[1].
-            bool is_rcc_own_dir = i == 0 || (i == 1 && has_include_fallback);
-            start = is_rcc_own_dir ? sys_start : i + 1;
-        }
+        if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i]))))
+            start = i + 1;
     }
     for (int i = start; i < nd; i++) {
         char *path = path_join(dirs[i], spec);
-        if (file_exists(path)) return canonical_path(path);
+        // A user -I directory may legitimately provide its own
+        // replacement for a bundled header (e.g. ksh93's own std/stdio.h
+        // forwarding to its sfio-based ast_stdio.h) -- only a trivial
+        // forward back into a header already open is a no-op to skip.
+        if (file_exists(path) && !is_noop_forward_to_active(path))
+            return canonical_path(path);
     }
     return NULL;
 }

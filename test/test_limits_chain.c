@@ -42,7 +42,14 @@ int main(void)
     /* C23 width macros from this header must still be there. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
     if (INT_WIDTH != 32) return 8;
+    /* `long` is 32-bit under Windows' LLP64 data model (unlike LP64
+     * Linux/macOS, where it's 64-bit) -- LONG_WIDTH must track that,
+     * not assume LP64 universally. */
+#ifdef _WIN32
+    if (LONG_WIDTH != 32) return 9;
+#else
     if (LONG_WIDTH != 64) return 9;
+#endif
 #endif
 
     printf("OK\n");

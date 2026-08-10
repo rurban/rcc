@@ -273,8 +273,19 @@ cat > "$TMP/wa.c" <<'EOF'
 const char pad1[] = "1234567";  /* 8 bytes incl NUL */
 const char pad2 = 'Q';          /* 1 byte: forces b.o's rodata off a 4-byte boundary */
 EOF
+# A hand-written wcslen() prototype (not <wchar.h>) deliberately: mingw's
+# real <wchar.h> pulls in a large family of __mingw_ovr (static inline,
+# __attribute__((unused))) wide-stdio wrapper helpers this TU never
+# calls; eliminate_unused_static_inline() (opt.c) is disabled outright
+# on the mingw target for an unrelated, documented reason (corrupts an
+# emulated-TLS layout elsewhere -- see that function's own comment), so
+# none of those unused helpers get dropped there, and several reference
+# UCRT-internal symbols this test's own link command doesn't pull in.
+# The real, vectorized libc wcslen() is what this test needs to exercise
+# -- its declaration doesn't have to come from <wchar.h>.
 cat > "$TMP/wb.c" <<'EOF'
-#include <wchar.h>
+#include <stddef.h>
+extern size_t wcslen(const wchar_t *s);
 int main(void) {
     const wchar_t *p = L"symlinkname2";
     return wcslen(p) == 12 ? 0 : 1;

@@ -1,39 +1,36 @@
 /* #include_next: resolve_include_next() (src/preprocess.c) continues the
  * search using build_search_dirs()'s combined list (RCC_INCDIR, then
  * every user -I directory, then the real system include dirs), starting
- * right after wherever the *current* file was found. For a header
- * reached through RCC_INCDIR (rcc's own bundled headers, e.g.
- * include/limits.h forwarding to the platform's real <limits.h> for
- * POSIX/XSI macros and platform internals it deliberately doesn't
- * define itself), that used to mean walking straight through every
- * user -I directory before ever reaching the system dirs - so a project
- * that happens to place a same-named header of its own in one of those
- * -I directories (a legitimate, unrelated file, e.g. a build-system
- * wrapper) got picked up INSTEAD of the real system header, and
- * #include_next's whole point - reaching past rcc's own header to the
- * platform's genuine one - silently failed.
+ * right after wherever the *current* file was found.
  *
- * Fixed by having resolve_include_next() skip every user -I directory
- * entirely when continuing from RCC_INCDIR (or its "include" fallback),
- * landing directly in the real system include chain - matching how GCC
- * never lets an unrelated project header shadow its own private
- * "fixed" includes.
+ * Case 1: a trivial one-line forwarding wrapper in a user -I directory
+ * must be skipped, not mistaken for the real next header. Found via
+ * ksh93's own libast headers: ast_wchar.h's `#include <../include/
+ * wchar.h>` resolves (through RCC_INCDIR) to rcc's own include/wchar.h,
+ * whose own `#include_next <wchar.h>` must reach glibc's <wchar.h> for
+ * wint_t/mbstate_t - but ksh93's own build passes `-Istd
+ * -I.../src/lib/libast/std`, and that directory contains its own
+ * libast wchar.h wrapper (itself just `#include <ast_wchar.h>`, which
+ * -- since ast_wchar.h is already open, mid #include_next -- is a
+ * no-op due to its own include guard). Naively accepting the first
+ * match left wint_t permanently undeclared. Fixed by having
+ * resolve_include_next() recognize this exact shape (a header whose
+ * entire content, once comments/blank lines are stripped, is a single
+ * #include resolving to a file *already active* on the include stack)
+ * and skip past it to keep searching.
  *
- * Found via ksh93's own libast headers: ast_wchar.h's
- * `#include <../include/wchar.h>` resolves (through RCC_INCDIR, since
- * `RCC_INCDIR/../include/wchar.h` collapses right back to
- * RCC_INCDIR/wchar.h) to rcc's own include/wchar.h, whose own
- * `#include_next <wchar.h>` must reach glibc's <wchar.h> for wint_t -
- * but ksh93's own build passes `-Istd -I.../src/lib/libast/std`, and
- * that directory happens to contain its own libast wchar.h wrapper
- * (itself just `#include <ast_wchar.h>`, guarded right back into a
- * no-op by ast_wchar.h's own include guard) - previously found and
- * used FIRST, leaving wint_t permanently undeclared. Reproduced here
- * with rcc's own bundled <limits.h> (unconditionally chains onward via
- * `#include_next <limits.h>` on every platform, unlike <wchar.h> whose
- * downstream typedefs have their own unrelated platform-specific gaps)
- * and a decoy "limits.h" of our own in a plain -I directory, standing
- * in for ksh93's std/wchar.h.
+ * Case 2 (the fix's own regression, caught fixing test_ksh93's __FILE
+ * gap): that recognition must be narrow. A user -I directory can also
+ * legitimately *replace* a bundled header with real, non-forwarding
+ * content of its own -- e.g. ksh93's own std/stdio.h forwards to its
+ * sfio-based ast_stdio.h, which is *not* already open and defines real
+ * new content (__FILE, among others). A blanket "skip every user -I
+ * dir when continuing from RCC_INCDIR" (an earlier, overly broad
+ * version of this fix) silently threw that away too, leaving __FILE
+ * undeclared in glibc's own <wchar.h> and breaking test_ksh93 further
+ * down the line. This case reproduces it directly: a decoy "limits.h"
+ * that provides real (non-forwarding) content of its own must still be
+ * found and used, not skipped just because it lives in a user -I dir.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +39,14 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include "test_common.h"
+
+static int write_file(const char *path, const char *contents) {
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fputs(contents, f);
+    fclose(f);
+    return 1;
+}
 
 int main(void) {
     const char *rcc = find_rcc();
@@ -59,23 +64,51 @@ int main(void) {
         return 1;
     }
 
-    /* A decoy "limits.h" that -I finds ahead of the system dirs. If
-     * #include_next inside rcc's own bundled <limits.h> ever stops
-     * here instead of reaching the real platform <limits.h>, this
-     * fires and the compile below fails. */
-    FILE *f = fopen(decoy, "w");
-    if (!f) { printf("FAIL: cannot write %s\n", decoy); return 2; }
-    fputs("#error decoy limits.h must never be reached\n", f);
-    fclose(f);
-
-    f = fopen(src, "w");
-    if (!f) { printf("FAIL: cannot write %s\n", src); return 3; }
-    fputs("#include <limits.h>\nint main(void){return INT_MAX > 0 ? 0 : 1;}\n", f);
-    fclose(f);
-
+    /* Case 1: a trivial forwarder back to the already-open bundled
+     * <limits.h> - #include_next must see straight through it to the
+     * real system <limits.h>, not stop here (which would just re-open
+     * rcc's own bundled header a second time). */
+    if (!write_file(decoy, "#include <limits.h>\n")) {
+        printf("FAIL: cannot write %s\n", decoy);
+        return 2;
+    }
+    if (!write_file(src, "#include <limits.h>\nint main(void){return INT_MAX > 0 ? 0 : 1;}\n")) {
+        printf("FAIL: cannot write %s\n", src);
+        return 3;
+    }
     snprintf(cmd, sizeof(cmd), "%s -I%s -c %s -o %s " NULL_REDIRECT,
              rcc, dir, src, obj);
     int rc = system(cmd);
+    remove(src);
+    remove(obj);
+    if (rc != 0) {
+        printf("FAIL: #include_next <limits.h> did not skip a trivial forwarder (rc=%d)\n", rc);
+        remove(decoy);
+        remove(dir);
+        return 4;
+    }
+
+    /* Case 2: a *real*, non-forwarding replacement in the same -I
+     * directory must still be found and used, not skipped just because
+     * case 1's heuristic lives in the same function. */
+    if (!write_file(decoy, "#define INCNEXT_REAL_OVERRIDE 1\n")) {
+        printf("FAIL: cannot write %s\n", decoy);
+        return 5;
+    }
+    if (!write_file(src,
+        "#include <limits.h>\n"
+        "#ifndef INCNEXT_REAL_OVERRIDE\n"
+        "#error real -I limits.h override was skipped\n"
+        "#endif\n"
+        "int main(void){return 0;}\n")) {
+        printf("FAIL: cannot write %s\n", src);
+        remove(decoy);
+        remove(dir);
+        return 6;
+    }
+    snprintf(cmd, sizeof(cmd), "%s -I%s -c %s -o %s " NULL_REDIRECT,
+             rcc, dir, src, obj);
+    rc = system(cmd);
 
     remove(src);
     remove(decoy);
@@ -83,8 +116,8 @@ int main(void) {
     remove(dir);
 
     if (rc != 0) {
-        printf("FAIL: #include_next <limits.h> did not reach the real system header (rc=%d)\n", rc);
-        return 4;
+        printf("FAIL: #include_next <limits.h> skipped a real -I override (rc=%d)\n", rc);
+        return 7;
     }
     printf("OK\n");
     return 0;
