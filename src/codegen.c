@@ -489,6 +489,10 @@ static int fn_struct_ret_total = 0; // high-water mark of struct-ret-buf space u
 // computation at each allocation site and `need`'s frame-size folding).
 static int fn_trampoline_off = 0;
 static int fn_trampoline_total = 0;
+// next_spill_slot right after per-fn spill init (8 ARM64, 24 x86-64).
+// Growth past this during Pass 1 is real spill pressure and gets
+// re-anchored on top of `need` before Pass 2 (see both prologue sites).
+static int spill_reserved_base;
 int rcc_label_count = 0;
 static int va_gp_start;
 static int va_fp_start;
@@ -13579,6 +13583,7 @@ struct ObjFile *codegen(Program *prog) {
 #ifndef ARCH_ARM64
         init_spill_slots();
 #endif
+        spill_reserved_base = next_spill_slot; // 8 (ARM64) / 24 (x86-64)
         fn_struct_ret_off = 0;
         fn_struct_ret_total = 0;
         fn_trampoline_off = 0;
@@ -14048,9 +14053,14 @@ struct ObjFile *codegen(Program *prog) {
             if (callee_mask & (1 << j)) n_callee_saved++;
 
         int need = fn->stack_size + fn_struct_ret_total + fn_trampoline_total + 32;
-        // Include register spill slots in frame (discovered during dry run)
-        if (need < next_spill_slot)
-            need = next_spill_slot;
+        // Spill slots grew from spill_reserved_base during Pass 1,
+        // independent of `need`'s regions -- can overrun into locals under
+        // heavy spill pressure. Re-anchor the excess on top of `need`;
+        // Pass 2 replays the same push_spill_slot() sequence.
+        int spill_bytes = next_spill_slot - spill_reserved_base;
+        if (spill_bytes < 0) spill_bytes = 0;
+        next_spill_slot = need;
+        need += spill_bytes;
         int va_save_size = 0;
 #ifndef __APPLE__
         // AAPCS64 (Linux): save all GP and FP arg regs for variadic functions
@@ -14516,9 +14526,31 @@ struct ObjFile *codegen(Program *prog) {
         int need = fn->stack_size + fn_struct_ret_total + fn_trampoline_total + 32;
         if (fn->is_variadic)
             need = va_reg_save_ofs;
-        // Reserve space for register spill slots
-        if (need < next_spill_slot)
-            need = next_spill_slot;
+        // Spill slots grew from spill_reserved_base during Pass 1,
+        // independent of `need`'s regions -- can overrun into locals under
+        // heavy spill pressure. Re-anchor the excess on top of `need`;
+        // Pass 2 replays the same push_spill_slot() sequence.
+        int spill_bytes = next_spill_slot - spill_reserved_base;
+        if (spill_bytes < 0) spill_bytes = 0;
+        // __cleanup__ epilogue (below) stashes RAX (+RDX for a GP-pair
+        // struct return) via spill_offset() *after* Pass 2's body walk --
+        // invisible to Pass 1's discovery. Budget it explicitly so it
+        // can't grow past `need` into the callee-saved area.
+        bool fn_has_cleanup = false;
+        for (LVar *cv = fn->locals; cv; cv = cv->next)
+            if (var_has_cleanup(cv)) {
+                fn_has_cleanup = true;
+                break;
+            }
+        if (fn_has_cleanup) {
+            spill_bytes += 8;
+#ifndef _WIN32
+            if (fn->ty->return_ty && struct_returns_in_gp_regs(fn->ty->return_ty) && fn->ty->return_ty->size > 8)
+                spill_bytes += 8;
+#endif
+        }
+        next_spill_slot = need;
+        need += spill_bytes;
         // Callee-saved registers are stored in a dedicated save area BELOW
         // the locals/spill region, at [rbp - need - 8 .. rbp - need -
         // push_bytes]. They must NOT be pushed at [rbp-8..]: locals and
