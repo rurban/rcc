@@ -2547,3 +2547,14 @@ via pointer decay). Full suite verified: TCC 118/118, Unit tests
 (100% of non-skipped), Dg-error 34/34, Link 7/7 — 0 failed overall
 (native Linux x86-64); confirmed clean on the mingw and arm64
 cross-compile targets.
+
+With both fixes above, `test_ksh93`'s full `bin/package make` now
+completes without error (builds and installs `ksh`, `shcomp`,
+`libshell.so`/`.a`, every man page and `fun/*` script) — the whole
+build that used to die partway through `libast` now finishes cleanly.
+`bin/package test` goes on to run ksh93's own real functional
+regression suite (`cmd/ksh93/tests/*.sh` via `shtests`) for the first
+time this project has ever reached it; `alias`/`append` pass cleanly,
+`arith.sh` surfaces one further, unrelated lead (`cos*cos + sin*sin >
+1.01`, a floating-point precision question, not yet root-caused) —
+left for a future session rather than expanding this one's scope.
