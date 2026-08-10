@@ -11495,6 +11495,44 @@ static VReg gen(Node *node) {
         int sz = node->ty->size;
         VReg r = alloc_reg();
         int ord = node->atomic_ord;
+        if (is_flonum(node->ty)) {
+            // A flonum VALUE living in a GP register is represented as
+            // its DOUBLE bit pattern (see ND_DEREF's identical
+            // is_flonum branch), not the same-size raw bytes a bare
+            // integer load would produce -- every later consumer
+            // (fmov/movq to an xmm register) expects that convention.
+            // A plain byte-for-byte load of a `float` would leave its
+            // 4-byte pattern zero-extended into the low 32 bits, which
+            // gets misread as a genuine (garbage) DOUBLE bit pattern.
+#ifdef ARCH_ARM64
+            if (sz == 4) {
+                asm_ldr_fp(cg_sec, 0, r_addr, 4); // ldr s0, [r_addr]
+                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0
+            } else {
+                asm_ldr_fp(cg_sec, 0, r_addr, 8); // ldr d0, [r_addr]
+            }
+            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
+            // ldr/ldur are already atomic for a naturally-aligned
+            // load; a plain barrier (rather than hand-rolling a raw-GP
+            // ldar + bit-reinterpret-to-FP sequence) is sufficient to
+            // provide the ACQUIRE ordering an integer ldar would add.
+            bool use_acquire = (ord == MEMORDER_ACQUIRE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST || ord == MEMORDER_CONSUME);
+            if (use_acquire)
+                asm_dmb(cg_sec); // dmb ish
+#else
+            if (sz == 4) {
+                asm_ldr_fp(cg_sec, 0, r_addr, 4); // movss (r_addr), %xmm0
+                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            } else {
+                asm_ldr_fp(cg_sec, 0, r_addr, 8); // movsd (r_addr), %xmm0
+            }
+            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+            if (ord == MEMORDER_SEQ_CST)
+                asm_mfence(cg_sec); // mfence
+#endif
+            free_reg(r_addr);
+            return r;
+        }
 #ifdef ARCH_ARM64
         bool use_acquire = (ord == MEMORDER_ACQUIRE || ord == MEMORDER_ACQ_REL || ord == MEMORDER_SEQ_CST || ord == MEMORDER_CONSUME);
         if (use_acquire) {

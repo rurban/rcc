@@ -9832,6 +9832,20 @@ static Node *unary(Token **rest, Token *tok) {
                 error_tok_simple(start, "integral or integer-sized pointer target type expected");
         }
         tok = skip(tok, ",");
+        Node *ret_ptr = NULL;
+        if (!equalc(start, "__atomic_load_n")) {
+            // __atomic_load(ptr, retptr, order): the 2nd argument is a
+            // *pointer to* where the loaded value is stored, unlike
+            // __atomic_load_n's 2-argument form where the loaded value
+            // is simply the call's own result. Mirrors __atomic_store's
+            // identical ptr/valptr asymmetry just below -- without this,
+            // retptr was silently misparsed as the memory-order argument.
+            ret_ptr = assign(&tok, tok);
+            check_type(ret_ptr);
+            if (ret_ptr->ty->kind != TY_PTR && ret_ptr->ty->kind != TY_ARRAY)
+                error_tok_simple(start, "pointer expected");
+            tok = skip(tok, ",");
+        }
         Node *node = new_node(ND_ATOMIC_LOAD, start);
         node->lhs = ptr;
         node->atomic_ord = parse_memory_order(&tok);
@@ -9840,6 +9854,15 @@ static Node *unary(Token **rest, Token *tok) {
             node->ty = ptr->ty->base;
         else
             node->ty = ty_int;
+        if (ret_ptr) {
+            // *retptr = <loaded value>; the whole expression is void,
+            // matching __atomic_store's return type.
+            Node *deref = new_unary(ND_DEREF, ret_ptr, start);
+            check_type(deref);
+            Node *store = new_binary(ND_ASSIGN, deref, node, start);
+            check_type(store);
+            return store;
+        }
         return node;
     }
     if (equalc(tok, "__atomic_store_n") || equalc(tok, "__atomic_store")) {
