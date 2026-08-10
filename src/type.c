@@ -930,11 +930,20 @@ static void add_type_internal(Node *node) {
     }
     case ND_COMMA:
         node->ty = node->rhs->ty;
-        // Comma expressions are never lvalues; apply array/function decay
-        if (node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
-            node->ty = pointer_to(node->ty->base);
-        else if (node->ty->kind == TY_FUNC)
-            node->ty = pointer_to(node->ty);
+        // Comma expressions are never lvalues; apply array/function decay.
+        // rhs->ty can be NULL here: several node kinds (ND_NULL,
+        // ND_ZERO_INIT, ND_LABEL, ...) are statement-like and never get a
+        // type assigned above, but can still legally sit as a comma
+        // operator's rightmost operand (e.g. a GNU statement-expression
+        // tail, or a macro-generated `(x, (void)0)`-style idiom). Leave
+        // the comma's own type NULL too in that case rather than
+        // dereferencing it.
+        if (node->ty) {
+            if (node->ty->kind == TY_ARRAY || node->ty->kind == TY_VLA)
+                node->ty = pointer_to(node->ty->base);
+            else if (node->ty->kind == TY_FUNC)
+                node->ty = pointer_to(node->ty);
+        }
         return;
     case ND_NUM:
         node->ty = ty_int;

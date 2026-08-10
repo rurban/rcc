@@ -627,8 +627,8 @@ static int build_search_dirs(const char **dirs, int max) {
 // only ever #include-d into util.c and cannot be compiled on its own.
 // Left NULL for angle includes and search-path/system hits, which really
 // do warrant an absolute display name (matching gcc there too).
-static char *resolve_include(char *curr_file, char *curr_display, char *spec, bool is_angle,
-                             char **out_display) {
+static char *resolve_include_raw(char *curr_file, char *curr_display, char *spec, bool is_angle,
+                                 char **out_display) {
     char *path;
     if (!is_angle) {
         char *dir = path_dirname(curr_file);
@@ -644,6 +644,57 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
     for (int i = 0; i < nd; i++) {
         path = path_join(dirs[i], spec);
         if (file_exists(path)) return canonical_path(path);
+    }
+    if (file_exists(spec)) return canonical_path(spec);
+    return NULL;
+}
+
+// A relative-escape spec (e.g. ast/ksh93's own `#include
+// <../include/wchar.h>`, meant to reach the platform's *native* header)
+// joined against RCC_INCDIR itself can collapse right back onto
+// RCC_INCDIR's own bundled copy of the same name whenever RCC_INCDIR's
+// own basename is "include" (`.../rcc/include/../include/X.h` lexically
+// IS `.../rcc/include/X.h`) — defeating the whole point of the escape.
+// If that bundled copy is *already* active on the include stack (we're
+// mid-`#include_next` from inside it, which is exactly when this idiom
+// is used), the real #include directive handler below must skip past
+// it to the actual next candidate (a user -I directory or the real
+// system header) instead of silently re-triggering the same file's own
+// include guard — matching resolve_include_next()'s own no-op-forward
+// handling for the same self-reference shape. is_noop_forward_to_active()
+// below deliberately calls resolve_include_raw() instead of this wrapper
+// for its own internal peek: it needs the *unfiltered* answer ("what
+// would a bare #include from this file actually resolve to") to
+// recognize that exact self-reference collision as its "already active"
+// signal in the first place.
+static char *resolve_include(char *curr_file, char *curr_display, char *spec, bool is_angle,
+                             char **out_display) {
+    if (!is_angle) {
+        char *dir = path_dirname(curr_file);
+        char *path = path_join(dir, spec);
+        if (file_exists(path)) {
+            if (out_display)
+                *out_display = path_join(path_dirname(curr_display), spec);
+            return canonical_path(path);
+        }
+    }
+    const char *dirs[128];
+    int nd = build_search_dirs(dirs, 128);
+    bool has_include_fallback = strcmp(RCC_INCDIR, "include") != 0;
+    for (int i = 0; i < nd; i++) {
+        char *path = path_join(dirs[i], spec);
+        if (!file_exists(path)) continue;
+        if (i == 0 || (i == 1 && has_include_fallback)) {
+            char *resolved = canonical_path(full_path(path));
+            bool self_active = false;
+            for (PPLvl *l = lvl; l; l = l->next)
+                if (l->fpath && !strcmp(canonical_path(l->fpath), resolved)) {
+                    self_active = true;
+                    break;
+                }
+            if (self_active) continue;
+        }
+        return canonical_path(path);
     }
     if (file_exists(spec)) return canonical_path(spec);
     return NULL;
@@ -705,7 +756,7 @@ static bool is_noop_forward_to_active(char *path) {
     while (*p && *p != close && *p != '\n') p++;
     if (*p != close) return false;
     char *target = pp_strndup(start, p - start);
-    char *resolved = resolve_include(path, path, target, angle, NULL);
+    char *resolved = resolve_include_raw(path, path, target, angle, NULL);
     if (!resolved) return false;
     resolved = canonical_path(full_path(resolved));
     for (PPLvl *l = lvl; l; l = l->next)
