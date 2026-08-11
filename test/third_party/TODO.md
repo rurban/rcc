@@ -848,7 +848,7 @@ a multi-session effort, not a quick win.
 | test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                                                                                                                                                                                                                                                                                                                                                            |
 | test_perl         | **fixed** — the spill-slot/locals-offset collision root-caused in "Investigated, not fixed (2026-08-10, register-spill/locals-collision session)" below is fixed, see "Fixed (2026-08-10, continued — spill/locals collision)" below; re-ran the real target fresh (`./Configure -des -Dcc=rcc ...`, `make -j3 test_prep && HARNESS_OPTIONS=j3 make test_harness`) and it now builds miniperl, the full `perl`, every extension, and `make test_harness` cleanly to completion — `rc=0` in 557s (previously segfaulted inside `Perl_upg_version()` before even reaching `lib/buildcustomize.pl`) |
 | test_go           | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| test_nginx        | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| test_nginx        | **fixed** — `__sync_fetch_and_add`/sub/or/xor/and/nand's narrow-argument sign-extension bug (`ngx_atomic_fetch_add(lock, -1)` corrupted `ngx_rwlock_unlock()`, hanging every worker in `ngx_rwlock_wlock()` forever), see "Fixed (2026-08-11, continued — atomic fetch-op narrow-argument session)" below; reran the real `nginx-tests` suite fresh (`prove .`, 492 files) — all 2600 tests pass                                                                                                                                                                                                 |
 | test_groff        | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
 | test_argtable3    | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
 | test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -3018,3 +3018,90 @@ encoded bytes via `objdump -s`. Full suite verified: Unit tests
 (100% of non-skipped), Dg-error 34/34, Link tests 7/7 — 0 failed
 overall (native Linux x86-64); the new test also confirmed passing
 standalone on the mingw cross target.
+
+### Fixed (2026-08-11, continued — atomic fetch-op narrow-argument session)
+
+**test_nginx**: `nginx-tests/upstream_resolve_reload.t` hung until its
+900s harness timeout — every worker process spun forever inside
+`ngx_rwlock_wlock()`'s CAS retry loop, never observing the lock drop
+back to 0.
+
+**Root cause** (codegen.c, `ND_ATOMIC_FETCH_OP`): nginx's
+`ngx_atomic_fetch_add(lock, -1)` macro-expands to
+`__sync_fetch_and_add(lock, -1)` on platforms with GCC atomic builtins
+(not the `ngx_atomic_amd64.h` inline-asm fallback, which is only used
+when the builtins are unavailable). The value argument's own static
+type (`-1` is a plain 4-byte `int`) is narrower than the pointee type
+being operated on (`ngx_atomic_t` = `intptr_t`, 8 bytes) — a completely
+ordinary implicit-conversion shape the parser leaves as-is (`node->rhs`
+keeps its own `int` type; only `node->ty`, the _result_ type, is set
+from the pointee). Codegen's `gen(node->rhs)` correctly materializes
+the value at its own (4-byte) width, but every op path (x86-64 `lock
+xadd`, the cmpxchg-loop combine for or/xor/and/nand, and ARM64's
+ldxr/stxr loop) then operates on the full pointee-width (8-byte)
+register without first widening it. On x86-64, writing a 32-bit
+register implicitly zeroes the register's upper 32 bits, so `-1`
+landed as its _zero-extended_ bit pattern (`0x00000000FFFFFFFF`)
+instead of sign-extended (`0xFFFFFFFFFFFFFFFF`) — turning
+`ngx_rwlock_unlock()`'s intended "subtract 1" into "add 4294967295",
+which left the lock word permanently non-zero and every subsequent
+`ngx_rwlock_wlock()` spinning forever. Confirmed via a minimal
+standalone repro and `objdump` disassembly (the value materialized as
+`mov $1,%r11d; neg %r11d` — no `movslq` sign-extension — then fed
+straight into a 64-bit `lock xadd`), and via `gdb` stepping an
+unoptimized debug build to rule out inlining or a second codegen path
+before finding the actual `__sync_fetch_and_add` builtin parse site
+(`parser.c`) and its `ND_ATOMIC_FETCH_OP` codegen case.
+
+Fixed by sign/zero-extending `r_val` (the generated value register) to
+the pointee's width immediately after `gen(node->rhs)`, before any
+op-specific codegen, using the same source-signedness rule
+(`node->rhs->ty->is_unsigned`) every other implicit narrow-to-wide
+integer conversion in codegen.c already follows. Applies uniformly to
+all six ops (add/sub/or/xor/and/nand) and both architectures, since the
+extension now happens once, ahead of the `#ifdef ARCH_ARM64` split.
+
+Rebuilt nginx with the fixed compiler and reran the _actual_
+`nginx-tests` suite end to end (not just the one previously-hung test):
+`prove .` — 492 files, 2600 tests, **all successful**.
+
+**Second, unrelated bug found investigating the same rebuild**: a
+`resolve_include_next()` (preprocess.c) gap where `RCC_INCDIR` (an
+absolute path baked into the binary — every build, installed or not,
+defaults it to `/usr/local/include/rcc`) and the relative `"include"`
+search-path fallback (added whenever it differs from `RCC_INCDIR`) can
+both physically exist with byte-identical bundled-header content — the
+normal shape once `make install` has ever run on a machine that also
+has a source checkout on hand. `#include <stdio.h>` resolves through
+`RCC_INCDIR` first (checked before the fallback); `#include_next
+<stdio.h>` from _inside_ that file used to advance past only
+`RCC_INCDIR` and land on the fallback's identical copy next — a real,
+non-trivial file (not a one-line forwarder, so the existing
+`is_noop_forward_to_active()` no-op detector doesn't catch it), but
+its own include guard is already defined by the first copy, so its
+entire body — including its own `#include_next <stdio.h>` that would
+reach the real system header — silently no-ops. `#include_next`
+"succeeds" at a file that contributes nothing, leaving `FILE` (and
+everything else glibc's real `<stdio.h>` declares) undeclared, with no
+error. Fixed by having the current-directory scan skip past _both_
+bundled-header slots together whenever either one matches, not just
+whichever slot's physical path happened to match. (This specific
+failure mode was surfaced by a stale, install-poisoned `preprocess.o`
+left over from an earlier `make install` in this session rather than a
+normally-reachable path — `make clean && make` alone also "fixes" it
+by rebuilding with consistent flags — but the underlying search-order
+bug is real and independently reproducible without any stale build
+state involved, so it's fixed and covered on its own merits.)
+
+New regression tests: `test/test_atomic_fetch_op_narrow_arg.c` (6
+cases: the exact `fetch_add(long*, -1)` shape, a narrow non-constant
+variable operand, fetch_sub/or/and, and an unsigned narrow value that
+must zero- rather than sign-extend); `test/test_include_next_dup_incdir.c`
+(builds a byte-identical duplicate of rcc's own bundled `include/stdio.h`
+at the relative `"include"` fallback location and confirms
+`#include_next` still reaches the real system header instead of being
+swallowed). Full suite verified: Unit tests 217/217, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64); both
+new tests also confirmed passing standalone on the mingw and arm64
+cross targets.

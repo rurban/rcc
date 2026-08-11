@@ -11785,6 +11785,23 @@ static VReg gen(Node *node) {
         VReg r_addr = gen(node->lhs);
         VReg r_val = gen(node->rhs);
         int sz = node->ty->size;
+        // The value operand keeps its own (possibly narrower) static type
+        // from parsing (e.g. `__sync_fetch_and_add(ptr, -1)` where `-1` is
+        // a plain `int` but `*ptr` is `intptr_t`/8 bytes) -- gen() above
+        // only materializes it at ITS OWN width, so a 4-byte value in an
+        // 8-byte atomic op leaves the register's upper 32 bits either
+        // stale or (per x86-64's implicit-zero-extend-on-32-bit-write
+        // rule) zeroed, not sign-extended. Every op below (xadd, or/xor/
+        // and/nand's cmpxchg-loop combine) operates on the full `sz`-wide
+        // register, so extend to match here -- once, before any op-
+        // specific codegen -- following the same source-signedness rule
+        // used for every other implicit narrow-to-wide conversion.
+        if (node->rhs->ty && node->rhs->ty->size > 0 && node->rhs->ty->size < sz) {
+            if (node->rhs->ty->is_unsigned)
+                zero_extend_to(r_val, node->rhs->ty->size, sz);
+            else
+                sign_extend_to(r_val, node->rhs->ty->size, sz);
+        }
         int op = node->atomic_fetch_op;
         bool is_store = node->atomic_is_store;
 #ifdef ARCH_ARM64

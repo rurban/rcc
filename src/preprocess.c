@@ -788,14 +788,29 @@ static char *resolve_include_next(char *curr_file, char *spec) {
         file_dir[file_dir_len - spec_dir_len] = '\0';
     }
     char *cur_dir = canonical_path(full_path(file_dir));
+    // RCC_INCDIR (dirs[0]) and the "include" fallback (dirs[1], added
+    // only when it differs from RCC_INCDIR -- see build_search_dirs())
+    // are two alternate *physical* locations for the SAME logical
+    // bundled-header set: an installed copy (e.g. /usr/local/include/rcc,
+    // which every build -- installed or not -- defaults RCC_INCDIR to)
+    // and the source tree's own include/. A dev/test invocation of a
+    // non-installed binary on a machine that has ever run `make install`
+    // has BOTH present with byte-identical content. If the current file
+    // was found in *either* slot, #include_next must escape the whole
+    // bundled-header rung, not just the one physical path that matched:
+    // otherwise the *other* slot's identical copy is "found" next, its
+    // include guard (already set by the first copy) silently swallows
+    // its entire body -- including its own #include_next -- so the real
+    // system header underneath is never reached and #include_next
+    // resolves to a file that contributes no content at all.
+    bool has_include_fallback = strcmp(RCC_INCDIR, "include") != 0;
     int start = 0;
-    // Start after the LAST search entry that names the current file's
-    // directory: RCC_INCDIR and the "include" fallback can resolve to the same
-    // physical directory, and stopping at the first would re-find this very
-    // header (its include guard then hides the real system header).
     for (int i = 0; i < nd; i++) {
-        if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i]))))
+        if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i])))) {
             start = i + 1;
+            if (has_include_fallback && (i == 0 || i == 1))
+                start = 2;
+        }
     }
     for (int i = start; i < nd; i++) {
         char *path = path_join(dirs[i], spec);
