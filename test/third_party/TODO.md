@@ -701,7 +701,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
-| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, -Werror unknown-flag, \_\_declspec native-target, and K&R EOF crash bugs; 340/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", "Fixed (2026-08-11, continued — -Werror unknown-flag session)", and "Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)" below; remaining 29 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~21 not individually triaged this session                                                                                                                                                                                                                                                                        |
+| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, -Werror unknown-flag, \_\_declspec native-target, K&R EOF crash, and angle-bracket #include cwd-search bugs; 341/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", "Fixed (2026-08-11, continued — -Werror unknown-flag session)", "Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)", and "Fixed (2026-08-11, continued — angle-bracket #include cwd-search session)" below; remaining 28 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~20 not individually triaged this session                                                                                                                                                        |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3563,3 +3563,68 @@ mingw cross-compiler).
 With this fix, `test_muon`'s `common/197 function attributes` row
 flips from failed to passing (340/387 muon self-tests now pass, up
 from 339/387).
+
+### Fixed (2026-08-11, continued — angle-bracket #include cwd-search session)
+
+Continued investigating `test_muon`'s remaining failures.
+`common/189 check header` — muon's own `check_header()` compiler
+method probe — deliberately copies a same-named decoy file
+(`ouagadougou.h`, a placeholder name chosen to be obviously
+nonexistent) into the build directory next to the compiled test file,
+then checks `#include <ouagadougou.h>` (angle brackets) still fails to
+find it, confirming the compiler's "system" search never accidentally
+includes the current working directory.
+
+- **Angle-bracket `#include <name.h>` could silently resolve to an
+  unrelated same-named file sitting in the compiler process's current
+  working directory, even when no actual search directory (`-I` or
+  the built-in system list) provided it** (preprocess.c,
+  `resolve_include()`/`resolve_include_raw()`) — both functions ended
+  with an unconditional `if (file_exists(spec)) return
+canonical_path(spec);` fallback, applied regardless of angle vs
+  quote form, after the real search-directory loop found nothing.
+  Since `spec` is the bare include name and `file_exists()` opens it
+  via a plain relative `fopen()`, this silently searched the
+  compiler's cwd — which real GCC never does for angle brackets
+  (verified directly: `#include <name.h>` from a file in a
+  subdirectory, with `name.h` sitting only in the invoking process's
+  cwd and no matching `-I`, is a clean "No such file or directory" on
+  real gcc). Reproduced exactly: muon compiles each probe's `test.c`
+  from a relative path (`.muon/test.c`) with the compiler's cwd set to
+  the build directory one level up — precisely where `configure_file()`
+  had copied the decoy. Fixed by only reaching that trailing
+  cwd-relative fallback for quote includes (whose own C search rules
+  already permit a directory-independent fallback once the
+  including-file's own directory search misses).
+- **Collateral consideration**: `#embed <file>` (C23) reuses the same
+  `resolve_include()` for its own angle-bracket form, but real GCC
+  gives `#embed` an entirely separate, dedicated search-path mechanism
+  (`--embed-dir=`, with "no default directories for #embed" per GCC's
+  own docs) that rcc doesn't implement at all; rcc's own
+  `test/test_embed.c` (from an earlier session) already relies on
+  `#embed <file>` resolving via this same cwd-relative fallback as a
+  deliberate, pragmatic substitute. Applying the `#include` fix
+  unconditionally would have regressed that existing, working
+  behavior (caught by `make check-all` before committing — a real
+  `test_embed` `EXEC FAIL`). Fixed by threading a new
+  `allow_cwd_fallback` parameter through `resolve_include()`, set
+  `false` at every `#include`/`#include_next`/`__has_include` call
+  site and `true` only at `#embed`'s own, so `#embed`'s pre-existing
+  (already-decided, unrelated to this session) leniency is preserved
+  exactly while `#include`'s matches real GCC.
+
+New regression test: `test/test_include_angle_no_cwd.c` — a decoy
+header sitting next to the compiled source must NOT be found via
+`#include <decoy.h>` (angle brackets), but the identical decoy MUST
+still be found via `#include "decoy.h"` (quote form, unaffected by the
+fix). Verified failing without the fix and passing with it (A/B).
+Full suite verified: Unit tests 226/226, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64); both
+the new test and `test_embed.c` (confirming its own #embed
+angle-bracket leniency stayed intact) verified passing standalone on
+the mingw and arm64 cross targets.
+
+With this fix, `test_muon`'s `common/189 check header` row flips from
+failed to passing (341/387 muon self-tests now pass, up from
+340/387).
