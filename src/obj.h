@@ -113,6 +113,29 @@ struct ObjSym {
     uint64_t size;
     SymBind bind;
     SymType type;
+    // True once a *real* `.globl`/`.global`/`.weak` directive has set this
+    // symbol's binding explicitly. ensure_sym() (asm.c) also creates
+    // not-yet-defined forward-referenced symbols with bind=SB_GLOBAL as a
+    // speculative default (needed so a reference that turns out to be a
+    // genuinely external, never-locally-defined symbol still links), but
+    // that guess must never survive into a label that's later defined in
+    // this same file *without* an explicit .globl — define_label() uses
+    // this flag to tell "confirmed global" from "assumed global until
+    // proven local" and downgrade the latter back to SB_LOCAL.
+    bool bind_pinned;
+    // ELF symbol visibility (STV_DEFAULT/STV_INTERNAL/STV_HIDDEN/
+    // STV_PROTECTED, low 2 bits of st_other) — set by an explicit
+    // `.hidden`/`.internal`/`.protected` directive. GMP's own hand-written
+    // asm relies on this: its PROTECT() macro expands to `.hidden`, used
+    // on file-local-but-cross-object-file data tables (e.g.
+    // mpn_invert_limb_table) that are referenced via a plain PC32 `%rip`
+    // LEA — a GLOBAL *default*-visibility symbol referenced that way in a
+    // shared object is rejected by the linker ("recompile with -fPIC",
+    // since a default-visibility global could be interposed by another
+    // shared object, which a bare PC32 relocation can't express); HIDDEN
+    // tells the linker this symbol can never be interposed, making the
+    // direct PC32 reference valid despite the GLOBAL binding.
+    uint8_t visibility;
 };
 
 // ---------------------------------------------------------------------------
@@ -325,6 +348,12 @@ bool objfile_has_debug(ObjFile *obj);
 
 void objfile_init(ObjFile *obj);
 void objfile_free(ObjFile *obj);
+
+// ELF symbol visibility (st_other's low 2 bits) — see ObjSym.visibility.
+#define STV_DEFAULT   0
+#define STV_INTERNAL  1
+#define STV_HIDDEN    2
+#define STV_PROTECTED 3
 
 // Add a symbol (returns its index).  Duplicate names with the same section
 // and offset are merged.

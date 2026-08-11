@@ -10765,8 +10765,32 @@ static VReg gen(Node *node) {
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
                 }
             } else if (op->is_memory) {
-                // "m" constraint: compute address, use as memory ref in template
+                // "m" constraint: compute address, use as memory ref in template.
                 VReg r = gen_addr(op->expr);
+                if (r < 0) {
+                    // Not an lvalue -- e.g. GMP's own longlong.h count_
+                    // leading_zeros/count_trailing_zeros macros pass
+                    // "rm" ((UDItype)(x)): the explicit cast makes the
+                    // operand expression a genuine rvalue (gen_addr()
+                    // correctly refuses an address for a scalar ND_CAST,
+                    // "caller can fall back to gen()"), but this is a
+                    // memory-alternative-only path with no register
+                    // fallback of its own. Real GCC materializes a
+                    // temporary and uses its address; do the same via
+                    // the shared staging-slot scheme (current_fn_stack_size
+                    // + fn_struct_ret_off) other rvalue-needs-an-address
+                    // sites in this file already use.
+                    VReg val = gen(op->expr);
+                    int sz = op->expr->ty ? op->expr->ty->size : 8;
+                    int alloc = (sz + 7) & ~7;
+                    fn_struct_ret_off += alloc;
+                    if (fn_struct_ret_off > fn_struct_ret_total) fn_struct_ret_total = fn_struct_ret_off;
+                    int result_off = current_fn_stack_size + fn_struct_ret_off;
+                    asm_mov_reg_rbp(cg_sec, val, sz, result_off); // mov val, -result_off(%rbp)
+                    free_reg(val);
+                    r = alloc_reg();
+                    asm_lea_rbp_reg(cg_sec, r, 8, result_off); // lea -result_off(%rbp), r
+                }
                 op_regs[i] = r;
                 op->reg = r;
                 snprintf(op->asm_str, sizeof(op->asm_str), "(%s)", reg64[r]);

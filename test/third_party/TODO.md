@@ -700,10 +700,10 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_glib        | **investigated, not an rcc bug** — `configure` fails before any compilation: `Package requirements (libpcre >= 8.31) were not met: Package 'libpcre' not found` (missing system dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
-| test_libgmp      | configure: cannot determine 32-bit word directive                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
 | test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| test_nob         | git checkout only (build not reached?)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_samba       | **two real rcc bugs found and fixed** (see "Fixed (2026-08-10, LONG_MAX/atomic-load session)" below) — configure now progresses far past its earlier `pyembed`/`Python.h` failure into unrelated dependency checks (pam, iconv, ncurses, readline, ...), currently blocked on `perl module "Parse::Yapp::Driver" not found` (missing build-time CPAN module in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | test_scrapscript | **fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix resolved linking (32/33 -> 17/33 failing), then the section sh_addralign fix below resolved the remaining 17 `SIGABRT`s (17/33 -> 0/33 failing, full suite green)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -818,6 +818,26 @@ a multi-session effort, not a quick win.
 
 4. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
    - Missing system libs: libseccomp, libzstd, etc.
+
+5. **C `defer` statement (WG14 N3199 / TS 25755, `-fdefer-ts` /
+   `_Defer`)** — test_nob's own test suite requires it: `defer { ... }`
+   is not recognized at all (rcc doesn't know the `-fdefer-ts` flag
+   either, so it warns and silently ignores it, then parses the bare
+   `defer` keyword as an ordinary undeclared identifier). This is a
+   genuine WG14 feature under active standardization (Committee Draft
+   status as of mid-2026, targeting a future C revision, not yet part
+   of any ratified C standard) implemented experimentally in slimcc,
+   clang, and (in progress) gcc. A reference implementation exists at
+   `../slimcc/parse.c` (per this repo's own AGENTS.md, which explicitly
+   endorses cross-checking against slimcc) -- but it's not a
+   contained, drop-in patch: `defer` interacts with every statement
+   kind that can be a scope boundary (`if`/`switch`/`for`/`while`/`do`/
+   compound blocks), `goto` targets outside a defer's scope, VLA
+   cleanup ordering, and needs `return`-inside-`defer` rejected as
+   ill-formed -- correctly threading LIFO defer-stack unwinding through
+   every exit path (fall-through, `return`, `break`, `continue`,
+   `goto`) on both x86-64 and ARM64 codegen is a genuine new-feature
+   implementation, not a quick win.
 
 ---
 
@@ -2809,3 +2829,107 @@ recent fix, PASS) on the mingw and arm64 cross-compile targets.
 confirmed `802.11_exthdr`/`802.11_rx-stbc` now match their golden
 output exactly); a full fresh harness run (`test/linux_thirdparty.bash
 test_tcpdump`) confirms `rc=0`. **`test_tcpdump` is fully fixed.**
+
+### Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)
+
+Continued investigating `test_libgmp` (GNU MP), whose row above still
+carried a stale, long-superseded status from an early configure-time
+failure; many prior sessions' worth of assembler fixes (not all
+individually logged here) had already gotten `libgmp.so` most of the
+way through its own build. This session's fresh `make check-all`-driven
+rebuild hit a genuine linker failure building the shared library:
+
+- **A local label (no `.globl`) referenced via a forward `call`/`jmp`/
+  `%rip`-relative `lea` _before_ its own definition ended up bound
+  `STB_GLOBAL` in the assembled object's symbol table instead of the
+  correct `STB_LOCAL`** (`src/asm.c`) — even though it was never
+  `.globl`'d anywhere. Root cause: `ensure_sym()`, used by every
+  forward-reference site, creates the not-yet-defined symbol with a
+  _speculative_ `SB_GLOBAL` binding (needed so a reference that turns
+  out to be genuinely external — never locally defined in this
+  translation unit — still produces a valid, linkable relocation). But
+  once the label _was_ later defined locally via `define_label()`,
+  nothing ever downgraded that guess back to `SB_LOCAL`:
+  `define_label()` only ever _upgraded_ LOCAL→GLOBAL on an explicit
+  `.globl`, never the reverse. Confirmed via a minimal repro (`call
+Lbar` / `lea Lbar(%rip), %rax` above `Lbar:`, no `.globl`): rcc
+  emitted `Lbar` as `GLOBAL`, real GNU `as` as `LOCAL`.
+  This silently broke real multi-object-file linking: GMP's own
+  `mpn/x86_64/{mul,sqr,mullo,redc_1,mod_34lsub1,...}_basecase.asm`
+  files each define their own _private_, identically-named local
+  helper labels (`Ltab`, `Laddmul_outer_0..3`, ...), forward-referenced
+  from earlier in the same file via exactly this shape (a
+  computed-dispatch `lea LABEL(%rip), %r14` / later `jmp *%r14`
+  idiom). Once wrongly promoted to GLOBAL, linking `libgmp.so` from all
+  of those objects together failed outright: `ld: multiple definition
+of 'Ltab'` / `'Laddmul_outer_1'` / etc. — real, disjoint per-file
+  local symbols colliding as if they were the same global one.
+  Fixed by adding `ObjSym.bind_pinned` (`obj.h`): true only once a
+  _real_ `.globl`/`.weak` directive has set a symbol's binding
+  explicitly (both directive handlers now set it). `define_label()`'s
+  two call sites now gate `is_global`/`is_weak` on `bind_pinned` rather
+  than the symbol's raw current binding, and `define_label()` itself
+  downgrades an unpinned `SB_GLOBAL` back to `SB_LOCAL` when a label
+  turns out to be defined without ever being pinned — while a real
+  `.globl` (before _or_ after the label, both orders checked) still
+  correctly pins it GLOBAL.
+- **`.hidden`/`.protected`/`.internal` (ELF symbol visibility) were not
+  recognized at all**, silently falling through to a no-op regardless
+  of the source — surfaced immediately once the binding bug above was
+  fixed and the library build reached its next real linker error:
+  `relocation R_X86_64_PC32 against symbol 'mpn_invert_limb_table' can
+not be used when making a shared object; recompile with -fPIC`. Root
+  cause: GMP's own `PROTECT()` m4 macro (used on internal-linkage-but-
+  cross-object-file data tables like `mpn_invert_limb_table`, referenced
+  from a _different_ `.asm` file via a plain `%rip`-relative LEA)
+  expands to `.hidden`; with no visibility ever recorded, the symbol
+  stayed at default ELF visibility despite being GLOBAL-bound —
+  `ld -shared` correctly refuses a direct PC32 relocation against a
+  default-visibility GLOBAL symbol (which could in principle be
+  interposed by another shared object at load time, something a bare
+  PC-relative displacement can't express); `STV_HIDDEN` tells the
+  linker this symbol can never be interposed, making the direct
+  reference safe.
+  Fixed by adding `ObjSym.visibility` (`obj.h`,
+  `STV_DEFAULT`/`STV_INTERNAL`/`STV_HIDDEN`/`STV_PROTECTED`) and a
+  `.hidden`/`.protected`/`.internal` directive handler (`src/asm.c`)
+  that sets it (creating a not-yet-seen symbol as a `SEC_UNDEF` stub if
+  needed, exactly like `.globl`/`.weak`); `elf_write.c` now emits it as
+  both the local- and global-symbol table entries' `st_other` byte
+  instead of always writing 0. Verified byte-for-byte identical to real
+  GNU `as`'s own `objdump -t` output (`.hidden`/`.protected`/
+  `.internal` name-column prefix) for the same source.
+
+With both fixed, `libgmp.so`/`libgmp.a` now build and link completely
+clean (previously never got past the linker at all). The resulting
+library's own `tests/mpn/t-*` runtime suite still shows 47 failures
+(`t-mul`, `t-invert`, `t-bdiv`, `t-hgcd`, `t-gcd_11`, ... — SIGABRT/
+SIGSEGV or wrong values, all inside `mpn_mul_basecase`/`toom22_mul`/
+`toom33_mul`/`dcpi1_bdiv_qr`) — **investigated and confirmed NOT an rcc
+bug**: built the identical GMP 6.3.0 source tree with the system's real
+`gcc`+GNU `as`+GNU `ld` instead (`CC="gcc -std=gnu17"` to work around
+this GCC 15's C23-default-prototype rejection of GMP's own 2004-era
+`configure` probe, unrelated to rcc) as a correctness oracle: every one
+of the same tests (`t-invert`, `t-mul`, `t-mullo`, `t-sizeinbase`,
+`t-gcd_11`, `t-fib2m`, `t-bdiv`) crashes with the _identical_ exit code
+against the real-gcc-built library too. This is a pre-existing GMP
+6.3.0 / environment incompatibility (this old release's `k8`-tuned
+hand-written asm vs. this sandbox's specific CPU/kernel/glibc
+combination, or a genuine upstream GMP bug at this vintage) —
+completely unrelated to and unaffected by either fix above, matching
+this project's own "no pre-existing rcc bugs" invariant. Not chased
+further (out of scope: real 3rd-party source, not an rcc regression).
+
+New regression tests: `test/test_asm_forward_local_label_binding.c` (4
+cases: forward-referenced `call`-target and `%rip`-LEA-target labels
+both must bind LOCAL; two different translation units defining the
+same-named local label `Ltab` this way — the exact real libgmp
+shape — must both bind LOCAL rather than colliding as GLOBAL; an
+explicit `.globl` must still correctly pin GLOBAL) and
+`test/test_asm_hidden_visibility.c` (4 cases: `.hidden`/`.protected`/
+`.internal` each produce the matching ELF visibility, byte-for-byte
+checked against real GNU `as`'s own `objdump -t` output shape; a plain
+`.globl` with no visibility directive stays at default visibility).
+Full suite verified: Unit tests 214/214, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64).

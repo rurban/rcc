@@ -235,6 +235,7 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
                 obj->syms[n->sym_idx].size = size;
                 obj->syms[n->sym_idx].bind = bind;
                 obj->syms[n->sym_idx].type = type;
+                obj->syms[n->sym_idx].bind_pinned = false;
             }
             return n->sym_idx;
         }
@@ -254,6 +255,8 @@ int objfile_add_sym(ObjFile *obj, const char *name, int section,
     obj->syms[idx].size = size;
     obj->syms[idx].bind = bind;
     obj->syms[idx].type = type;
+    obj->syms[idx].bind_pinned = false;
+    obj->syms[idx].visibility = STV_DEFAULT;
     // Insert into hash table
     struct SymHashNode *node = malloc(sizeof(struct SymHashNode));
     node->hash = h;

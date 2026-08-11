@@ -111,6 +111,28 @@ typedef struct {
     // invocation (e.g. objtool.h's ANNOTATE macro: ".Lhere_\@:"). See
     // asm_dispatch_substituted()'s param_set(&args, "@", ...).
     int macro_invocation_seq;
+    // Set when an unrecognized x86-64 instruction is hit (encode_x86's
+    // final "Unknown" fallback) -- real GAS hard-errors on this (`no such
+    // instruction`), but rcc's own encode_x86 previously only warned and
+    // kept going, silently no-op'ing the line while still reporting
+    // success (exit 0) to the caller. That let a colon-less bare-word
+    // label (traditional Unix-as syntax GAS itself no longer accepts
+    // either — confirmed: `as` on the same line reports "no such
+    // instruction") get silently swallowed as an "unknown instruction"
+    // instead of genuinely defining the label, which is exactly what
+    // misled gmp's own `configure` label-suffix auto-detection probe
+    // (`test_libgmp`, "cannot determine how to define a 32-bit word") --
+    // the probe's exit-code-based success check couldn't tell "the label
+    // was defined" from "the label was silently ignored, no symbol
+    // exists, but nothing complained". assemble_inline()'s final return
+    // value now reflects this, matching real `as`'s nonzero exit.
+    // ARM64's own encode_arm64 has the *opposite*, deliberately-kept
+    // silent-NOP fallback (see its own comment) -- test/tinycc-
+    // 139_arm64_errors.expect is a tracked, uneditable baseline asserting
+    // *empty* stderr for an unrecognized ARM64 mnemonic, so this flag is
+    // x86-64-only by construction (nothing on the ARM64 side ever sets
+    // it).
+    bool had_error;
 } AsmState;
 
 static void asm_error(AsmState *as, const char *msg) {
@@ -181,11 +203,22 @@ static void define_label(AsmState *as, const char *name, bool is_global, bool is
             SymBind bind = is_weak ? SB_WEAK : (is_global ? SB_GLOBAL : SB_LOCAL);
             SymType type = is_func ? ST_FUNC : ST_OBJECT;
             idx = objfile_add_sym(as->obj, name, sec, off, 0, bind, type);
+            if (is_global) as->obj->syms[idx].bind_pinned = true;
         } else {
             as->obj->syms[idx].section = sec;
             as->obj->syms[idx].offset = off;
-            if (is_global && as->obj->syms[idx].bind == SB_LOCAL)
-                as->obj->syms[idx].bind = is_weak ? SB_WEAK : SB_GLOBAL;
+            if (is_global) {
+                if (as->obj->syms[idx].bind == SB_LOCAL)
+                    as->obj->syms[idx].bind = is_weak ? SB_WEAK : SB_GLOBAL;
+            } else if (!as->obj->syms[idx].bind_pinned) {
+                // A prior forward reference (ensure_sym(), e.g. `call foo`
+                // or `lea foo(%rip)` before `foo:`) speculatively marked
+                // this SB_GLOBAL so it would still link if foo turned out
+                // to be genuinely external. Now that foo is actually
+                // defined right here, with no real .globl ever seen for
+                // it, that guess was wrong — it's local.
+                as->obj->syms[idx].bind = SB_LOCAL;
+            }
             if (is_func) as->obj->syms[idx].type = ST_FUNC;
         }
     }
@@ -562,6 +595,24 @@ static void strip_local_label_suffix(char *tok) {
     tok[len - 1] = '\0';
 }
 
+// Real GAS's PIC-mode call/jump target syntax: "call foo@PLT" / "jmp
+// foo@PLT" (see GMP's own mpn/x86_64/x86_64-defs.m4 CALL()/TCALL()
+// macros, unconditionally emitted whenever `PIC` is defined). The
+// "@PLT" is a pure assembler-level annotation selecting a PLT32
+// relocation against the BARE symbol name -- it is never part of the
+// symbol name itself. Every jmp/jcc/call target here already falls
+// back to exactly that R_X86_64_PLT32 relocation whenever the symbol
+// isn't a same-section local, so stripping the suffix before any of
+// that existing lookup/relocation logic runs is sufficient. Left
+// unstripped, the literal "@" ends up baked into the linker's
+// undefined-symbol name, which GNU ld then misparses as its own
+// "symbol@VERSION_NODE" versioned-symbol-reference syntax ("no symbol
+// version section for versioned symbol `foo@PLT'").
+static void strip_plt_suffix(char *tok) {
+    char *at = strchr(tok, '@');
+    if (at) *at = '\0';
+}
+
 // Full assembler-time integer expression evaluator (defined below, after
 // the ExprCtx/expr_* recursive-descent chain) with "." resolving to the
 // current section offset — used by .fill's repeat-count argument, e.g.
@@ -913,6 +964,12 @@ static X86Reg parse_x86_reg64(const char *s) {
     if (!strcmp(s, "r13") || !strcmp(s, "r13d") || !strcmp(s, "r13w") || !strcmp(s, "r13b")) return X86_R13;
     if (!strcmp(s, "r14") || !strcmp(s, "r14d") || !strcmp(s, "r14w") || !strcmp(s, "r14b")) return X86_R14;
     if (!strcmp(s, "r15") || !strcmp(s, "r15d") || !strcmp(s, "r15w") || !strcmp(s, "r15b")) return X86_R15;
+    // "(%rip)" -- RIP-relative addressing (base=NOREG happens to encode
+    // byte-for-byte identically via emit_mem's own X86_RIP/X86_NOREG
+    // branches, but only X86_RIP lets the LEA dispatch above tell "this
+    // was really RIP-relative" apart from "no base register at all" to
+    // decide whether a bare/symbol displacement needs a real relocation.
+    if (!strcmp(s, "rip")) return X86_RIP;
     return X86_NOREG;
 }
 
@@ -949,9 +1006,68 @@ static int reg_size_x86(const char *s) {
     return 8;
 }
 
+// Set by parse_x86_mem() whenever a memory operand's displacement names a
+// symbol (see try_parse_symbol_disp() below) -- reset to empty at the top
+// of every parse_x86_mem() call, so a caller checking it immediately after
+// a single M(i)/x86_get_mem() evaluation sees exactly that operand's
+// symbol, or "" if it had none. X86Mem itself carries only base/index/
+// scale/disp (no symbol slot, and the low-level x86_enc.c encoders have
+// no ObjFile access to emit a relocation even if it did), so a RIP-
+// relative symbol reference has nowhere else to travel from parsing to
+// the relocation the caller (encode_x86's LEA dispatch) must add.
+static char g_last_mem_sym[128];
+
+// Split a memory-operand displacement expression into "SYMBOL +/- CONST"
+// (either order -- "mytable+16", "-512+mytable", or bare "mytable"), the
+// only real-world shapes RIP-relative symbol addressing uses (GAS's own
+// general displacement grammar allows far more, but multiplication/
+// parens/multiple symbols in a `lea`'s displacement essentially never
+// appear in practice). Returns true and fills *sym_out/*addend_out on a
+// match; false (leaving both untouched) for anything fancier, a bare
+// numeric expression, or more than one identifier -- the caller falls
+// back to its existing pure-arithmetic eval_asm_expr_here() path.
+static bool try_parse_symbol_disp(const char *disp_s, char *sym_out, size_t sym_out_sz, int64_t *addend_out) {
+    int64_t total = 0;
+    bool have_sym = false;
+    const char *p = disp_s;
+    while (*p) {
+        while (isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        bool neg = false;
+        if (*p == '+') p++;
+        else if (*p == '-') {
+            neg = true;
+            p++;
+        }
+        while (isspace((unsigned char)*p)) p++;
+        if (isalpha((unsigned char)*p) || *p == '_' || *p == '.') {
+            if (have_sym || neg) return false; // second symbol, or "-symbol"
+            const char *start = p;
+            while (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '$') p++;
+            size_t len = (size_t)(p - start);
+            if (len == 0 || len >= sym_out_sz) return false;
+            memcpy(sym_out, start, len);
+            sym_out[len] = '\0';
+            have_sym = true;
+        } else if (isdigit((unsigned char)*p)) {
+            char *endp;
+            long long v = strtoll(p, &endp, 0);
+            if (endp == p) return false;
+            total += neg ? -v : v;
+            p = endp;
+        } else {
+            return false; // parens, '*', etc. -- not this shape
+        }
+    }
+    if (!have_sym) return false;
+    *addend_out = total;
+    return true;
+}
+
 // Parse AT&T memory operand: disp(%base, %index, scale) or (%base)
 // Returns true on success
 static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
+    g_last_mem_sym[0] = '\0';
     m->base = X86_NOREG;
     m->index = X86_NOREG;
     m->scale = 1;
@@ -964,17 +1080,24 @@ static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
     if (paren) {
         *paren = 0;
         if (buf[0]) {
-            // Parse displacement: a plain integer, or a full assembler-
-            // time arithmetic expression (e.g. the kernel's IRET-frame
-            // copy loops: "pushq 5*8(%rsp)", syscall-entry pt_regs
-            // pushes: "pushq 6*8(%rdi)") — never just a bare literal.
-            // strtoll() alone silently stopped at the first non-digit
-            // byte ('*'), turning "5*8" into a displacement of 5 instead
-            // of 40 and desyncing every offset after it.
             char *disp_s = skip_ws(buf);
-            if (disp_s[0] == '-' || isdigit((unsigned char)disp_s[0]))
+            int64_t sym_addend = 0;
+            if (try_parse_symbol_disp(disp_s, g_last_mem_sym, sizeof(g_last_mem_sym), &sym_addend)) {
+                // "SYMBOL(%rip)" / "-512+SYMBOL(%rip)" / "SYMBOL+16(%rip)":
+                // stash the symbol for the caller (see g_last_mem_sym's own
+                // comment) and carry the numeric part as the disp, exactly
+                // like the plain-arithmetic path below.
+                m->disp = sym_addend;
+            } else if (disp_s[0] == '-' || isdigit((unsigned char)disp_s[0])) {
+                // Parse displacement: a plain integer, or a full assembler-
+                // time arithmetic expression (e.g. the kernel's IRET-frame
+                // copy loops: "pushq 5*8(%rsp)", syscall-entry pt_regs
+                // pushes: "pushq 6*8(%rdi)") — never just a bare literal.
+                // strtoll() alone silently stopped at the first non-digit
+                // byte ('*'), turning "5*8" into a displacement of 5 instead
+                // of 40 and desyncing every offset after it.
                 m->disp = eval_asm_expr_here(as, disp_s);
-            // Symbol displacement handled separately
+            }
         }
         char *inner = paren + 1;
         char *close = strchr(inner, ')');
@@ -1239,14 +1362,33 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
             idx = objfile_add_sym(as->obj, sym, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
         else
             as->obj->syms[idx].bind = SB_GLOBAL;
+        as->obj->syms[idx].bind_pinned = true;
     } else if (!strcmp(dir, "weak")) {
         char *sym = args;
         trim_end(sym);
         int idx = objfile_find_sym(as->obj, sym);
         if (idx < 0)
-            objfile_add_sym(as->obj, sym, SEC_UNDEF, 0, 0, SB_WEAK, ST_NOTYPE);
+            idx = objfile_add_sym(as->obj, sym, SEC_UNDEF, 0, 0, SB_WEAK, ST_NOTYPE);
         else
             as->obj->syms[idx].bind = SB_WEAK;
+        as->obj->syms[idx].bind_pinned = true;
+    } else if (!strcmp(dir, "hidden") || !strcmp(dir, "protected") || !strcmp(dir, "internal")) {
+        // ELF symbol visibility — GMP's own PROTECT() macro expands to
+        // `.hidden`, marking an internal-to-this-shared-object data table
+        // (e.g. mpn_invert_limb_table) as non-interposable so the linker
+        // accepts a plain PC32 `%rip`-relative reference to it even though
+        // it's GLOBAL-bound; without it, `ld -shared` rejects that
+        // relocation ("recompile with -fPIC") since a *default*-visibility
+        // global could in principle be overridden by another shared
+        // object, which a bare PC32 displacement can't express.
+        char *sym = args;
+        trim_end(sym);
+        int idx = objfile_find_sym(as->obj, sym);
+        if (idx < 0)
+            idx = objfile_add_sym(as->obj, sym, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_NOTYPE);
+        as->obj->syms[idx].visibility = !strcmp(dir, "hidden") ? STV_HIDDEN
+            : !strcmp(dir, "protected")                        ? STV_PROTECTED
+                                                               : STV_INTERNAL;
     } else if (!strcmp(dir, "type")) {
         // Real GAS's ".type sym, TYPE_DESC" accepts several spellings for
         // TYPE_DESC — "@function"/"%function" (the common hand-written
@@ -1362,6 +1504,7 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
     } else if (!strcmp(dir, "byte") || !strcmp(dir, "2byte") ||
                !strcmp(dir, "4byte") || !strcmp(dir, "hword") ||
                !strcmp(dir, "word") || !strcmp(dir, "short") ||
+               !strcmp(dir, "value") ||
                !strcmp(dir, "long") ||
                !strcmp(dir, "quad") || !strcmp(dir, "octa") ||
                !strcmp(dir, "8byte")) {
@@ -1372,10 +1515,10 @@ static void handle_directive(AsmState *as, const char *dir, char *args) {
         // It was previously lumped in with .quad/.8byte's sz=8, silently
         // truncating every .octa value's high 64 bits and halving the
         // section's actual size vs. its declared entsize.
-        int sz = (!strcmp(dir, "byte")) ? 1 : (!strcmp(dir, "2byte") || !strcmp(dir, "hword") || !strcmp(dir, "word") || !strcmp(dir, "short")) ? 2
-            : (!strcmp(dir, "4byte") || !strcmp(dir, "long"))                                                                                   ? 4
-            : (!strcmp(dir, "octa"))                                                                                                            ? 16
-                                                                                                                                                : 8;
+        int sz = (!strcmp(dir, "byte")) ? 1 : (!strcmp(dir, "2byte") || !strcmp(dir, "hword") || !strcmp(dir, "word") || !strcmp(dir, "short") || !strcmp(dir, "value")) ? 2
+            : (!strcmp(dir, "4byte") || !strcmp(dir, "long"))                                                                                                            ? 4
+            : (!strcmp(dir, "octa"))                                                                                                                                     ? 16
+                                                                                                                                                                         : 8;
 
         SecBuf *buf = cur_sec_buf(as);
         // May have multiple comma-separated values
@@ -2778,11 +2921,14 @@ static bool encode_arm64(AsmState *as, const char *mnem, char *ops_str) {
 // ---------------------------------------------------------------------------
 
 // Returns 0 if no explicit AT&T size suffix, else 1/2/4/8.
-// "sub" ends with 'b' but that's the mnemonic, not a suffix.
+// "sub"/"sbb" end with 'b' but that's the mnemonic, not a suffix (found
+// via GMP's own mpn/x86_64/invert_limb.asm: "sbb %rax,%rax" was
+// misencoded as the 8-bit form "sbb %al,%al" since "sbb" wasn't in this
+// list — sub was, sbb never had been).
 // We maintain a list of known base names that don't carry size suffixes.
 static int suffix_size(const char *mnem) {
     static const char *no_sfx[] = {
-        "sub", "add", "and", "or", "xor", "not", "neg", "inc", "dec",
+        "sub", "add", "and", "or", "xor", "not", "neg", "inc", "dec", "sbb",
         "mul", "div", "imul", "idiv", "cmp", "test", "mov", "lea",
         "shl", "shr", "sal", "sar", "rol", "ror", "rcl", "rcr",
         "push", "pop", "call", "ret", "jmp", "nop", "xchg",
@@ -3233,10 +3379,28 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // LEA
+    // LEA. A RIP-relative memory operand naming a SYMBOL (e.g. GMP's own
+    // mpn/x86_64/invert_limb.asm's "-512+mpn_invert_limb_table(%rip)")
+    // has nowhere to carry that symbol through X86Mem/parse_x86_mem
+    // (see g_last_mem_sym's own comment) -- M(0) alone silently folds
+    // the whole displacement expression down to a bare integer (the
+    // symbol term evaluates to 0 in eval_asm_expr_here's arithmetic),
+    // producing a LEA that's RIP-relative to *itself* instead of the
+    // named symbol, no relocation recorded at all. Detect that case via
+    // g_last_mem_sym right after M(0) and add the real R_X86_64_PC32
+    // relocation GAS would.
     if (!strncmp(mnem, "lea", 3)) {
-        if (is_mem(0) && is_reg(1))
-            x86_lea(buf, sz, R(1), M(0));
+        if (is_mem(0) && is_reg(1)) {
+            X86Mem m = M(0);
+            if (g_last_mem_sym[0] && m.base == X86_RIP) {
+                x86_lea(buf, sz, R(1), x86_mem(X86_RIP, 0));
+                int sidx = ensure_sym(as, g_last_mem_sym);
+                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
+                                  R_X86_64_PC32, m.disp - 4);
+            } else {
+                x86_lea(buf, sz, R(1), m);
+            }
+        }
         return true;
     }
 
@@ -3330,34 +3494,78 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // SHIFTS (AT&T: count, r/m)
-    if (!strncmp(mnem, "shl", 3) || !strncmp(mnem, "sal", 3)) {
-        if (is_imm(0))
-            x86_shl_ri(buf, sz, R(1), (uint8_t)IMM(0));
+    // SHIFTS/ROTATES (AT&T: shl/shr/sar/rol/ror). Three operand shapes,
+    // matching real GAS: bare "shr reg" (1 operand, implicit shift-by-1
+    // -- the D0/D1 opcode form, distinct from an explicit "$1, reg"),
+    // "shr $imm, reg" (2 operands, C0/C1 + imm8), and "shr %cl, reg" (2
+    // operands, D2/D3). Previously every one of these mnemonics assumed
+    // exactly 2 operands and always read dst from R(1): for the 1-operand
+    // form R(1) silently read out of bounds (X86_NOREG, which happened to
+    // decode as a *different*, fixed physical register) and always took
+    // the "shift by CL" opcode instead of "shift by 1" -- confirmed via
+    // GMP's own mpn/x86_64/invert_limb.asm ("shr %rsi" / "shr %rax" /
+    // "shr %rdx" all silently became "shr %cl, %rdi", corrupting the
+    // exact reciprocal-approximation Newton's-method sequence
+    // mpn_invert_limb() depends on -- confirmed against real GNU `as`'s
+    // disassembly byte-for-byte).
+    if (!strncmp(mnem, "shl", 3) || !strncmp(mnem, "sal", 3) ||
+        !strncmp(mnem, "shr", 3) || !strncmp(mnem, "sar", 3) ||
+        !strncmp(mnem, "rol", 3) || !strncmp(mnem, "ror", 3)) {
+        bool is_shl = mnem[1] == 'h' && mnem[2] == 'l';
+        bool is_sal = mnem[0] == 's' && mnem[1] == 'a' && mnem[2] == 'l';
+        bool is_shr = mnem[1] == 'h' && mnem[2] == 'r';
+        bool is_sar = mnem[0] == 's' && mnem[1] == 'a' && mnem[2] == 'r';
+        bool is_rol = mnem[0] == 'r' && mnem[1] == 'o' && mnem[2] == 'l';
+        X86Reg dst = (nops >= 2) ? R(1) : R(0);
+        if (nops < 2) {
+            if (is_shl || is_sal) x86_shl_ri(buf, sz, dst, 1);
+            else if (is_shr)
+                x86_shr_ri(buf, sz, dst, 1);
+            else if (is_sar)
+                x86_sar_ri(buf, sz, dst, 1);
+            else if (is_rol)
+                x86_rol_ri(buf, sz, dst, 1);
+            else
+                x86_ror_ri(buf, sz, dst, 1);
+        } else if (is_imm(0)) {
+            uint8_t imm = (uint8_t)IMM(0);
+            if (is_shl || is_sal) x86_shl_ri(buf, sz, dst, imm);
+            else if (is_shr)
+                x86_shr_ri(buf, sz, dst, imm);
+            else if (is_sar)
+                x86_sar_ri(buf, sz, dst, imm);
+            else if (is_rol)
+                x86_rol_ri(buf, sz, dst, imm);
+            else
+                x86_ror_ri(buf, sz, dst, imm);
+        } else {
+            if (is_shl || is_sal) x86_shl_rcl(buf, sz, dst);
+            else if (is_shr)
+                x86_shr_rcl(buf, sz, dst);
+            else if (is_sar)
+                x86_sar_rcl(buf, sz, dst);
+            else if (is_rol)
+                x86_rol_rcl(buf, sz, dst);
+            else
+                x86_ror_rcl(buf, sz, dst);
+        }
+        return true;
+    }
+    // RCL/RCR (rotate-through-carry). AT&T normally writes "rcr $imm,
+    // reg" / "rcr %cl, reg" (2 operands), but a bare "rcr reg" (1
+    // operand) is also valid GAS syntax, implying an omitted count of
+    // 1 -- the *only* form GMP's own mpn/x86_64/*.asm bignum-shift
+    // routines (e.g. rsh1add_n.asm) ever emit.
+    if (!strncmp(mnem, "rcl", 3) || !strncmp(mnem, "rcr", 3)) {
+        bool is_rcr = mnem[2] == 'r';
+        X86Reg dst = (nops >= 2) ? R(1) : R(0);
+        if (nops < 2)
+            is_rcr ? x86_rcr_ri(buf, sz, dst, 1) : x86_rcl_ri(buf, sz, dst, 1);
+        else if (is_imm(0))
+            is_rcr ? x86_rcr_ri(buf, sz, dst, (uint8_t)IMM(0))
+                   : x86_rcl_ri(buf, sz, dst, (uint8_t)IMM(0));
         else
-            x86_shl_rcl(buf, sz, R(1));
-        return true;
-    }
-    if (!strncmp(mnem, "shr", 3)) {
-        if (is_imm(0))
-            x86_shr_ri(buf, sz, R(1), (uint8_t)IMM(0));
-        else
-            x86_shr_rcl(buf, sz, R(1));
-        return true;
-    }
-    if (!strncmp(mnem, "sar", 3)) {
-        if (is_imm(0))
-            x86_sar_ri(buf, sz, R(1), (uint8_t)IMM(0));
-        else
-            x86_sar_rcl(buf, sz, R(1));
-        return true;
-    }
-    if (!strncmp(mnem, "ror", 3)) {
-        x86_ror_ri(buf, sz, R(1), (uint8_t)IMM(0));
-        return true;
-    }
-    if (!strncmp(mnem, "rol", 3)) {
-        x86_rol_ri(buf, sz, R(1), (uint8_t)IMM(0));
+            is_rcr ? x86_rcr_rcl(buf, sz, dst) : x86_rcl_rcl(buf, sz, dst);
         return true;
     }
 
@@ -3452,6 +3660,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         // Label-based jump
         char *lbl = ops[0];
+        strip_plt_suffix(lbl);
         size_t off = buf->len;
         x86_jmp_rel32(buf, 0); // placeholder
         int sec = 0;
@@ -3521,6 +3730,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             return true;
         }
         char *lbl = ops[0];
+        strip_plt_suffix(lbl);
         size_t off = buf->len;
         x86_jcc_rel32(buf, cc, 0); // emits 0F 8X imm32 (6 bytes total)
         int sec = 0;
@@ -3554,6 +3764,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             return true;
         }
         char *lbl = ops[0];
+        strip_plt_suffix(lbl);
         size_t off = buf->len;
         x86_call_rel32(buf, 0);
         int sidx = ensure_sym(as, lbl);
@@ -3596,11 +3807,15 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // BSF/BSR/POPCNT/LZCNT/TZCNT
     if (!strncmp(mnem, "bsf", 3)) {
-        x86_bsf(buf, sz, R(1), R(0));
+        if (is_mem(0)) x86_bsf_rm(buf, sz, R(1), M(0));
+        else
+            x86_bsf(buf, sz, R(1), R(0));
         return true;
     }
     if (!strncmp(mnem, "bsr", 3)) {
-        x86_bsr(buf, sz, R(1), R(0));
+        if (is_mem(0)) x86_bsr_rm(buf, sz, R(1), M(0));
+        else
+            x86_bsr(buf, sz, R(1), R(0));
         return true;
     }
     if (!strncmp(mnem, "popcnt", 6)) {
@@ -4228,6 +4443,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_fstsw_m(buf, M(0));
         return true;
     }
+    if (!strcmp(mnem, "fnstenv")) {
+        x86_fnstenv_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "fstenv")) {
+        x86_fstenv_m(buf, M(0));
+        return true;
+    }
     // Bare "in"/"out" (no b/w/l suffix): AT&T infers the port-transfer
     // size from the AL/AX/EAX operand, same idea as the generic bare "mov".
     if (!strcmp(mnem, "in")) {
@@ -4335,8 +4558,11 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-    // Unknown
-    fprintf(stderr, "warning: unknown x86 instruction: %s\n", mnem);
+    // Unknown: real `as` hard-errors here ("no such instruction"); set
+    // had_error so the caller's exit code reflects that instead of
+    // silently reporting success (see AsmState.had_error's own comment).
+    fprintf(stderr, "error: unknown x86 instruction: %s\n", mnem);
+    as->had_error = true;
 #undef R
 #undef IMM
 #undef M
@@ -4418,8 +4644,8 @@ int assemble_file(const char *asm_path, const char *obj_path) {
             // lookup querying the bare digit — see the identical fix
             // in assemble_inline()'s own label-stripping loop.
             int idx = objfile_find_sym(&obj, lbl);
-            bool is_global = (idx >= 0 && obj.syms[idx].bind != SB_LOCAL);
-            bool is_weak = (idx >= 0 && obj.syms[idx].bind == SB_WEAK);
+            bool is_global = (idx >= 0 && obj.syms[idx].bind_pinned && obj.syms[idx].bind != SB_LOCAL);
+            bool is_weak = (idx >= 0 && obj.syms[idx].bind_pinned && obj.syms[idx].bind == SB_WEAK);
             bool is_func = (idx >= 0 && obj.syms[idx].type == ST_FUNC);
             define_label(&as, lbl, is_global, is_weak, is_func);
             p = skip_ws(colon + 1);
@@ -4960,7 +5186,7 @@ static bool is_data_emit_dir(const char *word) {
     // wrong 64-bit decimal value in place of the real 128-bit literal —
     // let .octa's original text reach handle_directive's own 128-bit-aware
     // parser (parse_u128_hex) untouched instead.
-    static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word", "short",
+    static const char *dirs[] = {"byte", "2byte", "4byte", "hword", "word", "short", "value",
                                  "long", "quad", "8byte"};
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
         if (!strcmp(word, dirs[i])) return true;
@@ -5949,8 +6175,8 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
             // "0b"/"0f" lookup that (correctly) queries the bare digit.
             char *lbl = p;
             int idx = objfile_find_sym(obj, lbl);
-            bool is_global = (idx >= 0 && obj->syms[idx].bind != SB_LOCAL);
-            bool is_weak = (idx >= 0 && obj->syms[idx].bind == SB_WEAK);
+            bool is_global = (idx >= 0 && obj->syms[idx].bind_pinned && obj->syms[idx].bind != SB_LOCAL);
+            bool is_weak = (idx >= 0 && obj->syms[idx].bind_pinned && obj->syms[idx].bind == SB_WEAK);
             bool is_func = (idx >= 0 && obj->syms[idx].type == ST_FUNC);
             define_label(&as, lbl, is_global, is_weak, is_func);
             p = skip_ws(after_tok + 1);
@@ -6148,5 +6374,5 @@ int assemble_inline(ObjFile *obj, const char *tmpl,
     }
 
     free(as.fixups);
-    return 0;
+    return as.had_error ? -1 : 0;
 }

@@ -364,6 +364,7 @@ int elf_write(ObjFile *obj, const char *path) {
                                     : os->type == ST_TLS                               ? STT_TLS
                                     : os->type == ST_GNU_IFUNC                         ? STT_IFUNC
                                                                                        : STT_NOTYPE);
+        es.other = os->visibility;
         es.shndx = USER_SYM_SHNDX(os);
         es.value = os->offset;
         es.size = os->size;
@@ -384,6 +385,7 @@ int elf_write(ObjFile *obj, const char *path) {
                                     : os->type == ST_TLS                               ? STT_TLS
                                     : os->type == ST_GNU_IFUNC                         ? STT_IFUNC
                                                                                        : STT_NOTYPE);
+        es.other = os->visibility;
         es.shndx = USER_SYM_SHNDX(os);
         es.value = os->offset;
         es.size = os->size;

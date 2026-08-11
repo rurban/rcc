@@ -352,6 +352,23 @@ static Node *clone_expr(Node *n) {
         at = at->next;
     }
     c->args = ahead.next;
+    // ND_ASM's operand expressions (e.g. GMP's own longlong.h count_
+    // leading_zeros/sub_ddmmss macros, used inside a const-trip-count
+    // for-loop body) live in asm_ops[].expr, entirely outside the
+    // lhs/rhs/cond/.../args fields walked above. A shallow `*c = *n`
+    // leaves c->asm_ops pointing at the SAME array as every other
+    // clone of this statement; without a real per-clone copy here,
+    // subst_lvar()'s in-place ND_LVAR->ND_NUM rewrite below would
+    // mutate one shared AsmOperand.expr tree from every unrolled
+    // copy in turn, so by the time codegen ran, every copy's operand
+    // referenced whatever the *last* copy substituted.
+    if (n->asm_ops && n->asm_noperands > 0) {
+        c->asm_ops = arena_alloc(sizeof(AsmOperand) * (size_t)n->asm_noperands);
+        for (int _ai = 0; _ai < n->asm_noperands; _ai++) {
+            c->asm_ops[_ai] = n->asm_ops[_ai];
+            c->asm_ops[_ai].expr = clone_expr(n->asm_ops[_ai].expr);
+        }
+    }
     return c;
 }
 
@@ -644,6 +661,15 @@ static bool writes_to_var(Node *n, LVar *var) {
             if (writes_to_var(c, var)) return true;
         for (Node *c = n->args; c; c = c->next)
             if (writes_to_var(c, var)) return true;
+        // ND_ASM operand expressions (see clone_expr()'s asm_ops comment) --
+        // an output constraint's expr writes to the operand, so even
+        // though the constraint char itself isn't inspected here, a
+        // conservative "any reference counts as a possible write" would
+        // be wrong (asm inputs only read); walk each just like any other
+        // subexpression instead, matching the read-detection every other
+        // field here already gets.
+        for (int _ai = 0; _ai < n->asm_noperands; _ai++)
+            if (writes_to_var(n->asm_ops[_ai].expr, var)) return true;
     }
     return false;
 }
@@ -668,6 +694,16 @@ static void subst_lvar(Node *n, LVar *var, long val) {
         subst_lvar(c, var, val);
     for (Node *c = n->args; c; c = c->next)
         subst_lvar(c, var, val);
+    // ND_ASM operand expressions -- see clone_expr()'s asm_ops comment;
+    // without this, an unrolled copy's inline-asm operand (e.g. GMP's
+    // own count_leading_zeros/sub_ddmmss macros indexing an array by
+    // the loop variable) keeps referencing the *original*, un-substituted
+    // LVar, which after unrolling drops its only writer (the loop's own
+    // `inc` clause is gone) and permanently reads whatever `i` was left
+    // at by the loop's `init` -- every copy silently computes the same
+    // (usually first) iteration's operands.
+    for (int _ai = 0; _ai < n->asm_noperands; _ai++)
+        subst_lvar(n->asm_ops[_ai].expr, var, val);
 }
 
 // Compute the constant iteration count of a for-loop with the canonical form

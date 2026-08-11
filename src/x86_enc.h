@@ -169,6 +169,15 @@ void x86_shr_rcl(SecBuf *s, int size, X86Reg r);
 void x86_sar_rcl(SecBuf *s, int size, X86Reg r);
 void x86_ror_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_rol_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
+// RCL/RCR (rotate-through-carry): opcode group 2, /r == 2/3. Real GAS
+// accepts both "rcr $imm, reg" (or the bare-register form implying
+// $1, e.g. GMP's own mpn/x86_64/*.asm) and "rcr %cl, reg".
+void x86_rcl_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
+void x86_rcr_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
+void x86_rcl_rcl(SecBuf *s, int size, X86Reg r); // rotate by CL
+void x86_rcr_rcl(SecBuf *s, int size, X86Reg r);
+void x86_rol_rcl(SecBuf *s, int size, X86Reg r);
+void x86_ror_rcl(SecBuf *s, int size, X86Reg r);
 
 // Compare / test
 void x86_cmp_rr(SecBuf *s, int size, X86Reg a, X86Reg b);
@@ -185,6 +194,8 @@ void x86_cmovcc(SecBuf *s, int size, X86Cond cc, X86Reg dst, X86Reg src);
 // Bit operations
 void x86_bsf(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_bsr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_bsf_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
+void x86_bsr_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
 void x86_popcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_lzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_tzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
@@ -392,6 +403,8 @@ void x86_fnop(SecBuf *s);
 void x86_fldcw_m(SecBuf *s, X86Mem m);
 void x86_fnstcw_m(SecBuf *s, X86Mem m);
 void x86_fstcw_m(SecBuf *s, X86Mem m);
+void x86_fnstenv_m(SecBuf *s, X86Mem m); // store FPU environment (14/28 bytes)
+void x86_fstenv_m(SecBuf *s, X86Mem m);
 void x86_fnstsw_m(SecBuf *s, X86Mem m);
 void x86_fnstsw_ax(SecBuf *s);
 void x86_fstsw_m(SecBuf *s, X86Mem m);

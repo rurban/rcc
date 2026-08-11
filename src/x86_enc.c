@@ -580,6 +580,12 @@ void x86_rol_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 0, r, 
 void x86_shl_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 4, r); }
 void x86_shr_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 5, r); }
 void x86_sar_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 7, r); }
+void x86_rcl_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 2, r, i); }
+void x86_rcr_ri(SecBuf *s, int sz, X86Reg r, uint8_t i) { shift_ri(s, sz, 3, r, i); }
+void x86_rcl_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 2, r); }
+void x86_rcr_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 3, r); }
+void x86_rol_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 0, r); }
+void x86_ror_rcl(SecBuf *s, int sz, X86Reg r) { shift_rcl(s, sz, 1, r); }
 
 // SETcc
 void x86_setcc(SecBuf *s, X86Cond cc, X86Reg dst) {
@@ -614,6 +620,29 @@ void x86_tzcnt(SecBuf *s, int sz, X86Reg d, X86Reg sr) {
     emit1(s, 0xf3);
     bop(s, sz, 0xbc, d, sr);
 }
+// 0F xx /r with dst=register, src=memory (BSF/BSR's r/m32/64 source
+// form) -- the mirror image of bop_mr's dst=memory shape. Missing this
+// meant a memory-operand "bsr (%mem), %reg" (or "bsf") had nowhere to
+// go: encode_x86's dispatch called the register-register x86_bsr/x86_bsf
+// unconditionally with whatever parse_x86_reg64() returned for a
+// non-register operand string like "(%rbx)" -- garbage that, empirically,
+// decoded to a fixed physical register rather than erroring, silently
+// reading the wrong value. Found via GMP's own longlong.h count_leading_
+// zeros/count_trailing_zeros macros, which pass their input operand as
+// "rm" (register-or-memory, compiler's choice) -- rcc's own encode_x86
+// always resolves "rm" to the memory alternative (see AsmOperand.is_memory
+// in parser.c), so BSR/BSF's *only* reachable operand shape from that
+// macro is the memory one.
+static void bop_rm(SecBuf *s, int sz, uint8_t op2, X86Reg dst, X86Mem src) {
+    size16_pfx(s, sz);
+    bool needrex = (sz == 8) || dst > X86_RDI || src.base > X86_RDI ||
+        (src.index != X86_NOREG && src.index > X86_RDI);
+    if (needrex) emit1(s, rex(sz == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
+    emit2(s, 0x0f, op2);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+}
+void x86_bsf_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbc, d, sm); }
+void x86_bsr_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbd, d, sm); }
 void x86_bswap(SecBuf *s, int sz, X86Reg r) {
     if (sz == 8) emit1(s, rex(1, 0, 0, r > X86_RDI));
     else if (r > X86_RDI)
@@ -1135,6 +1164,11 @@ void x86_fnstcw_m(SecBuf *s, X86Mem m) { x87_m(s, 0xd9, 7, m); }
 void x86_fstcw_m(SecBuf *s, X86Mem m) {
     emit1(s, 0x9b);
     x86_fnstcw_m(s, m);
+}
+void x86_fnstenv_m(SecBuf *s, X86Mem m) { x87_m(s, 0xd9, 6, m); }
+void x86_fstenv_m(SecBuf *s, X86Mem m) {
+    emit1(s, 0x9b);
+    x86_fnstenv_m(s, m);
 }
 void x86_fnstsw_m(SecBuf *s, X86Mem m) { x87_m(s, 0xdd, 7, m); }
 void x86_fnstsw_ax(SecBuf *s) { emit2(s, 0xdf, 0xe0); }
