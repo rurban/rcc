@@ -53,6 +53,7 @@ static char *kw_time;
 static char *kw_has_include;
 static char *kw_has_include_next;
 static char *kw_has_c_attribute;
+static char *kw_has_builtin;
 static char *kw_va_args;
 static char *kw_va_opt;
 static char *kw_defined;
@@ -1772,7 +1773,7 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    if (name == kw_has_include || name == kw_has_include_next || name == kw_has_c_attribute) {
+    if (name == kw_has_include || name == kw_has_include_next || name == kw_has_c_attribute || name == kw_has_builtin) {
         Token *nx = xp_next();
         if (ptok(nx, "(")) {
             xp_unget(nx);
@@ -2034,6 +2035,238 @@ static int64_t has_c_attribute_val(char *name) {
         if (strcmp(at, std_attrs[i]) == 0) return 202311L;
     return 0;
 }
+// __has_builtin(NAME): is a `__builtin_*` identifier one rcc's parser/
+// codegen actually recognizes and dispatches on by exact name (parser.c's
+// declspec()/unary() builtin chain, codegen.c's gen_funcall() bi_s_* table,
+// and preprocess.c's __builtin_X -> library-name macro aliases below)?
+// Table is a sorted, mechanically extracted list of every literal
+// "__builtin_*" string this source tree dispatches on; kept sorted for
+// bsearch(). Not exhaustive of every name GCC/clang recognize (rcc doesn't
+// implement every GCC builtin), but accurate for what rcc itself supports.
+static int builtin_name_cmp(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+static int64_t has_builtin_val(const char *name) {
+    static const char *builtin_names[] = {
+        "__builtin___confstr_chk",
+        "__builtin___confstr_chk_warn",
+        "__builtin___fprintf_chk",
+        "__builtin___getcwd_chk",
+        "__builtin___getcwd_chk_warn",
+        "__builtin___getdomainname_chk",
+        "__builtin___getdomainname_chk_warn",
+        "__builtin___getgroups_chk",
+        "__builtin___getgroups_chk_warn",
+        "__builtin___gethostname_chk",
+        "__builtin___gethostname_chk_warn",
+        "__builtin___getlogin_r_chk",
+        "__builtin___getlogin_r_chk_warn",
+        "__builtin___getwd_chk",
+        "__builtin___getwd_warn",
+        "__builtin___memcmp_chk",
+        "__builtin___memcpy_chk",
+        "__builtin___memmove_chk",
+        "__builtin___memset_chk",
+        "__builtin___pread_chk",
+        "__builtin___pread_chk_warn",
+        "__builtin___printf_chk",
+        "__builtin___read_chk",
+        "__builtin___read_chk_warn",
+        "__builtin___readlink_chk",
+        "__builtin___readlink_chk_warn",
+        "__builtin___readlinkat_chk",
+        "__builtin___readlinkat_chk_warn",
+        "__builtin___snprintf_chk",
+        "__builtin___sprintf_chk",
+        "__builtin___strcat_chk",
+        "__builtin___strcpy_chk",
+        "__builtin___strlen_chk",
+        "__builtin___strncat_chk",
+        "__builtin___strncpy_chk",
+        "__builtin___ttyname_r_chk",
+        "__builtin___ttyname_r_chk_warn",
+        "__builtin___vfprintf_chk",
+        "__builtin___vsnprintf_chk",
+        "__builtin___vsprintf_chk",
+        "__builtin_abort",
+        "__builtin_abs",
+        "__builtin_add_overflow",
+        "__builtin_alloca",
+        "__builtin_apply",
+        "__builtin_apply_args",
+        "__builtin_assume_aligned",
+        "__builtin_bswap16",
+        "__builtin_bswap32",
+        "__builtin_bswap64",
+        "__builtin_calloc",
+        "__builtin_choose_expr",
+        "__builtin_cimag",
+        "__builtin_cimagf",
+        "__builtin_classify_type",
+        "__builtin_clear_padding",
+        "__builtin_clrsb",
+        "__builtin_clrsbl",
+        "__builtin_clrsbll",
+        "__builtin_clz",
+        "__builtin_clzl",
+        "__builtin_clzll",
+        "__builtin_complex",
+        "__builtin_conj",
+        "__builtin_conjf",
+        "__builtin_conjl",
+        "__builtin_constant_p",
+        "__builtin_copysign",
+        "__builtin_copysignf",
+        "__builtin_copysignl",
+        "__builtin_cpu_init",
+        "__builtin_cpu_supports",
+        "__builtin_creal",
+        "__builtin_crealf",
+        "__builtin_ctz",
+        "__builtin_ctzl",
+        "__builtin_ctzll",
+        "__builtin_dynamic_object_size",
+        "__builtin_exit",
+        "__builtin_expect",
+        "__builtin_fabs",
+        "__builtin_fabsf",
+        "__builtin_ffs",
+        "__builtin_ffsl",
+        "__builtin_ffsll",
+        "__builtin_fma",
+        "__builtin_fmaf",
+        "__builtin_fmal",
+        "__builtin_fmax",
+        "__builtin_fmaxf",
+        "__builtin_fmin",
+        "__builtin_fminf",
+        "__builtin_fpclassify",
+        "__builtin_fpclassifyf",
+        "__builtin_fpclassifyl",
+        "__builtin_fprintf",
+        "__builtin_frame_address",
+        "__builtin_free",
+        "__builtin_has_attribute",
+        "__builtin_huge_val",
+        "__builtin_huge_valf",
+        "__builtin_huge_vall",
+        "__builtin_ia32_lfence",
+        "__builtin_ia32_mfence",
+        "__builtin_ia32_pause",
+        "__builtin_ia32_pshufb128",
+        "__builtin_ia32_rsqrtps",
+        "__builtin_ia32_sfence",
+        "__builtin_ia32_sqrtpd",
+        "__builtin_ia32_sqrtps",
+        "__builtin_ia32_sqrtsd",
+        "__builtin_ia32_sqrtss",
+        "__builtin_inf",
+        "__builtin_inff",
+        "__builtin_infl",
+        "__builtin_isfinite",
+        "__builtin_isfinitef",
+        "__builtin_isfinitel",
+        "__builtin_isinf",
+        "__builtin_isinff",
+        "__builtin_isinfl",
+        "__builtin_isnan",
+        "__builtin_isnanf",
+        "__builtin_isnanl",
+        "__builtin_isnormal",
+        "__builtin_isnormalf",
+        "__builtin_isnormall",
+        "__builtin_labs",
+        "__builtin_llabs",
+        "__builtin_longjmp",
+        "__builtin_malloc",
+        "__builtin_memcmp",
+        "__builtin_memcpy",
+        "__builtin_memmove",
+        "__builtin_memset",
+        "__builtin_mul_overflow",
+        "__builtin_mul_overflow_p",
+        "__builtin_nan",
+        "__builtin_nanf",
+        "__builtin_nanl",
+        "__builtin_nans",
+        "__builtin_nansf",
+        "__builtin_nansl",
+        "__builtin_object_size",
+        "__builtin_offsetof",
+        "__builtin_parity",
+        "__builtin_parityl",
+        "__builtin_parityll",
+        "__builtin_popcount",
+        "__builtin_popcountl",
+        "__builtin_popcountll",
+        "__builtin_pow",
+        "__builtin_powf",
+        "__builtin_prefetch",
+        "__builtin_printf",
+        "__builtin_puts",
+        "__builtin_realloc",
+        "__builtin_return",
+        "__builtin_return_address",
+        "__builtin_setjmp",
+        "__builtin_shuffle",
+        "__builtin_shufflevector",
+        "__builtin_signbit",
+        "__builtin_signbitf",
+        "__builtin_signbitl",
+        "__builtin_snprintf",
+        "__builtin_sprintf",
+        "__builtin_strcat",
+        "__builtin_strchr",
+        "__builtin_strcmp",
+        "__builtin_strcpy",
+        "__builtin_strdup",
+        "__builtin_strlen",
+        "__builtin_strncat",
+        "__builtin_strncmp",
+        "__builtin_strncpy",
+        "__builtin_strrchr",
+        "__builtin_sub_overflow",
+        "__builtin_trap",
+        "__builtin_types_compatible_p",
+        "__builtin_unreachable",
+        "__builtin_va_arg",
+        "__builtin_va_arg_pack",
+        "__builtin_va_arg_pack_len",
+        "__builtin_va_copy",
+        "__builtin_va_end",
+        "__builtin_va_start",
+        "__builtin_vprintf",
+        "__builtin_vsnprintf",
+        "__builtin_vsprintf",
+    };
+    if (bsearch(&name, builtin_names, sizeof(builtin_names) / sizeof(builtin_names[0]),
+                sizeof(builtin_names[0]), builtin_name_cmp))
+        return 1;
+    // Unlike real GCC/clang (where __builtin_alloca et al. are genuine
+    // front-end-recognized identifiers, never macros, so __has_builtin's
+    // argument reaches it unexpanded), rcc implements several __builtin_X
+    // names as plain preprocessor object macros that alias straight to
+    // the underlying library function name (see the __builtin_X ->
+    // library-name aliases below, e.g.
+    // define_pre("__builtin_alloca", "alloca")) -- an internal
+    // codegen-dispatch convenience. __has_builtin's argument DOES get
+    // ordinary macro expansion here (matching GCC's real behavior for
+    // genuine user macros, e.g. `#define FOO __builtin_expect` then
+    // __has_builtin(FOO)), so by the time this function runs, one of
+    // rcc's own aliases has already silently turned "__builtin_alloca"
+    // into the bare "alloca". Re-synthesize the __builtin_-prefixed
+    // spelling and check that too, so both forms answer identically.
+    size_t len = strlen(name);
+    if (len < 64) {
+        char buf[64 + 10];
+        snprintf(buf, sizeof(buf), "__builtin_%s", name);
+        const char *key = buf;
+        if (bsearch(&key, builtin_names, sizeof(builtin_names) / sizeof(builtin_names[0]),
+                    sizeof(builtin_names[0]), builtin_name_cmp))
+            return 1;
+    }
+    return 0;
+}
 static int64_t eval_pp_expr_tok(Token **pp);
 // #if-expression primary: defined()/__has_include()/__has_c_attribute(),
 // numeric/string literals, parenthesized subexpr, unary !/-/~/+.
@@ -2096,6 +2329,14 @@ static int64_t eval_primary_tok(Token **pp) {
             if (ptok(t, ")")) t = t->next;
             *pp = t;
             return has_c_attribute_val(text);
+        }
+        if (nm == kw_has_builtin) {
+            t = t->next;
+            if (ptok(t, "(")) t = t->next;
+            char *text = gather_spellings(t, ")", &t);
+            if (ptok(t, ")")) t = t->next;
+            *pp = t;
+            return has_builtin_val(text);
         }
         if (opt_std_version && strcmp(opt_std_version, "202311L") == 0) {
             if (nm == kw_true) {
@@ -3091,6 +3332,7 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__has_include", "1");
         define_pre("__has_c_attribute", "1");
         define_pre("__has_include_next", "1");
+        define_pre("__has_builtin", "1");
 #include "gcc_predefined.h"
         // rcc's own self-identification macro, matching every other
         // compiler's practice of defining both a GCC-compat macro (for
@@ -3358,6 +3600,7 @@ Token *preprocess(char *filename, char *p) {
         kw_has_include = str_intern("__has_include", 13);
         kw_has_include_next = str_intern("__has_include_next", 18);
         kw_has_c_attribute = str_intern("__has_c_attribute", 17);
+        kw_has_builtin = str_intern("__has_builtin", 13);
         kw_va_args = str_intern("__VA_ARGS__", 11);
         kw_va_opt = str_intern("__VA_OPT__", 10);
         kw_defined = str_intern("defined", 7);

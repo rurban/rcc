@@ -701,7 +701,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
-| test_muon        | **fixed unquoted-linker-path bug; 337/387 (87%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)" below; remaining 32 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~22 not individually triaged this session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| test_muon        | **fixed unquoted-linker-path, alloca() crash, and \_\_has_builtin bugs; 338/387 (87%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", and "Fixed (2026-08-11, continued — \_\_has_builtin session)" below; remaining 31 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~23 not individually triaged this session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3313,3 +3313,95 @@ Full suite verified: Unit tests 221/221, Compliance 15/15, C-testsuite
 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link
 tests 7/7 — 0 failed overall (native Linux x86-64); the new test also
 confirmed passing standalone on the mingw and arm64 cross targets.
+
+### Fixed (2026-08-11, continued — \_\_has_builtin session)
+
+Continued investigating `test_muon`'s remaining failures after the
+`alloca()` argument-count crash fix above (which unblocked the crash
+but didn't, by itself, flip `common/36 has function`'s overall
+verdict — see below). muon's own `has function alloca` capability
+probe runs several fallback checks; the last of them is the modern
+`__has_builtin` idiom:
+
+```c
+#ifdef __has_builtin
+  #if !__has_builtin(__builtin_alloca)
+    #error "__builtin_alloca not found"
+  #endif
+#elif ! defined(alloca)
+  __builtin_alloca;
+#endif
+```
+
+- **`__has_builtin` (a clang/GCC preprocessor extension, now the
+  idiomatic feature-detection guard used throughout modern
+  portable/build-system code) was not implemented at all** — `#ifdef
+__has_builtin` was unconditionally false, so every such probe fell
+  through to the `#elif` branch, referencing the bare identifier
+  `alloca`/`__builtin_alloca` as an ordinary (never declared)
+  variable and failing to compile — even for builtins rcc genuinely
+  implements. Implemented `__has_builtin(NAME)` following the exact
+  pattern already used for `__has_include`/`__has_c_attribute`:
+  registered as a predefined `#ifdef`-visible macro plus a special
+  case in the `#if`-expression evaluator (`eval_primary_tok`) that
+  looks `NAME` up in a sorted, mechanically-extracted table of every
+  `__builtin_*` string rcc's parser/codegen dispatch on by exact name
+  (190 entries: parser.c's `declspec()`/`unary()` builtin chain,
+  codegen.c's `gen_funcall()` `bi_s_*` table, and preprocess.c's
+  `__builtin_X` -> library-name macro aliases), checked via
+  `bsearch()`.
+- **Second, subtler bug found while verifying the first fix**: unlike
+  real GCC/clang (where `__builtin_alloca` et al. are genuine
+  front-end-recognized identifiers, never macros, so `__has_builtin`'s
+  argument reaches it completely unexpanded), rcc implements several
+  `__builtin_X` names as plain preprocessor object macros that alias
+  straight to the underlying library function name purely as an
+  internal codegen-dispatch convenience (e.g. `__builtin_alloca` ->
+  `alloca`, `__builtin_memcpy` -> `memcpy`). `__has_builtin`'s
+  argument correctly undergoes ordinary macro expansion (verified
+  against real GCC: `#define FOO __builtin_expect` then
+  `__has_builtin(FOO)` is true on both) — but that same, correct
+  expansion silently turned `__has_builtin(__builtin_alloca)`'s
+  argument into the bare `alloca` by the time the lookup table ran,
+  missing the table (which only has `__builtin_`-prefixed keys)
+  entirely and wrongly reporting `NO`. An initial attempt to fix this
+  by protecting `__has_builtin`'s argument from expansion entirely
+  (mirroring `defined(X)`'s protection) was verified WRONG and
+  reverted: it silently regressed GCC torture's own
+  `c23-has-c-attribute-2.c` (`#define foo deprecated` then
+  `__has_c_attribute(foo)`, which GCC _does_ expect to expand `foo` to
+  `deprecated` first). Fixed instead by having `has_builtin_val()`
+  check the looked-up name against the table both as given AND
+  re-prefixed with `__builtin_`, so both the unexpanded form (for
+  builtins rcc doesn't alias, e.g. `__builtin_popcount`) and the
+  post-alias-expansion bare form (`alloca`, `memcpy`, ...) resolve
+  correctly, with zero risk to the pre-existing, correct
+  `__has_c_attribute` expansion behavior.
+
+New regression test: `test/test_has_builtin.c` — `#ifdef`/`defined()`
+visibility, several genuinely-implemented builtins (including the
+alloca-aliasing case) reporting true, an unregistered name reporting
+false rather than erroring, the exact muon-derived `__has_builtin`
+fallback probe shape compiling cleanly, and a runtime check that
+`__builtin_alloca` genuinely works once `__has_builtin` confirms it.
+Verified this test fails without the fix (A/B, `git stash`-style
+revert) and passes with it. Also re-ran the four
+`c23-has-c-attribute-*` and `c23-attr-syntax-8` GCC torture tests
+directly to confirm no regression from the expansion-order fix. Full
+suite verified: Unit tests 222/222, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34,
+Link tests 7/7 — 0 failed overall (native Linux x86-64); the new test
+and the `c23-has-c-attribute-2` torture test both confirmed passing
+standalone on the mingw and arm64 cross targets.
+
+With this fix, `test_muon`'s own `common/36 has function` row flips
+from failed to passing (338/387 muon self-tests now pass, up from
+337/387 after the `alloca()` crash fix alone — that fix alone wasn't
+sufficient to flip this specific test's verdict, since muon's
+redeclared-signature probe still correctly fails to compile/link
+either way, matching real GCC's own behavior for that same construct;
+only the `__has_builtin` fallback probe's success actually flips
+`has function alloca`'s overall YES/NO answer). The remaining 31
+`test_muon` failures include the previously-confirmed-NOT-an-rcc-bug
+`common/273 both libraries` cluster (8 of the 31) plus ~23 not
+individually triaged this session — left for a future session.
