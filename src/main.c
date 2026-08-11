@@ -1078,33 +1078,67 @@ int main(int argc, char **argv) {
             }
         }
         // Build the linker command line: backend compiler + output flag first
+        //
+        // CodeQL cpp/command-line-injection, cpp/uncontrolled-process-
+        // operation: backend_out/each object path/the bundled runtime
+        // object path below are embedded in a system() command string;
+        // reject anything that could break out of the double quotes
+        // wrapping each one (see path_is_shell_safe()'s doc comment for
+        // why double-quote-and-reject beats escaping across both POSIX
+        // sh and cmd.exe dialects) instead of leaving them unquoted --
+        // an unquoted path containing a space (e.g. muon's own
+        // "native/4 tryrun/..." build-test directory, or any Windows/
+        // macOS path with a space in it) previously split into extra
+        // shell words: `ld` then reported "cannot find <tail>: No such
+        // file or directory" instead of ever seeing the real, intended
+        // single path.
+        if (!path_is_shell_safe(backend_out)) {
+            fprintf(stderr, "rcc: error: output path contains unsafe characters for linking: %s\n",
+                    backend_out);
+            free(libs);
+            return 1;
+        }
+        for (OutPath *p = out_paths; p; p = p->next) {
+            if (!path_is_shell_safe(p->path)) {
+                fprintf(stderr, "rcc: error: object path contains unsafe characters for linking: %s\n",
+                        p->path);
+                free(libs);
+                return 1;
+            }
+        }
 #ifdef __APPLE__
         xappendf(&cmd, &cmd_len, &cmd_cap,
-                 GCC " -o %s -arch arm64"
+                 GCC " -o \"%s\" -arch arm64"
                      " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
                      " -Wl,-undefined,dynamic_lookup",
                  backend_out);
 #else
         if (opt_pie)
-            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o \"%s\"", backend_out);
         else if (opt_pic)
-            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -o \"%s\"", backend_out);
         else
-            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o %s", backend_out);
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -no-pie -o \"%s\"", backend_out);
 #endif
 
         // Codegen already produced .o files; add them directly to linker command
         for (OutPath *p = out_paths; p; p = p->next)
-            xappendf(&cmd, &cmd_len, &cmd_cap, " %s", p->path);
+            xappendf(&cmd, &cmd_len, &cmd_cap, " \"%s\"", p->path);
 
 #if defined(_WIN32) || defined(__MINGW32__)
         {
             struct stat libst;
 #ifdef RCC_INCDIR
             const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
-            if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0)
-                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_lib);
-            else
+            if (stat("lib/rcc_mingw.obj", &libst) != 0 && stat(rcc_lib, &libst) == 0) {
+                if (!path_is_shell_safe(rcc_lib)) {
+                    fprintf(stderr, "rcc: error: runtime object path contains unsafe characters for linking: %s\n",
+                            rcc_lib);
+                    free(libs);
+                    return 1;
+                }
+                xappendf(&cmd, &cmd_len, &cmd_cap, " \"%s\"", rcc_lib);
+            } else
 #endif
                 if (stat("lib/rcc_mingw.obj", &libst) == 0)
                 xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_mingw.obj");
@@ -1116,9 +1150,15 @@ int main(int argc, char **argv) {
             // Try absolute path first (RCC_INCDIR/../lib/darwin.o)
 #ifdef RCC_INCDIR
             const char *rcc_darwin = RCC_INCDIR "/../lib/rcc_darwin.dylib";
-            if (stat(rcc_darwin, &libst) == 0)
-                xappendf(&cmd, &cmd_len, &cmd_cap, " %s", rcc_darwin);
-            else
+            if (stat(rcc_darwin, &libst) == 0) {
+                if (!path_is_shell_safe(rcc_darwin)) {
+                    fprintf(stderr, "rcc: error: runtime object path contains unsafe characters for linking: %s\n",
+                            rcc_darwin);
+                    free(libs);
+                    return 1;
+                }
+                xappendf(&cmd, &cmd_len, &cmd_cap, " \"%s\"", rcc_darwin);
+            } else
 #endif
                 if (stat("lib/rcc_darwin.dylib", &libst) == 0)
                 xappendf(&cmd, &cmd_len, &cmd_cap, " lib/rcc_darwin.dylib");

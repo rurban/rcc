@@ -701,7 +701,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
-| test_muon        | muon self-tests (some pass, some fail)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| test_muon        | **fixed unquoted-linker-path bug; 337/387 (87%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)" below; remaining 32 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~22 not individually triaged this session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3220,3 +3220,53 @@ confirmed passing standalone on the mingw and arm64 cross targets (the
 lexer test's POSIX `timeout N cmd` guard needed a Windows-specific
 no-op, since cmd.exe's own built-in `timeout` takes an incompatible
 `/T <seconds>` syntax).
+
+### Fixed (2026-08-11, continued — linker command unquoted-path session)
+
+Investigated `test_muon` (never previously triaged beyond "muon
+self-tests, some pass, some fail"). `build/muon -C build test` hit a
+genuine rcc bug on its very first compiler-capability probe:
+
+- **The fallback GCC-linker invocation built its `system()` command
+  line by substituting every path (the `-o` output path, each object
+  file, the bundled mingw/darwin runtime object) via a bare, unquoted
+  `%s`** (`main.c`) — reached whenever the native linker declines
+  (e.g. any program needing dynamic libc symbols like printf/fprintf).
+  A path containing a space split into extra shell words: `ld` then
+  reported `cannot find <tail-after-the-space>: No such file or
+directory` instead of ever seeing the single, intended path.
+  Trigger: muon's own test harness names one of its native
+  compiler-probe build subdirectories literally `4 tryrun` (a space in
+  the directory name); linking a trivial printf-using probe program
+  into `.../native/4 tryrun/.muon/compiler_check_exe` hit this exactly
+  — `ld: cannot find tryrun/.muon/compiler_check_exe: No such file or
+directory` — breaking every one of muon's own compiler-capability
+  probes that used it (`c compiler: runs String should succeed`, the
+  very first check muon's own toolchain detection performs).
+  Fixed by double-quoting every path substituted into the linker
+  command string, matching the existing `path_is_shell_safe()`-gated
+  double-quote convention the `-S` disassembly invocation already
+  uses (same rationale: double-quote-and-reject beats attempting to
+  escape across both POSIX sh and cmd.exe dialects) — rejecting a path
+  containing a genuine shell metacharacter with a clean error instead
+  of either breaking or, worse, being injectable.
+
+With this fixed, `test_muon`'s own suite moved from immediately
+breaking on its first probe to 337/387 passing (87%); of the 32
+remaining failures, the 10-case `common/273 both libraries` cluster
+was cross-checked against real GCC linking the identical rcc-produced
+`.so`/`.o` files (`gcc -no-pie -o main main.p/src/main.c.o
+libwith_library.so -lm`) and fails **identically** — a genuine
+transitive-shared-library `-rpath-link` limitation in muon's own
+generated `build.ninja` link rule, not an rcc bug. The remaining ~22
+failures were not individually triaged this session; left for a
+future one.
+
+New regression test: `test/test_link_path_with_space.c` (compiles and
+links a printf-using program into an output path containing a space,
+then runs the resulting binary and checks its output — reproduces the
+exact muon directory-naming shape). Full suite verified: Unit tests
+220/220, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609
+(100% of non-skipped), Dg-error 34/34, Link tests 7/7 — 0 failed
+overall (native Linux x86-64); the new test also confirmed passing
+standalone on the mingw and arm64 cross targets.
