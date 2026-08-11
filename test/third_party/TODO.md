@@ -3270,3 +3270,46 @@ exact muon directory-naming shape). Full suite verified: Unit tests
 (100% of non-skipped), Dg-error 34/34, Link tests 7/7 — 0 failed
 overall (native Linux x86-64); the new test also confirmed passing
 standalone on the mingw and arm64 cross targets.
+
+### Fixed (2026-08-11, continued — alloca() argument-count crash session)
+
+Continued investigating `test_muon`'s remaining failures (of 32, one
+session earlier fixed the linker-path bug that got 337/387 passing).
+`common/36 has function` — muon's own "does the C library provide
+`alloca`" capability probe — compiles `int main(void) { return
+alloca(); }` (calling `alloca` with zero arguments, deliberately: the
+probe only cares whether the _name_ resolves, not whether the call is
+well-formed) and expects a clean compile error.
+
+- **`alloca()` called with the wrong number of arguments crashed rcc
+  internally instead of producing a diagnostic** (codegen.c,
+  `gen_funcall()`) — `alloca` gets special codegen (inlined stack
+  adjustment, no real function call) purely by name match
+  (`call_target == bi_s_alloca`), without needing any declaration in
+  scope — unlike an ordinary function, there's no prototype for the
+  normal argument-count checker to validate against. Every
+  specialized alloca codegen path (there are several, one per
+  register-pressure/architecture variant) unconditionally read
+  `node->args` (the size expression) assuming exactly one argument was
+  given; calling `alloca()` with zero arguments left `gen(node->args)`
+  reading a NULL `Node`, surfacing many calls later as an opaque
+  internal `"Invalid register -1 in main"` crash instead of any real
+  diagnostic. The reverse (too _many_ arguments, e.g. `alloca(16,
+32)`) silently compiled clean too — the extra argument was simply
+  never read, not rejected. Real GCC treats `alloca` as a builtin with
+  a known one-argument prototype even without any declaration in
+  scope, so it cleanly reports `"too few arguments to function
+'alloca'; expected 1, have 0"` for the zero-argument case.
+  Fixed by validating the argument count right where `alloca`'s
+  special codegen is first recognized (before any of the specialized
+  paths run), rejecting anything other than exactly one argument with
+  the same GCC-style diagnostic.
+
+New regression test: `test/test_alloca_argcount.c` (zero arguments
+must be a clean compile error, not a crash; too many arguments must
+also be a clean compile error, not a silent accept; the correct
+single-argument form must still compile, link, and run correctly).
+Full suite verified: Unit tests 221/221, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link
+tests 7/7 — 0 failed overall (native Linux x86-64); the new test also
+confirmed passing standalone on the mingw and arm64 cross targets.

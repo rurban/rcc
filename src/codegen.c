@@ -1332,6 +1332,21 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     if (call_target && is_asm_reserved(call_target))
         call_target = format(".L_rcc_%s", call_target);
     init_local_builtins();
+    // alloca() takes exactly one argument. Every specialized alloca
+    // codegen path below unconditionally reads node->args (the size
+    // expression) assuming it exists; calling alloca() with zero
+    // arguments (a plain, unprototyped implicit-declaration call --
+    // alloca needs no #include to get this special codegen, unlike an
+    // ordinary function, so there's no prototype-based arg-count check
+    // to catch it earlier) left `gen(node->args)` reading a NULL Node,
+    // producing an internal "Invalid register -1" crash deep in codegen
+    // instead of a real diagnostic. Reject it here instead, matching
+    // real GCC's "too few arguments to function 'alloca'; expected 1,
+    // have 0" (GCC treats alloca as a builtin with a known prototype
+    // even without any declaration in scope).
+    if (call_target && call_target == bi_s_alloca && nargs != 1)
+        error_tok(node->tok, "too %s arguments to function 'alloca'; expected 1, have %d",
+                  nargs < 1 ? "few" : "many", nargs);
     // __builtin_unreachable(): reaching it is undefined behaviour, so emit no
     // code (GCC does the same). Statements following it in a block are dead and
     // are elided at -O1 (see the ND_BLOCK loop).
