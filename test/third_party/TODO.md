@@ -701,7 +701,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
-| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, and -Werror unknown-flag bugs; 339/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", and "Fixed (2026-08-11, continued — -Werror unknown-flag session)" below; remaining 30 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~22 not individually triaged this session                                                                                                                                                                                                                                                                                                                                                                                                         |
+| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, -Werror unknown-flag, \_\_declspec native-target, and K&R EOF crash bugs; 340/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", "Fixed (2026-08-11, continued — -Werror unknown-flag session)", and "Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)" below; remaining 29 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~21 not individually triaged this session                                                                                                                                                                                                                                                                        |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3482,3 +3482,84 @@ flag elsewhere in the corpus, so this is left as a separate,
 larger, more carefully-scoped undertaking for a future session rather
 than a quick win. ~22 of the remaining 30 failures are still not
 individually triaged.
+
+### Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)
+
+Continued investigating `test_muon`'s remaining failures.
+`common/197 function attributes` — muon's own "does this GNU/MSVC
+function attribute compile" capability probe — checks
+`__declspec(dllexport) int foo(void) { return 0; }` specifically
+expecting it to be rejected on `posix` (only genuinely supported on
+`_WIN32`).
+
+- **`__declspec(...)` (MSVC's declaration-attribute syntax) was
+  unconditionally recognized and silently swallowed (a complete
+  no-op — rcc implements no actual dllexport/dllimport semantics
+  anywhere) on every target, including native Linux** (parser.c,
+  `is_typename()`/`read_type_attrs()`) — but real GCC on native Linux
+  doesn't recognize `__declspec` at all (verified directly: `gcc -c`
+  reports a genuine syntax error); only MinGW-targeted GCC accepts it,
+  as a real, long-standing extension for Windows DLL export/import
+  entirely unrelated to MSVC compatibility mode. Checked the existing
+  third-party corpus for any reliance on this cross-platform leniency
+  first — every use found (bash's bundled gettext `lib/intl/export.h`
+  etc.) is already guarded by `#if defined _MSC_VER`, a macro rcc
+  never defines on any target, so `__declspec` is dead code under rcc
+  regardless of the fix. Fixed by gating `__declspec` keyword
+  recognition to `_WIN32` builds only (`#ifdef _WIN32` around both the
+  `is_typename()` lookahead and `read_type_attrs()`'s consumption
+  site), matching real GCC's own target-specific behavior exactly.
+- **Second, more serious bug found while verifying the first fix**:
+  once `__declspec` stopped being consumed as a recognized attribute
+  on native Linux, `__declspec(dllimport) int foo(void);` (a bodyless
+  prototype, no following K&R declaration-list ever reaching a `{`)
+  crashed rcc internally (SIGSEGV) instead of producing a clean
+  diagnostic. Root cause (parser.c, `parse_kr_param_list()`): the
+  unrecognized `__declspec` identifier got misparsed as an
+  implicit-int, K&R-style (old-style) function head named
+  `__declspec` taking one old-style parameter `dllimport`; the K&R
+  declaration-list loop (`while (!equalc(tok, "{"))`, meant to consume
+  each old-style parameter's `type name;` declaration before the
+  function body) had no EOF check at all, so once the real remaining
+  tokens (`int foo(void);`) were consumed without ever producing a
+  `{`, the loop kept calling `declspec()`/`declarator()` on the
+  trailing EOF sentinel token forever — `declspec()` on EOF silently
+  fails to consume it (EOF isn't a valid type-specifier token), so
+  `tok` stayed pinned there, and `declarator()` unconditionally reads
+  `tok->next` a few lines in, which is NULL for the lexer's genuine
+  end-of-list EOF token, segfaulting several calls deeper inside
+  `skip_attributes()`/`read_type_attrs()`. Reduced to a minimal repro
+  independent of `__declspec` entirely (any unrecognized identifier
+  followed by a K&R-shaped parameter list and a declaration that never
+  reaches `{` triggers it) — a real, previously-unreachable parser
+  robustness gap, not specific to this fix. Fixed by diagnosing a
+  clean "expected '{' before end of input" error the moment the
+  declaration-list loop reaches `TK_EOF`, instead of looping into it
+  (mirroring the identical "diagnose, don't crash" pattern an earlier
+  session already applied to `declarator()`'s own unclosed-`(`
+  recursion nearby).
+
+New regression tests: `test/test_declspec_native_reject.c`
+(`__declspec(dllexport)` must be a clean compile error on native Linux
+and must still compile cleanly on `_WIN32`; ordinary `__attribute__`
+usage must stay unaffected on every target) and
+`test/test_kr_param_list_eof.c` (the minimal `__declspec`-independent
+K&R/EOF crash repro must be a clean diagnostic, not a crash — verified
+via the `WIFEXITED`/`WEXITSTATUS` convention that distinguishes an
+actual signal death from a clean nonzero exit, since a crashed
+child's exit status surfaces through `system()`'s intermediate shell
+as an ordinary 128+signal exit code, indistinguishable from a genuine
+diagnostic exit without decoding it this way; a genuine, well-formed
+K&R function definition must still compile, link, and run correctly).
+Both verified failing without their respective fix and passing with
+it (A/B). Full suite verified: Unit tests 225/225, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
+34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64); both
+new tests confirmed passing standalone on the mingw and arm64 cross
+targets (including `test_declspec_native_reject.c`'s `_WIN32` branch,
+confirming `__declspec(dllexport)` still compiles cleanly under the
+mingw cross-compiler).
+
+With this fix, `test_muon`'s `common/197 function attributes` row
+flips from failed to passing (340/387 muon self-tests now pass, up
+from 339/387).

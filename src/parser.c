@@ -1400,7 +1400,10 @@ static bool is_typename(Token *tok) {
         tok->ptr + tok->len == tok->next->ptr)
         return true;
     if (tok->kw == ID___ATTRIBUTE || tok->kw == ID___ATTRIBUTE__ ||
-        tok->kw == ID___DECLSPEC || tok->kw == ID__ALIGNAS)
+#ifdef _WIN32
+        tok->kw == ID___DECLSPEC ||
+#endif
+        tok->kw == ID__ALIGNAS)
         return true;
     // `asm`/`__asm__` can never lead a declaration-specifier list (GNU C's
     // asm-name-specifier only ever trails a declarator, e.g. `int x
@@ -2034,12 +2037,14 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
             continue;
         }
 
+#ifdef _WIN32
         if (tok->kw == ID___DECLSPEC) {
             tok = tok->next;
             if (equalc(tok, "("))
                 tok = skip_balanced(tok);
             continue;
         }
+#endif
 
         break;
     }
@@ -7483,6 +7488,20 @@ static KRParam *parse_kr_param_list(Token **rest, Token *tok) {
     tok = skip(tok, ")");
     tok = skip_attributes(tok);
     while (!equalc(tok, "{")) {
+        // Malformed input (e.g. a misdetected K&R parameter list from
+        // garbage that isn't really an old-style function definition at
+        // all) can run this loop past the last real token without ever
+        // reaching a '{' body. Without this check, declspec()/declarator()
+        // called on the trailing TK_EOF sentinel silently fail to consume
+        // it (EOF isn't a valid type-specifier token), so `tok` stays
+        // pinned at EOF forever -- and declarator() unconditionally reads
+        // `tok->next` a few lines in, which is NULL for the lexer's
+        // genuine end-of-list EOF token, segfaulting several calls deeper
+        // inside skip_attributes()/read_type_attrs(). A real parameter
+        // declaration list running off the end of the file is a genuine
+        // syntax error; diagnose it here instead of looping into EOF.
+        if (tok->kind == TK_EOF)
+            error_tok(tok, "expected '{' before end of input");
         VarAttr dattr = {};
         Type *dty = declspec(&tok, tok, &dattr);
         for (;;) {
