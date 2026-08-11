@@ -356,6 +356,18 @@ int main(int argc, char **argv) {
     bool opt_E = false;
     bool opt_o = false;
     bool opt_stdout = false; // -o - : write final output to stdout
+    // Set only by the literal "-Werror" flag below, deliberately distinct
+    // from opt_Werror (which -pedantic-errors also sets, for promoting
+    // pedantic diagnostics to errors): promoting an unrecognized
+    // command-line flag to a hard error must stay scoped to an explicit,
+    // literal -Werror. rcc's own -pedantic-errors torture/compliance
+    // tests intentionally combine it with real GCC flags rcc doesn't
+    // implement (-fsigned-char, -ffreestanding, -fno-asm, ...) and rely
+    // on those being tolerated (warned, not rejected) -- unlike bare
+    // -Werror, whose only realistic caller is a build-system capability
+    // probe (see the muon-derived test below) that specifically wants an
+    // unrecognized flag to fail.
+    bool opt_werror_bare = false;
     // Ordered linker arguments: -l/-L/-Wl flags AND object/archive inputs,
     // in argv order. Interleaving matters (-Wl,--whole-archive lib.a
     // -Wl,--no-whole-archive), so they share one buffer.
@@ -432,6 +444,7 @@ int main(int argc, char **argv) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
             opt_Werror = true;
+            opt_werror_bare = true;
         } else if (!strcmp(argv[i], "-Wfatal-errors")) {
             opt_Wfatal_errors = true;
         } else if (!strncmp(argv[i], "-fmax-errors=", 13)) {
@@ -683,7 +696,21 @@ int main(int argc, char **argv) {
                     argv[i]);
             return 1;
         } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
-            if (opt_Werror_unknown) {
+            // Real GCC/clang always hard-error on an unrecognized
+            // non-warning flag (-f.../-m.../etc.), with or without
+            // -Werror — only unknown *warning* names (-W...) get the
+            // lenient "warn unless -Werror=unknown-warning-option" clang
+            // convention documented above (many build systems, meson
+            // included, probe warning-flag support that way and expect
+            // a bare -Werror to NOT itself turn that into an error).
+            // Since rcc otherwise deliberately tolerates flags it
+            // doesn't implement (many third-party Makefiles pass
+            // compiler-specific flags unconditionally), only promote to
+            // a hard error here when the caller explicitly opted in via
+            // -Werror — never unconditionally, unlike real GCC — so a
+            // plain, no-Werror build keeps its existing tolerance.
+            bool is_warn_flag = argv[i][1] == 'W';
+            if (opt_Werror_unknown || (opt_werror_bare && !is_warn_flag)) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
                 return 1;
             }
