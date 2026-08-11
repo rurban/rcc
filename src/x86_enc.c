@@ -1452,6 +1452,81 @@ void x86_pshufb(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit3(s, 0x0f, 0x38, 0x00);
     emit1(s, modrxmm(3, d, sr));
 }
+// PSHUFD xmm, xmm, imm8: 66 0F 70 /r ib (like SHUFPS/CMPPS's imm8 shape
+// above, but with a mandatory 66 prefix and reading only from `sr`).
+void x86_pshufd(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x70, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+// "Group 14" (66 0F 73 /ext ib) shift-by-immediate: ModRM.reg is a
+// fixed group-select value, not a real register; the single xmm
+// operand is both source and destination, in ModRM.rm.
+static void group14_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, 0, 0, (int)d);
+    emit3(s, 0x0f, 0x73, (uint8_t)((3 << 6) | (ext << 3) | ((int)d & 7)));
+    emit1(s, imm);
+}
+void x86_pslldq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 7, imm); }
+void x86_psrldq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 3, imm); }
+void x86_psllq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 6, imm); }
+void x86_psrlq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 2, imm); }
+// AES-NI (66 0F 38 xx /r), all reg/reg -- real GAS also accepts an
+// xmm/m128 second operand, but every real caller (OpenSSL/LibreSSL's
+// aesni-x86_64.pl-generated .S files) only ever uses the register form.
+void x86_aesenc(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xdc);
+    emit1(s, modrxmm(3, d, sr));
+}
+void x86_aesenclast(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xdd);
+    emit1(s, modrxmm(3, d, sr));
+}
+void x86_aesdec(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xde);
+    emit1(s, modrxmm(3, d, sr));
+}
+void x86_aesdeclast(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xdf);
+    emit1(s, modrxmm(3, d, sr));
+}
+void x86_aesimc(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xdb);
+    emit1(s, modrxmm(3, d, sr));
+}
+// AESKEYGENASSIST xmm, xmm, imm8: 66 0F 3A DF /r ib (the "0F 3A" 3-byte
+// opcode map, like AES's own "0F 38" map above but with a trailing
+// immediate).
+void x86_aeskeygenassist(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x3a, 0xdf);
+    emit1(s, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+// PINSRW xmm, r32/m16, imm8: 66 0F C4 /r ib -- insert a 16-bit word
+// into one of the xmm register's 8 word lanes (imm8 selects which,
+// 0-7). rc4's own SSE2 fast path (rc4-*-x86_64.S) always uses the
+// memory-operand form.
+void x86_pinsrw_rm(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    emit2(s, 0x0f, 0xc4);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit1(s, imm);
+}
 
 // x87
 void x86_fldl_m(SecBuf *s, X86Mem m) {

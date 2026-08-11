@@ -4050,6 +4050,125 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_pxor(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    if (!strcmp(mnem, "paddd")) {
+        x86_paddd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psubd")) {
+        x86_psubd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "paddq")) {
+        x86_paddq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psubq")) {
+        x86_psubq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "paddw")) {
+        x86_paddw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psubw")) {
+        x86_psubw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "paddb")) {
+        x86_paddb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "psubb")) {
+        x86_psubb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pand")) {
+        x86_pand(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "por")) {
+        x86_por(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpeqd")) {
+        x86_pcmpeqd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pcmpgtd")) {
+        x86_pcmpgtd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "shufps")) {
+        // shufps $imm, src, dst (AT&T: ops[0]=imm, ops[1]=src, ops[2]=dst)
+        x86_shufps(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "shufpd")) {
+        x86_shufpd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pshufd")) {
+        x86_pshufd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pslldq")) {
+        // pslldq $imm, reg -- single xmm operand, both source and dest.
+        x86_pslldq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "psrldq")) {
+        x86_psrldq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "psllq")) {
+        // psllq $imm, reg (shift form) vs "psllq src, dst" (reg-reg
+        // form, opcode F3 /r) -- LibreSSL's ghash*.S only ever uses the
+        // immediate shift form.
+        x86_psllq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "psrlq")) {
+        x86_psrlq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pshufb")) {
+        x86_pshufb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    // AES-NI: OpenSSL/LibreSSL's aesni-x86_64.pl-generated assembly
+    // (crypto/aes/aesni-*-x86_64.S) uses these throughout its hand-
+    // optimized round functions, always register/register.
+    if (!strcmp(mnem, "aesenc")) {
+        x86_aesenc(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "aesenclast")) {
+        x86_aesenclast(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "aesdec")) {
+        x86_aesdec(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "aesdeclast")) {
+        x86_aesdeclast(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "aesimc")) {
+        x86_aesimc(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "aeskeygenassist")) {
+        // aeskeygenassist $imm, src, dst
+        x86_aeskeygenassist(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pinsrw")) {
+        // pinsrw $imm, mem, xmm (rc4's own fast path never uses the
+        // register-source form).
+        x86_pinsrw_rm(buf, parse_x86_xmm(ops[2]), M(1), (uint8_t)IMM(0));
+        return true;
+    }
     if (!strcmp(mnem, "fldl")) {
         x86_fldl_m(buf, M(0));
         return true;

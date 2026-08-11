@@ -506,6 +506,34 @@ void x86_pcmpeqd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_pcmpgtd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 // PSHUFB xmm, xmm (SSSE3): byte-lane shuffle/permute, dst = shuffle(dst, src)
 void x86_pshufb(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+// PSHUFD xmm, xmm, imm8 (SSE2, 66 0F 70 /r ib): dword-lane shuffle,
+// dst = shuffle(src, imm) -- unlike PSHUFB's dst-in-place form, this
+// reads only from src (dst is write-only), matching real GAS's own
+// "pshufd $imm, src, dst" AT&T operand order.
+void x86_pshufd(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
+// "Group 14" shift-by-immediate (SSE2, 66 0F 73 /ext ib): the whole
+// xmm register shifts by imm8, zero-filling; single-operand form (dst
+// is both source and destination). PSLLDQ/PSRLDQ shift by *bytes*
+// (whole-register, lane-agnostic); PSLLQ/PSRLQ shift each 64-bit lane
+// independently.
+void x86_pslldq(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_psrldq(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_psllq(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_psrlq(SecBuf *s, X86XmmReg dst, uint8_t imm);
+// AES-NI (66 0F 38 xx /r): one round of AES encryption/decryption, or
+// the inverse-mix-columns step used when expanding a decryption key
+// schedule from an encryption one.
+void x86_aesenc(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_aesenclast(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_aesdec(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_aesdeclast(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_aesimc(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+// AESKEYGENASSIST xmm, xmm, imm8 (66 0F 3A DF /r ib): one round of the
+// AES key schedule (round constant in imm8).
+void x86_aeskeygenassist(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
+// PINSRW xmm, r32/m16, imm8 (66 0F C4 /r ib): insert a 16-bit word
+// into one of the xmm register's 8 word lanes (imm8 selects which).
+void x86_pinsrw_rm(SecBuf *s, X86XmmReg dst, X86Mem srcm, uint8_t imm);
 
 // x87 (legacy, for long double)
 void x86_fldl_m(SecBuf *s, X86Mem srcm);

@@ -852,10 +852,10 @@ a multi-session effort, not a quick win.
 | test_groff        | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
 | test_argtable3    | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
 | test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| test_libarchive   | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| test_libarchive   | **4/10 fixed, remaining 6 confirmed NOT an rcc bug** — the wide-string-literal alignment fix (4 stacked bugs, see "Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)" below) unblocked `test_entry`/`test_archive_match_path`/`test_archive_match_time`/`test_filter_count`; the remaining 6 are a pre-existing PPMd arithmetic-decoder issue in this libarchive 3.8.8 checkout's own test corpus, reproducing identically with a fully gcc-built libarchive — see "Investigated: libarchive PPMd cluster ..." below                                                 |
 | test_liblz4       | **investigated, not an rcc bug** — `make test`'s `test-lz4-hugefile` step generates and round-trips a 4.2GB file; this sandbox's disk/CPU throughput alone exceeds the 420s harness timeout, not a correctness issue, see "Investigated: test_liblz4 ..." below                                                                                                                                                                                                                                                                                                                                  |
 | test_libpng       | **investigated, not an rcc bug** — `pngtest-all`'s strict byte-compare fails identically with a fully gcc-built libpng+pngtest too (upstream zlib-version-sensitive reference file, libpng's own documented caveat); remaining timeout is `pngimage-full`'s exhaustive transform-combination test running correctly but ~3x slower under rcc's codegen than gcc -O2 (222s vs 68s, both 100% PASS) — see "Investigated: test_libpng ..." below                                                                                                                                                    |
-| test_libressl     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| test_libressl     | **AES-NI/SSE2/GHASH/RC4 crypto asm fixed; blocked on new gap** — was untriaged; this session added missing AES-NI + several SSE2/SSSE3 instruction encoders (see "Fixed (2026-08-11, continued — AES-NI/SSE2 instruction encoder session)" below), unblocking `crypto/aes/aesni-*.S`, `crypto/modes/ghash-*.S`, `crypto/rc4/rc4-*.S`; now blocked on 21 `crypto/bn/arch/amd64/*.S` files using `.intel_syntax noprefix` — rcc's assembler has no Intel-syntax parsing mode at all, a large separate undertaking, not attempted this session                                                      |
 | test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59                                                                                                                                                                                                                                                                                                                                    |
 
 ---
@@ -2933,3 +2933,88 @@ checked against real GNU `as`'s own `objdump -t` output shape; a plain
 Full suite verified: Unit tests 214/214, Compliance 15/15,
 C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64).
+
+### Fixed (2026-08-11, continued — AES-NI/SSE2 instruction encoder session)
+
+Investigated `test_libressl` (LibreSSL, an OpenSSL fork) fresh — never
+previously triaged (its row above just showed "—"). `./configure &&
+make check` failed immediately assembling
+`crypto/aes/aesni-elf-x86_64.S` (OpenSSL/LibreSSL's hand-optimized
+AES-NI implementation, `crypto/aes/asm/aesni-x86_64.pl`-generated):
+
+- **rcc's assembler had zero support for the AES-NI instruction set**
+  (`AESENC`/`AESENCLAST`/`AESDEC`/`AESDECLAST`/`AESIMC`/
+  `AESKEYGENASSIST`) — `error: unknown x86 instruction: aesenc` (etc.)
+  on every one of the 200+ AES-round instructions in the file.
+- **Several SSE2/SSSE3 instructions whose x86_enc.c encoders already
+  existed** (used internally by `codegen.c` for `vector_size` types:
+  `SHUFPS`, `PSHUFB`, and the whole packed-integer family `PADDD`/
+  `PSUBD`/`PADDQ`/`PSUBQ`/`PADDW`/`PSUBW`/`PADDB`/`PSUBB`/`PAND`/`POR`/
+  `PCMPEQD`/`PCMPGTD`) **were never wired into the raw-assembly-text
+  mnemonic dispatch at all** (`src/asm.c`'s `encode_x86()`) — only
+  `PXOR` was. A hand-written `.S` file using any of the others hit the
+  same "unknown x86 instruction" error despite the encoder existing.
+- **Several more instructions had no encoder at all**: `PSHUFD`
+  (dword-lane shuffle), the "group 14" shift-by-immediate family
+  `PSLLDQ`/`PSRLDQ`/`PSLLQ`/`PSRLQ`, and `PINSRW` (word-lane insert
+  from a memory operand) — needed by `crypto/modes/ghash-*.S` (GCM)
+  and `crypto/rc4/rc4-*.S` (RC4's SSE2 fast path) respectively, found
+  by iterating the batch harness once each new gap surfaced.
+
+Fixed by adding the missing encoders (`src/x86_enc.c`/`.h`:
+`x86_aesenc`/`x86_aesenclast`/`x86_aesdec`/`x86_aesdeclast`/
+`x86_aesimc`/`x86_aeskeygenassist`, `x86_pshufd`, a shared
+`group14_shift_imm()` helper backing `x86_pslldq`/`x86_psrldq`/
+`x86_psllq`/`x86_psrlq`, `x86_pinsrw_rm`) and wiring every one of the
+above — new and pre-existing — into `encode_x86()`'s mnemonic
+dispatch. Every encoding verified byte-for-byte identical to real GNU
+`as`'s own output for the same source (register operands `%xmm0`-
+`%xmm3`/memory base `%rbx`, all `< 4`, to sidestep a separate,
+harmless, purely cosmetic pre-existing quirk noted below).
+
+With these fixed, `crypto/aes/aesni-elf-x86_64.S`,
+`crypto/modes/ghash-elf-x86_64.S`, and `crypto/rc4/rc4-elf-x86_64.S`
+all now assemble cleanly. `libressl`'s build then reaches a **new,
+separate, and substantially larger gap**: 21 files under
+`crypto/bn/arch/amd64/` (OpenSSL/LibreSSL's `s2n-bignum`-derived
+constant-time bignum arithmetic — `bignum_mul_4_8.S`,
+`bignum_modadd.S`, `bignum_sqr_6_12.S`, ...) open with `.intel_syntax
+noprefix` and use Intel-syntax operand order/register spelling
+throughout (`adcx r10, rax` — no `%`/`$` sigils, reversed
+dst/src order, `[base+index*scale+disp]`-style memory syntax where
+used) — **rcc's assembler has no Intel-syntax parsing mode
+whatsoever**, only AT&T. This is a genuinely large, separate
+undertaking (a full parallel operand-order/memory-syntax parser for
+every instruction `.intel_syntax` sections can reach, not a handful of
+missing mnemonics) — out of scope for this session, in the same
+category as the already-documented AVX-512/`_BitInt`/`defer`-statement
+gaps under "Needs fixing" below. Left for a future session.
+
+**Pre-existing, unrelated, purely cosmetic quirk noted in passing**:
+`maybe_rex()` (`src/x86_enc.c`)'s "does this operand need a REX
+prefix" threshold is `>= X86_RSP` (4) — correct for its originally
+intended 8-bit-register-remap use (SPL/BPL/SIL/DIL vs. AH/BH/CH/DH,
+where 4-7 genuinely does need REX) and for real extended-register
+(R8-15/XMM8-15) detection, but several callers (all the new XMM
+encoders above included, following the exact same pattern every
+pre-existing XMM encoder already uses) also apply it to XMM register
+indices and memory base/index registers in the 4-7 range, where the
+correct threshold is 8, not 4 — emitting one semantically-inert extra
+REX `0x40` byte (always a pure no-op for non-8-bit operands) instead
+of omitting it. Confirmed via disassembly comparison against real GNU
+`as`: correct bytes decode identically either way, just not
+byte-for-byte GNU-as-identical when an operand register/memory-base
+index happens to land in [4,7]. Not fixed — it's genuinely harmless,
+affects dozens of already-shipped, already-tested XMM encoders beyond
+the scope of this session's fix, and a proper fix (splitting
+`maybe_rex()`'s GP-8-bit-register use from its XMM/general-register
+use into two correctly-thresholded helpers, then re-auditing every
+existing call site) is its own separate, carefully-scoped refactor.
+
+New regression test: `test/test_asm_aesni_sse2.c` — 25 sub-cases (one
+per instruction), each checked against its exact, GNU-as-confirmed
+encoded bytes via `objdump -s`. Full suite verified: Unit tests
+215/215, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609
+(100% of non-skipped), Dg-error 34/34, Link tests 7/7 — 0 failed
+overall (native Linux x86-64); the new test also confirmed passing
+standalone on the mingw cross target.
