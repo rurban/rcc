@@ -961,8 +961,29 @@ Token *lex_one(char **pp, int *plineno) {
             char *start = p;
             char *pos;
             uint32_t c = decode_utf8(&pos, p);
-            if (!is32_ident1(c) || pos == p) // ensure utf-8 progress
+            if (!is32_ident1(c) || pos == p) {
+                // Not a valid identifier-start codepoint (e.g. U+00B7
+                // MIDDLE DOT, legitimately used bare -- not as part of an
+                // adjacent ASCII identifier's own continuation scan, which
+                // already had its chance via is32_ident2() above -- in
+                // Plan9/Go-toolchain symbol names like
+                // `runtime\xc2\xb7no_pointers_stackmap`). C11 6.4p3: any
+                // leftover non-white-space character forms its own
+                // preprocessing token. Emit it as one so a macro body
+                // that merely stores this text (never required to be
+                // otherwise-valid C) reproduces it byte-for-byte on
+                // expansion/stringizing -- and, critically, always
+                // advance `p` past the decoded bytes (or at least one
+                // byte, if decode_utf8 itself made no progress on a
+                // malformed sequence): the old bare `continue` left `p`
+                // unmoved, so the outer loop re-decoded and
+                // re-classified the identical bytes forever, hanging on
+                // any non-ASCII byte that wasn't a valid identifier
+                // start.
+                p = (pos != p) ? pos : p + 1;
+                cur = cur->next = new_token(TK_PUNCT, start, p, cur_lineno);
                 continue;
+            }
             do {
                 p = pos;
                 c = decode_utf8(&pos, p);

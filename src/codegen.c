@@ -13535,13 +13535,23 @@ struct ObjFile *codegen(Program *prog) {
                 size_t rem = cg_obj->bss_size % align;
                 if (rem) cg_obj->bss_size += align - rem;
                 size_t off = cg_obj->bss_size;
-                if (!var->is_static)
-                    objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
-                else
-                    objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                // A tentative (no-initializer) global whose declaration
+                // carries __attribute__((weak)) needs STB_WEAK, not
+                // STB_GLOBAL -- otherwise identical definitions across
+                // multiple translation units (the exact idiom
+                // `int x __attribute__((weak));` in a shared header,
+                // e.g. Plan9/Go-toolchain's AUTOLIB() macro) collide as
+                // real "multiple definition" link errors instead of the
+                // silently-merged single definition weak linkage exists
+                // for. Matches cg_weak_label()'s SB_WEAK choice for
+                // functions; __attribute__((weak)) on a *static*
+                // (internal-linkage) variable has no effect (GCC treats
+                // it as a no-op too), so is_static still wins.
+                SymBind bss_bind = var->is_static ? SB_LOCAL : (var->is_weak ? SB_WEAK : SB_GLOBAL);
+                objfile_add_sym(cg_obj, sym_name_str, var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, bss_bind, var->is_tls ? ST_TLS : ST_OBJECT);
                 cg_label_ht_add(sym_name_str, off);
                 if (reserved)
-                    objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // .globl %s
+                    objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), var->is_tls ? SEC_TDATA : SEC_BSS, off, var->ty->size, bss_bind, var->is_tls ? ST_TLS : ST_OBJECT); // .globl %s
                 cg_obj->bss_size += var->ty->size;
             } else {
                 cg_set_section(data_sec);
@@ -13583,13 +13593,12 @@ struct ObjFile *codegen(Program *prog) {
                 } else
 #endif
                 {
-                    if (!var->is_static)
-                        objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT);
-                    else
-                        objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, SB_LOCAL, var->is_tls ? ST_TLS : ST_OBJECT);
+                    // Same STB_WEAK rationale as the .bss branch above.
+                    SymBind data_bind = var->is_static ? SB_LOCAL : (var->is_weak ? SB_WEAK : SB_GLOBAL);
+                    objfile_add_sym(cg_obj, sym_name_str, data_sec, off, var->ty->size, data_bind, var->is_tls ? ST_TLS : ST_OBJECT);
                     cg_label_ht_add(sym_name_str, off);
                     if (reserved)
-                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), data_sec, off, var->ty->size, var->is_static ? SB_LOCAL : SB_GLOBAL, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
+                        objfile_add_sym(cg_obj, asm_sym_name(sym_name(label)), data_sec, off, var->ty->size, data_bind, var->is_tls ? ST_TLS : ST_OBJECT); // %s:
                 }
                 if (var->is_tls && !var->has_init && !var->init_data && !var->relocs) {
                     for (int _zi = 0; _zi < var->ty->size; _zi++) secbuf_emit8(cg_sec, 0);

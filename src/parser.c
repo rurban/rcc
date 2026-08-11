@@ -221,9 +221,11 @@ static int pending_target_clones_n;
 // calling declarator(). Mirrors pending_alias_target/pending_cleanup_func.
 static bool pending_transparent_union;
 // Same as pending_transparent_union, but for __attribute__((weak))/__weak__
-// that appears between the pointer star(s) and the function name in a
-// declarator — kprobe_opcode_t * __attribute__((__weak__)) fn(...).
-// Set by declarator(), consumed by the function definition handler.
+// that appears either between the pointer star(s) and the declared name,
+// or trailing right after the name itself (kprobe_opcode_t *
+// __attribute__((__weak__)) fn(...); int x __attribute__((weak));).
+// Set by declarator(), consumed by both the function-definition handler
+// and the plain global-variable declaration path.
 static bool pending_weak;
 // VLA-containing struct: emit size-capture code before the next statement
 static Node *pending_vla_struct_capture;
@@ -3232,6 +3234,16 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
     ty = apply_pending_mode(ty);
     if (trail_attr.is_transparent_union)
         pending_transparent_union = true;
+    // A trailing __attribute__((weak)) right after the identifier (e.g.
+    // `int x __attribute__((weak));`) was parsed into trail_attr but
+    // never propagated anywhere -- only the pointer-attribute case just
+    // above (`int *p __attribute__((weak))`) set pending_weak. Both
+    // placements need the same result: this is how the Plan9/Go-
+    // toolchain AUTOLIB() idiom (`int __p9l_autolib_x
+    // __attribute__((weak));`, u.h) and ordinary weak global variables
+    // declare weak linkage.
+    if (trail_attr.is_weak)
+        pending_weak = true;
     ty = type_suffix(rest, tok, ty, decl_name);
     if (pending_vector_size) {
         ty = make_vector_type(ty, pending_vector_size);
@@ -12808,7 +12820,19 @@ Program *parse(Token *tok) {
                         var->is_extern = attr.is_extern;
                         var->is_static = attr.is_static;
                         var->is_tls = attr.is_tls;
+                        // __attribute__((weak)) may appear either as a
+                        // prefix specifier (attr.is_weak, from
+                        // declspec()) or trailing the declarator itself
+                        // (pending_weak, set by declarator() -- see its
+                        // declaration above; previously only consumed by
+                        // the function-definition path below, leaving a
+                        // plain global variable's own trailing
+                        // `__attribute__((weak))` silently dropped, e.g.
+                        // the Plan9/Go-toolchain AUTOLIB() idiom
+                        // `int __p9l_autolib_x __attribute__((weak));`).
+                        var->is_weak = attr.is_weak || pending_weak;
                     }
+                    pending_weak = false;
                     if (attr.is_register && pending_asm_name && !var->has_init &&
                         ty->size > 0 && ty->size <= 8 &&
                         ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_ARRAY) {

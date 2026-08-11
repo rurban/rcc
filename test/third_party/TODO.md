@@ -843,20 +843,20 @@ a multi-session effort, not a quick win.
 
 ## rc=124 — Timeouts
 
-| test              | notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                                                                                                                                                                                                                                                                                                                                                            |
-| test_perl         | **fixed** — the spill-slot/locals-offset collision root-caused in "Investigated, not fixed (2026-08-10, register-spill/locals-collision session)" below is fixed, see "Fixed (2026-08-10, continued — spill/locals collision)" below; re-ran the real target fresh (`./Configure -des -Dcc=rcc ...`, `make -j3 test_prep && HARNESS_OPTIONS=j3 make test_harness`) and it now builds miniperl, the full `perl`, every extension, and `make test_harness` cleanly to completion — `rc=0` in 557s (previously segfaulted inside `Perl_upg_version()` before even reaching `lib/buildcustomize.pl`) |
-| test_go           | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| test_nginx        | **fixed** — `__sync_fetch_and_add`/sub/or/xor/and/nand's narrow-argument sign-extension bug (`ngx_atomic_fetch_add(lock, -1)` corrupted `ngx_rwlock_unlock()`, hanging every worker in `ngx_rwlock_wlock()` forever), see "Fixed (2026-08-11, continued — atomic fetch-op narrow-argument session)" below; reran the real `nginx-tests` suite fresh (`prove .`, 492 files) — all 2600 tests pass                                                                                                                                                                                                 |
-| test_groff        | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
-| test_argtable3    | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                             |
-| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| test_libarchive   | **4/10 fixed, remaining 6 confirmed NOT an rcc bug** — the wide-string-literal alignment fix (4 stacked bugs, see "Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)" below) unblocked `test_entry`/`test_archive_match_path`/`test_archive_match_time`/`test_filter_count`; the remaining 6 are a pre-existing PPMd arithmetic-decoder issue in this libarchive 3.8.8 checkout's own test corpus, reproducing identically with a fully gcc-built libarchive — see "Investigated: libarchive PPMd cluster ..." below                                                 |
-| test_liblz4       | **investigated, not an rcc bug** — `make test`'s `test-lz4-hugefile` step generates and round-trips a 4.2GB file; this sandbox's disk/CPU throughput alone exceeds the 420s harness timeout, not a correctness issue, see "Investigated: test_liblz4 ..." below                                                                                                                                                                                                                                                                                                                                  |
-| test_libpng       | **investigated, not an rcc bug** — `pngtest-all`'s strict byte-compare fails identically with a fully gcc-built libpng+pngtest too (upstream zlib-version-sensitive reference file, libpng's own documented caveat); remaining timeout is `pngimage-full`'s exhaustive transform-combination test running correctly but ~3x slower under rcc's codegen than gcc -O2 (222s vs 68s, both 100% PASS) — see "Investigated: test_libpng ..." below                                                                                                                                                    |
-| test_libressl     | **AES-NI/SSE2/GHASH/RC4 crypto asm fixed; blocked on new gap** — was untriaged; this session added missing AES-NI + several SSE2/SSSE3 instruction encoders (see "Fixed (2026-08-11, continued — AES-NI/SSE2 instruction encoder session)" below), unblocking `crypto/aes/aesni-*.S`, `crypto/modes/ghash-*.S`, `crypto/rc4/rc4-*.S`; now blocked on 21 `crypto/bn/arch/amd64/*.S` files using `.intel_syntax noprefix` — rcc's assembler has no Intel-syntax parsing mode at all, a large separate undertaking, not attempted this session                                                      |
-| test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59                                                                                                                                                                                                                                                                                                                                    |
+| test              | notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| test_bash         | **fixed** — `dstack` const-fold bug + small-struct return ABI bug + `-rdynamic` not implemented, see "Fixed (2026-08-08, ...)" sections above; own `make test` now runs to completion, `run-glob-bracket` also passes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| test_perl         | **fixed** — the spill-slot/locals-offset collision root-caused in "Investigated, not fixed (2026-08-10, register-spill/locals-collision session)" below is fixed, see "Fixed (2026-08-10, continued — spill/locals collision)" below; re-ran the real target fresh (`./Configure -des -Dcc=rcc ...`, `make -j3 test_prep && HARNESS_OPTIONS=j3 make test_harness`) and it now builds miniperl, the full `perl`, every extension, and `make test_harness` cleanly to completion — `rc=0` in 557s (previously segfaulted inside `Perl_upg_version()` before even reaching `lib/buildcustomize.pl`)                                                                                                                                                             |
+| test_go           | **C bootstrap phase fully fixed; blocked one layer deeper** — a lexer infinite-loop DoS bug (any non-identifier-start non-ASCII byte hung rcc forever) and a missing `__attribute__((weak))` variable-linkage gap (two independent stacked bugs), see "Fixed (2026-08-11, continued — lexer non-ASCII infinite loop / weak variable attribute session)" below; `cmd/dist`/`lib9`/`libbio`/`liblink`/`5c`/`6c`/`8c`/`9c`/`5g`/`6g`/`8g` now build and self-bootstrap completely, reaching real `.go` stdlib compilation with the freshly-built `6g` — which then hits a likely miscompilation in `6g`'s own (Plan9 C, rcc-built) embedded-struct-field-promotion logic, several layers removed from rcc's own C-level correctness; not attempted this session |
+| test_nginx        | **fixed** — `__sync_fetch_and_add`/sub/or/xor/and/nand's narrow-argument sign-extension bug (`ngx_atomic_fetch_add(lock, -1)` corrupted `ngx_rwlock_unlock()`, hanging every worker in `ngx_rwlock_wlock()` forever), see "Fixed (2026-08-11, continued — atomic fetch-op narrow-argument session)" below; reran the real `nginx-tests` suite fresh (`prove .`, 492 files) — all 2600 tests pass                                                                                                                                                                                                                                                                                                                                                             |
+| test_groff        | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| test_argtable3    | **fixed** — passes cleanly now (confirmed via a fresh batch run this session); no rcc changes were needed specifically for it, resolved by the accumulated fixes from prior sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| test_libarchive   | **4/10 fixed, remaining 6 confirmed NOT an rcc bug** — the wide-string-literal alignment fix (4 stacked bugs, see "Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)" below) unblocked `test_entry`/`test_archive_match_path`/`test_archive_match_time`/`test_filter_count`; the remaining 6 are a pre-existing PPMd arithmetic-decoder issue in this libarchive 3.8.8 checkout's own test corpus, reproducing identically with a fully gcc-built libarchive — see "Investigated: libarchive PPMd cluster ..." below                                                                                                                                                                                                             |
+| test_liblz4       | **investigated, not an rcc bug** — `make test`'s `test-lz4-hugefile` step generates and round-trips a 4.2GB file; this sandbox's disk/CPU throughput alone exceeds the 420s harness timeout, not a correctness issue, see "Investigated: test_liblz4 ..." below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| test_libpng       | **investigated, not an rcc bug** — `pngtest-all`'s strict byte-compare fails identically with a fully gcc-built libpng+pngtest too (upstream zlib-version-sensitive reference file, libpng's own documented caveat); remaining timeout is `pngimage-full`'s exhaustive transform-combination test running correctly but ~3x slower under rcc's codegen than gcc -O2 (222s vs 68s, both 100% PASS) — see "Investigated: test_libpng ..." below                                                                                                                                                                                                                                                                                                                |
+| test_libressl     | **AES-NI/SSE2/GHASH/RC4 crypto asm fixed; blocked on new gap** — was untriaged; this session added missing AES-NI + several SSE2/SSSE3 instruction encoders (see "Fixed (2026-08-11, continued — AES-NI/SSE2 instruction encoder session)" below), unblocking `crypto/aes/aesni-*.S`, `crypto/modes/ghash-*.S`, `crypto/rc4/rc4-*.S`; now blocked on 21 `crypto/bn/arch/amd64/*.S` files using `.intel_syntax noprefix` — rcc's assembler has no Intel-syntax parsing mode at all, a large separate undertaking, not attempted this session                                                                                                                                                                                                                  |
+| test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ---
 
@@ -3105,3 +3105,118 @@ C-testsuite 220/220, Torture 3605/3609 (100% of non-skipped), Dg-error
 34/34, Link tests 7/7 — 0 failed overall (native Linux x86-64); both
 new tests also confirmed passing standalone on the mingw and arm64
 cross targets.
+
+### Fixed (2026-08-11, continued — lexer non-ASCII infinite loop / weak variable attribute session)
+
+**test_go**: `go tool dist`'s C bootstrap phase (`cmd/dist`, then `lib9`/
+`libbio`/`liblink` and the `5c`/`6c`/`8c`/`9c`/`5g`/`6g`/`8g` Plan9-style
+compilers, all C) previously either hung indefinitely (timing out the
+420s harness budget with no diagnostic at all) or, once that was fixed,
+failed to link with "multiple definition" errors. Both were genuine rcc
+bugs, found by attaching gdb to the hung/stuck compile and sampling its
+call stack.
+
+- **Any non-ASCII byte that decoded to a non-identifier-start codepoint
+  hung the lexer forever** (lexer.c, `lex_one()`) — dispatching a byte
+  `>= 0x80`, the lexer decoded one UTF-8 codepoint and checked
+  `is32_ident1()` (valid identifier-_start_ character?); when it wasn't
+  (e.g. U+00B7 MIDDLE DOT — General Category Po, punctuation, not a
+  letter — appearing bare, not as part of an adjacent ASCII identifier's
+  own continuation scan), the code did a bare `continue` without ever
+  advancing `p`. The outer dispatch loop then re-examined the identical
+  byte position, re-decoded the identical codepoint, and reached the
+  identical "not identifier-start" verdict again — forever. This needs
+  no malformed UTF-8, just an ordinary punctuation-class Unicode
+  character outside a string/char literal and outside an identifier's
+  own continuation scan — a genuine DoS-class bug reachable by any
+  source file, not specific to Go. Trigger: `include/runtime/funcdata.h`
+  (included by nearly every `lib9`/`libbio`/`liblink` `.c` file)
+  defines `NO_LOCAL_POINTERS` as a macro whose replacement list contains
+  `runtime\xc2\xb7no_pointers_stackmap(SB)` — Plan9/Go's
+  "package·symbol" assembly-name convention (U+00B7 is one of the
+  handful of characters Unicode's `PropList.txt` explicitly lists under
+  `Other_ID_Continue` for exactly this legacy use, which real GCC
+  honors — a separate, smaller gap not fixed this session, since it
+  only affects _how the identifier is tokenized_ — one token vs. three
+  — not whether compilation terminates or succeeds). A `#define`'s
+  replacement list is tokenized unconditionally regardless of whether
+  the macro is ever expanded, so every file that merely `#include`s
+  this header hung, whether or not it called `NO_LOCAL_POINTERS`.
+  Found via `gdb -p <stuck-pid> -batch -ex bt`, repeated across several
+  seconds: 8 of 10 samples landed in the identical
+  `binary_search`/`isTR39_start(cp=183)` call chain (183 = 0xB7).
+  Fixed by always advancing `p` on this path — past the decoded
+  codepoint's bytes when `decode_utf8()` made progress, or past one
+  byte otherwise (a malformed sequence that didn't decode at all) — and
+  emitting the skipped bytes as their own preprocessing token (C11
+  6.4p3: any leftover non-white-space character forms its own
+  pp-token), so a macro body that merely stores this text still
+  reproduces it byte-for-byte if ever expanded/stringized.
+- **`**attribute**((weak)) on a global variable was silently dropped**,
+  in two independent, stacked ways:
+  1. **Parser** (parser.c, `declarator()`) — a _trailing_ weak
+     attribute right after the declared identifier (`int x
+__attribute__((weak));`) was parsed into a local `trail_attr`
+     struct and then simply never read; only the separate _pointer_-
+     attribute case just above it (`int *p __attribute__((weak))`,
+     function-pointer-shaped declarators) propagated into
+     `pending_weak`. A _prefix_ weak attribute
+     (`__attribute__((weak)) int x;`) parsed correctly into
+     `attr.is_weak`, but that was equally unused for a plain variable
+     (see next point) — so _neither_ spelling worked for a variable
+     before this fix, only for functions.
+  2. **Codegen** (codegen.c, the `prog->globals` emission loop) — even
+     once `var->is_weak` was correctly set, the `.bss`/`.data` symbol-
+     binding choice only ever checked `var->is_static` (`SB_LOCAL` vs.
+     `SB_GLOBAL`), never `var->is_weak` — so a weak variable's own
+     definition still carried `STB_GLOBAL`, not `STB_WEAK`, in the
+     emitted object.
+     Trigger: `include/u.h`'s `AUTOLIB(x)` macro — `#define AUTOLIB(x) int
+__p9l_autolib_ ## x __attribute__ ((weak));` — used once per
+     translation unit throughout `lib9`/`libbio`/`liblink` to "tip off 9l
+     to autolink" a library. Every file including a given library's header
+     (e.g. `bio.h`) emits its own `__p9l_autolib_bio` with the identical
+     name; without real weak linkage every one of those became a hard
+     "multiple definition of `__p9l_autolib_bio`" link error building
+     `liblink.a`/`libbio.a`'s own archive members, instead of the silently-
+     merged single definition weak linkage exists for. Confirmed via
+     `objdump -t`/`nm`: rcc emitted `g O .bss` where real GCC (on the
+     identical source) emits `w O .bss` / `V`.
+
+With both fixed, rcc successfully builds the entire go1.4 C bootstrap
+chain end to end: `cmd/dist`, `lib9`, `libbio`, `liblink`, and the
+`5c`/`6c`/`8c`/`9c`/`5g`/`6g`/`8g` compilers/assemblers/linkers, which
+then successfully self-bootstrap and begin compiling the Go standard
+library's own `.go` sources with the freshly-built `6g`. That later
+stage now hits `runtime/mprof.go:487: r.Stack0 undefined (type
+*BlockProfileRecord has no field or method Stack0)` — `Stack0` is a
+field of `StackRecord`, anonymously embedded in `BlockProfileRecord`
+for Go's standard field-promotion rules to make `r.Stack0` resolve to
+`r.StackRecord.Stack0`; the rcc-built `6g` fails to resolve it. This is
+several layers removed from rcc itself (a possible miscompilation
+inside the _bootstrapped Go compiler's own_ embedded-struct-field-
+promotion logic, written in Plan9 C, itself compiled by rcc — not
+anything in the `.go` sources or in rcc's own C-level correctness) and
+needs a dedicated, properly-scoped investigation into `6g`'s own gc/\*.c
+sources; not attempted this session. `test_go` moves from completely
+untriaged (timed out with zero diagnostic information) to "C bootstrap
+phase fully fixed, blocked on one further layer" — a real, substantial
+step forward even though the target doesn't fully pass yet.
+
+New regression tests: `test/test_lexer_nonascii_infinite_loop.c` (the
+exact middle-dot-in-macro-body trigger, with a `timeout`-guarded
+subprocess invocation so a regression fails cleanly instead of hanging
+the suite; plus a genuinely valid Unicode identifier to confirm the fix
+didn't break the normal path); `test/test_weak_variable_attribute.c`
+(4 cases: trailing weak on a tentative/`.bss` global, trailing weak on
+an initialized/`.data` global, prefix weak, and an ordinary non-weak
+global that must NOT become weak as a side effect — verified via `nm`'s
+clean 3-field output rather than `objdump -t`'s fixed-width flag
+column, whose internal spaces defeat naive whitespace-based parsing).
+Full suite verified: Unit tests 219/219, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link
+tests 7/7 — 0 failed overall (native Linux x86-64); both new tests also
+confirmed passing standalone on the mingw and arm64 cross targets (the
+lexer test's POSIX `timeout N cmd` guard needed a Windows-specific
+no-op, since cmd.exe's own built-in `timeout` takes an incompatible
+`/T <seconds>` syntax).
