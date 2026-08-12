@@ -2441,6 +2441,17 @@ toolchain.register_compiler(
         'print_search_dirs': ['-print-search-dirs'],
     },
 )
+toolchain.register_compiler(
+    'rcc',
+    inherit: 'posix',
+    linker: 'ld',
+    detect: func(out str) -> int
+        return 'rcc' in out ? 100 : 0
+    endfunc,
+    handlers: {
+        'print_search_dirs': ['-print-search-dirs'],
+    },
+)
 EOF
  sh ./bootstrap.sh build
  # shellcheck disable=SC2086

@@ -531,6 +531,16 @@ int main(int argc, char **argv) {
                 (wl_has_token(argv[i], "-E") || wl_has_token(argv[i], "--export-dynamic")))
                 opt_export_dynamic = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+            // A bare -Wl,<opt> / -l<name> with no source or object inputs
+            // is a legitimate link-only invocation (real gcc runs the
+            // linker for these instead of failing with "no input files" —
+            // e.g. the `-Wl,-v` version probe that build tools like muon
+            // use to detect the linker type, which must print the real
+            // linker's "GNU ld version" banner). Mark it as having link
+            // inputs so the "no input files" fatal below doesn't fire
+            // before the link step gets to run.
+            if (!strncmp(argv[i], "-Wl,", 4) || !strncmp(argv[i], "-l", 2))
+                have_link_inputs = true;
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
                 fprintf(stderr, "error: missing argument for -soname\n");
@@ -1069,7 +1079,33 @@ int main(int argc, char **argv) {
             backend_out = stdout_tmp;
         }
         // Try the native linker first.
+        // The native ELF/PE/Mach-O linker understands only -l/-L/-static
+        // inputs (plus bare .a/.so positionals) and the -pie/-pic/-shared/
+        // -static/-export-dynamic mode flags. It cannot honor -Wl, options
+        // (rpath, soname, --start-group/--end-group, --as-needed,
+        // --no-undefined, -v, -z, ...) or -nodefaultlibs; silently dropping
+        // them would "link" with the wrong semantics (e.g. a shared lib
+        // whose DT_RUNPATH/DT_SONAME never got written, or an archive
+        // whose --start-group dependency closure was never resolved) — or,
+        // for -Wl,-v, produce no output at all, breaking tools like muon
+        // that probe the linker version through it. Detect these up front
+        // and go straight to the external linker instead.
+        bool native_link_capable = true;
         {
+            const char *lp = libs;
+            while (lp && *lp && native_link_capable) {
+                while (*lp == ' ') lp++;
+                if (!*lp) break;
+                const char *end = lp;
+                while (*end && *end != ' ') end++;
+                size_t len = (size_t)(end - lp);
+                if ((len >= 4 && !strncmp(lp, "-Wl,", 4)) ||
+                    (len >= 14 && !strncmp(lp, "-nodefaultlibs", 14)))
+                    native_link_capable = false;
+                lp = end;
+            }
+        }
+        if (native_link_capable) {
             int n_link_objs = 0;
             for (OutPath *p = out_paths; p; p = p->next) n_link_objs++;
             if (n_link_objs > 0) {
