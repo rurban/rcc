@@ -698,6 +698,9 @@ static VReg gen_vector_unary_builtin(Node *node);
 static VReg gen_vector_binary_builtin(Node *node);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
+static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label);
+static void gen_flonum_branch_if_nonzero(VReg r, const char *label);
+static void gen_flonum_truthiness(VReg r);
 
 static bool var_needs_got(LVar *var) {
     if (var->is_local) return false;
@@ -4997,7 +5000,25 @@ static VReg gen_addr(Node *node) {
         int c = ++rcc_label_count;
         VReg r = alloc_reg();
         VReg cond = gen(node->cond);
-        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
+        if (node->cond->ty && is_flonum(node->cond->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy.
+            gen_flonum_branch_if_zero(cond, NULL, format(".L.else.%d", c));
+            free_reg(cond);
+            VReg then_r = gen_addr(node->then);
+            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
+            free_reg(then_r);
+            {
+                size_t o = asm_jmp_label(cg_sec); // b .L.end.%d
+                asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.else.%d", c));
+            VReg else_r = gen_addr(node->els);
+            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
+            free_reg(else_r);
+            cg_def_label(format(".L.end.%d", c));
+            return r;
+        }
+        int cond_sz = node->cond->ty->size;
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
         {
@@ -5224,6 +5245,103 @@ static void cg_add_fwd(size_t instr_off, int type, size_t *fwd_off, const char *
     }
 }
 
+// Emit a branch to the false-target when the flonum value held as a
+// double bit pattern in GP register `r` compares equal to 0.0 (i.e. the
+// C condition is FALSE). IEEE semantics: -0.0 compares equal to +0.0
+// (condition false) even though its bit pattern is nonzero; NaN is
+// unordered, hence truthy (never branches). A plain bitwise `cmp $0, r`
+// would misclassify -0.0 as truthy.
+// Target resolution mirrors cg_add_fwd: fwd_off (direct patch) else
+// shared_label (fixup) else auto-label defined in place.
+static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label) {
+#ifdef ARCH_ARM64
+    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+    asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
+    asm_fcmp(cg_sec, 1); // fcmp d0, d1
+    int c = ++rcc_label_count;
+    const char *skip = format(".L.fz.skip.%d", c);
+    {
+        size_t o = asm_jcc_label(cg_sec, ARM64_VS); // b.vs skip (NaN truthy)
+        asm_fixup_add(cg_sec, o, skip, 1);
+    }
+    {
+        size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target (zero incl. -0.0)
+        cg_add_fwd(o, 1, fwd_off, shared_label);
+    }
+    cg_def_label(skip);
+#else
+    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
+    x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+    asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+    int c = ++rcc_label_count;
+    const char *skip = format(".L.fz.skip.%d", c);
+    {
+        size_t o = asm_jcc_label(cg_sec, X86_P); // jp skip (NaN truthy)
+        asm_fixup_add(cg_sec, o, skip, 1);
+    }
+    {
+        size_t o = asm_jcc_label(cg_sec, X86_E); // je target (zero incl. -0.0)
+        cg_add_fwd(o, 1, fwd_off, shared_label);
+    }
+    cg_def_label(skip);
+#endif
+}
+
+// Branch to label when the flonum value in GP register `r` is truthy
+// (compares unequal to 0.0, or is NaN). Inverse of
+// gen_flonum_branch_if_zero with a plain-label target.
+static void gen_flonum_branch_if_nonzero(VReg r, const char *label) {
+#ifdef ARCH_ARM64
+    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+    asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
+    asm_fcmp(cg_sec, 1); // fcmp d0, d1
+    {
+        size_t o = asm_jcc_label(cg_sec, ARM64_VS); // b.vs label (NaN truthy)
+        asm_fixup_add(cg_sec, o, label, 1);
+    }
+    {
+        size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne label (ordered unequal)
+        asm_fixup_add(cg_sec, o, label, 1);
+    }
+#else
+    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
+    x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+    asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+    {
+        size_t o = asm_jcc_label(cg_sec, X86_P); // jp label (NaN truthy)
+        asm_fixup_add(cg_sec, o, label, 1);
+    }
+    {
+        size_t o = asm_jcc_label(cg_sec, X86_NE); // jne label (ordered unequal)
+        asm_fixup_add(cg_sec, o, label, 1);
+    }
+#endif
+}
+
+// Normalize the flonum value in GP register `r` (double bit pattern) to a
+// C truthiness 0/1: 1 if the value compares unequal to 0.0 (or is NaN),
+// 0 if it compares equal to 0.0 (including -0.0). Mirrors gen_cast_reg's
+// _Bool conversion path.
+static void gen_flonum_truthiness(VReg r) {
+#ifdef ARCH_ARM64
+    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+    asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
+    asm_fcmp(cg_sec, 1); // fcmp d0, d1
+    asm_cset(cg_sec, r, ARM64_NE); // cset r, ne (ordered unequal)
+    // fcmp is unordered (NaN): Z=1 -> cset ne gave 0, but NaN is truthy.
+    // csinc r, r, xzr, vc: if not-unordered keep r, else r = xzr+1 = 1.
+    arm64_csinc(cg_sec, 0, REG(r), REG(r), ARM64_XZR, ARM64_VC);
+#else
+    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
+    x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
+    asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
+    asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al (ordered, unequal)
+    asm_setcc(cg_sec, X86_RCX, X86_P); // setp %cl (unordered: NaN)
+    x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
+    asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+}
+
 // Emit a conditional branch to label when the condition is FALSE (inverted sense).
 // If shared_label != NULL: all branches fix up to this label (via asm_fixup_add).
 // If shared_label == NULL:
@@ -5247,7 +5365,20 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
     }
     if (cond->kind == ND_LOGOR) {
         VReg lhs = gen(cond->lhs);
-        int lhs_sz = (cond->lhs->ty && is_flonum(cond->lhs->ty)) ? 8 : cond->lhs->ty->size;
+        if (cond->lhs->ty && is_flonum(cond->lhs->ty)) {
+            // Truthy (nonzero or NaN) lhs skips the rhs check. A bitwise
+            // GP-register test would misclassify -0.0 (nonzero bit
+            // pattern, value == 0.0) as truthy.
+            int c2 = ++rcc_label_count;
+            const char *skip = format(".L.glor.fskip.%d", c2);
+            gen_flonum_branch_if_nonzero(lhs, skip);
+            free_reg(lhs);
+            // If lhs was false, check rhs; if rhs is also false, branch to target
+            gen_cond_branch_inv(cond->rhs, fwd_off, shared_label);
+            cg_def_label(skip);
+            return;
+        }
+        int lhs_sz = cond->lhs->ty->size;
         asm_cmp_zero(cg_sec, lhs, lhs_sz); // cmp $0, rlhs
         free_reg(lhs);
 #ifdef ARCH_ARM64
@@ -5528,7 +5659,14 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
     }
 
     VReg r = gen(cond);
-    int sz = (cond->ty && is_flonum(cond->ty)) ? 8 : (cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4));
+    if (cond->ty && is_flonum(cond->ty)) {
+        // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. A bitwise
+        // `cmp $0` on the double bit pattern would treat -0.0 as truthy.
+        gen_flonum_branch_if_zero(r, fwd_off, shared_label);
+        free_reg(r);
+        return;
+    }
+    int sz = cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4);
 #ifdef ARCH_ARM64
     asm_cmp_zero(cg_sec, r, sz);
     free_reg(r);
@@ -6304,14 +6442,18 @@ static VReg gen_int128(Node *node) {
         int c = ++rcc_label_count;
         int cond_r = gen(node->cond);
         int dst = alloc_int128_addr();
-        int cond_cmp_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : (node->cond->ty ? node->cond->ty->size : 4);
+        if (node->cond->ty && is_flonum(node->cond->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy.
+            gen_flonum_branch_if_zero(cond_r, NULL, format(".L.else.%d", c));
+        } else {
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
-        emit_jcc_fixup(cg_sec, ARM64_EQ, format(".L.else.%d", c));
+            asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+            emit_jcc_fixup(cg_sec, ARM64_EQ, format(".L.else.%d", c));
 #else
-        asm_cmp_zero(cg_sec, cond_r, cond_cmp_sz);
-        emit_jcc_fixup(cg_sec, X86_E, format(".L.else.%d", c));
+            asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+            emit_jcc_fixup(cg_sec, X86_E, format(".L.else.%d", c));
 #endif
+        }
         free_reg(cond_r);
         int then_a = gen_to_int128(node->then);
 #ifdef ARCH_ARM64
@@ -6928,20 +7070,10 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
         // the value compares equal to 0, 1 otherwise. This must produce
         // an actual 0/1 normalization, not a truncating bit-copy.
         if (is_flonum(from)) {
-#ifdef ARCH_ARM64
-            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
-            asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
-            asm_fcmp(cg_sec, 1); // fcmp d0, d1
-            asm_cset(cg_sec, r, ARM64_NE); // cset r, ne (NaN is unordered/"ne")
-#else
-            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq r, %xmm0
-            x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
-            asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
-            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al (ordered, unequal)
-            asm_setcc(cg_sec, X86_RCX, X86_P); // setp %cl (unordered: NaN)
-            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX); // orb %cl, %al
-            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
-#endif
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. On ARM64 a
+            // bare `cset r, ne` after fcmp misclassifies NaN (unordered
+            // sets Z=1) as false; gen_flonum_truthiness handles both.
+            gen_flonum_truthiness(r);
         } else {
 #ifdef ARCH_ARM64
             asm_cmp_zero(cg_sec, r, from->size > 0 ? from->size : 8);
@@ -8145,11 +8277,11 @@ static VReg gen(Node *node) {
                 VReg r1 = gen_addr(node->lhs);
                 asm_movq_r_xmm(cg_sec, 0, r2); // movq r2, %xmm0
                 asm_str_fp(cg_sec, 0, r1, 8); // movsd %xmm0, (r1)
-                free_reg(r2);
                 free_reg(r1);
-                VReg dummy = alloc_reg();
-                asm_movq_zero(cg_sec, dummy); // xor rdummy, rdummy
-                return dummy;
+                // The assignment expression's value is the (truncated)
+                // stored value, i.e. the double bit pattern already in
+                // r2 -- exactly like the plain double path below.
+                return r2;
             }
 #endif
             VReg r2 = gen(node->rhs);
@@ -9745,32 +9877,52 @@ static VReg gen(Node *node) {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         VReg r = alloc_reg();
+        asm_movq_zero(cg_sec, r); // xor r, r — result is 0 when lhs short-circuits
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
-        asm_movq_zero(cg_sec, r);
-        {
-            size_t o = asm_jcc_label(cg_sec, ARM64_EQ);
-            asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+        if (is_flonum(node->lhs->ty))
+            gen_flonum_branch_if_zero(lhs, NULL, format(".L.end.%d", c));
+        else {
+            asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
+            {
+                size_t o = asm_jcc_label(cg_sec, ARM64_EQ);
+                asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+            }
         }
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
-        asm_cset(cg_sec, r, ARM64_NE);
+        if (is_flonum(node->rhs->ty)) {
+            gen_flonum_truthiness(rhs); // 0/1 in rhs
+            asm_mov_reg_reg(cg_sec, r, rhs, 4); // mov w{rhs} -> w{r}
+        } else {
+            asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
+            asm_cset(cg_sec, r, ARM64_NE);
+        }
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
 #else
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 0); // movb $0, -spill_logand(%rbp)
-        {
-            size_t o = asm_jcc_label(cg_sec, X86_E);
-            asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+        if (is_flonum(node->lhs->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
+            // GP-register test would misclassify -0.0.
+            gen_flonum_branch_if_zero(lhs, NULL, format(".L.end.%d", c));
+        } else {
+            asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E);
+                asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+            }
         }
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
-        asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-        asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
+        if (is_flonum(node->rhs->ty)) {
+            gen_flonum_truthiness(rhs); // 0/1 in rhs
+            asm_mov_reg_rbp(cg_sec, rhs, 1, spill_logand); // movb r{rhs}b, -spill_logand(%rbp)
+        } else {
+            asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty));
+            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+            asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
+        }
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
         VReg r = alloc_reg();
@@ -9782,6 +9934,27 @@ static VReg gen(Node *node) {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
         VReg lhs = gen(node->lhs);
+        if (is_flonum(node->lhs->ty)) {
+            int c2 = ++rcc_label_count;
+            const char *skip = format(".L.logor.fskip.%d", c2);
+            // Truthy (nonzero or NaN) lhs short-circuits with result 1.
+            arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result)
+            gen_flonum_branch_if_nonzero(lhs, skip);
+            free_reg(lhs);
+            VReg rhs = gen(node->rhs);
+            if (is_flonum(node->rhs->ty)) {
+                gen_flonum_truthiness(rhs); // 0/1 in rhs
+                arm64_orr_reg(cg_sec, 0, ARM64_X16, ARM64_XZR, REG(rhs), ARM64_LSL, 0); // mov w16, w{rhs}
+            } else {
+                asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
+                arm64_cset(cg_sec, 0, ARM64_X16, ARM64_NE); // cset w16, ne (false-path result in x16)
+            }
+            free_reg(rhs);
+            cg_def_label(skip);
+            VReg r = alloc_reg();
+            arm64_orr_reg(cg_sec, 0, REG(r), ARM64_XZR, ARM64_X16, ARM64_LSL, 0); // mov w{r}, w16
+            return r;
+        }
         asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
         arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result in x16)
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.end.%d
@@ -9799,15 +9972,28 @@ static VReg gen(Node *node) {
         return r;
 #else
         VReg lhs = gen(node->lhs);
-        asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 1); // movb $1, -spill_logand(%rbp)
-        size_t o = asm_jcc_label(cg_sec, X86_NE); // jne .L.end.%d
-        asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+        if (is_flonum(node->lhs->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
+            // GP-register test would misclassify -0.0.
+            gen_flonum_branch_if_nonzero(lhs, format(".L.end.%d", c));
+        } else {
+            asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_NE); // jne .L.end.%d
+                asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
+            }
+        }
         free_reg(lhs);
         VReg rhs = gen(node->rhs);
-        asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
-        asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-        asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
+        if (is_flonum(node->rhs->ty)) {
+            gen_flonum_truthiness(rhs); // 0/1 in rhs
+            asm_mov_reg_rbp(cg_sec, rhs, 1, spill_logand); // movb r{rhs}b, -spill_logand(%rbp)
+        } else {
+            asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
+            asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
+            asm_mov_phyreg_rbp(cg_sec, X86_RAX, 1, spill_logand); // movb %al, -spill_logand(%rbp)
+        }
         free_reg(rhs);
         cg_def_label(format(".L.end.%d", c));
         VReg r2 = alloc_reg();
@@ -9881,10 +10067,25 @@ static VReg gen(Node *node) {
         // twice). Reuse the already-computed `cond` register instead.
         bool gnu_omitted = node->then == node->cond ||
             (node->then->kind == ND_CAST && node->then->lhs == node->cond);
+        if (node->cond->ty && is_flonum(node->cond->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
+            // GP-register test would misclassify -0.0.
+            gen_flonum_branch_if_zero(cond, NULL, else_label);
+        } else {
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
-        size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
-        asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
+            asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
+            {
+                size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
+                asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
+            }
+#else
+            asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
+            {
+                size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
+                asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
+            }
+#endif
+        }
         VReg then_r;
         if (gnu_omitted) {
             then_r = (node->then->kind == ND_CAST)
@@ -9912,38 +10113,6 @@ static VReg gen(Node *node) {
             asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
             free_reg(else_r);
         }
-#else
-        asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
-        size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
-        asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
-        VReg then_r;
-        if (gnu_omitted) {
-            then_r = (node->then->kind == ND_CAST)
-                ? gen_cast_reg(cond, node->cond->ty, node->then->ty)
-                : cond;
-        } else {
-            free_reg(cond);
-            then_r = gen(node->then);
-        }
-        // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
-        // no value register; there is nothing to move into the result.
-        r = R_NONE;
-        if (then_r != R_NONE) {
-            r = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
-            free_reg(then_r);
-        }
-        size_t cj2 = asm_jmp_label(cg_sec); // je .L.end.%d
-        asm_fixup_add(cg_sec, cj2, end_label, 0); // fixup add for forward branch
-        cg_def_label(else_label); // setne %%al
-        VReg else_r = gen(node->els);
-        if (else_r != R_NONE) {
-            if (r == R_NONE)
-                r = alloc_reg();
-            asm_mov_reg_reg(cg_sec, r, else_r, 8); // mov relse_r -> rr
-            free_reg(else_r);
-        }
-#endif
         cg_def_label(end_label); // .L.end.%d:
         return r;
     }
@@ -10123,16 +10292,28 @@ static VReg gen(Node *node) {
         if (r_then != -1) free_reg(r_then);
         cg_def_label(cont_label); // continue:
         VReg r = gen(node->cond);
-        int cond_sz = (node->cond->ty && is_flonum(node->cond->ty)) ? 8 : node->cond->ty->size;
+        if (node->cond->ty && is_flonum(node->cond->ty)) {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. A bitwise
+            // GP-register test would misclassify -0.0 (nonzero bit
+            // pattern, value == 0.0) as truthy. Branch forward past the
+            // backward jump when the condition is FALSE, else loop back.
+            int c2 = ++rcc_label_count;
+            const char *fskip = format(".L.do.fskip.%d", c2);
+            gen_flonum_branch_if_zero(r, NULL, fskip);
+            free_reg(r);
+            asm_b_back(cg_sec, begin_pos); // b begin
+            cg_def_label(fskip);
+        } else {
 #ifdef ARCH_ARM64
-        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
-        free_reg(r);
-        asm_bcond_back(cg_sec, ARM64_NE, begin_pos); // b.ne begin
+            asm_cmp_zero(cg_sec, r, op_size(node->cond->ty)); // cmp $0, rr
+            free_reg(r);
+            asm_bcond_back(cg_sec, ARM64_NE, begin_pos); // b.ne begin
 #else
-        asm_cmp_zero(cg_sec, r, cond_sz); // cmp $0, rr
-        free_reg(r);
-        asm_bcond_back(cg_sec, X86_NE, begin_pos); // jne begin
+            asm_cmp_zero(cg_sec, r, op_size(node->cond->ty)); // cmp $0, rr
+            free_reg(r);
+            asm_bcond_back(cg_sec, X86_NE, begin_pos); // jne begin
 #endif
+        }
         cg_def_label(format(".L.end.%d", c)); // end:
         ctrl_depth--;
         return -1;

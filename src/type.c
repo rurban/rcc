@@ -140,6 +140,8 @@ Type *array_of(Type *base, int64_t len) {
     return ty;
 }
 
+static Type *usual_arith_type(Type *lhs, Type *rhs);
+
 static Node *new_scale_mul(Node *rhs, int size) {
     Node *num = arena_alloc(sizeof(Node));
     num->kind = ND_NUM;
@@ -149,7 +151,15 @@ static Node *new_scale_mul(Node *rhs, int size) {
     node->kind = ND_MUL;
     node->lhs = rhs;
     node->rhs = num;
-    node->ty = ty_int;
+    // The multiply's type must be the actual usual-arithmetic-conversion
+    // result of `rhs * (int)size`, NOT a hardcoded int. Pointer arithmetic
+    // `p + n` with a 64-bit n (e.g. `char *p + long n`) previously became
+    // `p + (long)(n * 1)` where `n * 1` was typed int — codegen then
+    // truncated n to 32 bits before the sign-extending cast, silently
+    // corrupting every offset >= 2^31 (real bug: ksh93's
+    // `printf -v v "%4000000000d"` produced a 32-bit-truncated 4 GB
+    // padding, and segfaulted at exactly 2^32).
+    node->ty = usual_arith_type(rhs->ty, num->ty);
     return node;
 }
 
@@ -642,9 +652,14 @@ static void add_type_internal(Node *node) {
             return;
         }
         if (lty->base && rty->base) {
-            // ptr - ptr
-            // For now just output int
-            node->ty = ty_int;
+            // ptr - ptr: the result is ptrdiff_t (64-bit on LP64), NOT int.
+            // Typing it int made codegen compute the difference in 32 bits,
+            // truncating any offset >= 2^31 before the element-size
+            // division — real bug: sfio's `f->next - f->data` position
+            // arithmetic in _sfexcept's string-buffer growth corrupted the
+            // stream fields once the buffer passed 2 GB (ksh93's
+            // `printf -v v "%4000000000d"` segfaulted at exactly 2^31).
+            node->ty = ty_llong;
             return;
         }
         node->ty = ty_int;

@@ -2,12 +2,12 @@
 
 **Platform**: Linux ARM64 (aarch64 cross)
 
-Generated: August 10 2026 22:46
+Generated: August 12 2026 13:51
 
 ## Overall Summary
 
-- **Total**: 4516
-- **Passed**: 4151
+- **Total**: 4538
+- **Passed**: 4173
 - **Failed**: 6
 - **Skipped**: 354
 - **Overall Pass Rate**: 100%
@@ -21,10 +21,10 @@ Generated: August 10 2026 22:46
 
 ## RCC Unit Tests
 
-- **Total**: 198
-- **Passed**: 197
+- **Total**: 220
+- **Passed**: 219
 - **Failed**: 0
-- **Pass Rate**: 99%
+- **Pass Rate**: 100%
 
 ## c-testsuite
 
