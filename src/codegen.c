@@ -694,13 +694,59 @@ static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
 static VReg alloc_int128_addr(void);
 static VReg gen_vector(Node *node);
+#ifdef ARCH_ARM64
 static VReg gen_vector_unary_builtin(Node *node);
 static VReg gen_vector_binary_builtin(Node *node);
+#endif
+#ifndef ARCH_ARM64
+static VReg gen_ia32_builtin(Node *node);
+#endif
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
 static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label);
 static void gen_flonum_branch_if_nonzero(VReg r, const char *label);
 static void gen_flonum_truthiness(VReg r);
+
+// True if `fn`'s body contains a call to `fn` itself by name. A GNU
+// extern-inline wrapper that does this is a fortify-style fallback (the
+// body's self-call is meant to bind to the real libc symbol); emitting a
+// local copy would shadow it and recurse forever (see the gnu_ext_inline
+// handling in codegen()).
+static bool fn_self_references(Function *fn) {
+    if (!fn || !fn->body || !fn->name)
+        return false;
+    // walk all nodes for a call whose funcname/lhs resolves to fn->name
+    // (a small recursive walker; ND_FUNCALL names are interned pointers)
+    // [uses a simple iterative stack to avoid recursion depth issues]
+    Node *stack[4096];
+    int sp = 0;
+    stack[sp++] = fn->body;
+    while (sp > 0) {
+        Node *n = stack[--sp];
+        if (!n) continue;
+        if (n->kind == ND_FUNCALL) {
+            if (n->funcname == fn->name)
+                return true;
+            if (n->lhs && n->lhs->kind == ND_LVAR && n->lhs->var &&
+                n->lhs->var->name == fn->name)
+                return true;
+        }
+        if (sp + 8 >= 4096) break; // defensive; bodies this deep don't exist
+        if (n->lhs) stack[sp++] = n->lhs;
+        if (n->rhs) stack[sp++] = n->rhs;
+        if (n->cond) stack[sp++] = n->cond;
+        if (n->then) stack[sp++] = n->then;
+        if (n->els) stack[sp++] = n->els;
+        if (n->init) stack[sp++] = n->init;
+        if (n->inc) stack[sp++] = n->inc;
+        if (n->stmt_expr_result) stack[sp++] = n->stmt_expr_result;
+        for (Node *c = n->body; c; c = c->next)
+            stack[sp++] = c;
+        for (Node *c = n->args; c; c = c->next)
+            stack[sp++] = c;
+    }
+    return false;
+}
 
 static bool var_needs_got(LVar *var) {
     if (var->is_local) return false;
@@ -1249,6 +1295,17 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         node->lhs->var->asm_name) {
         call_target = node->lhs->var->asm_name;
         is_asm_call = true;
+    } else if (call_target) {
+        // A funcname-only call (e.g. a clone spliced in by the inliner, or
+        // an implicit call): the target's declaration may carry an
+        // __asm__("sym") rename (mingw's `void __mingw_chk_fail_warn(void)
+        // __asm__("__chk_fail")`). Without this the call references the
+        // literal name, which has no symbol of its own.
+        LVar *g = find_global_name(call_target);
+        if (g && g->is_function && g->asm_name) {
+            call_target = g->asm_name;
+            is_asm_call = true;
+        }
     }
     // glibc __REDIRECT: extern readlink(...) __asm__("__readlink_chk")
     // adds a trailing buflen arg.  The call site has the right arity
@@ -1309,18 +1366,26 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             call_target = "cimagf";
     }
 
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps/sqrtpd/sqrtsd — packed SSE/NEON dispatch.
-    if (call_target &&
-        (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
-         !strcmp(call_target, "__builtin_ia32_sqrtss") ||
-         !strcmp(call_target, "__builtin_ia32_rsqrtps") ||
-         !strcmp(call_target, "__builtin_ia32_sqrtpd") ||
-         !strcmp(call_target, "__builtin_ia32_sqrtsd"))) {
-        return gen_vector_unary_builtin(node);
-    }
-    // Two-arg vector builtin: __builtin_ia32_pshufb128 — _mm_shuffle_epi8.
-    if (call_target && !strcmp(call_target, "__builtin_ia32_pshufb128")) {
-        return gen_vector_binary_builtin(node);
+    // __builtin_ia32_* SIMD intrinsics (SSE/SSE2/SSSE3/SSE4.x): the
+    // real GCC headers wrap every intrinsic in one of these calls, so
+    // dispatch them all through gen_ia32_builtin (the old sqrt*/pshufb
+    // special cases are a subset of it).
+    if (call_target && !strncmp(call_target, "__builtin_ia32_", 15)) {
+#ifdef ARCH_ARM64
+        if (!strcmp(call_target, "__builtin_ia32_sqrtps") ||
+            !strcmp(call_target, "__builtin_ia32_sqrtss") ||
+            !strcmp(call_target, "__builtin_ia32_rsqrtps") ||
+            !strcmp(call_target, "__builtin_ia32_sqrtpd") ||
+            !strcmp(call_target, "__builtin_ia32_sqrtsd"))
+            return gen_vector_unary_builtin(node);
+        if (!strcmp(call_target, "__builtin_ia32_pshufb128"))
+            return gen_vector_binary_builtin(node);
+        error_tok(node->tok, "__builtin_ia32_%s: not implemented on this target",
+                  call_target + 15);
+        return R_NONE;
+#else
+        return gen_ia32_builtin(node);
+#endif
     }
     // Check for __attribute__((warning/error/diagnose_if)) on function
     if (!cg_dry_run && node->lhs && node->lhs->var) {
@@ -4808,6 +4873,44 @@ static void gen_chain_walk_into(VReg r, int depth) {
 #endif
 }
 
+// Scalar -> vector cast: GCC broadcasts the scalar to every lane. The
+// scalar value (int/float bit pattern in a GP register) is moved into an
+// XMM register and replicated lane-wise; the result materializes in a
+// 16-byte slot (vectors are slot-resident in rcc).
+#ifndef ARCH_ARM64
+static VReg gen_vector_splat(Node *scalar, Type *vty) {
+    Type *elem = vty ? vty->base : NULL;
+    int esz = elem ? (int)elem->size : 4;
+    VReg r = gen(scalar);
+    VReg dst = alloc_int128_addr();
+    if (esz == 8) {
+        x86_movq_r_xmm(cg_sec, X86_XMM0, REG(r)); // movq r, %xmm0
+        x86_punpcklqdq(cg_sec, X86_XMM0, X86_XMM0); // {v, v}
+    } else if (esz == 4) {
+        if (elem && is_flonum(elem)) {
+            // rcc keeps float VALUES in GP registers as double bit
+            // patterns; narrow to single before broadcasting.
+            x86_movq_r_xmm(cg_sec, X86_XMM0, REG(r));
+            asm_cvtsd2ss(cg_sec);
+        } else {
+            x86_movd_r_xmm(cg_sec, X86_XMM0, REG(r)); // movd r, %xmm0
+        }
+        x86_shufps(cg_sec, X86_XMM0, X86_XMM0, 0); // broadcast
+    } else if (esz == 2) {
+        x86_movd_r_xmm(cg_sec, X86_XMM0, REG(r));
+        x86_punpcklwd(cg_sec, X86_XMM0, X86_XMM0);
+        x86_punpcklwd(cg_sec, X86_XMM0, X86_XMM0);
+    } else {
+        x86_movd_r_xmm(cg_sec, X86_XMM0, REG(r));
+        x86_punpcklbw(cg_sec, X86_XMM0, X86_XMM0);
+        x86_punpcklbw(cg_sec, X86_XMM0, X86_XMM0);
+        x86_punpcklbw(cg_sec, X86_XMM0, X86_XMM0);
+    }
+    free_reg(r);
+    x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+}
+#endif
 static VReg gen_addr(Node *node) {
     // A vector arithmetic/compare/unary result is materialized into a 16-byte
     // slot; its "address" is that slot (used when a vector value is returned by
@@ -5061,6 +5164,18 @@ static VReg gen_addr(Node *node) {
         return r;
     }
     case ND_CAST:
+        if (node->ty && node->ty->is_vector) {
+            // Vector cast: same-size vector -> vector is a bitcast (address
+            // unchanged); scalar -> vector broadcasts the scalar to every
+            // lane (GCC semantics), materialized in a 16-byte slot.
+#ifndef ARCH_ARM64
+            if (node->lhs && node->lhs->ty && node->lhs->ty->is_vector)
+                return gen_addr(node->lhs);
+            return gen_vector_splat(node->lhs, node->ty);
+#else
+            return gen(node);
+#endif
+        }
         if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_COMPLEX || node->ty->kind == TY_ARRAY)) {
             // Complex -> complex cast with a differently-sized base type of
             // the same kind (e.g. _Complex char -> _Complex int, from the
@@ -6983,6 +7098,7 @@ static VReg gen_vector(Node *node) {
 }
 
 // Single-arg vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps
+#ifdef ARCH_ARM64
 static VReg gen_vector_unary_builtin(Node *node) {
     VReg a = gen_addr(node->args);
 #ifdef ARCH_ARM64
@@ -7040,10 +7156,12 @@ static VReg gen_vector_unary_builtin(Node *node) {
     return dst;
 #endif
 }
+#endif /* ARCH_ARM64 */
 
 // Two-arg vector builtins: __builtin_ia32_pshufb128 (x86 SSSE3 only —
 // _mm_shuffle_epi8's real implementation; ARM64's NEON TBL equivalent
 // isn't wired up, matching several other x86-only builtins in this file).
+#ifdef ARCH_ARM64
 static VReg gen_vector_binary_builtin(Node *node) {
 #ifdef ARCH_ARM64
     (void)node;
@@ -7063,6 +7181,1110 @@ static VReg gen_vector_binary_builtin(Node *node) {
     return dst;
 #endif
 }
+#endif /* ARCH_ARM64 */
+
+
+#ifndef ARCH_ARM64
+// ===== __builtin_ia32_* SIMD intrinsic codegen (x86-64) =====
+// The real GCC headers (xmmintrin.h/emmintrin.h/...) implement the
+// intrinsics as thin inline wrappers over __builtin_ia32_* calls. Each
+// call is typed by name (see type.c's ia32_builtin_ret); here we emit
+// the matching packed-SSE instruction. Vector operands/results live in
+// 8- or 16-byte stack slots (vectors are TY_STRUCT in this compiler).
+static bool ia32_suf(const char *n, const char *s) {
+    size_t nl = strlen(n), sl = strlen(s);
+    return nl >= sl && memcmp(n + nl - sl, s, sl) == 0;
+}
+static bool ia32_is_const(Node *arg) {
+    if (!arg) return false;
+    while (arg->kind == ND_CAST && arg->lhs)
+        arg = arg->lhs;
+    return arg->kind == ND_NUM;
+}
+static uint8_t ia32_imm8(Node *arg, const char *what) {
+    if (!arg)
+        error("__builtin_ia32_*: missing %s operand", what);
+    if (!ia32_is_const(arg)) {
+        // _MM_SHUFFLE(a,b,c,d) macro arithmetic folds to a constant here;
+        // only genuinely runtime values fall through to the error.
+        long long v = 0;
+        if (!eval_const_expr(arg, &v))
+            error_tok(arg->tok, "__builtin_ia32_*: %s must be an integer constant", what);
+        return (uint8_t)v;
+    }
+    while (arg->kind == ND_CAST && arg->lhs)
+        arg = arg->lhs;
+    return (uint8_t)arg->val;
+}
+// Address of a by-value vector operand (vector values live in slots).
+static VReg ia32_vaddr(Node *arg) {
+    VReg r = gen_addr(arg);
+    if (r < 0) {
+        r = gen(arg);
+    }
+    return r;
+}
+// Load a 8/16-byte vector operand into XMM2/XMM1 and copy XMM2 to XMM0.
+static void ia32_load2(Node *a, Node *b, int bytes) {
+    VReg da = ia32_vaddr(a);
+    if (bytes == 8)
+        x86_movq_rm(cg_sec, x86_mem(REG(da), 0), X86_XMM2);
+    else
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(da), 0));
+    free_reg(da);
+    VReg db = ia32_vaddr(b);
+    if (bytes == 8)
+        x86_movq_rm(cg_sec, x86_mem(REG(db), 0), X86_XMM1);
+    else
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(db), 0));
+    free_reg(db);
+    x86_movaps(cg_sec, X86_XMM0, X86_XMM2); // dst = arg1 (upper lanes from arg1)
+}
+static void ia32_load1(Node *a, int bytes) {
+    VReg da = ia32_vaddr(a);
+    if (bytes == 8)
+        x86_movq_rm(cg_sec, x86_mem(REG(da), 0), X86_XMM0);
+    else
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(da), 0));
+    free_reg(da);
+}
+static VReg ia32_store(int bytes) {
+    VReg dst = alloc_int128_addr();
+    if (bytes == 8)
+        x86_movq_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    else
+        x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+}
+// Emit prefix + 0F op /r (reg/reg) on XMM0, XMM1.
+static void ia32_emit2(int pfx, int op) {
+    switch (pfx) {
+    case 0x66: sse_rr_66(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM1); break;
+    case 0xf3: sse_rr_f3(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM1); break;
+    case 0xf2: sse_rr_f2(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM1); break;
+    default: sse_rr_np(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM1); break;
+    }
+}
+// int ALU root -> 66 0F opcode (shared MMX/SSE; size selects load/store width)
+static int ia32_int_op(const char *root) {
+    static const struct {
+        const char *r;
+        int op;
+    } tab[] = {
+        {"paddb", 0xfc},
+        {"paddw", 0xfd},
+        {"paddd", 0xfe},
+        {"paddq", 0xd4},
+        {"psubb", 0xf8},
+        {"psubw", 0xf9},
+        {"psubd", 0xfa},
+        {"psubq", 0xfb},
+        {"paddsb", 0xec},
+        {"paddsw", 0xed},
+        {"paddusb", 0xdc},
+        {"paddusw", 0xdd},
+        {"psubsb", 0xe8},
+        {"psubsw", 0xe9},
+        {"psubusb", 0xd8},
+        {"psubusw", 0xd9},
+        {"pand", 0xdb},
+        {"pandn", 0xdf},
+        {"por", 0xeb},
+        {"pxor", 0xef},
+        {"pcmpeqb", 0x74},
+        {"pcmpeqw", 0x75},
+        {"pcmpeqd", 0x76},
+        {"pcmpgtb", 0x64},
+        {"pcmpgtw", 0x65},
+        {"pcmpgtd", 0x66},
+        {"pmullw", 0xd5},
+        {"pmulhw", 0xe5},
+        {"pmulhuw", 0xe4},
+        {"pmuludq", 0xf4},
+        {"pmaddwd", 0xf5},
+        {"pavgb", 0xe0},
+        {"pavgw", 0xe3},
+        {"psadbw", 0xf6},
+        {"pmaxub", 0xde},
+        {"pmaxsw", 0xee},
+        {"pminub", 0xda},
+        {"pminsw", 0xea},
+        {"packsswb", 0x63},
+        {"packssdw", 0x6b},
+        {"packuswb", 0x67},
+        {"punpcklbw", 0x60},
+        {"punpcklwd", 0x61},
+        {"punpckldq", 0x62},
+        {"punpcklqdq", 0x6c},
+        {"punpckhbw", 0x68},
+        {"punpckhwd", 0x69},
+        {"punpckhdq", 0x6a},
+        {"punpckhqdq", 0x6d},
+    };
+    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+        if (!strcmp(tab[i].r, root))
+            return tab[i].op;
+    return -1;
+}
+// 66 0F 38 xx /r two-register ops (SSSE3/SSE4.x)
+static int ia32_int38_op(const char *root) {
+    static const struct {
+        const char *r;
+        int op;
+    } tab[] = {
+        {"pabsb", 0x1c},
+        {"pabsw", 0x1d},
+        {"pabsd", 0x1e},
+        {"psignb", 0x08},
+        {"psignw", 0x09},
+        {"psignd", 0x0a},
+        {"phaddw", 0x01},
+        {"phaddd", 0x02},
+        {"phaddsw", 0x03},
+        {"phsubw", 0x05},
+        {"phsubd", 0x06},
+        {"phsubsw", 0x07},
+        {"pmaddubsw", 0x04},
+        {"pmulhrsw", 0x0b},
+        {"pblendvb", 0x0c},
+        {"blendvps", 0x0d},
+        {"blendvpd", 0x0e},
+        {"ptest", 0x17},
+        {"pmovsxbw", 0x20},
+        {"pmovsxbd", 0x21},
+        {"pmovsxbq", 0x22},
+        {"pmovsxwd", 0x23},
+        {"pmovsxwq", 0x24},
+        {"pmovsxdq", 0x25},
+        {"pmuldq", 0x28},
+        {"pcmpeqq", 0x29},
+        {"movntdqa", 0x2a},
+        {"packusdw", 0x2b},
+        {"pmovzxbw", 0x30},
+        {"pmovzxbd", 0x31},
+        {"pmovzxbq", 0x32},
+        {"pmovzxwd", 0x33},
+        {"pmovzxwq", 0x34},
+        {"pmovzxdq", 0x35},
+        {"pcmpgtq", 0x37},
+        {"pminsb", 0x38},
+        {"pminsd", 0x39},
+        {"pminuw", 0x3a},
+        {"pminud", 0x3b},
+        {"pmaxsb", 0x3c},
+        {"pmaxsd", 0x3d},
+        {"pmaxuw", 0x3e},
+        {"pmaxud", 0x3f},
+        {"pmulld", 0x40},
+        {"phminposuw", 0x41},
+        {"pshufb", 0x00},
+    };
+    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+        if (!strcmp(tab[i].r, root))
+            return tab[i].op;
+    return -1;
+}
+// 66 0F 3A xx /r ib (SSE4.1 immediate ops)
+static int ia32_int3a_op(const char *root) {
+    static const struct {
+        const char *r;
+        int op;
+    } tab[] = {
+        {"roundps", 0x08},
+        {"roundpd", 0x09},
+        {"roundss", 0x0a},
+        {"roundsd", 0x0b},
+        {"blendps", 0x0c},
+        {"blendpd", 0x0d},
+        {"pblendw", 0x0e},
+        {"palignr", 0x0f},
+        {"insertps", 0x21},
+        {"dpps", 0x40},
+        {"dppd", 0x41},
+        {"mpsadbw", 0x42},
+        {"pclmulqdq", 0x44},
+        {"pcmpestrm", 0x60},
+        {"pcmpestri", 0x61},
+        {"pcmpistrm", 0x62},
+        {"pcmpistri", 0x63},
+    };
+    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++)
+        if (!strcmp(tab[i].r, root))
+            return tab[i].op;
+    return -1;
+}
+static void ia32_emit38(int op) {
+    emit1(cg_sec, 0x66);
+    maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM1);
+    emit3(cg_sec, 0x0f, 0x38, (uint8_t)op);
+    emit1(cg_sec, modrxmm(3, X86_XMM0, X86_XMM1));
+}
+static void ia32_emit3a(int op, uint8_t imm) {
+    emit1(cg_sec, 0x66);
+    maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM1);
+    emit3(cg_sec, 0x0f, 0x3a, (uint8_t)op);
+    emit1(cg_sec, modrxmm(3, X86_XMM0, X86_XMM1));
+    emit1(cg_sec, imm);
+}
+
+static VReg gen_ia32_builtin(Node *node) {
+    const char *fn = node->funcname;
+    // rcc's own bundled SIMD headers declare the five legacy builtins
+    // (sqrtps/sqrtss/rsqrtps/sqrtpd/sqrtsd) as real functions, so those
+    // calls carry their target in lhs->var->name instead of funcname.
+    if (!fn && node->lhs && node->lhs->var && node->lhs->var->name)
+        fn = node->lhs->var->name;
+    if (!fn) return R_NONE;
+    const char *n = fn + 15; // "__builtin_ia32_"
+    Node *a1 = node->args, *a2 = a1 ? a1->next : NULL, *a3 = a2 ? a2->next : NULL;
+
+    // ================= no-result ops =================
+    if (!strcmp(n, "pause")) {
+        x86_pause(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "sfence")) {
+        x86_sfence(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "lfence")) {
+        x86_lfence(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "mfence")) {
+        x86_mfence(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "emms")) {
+        x86_emms(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "femms")) {
+        x86_femms(cg_sec);
+        return R_NONE;
+    }
+    if (!strcmp(n, "monitor")) {
+        VReg p = gen(a1), e = gen(a2), h = gen(a3);
+        x86_mov_rr(cg_sec, 8, X86_RAX, REG(p)); // rax = addr
+        x86_mov_rr(cg_sec, 8, X86_RCX, REG(e)); // rcx = ext
+        x86_mov_rr(cg_sec, 8, X86_RDX, REG(h)); // rdx = hints
+        x86_monitor(cg_sec);
+        free_reg(p);
+        free_reg(e);
+        free_reg(h);
+        return R_NONE;
+    }
+    if (!strcmp(n, "mwait")) {
+        VReg e = gen(a1), h = gen(a2);
+        x86_mov_rr(cg_sec, 4, X86_RAX, REG(e)); // eax = ext
+        x86_mov_rr(cg_sec, 4, X86_RCX, REG(h)); // ecx = hints
+        x86_mwait(cg_sec);
+        free_reg(e);
+        free_reg(h);
+        return R_NONE;
+    }
+    if (!strcmp(n, "clflush")) {
+        VReg p = gen(a1);
+        x86_clflush(cg_sec, x86_mem(REG(p), 0));
+        free_reg(p);
+        return R_NONE;
+    }
+    if (!strcmp(n, "prefetch")) {
+        VReg p = gen(a1);
+        X86Mem m = x86_mem(REG(p), 0);
+        if (ia32_is_const(a2)) {
+            switch (ia32_imm8(a2, "locality") & 3) {
+            case 0: x86_prefetchnta(cg_sec, m); break;
+            case 1: x86_prefetcht0(cg_sec, m); break;
+            case 2: x86_prefetcht1(cg_sec, m); break;
+            default: x86_prefetcht2(cg_sec, m); break;
+            }
+        } else {
+            // Runtime locality (xmmintrin.h's _mm_prefetch passes
+            // `(__I & 0xC) >> 2`): dispatch among the four forms.
+            int c = ++rcc_label_count;
+            VReg loc = gen(a2);
+            asm_cmp_imm(cg_sec, loc, 4, 0);
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E);
+                asm_fixup_add(cg_sec, o, format(".L.pf.nta.%d", c), 1);
+            }
+            asm_cmp_imm(cg_sec, loc, 4, 1);
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E);
+                asm_fixup_add(cg_sec, o, format(".L.pf.t0.%d", c), 1);
+            }
+            asm_cmp_imm(cg_sec, loc, 4, 2);
+            {
+                size_t o = asm_jcc_label(cg_sec, X86_E);
+                asm_fixup_add(cg_sec, o, format(".L.pf.t1.%d", c), 1);
+            }
+            x86_prefetcht2(cg_sec, m);
+            {
+                size_t o = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, o, format(".L.pf.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.pf.nta.%d", c));
+            x86_prefetchnta(cg_sec, m);
+            {
+                size_t o = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, o, format(".L.pf.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.pf.t0.%d", c));
+            x86_prefetcht0(cg_sec, m);
+            {
+                size_t o = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, o, format(".L.pf.end.%d", c), 0);
+            }
+            cg_def_label(format(".L.pf.t1.%d", c));
+            x86_prefetcht1(cg_sec, m);
+            cg_def_label(format(".L.pf.end.%d", c));
+            free_reg(loc);
+        }
+        free_reg(p);
+        return R_NONE;
+    }
+    if (!strcmp(n, "ldmxcsr")) {
+        VReg r = gen(a1);
+        asm_sub_rsp_imm(cg_sec, 16);
+        x86_mov_mr(cg_sec, 4, x86_mem(X86_RSP, 0), REG(r));
+        x86_ldmxcsr_m(cg_sec, x86_mem(X86_RSP, 0));
+        asm_add_rsp_imm(cg_sec, 16);
+        free_reg(r);
+        return R_NONE;
+    }
+    if (!strcmp(n, "stmxcsr")) {
+        asm_sub_rsp_imm(cg_sec, 16);
+        x86_stmxcsr_m(cg_sec, x86_mem(X86_RSP, 0));
+        VReg r = alloc_reg();
+        x86_mov_rm(cg_sec, 4, REG(r), x86_mem(X86_RSP, 0));
+        asm_add_rsp_imm(cg_sec, 16);
+        return r;
+    }
+    if (!strcmp(n, "movnti") || !strcmp(n, "movnti64")) {
+        VReg p = gen(a1), v = gen(a2);
+        x86_movnti_m(cg_sec, x86_mem(REG(p), 0), REG(v), !strcmp(n, "movnti") ? 4 : 8);
+        free_reg(p);
+        free_reg(v);
+        return R_NONE;
+    }
+    if (!strcmp(n, "movntps") || !strcmp(n, "movntpd") || !strcmp(n, "movntdq")) {
+        VReg p = gen(a1);
+        VReg va = ia32_vaddr(a2);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        free_reg(va);
+        if (!strcmp(n, "movntps")) x86_movntps_m(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        else if (!strcmp(n, "movntpd"))
+            x86_movntpd_m(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        else
+            x86_movntdq_m(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        free_reg(p);
+        return R_NONE;
+    }
+    if (!strcmp(n, "movntq")) {
+        VReg p = gen(a1);
+        VReg va = ia32_vaddr(a2);
+        x86_movq_rm(cg_sec, x86_mem(REG(va), 0), X86_XMM0);
+        free_reg(va);
+        x86_movntq_m(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        free_reg(p);
+        return R_NONE;
+    }
+    if (!strcmp(n, "maskmovdqu")) {
+        VReg da = ia32_vaddr(a1);
+        VReg db = ia32_vaddr(a2);
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(da), 0));
+        free_reg(da);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(db), 0));
+        free_reg(db);
+        x86_maskmovdqu(cg_sec, X86_XMM1, X86_XMM2); // writes to [rdi]
+        return R_NONE;
+    }
+    // storehps/storelps: store high/low 64 bits of the vector to *ptr
+    if (!strcmp(n, "storehps") || !strcmp(n, "storelps")) {
+        VReg p = gen(a1);
+        VReg va = ia32_vaddr(a2);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        free_reg(va);
+        if (!strcmp(n, "storehps"))
+            x86_pshufd(cg_sec, X86_XMM0, X86_XMM0, 0xee); // high dwords -> low
+        x86_movq_mr(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        free_reg(p);
+        return R_NONE;
+    }
+    // loadhps/loadlps: A with high/low 64 bits replaced by *ptr
+    if (!strcmp(n, "loadhps") || !strcmp(n, "loadlps")) {
+        VReg va = ia32_vaddr(a1);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        free_reg(va);
+        VReg p = gen(a2);
+        x86_movq_rm(cg_sec, x86_mem(REG(p), 0), X86_XMM1);
+        free_reg(p);
+        if (!strcmp(n, "loadhps"))
+            x86_movlhps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_movsd_rr(cg_sec, X86_XMM0, X86_XMM1);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "movss") || !strcmp(n, "movsd")) {
+        // movss/movsd: A with lane 0 replaced by B's lane 0
+        ia32_load2(a1, a2, 16);
+        if (!strcmp(n, "movss")) x86_movss_rr(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_movsd_rr(cg_sec, X86_XMM0, X86_XMM1);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "movhlps") || !strcmp(n, "movlhps")) {
+        ia32_load2(a1, a2, 16);
+        if (!strcmp(n, "movhlps")) x86_movhlps(cg_sec, X86_XMM0, X86_XMM1);
+        else
+            x86_movlhps(cg_sec, X86_XMM0, X86_XMM1);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "movsldup") || !strcmp(n, "movshdup")) {
+        ia32_load1(a1, 16);
+        if (!strcmp(n, "movsldup")) x86_movsldup(cg_sec, X86_XMM0, X86_XMM0);
+        else
+            x86_movshdup(cg_sec, X86_XMM0, X86_XMM0);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "movq128")) {
+        // movq xmm, xmm: low 64 bits, upper zero
+        ia32_load1(a1, 8); // movq load zero-extends
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "movmskps") || !strcmp(n, "movmskpd")) {
+        VReg va = ia32_vaddr(a1);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        free_reg(va);
+        VReg r = alloc_reg();
+        if (!strcmp(n, "movmskps")) x86_movmskps(cg_sec, REG(r), X86_XMM0);
+        else
+            x86_movmskpd(cg_sec, REG(r), X86_XMM0);
+        return r;
+    }
+    if (!strcmp(n, "pmovmskb") || !strcmp(n, "pmovmskb128")) {
+        VReg va = ia32_vaddr(a1);
+        int bytes = !strcmp(n, "pmovmskb") ? 8 : 16;
+        if (bytes == 8) x86_movq_rm(cg_sec, x86_mem(REG(va), 0), X86_XMM0);
+        else
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        free_reg(va);
+        VReg r = alloc_reg();
+        x86_pmovmskb(cg_sec, (X86XmmReg)REG(r), X86_XMM0); // GP dst in reg field
+        return r;
+    }
+
+    // ================= crc32 =================
+    if (!strncmp(n, "crc32", 5)) {
+        // crc32 r32, r/m8/16/32/64: the operand SIZE comes from the name
+        // suffix (qi=byte, hi=word, si=dword, di=qword), never from the
+        // argument's type (the headers pass unsigned char/values, but
+        // direct calls pass plain int literals).
+        int vsz = !strcmp(n, "crc32qi") ? 1 : !strcmp(n, "crc32hi") ? 2
+            : !strcmp(n, "crc32di")                                 ? 8
+                                                                    : 4;
+        VReg c0 = gen(a1);
+        VReg v = gen(a2);
+        VReg r = alloc_reg();
+        x86_mov_rr(cg_sec, 4, REG(r), REG(c0)); // seed with the incoming CRC
+        if (vsz == 1) x86_crc32qi(cg_sec, REG(r), REG(v));
+        else
+            x86_crc32si(cg_sec, REG(r), REG(v), vsz);
+        free_reg(c0);
+        free_reg(v);
+        return r;
+    }
+
+    // ================= move-mask / compare-flag int results =================
+    if (!strncmp(n, "ptest", 5)) {
+        ia32_load2(a1, a2, 16);
+        ia32_emit38(0x17); // ptest xmm0, xmm1: ZF = (xmm0 & xmm1)==0, CF = (~xmm0 & xmm1)==0
+        VReg r = alloc_reg();
+        if (n[5] == 'z') {
+            asm_setcc(cg_sec, X86_RAX, X86_E); // ZF: (a & b) == 0
+            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+        } else if (n[5] == 'c') {
+            asm_setcc(cg_sec, X86_RAX, X86_B); // CF: (~a & b) == 0
+            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+        } else {
+            // nzc: !(ZF || CF)
+            asm_setcc(cg_sec, X86_RAX, X86_E);
+            asm_setcc(cg_sec, X86_RCX, X86_B);
+            x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX);
+            x86_xor_ri(cg_sec, 1, X86_RAX, 1);
+            asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+        }
+        return r;
+    }
+    // comi*/ucomi*: compare two floats, return flag-derived int
+    if (!strncmp(n, "comi", 4) || !strncmp(n, "ucomi", 5)) {
+        ia32_load2(a1, a2, 16);
+        if (strncmp(n, "ucomi", 5) == 0) {
+            if (strstr(n, "sd")) x86_ucomisd(cg_sec, X86_XMM0, X86_XMM1);
+            else
+                x86_ucomiss(cg_sec, X86_XMM0, X86_XMM1);
+        } else {
+            if (strstr(n, "sd")) x86_comisd(cg_sec, X86_XMM0, X86_XMM1);
+            else
+                x86_comiss(cg_sec, X86_XMM0, X86_XMM1);
+        }
+        VReg r = alloc_reg();
+        if (ia32_suf(n, "eq")) asm_setcc(cg_sec, X86_RAX, X86_E);
+        else if (ia32_suf(n, "neq"))
+            asm_setcc(cg_sec, X86_RAX, X86_NE);
+        else if (ia32_suf(n, "lt"))
+            asm_setcc(cg_sec, X86_RAX, X86_B);
+        else if (ia32_suf(n, "le"))
+            asm_setcc(cg_sec, X86_RAX, X86_BE);
+        else if (ia32_suf(n, "gt"))
+            asm_setcc(cg_sec, X86_RAX, X86_A);
+        else
+            asm_setcc(cg_sec, X86_RAX, X86_AE); // ge
+        asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+        return r;
+    }
+
+    // ================= converts =================
+    if (!strncmp(n, "cvt", 3)) {
+        // scalar int -> float: cvtsi2ss/sd (2 args: vec, int)
+        if (!strcmp(n, "cvtsi2ss") || !strcmp(n, "cvtsi642ss") ||
+            !strcmp(n, "cvtsi2sd") || !strcmp(n, "cvtsi642sd")) {
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            free_reg(va);
+            VReg iv = gen(a2);
+            int isz = a2->ty ? (int)a2->ty->size : 4;
+            if (isz > 4) isz = 8;
+            if (ia32_suf(n, "ss")) x86_cvtsi2ss(cg_sec, isz, X86_XMM0, REG(iv));
+            else
+                x86_cvtsi2sd(cg_sec, isz, X86_XMM0, REG(iv));
+            free_reg(iv);
+            return ia32_store(16);
+        }
+        // float -> int scalar: cvtss2si/cvtsd2si (truncate forms exist too)
+        if (!strcmp(n, "cvtss2si") || !strcmp(n, "cvttss2si") ||
+            !strcmp(n, "cvtsd2si") || !strcmp(n, "cvttsd2si") ||
+            !strcmp(n, "cvtss2si64") || !strcmp(n, "cvttss2si64") ||
+            !strcmp(n, "cvtsd2si64") || !strcmp(n, "cvttsd2si64")) {
+            bool is64 = ia32_suf(n, "64");
+            bool is_sd = strstr(n, "sd2si") != NULL;
+            VReg va = ia32_vaddr(a1);
+            if (is_sd) x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            else
+                x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            free_reg(va);
+            VReg r = alloc_reg();
+            bool trunc = !strncmp(n, "cvtt", 4);
+            if (trunc) {
+                if (is_sd) x86_cvttsd2si(cg_sec, is64 ? 8 : 4, REG(r), X86_XMM0);
+                else
+                    x86_cvttss2si(cg_sec, is64 ? 8 : 4, REG(r), X86_XMM0);
+            } else {
+                if (is_sd) x86_cvtsd2si(cg_sec, is64 ? 8 : 4, REG(r), X86_XMM0);
+                else
+                    x86_cvtss2si(cg_sec, is64 ? 8 : 4, REG(r), X86_XMM0);
+            }
+            return r;
+        }
+        // packed float <-> int / width conversions
+        if (!strcmp(n, "cvtps2dq") || !strcmp(n, "cvttps2dq") ||
+            !strcmp(n, "cvtdq2ps") || !strcmp(n, "cvtps2pd") ||
+            !strcmp(n, "cvtpd2ps") || !strcmp(n, "cvtdq2pd") ||
+            !strcmp(n, "cvtpd2dq") || !strcmp(n, "cvttpd2dq")) {
+            ia32_load1(a1, 16);
+            if (!strcmp(n, "cvtps2dq")) sse_rr_66(cg_sec, 0x5b, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvttps2dq"))
+                sse_rr_f3(cg_sec, 0x5b, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtdq2ps"))
+                sse_rr_np(cg_sec, 0x5b, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtps2pd"))
+                sse_rr_np(cg_sec, 0x5a, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtpd2ps"))
+                sse_rr_66(cg_sec, 0x5a, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtdq2pd"))
+                sse_rr_f3(cg_sec, 0xe6, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtpd2dq"))
+                sse_rr_f2(cg_sec, 0xe6, X86_XMM0, X86_XMM0);
+            else
+                sse_rr_66(cg_sec, 0xe6, X86_XMM0, X86_XMM0); // cvttpd2dq
+            return ia32_store(16);
+        }
+        // scalar float conversions: cvtss2sd / cvtsd2ss (2-arg: A, B)
+        if (!strcmp(n, "cvtss2sd") || !strcmp(n, "cvtsd2ss")) {
+            ia32_load2(a1, a2, 16); // XMM0 = A (dst, upper preserved), XMM1 = B
+            if (!strcmp(n, "cvtss2sd")) sse_rr_f3(cg_sec, 0x5a, X86_XMM0, X86_XMM1);
+            else
+                sse_rr_f2(cg_sec, 0x5a, X86_XMM0, X86_XMM1);
+            return ia32_store(16);
+        }
+        // MMX converts. cvtpi2ps(A, B): dst = A with low 64 = conv(B[0..1]).
+        // cvtpi2pd(A): dst = {conv(A[0]), conv(A[1])} — BOTH lanes written,
+        // no dst operand (the header passes a single __m64 argument).
+        if (!strcmp(n, "cvtpi2ps") || !strcmp(n, "cvtpi2pd")) {
+            if (!strcmp(n, "cvtpi2pd")) {
+                VReg vb = ia32_vaddr(a1); // the MMX source is the only arg
+                x86_movq_rm(cg_sec, x86_mem(REG(vb), 0), X86_XMM1);
+                free_reg(vb);
+                x86_cvtpi2pd(cg_sec, X86_XMM0, X86_XMM1);
+                return ia32_store(16);
+            }
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            free_reg(va);
+            VReg vb = ia32_vaddr(a2); // 8-byte MMX operand
+            x86_movq_rm(cg_sec, x86_mem(REG(vb), 0), X86_XMM1);
+            free_reg(vb);
+            x86_cvtpi2ps(cg_sec, X86_XMM0, X86_XMM1);
+            return ia32_store(16);
+        }
+        if (!strcmp(n, "cvtps2pi") || !strcmp(n, "cvttps2pi") ||
+            !strcmp(n, "cvtpd2pi") || !strcmp(n, "cvttpd2pi")) {
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            free_reg(va);
+            if (!strcmp(n, "cvtps2pi")) x86_cvtps2pi(cg_sec, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvttps2pi"))
+                x86_cvttps2pi(cg_sec, X86_XMM0, X86_XMM0);
+            else if (!strcmp(n, "cvtpd2pi"))
+                x86_cvtpd2pi(cg_sec, X86_XMM0, X86_XMM0);
+            else
+                x86_cvttpd2pi(cg_sec, X86_XMM0, X86_XMM0);
+            return ia32_store(8);
+        }
+    }
+
+    // ================= shuffles / byte permutes with immediate =================
+    if (!strcmp(n, "shufps") || !strcmp(n, "shufpd")) {
+        ia32_load2(a1, a2, 16);
+        uint8_t imm = ia32_imm8(a3, "imm");
+        if (!strcmp(n, "shufps")) x86_shufps(cg_sec, X86_XMM0, X86_XMM1, imm);
+        else
+            x86_shufpd(cg_sec, X86_XMM0, X86_XMM1, imm);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "pshufd") || !strcmp(n, "pshuflw") || !strcmp(n, "pshufhw") ||
+        !strcmp(n, "pshufw")) {
+        int bytes = !strcmp(n, "pshufd") || !strcmp(n, "pshuflw") || !strcmp(n, "pshufhw") ? 16 : 8;
+        ia32_load1(a1, bytes);
+        uint8_t imm = ia32_imm8(a2, "imm");
+        if (!strcmp(n, "pshufd")) x86_pshufd(cg_sec, X86_XMM0, X86_XMM0, imm);
+        else if (!strcmp(n, "pshuflw"))
+            x86_pshuflw(cg_sec, X86_XMM0, X86_XMM0, imm);
+        else if (!strcmp(n, "pshufhw"))
+            x86_pshufhw(cg_sec, X86_XMM0, X86_XMM0, imm);
+        else
+            x86_pshufw(cg_sec, X86_XMM0, X86_XMM0, imm);
+        return ia32_store(bytes);
+    }
+    if (!strcmp(n, "palignr") || !strcmp(n, "palignr128")) {
+        int bytes = !strcmp(n, "palignr") ? 8 : 16;
+        ia32_load2(a1, a2, bytes);
+        x86_palignr(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a3, "imm"));
+        return ia32_store(bytes);
+    }
+
+    // ================= shifts =================
+    {
+        const char *sh = NULL;
+        if (!strncmp(n, "psllw", 5)) sh = "psllw";
+        else if (!strncmp(n, "pslld", 5))
+            sh = "pslld";
+        else if (!strncmp(n, "psllq", 5))
+            sh = "psllq";
+        else if (!strncmp(n, "psrlw", 5))
+            sh = "psrlw";
+        else if (!strncmp(n, "psrld", 5))
+            sh = "psrld";
+        else if (!strncmp(n, "psrlq", 5))
+            sh = "psrlq";
+        else if (!strncmp(n, "psraw", 5))
+            sh = "psraw";
+        else if (!strncmp(n, "psrad", 5))
+            sh = "psrad";
+        if (sh) {
+            bool is128 = ia32_suf(n, "128") || strstr(n, "128") != NULL;
+            int bytes = is128 ? 16 : 8;
+            bool imm_form = ia32_suf(n, "i") || ia32_suf(n, "i128") || n[strlen(n) - 1] == 'i';
+            // strip trailing "128"/"i" to find the root shift family
+            char root[16];
+            size_t rl = strlen(n);
+            while (rl > 0 && (n[rl - 1] == '1' || n[rl - 1] == '2' || n[rl - 1] == '8' || n[rl - 1] == 'i'))
+                rl--;
+            memcpy(root, n, rl);
+            root[rl] = 0;
+            // dq shifts: pslldqi128/psrldqi128 -> group14 with ext 7/3
+            if (!strcmp(root, "pslldq") || !strcmp(root, "psrldq")) {
+                ia32_load1(a1, 16);
+                if (!strcmp(root, "pslldq")) x86_pslldq(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                else
+                    x86_psrldq(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                return ia32_store(16);
+            }
+            if (imm_form) {
+                // The count is a compile-time constant: immediate form
+                // (group 12/13/14). A runtime int count (GCC's
+                // __builtin_ia32_psllwi takes both, mmintrin.h's
+                // _mm_slli_pi16 passes a plain int) falls back to the
+                // register-count form below.
+                if (ia32_is_const(a2)) {
+                    ia32_load1(a1, bytes);
+                    uint8_t imm = ia32_imm8(a2, "imm");
+                    // group 12 (words, 66 0F 71), 13 (dwords, 72), 14 (qwords, 73)
+                    int grp = !strncmp(sh, "psllw", 5) || !strncmp(sh, "psrlw", 5) || !strncmp(sh, "psraw", 5) ? 0x71
+                        : !strncmp(sh, "psllq", 5) || !strncmp(sh, "psrlq", 5)                                 ? 0x73
+                                                                                                               : 0x72;
+                    int ext = !strncmp(sh, "psll", 4) ? 6
+                        : !strncmp(sh, "psrl", 4)     ? 2
+                                                      : 4; // psra
+                    emit1(cg_sec, 0x66);
+                    maybe_rex(cg_sec, 0, 0, 0, (int)X86_XMM0);
+                    emit3(cg_sec, 0x0f, (uint8_t)grp, (uint8_t)((3 << 6) | (ext << 3) | ((int)X86_XMM0 & 7)));
+                    emit1(cg_sec, imm);
+                    return ia32_store(bytes);
+                }
+                // runtime count: load it into XMM1 (low bits), register form
+                VReg cnt = gen(a2);
+                asm_sub_rsp_imm(cg_sec, 16);
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, 0), REG(cnt));
+                free_reg(cnt);
+                x86_movq_rm(cg_sec, x86_mem(X86_RSP, 0), X86_XMM1);
+                asm_add_rsp_imm(cg_sec, 16);
+                ia32_load1(a1, bytes);
+                if (!strcmp(root, "psllw")) x86_psllw_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "pslld"))
+                    x86_pslld_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "psllq"))
+                    x86_psllq_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "psrlw"))
+                    x86_psrlw_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "psrld"))
+                    x86_psrld_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "psrlq"))
+                    x86_psrlq_r(cg_sec, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "psraw"))
+                    x86_psraw_r(cg_sec, X86_XMM0, X86_XMM1);
+                else
+                    x86_psrad_r(cg_sec, X86_XMM0, X86_XMM1);
+                return ia32_store(bytes);
+            }
+            // register-count form: shift by XMM1's low bits
+            ia32_load2(a1, a2, bytes);
+            if (!strcmp(root, "pslldq") || !strcmp(root, "psrldq")) {
+                ia32_load1(a1, 16);
+                if (!strcmp(root, "pslldq")) x86_pslldq(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                else
+                    x86_psrldq(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                return ia32_store(16);
+            }
+            return ia32_store(bytes);
+        }
+    }
+
+    // ================= float ALU / compare (ss/sd/ps/pd) =================
+    if (ia32_suf(n, "ss") || ia32_suf(n, "sd") || ia32_suf(n, "ps") || ia32_suf(n, "pd")) {
+        int op = -1, pfx = 0;
+        bool unary = false;
+        // addsub*/hadd*/hsub* MUST be checked before the plain add/sub
+        // (addsubps starts with "add" and would match 0x58 first).
+        if (!strncmp(n, "addsub", 6)) op = 0xd0;
+        else if (!strncmp(n, "hadd", 4))
+            op = 0x7c;
+        else if (!strncmp(n, "hsub", 4))
+            op = 0x7d;
+        else if (!strncmp(n, "add", 3))
+            op = 0x58;
+        else if (!strncmp(n, "sub", 3))
+            op = 0x5c;
+        else if (!strncmp(n, "mul", 3))
+            op = 0x59;
+        else if (!strncmp(n, "div", 3))
+            op = 0x5e;
+        else if (!strncmp(n, "min", 3))
+            op = 0x5d;
+        else if (!strncmp(n, "max", 3))
+            op = 0x5f;
+        else if (!strncmp(n, "sqrt", 4)) {
+            op = 0x51;
+            unary = true;
+        } else if (!strncmp(n, "rcp", 3)) {
+            op = 0x53;
+            unary = true;
+        } else if (!strncmp(n, "rsqrt", 5)) {
+            op = 0x52;
+            unary = true;
+        } else if (!strncmp(n, "andn", 4))
+            op = 0x55;
+        else if (!strncmp(n, "and", 3))
+            op = 0x54;
+        else if (!strncmp(n, "or", 2))
+            op = 0x56;
+        else if (!strncmp(n, "xor", 3))
+            op = 0x57;
+        else if (!strncmp(n, "unpckl", 6))
+            op = 0x14;
+        else if (!strncmp(n, "unpckh", 6))
+            op = 0x15;
+        if (op >= 0) {
+            if (ia32_suf(n, "ss") || ia32_suf(n, "ps")) {
+                // addsubps/haddps/hsubps take the F2 prefix (not none)
+                if (op == 0xd0 || op == 0x7c || op == 0x7d)
+                    pfx = ia32_suf(n, "ss") ? 0xf3 : 0xf2;
+                else
+                    pfx = ia32_suf(n, "ss") ? 0xf3 : 0x00;
+            } else {
+                pfx = ia32_suf(n, "sd") ? 0xf2 : 0x66;
+            }
+            if (unary) {
+                ia32_load1(a1, 16);
+                // unary: the source is XMM0 itself (sqrtps xmm0, xmm0)
+                switch (pfx) {
+                case 0x66: sse_rr_66(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM0); break;
+                case 0xf3: sse_rr_f3(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM0); break;
+                case 0xf2: sse_rr_f2(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM0); break;
+                default: sse_rr_np(cg_sec, (uint8_t)op, X86_XMM0, X86_XMM0); break;
+                }
+                return ia32_store(16);
+            }
+            ia32_load2(a1, a2, 16);
+            ia32_emit2(pfx, op);
+            return ia32_store(16);
+        }
+        // cmpXX{ss,sd,ps,pd}: two-arg compare with fixed predicate
+        int cmpimm = -1;
+        if (!strncmp(n, "cmpeq", 5)) cmpimm = 0;
+        else if (!strncmp(n, "cmplt", 5))
+            cmpimm = 1;
+        else if (!strncmp(n, "cmple", 5))
+            cmpimm = 2;
+        else if (!strncmp(n, "cmpunord", 8))
+            cmpimm = 3;
+        else if (!strncmp(n, "cmpneq", 6))
+            cmpimm = 4;
+        else if (!strncmp(n, "cmpnlt", 6))
+            cmpimm = 5;
+        else if (!strncmp(n, "cmpnle", 6))
+            cmpimm = 6;
+        else if (!strncmp(n, "cmpord", 6))
+            cmpimm = 7;
+        else if (!strncmp(n, "cmpge", 5))
+            cmpimm = 5; // A >= B  ==  !(A < B)
+        else if (!strncmp(n, "cmpgt", 5))
+            cmpimm = 1; // A > B   ==  B < A
+        else if (!strncmp(n, "cmpnge", 6))
+            cmpimm = 1; // !(A>=B) ==  A < B
+        else if (!strncmp(n, "cmpngt", 6))
+            cmpimm = 5; // !(A>B)  ==  !(B<A)
+        if (cmpimm >= 0) {
+            bool swap = !strncmp(n, "cmpgt", 5) || !strncmp(n, "cmpngt", 6);
+            if (swap) {
+                ia32_load2(a2, a1, 16); // swap operands
+            } else {
+                ia32_load2(a1, a2, 16);
+            }
+            int pfx = ia32_suf(n, "ss") ? 0xf3 : ia32_suf(n, "sd") ? 0xf2
+                : ia32_suf(n, "pd")                                ? 0x66
+                                                                   : 0x00;
+            if (pfx) emit1(cg_sec, (uint8_t)pfx);
+            maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM1);
+            emit3(cg_sec, 0x0f, 0xc2, modrxmm(3, X86_XMM0, X86_XMM1));
+            emit1(cg_sec, (uint8_t)cmpimm);
+            return ia32_store(16);
+        }
+        // cmpps/cmppd/cmpss/cmpsd: immediate predicate form
+        if (!strcmp(n, "cmpps") || !strcmp(n, "cmppd") || !strcmp(n, "cmpss") || !strcmp(n, "cmpsd")) {
+            ia32_load2(a1, a2, 16);
+            int pfx = !strcmp(n, "cmpss") ? 0xf3 : !strcmp(n, "cmpsd") ? 0xf2
+                : !strcmp(n, "cmppd")                                  ? 0x66
+                                                                       : 0x00;
+            if (ia32_is_const(a3)) {
+                if (pfx) emit1(cg_sec, (uint8_t)pfx);
+                maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM1);
+                emit3(cg_sec, 0x0f, 0xc2, modrxmm(3, X86_XMM0, X86_XMM1));
+                emit1(cg_sec, ia32_imm8(a3, "imm"));
+                return ia32_store(16);
+            }
+            // Runtime predicate (xmmintrin.h's _mm_cmp_ps takes an int P;
+            // GCC requires it constant, so this only ever fires when the
+            // header's own inline body is compiled as the local copy):
+            // dispatch among the 8 predicates.
+            {
+                int c = ++rcc_label_count;
+                VReg pr = gen(a3);
+                for (int pred = 0; pred < 8; pred++) {
+                    if (pred > 0) {
+                        asm_cmp_imm(cg_sec, pr, 4, pred);
+                        size_t o = asm_jcc_label(cg_sec, X86_NE);
+                        asm_fixup_add(cg_sec, o, format(".L.cmp.%d.next.%d", c, pred), 1);
+                    }
+                    if (pfx) emit1(cg_sec, (uint8_t)pfx);
+                    maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM1);
+                    emit3(cg_sec, 0x0f, 0xc2, modrxmm(3, X86_XMM0, X86_XMM1));
+                    emit1(cg_sec, (uint8_t)pred);
+                    {
+                        size_t o = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, o, format(".L.cmp.%d.end.%d", c, pred), 0);
+                    }
+                    if (pred < 7) cg_def_label(format(".L.cmp.%d.next.%d", c, pred));
+                }
+                cg_def_label(format(".L.cmp.%d.end.%d", c, 0));
+                free_reg(pr);
+                return ia32_store(16);
+            }
+        }
+    }
+
+    // ================= integer vector two-register ops =================
+    {
+        bool is128 = ia32_suf(n, "128");
+        int end = (int)strlen(n) - (is128 ? 3 : 0);
+        char root[24];
+        size_t rl = (size_t)end;
+        if (rl > 23) rl = 23;
+        memcpy(root, n, rl);
+        root[rl] = 0;
+        int op = ia32_int_op(root);
+        int bytes = is128 ? 16 : 8;
+        if (op >= 0) {
+            ia32_load2(a1, a2, bytes);
+            ia32_emit2(0x66, op);
+            return ia32_store(bytes);
+        }
+        // 66 0F 38 ops (SSSE3/SSE4.x). The MMX-era roots have 8-byte
+        // (bare) and 16-byte (128-suffixed) forms; the SSE4-only roots
+        // (blendv*, ptest, pmovsx/zx, pmuldq, pcmpeqq, packusdw,
+        // pcmpgtq, pminsd.., pmulld, phminposuw, movntdqa) are always
+        // 16 bytes even without the suffix.
+        int bytes38 = 16;
+        if (!strncmp(root, "pshufb", 6) || !strncmp(root, "pabs", 4) ||
+            !strncmp(root, "psign", 5) || !strncmp(root, "phadd", 5) ||
+            !strncmp(root, "phsub", 5) || !strcmp(root, "pmaddubsw") ||
+            !strcmp(root, "pmulhrsw"))
+            bytes38 = is128 ? 16 : 8;
+        op = ia32_int38_op(root);
+        if (op >= 0) {
+            if (!strcmp(root, "ptest")) {
+                ia32_load2(a1, a2, 16);
+                ia32_emit38(op);
+                VReg r = alloc_reg();
+                asm_setcc(cg_sec, X86_RAX, X86_E);
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+                return r;
+            }
+            if (!strcmp(root, "movntdqa")) {
+                VReg p = gen(a1);
+                x86_movntdqa_rm(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+                free_reg(p);
+                return ia32_store(16);
+            }
+            // Unary 0F38 ops (pabs*, pmovsx/zx*, phminposuw): the source
+            // is XMM0 itself, not a second argument.
+            bool un38 = !strncmp(root, "pabs", 4) ||
+                !strncmp(root, "pmovsx", 6) || !strncmp(root, "pmovzx", 6) ||
+                !strcmp(root, "phminposuw");
+            if (un38) {
+                ia32_load1(a1, bytes38);
+                emit1(cg_sec, 0x66);
+                maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM0);
+                emit3(cg_sec, 0x0f, 0x38, (uint8_t)op);
+                emit1(cg_sec, modrxmm(3, X86_XMM0, X86_XMM0));
+                return ia32_store(bytes38);
+            }
+            ia32_load2(a1, a2, bytes38);
+            ia32_emit38(op);
+            return ia32_store(bytes38);
+        }
+        // 66 0F 3A imm ops (SSE4.x). roundps/roundpd are UNARY: their
+        // imm is the second argument (xmmintrin.h: _mm_round_ps(A, mode)).
+        // All are 16-byte except the bare MMX palignr (palignr128: 16).
+        int bytes3a = (!strcmp(root, "palignr") && !is128) ? 8 : 16;
+        op = ia32_int3a_op(root);
+        if (op >= 0) {
+            if (!strcmp(root, "roundps") || !strcmp(root, "roundpd")) {
+                ia32_load1(a1, bytes3a);
+                emit1(cg_sec, 0x66);
+                maybe_rex(cg_sec, 0, (int)X86_XMM0, 0, (int)X86_XMM0);
+                emit3(cg_sec, 0x0f, 0x3a, (uint8_t)op);
+                emit1(cg_sec, modrxmm(3, X86_XMM0, X86_XMM0));
+                emit1(cg_sec, ia32_imm8(a2, "imm"));
+                return ia32_store(bytes3a);
+            }
+            ia32_load2(a1, a2, bytes3a);
+            ia32_emit3a(op, ia32_imm8(a3, "imm"));
+            return ia32_store(bytes3a);
+        }
+    }
+
+    // ================= misc vector results =================
+    if (!strcmp(n, "pshufb") || !strcmp(n, "pshufb128")) {
+        int bytes = !strcmp(n, "pshufb") ? 8 : 16;
+        ia32_load2(a1, a2, bytes);
+        x86_pshufb(cg_sec, X86_XMM0, X86_XMM1);
+        return ia32_store(bytes);
+    }
+    if (!strcmp(n, "lddqu")) {
+        VReg p = gen(a1);
+        x86_lddqu_rm(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+        free_reg(p);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "blendvps") || !strcmp(n, "blendvpd") || !strcmp(n, "pblendvb")) {
+        // implicit xmm0 mask: dst[i] = (xmm0[i] & 0x80) ? src2[i] : src1[i].
+        // Instruction operand encoding: reg field = arg1, rm field = arg2.
+        VReg da = ia32_vaddr(a1);
+        x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(da), 0));
+        free_reg(da);
+        VReg db = ia32_vaddr(a2);
+        x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(db), 0));
+        free_reg(db);
+        VReg dm = ia32_vaddr(a3);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(dm), 0));
+        free_reg(dm);
+        int op = !strcmp(n, "blendvps") ? 0x0d : !strcmp(n, "blendvpd") ? 0x0e
+                                                                        : 0x0c;
+        emit1(cg_sec, 0x66);
+        maybe_rex(cg_sec, 0, (int)X86_XMM1, 0, (int)X86_XMM2);
+        emit3(cg_sec, 0x0f, 0x38, (uint8_t)op);
+        emit1(cg_sec, modrxmm(3, X86_XMM1, X86_XMM2));
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "vec_ext_v4sf") || !strcmp(n, "vec_ext_v4si") ||
+        !strcmp(n, "vec_ext_v2di") || !strcmp(n, "vec_ext_v16qi") ||
+        !strcmp(n, "vec_ext_v8hi") || !strcmp(n, "vec_ext_v2si") ||
+        !strcmp(n, "vec_ext_v4hi") || !strcmp(n, "vec_ext_v8qi")) {
+        // extract element at index a2 (constant) from vector a1
+        VReg va = ia32_vaddr(a1);
+        uint64_t idx = (uint64_t)ia32_imm8(a2, "index");
+        Type *ety = a1->ty ? a1->ty->base : NULL;
+        int esz = ety ? (int)ety->size : 4;
+        VReg r = alloc_reg();
+        x86_mov_rm(cg_sec, esz <= 4 ? 4 : 8, REG(r), x86_mem(REG(va), (int)(idx * esz)));
+        free_reg(va);
+        return r;
+    }
+    if (!strncmp(n, "vec_set_v", 9) || !strncmp(n, "vec_init_v", 10)) {
+        // build a vector from scalar args: store each to the slot. The
+        // element width comes from the RESULT vector type (v4hi -> 2
+        // bytes), never from the args (which are plain int literals).
+        Type *ety = node->ty ? node->ty->base : NULL;
+        int esz = ety ? (int)ety->size : 4;
+        int nargs = 0;
+        for (Node *p = a1; p; p = p->next) nargs++;
+        VReg dst = alloc_int128_addr();
+        int i = 0;
+        for (Node *p = a1; p; p = p->next, i++) {
+            VReg v = gen(p);
+            x86_mov_mr(cg_sec, esz, x86_mem(REG(dst), i * esz), REG(v));
+            free_reg(v);
+        }
+        return dst;
+    }
+    // unhandled intrinsic: clear diagnostic instead of emitting garbage
+    error_tok(node->tok, "__builtin_ia32_%s: intrinsic not yet implemented", n);
+    return R_NONE;
+}
+
+#endif /* !ARCH_ARM64 */
 
 static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
     if (to->kind == TY_BOOL && !is_complex(from)) {
@@ -7438,19 +8660,26 @@ static VReg gen(Node *node) {
             break;
         }
     }
-    // Vector builtins: __builtin_ia32_sqrtps/sqrtss/rsqrtps/sqrtpd/sqrtsd — packed SSE/NEON dispatch.
+    // __builtin_ia32_* SIMD intrinsics (x86) / clean error (ARM64).
     if (node->kind == ND_FUNCALL && node->funcname &&
-        (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
-         !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
-         !strcmp(node->funcname, "__builtin_ia32_rsqrtps") ||
-         !strcmp(node->funcname, "__builtin_ia32_sqrtpd") ||
-         !strcmp(node->funcname, "__builtin_ia32_sqrtsd"))) {
-        return gen_vector_unary_builtin(node);
-    }
-    // Two-arg vector builtin: __builtin_ia32_pshufb128 — _mm_shuffle_epi8.
-    if (node->kind == ND_FUNCALL && node->funcname &&
-        !strcmp(node->funcname, "__builtin_ia32_pshufb128")) {
-        return gen_vector_binary_builtin(node);
+        !strncmp(node->funcname, "__builtin_ia32_", 15)) {
+#ifdef ARCH_ARM64
+        // ARM64 keeps the original packed-SSE/NEON generators for the few
+        // builtins they covered; everything else is a clean error.
+        if (!strcmp(node->funcname, "__builtin_ia32_sqrtps") ||
+            !strcmp(node->funcname, "__builtin_ia32_sqrtss") ||
+            !strcmp(node->funcname, "__builtin_ia32_rsqrtps") ||
+            !strcmp(node->funcname, "__builtin_ia32_sqrtpd") ||
+            !strcmp(node->funcname, "__builtin_ia32_sqrtsd"))
+            return gen_vector_unary_builtin(node);
+        if (!strcmp(node->funcname, "__builtin_ia32_pshufb128"))
+            return gen_vector_binary_builtin(node);
+        error_tok(node->tok, "__builtin_ia32_%s: not implemented on this target",
+                  node->funcname + 15);
+        return R_NONE;
+#else
+        return gen_ia32_builtin(node);
+#endif
     }
     // Cast from int128 to a smaller type: extract value from 16-byte slot
     if (node->kind == ND_CAST && node->lhs && node->lhs->ty &&
@@ -7914,7 +9143,7 @@ static VReg gen(Node *node) {
         return r;
     }
     case ND_ASSIGN: {
-        if ((node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) && !(node->lhs->ty->is_vector && node->lhs->ty->size == 16)) {
+        if ((node->lhs->ty->kind == TY_ARRAY || node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || node->lhs->ty->kind == TY_COMPLEX) && !(node->lhs->ty->is_vector && (node->lhs->ty->size == 16 || node->lhs->ty->size == 8))) {
             int c = ++rcc_label_count;
             bool lhs_vla_struct = (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION) && node->lhs->ty->vla_len_expr;
             VReg dst = lhs_vla_struct ? gen(node->lhs) : gen_addr(node->lhs);
@@ -8297,17 +9526,29 @@ static VReg gen(Node *node) {
             return r2;
 #endif
         }
-        // 16-byte vector: copy using ldr q/str q (or movups on x86).
-        if (node->lhs->ty->is_vector && node->lhs->ty->size == 16) {
+        // 8/16-byte vector value copy (vector results are slot addresses,
+        // so gen(rhs) would store the address instead of the bytes — the
+        // 8-byte MMX case used to fall through to the scalar store below).
+        if (node->lhs->ty->is_vector && (node->lhs->ty->size == 16 || node->lhs->ty->size == 8)) {
             VReg rhs_a = gen_addr(node->rhs);
             VReg lhs_a = gen_addr(node->lhs);
+            if (node->lhs->ty->size == 8) {
 #ifdef ARCH_ARM64
-            asm_ldr_q(cg_sec, ASM_Q0, rhs_a); // ldr q0, [x{rhs_a}]
-            asm_str_q(cg_sec, ASM_Q0, lhs_a); // str q0, [x{lhs_a}]
+                arm64_ldr_fp(cg_sec, 3, ARM64_D0, REG(rhs_a), 0); // ldr d0, [rhs_a]
+                arm64_str_fp(cg_sec, 3, ARM64_D0, REG(lhs_a), 0); // str d0, [lhs_a]
 #else
-            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(rhs_a), 0));
-            x86_movups_mr(cg_sec, x86_mem(REG(lhs_a), 0), X86_XMM0);
+                x86_movq_rm(cg_sec, x86_mem(REG(rhs_a), 0), X86_XMM0);
+                x86_movq_mr(cg_sec, x86_mem(REG(lhs_a), 0), X86_XMM0);
 #endif
+            } else {
+#ifdef ARCH_ARM64
+                asm_ldr_q(cg_sec, ASM_Q0, rhs_a); // ldr q0, [x{rhs_a}]
+                asm_str_q(cg_sec, ASM_Q0, lhs_a); // str q0, [x{lhs_a}]
+#else
+                x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(rhs_a), 0));
+                x86_movups_mr(cg_sec, x86_mem(REG(lhs_a), 0), X86_XMM0);
+#endif
+            }
             free_reg(rhs_a);
             return lhs_a;
         }
@@ -9150,6 +10391,22 @@ static VReg gen(Node *node) {
     case ND_ADDR:
         return gen_addr(node->lhs);
     case ND_CAST: {
+        if (node->ty && node->ty->is_vector)
+            return gen_addr(node); // vectors are slot-resident
+        // 8-byte vector -> scalar bitcast (e.g. `(long long)__m64`):
+        // the vector VALUE is a slot address, so load the bytes out.
+        if (node->lhs && node->lhs->ty && node->lhs->ty->is_vector &&
+            node->lhs->ty->size <= 8 && !is_complex(node->ty)) {
+            VReg a = gen_addr(node->lhs);
+            VReg r = alloc_reg();
+#ifndef ARCH_ARM64
+            x86_mov_rm(cg_sec, node->lhs->ty->size <= 4 ? 4 : 8, REG(r), x86_mem(REG(a), 0));
+#else
+            arm64_ldr_uoff(cg_sec, node->lhs->ty->size <= 4 ? 2 : 3, REG(r), REG(a), 0);
+#endif
+            free_reg(a);
+            return r;
+        }
         VReg r = gen(node->lhs);
         return gen_cast_reg(r, node->lhs->ty, node->ty);
     }
@@ -13990,12 +15247,41 @@ struct ObjFile *codegen(Program *prog) {
             continue;
         }
         Function *fn = item->fn;
+        bool fn_emitting_local_copy = false;
         // GNU89 extern inline (gnu_inline attribute): the body is an inline
         // definition only; the external definition lives elsewhere (glibc
-        // _FORTIFY_SOURCE wrappers). Emit nothing; calls bind to the extern
-        // symbol.
-        if (fn->is_inline && fn->is_extern && fn->is_gnu_inline)
+        // _FORTIFY_SOURCE wrappers). GCC emits no symbol and relies on
+        // inlining. rcc has no guaranteed inliner (vector-returning
+        // functions, -O0), so compile the body as a LOCAL copy per TU:
+        // intra-TU calls bind to it, no global symbol is exported (GCC's
+        // actual promise), and multi-TU links never collide. The -O2
+        // inliner replaces the calls when it can (the header functions are
+        // single-return bodies), after which the local copy is dead.
+        //
+        // EXCEPTION: a fortify-style wrapper whose body calls its OWN name
+        // (the fallback to the libc function, e.g. glibc's
+        // `... ? abort() : memcpy(__dest, __src, __len)`). A local copy of
+        // it would shadow that fallback call inside the same TU, recursing
+        // until the stack overflows (the fallback MUST bind to the real
+        // libc symbol). Skip the copy for those: call sites then bind to
+        // libc, which is what the wrapper's fallback needs anyway.
+        bool gnu_ext_inline = fn->is_inline && fn->is_extern && fn->is_gnu_inline;
+        if (gnu_ext_inline) {
+            if (fn_self_references(fn))
+                continue; // fortify-style: bind call sites to libc
+#ifdef _WIN32
+            // mingw's SIMD headers use runtime `const int` operands in
+            // several wrappers (_mm_round_pd(..., int M), _mm_blend_ps(
+            // ..., int mask)); their local copies can't compile (the
+            // intrinsics need a constant immediate) and, since the
+            // unused-copy elimination is disabled on Windows, would be
+            // compiled anyway. The always-inline at -O1 handles the real
+            // call sites; skip the copies here entirely.
             continue;
+#else
+            fn_emitting_local_copy = true;
+#endif
+        }
         current_fn = fn->name;
         cg_dbg_fn = fn->name;
         current_fn_def = fn;
@@ -14568,7 +15854,8 @@ struct ObjFile *codegen(Program *prog) {
         // local (non-.globl) symbol, leaving the final executable link
         // with an unresolved reference despite every object file
         // individually containing a full, correct definition.
-        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
+        bool fn_exported = !fn->is_static && !fn_emitting_local_copy &&
+            (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
         // A mangled asm_name (GNU nested function, or __asm__("name")
         // renaming) is already the exact final symbol text — used as-is,
         // matching how call sites resolve it (gen_funcall, codegen.c
@@ -15034,7 +16321,8 @@ struct ObjFile *codegen(Program *prog) {
             fn_label = format(".L_rcc_%s", fn->name);
         // See the ARM64 fn_exported computation above for the GNU89
         // gnu_inline rationale.
-        bool fn_exported = !fn->is_static && (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
+        bool fn_exported = !fn->is_static && !fn_emitting_local_copy &&
+            (!fn->is_inline || fn->is_extern || has_noninline_decl || had_extern_decl || fn->is_gnu_inline);
         const char *fn_sym_name = fn->asm_name ? fn->asm_name : asm_sym_name(sym_name(fn_label));
         size_t fn_sym_start = cg_sec->len;
         if (fn->is_weak) {

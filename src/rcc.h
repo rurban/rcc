@@ -511,6 +511,11 @@ struct LVar {
 #define TRAMPOLINE_SIZE 32
 
 void check_type(Node *node);
+// Build a GCC __attribute__((vector_size(N))) type (TY_STRUCT + is_vector
+// + per-lane members). Shared by parser.c's declarator path (the
+// headers' __m128/__m128i typedefs) and type.c's __builtin_ia32_*
+// return-type classifier, so both see the exact same Type construction.
+Type *rcc_make_vector_type(Type *elem, int total_size);
 LVar *find_global_name(char *name);
 // True if `name` (an interned function-name pointer) is the target of an
 // actual nonlocal goto from a nested descendant - see parser.c. Valid to
@@ -712,6 +717,7 @@ struct Function {
     bool is_destructor;
     bool is_inline;
     bool is_gnu_inline; // GNU89 semantics: extern inline is never emitted
+    bool is_always_inline; // __attribute__((always_inline)): force inline at -O0 too
     bool is_static;
     bool is_extern;
     bool is_weak;
