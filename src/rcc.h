@@ -347,6 +347,14 @@ extern bool opt_gnu_mode;
 extern const char *opt_exec_charset;
 extern bool opt_W;
 extern bool opt_Werror;
+// Set only by the literal "-Werror" flag, deliberately distinct from
+// opt_Werror (which -pedantic-errors also sets, for promoting pedantic
+// diagnostics to errors -- see main.c's own detailed comment at the
+// -Werror parse site). Genuine compiler diagnostics that real GCC only
+// promotes under an explicit bare -Werror (never under -pedantic-errors
+// alone, confirmed directly against gcc) -- currently #warning -- must
+// gate on this instead of opt_Werror.
+extern bool opt_werror_flag;
 extern bool opt_pedantic;
 extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;

@@ -268,6 +268,21 @@ bool opt_gnu_mode = false; // -std=gnu* enables GNU extensions like typeof, ({})
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
 bool opt_W = false;
 bool opt_Werror = false;
+// Set only by the literal "-Werror" flag below, deliberately distinct
+// from opt_Werror (which -pedantic-errors also sets, for promoting
+// pedantic diagnostics to errors): genuine compiler diagnostics real
+// GCC only promotes to errors under an explicit bare -Werror (never
+// under -pedantic-errors alone, confirmed directly against gcc) --
+// currently the unrecognized-flag rejection below and preprocess.c's
+// #warning handling -- must gate on this instead. rcc's own
+// -pedantic-errors torture/compliance tests intentionally combine it
+// with real GCC flags rcc doesn't implement (-fsigned-char,
+// -ffreestanding, -fno-asm, ...) and rely on those being tolerated
+// (warned, not rejected) -- unlike bare -Werror, whose only realistic
+// caller is a build-system capability probe (see the muon-derived
+// tests) that specifically wants an unrecognized flag or diagnostic
+// to fail.
+bool opt_werror_flag = false;
 bool opt_pedantic = false;
 bool opt_Werror_unknown = false;
 bool opt_Wno_homoglyph = false;
@@ -356,18 +371,6 @@ int main(int argc, char **argv) {
     bool opt_E = false;
     bool opt_o = false;
     bool opt_stdout = false; // -o - : write final output to stdout
-    // Set only by the literal "-Werror" flag below, deliberately distinct
-    // from opt_Werror (which -pedantic-errors also sets, for promoting
-    // pedantic diagnostics to errors): promoting an unrecognized
-    // command-line flag to a hard error must stay scoped to an explicit,
-    // literal -Werror. rcc's own -pedantic-errors torture/compliance
-    // tests intentionally combine it with real GCC flags rcc doesn't
-    // implement (-fsigned-char, -ffreestanding, -fno-asm, ...) and rely
-    // on those being tolerated (warned, not rejected) -- unlike bare
-    // -Werror, whose only realistic caller is a build-system capability
-    // probe (see the muon-derived test below) that specifically wants an
-    // unrecognized flag to fail.
-    bool opt_werror_bare = false;
     // Ordered linker arguments: -l/-L/-Wl flags AND object/archive inputs,
     // in argv order. Interleaving matters (-Wl,--whole-archive lib.a
     // -Wl,--no-whole-archive), so they share one buffer.
@@ -444,7 +447,7 @@ int main(int argc, char **argv) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
             opt_Werror = true;
-            opt_werror_bare = true;
+            opt_werror_flag = true;
         } else if (!strcmp(argv[i], "-Wfatal-errors")) {
             opt_Wfatal_errors = true;
         } else if (!strncmp(argv[i], "-fmax-errors=", 13)) {
@@ -710,7 +713,7 @@ int main(int argc, char **argv) {
             // -Werror — never unconditionally, unlike real GCC — so a
             // plain, no-Werror build keeps its existing tolerance.
             bool is_warn_flag = argv[i][1] == 'W';
-            if (opt_Werror_unknown || (opt_werror_bare && !is_warn_flag)) {
+            if (opt_Werror_unknown || (opt_werror_flag && !is_warn_flag)) {
                 fprintf(stderr, "rcc: error: unrecognized command-line option '%s'\n", argv[i]);
                 return 1;
             }

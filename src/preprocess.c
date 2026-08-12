@@ -2943,6 +2943,18 @@ static void do_directive(void) {
             n += sl;
         }
         msg[n] = '\0';
+        // Real GCC promotes #warning to a hard error under -Werror
+        // (`[-Werror=cpp]`) -- verified directly -- but NOT under
+        // -pedantic-errors alone, so this must gate on opt_werror_flag
+        // (bare -Werror only), never the broader opt_Werror also set by
+        // -pedantic-errors (see main.c's own detailed comment on that
+        // distinction). Found via test_muon's own `common/28 try
+        // compile` capability probe, which specifically checks that
+        // `#warning` promotes under -Werror.
+        if (opt_werror_flag) {
+            fprintf(stderr, "%s:%d: error: %s\n", lvl->filename, lvl->reported_line, msg);
+            exit(1);
+        }
         fprintf(stderr, "%s:%d: warning: %s\n", lvl->filename, lvl->reported_line, msg);
         return;
     }

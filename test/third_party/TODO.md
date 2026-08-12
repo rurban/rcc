@@ -701,7 +701,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_got         | configure: missing libbsd-overlay                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_ksh93       | **partially fixed, further blockers found and fixed** — mamprobe's C-compiler sniff, `ast_wchar.h`'s `#include_next <wchar.h>` reaching glibc, and ksh93's own `std/stdio.h`→`ast_stdio.h` (`__FILE`) forwarding were fixed in the sessions below; three more root-caused this session: `resolve_include()`'s own RCC_INCDIR self-reference collision (blocked `comp/iconv.c`'s `iconv_t` and `string/chresc.c`'s `CC_bel`/`CC_esc`/`CC_vt`), a genuine rcc SIGSEGV in `add_type_internal()`'s `ND_COMMA` case (crashed on `sfio/sfvprintf.c`), and a missing `sizeof`/cast scalar-type validation pair (both silently accepted invalid C, so `iffe`'s own `mem`-opaque-struct probe couldn't tell an opaque struct apart from a real one) — see "Fixed (2026-08-10, include_next self-reference / ND_COMMA null-deref session)" and "Fixed (2026-08-10, continued — sizeof/cast incomplete-type validation)" below. Build now compiles and links the **entire** `libast` library and its `cmd/INIT` `iffe` self-test suite is fully green (161/161, was 159/161) |
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                         |
-| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, -Werror unknown-flag, \_\_declspec native-target, K&R EOF crash, and angle-bracket #include cwd-search bugs; 341/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", "Fixed (2026-08-11, continued — -Werror unknown-flag session)", "Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)", and "Fixed (2026-08-11, continued — angle-bracket #include cwd-search session)" below; remaining 28 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~20 not individually triaged this session                                                                                                                                                        |
+| test_muon        | **fixed unquoted-linker-path, alloca() crash, \_\_has_builtin, -Werror unknown-flag, \_\_declspec native-target, K&R EOF crash, angle-bracket #include cwd-search, and #warning -Werror promotion bugs; 342/387 (88%) muon self-tests pass** — was: broke on the very first compiler probe, see "Fixed (2026-08-11, continued — linker command unquoted-path session)", "Fixed (2026-08-11, continued — alloca() argument-count crash session)", "Fixed (2026-08-11, continued — \_\_has_builtin session)", "Fixed (2026-08-11, continued — -Werror unknown-flag session)", "Fixed (2026-08-11, continued — \_\_declspec native-target / K&R EOF crash session)", "Fixed (2026-08-11, continued — angle-bracket #include cwd-search session)", and "Fixed (2026-08-11, continued — #warning -Werror promotion session)" below; remaining 27 failures include a `common/273 both libraries` cluster confirmed NOT an rcc bug (identical failure with real GCC) plus ~19 not individually triaged this session                                                      |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3628,3 +3628,48 @@ the mingw and arm64 cross targets.
 With this fix, `test_muon`'s `common/189 check header` row flips from
 failed to passing (341/387 muon self-tests now pass, up from
 340/387).
+
+### Fixed (2026-08-11, continued — #warning -Werror promotion session)
+
+Continued investigating `test_muon`'s remaining failures.
+`common/28 try compile` — muon's own `compiler.compiles(werror:
+true/false)` capability probe — checks that a `#warning` directive
+compiles cleanly with `werror: false` but fails to compile with
+`werror: true`.
+
+- **`#warning` never promoted to a compile error under `-Werror`**
+  (preprocess.c, `do_directive()`'s `dn_warning` case) — unconditionally
+  printed the warning message and continued, with no mechanism at all
+  to promote it to an error even when the caller explicitly opted in
+  via `-Werror`. Real GCC promotes `#warning` to a hard error under
+  bare `-Werror` (`error: #warning ... [-Werror=cpp]`, verified
+  directly) — but, also verified directly, NOT under `-pedantic-errors`
+  alone (`-pedantic-errors` promotes pedantic _diagnostics_, not
+  `-Wcpp` ones). Fixed by promoting `#warning` to a clean compile error
+  (matching the existing `#error` handler's `exit(1)` convention) when
+  the caller passed bare `-Werror`.
+- Reused the `opt_werror_bare`-vs-`opt_Werror` distinction from the
+  earlier "Fixed (2026-08-11, continued — -Werror unknown-flag
+  session)" above rather than re-deriving it: promoted that
+  previously-`main()`-local boolean to a proper global
+  (`opt_werror_flag`, declared in rcc.h) so preprocess.c's directive
+  handler can see it too, since the earlier session's local-only
+  version was scoped for a single main.c-internal use case that no
+  longer covers this one.
+
+New regression test: `test/test_warning_werror_promote.c` — three
+cases: `#warning` without `-Werror` must still compile cleanly;
+`#warning` with bare `-Werror` must fail to compile; `#warning` with
+`-pedantic-errors` (no bare `-Werror`) must still compile cleanly,
+matching real GCC exactly in every case. Verified failing without the
+fix and passing with it (A/B), and that the earlier
+`test_werror_unknown_opt.c` test is unaffected by the
+`opt_werror_bare` → `opt_werror_flag` promotion-to-global refactor.
+Full suite verified: Unit tests 227/227, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34, Link
+tests 7/7 — 0 failed overall (native Linux x86-64); the new test
+confirmed passing standalone on the mingw and arm64 cross targets.
+
+With this fix, `test_muon`'s `common/28 try compile` row flips from
+failed to passing (342/387 muon self-tests now pass, up from
+341/387).
