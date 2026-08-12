@@ -9526,10 +9526,8 @@ static VReg gen(Node *node) {
             return r2;
 #endif
         }
-        // 8/16-byte vector value copy (vector results are slot addresses,
-        // so gen(rhs) would store the address instead of the bytes — the
-        // 8-byte MMX case used to fall through to the scalar store below).
-        if (node->lhs->ty->is_vector && (node->lhs->ty->size == 16 || node->lhs->ty->size == 8)) {
+        // (A/B: original 16-only)
+        if (node->lhs->ty->is_vector && node->lhs->ty->size == 16) {
             VReg rhs_a = gen_addr(node->rhs);
             VReg lhs_a = gen_addr(node->lhs);
             if (node->lhs->ty->size == 8) {
