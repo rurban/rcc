@@ -10377,6 +10377,8 @@ static VReg gen(Node *node) {
     case ND_ADDR:
         return gen_addr(node->lhs);
     case ND_CAST: {
+        if (node->ty && node->ty->is_vector)
+            return gen_addr(node); // vectors are slot-resident
         VReg r = gen(node->lhs);
         return gen_cast_reg(r, node->lhs->ty, node->ty);
     }
