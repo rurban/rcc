@@ -3673,3 +3673,48 @@ confirmed passing standalone on the mingw and arm64 cross targets.
 With this fix, `test_muon`'s `common/28 try compile` row flips from
 failed to passing (342/387 muon self-tests now pass, up from
 341/387).
+
+### Fixed (2026-08-12, continued — path_join() absolute-path session)
+
+While A/B-verifying the angle-bracket cwd-search fix above, an
+unrelated, pre-existing regression test (`test/test_pp_tokens_file_boundary.c`,
+which embeds absolute header paths in quote-form `#include` directives)
+started failing once the angle-bracket fix's tightened quote-include cwd
+fallback stopped silently masking it.
+
+- **`path_join(dir, file)` (preprocess.c) never checked whether `file`
+  was already an absolute path** — it unconditionally concatenated
+  `dir + separator + file`, so `#include "/abs/path/foo.h"` from a
+  source file in a different directory produced the literal, garbage
+  candidate path `"<source's own dir>/abs/path/foo.h"` instead of using
+  the already-fully-qualified absolute path as-is. Every standard
+  path-joining utility (POSIX/Python `os.path.join`, C++
+  `std::filesystem::path::append`, ...) treats joining an absolute path
+  onto any base as returning that absolute path unchanged; real GCC
+  matches this too (verified directly: `#include "/abs/path"` resolves
+  regardless of the including file's own directory). This bug had been
+  present and previously invisible: quote-form `#include`'s old,
+  overly-broad trailing `file_exists(spec)` cwd fallback (removed by
+  the angle-bracket fix above) happened to independently re-resolve
+  most absolute-path quote-includes whenever the compiler's cwd
+  happened to be `/` or the path started from cwd — masking the join
+  bug rather than exercising the intended directory-relative path.
+  Fixed by adding `is_absolute_path()` (POSIX: leading `/`; Windows:
+  also a drive letter + `:` or a leading `\`) and having `path_join()`
+  return `file` unchanged whenever it's already absolute, before ever
+  touching `dir`. This is the single, general fix point: every
+  `#include`/`#include_next`/`__has_include`/`#embed` call site already
+  routes through `path_join()`, so no call site needed updating.
+
+New regression test: `test/test_include_abs_path_quote.c` — a header
+and its including source file placed in two different, unrelated
+subdirectories, `#include`d by the source's absolute path; must
+compile cleanly. Verified failing without the fix (isolated: only
+`path_join()`'s absolute-path check reverted, angle-bracket fix left
+in place) and passing with it (A/B), and that the pre-existing
+`test_pp_tokens_file_boundary.c` failure this session started from is
+fixed by the same change. Full suite verified: Unit tests 228/228,
+Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 (100% of
+non-skipped), Dg-error 34/34, Link tests 7/7 — 0 failed overall (native
+Linux x86-64); both new/fixed tests confirmed passing standalone on
+the mingw and arm64 cross targets.

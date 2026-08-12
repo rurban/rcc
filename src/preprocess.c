@@ -706,18 +706,23 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
         }
         return canonical_path(path);
     }
-    // Angle-bracket #include/__has_include never implicitly searches the
-    // current working directory (only explicit -I/-iquote dirs and the
-    // built-in system list above) -- confirmed against real gcc, which
-    // never does this. #embed is a different construct with its own,
-    // separate search-path mechanism in real GCC (--embed-dir=, entirely
+    // Neither angle-bracket nor quote-form #include/__has_include ever
+    // implicitly searches the current working directory: quote includes
+    // search the including file's own directory (handled above), then
+    // -iquote/-I/system dirs (the loop above); angle includes skip
+    // straight to -I/system dirs. Confirmed against real gcc for both
+    // forms directly: `#include "foo.h"` sitting in cwd, but not in the
+    // compiled file's own directory nor any -I dir, is a clean "No such
+    // file or directory" -- gcc never falls back to a bare cwd lookup
+    // either. #embed is a different construct with its own, separate
+    // search-path mechanism in real GCC (--embed-dir=, entirely
     // unrelated to -I) that rcc doesn't implement; `allow_cwd_fallback`
     // (set only by #embed's own call site) intentionally preserves rcc's
     // existing, pragmatic cwd-relative resolution for #embed <file>
     // rather than making it stricter than real GCC in the OTHER
     // direction (#embed with no search path at all would never resolve
     // anything).
-    if ((!is_angle || allow_cwd_fallback) && file_exists(spec)) return canonical_path(spec);
+    if (allow_cwd_fallback && file_exists(spec)) return canonical_path(spec);
     return NULL;
 }
 
@@ -911,8 +916,24 @@ char *path_basename(char *path) {
             last = p + 1;
     return last;
 }
+// True if `path` is already absolute (POSIX: leading '/'; Windows: also a
+// drive letter + ':', or a leading '\\') -- an absolute path ignores
+// whatever base directory it's being joined against, same as every other
+// path-joining utility (os.path.join, std::filesystem::path::append, ...).
+static bool is_absolute_path(const char *path) {
+    if (!path || !*path) return false;
+#ifdef _WIN32
+    if (path[0] == '/' || path[0] == '\\') return true;
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':')
+        return true;
+    return false;
+#else
+    return path[0] == '/';
+#endif
+}
 static char *path_join(const char *dir, const char *file) {
-    if (!*dir) return str_intern(file, strlen(file));
+    if (!*dir || is_absolute_path(file)) return str_intern(file, strlen(file));
 #ifdef _WIN32
     return format("%s%s%s", dir, (dir[strlen(dir) - 1] == '/' || dir[strlen(dir) - 1] == '\\') ? "" : PATHSEP, file);
 #else
