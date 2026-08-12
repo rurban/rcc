@@ -5164,18 +5164,6 @@ static VReg gen_addr(Node *node) {
         return r;
     }
     case ND_CAST:
-        if (node->ty && node->ty->is_vector) {
-            // Vector cast: same-size vector -> vector is a bitcast (address
-            // unchanged); scalar -> vector broadcasts the scalar to every
-            // lane (GCC semantics), materialized in a 16-byte slot.
-#ifndef ARCH_ARM64
-            if (node->lhs && node->lhs->ty && node->lhs->ty->is_vector)
-                return gen_addr(node->lhs);
-            return gen_vector_splat(node->lhs, node->ty);
-#else
-            return gen(node);
-#endif
-        }
         if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_COMPLEX || node->ty->kind == TY_ARRAY)) {
             // Complex -> complex cast with a differently-sized base type of
             // the same kind (e.g. _Complex char -> _Complex int, from the
@@ -10389,22 +10377,6 @@ static VReg gen(Node *node) {
     case ND_ADDR:
         return gen_addr(node->lhs);
     case ND_CAST: {
-        if (node->ty && node->ty->is_vector)
-            return gen_addr(node); // vectors are slot-resident
-        // 8-byte vector -> scalar bitcast (e.g. `(long long)__m64`):
-        // the vector VALUE is a slot address, so load the bytes out.
-        if (node->lhs && node->lhs->ty && node->lhs->ty->is_vector &&
-            node->lhs->ty->size <= 8 && !is_complex(node->ty)) {
-            VReg a = gen_addr(node->lhs);
-            VReg r = alloc_reg();
-#ifndef ARCH_ARM64
-            x86_mov_rm(cg_sec, node->lhs->ty->size <= 4 ? 4 : 8, REG(r), x86_mem(REG(a), 0));
-#else
-            arm64_ldr_uoff(cg_sec, node->lhs->ty->size <= 4 ? 2 : 3, REG(r), REG(a), 0);
-#endif
-            free_reg(a);
-            return r;
-        }
         VReg r = gen(node->lhs);
         return gen_cast_reg(r, node->lhs->ty, node->ty);
     }
