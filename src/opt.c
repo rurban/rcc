@@ -570,7 +570,7 @@ static Node *try_inline(Program *prog, Node *call) {
     int nparams = 0;
     for (LVar *p = fn->params; p; p = p->param_next) {
         if (nparams >= MAX_INLINE_PARAMS) return NULL;
-        if (!(p->ty && (is_integer(p->ty) || is_flonum(p->ty) || p->ty->kind == TY_PTR || ((p->ty->kind == TY_STRUCT || p->ty->kind == TY_UNION) && p->ty->is_vector))))
+        if (!(p->ty && (is_integer(p->ty) || is_flonum(p->ty) || p->ty->kind == TY_PTR)))
             return NULL;
         params[nparams++] = p;
     }
