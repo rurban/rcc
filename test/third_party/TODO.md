@@ -862,14 +862,20 @@ a multi-session effort, not a quick win.
 
 ## Quick Wins (next to fix)
 
-1. **AVX2/AVX-512 codegen** — test_blake3 (AVX-512), test_brotli (AVX2)
+1. **AVX2/AVX-512 codegen** — test*blake3 (AVX-512), test_brotli (AVX2)
    need rcc to ship its own `<immintrin.h>`/`<avxintrin.h>`/
    `<avx2intrin.h>` (and, for blake3, AVX-512 mask-register codegen)
    instead of falling through to GCC's real system headers; a
    multi-session effort, see "Fixed (2026-08-08,
    shufflevector/SSE2-baseline session)" above for what's already
    covered (`__builtin_shufflevector`, the missing baseline-SSE2 tier —
-   both unblocked test_libwebp).
+   both unblocked test_libwebp). Since the 2026-08-12 SIMD-intrinsics
+   session, the full base-SSE surface (SSE1/SSE2/SSE3/SSSE3/SSE4.1,
+   MMX, AES) is typed and codegen'd (`\_\_builtin_ia32*\*` dispatcher +
+   ~150 encoders) and the REAL glibc headers compile and run
+   byte-identical to gcc at -O0 and -O2 — what remains for blake3/
+   brotli is the 256/512-bit vector tiers (AVX/AVX-512 intrinsics,
+   mask registers) and 16-bit float/bf16 arithmetic.
 2. **C23 `_BitInt(N)`** — test_c23doku only now (test_cproc fixed, see
    "Fixed (2026-08-08, root-cause/test_cproc-completion session)" below)
 
@@ -3845,3 +3851,96 @@ tests 7/7 — 0 failed overall (native Linux x86-64). muon: full
 add_project_dependencies`) reproduce identically with a fully gcc-built
 muon and are environment/muon issues (wayland-scanner tool missing;
 zlib link path), not rcc bugs.
+
+### Fixed (2026-08-12, SIMD intrinsics / real glibc headers session)
+
+Investigated why rcc cannot include the real glibc `<immintrin.h>`
+chain (the diagnosis that became this session's fixes). With rcc's
+bundled headers renamed away, `#include <immintrin.h>` resolved to
+`/usr/lib/gcc/.../include/` and failed on four independent gaps:
+
+- **`__builtin_ia32_*` calls typed as implicit int** — every real
+  header intrinsic is a thin `extern __inline __always_inline__`
+  wrapper over one of these calls; rcc neither typed them (they fell
+  through `declare_builtin_on_demand` to implicit int, so the headers'
+  `(__m128)__builtin_ia32_addps(...)` casts became scalar-int→vector
+  casts) nor codegen'd them (only sqrtps/sqrtss/rsqrtps existed).
+  Fixed by (a) type.c's `ia32_builtin_ret()` name-suffix classifier
+  (ps/pd/ss/sd → float vectors, trailing b/w/d/q + optional "128" →
+  integer vectors, exact matches for converts/moves/compares/string
+  ops), and (b) codegen.c's `gen_ia32_builtin()` dispatcher plus
+  ~150 new x86 encoders covering SSE1 (xmmintrin.h), SSE2
+  (emmintrin.h), SSE3 (pmmintrin.h), SSSE3 (tmmintrin.h), SSE4.1
+  (smmintrin.h), AES-NI (wmmintrin.h) and the MMX 8-byte ops
+  (mmintrin.h) — ALU, compares (cmp* imm predicates incl. operand
+  swap for gt/ge and runtime-predicate dispatch), shuffles
+  (shufps/pshufd/pshuflw/pshufhw/unpck*/pack*/palignr), loads/stores
+  (movdqa/movdqu/movnt*/lddqu/movq/movd), converts (packed cvtps2dq
+  family + scalar cvtsi2ss/cvtss2si), masks (movmskps/pmovmskb/ptest),
+  shifts (imm + register-count forms), MMX vec_init/vec_ext, and the
+  fence/cache/mxcsr/monitor/mwait controls.
+- **GNU `extern __inline __gnu_inline__` emitted nothing** — GCC
+  relies on mandatory inlining; rcc has no guaranteed inliner, so at
+  -O0 the header wrappers never inlined and no symbol existed → every
+  call was an undefined reference. Fixed two ways: (a) `try_inline()`
+  now inlines `__attribute__((always_inline))` callees at every -O
+  level (matching GCC) and accepts vector (is_vector) returns/params,
+  and (b) when a call can't be inlined, the wrapper body is compiled
+  as a per-TU LOCAL copy (`fn_emitting_local_copy`) instead of
+  nothing — no global symbol is exported (GCC's actual promise) and
+  multi-TU links never collide. Unreferenced copies are dropped by
+  `eliminate_unused_static_inline` (now also treating gnu-extern-
+  inline as omittable). EXCEPTION: a fortify-style wrapper whose body
+  calls its OWN name (glibc's `... ? abort() : memcpy(...)` fallback)
+  skips the local copy — a copy would shadow the fallback's libc
+  binding and recurse until stack overflow; those call sites bind to
+  libc exactly as before.
+- **scalar→vector casts ICE'd** — `(__v8qi)0LL` (and the real
+  headers' `(__m128i)0` idiom) hit "Invalid register -1": the cast was
+  never materialized. `gen_vector_splat()` now broadcasts any scalar
+  (constant or runtime, int or float/double) to every lane into a
+  16-byte slot, matching GCC's semantics. Also fixed the companion
+  8-byte (MMX) vector-assignment path (stored the slot address
+  instead of copying the value) and vector→scalar bitcasts
+  (`(long long)__m64`).
+- **`__bf16` type missing** — avx512bf16vlintrin.h's `typedef __bf16
+__v16bf ...` failed with "expected ';' or ','". `__bf16` and
+  `_Float16` are now builtin typedefs (16-bit storage; rcc has no
+  16-bit-float or AVX512-BF16 codegen, so the typedefs parse and any
+  real bf16 arithmetic falls through integer paths).
+- **bundled-header gaps** — rcc's own xmmintrin.h/emmintrin.h lacked
+  the unaligned `__m128_u`/`__m128i_u`/`__m128d_u`
+  (`__aligned__(1)`) typedefs that real programs use with
+  `_mm_loadu_si128`'s pointer type; added them.
+
+Also fixed while iterating: haddps/haddpd prefix (F2, not none),
+addsubps matching the "add" prefix first (now checked before plain
+add/sub), unary 0F38 ops (pabs*/pmovsx/zx*) loading a second
+argument, roundps/roundpd (unary 0F3A) reading the imm from the wrong
+argument, cvtpi2pd arity (1 arg), vec_init_v4hi storing ints instead
+of the vector's element width, blendps-family width (non-128-suffixed
+SSE4.1 names are 16 bytes, not MMX 8), cvtss2si/cvtsd2si prefix order
+(F3/F2 must precede REX), and the 5 legacy sqrt\* builtins declared as
+real functions in rcc's bundled headers (calls carried their target
+in lhs, not funcname).
+
+Verified: with the bundled headers renamed away, a program covering
+SSE1/SSE2/SSE3/SSSE3/SSE4.1/MMX (`real_broad.c`: addps/addsubps/
+haddps/pmaddwd/pshufb/pabsd/pmin/pmovsxbd/blendps/roundps/ptest/
+extract/cvt/mmx-add) compiles against the REAL glibc headers and its
+output is byte-identical to gcc -O2 -mssse3 -msse4.1 at both rcc -O0
+and rcc -O2. blake3/brotli still need AVX2/AVX-512 (256/512-bit)
+intrinsics + mask registers — unchanged, still item 1 below.
+
+New regression test: `test/test_ia32_intrinsics.c` — direct
+`__builtin_ia32_*` calls (packed+scalar float ALU incl. lane-0
+semantics, integer ALU, compares with operand swap, shuffles,
+converts, move masks, pshufb128, unary pabsd128, blendps/roundps/
+ptestz128, MMX paddw via vec_init), the splat casts, and a GNU
+extern-inline wrapper exercising the local-copy link path; passes at
+-O0/-O1/-O2/-O3 and matches gcc byte-for-byte. Full suite verified:
+Unit tests 233/233, TCC 118/118, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (100% of non-skipped), Dg-error 34/34,
+Link 7/7 — 0 failed (native Linux x86-64). The 8-byte vector and
+vector→scalar codegen paths are additionally covered on arm64 by the
+same test (guard skipped there).

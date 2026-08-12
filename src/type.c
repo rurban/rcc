@@ -305,6 +305,9 @@ static bool is_null_pointer_constant(Node *n) {
 // which would otherwise default to plain `int`. Report their true return
 // types here so that e.g. ND_RETURN doesn't mis-truncate/sign-extend a
 // 64-bit __builtin_bswap64 result down to 32 bits.
+static Type *builtin_return_type(const char *name);
+static Type *ia32_builtin_ret(const char *fullname);
+
 static Type *builtin_return_type(const char *name) {
     if (!name) return NULL;
     if (name == bi_bswap16) return ty_ushort;
@@ -315,7 +318,192 @@ static Type *builtin_return_type(const char *name) {
     if (name == bi_copysignf) return ty_float;
     if (name == bi_copysignl) return ty_ldouble;
     if (name == bi_unreachable) return ty_void;
+    // __builtin_ia32_*: real GCC SIMD intrinsics. Their return types are
+    // derived from the name's type-suffix family (see ia32_builtin_ret);
+    // without this the calls would type as implicit int, and the headers'
+    // `(__m128)__builtin_ia32_addps(...)` casts would become scalar-int ->
+    // vector casts instead of vector -> vector bitcasts.
+    if (strncmp(name, "__builtin_ia32_", 15) == 0) {
+        Type *r = ia32_builtin_ret(name);
+        return r;
+    }
     return NULL;
+}
+
+// Cached vector types for __builtin_ia32_* return-type classification.
+// kind: 0=float,1=double,2=signed char,3=short,4=int,5=long long.
+// Only the 8-byte (MMX) and 16-byte (SSE) shapes are ever needed.
+static Type *ia32_vec_ty(int kind, int bytes) {
+    static Type *cache[6][2];
+    if (!cache[kind][bytes == 8 ? 0 : 1]) {
+        Type *elem = kind == 0 ? ty_float
+            : kind == 1        ? ty_double
+            : kind == 2        ? ty_char
+            : kind == 3        ? ty_short
+            : kind == 4        ? ty_int
+                               : ty_llong;
+        cache[kind][bytes == 8 ? 0 : 1] = rcc_make_vector_type(elem, bytes);
+    }
+    return cache[kind][bytes == 8 ? 0 : 1];
+}
+
+static bool ia32_endswith(const char *n, const char *suf) {
+    size_t nl = strlen(n), sl = strlen(suf);
+    return nl >= sl && memcmp(n + nl - sl, suf, sl) == 0;
+}
+
+// Return type of a `__builtin_ia32_<name>` call, derived from the name.
+// The SSE/SSE2/SSSE3/SSE4.1 intrinsic families encode their operand
+// shape in the name suffix: ps/pd/ss/sd for float/double vectors,
+// trailing b/w/d/q (+ optional "128") for integer vectors, and a
+// handful of exact names for converts/moves/comparisons. The ARG types
+// are always correct already (the headers cast every call site), so
+// only the return type must be known to make `(__m128)call` a
+// vector->vector bitcast instead of an implicit-int scalar cast.
+static Type *ia32_builtin_ret(const char *fullname) {
+    const char *n = fullname + 15; // "__builtin_ia32_"
+    int L = (int)strlen(n);
+
+    // --- exact scalar/void returns ---
+    // int-returning: move-masks, compares-with-flags, CRC, string ops
+    if (!strcmp(n, "movmskps") || !strcmp(n, "movmskpd") ||
+        !strcmp(n, "pmovmskb") || !strcmp(n, "pmovmskb128") ||
+        !strncmp(n, "comi", 4) || !strncmp(n, "ucomi", 5) ||
+        !strncmp(n, "crc32", 5) || !strncmp(n, "ptest", 5) ||
+        !strncmp(n, "pcmpestr", 8) || !strncmp(n, "pcmpistr", 8) ||
+        !strcmp(n, "stmxcsr"))
+        return ty_int;
+    // long long: the 64-bit scalar-convert results
+    if (!strcmp(n, "cvtss2si64") || !strcmp(n, "cvttss2si64") ||
+        !strcmp(n, "cvtsd2si64") || !strcmp(n, "cvttsd2si64"))
+        return ty_llong;
+    // void-returning: fences, stores, cache/mxcsr control, MMX state
+    if (!strcmp(n, "emms") || !strcmp(n, "femms") || !strcmp(n, "pause") ||
+        !strcmp(n, "sfence") || !strcmp(n, "lfence") || !strcmp(n, "mfence") ||
+        !strcmp(n, "clflush") || !strcmp(n, "prefetch") || !strcmp(n, "ldmxcsr") ||
+        !strcmp(n, "monitor") || !strcmp(n, "mwait") ||
+        !strncmp(n, "movnt", 5) || // movntps/pd/dq/nti/nti64/ntq
+        !strcmp(n, "maskmovdqu") || !strcmp(n, "maskmovq") ||
+        !strncmp(n, "storehps", 8) || !strncmp(n, "storelps", 8))
+        return ty_void;
+
+    // --- converts (cvt*) ---
+    if (L > 3 && memcmp(n, "cvt", 3) == 0) {
+        if (strstr(n, "2si")) return ty_int; // cvt*2si, cvt*2si64
+        if (strstr(n, "2ps")) return ia32_vec_ty(0, 16); // cvtpi2ps, cvtdq2ps
+        if (strstr(n, "2pd")) return ia32_vec_ty(1, 16); // cvtpi2pd, cvtdq2pd
+        if (strstr(n, "2dq")) return ia32_vec_ty(4, 16); // cvtps2dq, cvttps2dq, cvtpd2dq, cvttpd2dq
+        if (strstr(n, "2pi")) return ia32_vec_ty(4, 8); // cvtps2pi, cvttps2pi, cvtpd2pi, cvttpd2pi
+        if (strstr(n, "2ss")) return ia32_vec_ty(0, 16); // cvtsi2ss, cvtsi642ss, cvtsd2ss
+        if (strstr(n, "2sd")) return ia32_vec_ty(1, 16); // cvtsi2sd, cvtsi642sd, cvtss2sd
+        return ty_int; // unknown cvt: assume int
+    }
+
+    // --- exact vector returns ---
+    // bitwise int ops with no size letter in the name (MMX pand/por/pxor,
+    // SSE2 pandn128): result is an 8/16-byte int vector matching the args
+    if (!strcmp(n, "pand") || !strcmp(n, "por") || !strcmp(n, "pxor"))
+        return ia32_vec_ty(4, 8); // v2si
+    if (!strcmp(n, "pandn128"))
+        return ia32_vec_ty(4, 16); // v4si
+    if (!strcmp(n, "movq128") || !strcmp(n, "lddqu") || !strcmp(n, "movntdqa") ||
+        !strcmp(n, "aesdec128") || !strcmp(n, "aesdeclast128") ||
+        !strcmp(n, "aesenc128") || !strcmp(n, "aesenclast128") ||
+        !strcmp(n, "aesimc128") || !strcmp(n, "aeskeygenassist128") ||
+        !strcmp(n, "pclmulqdq128"))
+        return ia32_vec_ty(5, 16); // v2di
+    // vec_ext_v<TY>(v, i): return the ELEMENT scalar (the header casts
+    // the result to the exact scalar type, but codegen needs the right
+    // width: v2di elements are 8 bytes, v4sf elements are 4-byte float)
+    if (!strncmp(n, "vec_ext_v2di", 12)) return ty_llong;
+    if (!strncmp(n, "vec_ext_v4sf", 12)) return ty_float;
+    if (!strncmp(n, "vec_ext_", 8)) return ty_int;
+    if (!strcmp(n, "loadhps") || !strcmp(n, "loadlps") ||
+        !strcmp(n, "movhlps") || !strcmp(n, "movlhps") ||
+        !strcmp(n, "insertps128") || !strcmp(n, "dpps") ||
+        !strcmp(n, "roundps") || !strcmp(n, "roundss") ||
+        !strcmp(n, "blendps") || !strcmp(n, "blendvps"))
+        return ia32_vec_ty(0, 16); // v4sf
+    if (!strcmp(n, "dppd") || !strcmp(n, "roundpd") || !strcmp(n, "roundsd") ||
+        !strcmp(n, "blendpd") || !strcmp(n, "blendvpd"))
+        return ia32_vec_ty(1, 16); // v2df
+    if (!strcmp(n, "pshufd")) return ia32_vec_ty(4, 16); // v4si
+    if (!strcmp(n, "pshuflw") || !strcmp(n, "pshufhw")) return ia32_vec_ty(3, 16); // v8hi
+    if (!strcmp(n, "pshufw")) return ia32_vec_ty(3, 8); // v4hi (MMX)
+    if (!strcmp(n, "palignr")) return ia32_vec_ty(2, 8); // v8qi (MMX)
+    if (!strcmp(n, "palignr128")) return ia32_vec_ty(2, 16); // v16qi
+    if (!strcmp(n, "mpsadbw128") || !strcmp(n, "pblendvb128")) return ia32_vec_ty(2, 16);
+    if (!strcmp(n, "phminposuw128")) return ia32_vec_ty(3, 16); // v8hi
+    if (!strcmp(n, "pslldqi128") || !strcmp(n, "psrldqi128")) return ia32_vec_ty(5, 16); // v2di
+    // vec_init_*/vec_set_*: return the named vector type. The suffix
+    // starts right after "vec_init_v" (10 chars) / "vec_set_v" (9 chars).
+    {
+        const char *v = NULL;
+        if (!strncmp(n, "vec_init_v", 10)) v = n + 10;
+        else if (!strncmp(n, "vec_set_v", 9))
+            v = n + 9;
+        if (v) {
+            if (v[1] == 's' && v[2] == 'f') return ia32_vec_ty(0, 16); // v4sf
+            if (v[1] == 'd' && v[2] == 'i') return ia32_vec_ty(5, 16); // v2di
+            if (v[0] == '8' && v[1] == 'q') return ia32_vec_ty(2, 8); // v8qi
+            if (v[0] == '4' && v[1] == 'h') return ia32_vec_ty(3, 8); // v4hi
+            if (v[0] == '2' && v[1] == 's') return ia32_vec_ty(4, 8); // v2si
+            if (v[0] == '1' && v[1] == '6') return ia32_vec_ty(2, 16); // v16qi
+            if (v[0] == '8' && v[1] == 'h') return ia32_vec_ty(3, 16); // v8hi
+            if (v[0] == '4' && v[1] == 's') return ia32_vec_ty(4, 16); // v4si
+            if (v[0] == '2' && v[1] == 'd') return ia32_vec_ty(5, 16); // v2di
+        }
+    }
+
+    // --- float/double vector families by suffix ---
+    // (exceptions handled by the exact matches above: movmskps/movmskpd,
+    // movntps/movntpd, cvtss2si/cvtsd2si...)
+    if (ia32_endswith(n, "ss") || ia32_endswith(n, "ps"))
+        return ia32_vec_ty(0, 16); // v4sf
+    if (ia32_endswith(n, "sd") || ia32_endswith(n, "pd"))
+        return ia32_vec_ty(1, 16); // v2df
+
+    // --- integer vector families: last b/w/d/q before trailing digits ---
+    {
+        // punpcklX*/punpckhX*: the element letter is the ONE AFTER the
+        // l/h (punpcklbw interleaves BYTE lanes even though the mnemonic
+        // ends in "w"); the backward scan below would pick the wrong one.
+        if (!strncmp(n, "punpck", 6) && L >= 9) {
+            char el = n[7]; // punpckl|h + element letter
+            int kind = el == 'b' ? 2 : el == 'w' ? 3
+                : el == 'd'                      ? 4
+                                                 : 5;
+            bool is128 = ia32_endswith(n, "128");
+            return ia32_vec_ty(kind, is128 ? 16 : 8);
+        }
+        // movshdup/movsldup: SSE3 packed-float unary shuffles
+        if (!strcmp(n, "movshdup") || !strcmp(n, "movsldup"))
+            return ia32_vec_ty(0, 16); // v4sf
+        bool is128 = ia32_endswith(n, "128");
+        int end = is128 ? L - 3 : L;
+        int kind = -1;
+        for (int i = end - 1; i >= 0; i--) {
+            if (n[i] == 'b') {
+                kind = 2;
+                break;
+            } // byte lanes
+            if (n[i] == 'w') {
+                kind = 3;
+                break;
+            } // word lanes
+            if (n[i] == 'd') {
+                kind = 4;
+                break;
+            } // dword lanes
+            if (n[i] == 'q') {
+                kind = 5;
+                break;
+            } // qword lanes
+        }
+        if (kind >= 0)
+            return ia32_vec_ty(kind, is128 ? 16 : 8);
+    }
+    return ty_int; // unknown: implicit int (better than a wrong vector type)
 }
 
 // Return type assumed for a function called WITHOUT a visible prototype.

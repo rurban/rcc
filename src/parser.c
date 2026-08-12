@@ -12,6 +12,7 @@ struct VarAttr {
     bool is_static;
     bool is_inline;
     bool is_gnu_inline;
+    bool is_always_inline;
     bool is_weak;
     bool is_used; // __attribute__((used)) / __attribute__((__used__))
     bool is_tls;
@@ -684,8 +685,9 @@ static int last_find_var_chain_depth;
 static LVar *find_var(Token *tok) {
     last_find_var_chain_depth = 0;
     for (LVar *var = locals; var; var = var->next)
-        if (var->name == tok->name)
+        if (var->name == tok->name) {
             return var;
+        }
     // Nested function: walk outward through enclosing functions' frozen
     // locals snapshots (FnCtx.locals) before falling back to globals, so a
     // nested function body can reference an enclosing function's locals
@@ -1179,6 +1181,16 @@ void init_builtins(void) {
 #endif
     );
     add_typedef("iconv_t", pointer_to(ty_void));
+    // GCC builtin 16-bit float types. rcc has no true 16-bit float
+    // codegen (and no AVX512-BF16/FP16 instruction set), so model them
+    // as 16-bit storage: the typedefs in the real GCC headers
+    // (avx512bf16vlintrin.h's `typedef __bf16 __v16bf ...`) then parse,
+    // and any actual bf16/fp16 arithmetic falls through the normal
+    // integer paths instead of erroring on an unknown type name. The
+    // size-2 vectors these produce (32/64-byte __m256bh/__m512bh) are
+    // already supported by the vector_size machinery.
+    add_typedef("__bf16", ty_ushort);
+    add_typedef("_Float16", ty_ushort);
 }
 
 static Type *typedef_find_name(const char *name) {
@@ -1715,6 +1727,15 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                     tok = tok->next;
                     if (equalc(tok, "("))
                         tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
+
+                if (equalc(tok, "always_inline") || equalc(tok, "__always_inline__")) {
+                    if (attr)
+                        attr->is_always_inline = true;
+                    tok = tok->next;
                     if (equalc(tok, ","))
                         tok = tok->next;
                     continue;
@@ -3083,6 +3104,14 @@ static Type *make_vector_type(Type *elem, int total_size) {
     }
     ty->members = head.next;
     return ty;
+}
+
+// Non-static entry point for the same builder, used by type.c's
+// __builtin_ia32_* return-type classifier (ia32_builtin_ret) so the
+// intrinsic-builtin return types share the header typedefs' exact Type
+// construction path (same member layout, same alignment).
+Type *rcc_make_vector_type(Type *elem, int total_size) {
+    return make_vector_type(elem, total_size);
 }
 
 // Apply a pending GCC __attribute__((mode(...))) to `ty`, resetting the
@@ -12671,6 +12700,7 @@ Program *parse(Token *tok) {
                     fn->is_destructor = pending_destructor;
                     fn->is_inline = attr.is_inline;
                     fn->is_gnu_inline = attr.is_gnu_inline;
+                    fn->is_always_inline = attr.is_always_inline;
                     // is_static is sticky: if any decl was static the fn is static
                     fn->is_static = attr.is_static || (fn_sym2 && fn_sym2->is_static);
                     // is_extern: explicit extern on this def, OR any non-inline extern

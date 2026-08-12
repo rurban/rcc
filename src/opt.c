@@ -528,9 +528,14 @@ static Node *try_inline(Program *prog, Node *call) {
     if (!name || name == bi_s_printf) return NULL;
 
     // The call must yield a scalar value; struct/union/void returns are not
-    // safe to splice as a plain expression here.
+    // safe to splice as a plain expression here. Vectors (is_vector) are
+    // first-class by-value values in rcc (slot-resident), so they splice
+    // exactly like scalars — without this, the real GCC SIMD headers'
+    // __m128-returning inline wrappers would never inline at -O2 and
+    // every call would pay a full call/return through the local copy.
     Type *rt = call->ty;
-    if (!rt || rt->kind == TY_VOID || rt->kind == TY_STRUCT || rt->kind == TY_UNION)
+    if (!rt || rt->kind == TY_VOID ||
+        ((rt->kind == TY_STRUCT || rt->kind == TY_UNION) && !rt->is_vector))
         return NULL;
 
     Function *fn = NULL;
@@ -540,6 +545,14 @@ static Node *try_inline(Program *prog, Node *call) {
             break;
         }
     if (!fn || !fn->body || fn->is_variadic || (fn->ty && fn->ty->is_variadic))
+        return NULL;
+    // __attribute__((always_inline)) forces inlining at every -O level
+    // (real GCC semantics); everything else only inlines under -finline.
+    // Without this the real GCC headers' wrappers with runtime immediate
+    // operands (e.g. _mm_round_ps's mode) can't compile: their local
+    // copies would hit "imm must be an integer constant". Self-referencing
+    // fortify wrappers are still refused below (recursion guard).
+    if (!opt_finline && !fn->is_always_inline)
         return NULL;
     if (has_cleanup_local(fn)) return NULL;
 
@@ -557,7 +570,7 @@ static Node *try_inline(Program *prog, Node *call) {
     int nparams = 0;
     for (LVar *p = fn->params; p; p = p->param_next) {
         if (nparams >= MAX_INLINE_PARAMS) return NULL;
-        if (!(p->ty && (is_integer(p->ty) || is_flonum(p->ty) || p->ty->kind == TY_PTR)))
+        if (!(p->ty && (is_integer(p->ty) || is_flonum(p->ty) || p->ty->kind == TY_PTR || ((p->ty->kind == TY_STRUCT || p->ty->kind == TY_UNION) && p->ty->is_vector))))
             return NULL;
         params[nparams++] = p;
     }
@@ -1031,8 +1044,11 @@ static Node *optimize_node(Program *prog, Node *node) {
         // Second: -finline. Replace a call to a tiny "return EXPR;" function
         // with the substituted expression when the arguments are simple.
         // Runs before the funcname gate below because in-scope direct calls
-        // carry their target in lhs, not funcname.
-        if (opt_finline) {
+        // carry their target in lhs, not funcname. Also runs without
+        // -finline for __always_inline__ callees (see the gate inside
+        // try_inline), so the real GCC SIMD headers' `extern __inline
+        // __always_inline__` wrappers inline at -O0 exactly like GCC's.
+        {
             Node *inl = try_inline(prog, node);
             if (inl) return inl;
         }
@@ -1262,9 +1278,14 @@ void eliminate_unused_static_inline(Program *prog) {
     // undefined `__SCK__*` static-call-key symbols and failing the link.
     for (int k = 0; k < n; k++) {
         Function *f = fns[k];
-        bool omittable = f->is_static && f->body &&
-            !f->is_used && !f->is_weak && !f->is_constructor && !f->is_destructor &&
-            (f->is_inline || opt_O1);
+        bool omittable = f->body && !f->is_used && !f->is_weak &&
+            !f->is_constructor && !f->is_destructor &&
+            ((f->is_static && (f->is_inline || opt_O1)) ||
+             // GNU `extern __inline __gnu_inline__`: the body is an inline
+             // definition only — emitted as a per-TU local copy only when
+             // something actually calls it (see codegen.c's
+             // fn_emitting_local_copy), never as a global symbol.
+             (f->is_inline && f->is_extern && f->is_gnu_inline));
         if (!omittable)
             dce_mark(f, &wl, &wl_len, &wl_cap);
     }
@@ -1320,8 +1341,9 @@ void eliminate_unused_static_inline(Program *prog) {
     TLItem **link = &prog->items;
     for (TLItem *item = prog->items; item;) {
         TLItem *next = item->next;
-        if (item->kind == TL_FUNC && item->fn->body && item->fn->is_static &&
-            !item->fn->dce_live) {
+        if (item->kind == TL_FUNC && item->fn->body && !item->fn->dce_live &&
+            (item->fn->is_static ||
+             (item->fn->is_inline && item->fn->is_extern && item->fn->is_gnu_inline))) {
             omitted[n_omitted++] = item->fn->name;
             *link = next;
         } else {
