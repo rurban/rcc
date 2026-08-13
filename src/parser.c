@@ -12166,6 +12166,7 @@ Program *parse(Token *tok) {
     tok = head;
 
     globals = NULL;
+    parser_used_wide_bitint = false;
     memset(global_htab, 0, sizeof(global_htab));
     memset(typedef_htab, 0, sizeof(typedef_htab));
     typedef_log = NULL;

@@ -4,6 +4,7 @@
 #include "rcc.h"
 #include "asm.h"
 #include "codegen_asm.h"
+#include "bitint_rt.h"
 
 AsmFixupNode *asm_fixup_htab[CG_HT_SIZE];
 int asm_fixup_count = 0;
@@ -694,11 +695,38 @@ static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
 VReg alloc_int128_addr(void);
 int alloc_int128_slot(void);
+int alloc_wide_slot(int size);
+VReg alloc_wide_addr(int size);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
+static VReg gen_bitint(Node *node);
 static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label);
 static void gen_flonum_branch_if_nonzero(VReg r, const char *label);
 static void gen_flonum_truthiness(VReg r);
+
+static void emit_bitint_bits_arg(int bits);
+static void emit_bitint_addr_arg(VReg r, int n);
+static void emit_bitint_imm_arg(int imm, int n);
+static void emit_bitint_slot_arg(int slot, int n);
+static void emit_bitint_amount_arg(VReg r, int n);
+static void emit_bitint_copy_bytes(VReg dst, VReg src, int size);
+static void emit_bitint_const_fill(VReg dst, long long val, int size, bool is_unsigned);
+static VReg widen_to_bitint(VReg val, Type *ty, bool src_is_unsigned);
+static VReg gen_to_bitint(Node *operand);
+
+// A 16-byte value passed in two GP registers: __int128 and _BitInt(65..128)
+// share the SysV/Win64/AAPCS64 convention (2 consecutive GP arg regs,
+// RAX:RDX / X0:X1 return, 16-byte stack slot). _BitInt(N) with N > 128
+// (size > 16) instead follows the large-struct convention (hidden return
+// buffer + by-pointer/stack arg marshalling).
+static bool is_int128_like(Type *ty) {
+    return ty && (ty->kind == TY_INT128 || (ty->kind == TY_BITINT && ty->size == 16));
+}
+
+// A wide _BitInt (N > 64, size > 8): routed through gen_bitint().
+static bool is_wide_bitint(Type *ty) {
+    return ty && ty->kind == TY_BITINT && ty->size > 8;
+}
 
 // True if `fn`'s body contains a call to `fn` itself by name. A GNU
 // extern-inline wrapper that does this is a fortify-style fallback (the
@@ -875,6 +903,90 @@ static void emit_direct_call(char *name, bool is_asm_label) {
         sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, SB_GLOBAL, ST_FUNC);
     // call label
     objfile_add_reloc(cg_obj, SEC_TEXT, off + 1, sidx, R_X86_64_PLT32, -4);
+#endif
+}
+
+// Call a rcc_bitint_* helper, preserving every live VReg across the call.
+// The helpers are ordinary functions: they clobber the caller-saved
+// registers (r10-r15 on x86-64 SysV/Win64, x10-x15 on AAPCS64) that rcc's
+// register allocator uses for its virtual registers. gen_funcall saves
+// these around every call it emits; gen_bitint's helper calls bypass that
+// marshalling, so they must do their own save/restore here or a live
+// enclosing-expression value (e.g. a printf format-string address held in
+// r10) is silently destroyed by the helper's own codegen. Save to each
+// VReg's per-register spill slot; restore from the same slot after.
+static void emit_bitint_call(char *fn) {
+    // Preserve r10/r11 (VRegs 0/1) across the helper call UNCONDITIONALLY,
+    // via plain stack push/pop — the one scratch area the register
+    // allocator never touches for register values (frame slots collide:
+    // the allocator owns that memory). The helpers are real functions that
+    // clobber the caller-saved registers rcc's allocator uses for VRegs
+    // 0/1; a raw emit_direct_call bypasses gen_funcall's saved_scratch
+    // marshalling, so a hoisted enclosing value (e.g. a printf
+    // format-string address loaded into r10 before this helper call) would
+    // be silently destroyed. Two 8-byte pushes keep rsp 16-byte aligned
+    // at the call (required by SysV), and the pops restore exactly. This
+    // is the same push/pop pattern the inline memcmp/strlen/memcpy
+    // expansions use around their raw instructions. rbx/r12-r15 (VRegs 2+)
+    // are callee-saved and survive the call.
+#ifdef ARCH_ARM64
+    // AAPCS64: x10-x15 are all caller-saved (rcc uses them as VRegs 0-5).
+    // Save every currently-live one (used_regs); use x16/x17 as scratch
+    // for large offsets. Matches the x86 push/pop intent.
+    int saved = used_regs & ((1 << NUM_REGS) - 1);
+    int arm_saved[NUM_REGS];
+    bool arm_pushed[NUM_REGS];
+    for (int i = 0; i < NUM_REGS; i++) {
+        arm_saved[i] = -1;
+        arm_pushed[i] = false;
+    }
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (saved & (1 << i)) {
+            int d0 = spill_depth[i];
+            int off = spill_offset(i); // push when depth was 0
+            arm_pushed[i] = (spill_depth[i] > d0);
+            arm_saved[i] = off;
+            if (off <= 255)
+                asm_stur_fp_phy(cg_sec, cg_arm_reg[i], off); // str x{i}, [x29, #-off]
+            else {
+                // Load the slot address into a VReg base (arm64_str_uoff
+                // expects a VReg, not a physical reg), then store through it.
+                VReg base = alloc_reg();
+                asm_mov_imm(cg_sec, base, 8, off); // mov x{base}, #off
+                asm_sub_reg_fp_reg(cg_sec, base, base, 8); // sub x{base}, x29, x{base}
+                asm_str_reg_off_phy(cg_sec, cg_arm_reg[i], base, 8, 0); // str x{i}, [x{base}]
+                free_reg(base);
+            }
+        }
+    }
+#else
+    asm_push(cg_sec, X86_R10); // pushq %r10
+    asm_push(cg_sec, X86_R11); // pushq %r11
+#endif
+    emit_direct_call(fn, false);
+#ifdef ARCH_ARM64
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (saved & (1 << i)) {
+            int off = arm_saved[i];
+            if (off <= 255)
+                arm64_ldur(cg_sec, 1, cg_arm_reg[i], ARM64_X29, -off); // ldr x{i}, [x29, #-off]
+            else {
+                VReg base = alloc_reg();
+                asm_mov_imm(cg_sec, base, 8, off); // mov x{base}, #off
+                asm_sub_reg_fp_reg(cg_sec, base, base, 8); // sub x{base}, x29, x{base}
+                VReg tmp = alloc_reg();
+                asm_ldr_reg_off(cg_sec, tmp, base, 8, 0); // ldr x{tmp}, [x{base}]
+                asm_mov_phy_reg(cg_sec, cg_arm_reg[i], tmp, 1); // mov x{i}, x{tmp}
+                free_reg(tmp);
+                free_reg(base);
+            }
+            if (arm_pushed[i])
+                pop_spill_slot(i); // keep the allocator's depth balanced
+        }
+    }
+#else
+    asm_pop(cg_sec, X86_R11); // popq %r11
+    asm_pop(cg_sec, X86_R10); // popq %r10
 #endif
 }
 
@@ -1513,11 +1625,11 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     bool has_hidden_retbuf = node->ty &&
         (
 #ifdef _WIN32
-                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->size > 8) || (node->ty->kind == TY_COMPLEX && node->ty->size > 8)
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && node->ty->size > 8) || (node->ty->kind == TY_COMPLEX && node->ty->size > 8) || (node->ty->kind == TY_BITINT && node->ty->size > 16)
 #elif defined(ARCH_ARM64)
-                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty)) || node->ty->kind == TY_COMPLEX
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty)) || node->ty->kind == TY_COMPLEX || (node->ty->kind == TY_BITINT && node->ty->size > 16)
 #else
-                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty))
+                                 ((node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) && !struct_returns_in_gp_regs(node->ty)) || (node->ty->kind == TY_BITINT && node->ty->size > 16)
 #endif
         );
 
@@ -1922,8 +2034,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         }
 #endif
-        // int128: two consecutive GP register slots or 16-byte stack
-        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+        // int128 / _BitInt(65..128): two consecutive GP register slots or 16-byte stack
+        if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
             if (gp_reg_args + 1 < max_gp_args) {
                 arg_gp_idx[i] = gp_reg_args;
                 gp_reg_args += 2;
@@ -2033,8 +2145,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         }
 
-        // int128: needs two consecutive GP register slots
-        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+        // int128 / _BitInt(65..128): needs two consecutive GP register slots
+        if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
             if (gp_reg_args + 1 < max_gp_args) {
                 arg_gp_idx[i] = gp_reg_args;
                 gp_reg_args += 2;
@@ -2270,8 +2382,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             r = gen_addr(argv[i]);
             arm64_str_uoff(cg_sec, 3, REG(r), ARM64_SP, (uint32_t)(off / 8)); // str x{r}, [sp, #off]
             free_reg(r);
-        } else if (argv[i]->ty->kind == TY_INT128) {
-            int addr = gen_int128(argv[i]);
+        } else if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
+            int addr = gen(argv[i]); // gen_int128/gen_bitint -> slot address
             arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), 0);
             arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr), 1);
             arm64_str_uoff(cg_sec, 3, ARM64_X16, ARM64_SP, (uint32_t)arg_stack_idx[i]);
@@ -2462,8 +2574,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         } else if (arg_is_float[i] && arg_gp_idx[i] >= 0) {
             asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
-        } else if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
-            // int128: load two 64-bit values into consecutive arg registers
+        } else if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
+            // int128 / _BitInt(65..128): load two 64-bit values into consecutive arg registers
             arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(arg_regs[i]), 0); // ldr x16, [addr]
             arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(arg_regs[i]), 1); // ldr x17, [addr, #8]
             asm_mov_phy_phy(cg_sec, arg_gp_idx[i], ARM64_X16, 1); // mov x{gp_idx}, x16
@@ -2630,8 +2742,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         }
         return addr;
     }
-    // int128 return: spill x0:x1 to a 16-byte slot
-    if (node->ty && node->ty->kind == TY_INT128) {
+    // int128 / _BitInt(65..128) return: spill x0:x1 to a 16-byte slot
+    if (node->ty && is_int128_like(node->ty)) {
         int addr = alloc_int128_addr();
         arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(addr), 0); // str x0, [x{addr}]
         arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(addr), 1); // str x1, [x{addr}, #8]
@@ -2949,7 +3061,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             continue;
         }
         VReg r;
-        if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+        if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
             r = gen(argv[i]); // returns address of 16-byte slot
             x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(r), 0)); // movq (%s), %%rax
             x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, shadow_space + arg_stack_idx[i] * 8), X86_RAX); // movq %%rax, ...
@@ -3109,7 +3221,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // before reading REG(arg_regs[i]).
                 materialize_reg(arg_regs[i]);
             }
-            if (argv[i]->ty && argv[i]->ty->kind == TY_INT128) {
+            if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // movq (%s), %s
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8)); // movq 8(%s), %s
@@ -3305,8 +3417,8 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
         return addr;
     }
 #endif
-    // int128 return: spill rax:rdx (x86-64) or x0:x1 (ARM64) to a 16-byte slot
-    if (node->ty && node->ty->kind == TY_INT128) {
+    // int128 / _BitInt(65..128) return: spill rax:rdx (x86-64) or x0:x1 (ARM64) to a 16-byte slot
+    if (node->ty && is_int128_like(node->ty)) {
         int addr = alloc_int128_addr();
 #ifdef ARCH_ARM64
         asm_str_reg_off_phy(cg_sec, ARM64_X0, addr, 8, 0); // str x0, [addr]
@@ -5502,6 +5614,20 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             cg_add_fwd(o, 1, fwd_off, shared_label);
             return;
         }
+        if ((cond->lhs->ty && is_wide_bitint(cond->lhs->ty)) ||
+            (cond->rhs && cond->rhs->ty && is_wide_bitint(cond->rhs->ty))) {
+            // wide _BitInt comparison: gen_bitint returns a boolean VReg (0 or 1)
+            VReg r = gen_bitint(cond);
+            asm_cmp_zero(cg_sec, r, 4); // cmpl $0, rr
+            free_reg(r);
+#ifdef ARCH_ARM64
+            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
+#else
+            size_t o = asm_jcc_label(cg_sec, X86_E); // je target
+#endif
+            cg_add_fwd(o, 1, fwd_off, shared_label);
+            return;
+        }
         if (cond->lhs->ty && is_complex(cond->lhs->ty)) {
             // Complex EQ/NE: compare both parts, branch if not equal
             int r = gen(cond); // use the expression handler which now handles complex
@@ -5763,6 +5889,25 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         free_reg(r);
         return;
     }
+    if (cond->ty && is_wide_bitint(cond->ty)) {
+        // wide _BitInt truthiness: r holds the slot ADDRESS, not the value.
+        // Call the to_bool helper and branch on its result.
+        emit_bitint_bits_arg(cond->ty->bitint_width);
+        emit_bitint_addr_arg(r, 0);
+        free_reg(r);
+        emit_bitint_call((char *)"rcc_bitint_to_bool");
+        VReg br = alloc_reg();
+        asm_mov_retval(cg_sec, br, 4); // movl %eax, br
+        asm_cmp_zero(cg_sec, br, 4); // cmpl $0, br
+        free_reg(br);
+#ifdef ARCH_ARM64
+        size_t bo = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target (false)
+#else
+        size_t bo = asm_jcc_label(cg_sec, X86_E); // je target (false)
+#endif
+        cg_add_fwd(bo, 1, fwd_off, shared_label);
+        return;
+    }
     int sz = cond->ty->size > 8 ? 8 : (cond->ty->size > 0 ? cond->ty->size : 4);
 #ifdef ARCH_ARM64
     asm_cmp_zero(cg_sec, r, sz);
@@ -5784,6 +5929,15 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
 
 // Allocate a fresh 16-byte-aligned int128 scratch slot in the struct-ret area.
 int alloc_int128_slot(void) {
+    return alloc_wide_slot(16);
+}
+
+// Allocate a fresh aligned scratch slot of `size` bytes (>= 8, rounded to
+// 16) in the struct-ret area. Used for __int128 (16), _BitInt(N>64)
+// (8*ceil(N/64)), and 32-byte vector operands.
+int alloc_wide_slot(int size) {
+    if (size < 8) size = 8;
+    size = (size + 15) & ~15;
     // The hidden struct-return buffer var and 32-byte vector params belong
     // to the local pool but can extend past fn->stack_size (the frame sizes
     // those slots via struct_ret_total only). Never hand out struct-ret-buf
@@ -5797,14 +5951,14 @@ int alloc_int128_slot(void) {
             deep = end;
     }
     if (deep > current_fn_stack_size) {
-        int need = deep - current_fn_stack_size + 16;
+        int need = deep - current_fn_stack_size + size;
         while (fn_struct_ret_off < need) {
             fn_struct_ret_off = (fn_struct_ret_off + 15) & ~15;
-            fn_struct_ret_off += 16;
+            fn_struct_ret_off += size;
         }
     }
     fn_struct_ret_off = (fn_struct_ret_off + 15) & ~15;
-    fn_struct_ret_off += 16;
+    fn_struct_ret_off += size;
     if (fn_struct_ret_off > fn_struct_ret_total)
         fn_struct_ret_total = fn_struct_ret_off;
     return current_fn_stack_size + fn_struct_ret_off;
@@ -5812,7 +5966,12 @@ int alloc_int128_slot(void) {
 
 // Return a GP register holding the address of a fresh 16-byte scratch slot.
 VReg alloc_int128_addr(void) {
-    int slot = alloc_int128_slot();
+    return alloc_wide_addr(16);
+}
+
+// Return a GP register holding the address of a fresh `size`-byte slot.
+VReg alloc_wide_addr(int size) {
+    int slot = alloc_wide_slot(size);
     VReg r = alloc_reg();
 #ifdef ARCH_ARM64
     if (slot <= 4095) {
@@ -7137,6 +7296,649 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
     return r;
 }
 
+// ===== _BitInt(N) with N > 64 (wide multi-limb values) =====
+// Convention: a TY_BITINT value with size > 8 lives in an `size`-byte stack
+// slot, little-endian, padding bits above N sign/zero-extended (see
+// bitint_type() in type.c). gen_bitint(node) returns a GP register holding
+// the slot address, mirroring gen_int128's convention. All arithmetic is
+// done by the per-TU runtime helpers in src/bitint_rt.c (self-hosted: the
+// driver parses that source into every TU that uses a wide _BitInt, see
+// main.c's bitint-runtime injection). Helpers take (bits, ...) with the
+// standard calling convention; the code below stages operands into fresh
+// slots first because the in-place helpers clobber their rp (and div also
+// clobbers lp).
+
+// Move `bits` (the _BitInt width) into the first integer arg register.
+static void emit_bitint_bits_arg(int bits) {
+#ifdef ARCH_ARM64
+    asm_mov_imm_phy(cg_sec, ARM64_X0, 4, bits); // mov w0, #bits
+#elif defined(_WIN32)
+    x86_mov_ri(cg_sec, 4, X86_RCX, bits); // movl $bits, %ecx
+#else
+    x86_mov_ri(cg_sec, 4, X86_RDI, bits); // movl $bits, %edi
+#endif
+}
+
+// Move VReg `r` (holding an address) into integer arg register N (0-based).
+static void emit_bitint_addr_arg(VReg r, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    asm_mov_phy_reg(cg_sec, a64[n], r, 1); // mov xN, x{r}
+#elif defined(_WIN32)
+    static const X86Reg aw[] = {X86_RDX, X86_R8, X86_R9};
+    x86_mov_rr(cg_sec, 8, aw[n], cg_x86_reg[r]); // movq %r, %arg
+#else
+    static const X86Reg al[] = {X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    x86_mov_rr(cg_sec, 8, al[n], cg_x86_reg[r]); // movq %r, %arg
+#endif
+}
+
+// Move an immediate into integer arg register N (0-based).
+static void emit_bitint_imm_arg(int imm, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X0, ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    asm_mov_imm_phy(cg_sec, a64[n], 4, imm); // mov wN, #imm
+#elif defined(_WIN32)
+    static const X86Reg aw[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+    x86_mov_ri(cg_sec, 4, aw[n], imm); // movl $imm, %arg
+#else
+    static const X86Reg al[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    x86_mov_ri(cg_sec, 4, al[n], imm); // movl $imm, %arg
+#endif
+}
+
+// lea the address of frame slot `slot` (a positive offset below rbp) into
+// integer arg register N. Used for helper call arguments whose address is a
+// compile-time frame offset: avoids holding the address in a caller-saved
+// VReg across the call (the helpers clobber r10/r11, rcc's own scratch).
+static void emit_bitint_slot_arg(int slot, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    if (slot <= 4095) {
+        arm64_sub_imm(cg_sec, 1, a64[n], ARM64_X29, slot, 0); // sub xN, x29, #slot
+    } else {
+        asm_mov_imm_phy(cg_sec, ARM64_X16, 8, slot);
+        arm64_sub_reg(cg_sec, 1, a64[n], ARM64_X29, ARM64_X16, ARM64_LSL, 0); // sub xN, x29, x16
+    }
+#elif defined(_WIN32)
+    static const X86Reg aw[] = {X86_RDX, X86_R8, X86_R9};
+    asm_lea_rbp(cg_sec, aw[n], 8, slot);
+#else
+    static const X86Reg al[] = {X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    asm_lea_rbp(cg_sec, al[n], 8, slot);
+#endif
+}
+
+// Move a runtime shift amount (VReg holding an int) into arg register N.
+static void emit_bitint_amount_arg(VReg r, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X0, ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    asm_mov_phy_reg(cg_sec, a64[n], r, 1); // mov xN, x{r} (amount is an int; low bits)
+#elif defined(_WIN32)
+    static const X86Reg aw[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+    x86_mov_rr(cg_sec, 8, aw[n], cg_x86_reg[r]); // movq %r, %arg
+#else
+    static const X86Reg al[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    x86_mov_rr(cg_sec, 8, al[n], cg_x86_reg[r]); // movq %r, %arg
+#endif
+}
+
+// Copy `size` bytes from src slot to dst slot (both VReg addresses).
+static void emit_bitint_copy_bytes(VReg dst, VReg src, int size) {
+#ifdef ARCH_ARM64
+    VReg tmp = alloc_reg();
+    for (int off = 0; off + 8 <= size; off += 8) {
+        asm_ldr_reg_off(cg_sec, tmp, src, 8, (uint32_t)off); // ldr x{tmp}, [src, #off]
+        asm_str_reg_off(cg_sec, tmp, dst, 8, (uint32_t)off); // str x{tmp}, [dst, #off]
+    }
+    free_reg(tmp);
+#else
+    for (int off = 0; off + 8 <= size; off += 8) {
+        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(src), off)); // movq off(src), %rax
+        x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), off), X86_RAX); // movq %rax, off(dst)
+    }
+#endif
+}
+
+// Copy a compile-time constant (int64) into a bitint slot, sign/zero-
+// extended to the slot's width per `is_unsigned`.
+static void emit_bitint_const_fill(VReg dst, long long val, int size, bool is_unsigned) {
+#ifdef ARCH_ARM64
+    asm_mov_imm_phy(cg_sec, ARM64_X16, 8, val); // mov x16, #val
+    asm_str_reg_off_phy(cg_sec, ARM64_X16, dst, 8, 0); // str x16, [dst]
+    long long fill = is_unsigned ? 0 : (val < 0 ? -1 : 0);
+    for (int off = 8; off + 8 <= size; off += 8) {
+        asm_mov_imm_phy(cg_sec, ARM64_X16, 8, fill); // mov x16, #fill
+        asm_str_reg_off_phy(cg_sec, ARM64_X16, dst, 8, (uint32_t)off); // str x16, [dst, #off]
+    }
+#else
+    if (val == (int32_t)val) {
+        x86_mov_mi(cg_sec, 8, x86_mem(REG(dst), 0), val); // movq $val, (dst)
+    } else {
+        asm_movabs_phy(cg_sec, X86_RAX, val); // movabsq $val, %rax
+        asm_mov_rax_mem(cg_sec, dst); // movq %rax, (dst)
+    }
+    long long fill = is_unsigned ? 0 : (val < 0 ? -1 : 0);
+    for (int off = 8; off + 8 <= size; off += 8) {
+        if (fill == (int32_t)fill)
+            x86_mov_mi(cg_sec, 8, x86_mem(REG(dst), off), fill);
+        else {
+            asm_movabs_phy(cg_sec, X86_RAX, fill); // movabsq $fill, %rax
+            x86_mov_mr(cg_sec, 8, x86_mem(REG(dst), off), X86_RAX); // movq %rax, off(dst)
+        }
+    }
+#endif
+}
+
+// Widen a 64-bit GP value to a fresh bitint slot. The extension above bit
+// 63 follows the SOURCE value's signedness (`src_is_unsigned`), never the
+// target bitint type's: `(B)(unsigned long long)0xF0...` must zero-extend
+// even when B is signed (a cast preserves the source's value; the source
+// value is already 64-bit, so its signedness decides the fill).
+static VReg widen_to_bitint(VReg val, Type *ty, bool src_is_unsigned) {
+    int slot = alloc_wide_slot(ty->size);
+#ifdef ARCH_ARM64
+    VReg addr = alloc_reg();
+    asm_sub_reg_fp_imm(cg_sec, addr, slot); // sub addr, x29, #slot
+    asm_str_reg_off(cg_sec, val, addr, 8, 0); // str val, [addr]
+    free_reg(val);
+    free_reg(addr);
+    emit_bitint_bits_arg(64); // w0 = 64 (current width)
+    emit_bitint_imm_arg(src_is_unsigned ? 1 : 0, 1); // w1 = is_unsigned
+    emit_bitint_slot_arg(slot, 1); // x2 = addr
+    emit_bitint_imm_arg(ty->bitint_width, 3); // w3 = N
+    emit_bitint_call((char *)"rcc_bitint_sign_ext");
+    VReg r = alloc_reg();
+    asm_sub_reg_fp_imm(cg_sec, r, slot); // sub r, x29, #slot
+    return r;
+#else
+    VReg addr = alloc_reg();
+    asm_lea_rbp_reg(cg_sec, addr, 8, slot); // lea slot, addr
+    asm_mov_reg_to_retval(cg_sec, val, 8); // movq val, %rax
+    asm_mov_rax_mem(cg_sec, addr); // movq %rax, (addr)
+    free_reg(val);
+    free_reg(addr);
+    emit_bitint_bits_arg(64); // w/edi = 64 (current width)
+    emit_bitint_imm_arg(src_is_unsigned ? 1 : 0, 1); // is_unsigned
+    emit_bitint_slot_arg(slot, 1); // lp = addr
+    emit_bitint_imm_arg(ty->bitint_width, 3); // bits2 = N
+    emit_bitint_call((char *)"rcc_bitint_sign_ext");
+    VReg r = alloc_reg();
+    asm_lea_rbp_reg(cg_sec, r, 8, slot); // lea slot, r
+    return r;
+#endif
+}
+
+// Ensure operand is available as a bitint slot address.
+static VReg gen_to_bitint(Node *operand) {
+    if (operand->ty && is_wide_bitint(operand->ty))
+        return gen_bitint(operand);
+    int val = gen(operand);
+    Type *ty = operand->ty ? operand->ty : ty_llong;
+    // Extend to 64-bit first if narrower
+    if (ty->size < 8) {
+        if (ty->is_unsigned)
+            zero_extend_to(val, ty->size, 8);
+        else
+            sign_extend_to(val, ty->size, 8);
+    }
+    Type *bty = bitint_type(ty->size * 8, ty->is_unsigned);
+    return widen_to_bitint(val, bty, ty->is_unsigned);
+}
+
+static VReg gen_bitint(Node *node) {
+    if (!node) return R_NONE;
+    if (opt_g) emit_loc(node);
+
+    switch (node->kind) {
+
+    case ND_NUM: {
+        int addr = alloc_wide_addr(node->ty->size);
+        emit_bitint_const_fill(addr, node->val, node->ty->size, node->ty->is_unsigned);
+        return addr;
+    }
+
+    case ND_LVAR:
+    case ND_MEMBER:
+        return gen_addr(node);
+
+    case ND_DEREF:
+        // *ptr where ptr → bitint value: the pointer value IS the address
+        return gen(node->lhs);
+
+    case ND_ADDR:
+        return gen_addr(node->lhs);
+
+    case ND_COMMA:
+    case ND_CHAIN: {
+        int r = gen(node->lhs);
+        if (r >= 0) free_reg(r);
+        return gen_bitint(node->rhs);
+    }
+
+    case ND_ASSIGN: {
+        // Copy rhs slot -> lhs slot (size bytes)
+        VReg rhs_a = gen_to_bitint(node->rhs);
+        VReg lhs_a = gen_addr(node->lhs);
+        emit_bitint_copy_bytes(lhs_a, rhs_a, node->ty->size);
+        free_reg(rhs_a);
+        return lhs_a;
+    }
+
+    case ND_CAST: {
+        Type *from = node->lhs->ty;
+        Type *to = node->ty;
+        // bitint -> bitint: copy + sign/zero extend to target width
+        if (from && from->kind == TY_BITINT && to->kind == TY_BITINT) {
+            VReg src = gen_bitint(node->lhs);
+            int slot = alloc_wide_slot(to->size);
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_sub_reg_fp_imm(cg_sec, dst, slot);
+#else
+            asm_lea_rbp_reg(cg_sec, dst, 8, slot); // lea slot, dst
+#endif
+            emit_bitint_copy_bytes(dst, src, from->size);
+            free_reg(src);
+            if (to->bitint_width != from->bitint_width ||
+                to->is_unsigned != from->is_unsigned) {
+                emit_bitint_bits_arg(from->bitint_width);
+                emit_bitint_imm_arg(to->is_unsigned ? 1 : 0, 1);
+                emit_bitint_addr_arg(dst, 1);
+                emit_bitint_imm_arg(to->bitint_width, 3);
+                free_reg(dst);
+                emit_bitint_call((char *)"rcc_bitint_sign_ext");
+            } else {
+                free_reg(dst);
+            }
+            VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_sub_reg_fp_imm(cg_sec, r, slot);
+#else
+            asm_lea_rbp_reg(cg_sec, r, 8, slot); // re-lea result
+#endif
+            return r;
+        }
+        // int -> bitint: widen. The fill above bit 63 follows the source
+        // type's signedness (C: casting a value preserves it; a signed
+        // source sign-extends, an unsigned source zero-extends), then the
+        // result's own type is the target bitint (the slot keeps the
+        // fill; the target's signedness governs later reads).
+        if (to->kind == TY_BITINT) {
+            VReg src = gen(node->lhs);
+            Type *f = from ? from : ty_llong;
+            bool src_u = f->is_unsigned;
+            if (f->size < 8) {
+                if (f->is_unsigned)
+                    zero_extend_to(src, f->size, 8);
+                else
+                    sign_extend_to(src, f->size, 8);
+            }
+            return widen_to_bitint(src, to, src_u);
+        }
+        // bitint -> smaller int: load low bytes, truncate
+        if (from && from->kind == TY_BITINT && is_integer(to)) {
+            VReg addr = gen_bitint(node->lhs);
+            VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_ldr_reg_off(cg_sec, r, addr, 8, 0); // ldr x{r}, [addr]
+            free_reg(addr);
+            if (to->size < 8) {
+                if (to->is_unsigned) {
+                    unsigned long long m = (1ULL << (to->size * 8)) - 1;
+                    if (m <= 0xffff) {
+                        asm_and_imm(cg_sec, r, 4, (int32_t)m); // and w{r}, w{r}, #m
+                    } else {
+                        emit_mov_imm64(ARM64_X16, m);
+                        asm_and_reg_phy(cg_sec, r, ARM64_X16, 4); // and w{r}, w{r}, w16
+                    }
+                } else
+                    asm_movsx(cg_sec, r, r, 4, to->size);
+            }
+#else
+            x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(addr), 0)); // movq (addr), r
+            free_reg(addr);
+            if (to->size < 8) {
+                if (to->is_unsigned)
+                    asm_movzx(cg_sec, r, r, 4, to->size);
+                else
+                    asm_movsx(cg_sec, r, r, 4, to->size);
+            }
+#endif
+            return r;
+        }
+        // bitint -> bool: to_bool helper
+        if (from && from->kind == TY_BITINT && to->kind == TY_BOOL) {
+            VReg addr = gen_bitint(node->lhs);
+            emit_bitint_bits_arg(from->bitint_width);
+            emit_bitint_addr_arg(addr, 0);
+            free_reg(addr);
+            emit_bitint_call((char *)"rcc_bitint_to_bool");
+            VReg r = alloc_reg();
+            asm_mov_retval(cg_sec, r, 8); // movq %rax, r
+            return r;
+        }
+        // float -> bitint (convert to int64 first, then extend)
+        if (to->kind == TY_BITINT && from && is_flonum(from)) {
+            VReg r = gen(node->lhs);
+#ifdef ARCH_ARM64
+            asm_fmov_d0_x(cg_sec, r); // fmov d0, x{r}
+            free_reg(r);
+            if (to->is_unsigned)
+                asm_fcvtzu_x16(cg_sec); // fcvtzu x16, d0
+            else
+                asm_fcvtzs_x16(cg_sec); // fcvtzs x16, d0
+            asm_mov_phy_reg(cg_sec, ARM64_X0, ARM64_X16, 0); // mov x0, x16
+            VReg rv = alloc_reg();
+            asm_mov_retval(cg_sec, rv, 8); // mov x{rv}, x0
+            return widen_to_bitint(rv, to, to->is_unsigned);
+#else
+            if (to->is_unsigned) {
+                int c = ++rcc_label_count;
+                asm_movabs_phy(cg_sec, X86_RAX, 0x43e0000000000000LL); // 2^63 as double
+                x86_movq_r_xmm(cg_sec, X86_XMM1, X86_RAX);
+                x86_comisd(cg_sec, X86_XMM0, X86_XMM1);
+                emit_jcc_fixup(cg_sec, X86_B, format(".L.f2bu.%d", c)); // jb
+                x86_subsd(cg_sec, X86_XMM0, X86_XMM1);
+                x86_cvttsd2si(cg_sec, 8, X86_RAX, X86_XMM0);
+                asm_movabs_phy(cg_sec, X86_RDX, 0x8000000000000000LL);
+                x86_xor_rr(cg_sec, 8, X86_RAX, X86_RDX);
+                emit_jmp_fixup(cg_sec, format(".L.f2bu_d.%d", c));
+                cg_def_label(format(".L.f2bu.%d", c));
+                x86_cvttsd2si(cg_sec, 8, X86_RAX, X86_XMM0);
+                cg_def_label(format(".L.f2bu_d.%d", c));
+            } else {
+                x86_cvttsd2si(cg_sec, 8, X86_RAX, X86_XMM0); // cvttsd2si %xmm0, %rax
+            }
+            free_reg(r);
+            VReg rv = alloc_reg();
+            asm_mov_retval(cg_sec, rv, 8); // movq %rax, rv
+            return widen_to_bitint(rv, to, to->is_unsigned);
+#endif
+        }
+        // bitint -> float: convert low 64 bits
+        if (from && from->kind == TY_BITINT && to && is_flonum(to)) {
+            VReg addr = gen_bitint(node->lhs);
+#ifdef ARCH_ARM64
+            asm_ldr_reg_off(cg_sec, ARM64_X0, addr, 8, 0); // ldr x0, [addr]
+            free_reg(addr);
+            if (from->is_unsigned)
+                arm64_ucvtf(cg_sec, 1, 1, ARM64_D0, ARM64_X0);
+            else
+                arm64_scvtf(cg_sec, 1, 1, ARM64_D0, ARM64_X0);
+            VReg r = alloc_reg();
+            asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0
+            return r;
+#else
+            VReg lo = alloc_reg();
+            x86_mov_rm(cg_sec, 8, REG(lo), x86_mem(REG(addr), 0)); // movq (addr), lo
+            free_reg(addr);
+            // Low 64 bits as signed; matches rcc's int128->float behavior.
+            asm_cvtsi2sd(cg_sec, lo, 8); // cvtsi2sd lo, %xmm0
+            free_reg(lo);
+            VReg r = alloc_reg();
+            asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
+            return r;
+#endif
+        }
+        // bitint -> complex / other: not supported yet
+        error_tok(node->tok, "_BitInt cast to this type not supported");
+        return R_NONE;
+    }
+
+    case ND_NEG:
+    case ND_BITNOT: {
+        bool is_neg = (node->kind == ND_NEG);
+        VReg src = gen_to_bitint(node->lhs);
+        int slot = alloc_wide_slot(node->ty->size);
+        VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, dst, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, dst, 8, slot); // lea slot, dst
+#endif
+        emit_bitint_copy_bytes(dst, src, node->ty->size);
+        free_reg(src);
+        free_reg(dst);
+        emit_bitint_bits_arg(node->ty->bitint_width);
+        emit_bitint_slot_arg(slot, 0); // lp = addr (physical lea, no VReg across call)
+        emit_bitint_call((char *)(is_neg ? "rcc_bitint_neg" : "rcc_bitint_bitnot"));
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, r, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, r, 8, slot); // re-lea result after call
+#endif
+        return r;
+    }
+
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR: {
+        // in-place helpers: result in rp; stage rhs into dst first
+        VReg lhs = gen_to_bitint(node->lhs);
+        VReg rhs = gen_to_bitint(node->rhs);
+        int slot = alloc_wide_slot(node->ty->size);
+        VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, dst, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, dst, 8, slot); // lea slot, dst
+#endif
+        emit_bitint_copy_bytes(dst, rhs, node->ty->size);
+        free_reg(rhs);
+        const char *fn = node->kind == ND_ADD ? "rcc_bitint_add"
+            : node->kind == ND_SUB            ? "rcc_bitint_sub"
+            : node->kind == ND_MUL            ? "rcc_bitint_mul"
+            : node->kind == ND_BITAND         ? "rcc_bitint_bitand"
+            : node->kind == ND_BITOR          ? "rcc_bitint_bitor"
+                                              : "rcc_bitint_bitxor";
+        free_reg(dst);
+        emit_bitint_bits_arg(node->ty->bitint_width);
+        emit_bitint_addr_arg(lhs, 0); // lp (VReg moved before call; lhs freed after)
+        free_reg(lhs);
+        emit_bitint_slot_arg(slot, 1); // rp = dst (physical lea)
+        emit_bitint_call((char *)fn);
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, r, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, r, 8, slot); // re-lea result after call
+#endif
+        return r;
+    }
+
+    case ND_DIV:
+    case ND_MOD: {
+        // div(bits, flags, lp, rp): flags bit0=unsigned, bit1=div; lp is the
+        // dividend (clobbered), rp the divisor; result lands in rp. Both
+        // operands must be staged copies.
+        VReg lhs = gen_to_bitint(node->lhs);
+        VReg rhs = gen_to_bitint(node->rhs);
+        int s1 = alloc_wide_slot(node->ty->size);
+        int s2 = alloc_wide_slot(node->ty->size);
+        VReg t1 = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, t1, s1);
+#else
+        asm_lea_rbp_reg(cg_sec, t1, 8, s1); // lea s1, t1
+#endif
+        emit_bitint_copy_bytes(t1, lhs, node->ty->size);
+        free_reg(lhs);
+        free_reg(t1);
+        VReg t2 = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, t2, s2);
+#else
+        asm_lea_rbp_reg(cg_sec, t2, 8, s2); // lea s2, t2
+#endif
+        emit_bitint_copy_bytes(t2, rhs, node->ty->size);
+        free_reg(rhs);
+        free_reg(t2);
+        int flags = (node->ty->is_unsigned ? 1 : 0) | (node->kind == ND_DIV ? 2 : 0);
+        emit_bitint_bits_arg(node->ty->bitint_width);
+        emit_bitint_imm_arg(flags, 1);
+        emit_bitint_slot_arg(s1, 1); // lp = dividend slot
+        emit_bitint_slot_arg(s2, 2); // rp = divisor slot
+        emit_bitint_call((char *)"rcc_bitint_div");
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, r, s2);
+#else
+        asm_lea_rbp_reg(cg_sec, r, 8, s2); // re-lea result after call
+#endif
+        return r;
+    }
+
+    case ND_SHL:
+    case ND_SHR: {
+        bool is_shl = (node->kind == ND_SHL);
+        VReg lhs = gen_to_bitint(node->lhs);
+        int slot = alloc_wide_slot(node->ty->size);
+        VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, dst, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, dst, 8, slot); // lea slot, dst
+#endif
+        emit_bitint_copy_bytes(dst, lhs, node->ty->size);
+        free_reg(lhs);
+        free_reg(dst);
+        // amount: constant or runtime
+        if (node->rhs->kind == ND_NUM) {
+            long amt = node->rhs->val;
+            emit_bitint_bits_arg(node->ty->bitint_width);
+            if (is_shl) {
+                emit_bitint_slot_arg(slot, 0); // sp = dst
+                emit_bitint_slot_arg(slot, 1); // dp = dst
+                emit_bitint_imm_arg((int)amt, 3); // amount
+            } else {
+                int flags = (int)((amt << 1) | (node->ty->is_unsigned ? 1 : 0));
+                emit_bitint_imm_arg(flags, 1);
+                emit_bitint_slot_arg(slot, 1); // sp = dst
+                emit_bitint_slot_arg(slot, 2); // dp = dst
+            }
+            emit_bitint_call((char *)(is_shl ? "rcc_bitint_shl" : "rcc_bitint_shr"));
+        } else {
+            VReg amt = gen(node->rhs);
+            if (is_shl) {
+                emit_bitint_bits_arg(node->ty->bitint_width);
+                emit_bitint_slot_arg(slot, 0); // sp = dst
+                emit_bitint_slot_arg(slot, 1); // dp = dst
+                emit_bitint_amount_arg(amt, 3);
+            } else {
+                // flags = (amount << 1) | is_unsigned
+                VReg flags = alloc_reg();
+#ifdef ARCH_ARM64
+                asm_mov_imm(cg_sec, flags, 4, node->ty->is_unsigned ? 1 : 0); // mov flags, #u
+                arm64_add_reg(cg_sec, 0, REG(flags), REG(flags), REG(amt), ARM64_LSL, 1); // add flags, flags, amt, lsl #1
+#else
+                asm_mov_reg_reg(cg_sec, flags, amt, 4); // movl amt, flags
+                x86_shl_ri(cg_sec, 4, REG(flags), 1); // shll $1, flags
+                x86_or_ri(cg_sec, 4, REG(flags), node->ty->is_unsigned ? 1 : 0); // orl $u, flags
+#endif
+                free_reg(amt);
+                emit_bitint_bits_arg(node->ty->bitint_width);
+                emit_bitint_amount_arg(flags, 1);
+                emit_bitint_slot_arg(slot, 1); // sp = dst
+                emit_bitint_slot_arg(slot, 2); // dp = dst
+                free_reg(flags);
+            }
+            emit_bitint_call((char *)(is_shl ? "rcc_bitint_shl" : "rcc_bitint_shr"));
+        }
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, r, slot);
+#else
+        asm_lea_rbp_reg(cg_sec, r, 8, slot); // re-lea result after call
+#endif
+        return r;
+    }
+
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE: {
+        // cmp helper: 0=eq, 1=lt, 2=gt. Stage both operands into fresh
+        // slots first: gen(rhs) may emit helper calls that clobber lhs's
+        // VReg, and the cmp call itself clobbers caller-saved registers.
+        VReg lhs = gen_to_bitint(node->lhs);
+        int s1 = alloc_wide_slot(node->lhs->ty->size);
+        VReg t1 = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, t1, s1);
+#else
+        asm_lea_rbp_reg(cg_sec, t1, 8, s1);
+#endif
+        emit_bitint_copy_bytes(t1, lhs, node->lhs->ty->size);
+        free_reg(lhs);
+        free_reg(t1);
+        VReg rhs = gen_to_bitint(node->rhs);
+        int s2 = alloc_wide_slot(node->rhs->ty->size);
+        VReg t2 = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_sub_reg_fp_imm(cg_sec, t2, s2);
+#else
+        asm_lea_rbp_reg(cg_sec, t2, 8, s2);
+#endif
+        emit_bitint_copy_bytes(t2, rhs, node->rhs->ty->size);
+        free_reg(rhs);
+        free_reg(t2);
+        emit_bitint_bits_arg(node->lhs->ty->bitint_width);
+        emit_bitint_imm_arg(node->lhs->ty->is_unsigned ? 1 : 0, 1);
+        emit_bitint_slot_arg(s1, 1); // lp
+        emit_bitint_slot_arg(s2, 2); // rp
+        emit_bitint_call((char *)"rcc_bitint_cmp");
+        VReg r = alloc_reg();
+        asm_mov_retval(cg_sec, r, 4); // movl %eax, r (cmp result: 0=eq, 1=lt, 2=gt)
+        // map 0/1/2 to the comparison result
+        int val = 0;
+        bool is_eq_kind = false;
+        switch (node->kind) {
+        case ND_EQ:
+            val = 0;
+            is_eq_kind = true;
+            break;
+        case ND_NE:
+            val = 0;
+            is_eq_kind = false;
+            break;
+        case ND_LT:
+            val = 1;
+            is_eq_kind = true;
+            break;
+        case ND_LE:
+            val = 2;
+            is_eq_kind = false;
+            break;
+        default: break;
+        }
+        // result = (r == val) for EQ/LT, (r != val) for NE/LE. The cmp
+        // helper returns 0 for equal, so EQ -> r==0, NE -> r!=0,
+        // LT -> r==1, LE -> r!=2 (i.e. r==0 || r==1, the <= case).
+#ifdef ARCH_ARM64
+        asm_cmp_imm(cg_sec, r, 4, val); // cmp w{r}, #val
+        asm_cset(cg_sec, r, is_eq_kind ? ARM64_EQ : ARM64_NE);
+#else
+        asm_cmp_imm(cg_sec, r, 4, val); // cmpl $val, r
+        asm_setcc(cg_sec, X86_RAX, is_eq_kind ? X86_E : X86_NE);
+        asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1); // movzbl %al, r
+#endif
+        return r;
+    }
+
+    default:
+        // Anything else with a wide-bitint type (VA_ARG, STMT_EXPR, ...):
+        // not supported yet; clear error rather than silently truncating.
+        error_tok(node->tok, "_BitInt(%d): operation not supported",
+                  node->ty ? node->ty->bitint_width : 0);
+        return R_NONE;
+    }
+}
+
 // Generate code for a given node.
 VReg gen(Node *node) {
     if (!node) return R_NONE;
@@ -7148,6 +7950,9 @@ VReg gen(Node *node) {
     // Dispatch int128 nodes to gen_int128()
     if (node->ty && node->ty->kind == TY_INT128)
         return gen_int128(node);
+    // Dispatch wide _BitInt (N > 64) nodes to gen_bitint()
+    if (node->ty && is_wide_bitint(node->ty))
+        return gen_bitint(node);
     // Element-wise vector ops (__attribute__((vector_size))) → packed SSE/NEON.
     // Only arithmetic/compare/unary route here; lvalue/assign/call/init on a
     // vector already work via the TY_STRUCT aggregate paths below.
@@ -7232,6 +8037,9 @@ VReg gen(Node *node) {
 #endif
         return r;
     }
+    // Cast from wide _BitInt to a smaller type: gen_bitint handles it
+    if (node->kind == ND_CAST && node->lhs && node->lhs->ty && is_wide_bitint(node->lhs->ty))
+        return gen_bitint(node);
     // Comparisons where the operand is int128 (result is int)
     if (node->lhs && node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
         switch (node->kind) {
@@ -7240,6 +8048,28 @@ VReg gen(Node *node) {
         case ND_LT:
         case ND_LE:
             return gen_int128(node);
+        default: break;
+        }
+    }
+    // Comparisons where an operand is a wide _BitInt (result is int)
+    if (node->lhs && node->lhs->ty && is_wide_bitint(node->lhs->ty)) {
+        switch (node->kind) {
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+            return gen_bitint(node);
+        default: break;
+        }
+    }
+    if (node->rhs && node->rhs->ty && is_wide_bitint(node->rhs->ty) && node->lhs && node->lhs->ty &&
+        !is_wide_bitint(node->lhs->ty)) {
+        switch (node->kind) {
+        case ND_EQ:
+        case ND_NE:
+        case ND_LT:
+        case ND_LE:
+            return gen_bitint(node);
         default: break;
         }
     }
@@ -9106,9 +9936,10 @@ VReg gen(Node *node) {
                 cast->tok = node->lhs->tok;
                 node->lhs = cast;
             }
-            if (node->lhs->ty && node->lhs->ty->kind == TY_INT128) {
-                // Return int128 in rax:rdx (lo:hi) on x86-64, x0:x1 on ARM64
-                int src = gen_int128(node->lhs);
+            if (node->lhs->ty && is_int128_like(node->lhs->ty)) {
+                // Return int128 (or _BitInt(65..128)) in rax:rdx (lo:hi) on
+                // x86-64, x0:x1 on ARM64
+                int src = gen(node->lhs); // dispatches to gen_int128/gen_bitint
 #ifdef ARCH_ARM64
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(src), 0); // ldr x0, [src]
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(src), 1); // ldr x1, [src, #8]
@@ -9181,7 +10012,7 @@ VReg gen(Node *node) {
                 }
                 free_reg(src);
 #endif
-            } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty))) {
+            } else if (node->lhs->ty && (node->lhs->ty->kind == TY_STRUCT || node->lhs->ty->kind == TY_UNION || is_complex(node->lhs->ty) || (node->lhs->ty->kind == TY_BITINT && node->lhs->ty->size > 16)) && current_fn_def && current_fn_def->ty && (current_fn_def->ty->return_ty->kind == TY_STRUCT || current_fn_def->ty->return_ty->kind == TY_UNION || is_complex(current_fn_def->ty->return_ty) || (current_fn_def->ty->return_ty->kind == TY_BITINT && current_fn_def->ty->return_ty->size > 16))) {
                 int src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs);
@@ -13805,6 +14636,7 @@ struct ObjFile *codegen(Program *prog) {
         current_fn_def = fn;
         current_fn_stack_size = fn->stack_size;
         memset(spill_slot, 0, sizeof(spill_slot));
+        memset(spill_depth, 0, sizeof(spill_depth));
         next_spill_slot = 8;
 #ifndef ARCH_ARM64
         init_spill_slots();
@@ -13914,6 +14746,22 @@ struct ObjFile *codegen(Program *prog) {
                     x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(cg_x86_paramreg[param_index], 8)); // movq 8(preg), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                } else if (var->ty->kind == TY_BITINT && var->ty->size > 8) {
+                    // wide _BitInt (>8 bytes): passed by pointer; copy pointee.
+                    // (65..128-bit bitints take the int128 pointer path above.)
+                    int c = ++rcc_label_count;
+                    asm_mov_preg_r11(cg_sec, cg_x86_paramreg[param_index]); // movq preg, %r11
+                    x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10
+                    cg_def_label(format(".L.pcopy.%d", c));
+                    x86_cmp_ri(cg_sec, 8, X86_R10, 0); // cmpq $0, %r10
+                    size_t jz = asm_jcc_label(cg_sec, X86_E);
+                    asm_fixup_add(cg_sec, jz, format(".L.pcopy_end.%d", c), 0);
+                    asm_movb_r11_r10_al(cg_sec, -1); // movb -1(%r11,%r10), %%al
+                    asm_movb_al_rbp_r10(cg_sec, var->offset); // movb %%al, -(off)-1(%rbp,%r10)
+                    x86_sub_ri(cg_sec, 8, X86_R10, 1); // subq $1, %r10
+                    size_t jm = asm_jmp_label(cg_sec);
+                    asm_fixup_add(cg_sec, jm, format(".L.pcopy.%d", c), 0);
+                    cg_def_label(format(".L.pcopy_end.%d", c));
                 } else {
                     asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], psz, var->offset); // mov preg, -(off)(%rbp)
                 }
@@ -13939,7 +14787,7 @@ struct ObjFile *codegen(Program *prog) {
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
                     x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 8)); // movq 8(%rax), %rcx  (hi)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset - 8);
-                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8) {
+                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty) || var->ty->kind == TY_BITINT) && var->ty->size > 8) {
                     // Structs > 8 bytes (and 16-byte _Complex double) are passed
                     // by pointer even on the stack; load the pointer and copy
                     // the pointee into the local slot.
@@ -14016,7 +14864,7 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     stack_param_index++;
                 }
-            } else if (var->ty->kind == TY_INT128) {
+            } else if (var->ty->kind == TY_INT128 || (var->ty->kind == TY_BITINT && var->ty->size == 16)) {
 #ifdef _WIN32
                 // Windows x64: __int128 is passed by pointer in a single GP register.
                 // Dereference the pointer to copy the 16-byte value to the local slot.
@@ -14126,7 +14974,8 @@ struct ObjFile *codegen(Program *prog) {
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
                                                                       : 8;
-                if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) {
+                if (((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 8) ||
+                    (var->ty->kind == TY_BITINT && var->ty->size > 16)) {
                     int c = ++rcc_label_count;
                     asm_mov_preg_r11(cg_sec, cg_x86_paramreg[param_index]); // movq preg, %r11
                     x86_mov_ri(cg_sec, 8, X86_R10, var->ty->size); // movq $size, %r10

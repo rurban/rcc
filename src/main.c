@@ -4,6 +4,7 @@
 #include "asm.h"
 #include "codegen_asm.h"
 #include "link.h"
+#include "bitint_rt.h"
 #include <stdarg.h>
 #ifdef _WIN32
 #include <process.h>
@@ -905,6 +906,48 @@ int main(int argc, char **argv) {
         // parsed for their diagnostics. Failure exit happens after the loop.
         if (error_count)
             continue;
+
+        // Self-host the wide-_BitInt runtime into this TU: when the parsed
+        // source uses a _BitInt(N) with N > 64, gen_bitint emits calls to
+        // the rcc_bitint_* helpers (see src/bitint_rt.c). Those functions
+        // are compiled here by rcc itself (self-hosted), as `static` copies
+        // private to this TU, so:
+        //   - no link-time dependency on a bundled runtime object (which
+        //     would need a per-target .a and a driver change);
+        //   - target-correct on x86-64, ARM64 and mingw alike (rcc compiles
+        //     the runtime for whatever target it is building);
+        //   - multi-TU links never collide (each TU's copy is local);
+        //   - -c/-S/-E modes carry the helpers inside the single .o.
+        // The DCE pass (eliminate_unused_static_inline) must keep them: it
+        // only sees AST-level references, not the raw calls gen_bitint
+        // emits, so each injected function is marked is_used. The runtime's
+        // own items join BEFORE the typecheck loop below so they are fully
+        // checked like the user's code.
+        if (parser_used_wide_bitint) {
+            Token *rt_tok = preprocess("<rcc-bitint-runtime>", (char *)bitint_rt_src);
+            Program *rt_prog = parse(rt_tok);
+            for (TLItem *item = rt_prog->items; item; item = item->next) {
+                if (item->kind == TL_FUNC) {
+                    item->fn->is_used = true;
+                    item->fn->is_static = true;
+                }
+            }
+            // Append the runtime's items to this TU's Program so codegen
+            // emits them into the same object.
+            TLItem **tail = &prog->items;
+            while (*tail)
+                tail = &(*tail)->next;
+            *tail = rt_prog->items;
+            // The runtime's own string literals/globals must join the TU's
+            // too (codegen walks prog->strs / prog->globals independently
+            // of items).
+            if (rt_prog->strs) {
+                StrLit **st = &prog->strs;
+                while (*st)
+                    st = &(*st)->next;
+                *st = rt_prog->strs;
+            }
+        }
 
         // Type system / Semantic checks
         t0 = opt_time ? now_us() : 0;

@@ -378,6 +378,7 @@ Type *pointer_to(Type *base);
 Type *array_of(Type *base, int64_t len);
 Type *complex_type(Type *base);
 Type *bitint_type(int width, bool is_unsigned);
+extern bool parser_used_wide_bitint;
 
 typedef struct Reloc Reloc;
 struct Reloc {

@@ -1,5 +1,6 @@
 src/sysinc_paths.h
 src/gcc_predefined.h
+src/bitint_rt.h
 TAGS
 .gdbinit
 *.exe

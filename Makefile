@@ -226,8 +226,17 @@ src/sysinc_paths.h: FORCE
 	rm -f $$plat; \
 	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi
 
+src/bitint_rt.h: src/bitint_rt.c tools/embed-c.sh
+	@tmp=$$(mktemp); out=$$(mktemp); \
+	printf 'static const char bitint_rt_src[] =\n' > $$out; \
+	./tools/embed-c.sh src/bitint_rt.c >> $$out; \
+	printf ';\n' >> $$out; \
+	if [ -f $@ ] && cmp -s $$out $@; then rm -f $$out; else mv $$out $@; fi; \
+	rm -f $$tmp
+
 src/gcc_predefined.h: FORCE
 	@tmp=$$(mktemp); out=$$(mktemp); \
+	plat=$$(mktemp); \
 	$(CC) -dM -E - < /dev/null > $$tmp; \
 	if grep -q '__APPLE__' $$tmp; then \
 		echo '#ifndef __APPLE__' > $$out; \
@@ -268,7 +277,9 @@ $(DARWIN_O): lib/rcc_darwin.c
 	$(CC) -arch arm64 -dynamiclib -install_name $(PWD)/lib/rcc_darwin.dylib -o $@ lib/rcc_darwin.c
 $(MINGW_O): lib/rcc_mingw.c
 	$(CC) $(filter-out -flto=auto -flto=thin,$(CFLAGS)) -c lib/rcc_mingw.c -o $@
-src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h $(HDRS)
+src/codegen$(OBJ_EXT): src/codegen.c src/bitint_rt.h $(HDRS)
+	$(CC) $(CFLAGS) -c src/codegen.c -o $@
+src/main$(OBJ_EXT): src/main.c src/sysinc_paths.h src/bitint_rt.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/main.c -o $@ -DGCC=\"$(RCC_GCC)\" $(DEF_INCDIR) -DVERSION=\"$(VERSION)\" -DMACHINE=\"$(MACHINE)\"
 src/preprocess$(OBJ_EXT): src/preprocess.c src/sysinc_paths.h src/gcc_predefined.h $(HDRS)
 	$(CC) $(CFLAGS) -c src/preprocess.c -o $@ $(DEF_INCDIR)

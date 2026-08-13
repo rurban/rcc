@@ -25,6 +25,37 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-13, wide `_BitInt(N>64)` session)
+
+- **`_BitInt(N)` with N > 64 silently truncated to 64 bits** (codegen.c,
+  type.c, parser.c, main.c, src/bitint_rt.c) — before this fix every
+  `_BitInt(N>64)` operation went through the scalar 64-bit path: operands
+  were truncated (e.g. `x << 100` produced 0, 128-bit+ values compared
+  wrong), because `gen()` dispatched only `TY_INT128` to the wide-int
+  slot path and left `TY_BITINT` on the scalar path. Now wide `_BitInt`
+  values live in `size`-byte stack slots and every op (add/sub/mul/div/
+  mod, shifts, bitwise, compare, casts, truthiness, function args/returns)
+  is a call to a per-TU `static` runtime helper ported from slimcc's
+  `bitint.c` (`src/bitint_rt.c`, MIT: Copyright (c) 2019 Rui Ueyama,
+  Copyright (c) 2023-2026 Hsiang-Ying Fu, embedded via `tools/embed-c.sh`
+  as `src/bitint_rt.h` and self-hosted: rcc preprocesses+parses its own
+  embedded runtime into any TU that uses wide `_BitInt`, so no link-time
+  runtime object is needed and it is target-correct on x86-64, ARM64 and
+  mingw). ABI: `_BitInt(65..128)` shares the `__int128` two-GP-reg /
+  RAX:RDX (X0:X1) convention; `_BitInt(N>128)` uses the large-struct
+  hidden-retbuf/pointer convention. Regression test:
+  `test/test_wide_bitint.c` (9 sub-tests), PASS at -O0/-O1/-O2/-O3 on
+  x86-64 and via qemu on ARM64, matching gcc reference output. ARM64
+  specifics fixed along the way: physical-reg base misuse in
+  `emit_bitint_call` save/restore (`arm64_str_uoff` expects VRegs),
+  VReg vs physical reg confusion in `emit_bitint_copy_bytes`, and a
+  spill-slot depth leak (save pushed a slot, restore never popped →
+  stale `spill_depth` made the next function spill to offset 0, i.e. the
+  saved frame-pointer slot; `spill_depth` is now also zeroed at function
+  entry). `test_c23doku` stays skipped (arbitrary-precision 11163-bit
+  bignum workload; the runtime is width-agnostic but that project is not
+  a target).
+
 ### Fixed (2026-08-07, blosc2 session)
 
 - **Inline-asm multi-output register clobber** (codegen.c) — a
@@ -803,14 +834,15 @@ a multi-session effort, not a quick win.
 1. **C23 `_BitInt(N)`** — **test_cproc fixed** (see "Fixed (2026-08-08,
    root-cause/test_cproc-completion session)" below: `_BitInt` was never
    the real blocker for test_cproc — full type-system support has been
-   added regardless). **test_c23doku still needs real arbitrary-precision
-   `_BitInt` codegen** — its `brute_force.c`/`graph_color.c` declare
-   `_BitInt(total * 3)` where `total = digit * digit`, i.e. up to 11163
-   bits for the 61x61 puzzle (175 64-bit legs) — genuine bignum ALU
-   codegen (multi-word assign/zero-extend/shift/or/and/xor, ABI classification
-   reusing the large-struct hidden-pointer convention, on both x86-64 and
-   ARM64), not a quick win. See that session's notes for the exact scope
-   assessment.
+   added regardless). **Wide `_BitInt(N>64)` codegen is now fixed too**
+   (see "Fixed (2026-08-13, wide `_BitInt(N>64)` session)" above: all
+   operations route through the embedded slimcc bitint runtime).
+   **test_c23doku remains skipped by decision** — its
+   `brute_force.c`/`graph_color.c` declare `_BitInt(total * 3)` where
+   `total = digit * digit`, i.e. up to 11163 bits for the 61x61 puzzle
+   (175 64-bit legs). The runtime is width-agnostic so it would compile
+   and run, but the project is not a target (no arbitrary-precision
+   workload in scope).
 
 2. **lib/tempname.c pattern** (now partially fixed)
    - `SIZE_WIDTH` undeclared in test_diffutils (project-specific macro, not stdint)
@@ -879,7 +911,9 @@ a multi-session effort, not a quick win.
    brotli is the 256/512-bit vector tiers (AVX/AVX-512 intrinsics,
    mask registers) and 16-bit float/bf16 arithmetic.
 2. **C23 `_BitInt(N)`** — test_c23doku only now (test_cproc fixed, see
-   "Fixed (2026-08-08, root-cause/test_cproc-completion session)" below)
+   "Fixed (2026-08-08, root-cause/test_cproc-completion session)" below;
+   wide `_BitInt(N>64)` codegen fixed 2026-08-13 — test_c23doku stays
+   skipped by decision)
 
 ### Fixed (2026-08-08, VM-type evaluation-order session)
 

@@ -92,9 +92,19 @@ Type *get_integer_type(int size, bool is_unsigned) {
 #define BITINT_MAXWIDTH 512 // cache limit; wider types are still correctly
                             // constructed (see type_equal's TY_BITINT case),
                             // just allocated fresh instead of interned
+
+// Set whenever a _BitInt(N) with N > 64 (size > 8, multi-limb) type is
+// constructed in the current translation unit. The driver checks this after
+// parse() and, when set, self-hosts the bitint runtime source (bitint_rt.c)
+// into the same TU so the gen_bitint helper calls resolve. Reset at the
+// start of each parse() (see parser.c).
+bool parser_used_wide_bitint = false;
+
 Type *bitint_type(int width, bool is_unsigned) {
     static Type *cache[2][BITINT_MAXWIDTH + 1];
     if (width < 1) width = 1;
+    if (width > 64)
+        parser_used_wide_bitint = true;
     Type **slot = (width <= BITINT_MAXWIDTH) ? &cache[is_unsigned ? 1 : 0][width] : NULL;
     if (slot && *slot) return *slot;
     Type *ty = calloc(1, sizeof(Type));
