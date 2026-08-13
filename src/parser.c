@@ -1189,8 +1189,8 @@ void init_builtins(void) {
     // integer paths instead of erroring on an unknown type name. The
     // size-2 vectors these produce (32/64-byte __m256bh/__m512bh) are
     // already supported by the vector_size machinery.
-    add_typedef("__bf16", ty_ushort);
-    add_typedef("_Float16", ty_ushort);
+    add_typedef(str_intern("__bf16", 6), ty_ushort);
+    add_typedef(str_intern("_Float16", 8), ty_ushort);
 }
 
 static Type *typedef_find_name(const char *name) {
@@ -2838,7 +2838,7 @@ static bool eval_complex_const_expr(Node *node, double *real_out, double *imag_o
 }
 
 
-static Type *declarator(Token **rest, Token *tok, Type *ty, char **name);
+static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr *attr);
 
 static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
     Type param_head = {};
@@ -2873,7 +2873,7 @@ static Type *declarator_params(Token **rest, Token *tok, Type *ty) {
             VarAttr attr = {};
             Type *base = declspec(&tok, tok, &attr);
             char *pname = NULL;
-            Type *pty = declarator(&tok, tok, copy_type(base), &pname);
+            Type *pty = declarator(&tok, tok, copy_type(base), &pname, NULL);
             // C11 6.7.4p2: _Noreturn only on function declarations
             if (attr.is_noreturn_std)
                 error_tok(tok, "'_Noreturn' on function parameter");
@@ -3152,9 +3152,9 @@ static Type *apply_pending_mode(Type *ty) {
     return ty;
 }
 
-static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
+static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr *attr) {
     int decl_align = 0;
-    tok = read_type_attrs(tok, &decl_align, NULL);
+    tok = read_type_attrs(tok, &decl_align, attr);
     ty = apply_pending_mode(ty);
     while (equalc(tok, "*")) {
         ty = pointer_to(ty);
@@ -3164,6 +3164,17 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         tok = read_type_attrs(tok, &decl_align, &ptr_attr);
         if (ptr_attr.is_weak)
             pending_weak = true;
+        // GNU allows function attributes after a pointer star in the
+        // declarator (`extern __inline void * __attribute__((__gnu_inline__))
+        // fn(void)` — gcc's lwpintrin.h). Merge the function-relevant ones
+        // into the caller's attr instead of dropping them, or the
+        // gnu-inline wrappers fail the eliminate-unused pass and their
+        // bodies get codegen'd.
+        if (attr) {
+            if (ptr_attr.is_gnu_inline) attr->is_gnu_inline = true;
+            if (ptr_attr.is_always_inline) attr->is_always_inline = true;
+            if (ptr_attr.is_inline) attr->is_inline = true;
+        }
         if (tok != attr_start &&
             (attr_start->kw == ID__ALIGNAS ||
              (attr_start->kw == ID_ALIGNAS && opt_std_version &&
@@ -3217,7 +3228,7 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name) {
         tok = after_paren;
         Type *suffixed = type_suffix(&tok, tok, ty, NULL);
         *rest = tok;
-        return declarator(&tok, start, suffixed, name);
+        return declarator(&tok, start, suffixed, name, attr);
     }
 
     // Skip calling convention keywords, attributes, and pointer declarators before the identifier
@@ -3961,7 +3972,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
 
         for (;;) {
             char *name = NULL;
-            Type *mem_ty = declarator(&tok, tok, copy_type(base), &name);
+            Type *mem_ty = declarator(&tok, tok, copy_type(base), &name, NULL);
             tok = skip_attributes(tok);
 
             // Check for bitfield
@@ -4528,6 +4539,13 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+        if (equalc(tok, "__bf16")) {
+            // 16-bit storage (no real bf16 codegen); 2-byte elements so
+            // avx512bf16vlintrin.h's `typedef __bf16 __v16bf` works.
+            ty = ty_ushort;
+            tok = tok->next;
+            continue;
+        }
         if (equalc(tok, "_Float16")) {
             is_float = true; // nearest supported type (matches the F16 suffix)
             tok = tok->next;
@@ -4785,7 +4803,7 @@ static Type *type_name(Token **rest, Token *tok) {
         error_tok(tn_start, "storage class specifier in type name");
     if (!in_compound_literal && (attr.is_static || attr.is_register || attr.is_tls))
         error_tok(tn_start, "storage class specifier in type name");
-    Type *ty = declarator(&tok, tok, copy_type(base), NULL);
+    Type *ty = declarator(&tok, tok, copy_type(base), NULL, &attr);
     in_type_name = _saved_in_type_name;
     tok = skip_attributes(tok);
     *rest = tok;
@@ -6707,7 +6725,7 @@ static Node *declaration(Token **rest, Token *tok) {
         char *name = NULL;
         int decl_align = 0;
         pending_cleanup_func = NULL;
-        Type *ty = declarator(&tok, tok, copy_type(base), &name);
+        Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
         // C11 6.7.4p2: _Noreturn only on function declarations
         if (attr.is_noreturn_std && ty->kind != TY_FUNC)
             error_tok(tok, "'_Noreturn' on a non-function declaration");
@@ -7535,7 +7553,7 @@ static KRParam *parse_kr_param_list(Token **rest, Token *tok) {
         Type *dty = declspec(&tok, tok, &dattr);
         for (;;) {
             char *dname = NULL;
-            Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname);
+            Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname, &dattr);
             if (dname) {
                 for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
                     if (krp->name == dname) {
@@ -7867,7 +7885,7 @@ static Node *stmt(Token **rest, Token *tok) {
                 Type *base = declspec(&tok, tok, &attr);
                 char *name = NULL;
                 int decl_align = 0;
-                Type *ty = declarator(&tok, tok, copy_type(base), &name);
+                Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
                 tok = read_type_attrs(tok, &decl_align, NULL);
                 if (!name)
                     error_tok(tok, "expected variable name");
@@ -8034,7 +8052,7 @@ static Node *stmt(Token **rest, Token *tok) {
                 Type *base = declspec(&tok, tok, &attr);
                 char *name = NULL;
                 int decl_align = 0;
-                Type *ty = declarator(&tok, tok, copy_type(base), &name);
+                Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
                 tok = read_type_attrs(tok, &decl_align, NULL);
                 if (!name)
                     error_tok(tok, "expected variable name");
@@ -11556,7 +11574,7 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
         VarAttr attr = {};
         Type *base = declspec(&tok, tok, &attr);
         char *name = NULL;
-        Type *ty = declarator(&tok, tok, copy_type(base), &name);
+        Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
         tok = skip_attributes(tok);
 
         if (!name)
@@ -12367,7 +12385,7 @@ Program *parse(Token *tok) {
             EnumLog *top_enum_log_cp = enum_scope_checkpoint();
             int top_decl_align = 0;
             char *name = NULL;
-            Type *ty = declarator(&tok, tok, copy_type(base), &name);
+            Type *ty = declarator(&tok, tok, copy_type(base), &name, &attr);
             tok = read_type_attrs(tok, &top_decl_align, &attr);
             // Transfer C23 function type attributes from VarAttr to the Type
             if (attr.is_reproducible || attr.is_unsequenced) {

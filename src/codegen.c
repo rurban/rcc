@@ -694,6 +694,203 @@ static void sign_extend_to(VReg r, int from_size, int to_size);
 static void zero_extend_to(VReg r, int from_size, int to_size);
 static VReg alloc_int128_addr(void);
 static VReg gen_vector(Node *node);
+#ifndef ARCH_ARM64
+static VReg gen_vector32_x86(Node *node);
+static void avx_loadY(X86XmmReg y, Node *a);
+static VReg avx_slot_addr(void);
+static VReg avx_store(void);
+#endif
+
+// ===== 32-byte (AVX, YMM) vector ops =====
+// Element-wise 32-byte vector arithmetic on x86-64 via VEX.256 encoders.
+// Mirrors the 16-byte gen_vector path (fixed YMM2/YMM1 operands, slot-
+// resident operands/results); the register allocator never manages YMM
+// regs, exactly like the XMM path.
+#ifndef ARCH_ARM64
+static VReg gen_vector32_x86(Node *node) {
+    Type *ty = node->ty;
+    Type *elem = ty ? ty->base : NULL;
+    int esz = elem ? (int)elem->size : 4;
+    bool flt = elem && is_flonum(elem);
+    bool lvec = node->lhs && node->lhs->ty && node->lhs->ty->is_vector;
+    bool rvec = node->rhs && node->rhs->ty && node->rhs->ty->is_vector;
+
+    if (node->kind == ND_NEG || node->kind == ND_BITNOT) {
+        VReg a = gen_addr(node->lhs);
+        x86_vmovups_rm256(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
+        free_reg(a);
+        if (node->kind == ND_BITNOT) {
+            x86_vpcmpeqd(cg_sec, X86_XMM3, X86_XMM3, X86_XMM3); // all ones
+            x86_vpxor(cg_sec, X86_XMM2, X86_XMM2, X86_XMM3);
+        } else if (flt) {
+            x86_vxorps(cg_sec, X86_XMM3, X86_XMM3, X86_XMM3);
+            if (esz == 8) x86_vsubpd(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+            else
+                x86_vsubps(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+        } else {
+            x86_vpxor(cg_sec, X86_XMM3, X86_XMM3, X86_XMM3);
+            if (esz == 8) x86_vpsubq(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+            else if (esz == 4)
+                x86_vpsubd(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+            else if (esz == 2)
+                x86_vpsubw(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+            else
+                x86_vpsubb(cg_sec, X86_XMM2, X86_XMM3, X86_XMM2);
+        }
+        VReg dst = avx_slot_addr();
+        x86_vmovups_mr256(cg_sec, x86_mem(REG(dst), 0), X86_XMM2);
+        return dst;
+    }
+
+    // scalar -> 32-byte broadcast
+    if (lvec) {
+        VReg a = gen_addr(node->lhs);
+        x86_vmovups_rm256(cg_sec, X86_XMM2, x86_mem(REG(a), 0));
+        free_reg(a);
+    } else {
+        VReg r = gen(node->lhs);
+        x86_movq_r_xmm(cg_sec, X86_XMM0, REG(r));
+        if (flt && esz == 4) asm_cvtsd2ss(cg_sec);
+        if (esz == 8) x86_vpbroadcastq(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+        else if (esz == 4)
+            x86_vbroadcastss(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+        else if (esz == 2)
+            x86_vpbroadcastw(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+        else
+            x86_vpbroadcastb(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+        free_reg(r);
+    }
+    if (rvec) {
+        VReg b = gen_addr(node->rhs);
+        x86_vmovups_rm256(cg_sec, X86_XMM1, x86_mem(REG(b), 0));
+        free_reg(b);
+    } else {
+        VReg r = gen(node->rhs);
+        x86_movq_r_xmm(cg_sec, X86_XMM0, REG(r));
+        if (flt && esz == 4) asm_cvtsd2ss(cg_sec);
+        if (esz == 8) x86_vpbroadcastq(cg_sec, X86_XMM1, X86_XMM0, X86_XMM0);
+        else if (esz == 4)
+            x86_vbroadcastss(cg_sec, X86_XMM1, X86_XMM0, X86_XMM0);
+        else if (esz == 2)
+            x86_vpbroadcastw(cg_sec, X86_XMM1, X86_XMM0, X86_XMM0);
+        else
+            x86_vpbroadcastb(cg_sec, X86_XMM1, X86_XMM0, X86_XMM0);
+        free_reg(r);
+    }
+
+    VReg dst = avx_slot_addr();
+    switch (node->kind) {
+    case ND_ADD:
+        if (flt) {
+            if (esz == 8) x86_vaddpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                x86_vaddps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        } else if (esz == 8)
+            x86_vpaddq(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 4)
+            x86_vpaddd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 2)
+            x86_vpaddw(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else
+            x86_vpaddb(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_SUB:
+        if (flt) {
+            if (esz == 8) x86_vsubpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                x86_vsubps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        } else if (esz == 8)
+            x86_vpsubq(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 4)
+            x86_vpsubd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 2)
+            x86_vpsubw(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else
+            x86_vpsubb(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_MUL:
+        if (!flt) {
+            if (esz == 4) x86_vpmulld(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else if (esz == 2)
+                x86_vpmullw(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                error("vector_size: integer vector multiply of %d-byte elements not supported", esz);
+            break;
+        }
+        if (esz == 8) x86_vmulpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else
+            x86_vmulps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_DIV:
+        if (!flt) { error("vector_size: integer vector divide not supported"); }
+        if (esz == 8) x86_vdivpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else
+            x86_vdivps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_BITAND:
+        if (flt) {
+            if (esz == 8) x86_vandpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                x86_vandps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        } else
+            x86_vpand(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_BITOR:
+        if (flt) {
+            if (esz == 8) x86_vorpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                x86_vorps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        } else
+            x86_vpor(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_BITXOR:
+        if (flt) {
+            if (esz == 8) x86_vxorpd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+            else
+                x86_vxorps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        } else
+            x86_vpxor(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_LT:
+        if (!flt) { error("vector_size: integer vector compare not supported"); }
+        if (esz == 8) x86_vcmppd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 1);
+        else
+            x86_vcmpps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 1);
+        break;
+    case ND_LE:
+        if (!flt) { error("vector_size: integer vector compare not supported"); }
+        if (esz == 8) x86_vcmppd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 2);
+        else
+            x86_vcmpps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 2);
+        break;
+    case ND_EQ:
+        if (flt) {
+            if (esz == 8) x86_vcmppd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 0);
+            else
+                x86_vcmpps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 0);
+        } else if (esz == 8)
+            x86_vpcmpeqq(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 4)
+            x86_vpcmpeqd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else if (esz == 2)
+            x86_vpcmpeqw(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        else
+            x86_vpcmpeqb(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1);
+        break;
+    case ND_NE:
+        if (!flt) { error("vector_size: integer vector compare not supported"); }
+        if (esz == 8) x86_vcmppd(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 4);
+        else
+            x86_vcmpps(cg_sec, X86_XMM2, X86_XMM2, X86_XMM1, 4);
+        break;
+    default:
+        error("vector_size: unsupported 32-byte vector op %d", node->kind);
+    }
+    x86_vmovups_mr256(cg_sec, x86_mem(REG(dst), 0), X86_XMM2);
+    return dst;
+}
+#endif
+
 #ifdef ARCH_ARM64
 static VReg gen_vector_unary_builtin(Node *node);
 static VReg gen_vector_binary_builtin(Node *node);
@@ -4931,6 +5128,10 @@ static VReg gen_addr(Node *node) {
         case ND_LE:
         case ND_NEG:
         case ND_BITNOT:
+#ifndef ARCH_ARM64
+            if (node->ty->size == 32)
+                return gen_vector32_x86(node);
+#endif
             return gen_vector(node);
         default:
             break;
@@ -5823,6 +6024,25 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
 
 // Allocate a fresh 16-byte-aligned int128 scratch slot in the struct-ret area.
 static int alloc_int128_slot(void) {
+    // The hidden struct-return buffer var and 32-byte vector params belong
+    // to the local pool but can extend past fn->stack_size (the frame sizes
+    // those slots via struct_ret_total only). Never hand out struct-ret-buf
+    // slots that overlap the vars, or the result store clobbers e.g. the
+    // saved struct-return pointer (a 16-byte slot next to a 32-byte vector
+    // param pair already did before this guard).
+    int deep = current_fn_def ? current_fn_def->stack_size : current_fn_stack_size;
+    for (LVar *var = current_fn_def ? current_fn_def->locals : NULL; var; var = var->next) {
+        int end = var->offset + (var->ty ? (int)var->ty->size : 8);
+        if (end > deep)
+            deep = end;
+    }
+    if (deep > current_fn_stack_size) {
+        int need = deep - current_fn_stack_size + 16;
+        while (fn_struct_ret_off < need) {
+            fn_struct_ret_off = (fn_struct_ret_off + 15) & ~15;
+            fn_struct_ret_off += 16;
+        }
+    }
     fn_struct_ret_off = (fn_struct_ret_off + 15) & ~15;
     fn_struct_ret_off += 16;
     if (fn_struct_ret_off > fn_struct_ret_total)
@@ -7448,6 +7668,27 @@ static void ia32_emit3a(int op, uint8_t imm) {
     emit1(cg_sec, imm);
 }
 
+#ifndef ARCH_ARM64
+// Load a 32-byte vector operand into YMM<y> (vectors live in slots).
+static void avx_loadY(X86XmmReg y, Node *a) {
+    VReg va = ia32_vaddr(a);
+    x86_vmovups_rm256(cg_sec, y, x86_mem(REG(va), 0));
+    free_reg(va);
+}
+// Address of a fresh 32-byte slot (two 16-byte int128 slots).
+static VReg avx_slot_addr(void) {
+    VReg dst = alloc_int128_addr();
+    alloc_int128_slot(); // second half of the 32-byte slot
+    return dst;
+}
+// Store YMM0 to a fresh 32-byte slot and return its address.
+static VReg avx_store(void) {
+    VReg dst = avx_slot_addr();
+    x86_vmovups_mr256(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    return dst;
+}
+#endif
+
 static VReg gen_ia32_builtin(Node *node) {
     const char *fn = node->funcname;
     // rcc's own bundled SIMD headers declare the five legacy builtins
@@ -7695,6 +7936,615 @@ static VReg gen_ia32_builtin(Node *node) {
         x86_pmovmskb(cg_sec, (X86XmmReg)REG(r), X86_XMM0); // GP dst in reg field
         return r;
     }
+
+
+    // ================= AVX/AVX2: 256-bit names =================
+    // All AVX/AVX2 intrinsics are `__builtin_ia32_<name>256`; the family
+    // letter (ps/pd/b/w/d/q) stays in the root after stripping "256".
+    // Fixed YMM2/YMM1 sources, YMM0 result (like the XMM path); YMM3 for
+    // the blendv mask.
+#ifndef ARCH_ARM64
+    if (ia32_suf(n, "256")) {
+        char root[64];
+        size_t rl = strlen(n) - 3;
+        memcpy(root, n, rl);
+        root[rl] = 0;
+        // int/void results and memory forms first (no vector result)
+        if (!strcmp(root, "movmskps") || !strcmp(root, "movmskpd")) {
+            avx_loadY(X86_XMM1, a1);
+            VReg r = alloc_reg();
+            if (!strcmp(root, "movmskps")) x86_vmovmskps(cg_sec, (X86XmmReg)REG(r), X86_XMM1);
+            else
+                x86_vmovmskpd(cg_sec, (X86XmmReg)REG(r), X86_XMM1);
+            return r;
+        }
+        if (!strcmp(root, "pmovmskb")) {
+            avx_loadY(X86_XMM1, a1);
+            VReg r = alloc_reg();
+            x86_vpmovmskb256(cg_sec, (X86XmmReg)REG(r), X86_XMM1);
+            return r;
+        }
+        if (!strcmp(root, "ptestz") || !strcmp(root, "ptestc") || !strcmp(root, "ptestnzc") ||
+            !strcmp(root, "vtestzps") || !strcmp(root, "vtestcps") || !strcmp(root, "vtestnzcps") ||
+            !strcmp(root, "vtestzpd") || !strcmp(root, "vtestcpd") || !strcmp(root, "vtestnzcpd")) {
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            if (!strncmp(root, "ptest", 5)) x86_vptest(cg_sec, X86_XMM1, X86_XMM2);
+            else if (strstr(root, "ps"))
+                x86_vtestps(cg_sec, X86_XMM1, X86_XMM2);
+            else
+                x86_vtestpd(cg_sec, X86_XMM1, X86_XMM2);
+            VReg r = alloc_reg();
+            bool isz = root[strlen(root) - 1] == 'z';
+            bool isc = root[strlen(root) - 1] == 'c';
+            if (isz) {
+                asm_setcc(cg_sec, X86_RAX, X86_E);
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+            } else if (isc) {
+                asm_setcc(cg_sec, X86_RAX, X86_B);
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+            } else {
+                asm_setcc(cg_sec, X86_RAX, X86_E);
+                asm_setcc(cg_sec, X86_RCX, X86_B);
+                x86_or_rr(cg_sec, 1, X86_RAX, X86_RCX);
+                x86_xor_ri(cg_sec, 1, X86_RAX, 1);
+                asm_movzx_phys(cg_sec, r, X86_RAX, 4, 1);
+            }
+            return r;
+        }
+        // non-temporal stores: movntps/movntpd/movntdq (ptr, vec)
+        if (!strcmp(root, "movntps") || !strcmp(root, "movntpd") || !strcmp(root, "movntdq")) {
+            VReg p = gen(a1);
+            avx_loadY(X86_XMM0, a2);
+            if (!strcmp(root, "movntps")) x86_vmovntps_m256(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+            else if (!strcmp(root, "movntpd"))
+                x86_vmovntpd_m256(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+            else
+                x86_vmovntdq_m256(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
+            free_reg(p);
+            return R_NONE;
+        }
+        // masked stores: maskstoreps/pd (ptr, data, mask), maskstored/q
+        if (!strcmp(root, "maskstoreps") || !strcmp(root, "maskstorepd") ||
+            !strcmp(root, "maskstored") || !strcmp(root, "maskstoreq")) {
+            VReg p = gen(a1);
+            avx_loadY(X86_XMM0, a2); // data
+            avx_loadY(X86_XMM1, a3); // mask
+            if (ia32_suf(root, "q")) x86_vpmaskmovq_mr(cg_sec, x86_mem(REG(p), 0), X86_XMM0, X86_XMM1);
+            else
+                x86_vpmaskmovd_mr(cg_sec, x86_mem(REG(p), 0), X86_XMM0, X86_XMM1);
+            free_reg(p);
+            return R_NONE;
+        }
+        // masked loads: maskloadps/pd (ptr, mask), maskloadd/q
+        if (!strcmp(root, "maskloadps") || !strcmp(root, "maskloadpd") ||
+            !strcmp(root, "maskloadd") || !strcmp(root, "maskloadq")) {
+            VReg p = gen(a1);
+            avx_loadY(X86_XMM1, a2); // mask
+            if (ia32_suf(root, "q")) x86_vpmaskmovq_rm(cg_sec, X86_XMM0, X86_XMM1, x86_mem(REG(p), 0));
+            else
+                x86_vpmaskmovd_rm(cg_sec, X86_XMM0, X86_XMM1, x86_mem(REG(p), 0));
+            free_reg(p);
+            return avx_store();
+        }
+        // 2-op unary converts
+        if (!strcmp(root, "cvtdq2ps") || !strcmp(root, "cvtps2dq") ||
+            !strcmp(root, "cvttps2dq") || !strcmp(root, "cvtps2pd") ||
+            !strcmp(root, "cvtpd2ps") || !strcmp(root, "cvtdq2pd") ||
+            !strcmp(root, "cvtpd2dq") || !strcmp(root, "cvttpd2dq")) {
+            avx_loadY(X86_XMM1, a1);
+            if (!strcmp(root, "cvtdq2ps")) x86_vcvtdq2ps(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvtps2dq"))
+                x86_vcvtps2dq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvttps2dq"))
+                x86_vcvttps2dq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvtps2pd"))
+                x86_vcvtps2pd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvtpd2ps"))
+                x86_vcvtpd2ps(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvtdq2pd"))
+                x86_vcvtdq2pd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "cvtpd2dq"))
+                x86_vcvtpd2dq(cg_sec, X86_XMM0, X86_XMM1);
+            else
+                x86_vcvttpd2dq(cg_sec, X86_XMM0, X86_XMM1);
+            return avx_store();
+        }
+        // pmovsx*/pmovzx*: sign/zero-extend from XMM (8/16 source bytes) to YMM
+        if (!strncmp(root, "pmovsx", 6) || !strncmp(root, "pmovzx", 6)) {
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM1, x86_mem(REG(va), 0)); // low 128 bits
+            free_reg(va);
+            if (!strcmp(root, "pmovsxbw")) x86_vpmovsxbw(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovsxbd"))
+                x86_vpmovsxbd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovsxbq"))
+                x86_vpmovsxbq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovsxwd"))
+                x86_vpmovsxwd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovsxwq"))
+                x86_vpmovsxwq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovsxdq"))
+                x86_vpmovsxdq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovzxbw"))
+                x86_vpmovzxbw(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovzxbd"))
+                x86_vpmovzxbd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovzxbq"))
+                x86_vpmovzxbq(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovzxwd"))
+                x86_vpmovzxwd(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "pmovzxwq"))
+                x86_vpmovzxwq(cg_sec, X86_XMM0, X86_XMM1);
+            else
+                x86_vpmovzxdq(cg_sec, X86_XMM0, X86_XMM1);
+            return avx_store();
+        }
+        // lddqu / movntdqa / vbroadcastf128: memory loads
+        if (!strcmp(root, "lddqu")) {
+            VReg p = gen(a1);
+            x86_vlddqu256(cg_sec, X86_XMM0, x86_mem(REG(p), 0));
+            free_reg(p);
+            return avx_store();
+        }
+        if (!strcmp(root, "movntdqa")) {
+            VReg p = gen(a1);
+            x86_vmovntdqa256(cg_sec, X86_XMM0, x86_mem(REG(p), 0));
+            free_reg(p);
+            return avx_store();
+        }
+        if (!strcmp(root, "vbroadcastf128_pd") || !strcmp(root, "vbroadcastf128_ps")) {
+            VReg p = gen(a1);
+            x86_vbroadcastf128(cg_sec, X86_XMM0, x86_mem(REG(p), 0));
+            free_reg(p);
+            return avx_store();
+        }
+        // broadcasts: vbroadcastss/sd, pbroadcastb/w/d/q, vbroadcastsi256
+        // (arg is a 16-byte vector; low element broadcast to all 8/4 lanes)
+        if (!strcmp(root, "vbroadcastss") || !strcmp(root, "vbroadcastss_ps") ||
+            !strcmp(root, "pbroadcastd") || !strcmp(root, "vbroadcastsd") ||
+            !strcmp(root, "vbroadcastsd_pd") || !strcmp(root, "pbroadcastb") ||
+            !strcmp(root, "pbroadcastw") || !strcmp(root, "pbroadcastq") ||
+            !strcmp(root, "vbroadcastsi")) {
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+            free_reg(va);
+            if (!strcmp(root, "vbroadcastss") || !strcmp(root, "vbroadcastss_ps"))
+                x86_vbroadcastss(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            else if (!strcmp(root, "vbroadcastsd") || !strcmp(root, "vbroadcastsd_pd") || !strcmp(root, "vbroadcastsi"))
+                x86_vbroadcastsd(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            else if (!strcmp(root, "pbroadcastb"))
+                x86_vpbroadcastb(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            else if (!strcmp(root, "pbroadcastw"))
+                x86_vpbroadcastw(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            else if (!strcmp(root, "pbroadcastq"))
+                x86_vpbroadcastq(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            else
+                x86_vpbroadcastd(cg_sec, X86_XMM2, X86_XMM0, X86_XMM0);
+            VReg dst = avx_slot_addr();
+            x86_vmovups_mr256(cg_sec, x86_mem(REG(dst), 0), X86_XMM2);
+            return dst;
+        }
+        // 256->128 casts: ps_ps/pd_pd/si_si (truncation of the low half)
+        if (!strcmp(root, "ps_ps") || !strcmp(root, "pd_pd") || !strcmp(root, "si_si")) {
+            VReg va = ia32_vaddr(a1);
+            x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0)); // low 128 bits
+            free_reg(va);
+            return ia32_store(16);
+        }
+        // extract 128 from 256: extract128i / vextractf128 (16-byte result)
+        if (!strcmp(root, "extract128i") || !strcmp(root, "vextractf128_pd") ||
+            !strcmp(root, "vextractf128_ps") || !strcmp(root, "vextractf128_si")) {
+            // vextractf128: ps=1C, pd=19, si/i128=39
+            avx_loadY(X86_XMM1, a1);
+            if (!strcmp(root, "extract128i") || !strcmp(root, "vextractf128_si"))
+                x86_vextracti128(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "vextractf128_pd"))
+                x86_vextractf128_pd(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else
+                x86_vextractf128(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            return ia32_store(16);
+        }
+        // insert 128 into 256: insert128i / vinsertf128 (32-byte result)
+        if (!strcmp(root, "insert128i") || !strcmp(root, "vinsertf128_pd") ||
+            !strcmp(root, "vinsertf128_ps") || !strcmp(root, "vinsertf128_si")) {
+            // vinsertf128: ps=18, pd=19, si/i128=38
+            avx_loadY(X86_XMM1, a1);
+            VReg vb = ia32_vaddr(a2);
+            x86_movups_rm(cg_sec, X86_XMM2, x86_mem(REG(vb), 0)); // 16-byte source
+            free_reg(vb);
+            if (!strcmp(root, "insert128i") || !strcmp(root, "vinsertf128_si"))
+                x86_vinserti128(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else if (!strcmp(root, "vinsertf128_pd"))
+                x86_vinsertf128_pd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else
+                x86_vinsertf128(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            return avx_store();
+        }
+        // unary 2-op permutes/moves: movddup/movshdup/movsldup,
+        // vpermq/vpermpd (imm), vpermilps/pd (imm)
+        if (!strcmp(root, "movddup") || !strcmp(root, "movshdup") || !strcmp(root, "movsldup")) {
+            avx_loadY(X86_XMM1, a1);
+            if (!strcmp(root, "movddup")) x86_vmovddup(cg_sec, X86_XMM0, X86_XMM1);
+            else if (!strcmp(root, "movshdup"))
+                x86_vmovshdup(cg_sec, X86_XMM0, X86_XMM1);
+            else
+                x86_vmovsldup(cg_sec, X86_XMM0, X86_XMM1);
+            return avx_store();
+        }
+        if (!strcmp(root, "permdi") || !strcmp(root, "permdf") ||
+            !strcmp(root, "vpermilps") || !strcmp(root, "vpermilpd")) {
+            avx_loadY(X86_XMM1, a1);
+            if (!strcmp(root, "permdi")) x86_vpermq(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "permdf"))
+                x86_vpermpd(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "vpermilps"))
+                x86_vpermilps_i(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else
+                x86_vpermilpd_i(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            return avx_store();
+        }
+        // 3-op permutes: permvarsi (vpermd), permvarsf (vpermps),
+        // permti (vperm2i128), vpermilvarps/vpermilvarpd
+        if (!strcmp(root, "permvarsi") || !strcmp(root, "permvarsf") ||
+            !strcmp(root, "permti") || !strcmp(root, "vperm2f128_si") ||
+            !strcmp(root, "vpermilvarps") || !strcmp(root, "vpermilvarpd")) {
+            // vpermd/vpermps: dst=reg, INDICES=vvvv, table=rm — the builtin
+            // is (table, indices), so a2 goes to vvvv and a1 to rm.
+            if (!strcmp(root, "permvarsi") || !strcmp(root, "permvarsf")) {
+                avx_loadY(X86_XMM1, a2); // indices
+                avx_loadY(X86_XMM2, a1); // table
+                if (!strcmp(root, "permvarsi")) x86_vpermd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+                else
+                    x86_vpermps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+                return avx_store();
+            }
+            // vpermilvarps/vpermilvarpd: dst=reg, src=vvvv, indices=rm
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            if (!strcmp(root, "permti") || !strcmp(root, "vperm2f128_si"))
+                x86_vperm2i128(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else if (!strcmp(root, "vpermilvarps"))
+                x86_vpermilps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+            else
+                x86_vpermilpd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+            return avx_store();
+        }
+        // unary 3-op imm shuffles: pshufd/pshufhw/pshuflw
+        if (!strcmp(root, "pshufd") || !strcmp(root, "pshufhw") || !strcmp(root, "pshuflw")) {
+            avx_loadY(X86_XMM1, a1);
+            if (!strcmp(root, "pshufd")) x86_vpshufd(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "pshufhw"))
+                x86_vpshufhw(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else
+                x86_vpshuflw(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            return avx_store();
+        }
+        // float compares with imm: cmpps/cmppd
+        if (!strcmp(root, "cmpps") || !strcmp(root, "cmppd")) {
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            if (!strcmp(root, "cmpps")) x86_vcmpps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else
+                x86_vcmppd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            return avx_store();
+        }
+        // roundps/roundpd/dpps/mpsadbw: 3-op imm
+        if (!strcmp(root, "roundps") || !strcmp(root, "roundpd") ||
+            !strcmp(root, "dpps") || !strcmp(root, "mpsadbw")) {
+            // roundps/roundpd take (vec, imm); dpps/mpsadbw take (a, b, imm)
+            bool unary_imm = !strcmp(root, "roundps") || !strcmp(root, "roundpd");
+            avx_loadY(X86_XMM1, a1);
+            if (!unary_imm) avx_loadY(X86_XMM2, a2);
+            if (!strcmp(root, "roundps")) x86_vroundps(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "roundpd"))
+                x86_vroundpd(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+            else if (!strcmp(root, "dpps"))
+                x86_vdpps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else
+                x86_vmpsadbw(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            return avx_store();
+        }
+        // blendps/blendpd/pblendw/pblendd: 3-op imm
+        if (!strcmp(root, "blendps") || !strcmp(root, "blendpd") ||
+            !strcmp(root, "pblendw") || !strcmp(root, "pblendd")) {
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            if (!strcmp(root, "blendps")) x86_vblendps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else if (!strcmp(root, "blendpd"))
+                x86_vblendpd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else if (!strcmp(root, "pblendw"))
+                x86_vpblendw(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            else
+                x86_vpblendd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm"));
+            return avx_store();
+        }
+        // blendvps/blendvpd/pblendvb: mask in YMM3 (is4 field)
+        if (!strcmp(root, "blendvps") || !strcmp(root, "blendvpd") || !strcmp(root, "pblendvb")) {
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            avx_loadY(X86_XMM3, a3); // mask
+            if (!strcmp(root, "blendvps")) x86_vblendvps(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3);
+            else if (!strcmp(root, "blendvpd"))
+                x86_vblendvpd(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3);
+            else
+                x86_vpblendvb(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, X86_XMM3);
+            return avx_store();
+        }
+        // palignr/pshufb: 3-op (imm for palignr)
+        if (!strcmp(root, "palignr")) {
+            // the builtin's imm is in BITS (the header passes __N*8);
+            // the instruction shifts by bytes.
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            x86_vpalignr(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2, ia32_imm8(a3, "imm") >> 3);
+            return avx_store();
+        }
+        if (!strcmp(root, "pshufb")) {
+            avx_loadY(X86_XMM1, a1);
+            avx_loadY(X86_XMM2, a2);
+            x86_vpshufb(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+            return avx_store();
+        }
+        // shifts: pslldi/psllwi/psllqi/psrldi/psrlwi/psrlqi/psradi/psrawi
+        // (imm), pslldqi/psrldqi (imm byte), plain names (variable count)
+        {
+            size_t sl = strlen(root);
+            if (!strncmp(root, "psll", 4) || !strncmp(root, "psrl", 4) || !strncmp(root, "psra", 4)) {
+                bool imm_form = root[sl - 1] == 'i';
+                char base[12];
+                size_t bl = sl - (imm_form ? 1 : 0);
+                memcpy(base, root, bl);
+                base[bl] = 0;
+                if (!strcmp(base, "pslldq") || !strcmp(base, "psrldq")) {
+                    // byte shift by imm8
+                    avx_loadY(X86_XMM0, a1);
+                    if (!strcmp(base, "pslldq")) x86_vpslldq_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else
+                        x86_vpsrldq_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    return avx_store();
+                }
+                if (imm_form && ia32_is_const(a2)) {
+                    avx_loadY(X86_XMM0, a1);
+                    if (!strcmp(base, "psllw")) x86_vpsllw_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "pslld"))
+                        x86_vpslld_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "psllq"))
+                        x86_vpsllq_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "psrlw"))
+                        x86_vpsrlw_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "psrld"))
+                        x86_vpsrld_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "psrlq"))
+                        x86_vpsrlq_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else if (!strcmp(base, "psraw"))
+                        x86_vpsraw_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    else
+                        x86_vpsrad_i(cg_sec, X86_XMM0, ia32_imm8(a2, "imm"));
+                    return avx_store();
+                }
+                // variable count: count in XMM2 (low 64 bits), shift YMM0 in place
+                avx_loadY(X86_XMM0, a1);
+                VReg cnt = gen(a2);
+                asm_sub_rsp_imm(cg_sec, 16);
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, 0), REG(cnt));
+                free_reg(cnt);
+                x86_movq_rm(cg_sec, x86_mem(X86_RSP, 0), X86_XMM2);
+                asm_add_rsp_imm(cg_sec, 16);
+                if (!strcmp(base, "psllw")) x86_vpsllw_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "pslld"))
+                    x86_vpslld_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "psllq"))
+                    x86_vpsllq_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "psrlw"))
+                    x86_vpsrlw_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "psrld"))
+                    x86_vpsrld_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "psrlq"))
+                    x86_vpsrlq_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else if (!strcmp(base, "psraw"))
+                    x86_vpsraw_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                else
+                    x86_vpsrad_r(cg_sec, X86_XMM0, X86_XMM0, X86_XMM2);
+                return avx_store();
+            }
+        }
+        // int ALU: 0F map (pp=1) — paddb..packuswb, pcmpeq*, pcmpgt*, ...
+        {
+            static const struct {
+                const char *r;
+                void (*fn)(SecBuf *, X86XmmReg, X86XmmReg, X86XmmReg);
+            } tab0f[] = {
+                {"paddb", x86_vpaddb},
+                {"paddw", x86_vpaddw},
+                {"paddd", x86_vpaddd},
+                {"paddq", x86_vpaddq},
+                {"psubb", x86_vpsubb},
+                {"psubw", x86_vpsubw},
+                {"psubd", x86_vpsubd},
+                {"psubq", x86_vpsubq},
+                {"paddsb", x86_vpaddsb},
+                {"paddsw", x86_vpaddsw},
+                {"paddusb", x86_vpaddusb},
+                {"paddusw", x86_vpaddusw},
+                {"psubsb", x86_vpsubsb},
+                {"psubsw", x86_vpsubsw},
+                {"psubusb", x86_vpsubusb},
+                {"psubusw", x86_vpsubusw},
+                {"pand", x86_vpand},
+                {"pandn", x86_vpandn},
+                {"por", x86_vpor},
+                {"pxor", x86_vpxor},
+                {"andnotsi", x86_vpandn},
+                {"pcmpeqb", x86_vpcmpeqb},
+                {"pcmpeqw", x86_vpcmpeqw},
+                {"pcmpeqd", x86_vpcmpeqd},
+                {"pcmpgtb", x86_vpcmpgtb},
+                {"pcmpgtw", x86_vpcmpgtw},
+                {"pcmpgtd", x86_vpcmpgtd},
+                {"pmullw", x86_vpmullw},
+                {"pmulhw", x86_vpmulhw},
+                {"pmulhuw", x86_vpmulhuw},
+                {"pmuludq", x86_vpmuludq},
+                {"pmaddwd", x86_vpmaddwd},
+                {"pavgb", x86_vpavgb},
+                {"pavgw", x86_vpavgw},
+                {"psadbw", x86_vpsadbw},
+                {"pmaxub", x86_vpmaxub},
+                {"pmaxsw", x86_vpmaxsw},
+                {"pminub", x86_vpminub},
+                {"pminsw", x86_vpminsw},
+                {"packsswb", x86_vpacksswb},
+                {"packssdw", x86_vpackssdw},
+                {"packuswb", x86_vpackuswb},
+                {"punpcklbw", x86_vpunpcklbw},
+                {"punpcklwd", x86_vpunpcklwd},
+                {"punpckldq", x86_vpunpckldq},
+                {"punpcklqdq", x86_vpunpcklqdq},
+                {"punpckhbw", x86_vpunpckhbw},
+                {"punpckhwd", x86_vpunpckhwd},
+                {"punpckhdq", x86_vpunpckhdq},
+                {"punpckhqdq", x86_vpunpckhqdq},
+            };
+            for (size_t i = 0; i < sizeof(tab0f) / sizeof(tab0f[0]); i++)
+                if (!strcmp(tab0f[i].r, root)) {
+                    avx_loadY(X86_XMM1, a1);
+                    avx_loadY(X86_XMM2, a2);
+                    tab0f[i].fn(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+                    return avx_store();
+                }
+        }
+        // int ALU: 0F38 map — abs/sign/hadd/hsub/pmaddubsw/pmulhrsw/pshufb/
+        // pmulld/pmuldq/pcmpgtq/min/max/packusdw
+        {
+            static const struct {
+                const char *r;
+                void (*fn)(SecBuf *, X86XmmReg, X86XmmReg, X86XmmReg);
+            } tab38[] = {
+                {"psignb", x86_vpsignb},
+                {"psignw", x86_vpsignw},
+                {"psignd", x86_vpsignd},
+                {"phaddw", x86_vphaddw},
+                {"phaddd", x86_vphaddd},
+                {"phaddsw", x86_vphaddsw},
+                {"phsubw", x86_vphsubw},
+                {"phsubd", x86_vphsubd},
+                {"phsubsw", x86_vphsubsw},
+                {"pmaddubsw", x86_vpmaddubsw},
+                {"pmulhrsw", x86_vpmulhrsw},
+                {"pshufb", x86_vpshufb},
+                {"pmulld", x86_vpmulld},
+                {"pmuldq", x86_vpmuldq},
+                {"pcmpgtq", x86_vpcmpgtq},
+                {"pminsb", x86_vpminsb},
+                {"pminsd", x86_vpminsd},
+                {"pminuw", x86_vpminuw},
+                {"pminud", x86_vpminud},
+                {"pmaxsb", x86_vpmaxsb},
+                {"pmaxsd", x86_vpmaxsd},
+                {"pmaxuw", x86_vpmaxuw},
+                {"pmaxud", x86_vpmaxud},
+                {"packusdw", x86_vpackusdw},
+            };
+            for (size_t i = 0; i < sizeof(tab38) / sizeof(tab38[0]); i++)
+                if (!strcmp(tab38[i].r, root)) {
+                    avx_loadY(X86_XMM1, a1);
+                    avx_loadY(X86_XMM2, a2);
+                    tab38[i].fn(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+                    return avx_store();
+                }
+            // unary 0F38 ops: pabsb/pabsw/pabsd (single operand)
+            if (!strcmp(root, "pabsb") || !strcmp(root, "pabsw") || !strcmp(root, "pabsd")) {
+                avx_loadY(X86_XMM1, a1);
+                if (!strcmp(root, "pabsb")) x86_vpabsb(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1);
+                else if (!strcmp(root, "pabsw"))
+                    x86_vpabsw(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1);
+                else
+                    x86_vpabsd(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1);
+                return avx_store();
+            }
+        }
+        // float ALU: addsubps/pd, addps/pd, sub, mul, div, min, max, sqrt,
+        // rcp, rsqrt, andn, and, or, xor, unpckl/h
+        {
+            int op = -1;
+            bool unary = false;
+            if (!strncmp(root, "addsub", 6)) op = 0xd0;
+            else if (!strncmp(root, "hadd", 4))
+                op = 0x7c;
+            else if (!strncmp(root, "hsub", 4))
+                op = 0x7d;
+            else if (!strncmp(root, "add", 3))
+                op = 0x58;
+            else if (!strncmp(root, "sub", 3))
+                op = 0x5c;
+            else if (!strncmp(root, "mul", 3))
+                op = 0x59;
+            else if (!strncmp(root, "div", 3))
+                op = 0x5e;
+            else if (!strncmp(root, "min", 3))
+                op = 0x5d;
+            else if (!strncmp(root, "max", 3))
+                op = 0x5f;
+            else if (!strncmp(root, "sqrt", 4)) {
+                op = 0x51;
+                unary = true;
+            } else if (!strncmp(root, "rcp", 3)) {
+                op = 0x53;
+                unary = true;
+            } else if (!strncmp(root, "rsqrt", 5)) {
+                op = 0x52;
+                unary = true;
+            } else if (!strncmp(root, "andn", 4))
+                op = 0x55;
+            else if (!strncmp(root, "and", 3))
+                op = 0x54;
+            else if (!strncmp(root, "or", 2))
+                op = 0x56;
+            else if (!strncmp(root, "xor", 3))
+                op = 0x57;
+            else if (!strncmp(root, "unpckl", 6))
+                op = 0x14;
+            else if (!strncmp(root, "unpckh", 6))
+                op = 0x15;
+            if (op >= 0 && (ia32_suf(root, "ps") || ia32_suf(root, "pd"))) {
+                bool ispd = ia32_suf(root, "pd");
+                avx_loadY(X86_XMM1, a1);
+                if (!unary) avx_loadY(X86_XMM2, a2);
+                void (*fn)(SecBuf *, X86XmmReg, X86XmmReg, X86XmmReg) = NULL;
+                if (unary) {
+                    switch (op) {
+                    case 0x51: fn = ispd ? x86_vsqrtpd : x86_vsqrtps; break;
+                    case 0x53: fn = x86_vrcpps; break;
+                    default: fn = x86_vrsqrtps; break;
+                    }
+                    fn(cg_sec, X86_XMM0, X86_XMM0, X86_XMM1); // vvvv=1111
+                } else {
+                    switch (op) {
+                    case 0xd0: fn = ispd ? x86_vaddsubpd : x86_vaddsubps; break;
+                    case 0x7c: fn = ispd ? x86_vhaddpd : x86_vhaddps; break;
+                    case 0x7d: fn = ispd ? x86_vhsubpd : x86_vhsubps; break;
+                    case 0x58: fn = ispd ? x86_vaddpd : x86_vaddps; break;
+                    case 0x5c: fn = ispd ? x86_vsubpd : x86_vsubps; break;
+                    case 0x59: fn = ispd ? x86_vmulpd : x86_vmulps; break;
+                    case 0x5e: fn = ispd ? x86_vdivpd : x86_vdivps; break;
+                    case 0x5d: fn = ispd ? x86_vminpd : x86_vminps; break;
+                    case 0x5f: fn = ispd ? x86_vmaxpd : x86_vmaxps; break;
+                    case 0x55: fn = ispd ? x86_vandnpd : x86_vandnps; break;
+                    case 0x54: fn = ispd ? x86_vandpd : x86_vandps; break;
+                    case 0x56: fn = ispd ? x86_vorpd : x86_vorps; break;
+                    case 0x57: fn = ispd ? x86_vxorpd : x86_vxorps; break;
+                    case 0x14: fn = ispd ? x86_vunpcklpd : x86_vunpcklps; break;
+                    default: fn = ispd ? x86_vunpckhpd : x86_vunpckhps; break;
+                    }
+                    fn(cg_sec, X86_XMM0, X86_XMM1, X86_XMM2);
+                }
+                return avx_store();
+            }
+        }
+        error("__builtin_ia32_%s256: unsupported AVX/AVX2 intrinsic", root);
+    }
+#endif
 
     // ================= crc32 =================
     if (!strncmp(n, "crc32", 5)) {
@@ -8676,6 +9526,10 @@ static VReg gen(Node *node) {
         case ND_LE:
         case ND_NEG:
         case ND_BITNOT:
+#ifndef ARCH_ARM64
+            if (node->ty->size == 32)
+                return gen_vector32_x86(node);
+#endif
             return gen_vector(node);
         default:
             break;

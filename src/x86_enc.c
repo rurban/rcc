@@ -2188,6 +2188,435 @@ void x86_crc32si(SecBuf *s, X86Reg d, X86Reg sr, int size) {
 }
 
 
+// ===== VEX (AVX/AVX2) encoders =====
+// 2-byte VEX: C5 + R~vvvvLpp (map implied 0F). pp: 0=none 1=66 2=F3 3=F2.
+static void vex2(SecBuf *s, int pp, int L, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    int R = (int)d >> 3;
+    int vvvv = (~(int)v) & 15;
+    emit1(s, 0xc5);
+    emit1(s, (uint8_t)(((~R & 1) << 7) | (vvvv << 3) | ((L & 1) << 2) | (pp & 3)));
+}
+// 3-byte VEX: C4 + R~X~B~mmmmm + W~vvvvLpp. map: 1=0F 2=0F38 3=0F3A.
+static void vex3(SecBuf *s, int pp, int map, int W, int L, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    int R = (int)d >> 3, B = (int)rm >> 3;
+    int vvvv = (~(int)v) & 15;
+    emit1(s, 0xc4);
+    emit1(s, (uint8_t)(((~R & 1) << 7) | (1 << 6) | ((~B & 1) << 5) | (map & 31)));
+    emit1(s, (uint8_t)(((~W & 1) << 7) | (vvvv << 3) | ((L & 1) << 2) | (pp & 3)));
+}
+// reg/reg/reg VEX op (256-bit unless L=0). vvvv = first source.
+static void vex_rr(SecBuf *s, int pp, int map, int W, int L, int op, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    // The VEX mmmmm field selects the opcode map (1=0F, 2=0F38, 3=0F3A),
+    // so only the final opcode byte follows the prefix — no 0F/38/3A bytes.
+    // Then the ModRM byte (reg=dst, rm=second source).
+    if (map == 1 && (int)d < 8 && (int)rm < 8 && !W) {
+        vex2(s, pp, L, d, v, rm);
+        emit1(s, (uint8_t)op);
+    } else {
+        vex3(s, pp, map, W, L, d, v, rm);
+        emit1(s, (uint8_t)op);
+    }
+    emit1(s, modrxmm(3, d, rm));
+}
+// vmovups ymm, m256: VEX.256.0F.WIG 10 /r (load)
+void x86_vmovups_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 0, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x10);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+// vmovups m256, ymm: VEX.256.0F.WIG 11 /r (store)
+void x86_vmovups_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    vex3(s, 0, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x11);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+// vmovdqa ymm, m256 (aligned): VEX.256.66.0F 6F /r
+void x86_vmovdqa_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 1, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x6f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vmovdqa_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    vex3(s, 1, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x7f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+// vmovdqu ymm, m256 (unaligned): VEX.256.F3.0F 6F /r
+void x86_vmovdqu_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 2, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x6f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vmovdqu_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    vex3(s, 2, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x7f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+// reg/reg/reg 256-bit ALU ops. All three operands are YMM registers.
+#define VEX256_OP(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) { vex_rr(s, pp, 1, 0, 1, op, d, v, rm); }
+VEX256_OP(x86_vaddps, 0, 0x58)
+VEX256_OP(x86_vsubps, 0, 0x5c)
+VEX256_OP(x86_vmulps, 0, 0x59)
+VEX256_OP(x86_vdivps, 0, 0x5e)
+VEX256_OP(x86_vmaxps, 0, 0x5f)
+VEX256_OP(x86_vminps, 0, 0x5d)
+VEX256_OP(x86_vsqrtps, 0, 0x51)
+VEX256_OP(x86_vrcpps, 0, 0x53)
+VEX256_OP(x86_vrsqrtps, 0, 0x52)
+VEX256_OP(x86_vandps, 0, 0x54)
+VEX256_OP(x86_vandnps, 0, 0x55)
+VEX256_OP(x86_vorps, 0, 0x56)
+VEX256_OP(x86_vxorps, 0, 0x57)
+VEX256_OP(x86_vunpcklps, 0, 0x14)
+VEX256_OP(x86_vunpckhps, 0, 0x15)
+VEX256_OP(x86_vaddpd, 1, 0x58)
+VEX256_OP(x86_vsubpd, 1, 0x5c)
+VEX256_OP(x86_vmulpd, 1, 0x59)
+VEX256_OP(x86_vdivpd, 1, 0x5e)
+VEX256_OP(x86_vmaxpd, 1, 0x5f)
+VEX256_OP(x86_vminpd, 1, 0x5d)
+VEX256_OP(x86_vsqrtpd, 1, 0x51)
+VEX256_OP(x86_vandpd, 1, 0x54)
+VEX256_OP(x86_vandnpd, 1, 0x55)
+VEX256_OP(x86_vorpd, 1, 0x56)
+VEX256_OP(x86_vxorpd, 1, 0x57)
+VEX256_OP(x86_vunpcklpd, 1, 0x14)
+VEX256_OP(x86_vunpckhpd, 1, 0x15)
+VEX256_OP(x86_vaddss, 3, 0x58) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vsubss, 3, 0x5c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmulss, 3, 0x59) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vdivss, 3, 0x5e) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmaxss, 3, 0x5f) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vminss, 3, 0x5d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vsqrtss, 3, 0x51) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vrcpss, 3, 0x53) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vrsqrtss, 3, 0x52) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vaddsd, 2, 0x58) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vsubsd, 2, 0x5c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmulsd, 2, 0x59) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vdivsd, 2, 0x5e) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmaxsd, 2, 0x5f) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vminsd, 2, 0x5d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vsqrtsd, 2, 0x51) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vrcpsd, 2, 0x53) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vrsqrtsd, 2, 0x52) // 0F/0F38/0F3A VEX.256 macro
+// integer (VEX.256.66): VEX256_OP with pp=1
+VEX256_OP(x86_vpaddb, 1, 0xfc) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddw, 1, 0xfd) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddd, 1, 0xfe) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddq, 1, 0xd4) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubb, 1, 0xf8) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubw, 1, 0xf9) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubd, 1, 0xfa) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubq, 1, 0xfb) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddsb, 1, 0xec) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddsw, 1, 0xed) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddusb, 1, 0xdc) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpaddusw, 1, 0xdd) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubsb, 1, 0xe8) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubsw, 1, 0xe9) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubusb, 1, 0xd8) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsubusw, 1, 0xd9) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpand, 1, 0xdb) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpandn, 1, 0xdf) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpor, 1, 0xeb) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpxor, 1, 0xef) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpeqb, 1, 0x74) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpeqw, 1, 0x75) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpeqd, 1, 0x76) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpgtb, 1, 0x64) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpgtw, 1, 0x65) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpcmpgtd, 1, 0x66) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmullw, 1, 0xd5) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmulhw, 1, 0xe5) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmulhuw, 1, 0xe4) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmuludq, 1, 0xf4) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmaddwd, 1, 0xf5) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpavgb, 1, 0xe0) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpavgw, 1, 0xe3) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsadbw, 1, 0xf6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmaxub, 1, 0xde) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpmaxsw, 1, 0xee) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpminub, 1, 0xda) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpminsw, 1, 0xea) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpacksswb, 1, 0x63) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpackssdw, 1, 0x6b) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpackuswb, 1, 0x67) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpcklbw, 1, 0x60) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpcklwd, 1, 0x61) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpckldq, 1, 0x62) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpcklqdq, 1, 0x6c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpckhbw, 1, 0x68) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpckhwd, 1, 0x69) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpckhdq, 1, 0x6a) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpunpckhqdq, 1, 0x6d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsllw, 1, 0xf1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpslld, 1, 0xf2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsllq, 1, 0xf3) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsrlw, 1, 0xd1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsrld, 1, 0xd2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsrlq, 1, 0xd3) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsraw, 1, 0xe1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vpsrad, 1, 0xe2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vhaddps, 2, 0x7c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vhsubps, 2, 0x7d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vaddsubps, 2, 0xd0) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vhaddpd, 1, 0x7c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vhsubpd, 1, 0x7d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vaddsubpd, 1, 0xd0) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovhlps, 0, 0x12) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovlhps, 0, 0x16) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovaps, 0, 0x28) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovapd, 1, 0x28) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovdqa, 1, 0x6f) // 0F/0F38/0F3A VEX.256 macro
+VEX256_OP(x86_vmovdqu, 2, 0x6f) // 0F/0F38/0F3A VEX.256 macro
+// vpshufd/pshuflw/pshufhw/shufps/shufpd with imm
+#define VEX256_IMM(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) { vex_rr(s, pp, 1, 0, 1, op, d, v, rm); emit1(s, imm); }
+VEX256_IMM(x86_vpshufd, 1, 0x70) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vpshuflw, 3, 0x70) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vpshufhw, 2, 0x70) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vshufps, 0, 0xc6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vshufpd, 1, 0xc6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vcmpps, 0, 0xc2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vcmppd, 1, 0xc2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vcmpss, 3, 0xc2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM(x86_vcmpsd, 2, 0xc2) // 0F/0F38/0F3A VEX.256 macro
+
+// 0F38-map 256-bit ops (pp=1, map=2)
+#define VEX256_38(fn, op)     void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) { vex_rr(s, 1, 2, 1, 1, op, d, v, rm); }
+VEX256_38(x86_vpshufb, 0x00) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpabsb, 0x1c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpabsw, 0x1d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpabsd, 0x1e) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpsignb, 0x08) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpsignw, 0x09) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpsignd, 0x0a) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphaddw, 0x01) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphaddd, 0x02) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphaddsw, 0x03) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphsubw, 0x05) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphsubd, 0x06) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vphsubsw, 0x07) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaddubsw, 0x04) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmulhrsw, 0x0b) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpcmpeqq, 0x29) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpermd, 0x36) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpermps, 0x16) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaskmovd, 0x8c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaskmovq, 0x8d) // 0F/0F38/0F3A VEX.256 macro
+// vpalignr: 0F3A map (map=3), imm
+void x86_vpalignr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x0f, d, v, rm);
+    emit1(s, imm);
+}
+// vperm2f128 / vperm2i128: 0F3A 06/46, imm
+void x86_vperm2f128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x06, d, v, rm);
+    emit1(s, imm);
+}
+void x86_vperm2i128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x46, d, v, rm);
+    emit1(s, imm);
+}
+// vpermq/vpermpd: 0F3A 00/01, imm (v is the only source)
+void x86_vpermq(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 0, 1, 0x00, d, X86_XMM0, rm);
+    emit1(s, imm);
+}
+void x86_vpermpd(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 0, 1, 0x01, d, X86_XMM0, rm);
+    emit1(s, imm);
+}
+// vpermilps/vpermilpd (variable): 0F38 0C/0D
+VEX256_38(x86_vpermilps, 0x0c)
+VEX256_38(x86_vpermilpd, 0x0d)
+// variable shifts (AVX2): vpsllvd/q 0F38 47, vpsrlvd/q 45, vpsravd 46
+VEX256_38(x86_vpsllvd, 0x47)
+VEX256_38(x86_vpsrlvd, 0x45)
+VEX256_38(x86_vpsravd, 0x46)
+// vbroadcastss/sd: 0F38 18/19 (rm is the scalar source)
+VEX256_38(x86_vbroadcastss, 0x18)
+VEX256_38(x86_vbroadcastsd, 0x19)
+// vpbroadcastb/w/d/q: VEX.256.66.0F38.WIG 78-7B /r (xmm scalar source)
+VEX256_38(x86_vpbroadcastb, 0x78)
+VEX256_38(x86_vpbroadcastw, 0x79)
+VEX256_38(x86_vpbroadcastd, 0x7a)
+VEX256_38(x86_vpbroadcastq, 0x7b)
+// vextractf128/vextracti128: 0F3A 19/39 — xmm dest, ymm source, imm
+void x86_vextractf128(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    // d=dst(xmm), rm=src(ymm): dst is encoded in ModRM.rm for VEXTRACT*
+    vex_rr(s, 1, 3, 1, 1, 0x1c, rm, X86_XMM0, d);
+    emit1(s, imm);
+}
+void x86_vextracti128(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x39, rm, X86_XMM0, d);
+    emit1(s, imm);
+}
+// vinsertf128/vinserti128: 0F3A 18/38 — ymm dest, ymm src1, xmm src2, imm
+void x86_vinsertf128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x18, d, v, rm);
+    emit1(s, imm);
+}
+void x86_vinserti128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x38, d, v, rm);
+    emit1(s, imm);
+}
+void x86_vextractf128_pd(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x19, rm, X86_XMM0, d);
+    emit1(s, imm);
+}
+void x86_vinsertf128_pd(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x19, d, v, rm);
+    emit1(s, imm);
+}
+
+// ===================== AVX/AVX2 256-bit additions =====================
+// 2-operand VEX.256 (vvvv=1111): dst=ModRM.reg, src=ModRM.rm.
+#define VEX256_2OP(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg rm) { vex_rr(s, pp, 1, 0, 1, op, d, 0, rm); }
+VEX256_2OP(x86_vmovddup, 2, 0x12)
+VEX256_2OP(x86_vmovshdup, 3, 0x16)
+VEX256_2OP(x86_vmovsldup, 3, 0x12)
+VEX256_2OP(x86_vcvtdq2ps, 0, 0x5b)
+VEX256_2OP(x86_vcvtps2dq, 1, 0x5b)
+VEX256_2OP(x86_vcvttps2dq, 2, 0x5b)
+VEX256_2OP(x86_vcvtps2pd, 0, 0x5a)
+VEX256_2OP(x86_vcvtpd2ps, 1, 0x5a)
+VEX256_2OP(x86_vcvtdq2pd, 2, 0xe6)
+VEX256_2OP(x86_vcvtpd2dq, 3, 0xe6)
+VEX256_2OP(x86_vcvttpd2dq, 1, 0xe6)
+// 2-operand 0F38 map (pmovsx/pmovzx)
+#define VEX256_2OP_38(fn, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg rm) { vex_rr(s, 1, 2, 1, 1, op, d, 0, rm); }
+VEX256_2OP_38(x86_vpmovsxbw, 0x20)
+VEX256_2OP_38(x86_vpmovsxbd, 0x21)
+VEX256_2OP_38(x86_vpmovsxbq, 0x22)
+VEX256_2OP_38(x86_vpmovsxwd, 0x23)
+VEX256_2OP_38(x86_vpmovsxwq, 0x24)
+VEX256_2OP_38(x86_vpmovsxdq, 0x25)
+VEX256_2OP_38(x86_vpmovzxbw, 0x30)
+VEX256_2OP_38(x86_vpmovzxbd, 0x31)
+VEX256_2OP_38(x86_vpmovzxbq, 0x32)
+VEX256_2OP_38(x86_vpmovzxwd, 0x33)
+VEX256_2OP_38(x86_vpmovzxwq, 0x34)
+VEX256_2OP_38(x86_vpmovzxdq, 0x35)
+// vptest/vtestps/vtestpd: set flags from AND results (2-op, dst=reg)
+VEX256_2OP_38(x86_vptest, 0x17)
+VEX256_2OP_38(x86_vtestps, 0x0e)
+VEX256_2OP_38(x86_vtestpd, 0x0f)
+// vpermilps/vpermilpd IMMEDIATE forms (0F3A 05/04, 2-op) — the variable
+// forms (0F38 0C/0D) already exist as x86_vpermilps/x86_vpermilpd.
+#define VEX256_2OP_IMM3A(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) { vex_rr(s, pp, 3, 1, 1, op, d, 0, rm); emit1(s, imm); }
+VEX256_2OP_IMM3A(x86_vpermilps_i, 1, 0x04)
+VEX256_2OP_IMM3A(x86_vpermilpd_i, 1, 0x05)
+// 3-operand 0F3A-map with imm8 (vblend*, vround*, vdpps, vmpsadbw)
+#define VEX256_IMM3A(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) { vex_rr(s, pp, 3, 1, 1, op, d, v, rm); emit1(s, imm); }
+VEX256_IMM3A(x86_vblendps, 1, 0x0c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vblendpd, 1, 0x0d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vpblendw, 1, 0x0e) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vpblendd, 1, 0x02) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vroundps, 1, 0x08) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vroundpd, 1, 0x09) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vdpps, 1, 0x40) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IMM3A(x86_vmpsadbw, 1, 0x42) // 0F/0F38/0F3A VEX.256 macro
+// vblendvps/vblendvpd/vpblendvb: 4th operand (mask) in imm8[7:4] (is4)
+#define VEX256_IS4(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, X86XmmReg mask) { vex_rr(s, pp, 3, 1, 1, op, d, v, rm); emit1(s, (uint8_t)((int)mask << 4)); }
+VEX256_IS4(x86_vblendvps, 1, 0x4a) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IS4(x86_vblendvpd, 1, 0x4b) // 0F/0F38/0F3A VEX.256 macro
+VEX256_IS4(x86_vpblendvb, 1, 0x4c) // 0F/0F38/0F3A VEX.256 macro
+// 0F38-map additions: pmulld, pmuldq, pcmpgtq, min/max 8/32
+VEX256_38(x86_vpmulld, 0x40) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmuldq, 0x28) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpcmpgtq, 0x37) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpackusdw, 0x2b) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpminsb, 0x38) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpminsd, 0x39) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpminuw, 0x3a) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpminud, 0x3b) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaxsb, 0x3c) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaxsd, 0x3d) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaxuw, 0x3e) // 0F/0F38/0F3A VEX.256 macro
+VEX256_38(x86_vpmaxud, 0x3f) // 0F/0F38/0F3A VEX.256 macro
+// variable-count shifts: count in XMM (128-bit), vvvv=src, reg=count
+#define VEX256_SHIFT_VAR(fn, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg cnt) { vex_rr(s, 1, 1, 0, 1, op, d, v, cnt); }
+VEX256_SHIFT_VAR(x86_vpsllw_r, 0xf1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpslld_r, 0xf2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsllq_r, 0xf3) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsrlw_r, 0xd1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsrld_r, 0xd2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsrlq_r, 0xd3) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsraw_r, 0xe1) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_VAR(x86_vpsrad_r, 0xe2) // 0F/0F38/0F3A VEX.256 macro
+// immediate-count shifts: 66 0F 71/72/73 /ext ib, dst=rm, ext=reg, vvvv=1111
+#define VEX256_SHIFT_IMM(fn, grp, ext) \
+    void fn(SecBuf *s, X86XmmReg d, uint8_t imm) { vex_rr(s, 1, 1, 0, 1, grp, (X86XmmReg)ext, 0, d); emit1(s, imm); }
+VEX256_SHIFT_IMM(x86_vpsllw_i, 0x71, 6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpslld_i, 0x72, 6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsllq_i, 0x73, 6) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsrlw_i, 0x71, 2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsrld_i, 0x72, 2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsrlq_i, 0x73, 2) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsraw_i, 0x71, 4) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsrad_i, 0x72, 4) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpslldq_i, 0x73, 7) // 0F/0F38/0F3A VEX.256 macro
+VEX256_SHIFT_IMM(x86_vpsrldq_i, 0x73, 3) // 0F/0F38/0F3A VEX.256 macro
+// GP-register destinations: vmovmskps/pd, vpmovmskb (dst in ModRM.reg)
+#define VEX256_GP(fn, pp, op) \
+    void fn(SecBuf *s, X86XmmReg dstGp, X86XmmReg src) { vex_rr(s, pp, 1, 0, 1, op, dstGp, 0, src); }
+VEX256_GP(x86_vmovmskps, 0, 0x50) // 0F/0F38/0F3A VEX.256 macro
+VEX256_GP(x86_vmovmskpd, 1, 0x50) // 0F/0F38/0F3A VEX.256 macro
+VEX256_GP(x86_vpmovmskb256, 1, 0xd7) // 0F/0F38/0F3A VEX.256 macro
+// memory 2-op forms: vlddqu, vmovntdqa (dst=reg, mem=rm)
+void x86_vlddqu256(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 2, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0xf0);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vmovntdqa256(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 1, 2, 1, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x2a);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vbroadcastf128(SecBuf *s, X86XmmReg d, X86Mem m) {
+    vex3(s, 1, 2, 1, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x1a);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+// non-temporal stores: vmovntps/pd/dq m256, ymm (mem=rm, src=reg)
+#define VEX256_NTSTORE(fn, pp, map, op) \
+    void fn(SecBuf *s, X86Mem m, X86XmmReg sr) { vex3(s, pp, map, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base); emit1(s, op); emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr); }
+VEX256_NTSTORE(x86_vmovntps_m256, 0, 1, 0x2b)
+VEX256_NTSTORE(x86_vmovntpd_m256, 1, 1, 0x2b)
+VEX256_NTSTORE(x86_vmovntdq_m256, 1, 1, 0xe7)
+// masked loads/stores: vpmaskmovd/q (0F38 8C-8F). Load: dst=reg, mem=rm, mask=vvvv.
+void x86_vpmaskmovd_rm(SecBuf *s, X86XmmReg d, X86XmmReg mask, X86Mem m) {
+    vex3(s, 1, 2, 1, 1, d, mask, (X86XmmReg)m.base);
+    emit1(s, 0x8c);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vpmaskmovd_mr(SecBuf *s, X86Mem m, X86XmmReg data, X86XmmReg mask) {
+    vex3(s, 1, 2, 1, 1, data, mask, (X86XmmReg)m.base);
+    emit1(s, 0x8e);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)data);
+}
+void x86_vpmaskmovq_rm(SecBuf *s, X86XmmReg d, X86XmmReg mask, X86Mem m) {
+    vex3(s, 1, 2, 1, 1, d, mask, (X86XmmReg)m.base);
+    emit1(s, 0x8d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vpmaskmovq_mr(SecBuf *s, X86Mem m, X86XmmReg data, X86XmmReg mask) {
+    vex3(s, 1, 2, 1, 1, data, mask, (X86XmmReg)m.base);
+    emit1(s, 0x8f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)data);
+}
+
+
 // x87
 void x86_fldl_m(SecBuf *s, X86Mem m) {
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);

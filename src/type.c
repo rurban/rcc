@@ -332,19 +332,21 @@ static Type *builtin_return_type(const char *name) {
 
 // Cached vector types for __builtin_ia32_* return-type classification.
 // kind: 0=float,1=double,2=signed char,3=short,4=int,5=long long.
-// Only the 8-byte (MMX) and 16-byte (SSE) shapes are ever needed.
+// 8-byte (MMX), 16-byte (SSE) and 32-byte (AVX) shapes.
 static Type *ia32_vec_ty(int kind, int bytes) {
-    static Type *cache[6][2];
-    if (!cache[kind][bytes == 8 ? 0 : 1]) {
+    static Type *cache[6][3];
+    int idx = bytes == 8 ? 0 : bytes == 32 ? 2
+                                           : 1;
+    if (!cache[kind][idx]) {
         Type *elem = kind == 0 ? ty_float
             : kind == 1        ? ty_double
             : kind == 2        ? ty_char
             : kind == 3        ? ty_short
             : kind == 4        ? ty_int
                                : ty_llong;
-        cache[kind][bytes == 8 ? 0 : 1] = rcc_make_vector_type(elem, bytes);
+        cache[kind][idx] = rcc_make_vector_type(elem, bytes);
     }
-    return cache[kind][bytes == 8 ? 0 : 1];
+    return cache[kind][idx];
 }
 
 static bool ia32_endswith(const char *n, const char *suf) {
@@ -363,6 +365,12 @@ static bool ia32_endswith(const char *n, const char *suf) {
 static Type *ia32_builtin_ret(const char *fullname) {
     const char *n = fullname + 15; // "__builtin_ia32_"
     int L = (int)strlen(n);
+    // Vector width encoded in the trailing "256"/"128" suffix (AVX/SSE).
+    // 0 = no suffix: float families default to 16, int families to 8 (MMX).
+    int vecsz = 0;
+    if (ia32_endswith(n, "256")) vecsz = 32;
+    else if (ia32_endswith(n, "128"))
+        vecsz = 16;
 
     // --- exact scalar/void returns ---
     // int-returning: move-masks, compares-with-flags, CRC, string ops
@@ -386,6 +394,13 @@ static Type *ia32_builtin_ret(const char *fullname) {
         !strcmp(n, "maskmovdqu") || !strcmp(n, "maskmovq") ||
         !strncmp(n, "storehps", 8) || !strncmp(n, "storelps", 8))
         return ty_void;
+
+    // bf16 convert with mask: `__v8bf R = __builtin_ia32_cvtneps2bf16_v4sf_mask(...)`
+    // must type as a 16-byte vector (16-bit bf16 elements), else the header's
+    // scalar-init-of-vector parse fails. Checked BEFORE the generic cvt*
+    // branch (which would classify it as int).
+    if (!strcmp(n, "cvtneps2bf16_v4sf_mask"))
+        return ia32_vec_ty(3, 16); // v8hi
 
     // --- converts (cvt*) ---
     if (L > 3 && memcmp(n, "cvt", 3) == 0) {
@@ -455,13 +470,69 @@ static Type *ia32_builtin_ret(const char *fullname) {
         }
     }
 
+    // int-returning 256-bit forms: the root (name without the 128/256
+    // suffix) carries the exact-name meaning (movmskps256/movmskpd256
+    // return a bitmask, pmovmskb256 the sign bits, vtest* the flags).
+    {
+        const char *base = n;
+        int blen = L - (vecsz ? 3 : 0);
+        if ((blen == 8 && memcmp(base, "movmskps", 8) == 0) ||
+            (blen == 8 && memcmp(base, "movmskpd", 8) == 0) ||
+            (blen == 9 && memcmp(base, "pmovmskb", 9) == 0) ||
+            (blen >= 5 && memcmp(base, "vtest", 5) == 0))
+            return ty_int;
+    }
+
+    // root-based vector results for names whose suffix carries no
+    // b/w/d/q/ps/pd letter (palignr, permvarsi, vpermilps, movddup,
+    // extract/insert, broadcasts).
+    {
+        const char *base = n;
+        int blen = L - (vecsz ? 3 : 0);
+#define ROOT(s) (blen == (int)sizeof(s) - 1 && memcmp(base, s, sizeof(s) - 1) == 0)
+        if (ROOT("palignr")) return ia32_vec_ty(2, vecsz ? vecsz : 8); // v32qi / v8qi
+        if (ROOT("permvarsi")) return ia32_vec_ty(4, 32); // v8si
+        if (ROOT("permvarsf")) return ia32_vec_ty(0, 32); // v8sf
+        if (ROOT("vpermilvarps")) return ia32_vec_ty(0, 32); // v8sf
+        if (ROOT("vpermilvarpd")) return ia32_vec_ty(1, 32); // v4df
+        if (ROOT("vpermilps")) return ia32_vec_ty(0, 32); // v8sf (imm form)
+        if (ROOT("vpermilpd")) return ia32_vec_ty(1, 32); // v4df (imm form)
+        if (ROOT("vperm2f128_si")) return ia32_vec_ty(5, 32); // v4di
+        if (ROOT("vperm2f128_pd")) return ia32_vec_ty(1, 32); // v4df
+        if (ROOT("vperm2f128_ps")) return ia32_vec_ty(0, 32); // v8sf
+        if (ROOT("movddup") || ROOT("movsldup") || ROOT("movshdup"))
+            return ia32_vec_ty(0, vecsz ? vecsz : 16); // v8sf / v4sf
+        if (ROOT("vextractf128_pd")) return ia32_vec_ty(1, 16); // v2df
+        if (ROOT("vextractf128_ps")) return ia32_vec_ty(0, 16); // v4sf
+        if (ROOT("vextractf128_si") || ROOT("extract128i"))
+            return ia32_vec_ty(4, 16); // v4si
+        if (ROOT("vinsertf128_pd")) return ia32_vec_ty(1, 32); // v4df
+        if (ROOT("vinsertf128_ps")) return ia32_vec_ty(0, 32); // v8sf
+        if (ROOT("vinsertf128_si") || ROOT("insert128i"))
+            return ia32_vec_ty(4, 32); // v8si
+        if (ROOT("vbroadcastss") || ROOT("vbroadcastss_ps"))
+            return ia32_vec_ty(0, 32); // v8sf
+        if (ROOT("vbroadcastsd") || ROOT("vbroadcastsd_pd") || ROOT("vbroadcastsi"))
+            return ia32_vec_ty(1, 32); // v4df
+#undef ROOT
+    }
+
     // --- float/double vector families by suffix ---
     // (exceptions handled by the exact matches above: movmskps/movmskpd,
     // movntps/movntpd, cvtss2si/cvtsd2si...)
-    if (ia32_endswith(n, "ss") || ia32_endswith(n, "ps"))
-        return ia32_vec_ty(0, 16); // v4sf
-    if (ia32_endswith(n, "sd") || ia32_endswith(n, "pd"))
-        return ia32_vec_ty(1, 16); // v2df
+    // The float/double families encode their width in the suffix that
+    // PRECEDES the optional 128/256 size suffix (mulps256 -> mulps).
+    {
+        int blen = L - (vecsz ? 3 : 0); // base name, no size suffix
+        bool ends_ss = blen >= 2 && memcmp(n + blen - 2, "ss", 2) == 0;
+        bool ends_ps = blen >= 2 && memcmp(n + blen - 2, "ps", 2) == 0;
+        bool ends_sd = blen >= 2 && memcmp(n + blen - 2, "sd", 2) == 0;
+        bool ends_pd = blen >= 2 && memcmp(n + blen - 2, "pd", 2) == 0;
+        if (ends_ss || ends_ps)
+            return ia32_vec_ty(0, vecsz ? vecsz : 16); // v4sf / v8sf
+        if (ends_sd || ends_pd)
+            return ia32_vec_ty(1, vecsz ? vecsz : 16); // v2df / v4df
+    }
 
     // --- integer vector families: last b/w/d/q before trailing digits ---
     {
@@ -473,14 +544,12 @@ static Type *ia32_builtin_ret(const char *fullname) {
             int kind = el == 'b' ? 2 : el == 'w' ? 3
                 : el == 'd'                      ? 4
                                                  : 5;
-            bool is128 = ia32_endswith(n, "128");
-            return ia32_vec_ty(kind, is128 ? 16 : 8);
+            return ia32_vec_ty(kind, vecsz ? vecsz : 8);
         }
         // movshdup/movsldup: SSE3 packed-float unary shuffles
         if (!strcmp(n, "movshdup") || !strcmp(n, "movsldup"))
             return ia32_vec_ty(0, 16); // v4sf
-        bool is128 = ia32_endswith(n, "128");
-        int end = is128 ? L - 3 : L;
+        int end = vecsz ? L - (vecsz == 32 ? 3 : 3) : L;
         int kind = -1;
         for (int i = end - 1; i >= 0; i--) {
             if (n[i] == 'b') {
@@ -501,7 +570,7 @@ static Type *ia32_builtin_ret(const char *fullname) {
             } // qword lanes
         }
         if (kind >= 0)
-            return ia32_vec_ty(kind, is128 ? 16 : 8);
+            return ia32_vec_ty(kind, vecsz ? vecsz : 8);
     }
     return ty_int; // unknown: implicit int (better than a wrong vector type)
 }

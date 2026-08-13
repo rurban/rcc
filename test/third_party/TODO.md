@@ -788,8 +788,10 @@ PASS) on the mingw and arm64 cross-compile targets.
 **Still blocked** (much larger undertakings, not attempted this
 session): test*blake3 needs real AVX-512 (`avx512fintrin.h` pulls in
 `__mmask8`/`_CMP_EQ_OQ`-style predicates and hundreds of
-`\_\_builtin_ia32*\*` AVX-512 builtins rcc has no codegen for at all);
-test_brotli needs real AVX2 codegen similarly; test_fftw's failure
+`\_\_builtin_ia32*\*` AVX-512 builtins rcc has no codegen for at all —
+EVEX encodings, ZMM regs and k-masks; AVX2 (test_brotli) is now fully
+implemented, see "Fixed (2026-08-12, AVX/AVX2 intrinsics session)"
+below); test_fftw's failure
 (`fftw3.h:483`, `\_\_float128`/`FFTW_DEFINE_API`quad-precision) is
 unrelated to SIMD entirely. A genuine fix for blake3/brotli would mean
 rcc shipping its own`<immintrin.h>`/`<avxintrin.h>`/`<avx2intrin.h>`(the way it already does for`<emmintrin.h>`/`<tmmintrin.h>`) instead
@@ -3851,6 +3853,74 @@ tests 7/7 — 0 failed overall (native Linux x86-64). muon: full
 add_project_dependencies`) reproduce identically with a fully gcc-built
 muon and are environment/muon issues (wayland-scanner tool missing;
 zlib link path), not rcc bugs.
+
+### Fixed (2026-08-12, AVX/AVX2 intrinsics session)
+
+Implemented AVX (256-bit) intrinsic support end to end — the VEX
+encoding infrastructure and the full AVX/AVX2 `__builtin_ia32_*256`
+surface — unblocking test_brotli's `-mavx2` compile (test_blake3's
+AVX-512 remains, see below):
+
+- **VEX encoders in `src/x86_enc.c`** — 2- and 3-byte VEX prefix
+  emission (`vex2`/`vex3`/`vex_rr`, vvvv inverted, L=1) plus ~200
+  `VEX256_*` 2-op/3-op/imm/mem/GP-dst encoders: float ALU
+  (vaddps..vxorps, hadd/hsub/addsub, min/max, sqrt/rcp/rsqrt, cmpps),
+  int ALU (vpaddb..vpsubq, pand/por/pxor/pandn, pcmpeq/pcmpgt,
+  min/max, mul, pack, punpck, pavg, saturating add/sub, psadbw,
+  pmaddwd, pmaddubsw, pmulhrsw), 0F38 (pabs/psign/phadd/phsub/pshufb/
+  pmulld/pmuldq/pcmpgtq/packusdw/vpsllvd/vpsrlvd/vpsravd/pmovsx/pmovzx/
+  vptest/vtest/maskmov), 0F3A imm (vblendps/pd, vpblendb/w/d,
+  vblendv\* with the is4 mask nibble, vroundps/pd, vdpps, vmpsadbw,
+  vpalignr, vperm2f128/i128, vpermq/vpermpd, vpermilps/pd imm,
+  vextractf128/i128, vinsertf128/i128), shifts (imm 71/72/73 group +
+  XMM-count var forms + pslldq/psrldq), broadcasts, maskload/store,
+  movmsk, non-temporal stores.
+- **32-byte vector ops** (`gen_vector32_x86`) — element-wise
+  ADD/SUB/MUL/DIV/AND/OR/XOR/compare/neg for `vector_size(32)` types
+  via the fixed-YMM path, with scalar operands broadcast through
+  vpbroadcastb/w/d/q / vbroadcastss/sd. Integer MUL via vpmulld/vpmullw.
+  Result slots are 32-byte (two int128 slots), and `alloc_int128_slot`
+  now refuses to hand out struct-ret-buf slots that overlap the local
+  var pool (32-byte params / the hidden `__retbuf` var extend past
+  `fn->stack_size`, which used to clobber the saved struct-return
+  pointer and segfault).
+- **`__builtin_ia32_*256` classification** (`ia32_builtin_ret`) — the
+  trailing `256`/`128` suffix selects the vector width; the float
+  (ps/pd/ss/sd) suffix is checked on the base name _before_ the size
+  suffix (mulps256), the int rule scans the base for the element
+  letter, and root-based specials (palignr, permvarsi/permvarsf,
+  vpermilps/vpermilpd, movddup/movshdup/movsldup, vextract/insert,
+  vbroadcast, movmsk/pvtest int results) fill the gaps.
+- **Encoding gotchas found by A/B against gcc -mavx2** (the print
+  probe is byte-identical to gcc at -O0..-O3): gcc sets VEX.W=1 on
+  ALL 256-bit 0F38/0F3A ops (the W0 encodings SIGILL on this CPU),
+  vextracti128/vinserti128 are W1, vpermilps imm = 0F3A 04 (pd=05),
+  vpshuflw = F2 / vpshufhw = F3 (they were swapped), vpermd/vpermps
+  take (indices in vvvv, table in rm), vextract encodes dst in
+  ModRM.rm, palignr's builtin imm counts BITS (header passes \_\_N\*8),
+  cvttps2dq = F3 not F2, and the runtime-int shift counts on the "i"
+  builtins fall back to the XMM-count form.
+- **`__AVX__`/`__AVX2__`/`__FMA__`/AVX-512 macros** in
+  `gcc_predefined.h` so the real headers' `#error` guards pass, and
+  the header chain now compiles: `__bf16` is a 2-byte type (keyword,
+  not the float fallback), `__mmask8` resolves, the bf16-mask convert
+  builtin is typed as a 16-byte vector, and the declarator keeps
+  function attributes that appear after a pointer star
+  (`extern __inline void * __attribute__((__gnu_inline__)) fn()` —
+  gcc's lwpintrin.h) so those wrappers stay eliminated instead of
+  being codegen'd and erroring.
+- New regression test `test/test_avx2_intrinsics.c` (x86-only,
+  guarded like the ia32 intrinsics test) covering the families above,
+  gcc-verified; PASS at -O0..-O3, PASS on the mingw and arm64
+  cross-compile targets. Full suite: TCC 118/118, Unit tests
+  234/234, Compliance 15/15, C-testsuite 220/220, Torture
+  3605/3609 (0 failed, 4 todo).
+
+**Still blocked** (next session): test*blake3's `blake3_dispatch.c`
+uses AVX-512 (`avx512fintrin.h`/`avx512vlintrin.h`): EVEX (0x62)
+encodings, ZMM0-31 and the k0-k7 mask registers with `\_mm512_mask*_`predicates. The 256-bit VEX infrastructure and the`\_\_AVX512_\_\_`
+macros are in place, so the remaining work is EVEX/ZMM/mask codegen
+on top.
 
 ### Fixed (2026-08-12, SIMD intrinsics / real glibc headers session)
 
