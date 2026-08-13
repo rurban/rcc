@@ -368,9 +368,24 @@ static Type *ia32_builtin_ret(const char *fullname) {
     // Vector width encoded in the trailing "256"/"128" suffix (AVX/SSE).
     // 0 = no suffix: float families default to 16, int families to 8 (MMX).
     int vecsz = 0;
-    if (ia32_endswith(n, "256")) vecsz = 32;
+    if (ia32_endswith(n, "512_mask")) vecsz = 64; // AVX-512 masked forms
+    else if (ia32_endswith(n, "512"))
+        vecsz = 64;
+    else if (ia32_endswith(n, "256"))
+        vecsz = 32;
     else if (ia32_endswith(n, "128"))
         vecsz = 16;
+    // AVX-512 result-width exceptions: pmovqd512_mask narrows 512->256,
+    // extractf64x4_mask extracts 256, the compares return a 16-bit mask.
+    if (strstr(n, "pmovqd512_mask"))
+        return ia32_vec_ty(4, 32); // v8si
+    if (strstr(n, "extractf64x4_mask"))
+        return ia32_vec_ty(1, 32); // v4df
+    if (strstr(n, "ucmpd512_mask") || strstr(n, "cmpd512_mask") ||
+        strstr(n, "ucmpq512_mask") || strstr(n, "cmpq512_mask"))
+        return ty_int; // __mmask16 result
+    if (!strcmp(n, "extractf64x4_mask"))
+        return ia32_vec_ty(1, 32); // v4df (the name carries no 512 suffix)
 
     // --- exact scalar/void returns ---
     // int-returning: move-masks, compares-with-flags, CRC, string ops
@@ -488,7 +503,7 @@ static Type *ia32_builtin_ret(const char *fullname) {
     // extract/insert, broadcasts).
     {
         const char *base = n;
-        int blen = L - (vecsz ? 3 : 0);
+        int blen = L - (vecsz ? (ia32_endswith(n, "512_mask") ? 7 : 3) : 0);
 #define ROOT(s) (blen == (int)sizeof(s) - 1 && memcmp(base, s, sizeof(s) - 1) == 0)
         if (ROOT("palignr")) return ia32_vec_ty(2, vecsz ? vecsz : 8); // v32qi / v8qi
         if (ROOT("permvarsi")) return ia32_vec_ty(4, 32); // v8si
@@ -523,7 +538,7 @@ static Type *ia32_builtin_ret(const char *fullname) {
     // The float/double families encode their width in the suffix that
     // PRECEDES the optional 128/256 size suffix (mulps256 -> mulps).
     {
-        int blen = L - (vecsz ? 3 : 0); // base name, no size suffix
+        int blen = L - (vecsz ? (ia32_endswith(n, "512_mask") ? 7 : 3) : 0); // base name, no size suffix
         bool ends_ss = blen >= 2 && memcmp(n + blen - 2, "ss", 2) == 0;
         bool ends_ps = blen >= 2 && memcmp(n + blen - 2, "ps", 2) == 0;
         bool ends_sd = blen >= 2 && memcmp(n + blen - 2, "sd", 2) == 0;
@@ -549,7 +564,7 @@ static Type *ia32_builtin_ret(const char *fullname) {
         // movshdup/movsldup: SSE3 packed-float unary shuffles
         if (!strcmp(n, "movshdup") || !strcmp(n, "movsldup"))
             return ia32_vec_ty(0, 16); // v4sf
-        int end = vecsz ? L - (vecsz == 32 ? 3 : 3) : L;
+        int end = vecsz ? L - (ia32_endswith(n, "512_mask") ? 7 : 3) : L;
         int kind = -1;
         for (int i = end - 1; i >= 0; i--) {
             if (n[i] == 'b') {

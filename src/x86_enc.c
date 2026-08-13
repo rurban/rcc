@@ -2218,6 +2218,149 @@ static void vex_rr(SecBuf *s, int pp, int map, int W, int L, int op, X86XmmReg d
     }
     emit1(s, modrxmm(3, d, rm));
 }
+// ===================== EVEX (AVX-512) =====================
+// 4-byte EVEX prefix (0x62) for 512-bit ops: P0 = R X B R' 0 0 mmmmm,
+// P1 = W vvvv 1 pp, P2 = z L'L b V' aaa. L'L=10 selects 512-bit. aaa is
+// the k-mask register (0 = unmasked). Register extension: R/R' cover
+// reg bits 4/3, V' covers vvvv bit 4, B covers rm bit 4.
+static void evex4(SecBuf *s, int pp, int map, int W, int L, int k, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    int Rd = ((int)d >> 4) & 1, Rp = ((int)d >> 3) & 1;
+    int Vp = ((int)v >> 3) & 1;
+    int Bm = ((int)rm >> 4) & 1;
+    int vvvv = (~(int)v) & 15;
+    emit1(s, 0x62);
+    emit1(s, (uint8_t)(((~Rd & 1) << 7) | (1 << 6) | ((~Bm & 1) << 5) | ((~Rp & 1) << 4) | (map & 15)));
+    emit1(s, (uint8_t)(((W & 1) << 7) | (vvvv << 3) | (1 << 2) | (pp & 3))); // EVEX W is NOT inverted
+    emit1(s, (uint8_t)(((L & 3) << 5) | ((~Vp & 1) << 3) | (k & 15))); // z=0, b=0
+}
+// reg/reg/reg EVEX op with optional k-mask (aaa). vvvv = first source.
+static void evex_rr(SecBuf *s, int pp, int map, int W, int op, int k, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    evex4(s, pp, map, W, 2, k, d, v, rm);
+    emit1(s, (uint8_t)op);
+    emit1(s, modrxmm(3, d, rm));
+}
+// EVEX immediate-group shifts (66 0F 71/72/73 /ext ib): dst=rm, ext=reg.
+static void evex_group_imm(SecBuf *s, int W, int L, int grp, int ext, int k, X86XmmReg d, uint8_t imm) {
+    evex4(s, 1, 1, W, L, k, (X86XmmReg)ext, X86_XMM0, d);
+    emit1(s, (uint8_t)grp);
+    emit1(s, modrxmm(3, ext, d));
+    emit1(s, imm);
+}
+// EVEX 3-op with imm (0F3A map).
+static void evex_rr_imm(SecBuf *s, int map, int op, int k, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    evex4(s, 1, map, 0, 2, k, d, v, rm);
+    emit1(s, (uint8_t)op);
+    emit1(s, modrxmm(3, d, rm));
+    emit1(s, imm);
+}
+// EVEX mask compare: result in a k register (k0 invalid as mask; k1 used).
+static void evex_kcmp(SecBuf *s, int map, int op, int W, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    evex4(s, 1, map, W, 2, 0, d, v, rm); // aaa=0, k-dst in ModRM.reg
+    emit1(s, (uint8_t)op);
+    emit1(s, modrxmm(3, d, rm));
+    emit1(s, imm);
+}
+// VPMOVQD zmm -> ymm: 512-bit source (L'L=10), 256-bit dest.
+void x86_vpmovqd512(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
+    evex4(s, 1, 2, 0, 2, 0, d, X86_XMM0, rm);
+    emit1(s, 0x35);
+    emit1(s, modrxmm(3, d, rm));
+}
+// 512-bit 3-op ALU encoders (exported for codegen). k=0 = unmasked.
+// 64-byte vector moves: vmovups zmm, m512 / m512, zmm
+void x86_vmovups_rm512(SecBuf *s, X86XmmReg d, X86Mem m) {
+    evex4(s, 0, 1, 0, 2, 0, d, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x10);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+}
+void x86_vmovups_mr512(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    evex4(s, 0, 1, 0, 2, 0, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x11);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+// vpbroadcastd/q: EVEX.512.66.0F38.W0 58/59 (xmm source -> zmm dest)
+void x86_vpbroadcastd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+    evex_rr(s, 1, 2, 0, 0x58, k, d, X86_XMM0, rm);
+}
+void x86_vpbroadcastq512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+    evex_rr(s, 1, 2, 1, 0x59, k, d, X86_XMM0, rm);
+}
+// kmovw r32, k1 (VEX.128.0F.W0 90 /r): move a k-mask to a GP register.
+void x86_kmovw_r32_k1(SecBuf *s, X86Reg dstGp) {
+    vex2(s, 0, 0, (X86XmmReg)dstGp, X86_XMM0, X86_XMM1); // L=0, pp=0, vvvv=1111
+    emit1(s, 0x93); // KMOVW r32, k: reg=r32, rm=k
+    emit1(s, modrxmm(3, dstGp, X86_XMM1));
+}
+// vpcmpeqd: EVEX.512.66.0F.W0 76
+void x86_vpcmpeqd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+    evex_rr(s, 1, 1, 0, 0x76, k, d, v, rm);
+}
+
+#define EVEX512_3OP(fn, pp, map, W, op) \
+    void fn(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) { evex_rr(s, pp, map, W, op, k, d, v, rm); }
+EVEX512_3OP(x86_vpaddd512, 1, 1, 0, 0xfe)
+EVEX512_3OP(x86_vpaddq512, 1, 1, 1, 0xd4)
+EVEX512_3OP(x86_vpsubd512, 1, 1, 0, 0xfa)
+EVEX512_3OP(x86_vpsubq512, 1, 1, 1, 0xfb)
+EVEX512_3OP(x86_vpandd512, 1, 2, 0, 0xdb)
+EVEX512_3OP(x86_vpandq512, 1, 2, 1, 0xdb)
+EVEX512_3OP(x86_vpandnd512, 1, 2, 0, 0xdf)
+EVEX512_3OP(x86_vpandnq512, 1, 2, 1, 0xdf)
+EVEX512_3OP(x86_vpord512, 1, 2, 0, 0xeb) // 512/256 macro
+EVEX512_3OP(x86_vporq512, 1, 2, 1, 0xeb) // 512/256 macro
+EVEX512_3OP(x86_vpxord512, 1, 2, 0, 0xef) // 512/256 macro
+EVEX512_3OP(x86_vpxorq512, 1, 2, 1, 0xef) // 512/256 macro
+EVEX512_3OP(x86_vpunpckldq512, 1, 1, 0, 0x62) // 512/256 macro
+EVEX512_3OP(x86_vpunpckhdq512, 1, 1, 0, 0x6a) // 512/256 macro
+EVEX512_3OP(x86_vpunpcklqdq512, 1, 1, 1, 0x6c) // 512/256 macro
+EVEX512_3OP(x86_vpunpckhqdq512, 1, 1, 1, 0x6d) // 512/256 macro
+// 512-bit imm shifts: vpsrld/vpsrlq (72/73 /2), vprord (72 /1)
+void x86_vpsrld512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
+    evex_group_imm(s, 0, 2, 0x72, 2, 0, d, imm);
+}
+void x86_vpsrlq512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
+    evex_group_imm(s, 1, 2, 0x73, 2, 0, d, imm);
+}
+void x86_vprord512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
+    evex_group_imm(s, 0, 2, 0x72, 0, 0, d, imm); // VPRORD = 72 /0 (right rotate)
+}
+// vshufi32x4 zmm: 66 0F 3A 43 /r ib
+void x86_vshufi32x4(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    evex_rr_imm(s, 3, 0x43, 0, d, v, rm, imm);
+}
+// VPRORD xmm: EVEX.128.66.0F.W0 72 /0 ib (L'L=00).
+void x86_vprord128_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
+    evex_group_imm(s, 0, 0, 0x72, 0, 0, d, imm);
+}
+void x86_vprord256_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
+    evex_group_imm(s, 0, 1, 0x72, 0, 0, d, imm);
+}
+// VPMOVQD ymm -> xmm: EVEX.256.66.0F38.W0 35 (L'L=01).
+void x86_vpmovqd256(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
+    evex4(s, 1, 2, 0, 1, 0, d, X86_XMM0, rm);
+    emit1(s, 0x35);
+    emit1(s, modrxmm(3, d, rm));
+}
+// VMOVDQU32 m256, ymm{k}: EVEX.256.66.0F38.W0 2F (masked 256-bit store).
+void x86_vmovdqu32_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
+    evex4(s, 1, 2, 0, 1, 0, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x2f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+}
+// VEXTRACTF64X4 zmm -> ymm: EVEX.512.66.0F3A.W1 1B /r ib (dst=rm).
+void x86_vextractf64x4(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    evex4(s, 1, 3, 1, 2, 0, rm, X86_XMM0, d);
+    emit1(s, 0x1b);
+    emit1(s, modrxmm(3, rm, d));
+    emit1(s, imm);
+}
+// vpcmpud (predicate in imm): result in k1 (movmsk-like); the ModRM.reg
+// field holds the k destination, so d is encoded there and aaa=0.
+void x86_vpcmpud512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    evex_kcmp(s, 3, 0x1f, 0, d, v, rm, imm);
+}
+
+
 // vmovups ymm, m256: VEX.256.0F.WIG 10 /r (load)
 void x86_vmovups_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 0, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);

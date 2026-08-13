@@ -3916,11 +3916,46 @@ AVX-512 remains, see below):
   234/234, Compliance 15/15, C-testsuite 220/220, Torture
   3605/3609 (0 failed, 4 todo).
 
-**Still blocked** (next session): test*blake3's `blake3_dispatch.c`
-uses AVX-512 (`avx512fintrin.h`/`avx512vlintrin.h`): EVEX (0x62)
-encodings, ZMM0-31 and the k0-k7 mask registers with `\_mm512_mask*_`predicates. The 256-bit VEX infrastructure and the`\_\_AVX512_\_\_`
-macros are in place, so the remaining work is EVEX/ZMM/mask codegen
-on top.
+### Fixed (2026-08-12, AVX-512 / EVEX intrinsics session)
+
+test_blake3 now builds and passes (rc=0) end to end — the whole
+`blake3_avx512.c`/`blake3_avx2.c`/`blake3_sse41.c`/`blake3_sse2.c`/
+`blake3_dispatch.c` set compiles with rcc against the real glibc
+`<immintrin.h>` chain:
+
+- **EVEX infrastructure in `src/x86_enc.c`** — the 4-byte 0x62 prefix
+  (`evex4`/`evex_rr`, R/X/B/R'/V' extension bits, L'L width field,
+  aaa k-mask field; EVEX W is NOT inverted unlike VEX) plus encoders
+  for the blake3 set: vpsrld/vpsrlq/vprord imm-group shifts (incl. the
+  128/256-bit VL forms), vpunpckldq/hdq/lqdq/hqdq, vshufi32x4,
+  vpmovqd (zmm to ymm and ymm to xmm), vpcmpud (result in a k register
+  plus kmovw to GP), vmovdqu32 masked stores, vmovups zmm moves,
+  vpbroadcastd/q, vpandnd/vpxord/vpaddd/vpsubd 3-op ALU, and
+  vextractf64x4 (dst in ModRM.rm, W1).
+- **`*512_mask` builtin dispatch** in codegen.c — the masked forms
+  blake3's `_mm512_*` wrappers lower to; the (\_\_v16si)-1 mask blake3
+  passes encodes as aaa=0 (unmasked), equivalent to gcc's real k-mask.
+- **64-byte vectors**: int-element ops go through the parser's
+  `vector_lower` element loop (correct, gcc-verified); float 64-byte
+  vectors route to a new `gen_vector64_x86` (EVEX, fixed ZMM0-3,
+  64-byte result slots).
+- **Classifier**: the 512/512_mask size suffix, result-width
+  exceptions (pmovqd512_mask narrows to 32 bytes, the ucmpd\* compares
+  return a \_\_mmask16), and name-shape outliers (extractf64x4_mask,
+  shuf_i32x4_mask, storedqusi256_mask, prord128/256_mask carry no
+  "512" in the name).
+- **Bundled header gaps** the real chain needs: `__m128[u|d|i]_u` /
+  `__m256[u|d|i]_u` unaligned aliases in include/emmintrin.h and the
+  32 `_CMP_*` compare predicates in include/xmmintrin.h.
+- New regression test `test/test_avx512_intrinsics.c`: compiles the
+  full 512 surface; the runtime checks are guarded by
+  `__builtin_cpu_supports("avx512f")` so the test PASSes on machines
+  without AVX-512 (the local dev CPU is a Zen+ with no AVX-512; the
+  encodings were verified against gcc -mavx512f objdump output).
+  PASS at -O0..-O3, PASS on the mingw and arm64 cross targets.
+
+Full suite: TCC 118/118, Unit 235/235, Compliance 15/15, C-testsuite
+220/220, Torture 3605/3609 (0 failed, 4 todo); test_blake3 PASS.
 
 ### Fixed (2026-08-12, SIMD intrinsics / real glibc headers session)
 

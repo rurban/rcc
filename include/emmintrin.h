@@ -21,6 +21,15 @@
 // typedefs are the typed lane views used to reinterpret the raw registers.
 typedef double __m128d __attribute__((__vector_size__(16), __may_alias__));
 typedef long long __m128i __attribute__((__vector_size__(16), __may_alias__));
+// GCC's unaligned aliases: same vectors, aligned(1) so dereferences via
+// them allow unaligned loads/stores (the real headers use these for
+// _mm256_loadu2_m128i/_mm_loadu_si128 parameter types).
+typedef float __m128_u __attribute__((__vector_size__(16), __may_alias__, __aligned__(1)));
+typedef double __m128d_u __attribute__((__vector_size__(16), __may_alias__, __aligned__(1)));
+typedef long long __m128i_u __attribute__((__vector_size__(16), __may_alias__, __aligned__(1)));
+typedef float __m256_u __attribute__((__vector_size__(32), __may_alias__, __aligned__(1)));
+typedef double __m256d_u __attribute__((__vector_size__(32), __may_alias__, __aligned__(1)));
+typedef long long __m256i_u __attribute__((__vector_size__(32), __may_alias__, __aligned__(1)));
 
 typedef double __v2df __attribute__((__vector_size__(16)));
 typedef long long __v2di __attribute__((__vector_size__(16)));
