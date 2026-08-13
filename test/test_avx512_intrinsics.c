@@ -73,10 +73,12 @@ int main(void) {
         CHECK(m == 0xff);
         // 256-bit masked store + 512->256 extract
         v16si val = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
-        int buf[8] = {0};
-        fprintf(stderr, "CP9\n");
-        __builtin_ia32_storedqusi256_mask(buf, (v8si)val, -1);
-        CHECK(buf[0] == 7 && buf[7] == 7);
+        if (__builtin_cpu_supports("avx512vl")) {
+            int buf[8] = {0};
+            fprintf(stderr, "CP9\n");
+            __builtin_ia32_storedqusi256_mask(buf, (v8si)val, -1);
+            CHECK(buf[0] == 7 && buf[7] == 7);
+        }
         v8df src64 = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
         fprintf(stderr, "CP10\n");
         v4df ext = (v4df)__builtin_ia32_extractf64x4_mask(src64, 1, (v4df)-1);
