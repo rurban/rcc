@@ -2297,9 +2297,14 @@ void x86_kmovw_r32_k1(SecBuf *s, X86Reg dstGp) {
     emit1(s, 0x93); // KMOVW r32, k: reg=r32, rm=k
     emit1(s, modrxmm(3, (X86XmmReg)dstGp, X86_XMM1));
 }
-// vpcmpeqd: EVEX.512.66.0F.W0 76
+// all-ones: EVEX.512.66.0F3A.W0 25 /r ib (VPTERNLOGD zmm,zmm,zmm,0xff).
+// The compare ops (VPCMPEQD & co.) write k-registers only, so a vector
+// all-ones cannot come from vpcmpeqd with a zmm destination.
 void x86_vpcmpeqd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
-    evex_rr(s, 1, 1, 0, 0x76, k, d, v, rm);
+    (void)v;
+    (void)rm;
+    (void)k;
+    evex_rr_imm(s, 3, 0x25, 0, d, X86_XMM0, X86_XMM0, 0xff);
 }
 
 #define EVEX512_3OP(fn, pp, map, W, op) \
@@ -2347,10 +2352,12 @@ void x86_vpmovqd256(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
     emit1(s, 0x35);
     emit1(s, modrxmm(3, d, rm));
 }
-// VMOVDQU32 m256, ymm{k}: EVEX.256.66.0F38.W0 2F (masked 256-bit store).
+// VMOVDQU32 m256, ymm{k}: EVEX.256.F3.0F.W0 7F /r (masked 256-bit store).
+// The 0F38 2F form does not exist for the store direction (2F is a load-
+// only opcode); GNU as emits 62 d1 7e 28 7f.
 void x86_vmovdqu32_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
-    evex4(s, 1, 2, 0, 1, 0, sr, X86_XMM0, (X86XmmReg)m.base);
-    emit1(s, 0x2f);
+    evex4(s, 2, 1, 0, 1, 0, sr, X86_XMM0, (X86XmmReg)m.base);
+    emit1(s, 0x7f);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
 // VEXTRACTF64X4 zmm -> ymm: EVEX.512.66.0F3A.W1 1B /r ib (dst=rm).
