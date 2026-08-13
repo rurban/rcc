@@ -2290,7 +2290,7 @@ void x86_vpbroadcastq512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int 
 void x86_kmovw_r32_k1(SecBuf *s, X86Reg dstGp) {
     vex2(s, 0, 0, (X86XmmReg)dstGp, X86_XMM0, X86_XMM1); // L=0, pp=0, vvvv=1111
     emit1(s, 0x93); // KMOVW r32, k: reg=r32, rm=k
-    emit1(s, modrxmm(3, dstGp, X86_XMM1));
+    emit1(s, modrxmm(3, (X86XmmReg)dstGp, X86_XMM1));
 }
 // vpcmpeqd: EVEX.512.66.0F.W0 76
 void x86_vpcmpeqd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {

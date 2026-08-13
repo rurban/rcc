@@ -4121,8 +4121,30 @@ static inline void cg_ascii_add(const char *s) {
     cg_ascii_strings = a;
 }
 
-// codegen exports (used by cg_builtins.c)
+// codegen exports (used by cg_builtins.c, cg_vectors.c)
 extern VReg alloc_reg(void);
+extern VReg gen(Node *node);
+extern VReg gen_addr(Node *node);
+extern VReg alloc_int128_addr(void);
+extern int alloc_int128_slot(void);
+extern int current_fn_stack_size;
+extern int fn_struct_ret_off;
+extern int fn_struct_ret_total;
+extern Function *current_fn_def;
+extern VReg gen_scalar_addr(Node *node);
+extern VReg gen_vector(Node *node);
+#ifndef ARCH_ARM64
+extern VReg gen_vector32_x86(Node *node);
+extern VReg gen_vector64_x86(Node *node);
+extern VReg gen_ia32_builtin(Node *node);
+#endif
+#ifdef ARCH_ARM64
+extern VReg gen_vector_unary_builtin(Node *node);
+extern VReg gen_vector_binary_builtin(Node *node);
+#endif
+#ifndef ARCH_ARM64
+extern VReg gen_vector_splat(Node *scalar, Type *vty);
+#endif
 extern void free_reg(VReg i);
 extern VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node *));
 extern void init_builtin_names(void);
