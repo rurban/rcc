@@ -28,6 +28,10 @@ Type *ty_int128  = &(Type){.kind=TY_INT128,  .size=16, .align=16};
 Type *ty_uint128 = &(Type){.kind=TY_INT128,  .size=16, .align=16, .is_unsigned=true};
 Type *ty_float   = &(Type){.kind=TY_FLOAT,   .size=4,  .align=4};
 Type *ty_double  = &(Type){.kind=TY_DOUBLE,  .size=8,  .align=8};
+// IEEE 754-2008 decimal floating point (BID encoding): 7/16/34 digits.
+Type *ty_decimal32  = &(Type){.kind=TY_DECIMAL32,  .size=4,  .align=4};
+Type *ty_decimal64  = &(Type){.kind=TY_DECIMAL64,  .size=8,  .align=8};
+Type *ty_decimal128 = &(Type){.kind=TY_DECIMAL128, .size=16, .align=16};
 // Apple ARM64: long double is 64-bit (same as double).
 // Linux ARM64/x86-64: long double is 128-bit (80-bit x87 padded, or IEEE quad).
 #ifdef __APPLE__
@@ -48,6 +52,15 @@ bool is_flonum(Type *ty) {
     return ty->kind == TY_FLOAT || ty->kind == TY_DOUBLE || ty->kind == TY_LDOUBLE;
 }
 
+// IEEE 754-2008 decimal floating point. Values use the BID bit encoding
+// and are passed in FP-class registers (SSE on x86-64, NEON s/d/q on
+// arm64) per the platform decimal ABI, but ALL arithmetic is done by the
+// bundled libdfp runtime calls (__bid_*3/__bid_*2), never by native FP
+// instructions, so is_flonum() deliberately excludes them.
+bool is_decimal(Type *ty) {
+    return ty->kind == TY_DECIMAL32 || ty->kind == TY_DECIMAL64 || ty->kind == TY_DECIMAL128;
+}
+
 bool is_complex(Type *ty) {
     return ty && ty->kind == TY_COMPLEX;
 }
@@ -63,7 +76,7 @@ Type *complex_type(Type *base) {
 
 
 bool is_number(Type *ty) {
-    return is_integer(ty) || is_flonum(ty) || is_complex(ty);
+    return is_integer(ty) || is_flonum(ty) || is_complex(ty) || is_decimal(ty);
 }
 
 Type *get_integer_type(int size, bool is_unsigned) {
@@ -99,6 +112,7 @@ Type *get_integer_type(int size, bool is_unsigned) {
 // into the same TU so the gen_bitint helper calls resolve. Reset at the
 // start of each parse() (see parser.c).
 bool parser_used_wide_bitint = false;
+bool parser_used_decimal = false;
 
 Type *bitint_type(int width, bool is_unsigned) {
     static Type *cache[2][BITINT_MAXWIDTH + 1];
@@ -224,6 +238,28 @@ static Type *get_float_type(Type *lhs, Type *rhs) {
     return ty_float;
 }
 
+// C23 6.3.1.8 (usual arithmetic conversions) for _Decimal32/64/128: the
+// wider of the two decimal types wins; a binary floating type mixed with a
+// decimal type converts to the decimal type.
+static Type *get_decimal_type(Type *lhs, Type *rhs) {
+    Type *d = NULL, *other = NULL;
+    if (is_decimal(lhs)) {
+        d = lhs;
+        other = rhs;
+    } else {
+        d = rhs;
+        other = lhs;
+    }
+    if (is_decimal(other)) {
+        // Both decimal: wider wins (128 > 64 > 32).
+        if (other->size > d->size) return other;
+        return d;
+    }
+    // Decimal + binary float / integer: decimal wins. Integer operands are
+    // converted to the decimal type (like float operands do to int).
+    return d;
+}
+
 static int int_rank(Type *ty) {
     switch (ty->kind) {
     case TY_BOOL: return 0;
@@ -267,6 +303,8 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
     }
     if (is_flonum(lhs) || is_flonum(rhs))
         return get_float_type(lhs, rhs);
+    if (is_decimal(lhs) || is_decimal(rhs))
+        return get_decimal_type(lhs, rhs);
     lhs = integer_promotion(lhs);
     rhs = integer_promotion(rhs);
     bool is_unsigned = lhs->is_unsigned || rhs->is_unsigned;
@@ -871,10 +909,10 @@ static void add_type_internal(Node *node) {
         Type *rty = node->rhs->ty;
         if (is_number(lty) && is_number(rty)) {
             node->ty = usual_arith_type(lty, rty);
-            if (is_flonum(node->ty)) {
-                if (is_integer(lty))
+            if (is_flonum(node->ty) || is_decimal(node->ty)) {
+                if (lty != node->ty)
                     insert_arith_cast(&node->lhs, node->ty);
-                if (is_integer(rty))
+                if (rty != node->ty)
                     insert_arith_cast(&node->rhs, node->ty);
             } else if (is_integer(node->ty)) {
                 if (node->ty->size > lty->size)
@@ -1009,7 +1047,10 @@ static void add_type_internal(Node *node) {
                 cast->tok = node->rhs->tok;
                 node->rhs = cast;
             } else if ((lf && !rf) || (!lf && rf) ||
-                       (lf && rf && node->lhs->ty->size != node->rhs->ty->size)) {
+                       (lf && rf && node->lhs->ty->size != node->rhs->ty->size) ||
+                       (is_decimal(node->lhs->ty) && !is_decimal(node->rhs->ty)) ||
+                       (is_decimal(node->lhs->ty) && is_decimal(node->rhs->ty) &&
+                        node->lhs->ty->size != node->rhs->ty->size)) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;

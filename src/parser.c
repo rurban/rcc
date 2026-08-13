@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+#include <ctype.h>
 // Derived from chibicc by Rui Ueyama.
 #include "rcc.h"
+
+// Decimal-literal folding: these come from the bundled libdfp.a (libbid
+// core, LGPL-2.1, see lib/libdfp/), which rcc itself links so it can fold
+// _Decimal32/64/128 literals into IEEE 754-2008 BID bits at compile time.
+// The generated code calls the same __bid_* symbols at run time.
+typedef struct BID_UINT128 {
+    unsigned long long w[2];
+} BID_UINT128;
+extern unsigned long long __bid64_from_string(char *);
+extern BID_UINT128 __bid128_from_string(char *);
+extern unsigned long long __bid64_to_bid32(unsigned long long);
+extern unsigned long long __bid64_from_int64(long long);
+extern BID_UINT128 __bid64_to_bid128(unsigned long long);
 
 typedef struct VarAttr VarAttr;
 typedef struct TagScope TagScope;
@@ -538,6 +552,75 @@ static Node *new_fnum(double fval, Token *tok) {
     Node *node = new_node(ND_FNUM, tok);
     node->fval = fval;
     node->ty = tok->val == 2 ? ty_ldouble : ty_double;
+    return node;
+}
+
+// A _Decimal32/64/128 literal (1.5df, 2.5dd, 3.5dl, C23 1.5d32/d64/d128):
+// fold the token text into its IEEE 754-2008 BID bit pattern at compile
+// time via the bundled libbid (linked into rcc itself), and store the bits
+// in node->val (32/64-bit) or node->val/val2 (128-bit). The lexer already
+// parsed the value as a binary double (tok->fval) and discarded the exact
+// decimal spelling; re-parse from tok->ptr (raw token text, digit
+// separators and suffix included) so the decimal value is exact.
+static Node *new_decimal(Token *tok) {
+    // Decode suffix: df/dd/dl (legacy) and d32/d64/d128 (C23). The token
+    // text ends with the suffix; the numeric part is everything before.
+    char *p = tok->ptr + tok->len; // end of raw text
+    Type *ty = NULL;
+    if (p - tok->ptr >= 2) {
+        if ((p[-2] == 'd' || p[-2] == 'D') && (p[-1] == 'f' || p[-1] == 'F'))
+            ty = ty_decimal32;
+        else if ((p[-2] == 'd' || p[-2] == 'D') && (p[-1] == 'd' || p[-1] == 'D'))
+            ty = ty_decimal64;
+        else if ((p[-2] == 'd' || p[-2] == 'D') && (p[-1] == 'l' || p[-1] == 'L'))
+            ty = ty_decimal128;
+        else if (p - tok->ptr >= 3 && (p[-3] == 'd' || p[-3] == 'D') &&
+                 p[-2] == '3' && p[-1] == '2')
+            ty = ty_decimal32;
+        else if (p - tok->ptr >= 3 && (p[-3] == 'd' || p[-3] == 'D') &&
+                 p[-2] == '6' && p[-1] == '4')
+            ty = ty_decimal64;
+        else if (p - tok->ptr >= 4 && (p[-4] == 'd' || p[-4] == 'D') &&
+                 p[-3] == '1' && p[-2] == '2' && p[-1] == '8')
+            ty = ty_decimal128;
+    }
+    if (!ty)
+        return NULL; // not a decimal literal (shouldn't happen from lexer)
+
+    // Strip the suffix: df/dd/dl = 2 chars, d32/d64 = 3, d128 = 4
+    // (dl is decimal128 but its suffix is only 2 chars). Detect from the
+    // actual text, not from the type.
+    int suffix = 2;
+    if (p - tok->ptr >= 4 && (p[-4] == 'd' || p[-4] == 'D') &&
+        p[-3] == '1' && p[-2] == '2' && p[-1] == '8')
+        suffix = 4; // d128
+    else if (p - tok->ptr >= 3 && (p[-3] == 'd' || p[-3] == 'D') &&
+             (p[-2] == '3' || p[-2] == '6') && isdigit(p[-1]))
+        suffix = 3; // d32/d64
+    char buf[256];
+    int n = 0;
+    char *end = p - suffix;
+    for (char *q = tok->ptr; q < end; q++) {
+        if (*q != '\'')
+            buf[n++] = *q;
+        if (n >= 250)
+            break;
+    }
+    buf[n] = '\0';
+
+    Node *node = new_node(ND_NUM, tok);
+    node->ty = ty;
+    parser_used_decimal = true;
+    if (ty == ty_decimal128) {
+        BID_UINT128 r = __bid128_from_string(buf);
+        node->val = (int64_t)r.w[0];
+        node->val2 = (int64_t)r.w[1];
+    } else if (ty == ty_decimal64) {
+        node->val = (int64_t)__bid64_from_string(buf);
+    } else {
+        unsigned long long r = __bid64_from_string(buf);
+        node->val = (int64_t)__bid64_to_bid32(r);
+    }
     return node;
 }
 
@@ -2110,6 +2193,14 @@ static bool eval_const_addr_expr(Node *node, long long *val) {
 static bool eval_const_fexpr(Node *node, long double *val) {
     if (!node)
         return false;
+    // Decimal subexpressions are not float-const-foldable: BID bits aren't
+    // long doubles. Return false so the runtime __bid_* path is used.
+    if (node->ty && is_decimal(node->ty))
+        return false;
+    if (node->lhs && node->lhs->ty && is_decimal(node->lhs->ty))
+        return false;
+    if (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty))
+        return false;
     long double lhs, rhs;
     switch (node->kind) {
     case ND_FNUM:
@@ -2194,6 +2285,17 @@ bool eval_const_expr(Node *node, long long *val) {
         return true;
     }
 
+    // Decimal-typed nodes must NEVER fold as integers: the BID bit pattern
+    // is not a plain integer value (non-canonical encodings, decimal
+    // arithmetic semantics). Route to runtime __bid_* calls instead. This
+    // also covers decimal subexpressions (arithmetic on decimals).
+    if (node->ty && is_decimal(node->ty))
+        return false;
+    if (node->lhs && node->lhs->ty && is_decimal(node->lhs->ty))
+        return false;
+    if (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty))
+        return false;
+
     // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
 
@@ -2245,6 +2347,13 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_NE:
     case ND_LT:
     case ND_LE: {
+        // Decimal comparisons must NOT fold as raw-bit compares: the BID
+        // encoding is not canonical (7 as int and 7.0 as a string literal
+        // produce different bit patterns for the same value), so bitwise
+        // equality is wrong. Route to the runtime __bid_*2 helper instead.
+        if ((node->lhs->ty && is_decimal(node->lhs->ty)) ||
+            (node->rhs->ty && is_decimal(node->rhs->ty)))
+            return false;
         if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs))
             return false;
         bool uns = (node->lhs->ty && node->lhs->ty->is_unsigned) ||
@@ -4524,18 +4633,23 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             continue;
         }
         if (equalc(tok, "_Decimal32")) {
-            is_float = true;
+            // IEEE 754-2008 decimal32 (7 digits, BID encoding). Was
+            // previously aliased to float; now a real type whose ops go
+            // through the __bid_* runtime.
+            ty = ty_decimal32;
+            parser_used_decimal = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "_Decimal64")) {
-            is_double = true;
+            ty = ty_decimal64;
+            parser_used_decimal = true;
             tok = tok->next;
             continue;
         }
         if (equalc(tok, "_Decimal128")) {
-            is_double = true;
-            long_count = 1;
+            ty = ty_decimal128;
+            parser_used_decimal = true;
             tok = tok->next;
             continue;
         }
@@ -8840,9 +8954,14 @@ static Node *primary(Token **rest, Token *tok) {
             }
             tok = tok->next;
         } else {
-            node = new_fnum(tok->fval, tok);
-            if (tok->val == 1)
-                node->ty = ty_float;
+            Node *dec = new_decimal(tok);
+            if (dec) {
+                node = dec;
+            } else {
+                node = new_fnum(tok->fval, tok);
+                if (tok->val == 1)
+                    node->ty = ty_float;
+            }
             tok = tok->next;
         }
     } else if (tok->kind == TK_STR) {
@@ -11961,11 +12080,70 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         }
 
 
+        // _Decimal32/64/128: the literal was folded to BID bits at parse
+        // time (node->val low word, node->val2 high word for decimal128).
+        // Write the raw bits into init_data (all sizes; decimal128 needs
+        // both words — init_val alone would truncate it to 8 bytes). An
+        // integer constant initializer (e.g. `_Decimal64 d = 3;`) is
+        // converted through the BID runtime's int->decimal helpers.
+        if (is_decimal(var->ty)) {
+            int sz = var->ty->size;
+            unsigned long long lo = 0, hi = 0;
+            if (node && node->kind == ND_NUM && is_decimal(node->ty)) {
+                lo = (unsigned long long)node->val;
+                hi = (unsigned long long)node->val2;
+            } else {
+                // int/float constant -> decimal via the linked libbid.
+                long long iv = 0;
+                if (eval_const_expr(node, &iv)) {
+                    if (var->ty->kind == TY_DECIMAL128) {
+                        BID_UINT128 r = __bid64_to_bid128(__bid64_from_int64(iv));
+                        lo = r.w[0];
+                        hi = r.w[1];
+                    } else if (var->ty->kind == TY_DECIMAL64) {
+                        lo = __bid64_from_int64(iv);
+                    } else {
+                        lo = (unsigned long long)__bid64_to_bid32(__bid64_from_int64(iv));
+                    }
+                }
+            }
+            var->has_init = true;
+            var->init_data = arena_alloc(sz);
+            var->init_size = sz;
+            memcpy(var->init_data, &lo, sz <= 8 ? sz : 8);
+            if (sz > 8) {
+                memcpy(var->init_data + 8, &hi, 8);
+            }
+            // Also keep init_val (the BID bits as a 64-bit pattern) so
+            // constant-folding paths that read var->init_val for a
+            // constexpr decimal global (e.g. `e == 7.0dd` folding) agree
+            // with the emitted data. decimal128's high word is not
+            // representable; callers must use init_data for those.
+            var->init_val = (int64_t)lo;
+            *rest = tok;
+            return;
+        }
+
         // Try integer constant evaluation
         long long ival = 0;
         if (eval_const_expr(node, &ival)) {
             var->has_init = true;
             var->init_val = (int64_t)ival;
+            *rest = tok;
+            return;
+        }
+
+        if (is_decimal(var->ty) && node && node->kind == ND_NUM) {
+            int sz = var->ty->size;
+            var->has_init = true;
+            var->init_data = arena_alloc(sz);
+            var->init_size = sz;
+            unsigned long long lo = (unsigned long long)node->val;
+            memcpy(var->init_data, &lo, sz <= 8 ? sz : 8);
+            if (sz > 8) {
+                unsigned long long hi = (unsigned long long)node->val2;
+                memcpy(var->init_data + 8, &hi, 8);
+            }
             *rest = tok;
             return;
         }
@@ -12167,6 +12345,7 @@ Program *parse(Token *tok) {
 
     globals = NULL;
     parser_used_wide_bitint = false;
+    parser_used_decimal = false;
     memset(global_htab, 0, sizeof(global_htab));
     memset(typedef_htab, 0, sizeof(typedef_htab));
     typedef_log = NULL;

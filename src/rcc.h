@@ -228,6 +228,9 @@ typedef enum {
     TY_FUNC,
     TY_NULLPTR_T, // C23 nullptr_t
     TY_BITINT, // C23 _BitInt(N) / unsigned _BitInt(N)
+    TY_DECIMAL32, // C23 _Decimal32 (7 digits, BID 32-bit)
+    TY_DECIMAL64, // C23 _Decimal64 (16 digits, BID 64-bit)
+    TY_DECIMAL128, // C23 _Decimal128 (34 digits, BID 128-bit)
 } TypeKind;
 
 typedef struct Node Node;
@@ -333,6 +336,9 @@ extern Type *ty_uint128;
 extern Type *ty_float;
 extern Type *ty_double;
 extern Type *ty_ldouble;
+extern Type *ty_decimal32;
+extern Type *ty_decimal64;
+extern Type *ty_decimal128;
 extern Type *ty_nullptr_t;
 
 extern bool opt_O0;
@@ -371,6 +377,7 @@ extern bool sse42_available;
 
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);
+bool is_decimal(Type *ty);
 bool is_complex(Type *ty);
 bool is_number(Type *ty);
 Type *get_integer_type(int size, bool is_unsigned);
@@ -379,6 +386,7 @@ Type *array_of(Type *base, int64_t len);
 Type *complex_type(Type *base);
 Type *bitint_type(int width, bool is_unsigned);
 extern bool parser_used_wide_bitint;
+extern bool parser_used_decimal; // _Decimal32/64/128 type or literal seen
 
 typedef struct Reloc Reloc;
 struct Reloc {
@@ -657,6 +665,7 @@ struct Node {
     LVar *continue_cleanup_end;
 
     int64_t val; // Used if kind == ND_NUM
+    int64_t val2; // Used if kind == ND_NUM: high 64 bits (TY_DECIMAL128)
     double fval; // Used if kind == ND_FNUM
     int array_len; // Used if kind == TY_ARRAY
 

@@ -99,3 +99,5 @@ bench/bench
 # macOS debug symbols
 *.dSYM
 *.dSYM/
+lib/libdfp.a
+build/

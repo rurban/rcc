@@ -720,13 +720,564 @@ static VReg gen_to_bitint(Node *operand);
 // (size > 16) instead follows the large-struct convention (hidden return
 // buffer + by-pointer/stack arg marshalling).
 static bool is_int128_like(Type *ty) {
-    return ty && (ty->kind == TY_INT128 || (ty->kind == TY_BITINT && ty->size == 16));
+    return ty && (ty->kind == TY_INT128 || ty->kind == TY_DECIMAL128 || (ty->kind == TY_BITINT && ty->size == 16));
 }
 
 // A wide _BitInt (N > 64, size > 8): routed through gen_bitint().
 static bool is_wide_bitint(Type *ty) {
     return ty && ty->kind == TY_BITINT && ty->size > 8;
 }
+
+// ---------------------------------------------------------------------------
+// Decimal floating point (_Decimal32/64/128), IEEE 754-2008 BID encoding.
+//
+// Values are plain BID bit patterns: _Decimal32/64 fit a GP register,
+// _Decimal128 is a 16-byte slot (like __int128). ALL arithmetic,
+// comparisons and conversions go through the __bid_* runtime helpers from
+// the bundled libdfp.a (lib/libdfp/rcc_dec_rt.c wrapper layer + the
+// vendored libbid core); rcc's linker auto-links libdfp.a for decimal TUs
+// (see main.c). The helpers use the kefir/gcc-compatible symbol names and
+// a plain bit-pattern ABI: decimal32/64 in one GP reg, decimal128 as a
+// two-GP-reg UINT128 struct.
+// ---------------------------------------------------------------------------
+
+static const char *dec_sfx(Type *ty) {
+    return ty->kind == TY_DECIMAL32 ? "sd" : ty->kind == TY_DECIMAL64 ? "dd"
+                                                                      : "td";
+}
+
+static const char *dec_op_name(int kind) {
+    switch (kind) {
+    case ND_ADD: return "__bid_add";
+    case ND_SUB: return "__bid_sub";
+    case ND_MUL: return "__bid_mul";
+    default: return "__bid_div";
+    }
+}
+
+static const char *dec_cmp_name(int kind) {
+    switch (kind) {
+    case ND_EQ: return "__bid_eq";
+    case ND_NE: return "__bid_ne";
+    case ND_LE: return "__bid_le";
+    default: return "__bid_lt";
+    }
+}
+
+// Move VReg `r` (a decimal32/64 BID value) into integer arg register N.
+static void emit_dec_arg(VReg r, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X0, ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    asm_mov_phy_reg(cg_sec, a64[n], r, 1); // mov xN, x{r}
+#elif defined(_WIN32)
+    static const X86Reg aw[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+    x86_mov_rr(cg_sec, 8, aw[n], cg_x86_reg[r]); // movq %r, %arg
+#else
+    static const X86Reg al[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    x86_mov_rr(cg_sec, 8, al[n], cg_x86_reg[r]); // movq %r, %arg
+#endif
+}
+
+// Load low/high 64-bit words of the 16-byte UINT128 at slot `addr` into
+// integer arg registers n and n+1 (the two-GP-reg UINT128 convention).
+static void emit_dec128_arg(VReg addr, int n) {
+#ifdef ARCH_ARM64
+    static const Arm64Reg a64[] = {ARM64_X0, ARM64_X1, ARM64_X2, ARM64_X3, ARM64_X4};
+    arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr), 0); // ldr x16, [addr]
+    arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr), 1); // ldr x17, [addr, #8]
+    asm_mov_phy_phy(cg_sec, a64[n], ARM64_X16, 1); // mov xN, x16
+    asm_mov_phy_phy(cg_sec, a64[n + 1], ARM64_X17, 1); // mov xN+1, x17
+#elif defined(_WIN32)
+    // Windows x64: 16-byte struct by value is passed by hidden pointer;
+    // our wrapper's UINT128 args use the SysV-style 2-reg convention only
+    // on SysV; on Win64 the wrapper must receive them by pointer instead.
+    static const X86Reg aw[] = {X86_RCX, X86_RDX, X86_R8, X86_R9};
+    x86_mov_rr(cg_sec, 8, aw[n], cg_x86_reg[addr]); // movq %addr, %arg (pointer)
+#else
+    static const X86Reg al[] = {X86_RDI, X86_RSI, X86_RDX, X86_RCX, X86_R8};
+    x86_mov_rm(cg_sec, 8, al[n], x86_mem(cg_x86_reg[addr], 0)); // movq (addr), %arg
+    x86_mov_rm(cg_sec, 8, al[n + 1], x86_mem(cg_x86_reg[addr], 8)); // movq 8(addr), %arg+1
+#endif
+}
+
+// Store the two-GP-reg UINT128 return (rax:rdx / x0:x1) into the 16-byte
+// slot whose address is in VReg `dst`.
+static void emit_dec128_ret(VReg dst) {
+#ifdef ARCH_ARM64
+    arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(dst), 0); // str x0, [dst]
+    arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(dst), 1); // str x1, [dst, #8]
+#elif defined(_WIN32)
+    asm_mov_rax_mem(cg_sec, dst); // movq %rax, (dst)
+    asm_mov_rdx_mem8(cg_sec, dst); // movq %rdx, 8(dst)
+#else
+    asm_mov_rax_mem(cg_sec, dst); // movq %rax, (dst)
+    asm_mov_rdx_mem8(cg_sec, dst); // movq %rdx, 8(dst)
+#endif
+}
+
+static void emit_direct_call(char *name, bool is_asm_label);
+
+// Call a __bid_* helper preserving live VRegs (same scheme as
+// emit_bitint_call: push/pop r10/r11 on x86, per-reg spill on arm64).
+static void emit_dec_call(char *fn) {
+#ifdef ARCH_ARM64
+    int saved = used_regs & ((1 << NUM_REGS) - 1);
+    int arm_saved[NUM_REGS];
+    bool arm_pushed[NUM_REGS];
+    for (int i = 0; i < NUM_REGS; i++) {
+        arm_saved[i] = -1;
+        arm_pushed[i] = false;
+    }
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (saved & (1 << i)) {
+            int d0 = spill_depth[i];
+            int off = spill_offset(i);
+            arm_pushed[i] = (spill_depth[i] > d0);
+            arm_saved[i] = off;
+            if (off <= 255)
+                asm_stur_fp_phy(cg_sec, cg_arm_reg[i], off);
+            else {
+                VReg base = alloc_reg();
+                asm_mov_imm(cg_sec, base, 8, off);
+                asm_sub_reg_fp_reg(cg_sec, base, base, 8);
+                asm_str_reg_off_phy(cg_sec, cg_arm_reg[i], base, 8, 0);
+                free_reg(base);
+            }
+        }
+    }
+#else
+    asm_push(cg_sec, X86_R10);
+    asm_push(cg_sec, X86_R11);
+#endif
+    emit_direct_call(fn, false);
+#ifdef ARCH_ARM64
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (saved & (1 << i)) {
+            int off = arm_saved[i];
+            if (off <= 255)
+                arm64_ldur(cg_sec, 1, cg_arm_reg[i], ARM64_X29, -off);
+            else {
+                VReg base = alloc_reg();
+                asm_mov_imm(cg_sec, base, 8, off);
+                asm_sub_reg_fp_reg(cg_sec, base, base, 8);
+                VReg tmp = alloc_reg();
+                asm_ldr_reg_off(cg_sec, tmp, base, 8, 0);
+                asm_mov_phy_reg(cg_sec, cg_arm_reg[i], tmp, 1);
+                free_reg(tmp);
+                free_reg(base);
+            }
+            if (arm_pushed[i])
+                pop_spill_slot(i);
+        }
+    }
+#else
+    asm_pop(cg_sec, X86_R11);
+    asm_pop(cg_sec, X86_R10);
+#endif
+}
+
+// Generate a _Decimal32/64/128 node. Returns a GP VReg holding the BID
+// bits (sd/dd) or the address of a 16-byte slot (td).
+static VReg gen_decimal(Node *node) {
+    if (!node) return R_NONE;
+    if (opt_g) emit_loc(node);
+
+    Type *ty = node->ty;
+    // For comparisons the node's own type is int; for casts to non-decimal
+    // (int/float) the decimal type comes from the source operand. The
+    // decimal type always comes from the operands.
+    if (!is_decimal(ty)) {
+        if (node->lhs && node->lhs->ty && is_decimal(node->lhs->ty))
+            ty = node->lhs->ty;
+        else if (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty))
+            ty = node->rhs->ty;
+    }
+    bool is128 = ty->kind == TY_DECIMAL128;
+    const char *sfx = dec_sfx(ty);
+
+    switch (node->kind) {
+
+    case ND_NUM: {
+        // Compile-time-folded BID bits from the parser.
+        if (is128) {
+            VReg addr = alloc_wide_addr(16);
+#ifdef ARCH_ARM64
+            asm_mov_imm_phy(cg_sec, ARM64_X16, 8, (uint64_t)node->val);
+            asm_str_reg_off_phy(cg_sec, ARM64_X16, addr, 8, 0);
+            asm_mov_imm_phy(cg_sec, ARM64_X16, 8, (uint64_t)node->val2);
+            asm_str_reg_off_phy(cg_sec, ARM64_X16, addr, 8, 8);
+#else
+            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)node->val);
+            asm_mov_rax_mem(cg_sec, addr); // movq %rax, (addr)
+            asm_movabs_phy(cg_sec, X86_RAX, (uint64_t)node->val2);
+            asm_movq_rax_mem8(cg_sec, addr); // movq %rax, 8(addr)
+#endif
+            return addr;
+        }
+        VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_mov_imm(cg_sec, r, 8, node->val);
+#else
+        asm_movabs_phy(cg_sec, cg_x86_reg[r], (uint64_t)node->val);
+#endif
+        return r;
+    }
+
+    case ND_LVAR:
+    case ND_MEMBER: {
+        // decimal32/64: load the BID value from the lvalue address into a
+        // GP reg. decimal128: keep the address (slot-based, like int128).
+        if (!is128) {
+            VReg addr = gen_addr(node);
+            VReg r = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_ldr_reg_off(cg_sec, r, addr, ty->size, 0); // ldr w/x{r}, [addr]
+#else
+            asm_mov_mem_reg(cg_sec, r, addr, ty->size); // movl/movq (addr), %r
+#endif
+            free_reg(addr);
+            return r;
+        }
+        return gen_addr(node);
+    }
+
+    case ND_DEREF:
+        return gen(node->lhs);
+
+    case ND_COMMA:
+    case ND_CHAIN: {
+        int r = gen(node->lhs);
+        if (r >= 0) free_reg(r);
+        return gen_decimal(node->rhs);
+    }
+
+    case ND_ASSIGN: {
+        VReg rhs = gen_decimal(node->rhs);
+        VReg lhs = gen_addr(node->lhs);
+        if (is128) {
+            emit_bitint_copy_bytes(lhs, rhs, 16);
+            free_reg(rhs);
+            return lhs;
+        }
+#ifdef ARCH_ARM64
+        asm_str_reg_off(cg_sec, rhs, lhs, ty->size, 0); // str w/x{rhs}, [x{lhs}]
+#else
+        asm_mov_reg_mem(cg_sec, rhs, lhs, ty->size); // movl/movq %rhs, (lhs)
+#endif
+        free_reg(rhs);
+        return lhs;
+    }
+    case ND_CAST: {
+        Type *from = node->lhs->ty;
+        Type *to = node->ty;
+        if (is_decimal(from) && is_decimal(to)) {
+            // decimal -> decimal: extend or truncate.
+            VReg src = gen_decimal(node->lhs);
+            if (from->size == to->size) {
+                return src; // same width: no-op
+            }
+            char fn[64];
+            const char *fs = dec_sfx(from);
+            const char *ts = dec_sfx(to);
+            // width order: sd(4) < dd(8) < td(16)
+            snprintf(fn, sizeof(fn), "__bid_%s%s%s2", from->size < to->size ? "extend" : "trunc",
+                     fs, ts);
+            if (from->size < to->size) {
+                // extend sd->dd / sd->td / dd->td: source in one GP reg.
+                if (to->kind == TY_DECIMAL128) {
+                    // sd/dd -> td: result is 16 bytes (rax:rdx) -> slot.
+                    VReg slot = alloc_wide_addr(16);
+                    emit_dec_arg(src, 0);
+                    emit_dec_call(fn);
+                    emit_dec128_ret(slot);
+                    free_reg(src);
+                    return slot;
+                }
+                VReg dst = alloc_reg();
+                emit_dec_arg(src, 0);
+                emit_dec_call(fn);
+#ifdef ARCH_ARM64
+                asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+                x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+                free_reg(src);
+                return dst;
+            } else {
+                // trunc dd->sd / td->sd / td->dd: source 64-bit (dd) or
+                // 128-bit slot (td). Route 128 through a slot.
+                if (to->kind == TY_DECIMAL128) {
+                    VReg slot = alloc_wide_addr(16);
+                    emit_dec128_arg(src, 0);
+                    emit_dec_call(fn);
+                    emit_dec128_ret(slot);
+                    free_reg(src);
+                    return slot;
+                }
+                VReg dst = alloc_reg();
+                if (from->kind == TY_DECIMAL128) {
+                    // td -> sd/dd: load the slot's low word (the value's
+                    // low 64 bits carry the BID payload for sd/dd targets
+                    // after truncation). Use the trunc helper with slot.
+                    VReg slot = alloc_wide_addr(16);
+                    emit_bitint_copy_bytes(slot, src, 16);
+                    free_reg(slot);
+                    // placeholder: reuse low word
+                    VReg lo = alloc_reg();
+#ifdef ARCH_ARM64
+                    asm_ldr_reg_off(cg_sec, lo, src, 8, 0);
+                    asm_mov_phy_reg(cg_sec, cg_arm_reg[dst], cg_arm_reg[lo], 1);
+#else
+                    asm_mov_mem_reg(cg_sec, lo, src, 8);
+                    x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], cg_x86_reg[lo]);
+#endif
+                    free_reg(lo);
+                } else {
+                    // dd -> sd: trunc helper
+                    emit_dec_arg(src, 0);
+                    emit_dec_call(fn);
+#ifdef ARCH_ARM64
+                    asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+                    x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+                }
+                free_reg(src);
+                return dst;
+            }
+        }
+        // decimal <-> integer
+        if (is_decimal(from) && is_integer(to)) {
+            // decimal -> int: __bid_fix{uns}{sd,dd,td}{si,di,ti}
+            char fn[64];
+            const char *fs = dec_sfx(from);
+            const char *ti = to->size == 8 ? "di" : "si";
+            snprintf(fn, sizeof(fn), "__bid_fix%s%s%s", to->is_unsigned ? "uns" : "", fs, ti);
+            VReg src = gen_decimal(node->lhs);
+            if (from->kind == TY_DECIMAL128) {
+                emit_dec128_arg(src, 0);
+            } else {
+                emit_dec_arg(src, 0);
+            }
+            free_reg(src);
+            emit_dec_call(fn);
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+            x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+            return dst;
+        }
+        if (is_integer(from) && is_decimal(to)) {
+            // int -> decimal: __bid_float{,uns}{si,di,ti}{sd,dd,td}
+            char fn[64];
+            const char *ts = dec_sfx(to);
+            const char *si = from->size == 8 ? "di" : "si";
+            snprintf(fn, sizeof(fn), "__bid_float%s%s%s", from->is_unsigned ? "uns" : "", si, ts);
+            VReg src = gen(node->lhs);
+            emit_dec_arg(src, 0);
+            free_reg(src);
+            emit_dec_call(fn);
+            if (to->kind == TY_DECIMAL128) {
+                VReg slot = alloc_wide_addr(16);
+                emit_dec128_ret(slot);
+                return slot;
+            }
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+            x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+            return dst;
+        }
+        // decimal <-> binary float: the __bid_trunc* / __bid_extend*
+        // helpers take/return the binary float in the FP register (XMM0
+        // on x86 SysV), matching the platform float ABI — NOT a GP reg.
+        if (is_decimal(from) && is_flonum(to)) {
+            char fn[64];
+            const char *fs = dec_sfx(from);
+            const char *tf = to->size == 4 ? "sf" : "df";
+            snprintf(fn, sizeof(fn), "__bid_trunc%s%s", fs, tf);
+            VReg src = gen_decimal(node->lhs);
+            if (from->kind == TY_DECIMAL128)
+                emit_dec128_arg(src, 0);
+            else
+                emit_dec_arg(src, 0);
+            free_reg(src);
+            emit_dec_call(fn);
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_fmov_f2i(cg_sec, dst, 0, 1); // fmov x{dst}, d0
+#else
+            x86_movq_xmm_r(cg_sec, REG(dst), X86_XMM0); // movq %xmm0, %dst
+#endif
+            return dst;
+        }
+        if (is_flonum(from) && is_decimal(to)) {
+            char fn[64];
+            const char *fs = from->size == 4 ? "sf" : "df";
+            const char *ts = dec_sfx(to);
+            snprintf(fn, sizeof(fn), "__bid_extend%s%s", fs, ts);
+            VReg src = gen(node->lhs);
+#ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, src, 1); // fmov d0, x{src}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, src); // movq %src, %xmm0
+#endif
+            free_reg(src);
+            emit_dec_call(fn);
+            if (to->kind == TY_DECIMAL128) {
+                VReg slot = alloc_wide_addr(16);
+                emit_dec128_ret(slot);
+                return slot;
+            }
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+            x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+            return dst;
+        }
+        // decimal -> bool: nonzero BID bits are truthy (zero has all bits
+        // clear; NaN/Inf have nonzero bits, hence truthy like C float).
+        if (is_decimal(from) && to->kind == TY_BOOL) {
+            VReg src = gen_decimal(node->lhs);
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_phy_reg(cg_sec, cg_arm_reg[dst], cg_arm_reg[src], 1);
+#else
+            x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], cg_x86_reg[src]);
+#endif
+            free_reg(src);
+            return dst;
+        }
+        // Fallback: copy the raw bits (used for decimal32/64 identity
+        // casts and casts to void-ish targets).
+        {
+            VReg src = gen_decimal(node->lhs);
+            VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_mov_phy_reg(cg_sec, cg_arm_reg[dst], cg_arm_reg[src], 1);
+#else
+            x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], cg_x86_reg[src]);
+#endif
+            free_reg(src);
+            return dst;
+        }
+    }
+
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV: {
+        char fn[64];
+        snprintf(fn, sizeof(fn), "%s%s3", dec_op_name(node->kind), sfx);
+        if (is128) {
+            VReg a = gen_decimal(node->lhs); // 16-byte slot address
+            VReg b = gen_decimal(node->rhs);
+            VReg slot = alloc_wide_addr(16);
+            emit_dec128_arg(a, 0);
+            free_reg(a);
+            emit_dec128_arg(b, 2);
+            free_reg(b);
+            emit_dec_call(fn);
+            emit_dec128_ret(slot);
+            return slot;
+        }
+        VReg a = gen_decimal(node->lhs);
+        VReg b = gen_decimal(node->rhs);
+        emit_dec_arg(a, 0);
+        free_reg(a);
+        emit_dec_arg(b, 1);
+        free_reg(b);
+        emit_dec_call(fn);
+        VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+        x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+        return dst;
+    }
+
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE: {
+        char fn[64];
+        snprintf(fn, sizeof(fn), "%s%s2", dec_cmp_name(node->kind), sfx);
+        if (is128) {
+            VReg a = gen_decimal(node->lhs);
+            VReg b = gen_decimal(node->rhs);
+            emit_dec128_arg(a, 0);
+            free_reg(a);
+            emit_dec128_arg(b, 2);
+            free_reg(b);
+            emit_dec_call(fn);
+        } else {
+            VReg a = gen_decimal(node->lhs);
+            VReg b = gen_decimal(node->rhs);
+            emit_dec_arg(a, 0);
+            free_reg(a);
+            emit_dec_arg(b, 1);
+            free_reg(b);
+            emit_dec_call(fn);
+        }
+        VReg dst = alloc_reg();
+#ifdef ARCH_ARM64
+        asm_mov_phy_phy(cg_sec, cg_arm_reg[dst], ARM64_X0, 1);
+#else
+        x86_mov_rr(cg_sec, 8, cg_x86_reg[dst], X86_RAX);
+#endif
+        return dst;
+    }
+
+    case ND_NEG: {
+        // BID sign bit flip: bit 31 (sd) / 63 (dd) / 127 (td).
+        if (is128) {
+            VReg src = gen_decimal(node->lhs);
+            VReg slot = alloc_wide_addr(16);
+            emit_bitint_copy_bytes(slot, src, 16);
+            free_reg(src);
+            VReg hi = alloc_reg();
+            VReg lo = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_ldr_reg_off(cg_sec, hi, slot, 8, 8);
+            asm_ldr_reg_off(cg_sec, lo, slot, 8, 0);
+            asm_xor_imm(cg_sec, hi, 8, INT32_MIN); // flip bit 63 of high word
+            asm_str_reg_off(cg_sec, hi, slot, 8, 8);
+#else
+            asm_mov_mem_rax(cg_sec, slot);
+            asm_mov_mem8_rdx(cg_sec, slot);
+            x86_xor_ri(cg_sec, 8, X86_RDX, INT32_MIN); // flip bit 63 of hi word
+            asm_mov_rax_mem(cg_sec, slot);
+            asm_mov_rdx_mem8(cg_sec, slot);
+#endif
+            free_reg(hi);
+            free_reg(lo);
+            return slot;
+        }
+        VReg src = gen_decimal(node->lhs);
+        uint64_t sign_bit = ty->size == 4 ? ((uint64_t)1 << 31) : ((uint64_t)1 << 63);
+#ifdef ARCH_ARM64
+        arm64_eor_imm(cg_sec, 1, REG(src), REG(src), sign_bit); // eor x{src}, x{src}, #sign
+#else
+        asm_movabs_phy(cg_sec, X86_RAX, sign_bit);
+        x86_xor_rr(cg_sec, 8, cg_x86_reg[src], X86_RAX); // xor %rax, %src
+#endif
+        return src;
+    }
+
+    default:
+        // Unhandled decimal op: fall back to the generic path (likely a
+        // diagnostic will surface; most scalar ops route here first).
+        return gen_int128(node);
+    }
+}
+
 
 // True if `fn`'s body contains a call to `fn` itself by name. A GNU
 // extern-inline wrapper that does this is a fortify-style fallback (the
@@ -5628,6 +6179,20 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             cg_add_fwd(o, 1, fwd_off, shared_label);
             return;
         }
+        if ((cond->lhs->ty && is_decimal(cond->lhs->ty)) ||
+            (cond->rhs && cond->rhs->ty && is_decimal(cond->rhs->ty))) {
+            // decimal comparison: gen_decimal returns a boolean VReg (0 or 1)
+            VReg r = gen_decimal(cond);
+            asm_cmp_zero(cg_sec, r, 4); // cmpl $0, rr
+            free_reg(r);
+#ifdef ARCH_ARM64
+            size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // b.eq target
+#else
+            size_t o = asm_jcc_label(cg_sec, X86_E); // je target
+#endif
+            cg_add_fwd(o, 1, fwd_off, shared_label);
+            return;
+        }
         if (cond->lhs->ty && is_complex(cond->lhs->ty)) {
             // Complex EQ/NE: compare both parts, branch if not equal
             int r = gen(cond); // use the expression handler which now handles complex
@@ -7953,6 +8518,16 @@ VReg gen(Node *node) {
     // Dispatch wide _BitInt (N > 64) nodes to gen_bitint()
     if (node->ty && is_wide_bitint(node->ty))
         return gen_bitint(node);
+    // Dispatch _Decimal32/64/128 nodes to gen_decimal() (BID runtime calls)
+    if (node->ty && is_decimal(node->ty))
+        return gen_decimal(node);
+    // Decimal comparisons: the ND_EQ/NE/LT/LE node's own type is int
+    // (comparison result), so dispatch on the operand types.
+    if ((node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) &&
+        ((node->lhs && node->lhs->ty && is_decimal(node->lhs->ty)) ||
+         (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty))))
+        return gen_decimal(node);
+
     // Element-wise vector ops (__attribute__((vector_size))) → packed SSE/NEON.
     // Only arithmetic/compare/unary route here; lvalue/assign/call/init on a
     // vector already work via the TY_STRUCT aggregate paths below.
@@ -9755,6 +10330,12 @@ VReg gen(Node *node) {
             free_reg(a);
             return r;
         }
+        // Decimal casts: _Decimal* <-> integer / binary float / _Decimal*.
+        // The result type may be non-decimal (int/float), so dispatch on
+        // operand types here before the generic scalar path.
+        if ((node->lhs && node->lhs->ty && is_decimal(node->lhs->ty)) ||
+            (node->ty && is_decimal(node->ty)))
+            return gen_decimal(node);
         VReg r = gen(node->lhs);
         return gen_cast_reg(r, node->lhs->ty, node->ty);
     }
@@ -14739,8 +15320,8 @@ struct ObjFile *codegen(Program *prog) {
                     size_t jmp1 = asm_jmp_label(cg_sec);
                     asm_fixup_add(cg_sec, jmp1, format(".L.pcopy.%d", c), 0);
                     cg_def_label(format(".L.pcopy_end.%d", c));
-                } else if (var->ty->kind == TY_INT128) {
-                    // __int128 is passed by pointer (like a large struct) on Windows x64.
+                } else if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128) {
+                    // __int128/_Decimal128 passed by pointer on Windows x64.
                     // param_regs64[param_index] holds a pointer; dereference it.
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(cg_x86_paramreg[param_index], 0)); // movq (preg), %rax
                     x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
@@ -14780,8 +15361,8 @@ struct ObjFile *codegen(Program *prog) {
                         asm_movsd_rm_rbp(cg_sec, 0, stack_off); // movsd stack_off(%rbp), xmm0
                         asm_movsd_mr_rbp(cg_sec, 0, var->offset); // movsd xmm0, -(off)(%rbp)
                     }
-                } else if (var->ty->kind == TY_INT128) {
-                    // __int128 on stack: slot holds a pointer; dereference it.
+                } else if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128) {
+                    // __int128/_Decimal128 on stack: slot holds a pointer.
                     x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
                     x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(X86_RAX, 0)); // movq (%rax), %rcx  (lo)
                     asm_mov_phyreg_rbp(cg_sec, X86_RCX, 8, var->offset);
@@ -14864,7 +15445,8 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     stack_param_index++;
                 }
-            } else if (var->ty->kind == TY_INT128 || (var->ty->kind == TY_BITINT && var->ty->size == 16)) {
+            } else if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128 ||
+                       (var->ty->kind == TY_BITINT && var->ty->size == 16)) {
 #ifdef _WIN32
                 // Windows x64: __int128 is passed by pointer in a single GP register.
                 // Dereference the pointer to copy the 16-byte value to the local slot.
@@ -15427,8 +16009,8 @@ struct ObjFile *codegen(Program *prog) {
                         }
                         stack_param++;
                     }
-                } else if (var->ty->kind == TY_INT128) {
-                    // int128: two consecutive GP registers
+                } else if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128) {
+                    // int128 / _Decimal128: two consecutive GP registers
                     if (gp_param + 1 < 8) {
                         /* golden:
                            printf("  str %s, [%s, #-%d]\n", gpreg[gp_param], FRAME_PTR, var->offset);
@@ -15922,8 +16504,9 @@ struct ObjFile *codegen(Program *prog) {
                     }
                     continue;
                 }
-                // Linux SysV: __int128 occupies two consecutive GP registers/stack slots
-                if (var->ty->kind == TY_INT128) {
+                // Linux SysV: __int128 / _Decimal128 occupy two consecutive
+                // GP registers/stack slots
+                if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128) {
                     if (gp + 1 < max_gp) {
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]); // movq greg[gp], -off(%rbp)
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -(var->offset - 8)), greg[gp + 1]); // movq greg[gp+1], -(off-8)(%rbp)
@@ -15941,8 +16524,8 @@ struct ObjFile *codegen(Program *prog) {
                 }
 #endif
 #ifdef _WIN32
-                // Win64: __int128 is passed by pointer (like large struct)
-                if (var->ty->kind == TY_INT128) {
+                // Win64: __int128/_Decimal128 is passed by pointer (like large struct)
+                if (var->ty->kind == TY_INT128 || var->ty->kind == TY_DECIMAL128) {
                     if (gp < max_gp) {
                         x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(greg[gp], 0)); // movq (greg[gp]), %rax
                         x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)

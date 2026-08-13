@@ -28,6 +28,40 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 ### Fixed (2026-08-13, wide `_BitInt(N>64)` session)
 
 - **`_BitInt(N)` with N > 64 silently truncated to 64 bits** (codegen.c,
+
+### Fixed (2026-08-13, decimal `_Decimal32/64/128` session)
+
+- **`_Decimal32/64/128` were aliased to float/double/long double** (parser.c,
+  codegen.c, type.c, main.c, lib/libdfp/) — literals were converted to
+  binary doubles at lex time, so `0.1dd` lost its exact decimal
+  representation and decimal arithmetic silently used binary FP. Now they
+  are real IEEE 754-2008 decimal floating-point types with the BID
+  (binary-integer-decimal) bit encoding: `TY_DECIMAL32/64/128` kinds,
+  `df/dd/dl` and C23 `d32/d64/d128` literal suffixes folded exactly at
+  compile time via the bundled libbid runtime, and every operation
+  (add/sub/mul/div, comparisons, int/float/decimal casts, negation,
+  function args/returns) lowered to `__bid_*3`/`__bid_*2` runtime calls —
+  the same symbols GCC and kefir use. The runtime is **libdfp 1.0.17's
+  libbid core** (LGPL-2.1, same license as rcc) vendored into
+  `lib/libdfp/` with a plain bit-pattern wrapper layer
+  (`rcc_dec_rt.c`, no `_Decimal` C types so it compiles where the host
+  compiler has no decimal support, e.g. aarch64 gcc), built per target
+  into `lib/libdfp.a` by the Makefile, and auto-linked by rcc's native
+  linker for decimal TUs (the driver injects the archive path; a system
+  libdfp.so would use GCC's XMM-based ABI, incompatible with rcc's
+  GP-register ABI for the same symbol names). Compile-time literal folding
+  calls `__bid*_from_string` linked into rcc itself. Function args/returns
+  follow the `__int128`-like two-GP-register convention for decimal128 and
+  single GP registers for decimal32/64 (matching rcc's internal ABI).
+  Regression test: `test/test_decimal.c` (7 sub-tests), PASS at
+  -O0..-O3 on x86-64 and via qemu on ARM64 (where the native linker's
+  missing `R_AARCH64_LDST128_ABS_LO12_NC` reloc now correctly fails the
+  link and falls back to the external aarch64 gcc + bundled libdfp.a,
+  which links and runs correctly). `__STDC_IEC_60559_TYPES__` /
+  `__STDC_DEC_FP__` feature macros and glibc `%Hf/%Df/%DDf` printf hooks
+  are not yet wired (decimal printf not supported).
+
+- **`_BitInt(N)` with N > 64 silently truncated to 64 bits** (codegen.c,
   type.c, parser.c, main.c, src/bitint_rt.c) — before this fix every
   `_BitInt(N>64)` operation went through the scalar 64-bit path: operands
   were truncated (e.g. `x << 100` produced 0, 128-bit+ values compared

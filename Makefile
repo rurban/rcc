@@ -170,12 +170,37 @@ LDFLAGS += -liconv
 endif
 RCC_LIB = rcc_lib$(SHARED_EXT)
 
-all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB)
+all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB) $(LIBDFP_A)
 
-$(TARGET): $(TARGET_DEPS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT)
-$(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O)
-	$(CC) $(CFLAGS) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ src/lib$(OBJ_EXT) $(TARGET_EXT)
+# Bundled IEEE 754-2008 decimal (BID) runtime: the pure-C libbid core from
+# libdfp 1.0.17 (LGPL-2.1-or-later, same as rcc; see lib/libdfp/COPYING*)
+# plus rcc's own __bid_*3/__bid_*2 wrapper layer (lib/libdfp/rcc_dec_rt.c).
+# Built with the same CC as the target so host, arm64 cross and mingw cross
+# builds each get a matching archive; rcc's native linker auto-links it.
+# rcc_dec_rt.c declares no _Decimal types (BID bit-pattern ABI), so it
+# compiles even where the C compiler has no decimal support (aarch64 gcc).
+LIBDFP_DIR = lib/libdfp
+LIBDFP_A = lib/libdfp.a
+# No TLS: the decimal rounding/exception globals are plain (single-threaded
+# semantics are fine for rcc's use), which keeps the archive free of TLS
+# relocs rcc's native linker doesn't handle on every target (x86-64 LE is
+# mapped, but arm64 gcc emits TLS-DESC (R_AARCH64_TLS_DESC) regardless of
+# -ftls-model=local-exec).
+LIBDFP_CFLAGS = -O2 -fPIC -I$(LIBDFP_DIR) -DBID_HAS_GCC_DECIMAL_INTRINSICS=0
+LIBDFP_SRCS := $(wildcard $(LIBDFP_DIR)/*.c)
+LIBDFP_OBJS := $(patsubst $(LIBDFP_DIR)/%.c,build/libdfp$(OBJ_EXT)/%.o,$(LIBDFP_SRCS))
+
+$(LIBDFP_A): $(LIBDFP_OBJS)
+	ar rcs $@ $(LIBDFP_OBJS)
+
+build/libdfp$(OBJ_EXT)/%.o: $(LIBDFP_DIR)/%.c
+	@mkdir -p build/libdfp$(OBJ_EXT)
+	$(CC) $(LIBDFP_CFLAGS) -c $< -o $@
+
+$(TARGET): $(TARGET_DEPS) $(LIBDFP_A)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(TARGET_EXT) $(LIBDFP_A) -lm
+$(RCC_LIB): $(OBJS) src/lib$(OBJ_EXT) $(MINGW_O) $(LIBDFP_A)
+	$(CC) $(CFLAGS) $(RCC_LIB_LDFLAGS) $(LDFLAGS) -o $@ src/lib$(OBJ_EXT) $(TARGET_EXT) $(LIBDFP_A) -lm
 
 src/keywords.h: src/keywords.gperf src/keyword_ids.h
 	$(GPERF) -m 10 --output-file=$@.tmp src/keywords.gperf

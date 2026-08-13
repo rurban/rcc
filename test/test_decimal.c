@@ -1,187 +1,121 @@
-/* Test _Decimal / IEC 60559 feature macros.
+/* _Decimal32/64/128 (IEEE 754-2008 decimal floating point, BID encoding).
  *
- * When a standard macro is defined the corresponding real features are tested.
- * When none of the three are defined (rcc's current state) we verify the
- * alias behaviour: _DecimalN maps to float/double/long double. */
-#include <stdio.h>
+ * Before the decimal codegen existed, _Decimal32/64/128 were aliased to
+ * float/double/long double: literals were converted to binary doubles at
+ * lex time, so e.g. 0.1dd lost its exact decimal representation and
+ * decimal arithmetic used binary FP. Now they are real types whose values
+ * are IEEE 754-2008 BID bit patterns, every operation goes through the
+ * bundled libbid runtime (lib/libdfp.a, __bid_*3/__bid_*2 calls), and
+ * literals are folded exactly at compile time.
+ *
+ * All tests are pure decimal arithmetic/compare/cast — no printf of
+ * decimal values (glibc's %Hf/%Df/%DDf hooks are not wired).
+ */
 
-static int fail;
-#define CHECK(cond) \
-    do { if (!(cond)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #cond); fail++; } } while (0)
+typedef _Decimal32 D32;
+typedef _Decimal64 D64;
+typedef _Decimal128 D128;
 
-/* ── __STDC_IEC_60559_BFP__ ─────────────────────────────────────────────── */
-#ifdef __STDC_IEC_60559_BFP__
-#include <float.h>
-#include <fenv.h>
-#include <math.h>
-#include <stdlib.h>
-static void test_bfp(void) {
-    /* CR_DECIMAL_DIG must be at least DECIMAL_DIG + 3 */
-    CHECK(CR_DECIMAL_DIG >= DECIMAL_DIG + 3);
+static D64 add64(D64 a, D64 b) { return a + b; }
+static D32 add32(D32 a, D32 b) { return a + b; }
+static D128 add128(D128 a, D128 b) { return a + b; }
+static D128 mul128(D128 a, D128 b) { return a * b; }
 
-    /* strfromd: convert double to string */
-    char buf[32];
-    strfromd(buf, sizeof(buf), "%.1f", 3.14);
-    CHECK(buf[0] == '3');
-
-    /* issignaling / iseqsig */
-    CHECK(!issignaling(1.0));
-    CHECK(iseqsig(1.0, 1.0) == 1);
-    CHECK(iseqsig(1.0, 2.0) == 0);
-
-    /* SNANF must produce a signaling NaN */
-    CHECK(issignaling((float)SNANF));
-
-    /* fesetexcept / fetestexceptflag */
-    fexcept_t flag;
-    fesetexcept(FE_INVALID);
-    fetestexceptflag(&flag, FE_INVALID);
-
-    /* fegetmode / fesetmode */
-    femode_t mode;
-    fegetmode(&mode);
-    fesetmode(&mode);
+static int test_basics(void)
+{
+    D64 a = 1.25dd, b = 3.75dd;
+    if (a + b != 5.0dd) return 1;
+    if (b - a != 2.5dd) return 2;
+    if (a * b != 4.6875dd) return 3;
+    if (b / a != 3.0dd) return 4;
+    return 0;
 }
-#endif /* __STDC_IEC_60559_BFP__ */
 
-/* ── __STDC_IEC_60559_TYPES__ ───────────────────────────────────────────── */
-#ifdef __STDC_IEC_60559_TYPES__
-static void test_types(void) {
-    CHECK(sizeof(_Float32)  == 4);
-    CHECK(sizeof(_Float64)  == 8);
-    CHECK(sizeof(_Float32x) == 8);   /* _Float32x is at least double width */
-
-    _Float32  f32  = 1.5F32;
-    _Float64  f64  = 2.5F64;
-    _Float32x f32x = 3.5F32x;
-    CHECK((float)f32   == 1.5f);
-    CHECK((double)f64  == 2.5);
-    CHECK((double)f32x == 3.5);
-
-    /* arithmetic */
-    _Float64 a = 1.0F64, b = 2.0F64;
-    CHECK((double)(a + b) == 3.0);
-    CHECK((double)(b - a) == 1.0);
-    CHECK((double)(a * b) == 2.0);
-    CHECK((double)(b / a) == 2.0);
+static int test_decimal32(void)
+{
+    D32 a = 1.5df, b = 2.25df;
+    if (a + b != 3.75df) return 1;
+    if (a * b != 3.375df) return 2;
+    if (b / a != 1.5df) return 3;
+    if (a > 1.4df && a < 1.6df) return 0;
+    return 4;
 }
-#endif /* __STDC_IEC_60559_TYPES__ */
 
-/* ── __STDC_IEC_60559_DFP__ ─────────────────────────────────────────────── */
-#ifdef __STDC_IEC_60559_DFP__
-static void test_dfp(void) {
-    CHECK(sizeof(_Decimal32)  == 4);
-    CHECK(sizeof(_Decimal64)  == 8);
-    CHECK(sizeof(_Decimal128) == 16);
-
-    /* The definitive decimal test: 0.1 + 0.2 == 0.3 exactly in decimal FP */
-    _Decimal64 x = 0.1DD, y = 0.2DD, z = 0.3DD;
-    CHECK(x + y == z);
-
-    /* negative zero */
-    _Decimal64 neg = -0.0DD;
-    CHECK(neg == 0.0DD);
-
-    /* DD/DF/DL literal suffixes map to the correct decimal types */
-    _Decimal32  df = 1.5DF;
-    _Decimal64  dd = 1.5DD;
-    _Decimal128 dl = 1.5DL;
-    CHECK(df == (_Decimal32)1.5DF);
-    CHECK(dd == (_Decimal64)1.5DD);
-    CHECK(dl == (_Decimal128)1.5DL);
-
-    /* struct and array */
-    struct { _Decimal32 x; _Decimal64 y; } s;
-    s.x = 10.0DF; s.y = 20.0DD;
-    CHECK(s.x == 10.0DF);
-    CHECK(s.y == 20.0DD);
-
-    _Decimal32 arr[3] = {1.0DF, 2.0DF, 3.0DF};
-    CHECK(arr[0] == 1.0DF);
-    CHECK(arr[1] == 2.0DF);
-    CHECK(arr[2] == 3.0DF);
+static int test_decimal128(void)
+{
+    D128 c = 1.5dl, d = 2.5dl;
+    if (c + d != 4.0dl) return 1;
+    if (c * d != 3.75dl) return 2;
+    if (3.75dl / 1.5dl != 2.5dl) return 3;
+    if (mul128(1.5dl, 2.5dl) != 3.75dl) return 4;
+    return 0;
 }
-#endif /* __STDC_IEC_60559_DFP__ */
 
-/* ── alias fallback (rcc current state: none of the three defined) ──────── */
-#if !defined(__STDC_IEC_60559_BFP__) && \
-    !defined(__STDC_IEC_60559_TYPES__) && \
-    !defined(__STDC_IEC_60559_DFP__)
-static void test_aliases(void) {
-    /* __DECIMAL_BID_FORMAT__ and __DEC_EVAL_METHOD__ still present */
-#ifndef __DECIMAL_BID_FORMAT__
-    fprintf(stderr, "FAIL: __DECIMAL_BID_FORMAT__ not defined\n"); fail++;
-#endif
-#ifndef __DEC_EVAL_METHOD__
-    fprintf(stderr, "FAIL: __DEC_EVAL_METHOD__ not defined\n"); fail++;
-#endif
-
-    /* sizeof matches the aliased binary types */
-    CHECK(sizeof(_Decimal32)  == sizeof(float));
-    CHECK(sizeof(_Decimal64)  == sizeof(double));
-    CHECK(sizeof(_Decimal128) == sizeof(long double));
-
-    /* basic scalars */
-    _Decimal32  a32  = 1.5;
-    _Decimal64  a64  = 2.5;
-    _Decimal128 a128 = 3.5;
-    CHECK((float)a32        == 1.5f);
-    CHECK((double)a64       == 2.5);
-    CHECK((long double)a128 == 3.5L);
-
-    /* DD/DF/DL suffixes (aliased to double/float/long double) */
-    double      dd = 1.5DD;
-    float       df = 1.5DF;
-    long double dl = 1.5DL;
-    CHECK(dd == 1.5);
-    CHECK(df == 1.5f);
-    CHECK(dl == 1.5L);
-
-    /* negative zero */
-    _Decimal64 neg = -0.0;
-    CHECK(neg == 0.0);
-
-    /* arithmetic */
-    _Decimal64 x = 1.0, y = 2.0;
-    CHECK((double)(x + y) == 3.0);
-    CHECK((double)(y - x) == 1.0);
-    CHECK((double)(x * y) == 2.0);
-    CHECK((double)(y / x) == 2.0);
-
-    /* struct fields */
-    struct { _Decimal32 x; _Decimal64 y; _Decimal128 z; } s;
-    s.x = 10.0; s.y = 20.0; s.z = 30.0;
-    CHECK((float)s.x        == 10.0f);
-    CHECK((double)s.y       == 20.0);
-    CHECK((long double)s.z  == 30.0L);
-
-    /* array */
-    _Decimal32 arr[3] = {1.0, 2.0, 3.0};
-    CHECK((float)arr[0] == 1.0f);
-    CHECK((float)arr[1] == 2.0f);
-    CHECK((float)arr[2] == 3.0f);
+static int test_compare(void)
+{
+    D64 x = 5.0dd, y = 3.0dd;
+    if (!(x > y)) return 1;
+    if (!(x >= 5.0dd)) return 2;
+    if (!(x == 5.0dd)) return 3;
+    if (!(y < x)) return 4;
+    if (!(y <= 3.0dd)) return 5;
+    if (!(x != y)) return 6;
+    return 0;
 }
-#endif
 
-int main(void) {
-#ifdef __STDC_IEC_60559_BFP__
-    test_bfp();
-#endif
-#ifdef __STDC_IEC_60559_TYPES__
-    test_types();
-#endif
-#ifdef __STDC_IEC_60559_DFP__
-    test_dfp();
-#endif
-#if !defined(__STDC_IEC_60559_BFP__) && \
-    !defined(__STDC_IEC_60559_TYPES__) && \
-    !defined(__STDC_IEC_60559_DFP__)
-    test_aliases();
-#endif
-    if (fail) {
-        fprintf(stderr, "%d check(s) failed\n", fail);
-        return 1;
-    }
-    printf("OK\n");
+static int test_casts(void)
+{
+    /* decimal -> int truncates toward zero */
+    D64 d = 3.75dd;
+    if ((long)d != 3) return 1;
+    if ((int)(-3.75dd) != -3) return 2;
+    /* int -> decimal */
+    D64 e = 7;
+    if (e != 7.0dd) return 3;
+    D128 f = 42;
+    if (f != 42.0dl) return 4;
+    /* decimal <-> binary float */
+    double g = (double)d;
+    if (g != 3.75) return 5;
+    D64 h = (D64)2.5;
+    if (h != 2.5dd) return 6;
+    /* decimal size changes */
+    D128 i = (D128)d;
+    if (i != 3.75dl) return 7;
+    D32 j = (D32)d;
+    if (j != 3.75df) return 8;
+    return 0;
+}
+
+static int test_neg(void)
+{
+    D64 x = 1.25dd;
+    if (-x != -1.25dd) return 1;
+    if (-(-x) != x) return 2;
+    D128 y = 2.5dl;
+    if (-y != -2.5dl) return 3;
+    return 0;
+}
+
+static int test_funcall(void)
+{
+    /* decimal32/64 pass in GP regs; decimal128 in 2 GP regs */
+    if (add64(1.25dd, 3.75dd) != 5.0dd) return 1;
+    if (add32(1.5df, 2.25df) != 3.75df) return 2;
+    if (add128(1.5dl, 2.5dl) != 4.0dl) return 3;
+    if (mul128(1.5dl, 2.5dl) != 3.75dl) return 4;
+    return 0;
+}
+
+int main(void)
+{
+    int rc;
+    if ((rc = test_basics())) return rc;
+    if ((rc = test_decimal32())) return 100 + rc;
+    if ((rc = test_decimal128())) return 200 + rc;
+    if ((rc = test_compare())) return 300 + rc;
+    if ((rc = test_casts())) return 400 + rc;
+    if ((rc = test_neg())) return 500 + rc;
+    if ((rc = test_funcall())) return 600 + rc;
     return 0;
 }

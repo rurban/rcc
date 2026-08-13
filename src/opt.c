@@ -128,6 +128,16 @@ static bool try_fold_pure(const char *name, Node *args, long *result) {
 static int eval_ast(Program *prog, Function *fn, Node *node, int *env, int *cf, bool *success) {
     if (!node || !*success) return 0;
 
+    // Decimal arithmetic must never fold as integers: BID bit patterns are
+    // not plain integer values (non-canonical encodings, decimal
+    // semantics). Force the runtime __bid_* path.
+    if ((node->ty && is_decimal(node->ty)) ||
+        (node->lhs && node->lhs->ty && is_decimal(node->lhs->ty)) ||
+        (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty))) {
+        *success = false;
+        return 0;
+    }
+
     // codeql[cpp/long-switch]: central AST-node-kind dispatch; splitting cases into helpers is a large, purely-cosmetic refactor of core compiler internals, not attempted here.
     switch (node->kind) {
     case ND_NUM:
@@ -1004,6 +1014,12 @@ static Node *optimize_node(Program *prog, Node *node) {
     }
 
     if (node->kind == ND_ADD || node->kind == ND_SUB || node->kind == ND_MUL || node->kind == ND_DIV || node->kind == ND_MOD) {
+        // Decimal operands: the BID bit patterns are NOT plain integers;
+        // folding them arithmetically corrupts the value (non-canonical
+        // encodings, decimal semantics). Keep the runtime __bid_* call.
+        if ((node->lhs && node->lhs->ty && is_decimal(node->lhs->ty)) ||
+            (node->rhs && node->rhs->ty && is_decimal(node->rhs->ty)))
+            return node;
         if (node->lhs && node->lhs->kind == ND_NUM && node->rhs && node->rhs->kind == ND_NUM) {
             Node *fold = arena_alloc(sizeof(Node));
             fold->kind = ND_NUM;

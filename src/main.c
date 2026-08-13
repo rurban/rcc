@@ -1148,6 +1148,26 @@ int main(int argc, char **argv) {
                 lp = end;
             }
         }
+        // Decimal (_Decimal32/64/128) codegen emits __bid_*3/__bid_*2
+        // runtime calls; those live in the bundled libdfp.a (lib/libdfp.a,
+        // built from the vendored libbid core + rcc's wrapper layer). Link
+        // it automatically, the same way -lm is added unconditionally:
+        // locate it next to rcc's own include dir (RCC_INCDIR/../lib).
+        // Only when this TU actually used a decimal type or literal, and
+        // only when linking (-c/-S emit no calls and the archive is not
+        // needed there).
+        if (parser_used_decimal) {
+#ifndef RCC_INCDIR
+#define RCC_INCDIR "include"
+#endif
+            // Link the BUNDLED decimal runtime archive directly (positional
+            // .a, which resolve_archives() always loads) rather than -ldfp:
+            // a system libdfp.so found via the -l search uses GCC's
+            // _Decimal64 ABI (XMM registers) for __bid_adddd3, incompatible
+            // with rcc's plain bit-pattern ABI (GP registers) emitted for
+            // the same symbol names. Our lib/libdfp.a is built for that ABI.
+            xappendf(&libs, &libs_len, &libs_cap, " %s/../lib/libdfp.a", RCC_INCDIR);
+        }
         if (native_link_capable) {
             int n_link_objs = 0;
             for (OutPath *p = out_paths; p; p = p->next) n_link_objs++;
@@ -1157,6 +1177,11 @@ int main(int argc, char **argv) {
                 for (OutPath *p = out_paths; p; p = p->next)
                     link_objs[i++] = p->path;
                 uint64_t t_link = opt_time ? now_us() : 0;
+                if (getenv("RCC_LINK_DEBUG")) {
+                    fprintf(stderr, "DBG link objs:");
+                    for (int di = 0; di < n_link_objs; di++) fprintf(stderr, " %s", link_objs[di]);
+                    fprintf(stderr, "\nDBG libs: %s\n", libs);
+                }
                 int native = rcc_link(backend_out, link_objs, n_link_objs,
                                       libs, opt_pie, opt_pic, opt_shared, opt_static,
                                       opt_export_dynamic);
@@ -1331,6 +1356,10 @@ int main(int argc, char **argv) {
             remove(stdout_tmp);
 
         // Cleanup temp files
+        if (getenv("RCC_KEEP_TMP")) {
+            for (OutPath *p = out_paths; p; p = p->next)
+                fprintf(stderr, "DBG keep tmp: %s\n", p->path);
+        }
         for (OutPath *p = out_paths; p; p = p->next)
             remove(p->path);
         free(libs);

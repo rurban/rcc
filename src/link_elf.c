@@ -101,6 +101,7 @@
 #define R_AARCH64_LD64_GOT_LO12_NC 312
 #define R_AARCH64_TLSLE_ADD_TPREL_HI12 549
 #define R_AARCH64_TLSLE_ADD_TPREL_LO12 550
+#define R_AARCH64_TLSLE_ADD_TPREL_LO12_NC 551
 #define R_AARCH64_GLOB_DAT 1025
 #define R_AARCH64_JUMP_SLOT 1026
 #define R_AARCH64_RELATIVE 1027
@@ -262,7 +263,8 @@ static int map_reloc_type(uint32_t elf_type, LinkArch arch) {
         case R_AARCH64_ADR_GOT_PAGE: return RL_ARM64_GOT_PG;
         case R_AARCH64_LD64_GOT_LO12_NC: return RL_ARM64_GOT_LO;
         case R_AARCH64_TLSLE_ADD_TPREL_HI12: return RL_ARM64_TPREL_HI;
-        case R_AARCH64_TLSLE_ADD_TPREL_LO12: return RL_ARM64_TPREL_LO;
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12:
+        case R_AARCH64_TLSLE_ADD_TPREL_LO12_NC: return RL_ARM64_TPREL_LO;
         }
     }
     return 0;
@@ -566,8 +568,19 @@ static int elf_load_object(LinkState *s, const char *path) {
             if (mapped_sym < 0) continue;
             int rl_type = map_reloc_type(r_type, s->arch);
             if (rl_type == 0) {
+                // An unhandled relocation means the native linker cannot
+                // produce a correct binary for this object. Fail the
+                // native link so the driver falls back to the real
+                // system linker (which handles every relocation type)
+                // instead of silently emitting a broken output with the
+                // relocation left unresolved (e.g. R_AARCH64_LDST128 on
+                // the bundled libdfp.a's exception-flag globals produced
+                // a binary that read garbage data and segfaulted).
                 fprintf(stderr, "rcc: link: %s: unhandled reloc type %u\n", path, r_type);
-                continue;
+                free(sec_map);
+                free(sym_map);
+                elf_close(&ef);
+                return -1;
             }
             link_add_reloc(s, out_idx, r_offset, rl_type, mapped_sym, addend);
         }
@@ -664,6 +677,11 @@ static int load_archive(LinkState *s, const char *path) {
         round++;
         for (uint32_t i = 0; i < nsym; i++) {
             if (used[i] || !symnames[i]) continue;
+            if (getenv("RCC_LINK_DEBUG") && strstr(symnames[i], "glbflags")) {
+                int fs = link_find_sym(s, symnames[i]);
+                fprintf(stderr, "DBG sym %d %s find=%d sec=%d\n", i, symnames[i], fs,
+                        fs >= 0 ? s->syms[fs].sec : -99);
+            }
             // link_find_sym returning >= 0 only means a symbol by this
             // name exists in the table AT ALL -- it says nothing about
             // whether it's still an outstanding, undefined reference.
@@ -698,7 +716,18 @@ static int load_archive(LinkState *s, const char *path) {
                             perror("write rcc_link_ar");
                             abort();
                         }
-                        elf_load_object(s, tmp);
+                        if (getenv("RCC_LINK_DEBUG"))
+                            fprintf(stderr, "DBG pulling member for sym %s (offs %u)\n", symnames[i], symoffs[i]);
+                        if (elf_load_object(s, tmp) != 0) {
+                            unlink(tmp);
+                            free(used);
+                            free(symnames);
+                            free(symoffs);
+                            munmap(data, sz);
+                            return -1;
+                        }
+                        if (getenv("RCC_LINK_DEBUG"))
+                            fprintf(stderr, "DBG loaded member for sym %s\n", symnames[i]);
                         unlink(tmp);
                         used[i] = 1;
                         changed = 1;
@@ -2327,8 +2356,14 @@ int link_elf(LinkState *s) {
             if (sym->sec == bss_sec) {
                 uint64_t end = sym->value + sym->size;
                 if (end > max_bss) max_bss = end;
+                if (getenv("RCC_LINK_DEBUG") && strstr(sym->name, "glbflags"))
+                    fprintf(stderr, "DBG bss sym %s sec=%d value=%llu size=%llu\n", sym->name, sym->sec,
+                            (unsigned long long)sym->value, (unsigned long long)sym->size);
             }
         }
+        if (getenv("RCC_LINK_DEBUG"))
+            fprintf(stderr, "DBG bss_sec=%d len=%zu max_bss=%llu\n", bss_sec, s->secs[bss_sec].len,
+                    (unsigned long long)max_bss);
         if (max_bss > s->secs[bss_sec].len)
             s->secs[bss_sec].len = (size_t)max_bss;
     }
