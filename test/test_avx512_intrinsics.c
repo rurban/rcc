@@ -14,6 +14,7 @@ typedef long long v8di __attribute__((vector_size(64), aligned(64)));
 typedef int v8si __attribute__((vector_size(32), aligned(32)));
 typedef int v4si __attribute__((vector_size(16), aligned(16)));
 typedef double v4df __attribute__((vector_size(32), aligned(32)));
+typedef double v8df __attribute__((vector_size(64), aligned(64)));
 
 static int fails = 0;
 #define CHECK(cond)                                                           \
@@ -50,8 +51,9 @@ int main(void) {
         CHECK(ro[0] == 0x10000000 && ro[15] == 1);
         v16si u = (v16si)__builtin_ia32_punpckldq512_mask(a, b, (v16si)-1);
         CHECK(u[0] == 1 && u[1] == 16 && u[2] == 2 && u[3] == 15);
+        // 0x88: groups {0,2,0,2} of A -> {1..4, 9..12, 1..4, 9..12}
         v16si sh = (v16si)__builtin_ia32_shuf_i32x4_mask(a, b, 0x88, (v16si)-1);
-        CHECK(sh[0] == 1 && sh[4] == 5);
+        CHECK(sh[0] == 1 && sh[4] == 9 && sh[15] == 12);
         v16si an = (v16si)__builtin_ia32_pandnd512_mask(a, b, (v16si)-1);
         CHECK(an[0] == 16 && an[15] == 1);
         v8si lo = (v8si)__builtin_ia32_pmovqd512_mask((v8di){0x100000001, 0x300000002, 0x500000003, 0x700000004, 0x900000005, 0xB00000006, 0xD00000007, 0xF00000008}, (v8si)-1);
@@ -64,8 +66,9 @@ int main(void) {
         int buf[8] = {0};
         __builtin_ia32_storedqusi256_mask(buf, (v8si)val, -1);
         CHECK(buf[0] == 7 && buf[7] == 7);
-        v4si ext = (v4si)__builtin_ia32_extractf64x4_mask((v4df)val, 1, (v4df)-1);
-        CHECK(ext[0] == 7);
+        v8df src64 = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
+        v4df ext = (v4df)__builtin_ia32_extractf64x4_mask(src64, 1, (v4df)-1);
+        CHECK(ext[0] == 5.0 && ext[3] == 8.0);
     }
     printf(fails ? "%d FAILURES\n" : "ALL PASS\n", fails);
     return fails != 0;

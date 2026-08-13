@@ -2240,10 +2240,11 @@ static void evex_rr(SecBuf *s, int pp, int map, int W, int op, int k, X86XmmReg 
     emit1(s, modrxmm(3, d, rm));
 }
 // EVEX immediate-group shifts (66 0F 71/72/73 /ext ib): dst=rm, ext=reg.
-static void evex_group_imm(SecBuf *s, int W, int L, int grp, int ext, int k, X86XmmReg d, uint8_t imm) {
-    evex4(s, 1, 1, W, L, k, (X86XmmReg)ext, X86_XMM0, d);
+static void evex_group_imm(SecBuf *s, int W, int L, int grp, int ext, int k, X86XmmReg dst, X86XmmReg src, uint8_t imm) {
+    // EVEX group-imm form: reg=ext, rm=SRC, vvvv=DST (gcc: vpsrld $1,%zmm_src,%zmm_dst)
+    evex4(s, 1, 1, W, L, k, (X86XmmReg)ext, dst, src);
     emit1(s, (uint8_t)grp);
-    emit1(s, modrxmm(3, ext, d));
+    emit1(s, modrxmm(3, ext, src));
     emit1(s, imm);
 }
 // EVEX 3-op with imm (0F3A map).
@@ -2316,13 +2317,13 @@ EVEX512_3OP(x86_vpunpcklqdq512, 1, 1, 1, 0x6c) // 512/256 macro
 EVEX512_3OP(x86_vpunpckhqdq512, 1, 1, 1, 0x6d) // 512/256 macro
 // 512-bit imm shifts: vpsrld/vpsrlq (72/73 /2), vprord (72 /1)
 void x86_vpsrld512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
-    evex_group_imm(s, 0, 2, 0x72, 2, 0, d, imm);
+    evex_group_imm(s, 0, 2, 0x72, 2, 0, d, d, imm);
 }
 void x86_vpsrlq512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
-    evex_group_imm(s, 1, 2, 0x73, 2, 0, d, imm);
+    evex_group_imm(s, 1, 2, 0x73, 2, 0, d, d, imm);
 }
 void x86_vprord512_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
-    evex_group_imm(s, 0, 2, 0x72, 0, 0, d, imm); // VPRORD = 72 /0 (right rotate)
+    evex_group_imm(s, 0, 2, 0x72, 0, 0, d, d, imm); // VPRORD = 72 /0 (right rotate)
 }
 // vshufi32x4 zmm: 66 0F 3A 43 /r ib
 void x86_vshufi32x4(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
@@ -2330,10 +2331,10 @@ void x86_vshufi32x4(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t i
 }
 // VPRORD xmm: EVEX.128.66.0F.W0 72 /0 ib (L'L=00).
 void x86_vprord128_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
-    evex_group_imm(s, 0, 0, 0x72, 0, 0, d, imm);
+    evex_group_imm(s, 0, 0, 0x72, 0, 0, d, d, imm);
 }
 void x86_vprord256_i(SecBuf *s, X86XmmReg d, uint8_t imm) {
-    evex_group_imm(s, 0, 1, 0x72, 0, 0, d, imm);
+    evex_group_imm(s, 0, 1, 0x72, 0, 0, d, d, imm);
 }
 // VPMOVQD ymm -> xmm: EVEX.256.66.0F38.W0 35 (L'L=01).
 void x86_vpmovqd256(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
