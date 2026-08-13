@@ -985,6 +985,7 @@ void x86_vprord512_i(SecBuf *s, X86XmmReg d, uint8_t imm);
 void x86_vpsrld512_i(SecBuf *s, X86XmmReg d, uint8_t imm);
 void x86_vpsrlq512_i(SecBuf *s, X86XmmReg d, uint8_t imm);
 void x86_vshufi32x4(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm);
+void x86_vpternlogd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm);
 void x86_vpaddd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k);
 void x86_vpaddq512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k);
 void x86_vpandd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k);

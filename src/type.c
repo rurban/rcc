@@ -384,6 +384,12 @@ static Type *ia32_builtin_ret(const char *fullname) {
     if (strstr(n, "ucmpd512_mask") || strstr(n, "cmpd512_mask") ||
         strstr(n, "ucmpq512_mask") || strstr(n, "cmpq512_mask"))
         return ty_int; // __mmask16 result
+    // shuf_i32x4_mask carries no 512 suffix in its name; without this it
+    // types as implicit int and the header's `(__m512i)__builtin_ia32_...`
+    // cast becomes a scalar->vector broadcast (the call's slot address got
+    // splatted into the result instead of the shuffle result).
+    if (!strcmp(n, "shuf_i32x4_mask"))
+        return ia32_vec_ty(4, 64); // v16si
     if (!strcmp(n, "extractf64x4_mask"))
         return ia32_vec_ty(1, 32); // v4df (the name carries no 512 suffix)
 

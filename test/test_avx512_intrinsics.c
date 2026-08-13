@@ -5,9 +5,28 @@
 // encoders and the 64-byte gen_vector path; the runtime checks run
 // only when the CPU actually has AVX-512F (the local dev machines may
 // not — the test must PASS everywhere, CI runners included).
+// The builtin calls use the GCC avx512fintrin.h argument shapes
+// (src, imm, passthru, mask) so the same file compiles and runs under
+// both gcc and rcc; the -m flags are for gcc (rcc ignores -m options).
+// rcc falls through to the system <immintrin.h>, but its __OPTIMIZE__
+// branches reference f16c/bf16 builtins rcc has no codegen for, so under
+// rcc the canonical arg types are provided directly (identical to the
+// header typedefs); gcc gets them from the real header.
 // x86-64 only; guarded for arm64/mingw like the AVX2 test.
-#if !defined(__aarch64__) && !defined(_M_ARM64) && defined(__RCC__)
+/* { dg-options "-mavx512f -mavx512vl" } */
+#if !defined(__aarch64__) && !defined(_M_ARM64)
 #include <stdio.h>
+#ifdef __RCC__
+typedef int __v16si __attribute__((__vector_size__(64)));
+typedef long long __v8di __attribute__((__vector_size__(64)));
+typedef int __v8si __attribute__((__vector_size__(32)));
+typedef double __m512d __attribute__((__vector_size__(64), __may_alias__));
+typedef double __m256d __attribute__((__vector_size__(32), __may_alias__));
+typedef unsigned short __mmask16;
+typedef unsigned char __mmask8;
+#else
+#include <immintrin.h>
+#endif
 
 typedef int v16si __attribute__((vector_size(64), aligned(64)));
 typedef long long v8di __attribute__((vector_size(64), aligned(64)));
@@ -44,38 +63,37 @@ int main(void) {
         CHECK(e[0] == 0 && e[15] == 0);
         CHECK(f[0] == 16 && f[15] == 1);
         CHECK(i[0] == 9 && i[7] == 9);
-        // the masked builtins blake3 uses
-        v16si r = (v16si)__builtin_ia32_psrldi512_mask((v16si){16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, 4, (v16si)-1);
+        // the masked builtins blake3 uses (GCC arg order: src, imm,
+        // passthru, mask; all-ones mask -> unmasked, passthru unused)
+        v16si r = (v16si)__builtin_ia32_psrldi512_mask((__v16si){16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, 4, (__v16si){0}, (__mmask16)-1);
         CHECK(r[0] == 1 && r[1] == 0);
-        v16si ro = (v16si)__builtin_ia32_prord512_mask((v16si){1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, 4, (v16si)-1);
+        v16si ro = (v16si)__builtin_ia32_prord512_mask((__v16si){1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}, 4, (__v16si){0}, (__mmask16)-1);
         CHECK(ro[0] == 0x10000000 && ro[15] == 1);
-        v16si u = (v16si)__builtin_ia32_punpckldq512_mask(a, b, (v16si)-1);
+        v16si u = (v16si)__builtin_ia32_punpckldq512_mask((__v16si)a, (__v16si)b, (__v16si){0}, (__mmask16)-1);
         CHECK(u[0] == 1 && u[1] == 16 && u[2] == 2 && u[3] == 15);
-        // 0x88: groups {0,2,0,2} of A -> {1..4, 9..12, 1..4, 9..12}
-        v16si sh = (v16si)__builtin_ia32_shuf_i32x4_mask(a, b, 0x88, (v16si)-1);
-        CHECK(sh[0] == 1 && sh[4] == 9 && sh[15] == 12);
-        v16si an = (v16si)__builtin_ia32_pandnd512_mask(a, b, (v16si)-1);
+        // 0x88: output lanes 0-1 take 128-bit lane s=imm[2i+1:2i] from A,
+        // lanes 2-3 from B -> {A0, A2, B0, B2} = {1..4, 9..12, 16..13, 8..5}
+        v16si sh = (v16si)__builtin_ia32_shuf_i32x4_mask((__v16si)a, (__v16si)b, 0x88, (__v16si){0}, (__mmask16)-1);
+        CHECK(sh[0] == 1 && sh[4] == 9 && sh[15] == 5);
+        v16si an = (v16si)__builtin_ia32_pandnd512_mask((__v16si)a, (__v16si)b, (__v16si){0}, (__mmask16)-1);
         CHECK(an[0] == 16 && an[15] == 1);
-        v8si lo = (v8si)__builtin_ia32_pmovqd512_mask((v8di){0x100000001, 0x300000002, 0x500000003, 0x700000004, 0x900000005, 0xB00000006, 0xD00000007, 0xF00000008}, (v8si)-1);
+        v8si lo = (v8si)__builtin_ia32_pmovqd512_mask((__v8di){0x100000001, 0x300000002, 0x500000003, 0x700000004, 0x900000005, 0xB00000006, 0xD00000007, 0xF00000008}, (__v8si){0}, (__mmask8)-1);
         CHECK(lo[0] == 1 && lo[7] == 8);
         // cmp_epu32_mask -> __mmask16
-        int m = __builtin_ia32_ucmpd512_mask(a, b, 1); // LT: a[i] < b[i] for i<8
+        int m = __builtin_ia32_ucmpd512_mask((__v16si)a, (__v16si)b, 1, (__mmask16)-1); // LT: a[i] < b[i] for i<8
         CHECK(m == 0xff);
         // 256-bit masked store + 512->256 extract
-        v16si val = {7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+        v8si val8 = {7, 7, 7, 7, 7, 7, 7, 7};
         int buf[8] = {0};
-        __builtin_ia32_storedqusi256_mask(buf, (v8si)val, -1);
+        __builtin_ia32_storedqusi256_mask(buf, (__v8si)val8, (__mmask8)-1);
         CHECK(buf[0] == 7 && buf[7] == 7);
         v8df src64 = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};
-        v4df ext = (v4df)__builtin_ia32_extractf64x4_mask(src64, 1, (v4df)-1);
+        v4df ext = (v4df)__builtin_ia32_extractf64x4_mask((__m512d)src64, 1, (__m256d){0}, (__mmask8)-1);
         CHECK(ext[0] == 5.0 && ext[3] == 8.0);
     }
     printf(fails ? "%d FAILURES\n" : "ALL PASS\n", fails);
     return fails != 0;
 }
-#elif !defined(__aarch64__) && !defined(_M_ARM64)
-// gcc build: compile-only verification (rcc runs the runtime checks).
-int main(void) { return 0; }
 #else
 int main(void) { return 0; }
 #endif

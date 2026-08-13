@@ -247,7 +247,7 @@ VReg gen_vector64_x86(Node *node) {
         avx512_loadZ(X86_XMM2, node->lhs);
         free_reg(a);
         if (node->kind == ND_BITNOT) {
-            x86_vpcmpeqd512(cg_sec, X86_XMM3, X86_XMM3, X86_XMM3, 0); // all ones
+            x86_vpternlogd512(cg_sec, X86_XMM3, X86_XMM3, X86_XMM3, 0xff); // all ones
             x86_vpxord512(cg_sec, X86_XMM2, X86_XMM2, X86_XMM3, 0);
         } else if (flt) {
             error("vector_size 64: float negation not supported");
@@ -824,7 +824,10 @@ static VReg ia32_store(int bytes) {
     VReg dst = alloc_int128_addr();
     if (bytes == 8)
         x86_movq_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
-    else
+    else if (bytes == 32) {
+        alloc_int128_slot(); // second half of the 32-byte slot
+        x86_vmovups_mr256(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+    } else
         x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
     return dst;
 }
@@ -1916,7 +1919,7 @@ VReg gen_ia32_builtin(Node *node) {
         // masked 256-bit store: (ptr, data, mask); -1 mask -> no masking
         VReg p = gen(a1);
         VReg va = ia32_vaddr(a2);
-        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        x86_vmovups_rm256(cg_sec, X86_XMM0, x86_mem(REG(va), 0)); // 32-byte data operand
         free_reg(va);
         x86_vmovdqu32_mr256(cg_sec, x86_mem(REG(p), 0), X86_XMM0);
         free_reg(p);
