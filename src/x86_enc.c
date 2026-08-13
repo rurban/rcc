@@ -2224,12 +2224,15 @@ static void vex_rr(SecBuf *s, int pp, int map, int W, int L, int op, X86XmmReg d
 // the k-mask register (0 = unmasked). Register extension: R/R' cover
 // reg bits 4/3, V' covers vvvv bit 4, B covers rm bit 4.
 static void evex4(SecBuf *s, int pp, int map, int W, int L, int k, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
-    int Rd = ((int)d >> 4) & 1, Rp = ((int)d >> 3) & 1;
-    int Vp = ((int)v >> 3) & 1;
-    int Bm = ((int)rm >> 4) & 1;
+    // Register extension bits (all inverted): the 5-bit dest = {R' P0.4,
+    // R P0.7, modrm.reg}, the 5-bit rm = {X P0.6, B P0.5, modrm.rm} (X is
+    // the rm's bit 4 for register operands), vvvv + V' P2.3 for the source.
+    int Rd = ((int)d >> 3) & 1, Rp = ((int)d >> 4) & 1;
+    int Xm = ((int)rm >> 4) & 1, Bm = ((int)rm >> 3) & 1;
+    int Vp = ((int)v >> 4) & 1;
     int vvvv = (~(int)v) & 15;
     emit1(s, 0x62);
-    emit1(s, (uint8_t)(((~Rd & 1) << 7) | (1 << 6) | ((~Bm & 1) << 5) | ((~Rp & 1) << 4) | (map & 15)));
+    emit1(s, (uint8_t)(((~Rd & 1) << 7) | ((~Xm & 1) << 6) | ((~Bm & 1) << 5) | ((~Rp & 1) << 4) | (map & 15)));
     emit1(s, (uint8_t)(((W & 1) << 7) | (vvvv << 3) | (1 << 2) | (pp & 3))); // EVEX W is NOT inverted
     emit1(s, (uint8_t)(((L & 3) << 5) | ((~Vp & 1) << 3) | (k & 15))); // z=0, b=0
 }
@@ -2281,9 +2284,11 @@ void x86_vmovups_mr512(SecBuf *s, X86Mem m, X86XmmReg sr) {
 }
 // vpbroadcastd/q: EVEX.512.66.0F38.W0 58/59 (xmm source -> zmm dest)
 void x86_vpbroadcastd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+    (void)v;
     evex_rr(s, 1, 2, 0, 0x58, k, d, X86_XMM0, rm);
 }
 void x86_vpbroadcastq512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+    (void)v;
     evex_rr(s, 1, 2, 1, 0x59, k, d, X86_XMM0, rm);
 }
 // kmovw r32, k1 (VEX.128.0F.W0 90 /r): move a k-mask to a GP register.
