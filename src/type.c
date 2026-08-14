@@ -471,6 +471,24 @@ static Type *ia32_builtin_ret(const char *fullname) {
     if (!strcmp(n, "cvtneps2bf16_v4sf_mask"))
         return ia32_vec_ty(3, 16); // v8hi
 
+    // F16C half-precision converts: vcvtph2ps/vcvtph2ps256 widen 16-bit
+    // halfs to float (v4sf/v8sf, kind 0); vcvtps2ph/vcvtps2ph256 narrow
+    // floats to packed 16-bit halfs, returned in a v8hi-shaped 128-bit
+    // vector either way (256-bit input still packs down to 128 bits of
+    // output). None of these start with "cvt" (the leading "v" of
+    // "vcvtph2ps" defeats the memcmp(n,"cvt",3) check below) and none
+    // end in a b/w/d/q lane letter, so without this they fell through
+    // to the generic ty_int catch-all -- a `__v8hi H =
+    // __builtin_ia32_vcvtps2ph(...)` initializer then hit a completely
+    // unrelated codegen bug (a vector-typed declaration initialized
+    // from an int-returning call whose own argument is itself a vector
+    // mis-parsed as "expected an expression") instead of the real type
+    // mismatch. Found via test_brotli's F16C-guarded encoder path.
+    if (!strcmp(n, "vcvtph2ps")) return ia32_vec_ty(0, 16); // v4sf
+    if (!strcmp(n, "vcvtph2ps256")) return ia32_vec_ty(0, 32); // v8sf
+    if (!strcmp(n, "vcvtps2ph") || !strcmp(n, "vcvtps2ph256"))
+        return ia32_vec_ty(3, 16); // v8hi
+
     // --- converts (cvt*) ---
     if (L > 3 && memcmp(n, "cvt", 3) == 0) {
         if (strstr(n, "2si")) return ty_int; // cvt*2si, cvt*2si64

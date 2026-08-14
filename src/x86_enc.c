@@ -2692,6 +2692,40 @@ VEX256_IMM3A(x86_vmpsadbw, 1, 0x42) // 0F/0F38/0F3A VEX.256 macro
 VEX256_IS4(x86_vblendvps, 1, 0x4a) // 0F/0F38/0F3A VEX.256 macro
 VEX256_IS4(x86_vblendvpd, 1, 0x4b) // 0F/0F38/0F3A VEX.256 macro
 VEX256_IS4(x86_vpblendvb, 1, 0x4c) // 0F/0F38/0F3A VEX.256 macro
+// F16C half-precision converts. vcvtph2ps: VEX.128/256.66.0F38.W0 13 /r
+// (ordinary 2-op form, dst=ModRM.reg gets the widened floats,
+// src=ModRM.rm holds the packed halfs). vcvtps2ph: VEX.128/256.66.0F3A.W0
+// 1D /r ib — a store-like reversed form: ModRM.reg holds the SOURCE
+// (floats to narrow), ModRM.rm holds the DEST (packed halfs); L selects
+// the SOURCE width (xmm/ymm), the result is always <=128 bits. Opcodes
+// verified byte-for-byte against real gcc -mf16c output (objdump), not
+// transcribed from the SDM by hand -- an existing analogous reversed-
+// operand encoder in this file (x86_vextractf128) turned out to carry a
+// transcription bug (op=0x1c instead of the real 0x19), so this pair was
+// independently confirmed rather than modeled on it.
+//
+// vex_rr's own W parameter is the INVERSE of the real VEX.W bit
+// (vex3() applies `~W`, matching every other caller in this file --
+// e.g. x86_vpermq passes W=0 to *produce* real VEX.W=1, verified
+// against gcc's own `vpermq $imm,%ymm,%ymm` bytes) -- unlike every
+// other VEX instruction wired up so far, VCVTPH2PS/VCVTPS2PH are NOT
+// W-ignored (WIG): a wrong W bit selects a different, illegal opcode
+// and SIGILLs at runtime instead of silently working. Pass W=1 here to
+// emit the real, required W=0.
+void x86_vcvtph2ps(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
+    vex_rr(s, 1, 2, 1, 0, 0x13, d, X86_XMM0, rm); // 128-bit: xmm dst, xmm src (low 4 halfs)
+}
+void x86_vcvtph2ps256(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
+    vex_rr(s, 1, 2, 1, 1, 0x13, d, X86_XMM0, rm); // 256-bit: ymm dst, xmm src (8 halfs)
+}
+void x86_vcvtps2ph(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 0, 0x1d, rm, X86_XMM0, d); // 128-bit src -> xmm dst (4 halfs)
+    emit1(s, imm);
+}
+void x86_vcvtps2ph256(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 1, 1, 0x1d, rm, X86_XMM0, d); // 256-bit src -> xmm dst (8 halfs)
+    emit1(s, imm);
+}
 // 0F38-map additions: pmulld, pmuldq, pcmpgtq, min/max 8/32
 VEX256_38(x86_vpmulld, 0x40) // 0F/0F38/0F3A VEX.256 macro
 VEX256_38(x86_vpmuldq, 0x28) // 0F/0F38/0F3A VEX.256 macro

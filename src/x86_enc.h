@@ -909,8 +909,12 @@ void x86_vblendvps(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, X86XmmReg 
 void x86_vcvtdq2pd(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvtdq2ps(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvtpd2dq(SecBuf *s, X86XmmReg d, X86XmmReg rm);
+void x86_vcvtph2ps(SecBuf *s, X86XmmReg d, X86XmmReg rm);
+void x86_vcvtph2ps256(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvtpd2ps(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvtps2dq(SecBuf *s, X86XmmReg d, X86XmmReg rm);
+void x86_vcvtps2ph(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm);
+void x86_vcvtps2ph256(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm);
 void x86_vcvtps2pd(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvttpd2dq(SecBuf *s, X86XmmReg d, X86XmmReg rm);
 void x86_vcvttps2dq(SecBuf *s, X86XmmReg d, X86XmmReg rm);

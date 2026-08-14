@@ -1,20 +1,35 @@
 # Third-Party Test Results & Triage TODO
 
-Batch run: 2026-08-06 (199 of 221 targets)
+Batch run: 2026-08-14 (full 221/221 targets; supersedes the 2026-08-06
+partial 199/221 run below)
 Binary: rcc HEAD (third_party branch)
 
 ## Summary
 
-| rc  | count | meaning                                                        |
-| --- | ----- | -------------------------------------------------------------- |
-| 0   | 54    | pass                                                           |
-| 2   | 101   | build/compile failure                                          |
-| 1   | 18    | runtime/test failure (many are build-system: CC not respected) |
-| 124 | 12    | timeout (420 s)                                                |
-| 127 | 10    | missing tool (muon, lzip, etc.)                                |
-| 139 | 1     | SIGSEGV (box2d C++ binary, not rcc)                            |
-| 8   | 2     | test failure (blake3)                                          |
-| 6   | 1     | —                                                              |
+| rc  | count | meaning                                                               |
+| --- | ----- | --------------------------------------------------------------------- |
+| 0   | 78    | pass                                                                  |
+| 2   | 89    | build/compile failure                                                 |
+| 1   | 12    | runtime/test failure (many are build-system: CC not respected)        |
+| 124 | 29    | timeout (420 s) — most are large projects that build/test cleanly     |
+|     |       | and just need more wall-clock time under this batch's per-test budget |
+| 127 | 10    | missing tool (muon, lzip, scons, llvm-config, etc.)                   |
+| 139 | 1     | SIGSEGV (box2d — confirmed a crash in rcc-compiled C code, see below) |
+| 8   | 2     | project's own test-suite comparison failed (utf8proc, yyjson)         |
+
+221 targets triaged this session (5 parallel scouts read every failing
+log and classified it ENV / TIMEOUT-ARTIFACT / RCC-BUG / UNCLEAR — see
+"Needs fixing" below for the RCC-BUG clusters). One methodological note
+for future batch reruns: this sandbox's `/tmp` has a per-user tmpfs
+quota: a stale 7.5G `/tmp/.Trash-1000` silently ate most of the headroom
+partway through this session and caused several large projects
+(test_rsync, test_muon, test_nginx, test_perl, test_qbe_simplecc) to
+fail with "Disk quota exceeded" mid-build/mid-test — a sandbox artifact,
+not an rcc regression. Cleaned up (`rm -rf /tmp/.Trash-1000`); a full
+clean rerun of those five was interrupted by user request and still
+needs to be redone to reconfirm their previously-documented "Fixed"
+status holds (they were NOT re-broken by anything in this session —
+each was mid-build/mid-test with no rcc error when the quota hit).
 
 ## File Layout
 
@@ -24,6 +39,77 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
 **Genuine rcc bugs found so far**:
+
+### Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance session)
+
+- **F16C half-precision convert intrinsics not implemented**
+  (`__builtin_ia32_vcvtph2ps`/`vcvtph2ps256`/`vcvtps2ph`/`vcvtps2ph256`)
+  — type.c, x86_enc.c/.h, cg_vectors.c. None of these four names start
+  with `"cvt"` (the leading `v` of `vcvtph2ps` defeats the
+  `memcmp(n,"cvt",3)` prefix check every other `cvt*` builtin's return
+  type is classified through) and none end in a b/w/d/q lane-size
+  letter, so `type.c`'s `ia32_builtin_ret()` fell through to its
+  `ty_int` catch-all instead of the real vector return type — which
+  then tripped a second, unrelated, still-open codegen bug: a
+  vector-typed local declaration initialized **without** a cast from an
+  int-returning call whose own argument is itself a vector
+  (`__v8hi H = __builtin_ia32_vcvtps2ph(A, imm);`, no leading
+  `(v8hi)`/`(__m128i)`) mis-parses as "expected an expression" instead
+  of surfacing the real type mismatch — reproduces even for an
+  already-working intrinsic like `addps256` and is unrelated to F16C
+  specifically; not fixed this session (real GCC/clang headers always
+  wrap builtin calls in a cast, so it never blocks real-world header
+  usage — see "Needs fixing" below). Two new VEX encoders
+  (`x86_vcvtph2ps`/`x86_vcvtph2ps256`/`x86_vcvtps2ph`/`x86_vcvtps2ph256`)
+  were added and independently verified byte-for-byte against real
+  `gcc -mf16c` objdump output rather than transcribed from the SDM by
+  hand — good thing, since doing so caught a second, unrelated
+  pre-existing bug along the way: `vex3()`'s `W` parameter is the
+  **inverse** of the real VEX.W bit (by established convention across
+  every existing caller in this file, e.g. `x86_vpermq` passes `W=0` to
+  produce genuine VEX.W=1 — verified against gcc's own `vpermq` bytes),
+  which is invisible for every other VEX instruction wired up so far
+  because they all happen to be W-ignored (WIG); VCVTPH2PS/VCVTPS2PH
+  are genuinely W0-only, so getting the (inverted) parameter backwards
+  the first time around SIGILL'd instead of silently working. Found
+  via test_brotli, whose `backward_references.c` transitively pulls in
+  `<immintrin.h>` -> `<f16cintrin.h>` (parsed unconditionally by GCC's
+  headers regardless of `-mf16c`, matching every other ISA-extension
+  header). Regression test: `test/test_f16c_intrinsics.c` (new),
+  verified against real `gcc -mf16c` output; PASS at -O0..-O3.
+  test_brotli's own ctest suite: 12/12 passed. The same
+  `f16cintrin.h:62` parse failure was independently hit by test_sdl3
+  and test_libflac in this session's batch triage — expected to be
+  fixed too by the same change (not individually reverified).
+
+- **Several common, legitimate GCC/clang flags hard-error instead of
+  being accepted** (`-Os`, `-ggdb`, `-fno-builtin[-NAME]`,
+  `-fno-common`/`-fcommon`) — main.c. rcc already tolerates flags it
+  doesn't implement by warning-and-ignoring them, **except** when the
+  same command line also passes `-Werror`, which (correctly, by
+  design) promotes any **truly** unrecognized flag to a hard error; the
+  bug was that these four are not exotic or unknown to any real
+  compiler — `-Os`/`-ggdb` are ordinary optimization/debug-format
+  levels, `-fno-builtin`/`-fno-common` are extremely common portability
+  flags — so they belong in the same "recognized, silently accepted"
+  bucket as `-Wall`/`-fwrapv`/`-Wno-*`, not the "genuinely unknown"
+  bucket that `-Werror` is allowed to escalate. `-Os`/`-Ofast`/`-Og`
+  now alias to `-O1` (rcc has no separate size- or fast-math-aware
+  optimization pass); `-ggdb[123]` aliases to `-g` (rcc's debug info is
+  already gdb-oriented, no separate format to select); `-fno-builtin`
+  and `-fno-common`/`-fcommon` are accepted as true no-ops (rcc's
+  `__builtin_*` recognition is already strictly name-prefix-gated, and
+  rcc always emits plain BSS for uninitialized globals, never COMMON
+  symbols, matching `-fno-common`'s own semantics regardless of which
+  of the pair is requested). Found via this session's third-party
+  batch triage: test_micropython, test_mpack (`-Os`), test_jemalloc
+  (`-fno-builtin`), test_mongoose (`-fno-common`), test_cello,
+  test_valkey, test_rvvm (`-ggdb`) all hard-errored specifically on
+  build steps that also happened to pass `-Werror`. Not individually
+  reverified against each real project this session (time-boxed); the
+  flag-acceptance behavior itself is covered by a direct
+  compile-and-check in this session's verification (all five flags
+  compile cleanly with `-Werror` now).
 
 ### Fixed (2026-08-14, C `defer` session)
 
@@ -941,8 +1027,19 @@ a multi-session effort, not a quick win.
    `.os`/`.od` (PIC/PIE object) positional link inputs are now recognized
    as object files, not C sources. test_heatshrink passes (rc=0).
 
-4. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
-   - Missing system libs: libseccomp, libzstd, etc.
+4. **Link failures (environment/upstream, not rcc)**: test_file
+   (`undefined reference to 'isless'`, a glibc math.h macro rcc appears
+   to emit as a real call instead of inlining — actually **needs
+   re-triage**, tentatively rcc-side, see item 6 below), test_libgc /
+   test_libjansson (**confirmed upstream bug, not rcc**: both
+   independently call a nonexistent `__builtin_atomic_arith_add/sub/or`
+   -- verified this session that real `gcc -c` also rejects that exact
+   name with "implicit declaration of function", so any compiler
+   advertising `__sync`/`__atomic` builtin support hits the identical
+   broken macro in libgc's `include/private/gc_atomic_ops.h` and
+   jansson's `src/jansson.h`; not an rcc-specific gap). Missing system
+   libs/dev-headers unrelated to rcc: libseccomp, libzstd, ALSA
+   (`alsa/asoundlib.h`, test_sokol), etc.
 
 5. **C `defer` statement (WG14 N3199 / TS 25755, `-fdefer-ts` /
    `_Defer`)** — **fixed** (2026-08-14, C `defer` session): see "Fixed
@@ -950,6 +1047,93 @@ a multi-session effort, not a quick win.
    (12 of its 14 `tests/*.c`, excluding a Win32-only test and one with
    unstable directory-listing order) now builds and runs to completion
    under `rcc -fdefer-ts`, output checksum matching exactly.
+
+6. **Fresh clusters found in the 2026-08-14 full 221-target batch
+   triage** (5 parallel scouts read every failing log; F16C and the
+   unknown-flag-acceptance clusters below are already fixed, see
+   "Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance
+   session)" above — the rest are open, listed by cluster, not
+   individually fixed this session):
+   - **GNU C designated array-range initializers**
+     (`.field[0 ... N] = val,`) rejected — test_binutils/
+     test_binutils_gccverify (`opcodes/i386-dis.c:9739`), test_coreutils
+     (`lib/utimecmp.c:344`, inside a compound-literal array). A real
+     GNU C extension, not exotic — parser.c's array-designator handling
+     needs a range form (`[LOW ... HIGH] = val`) alongside the existing
+     single-index form.
+   - **`__builtin_*_overflow` family entirely unimplemented**
+     (`__builtin_add/sub/mul_overflow` and the `s`/`u` + `l`/`ll`-width
+     variants, e.g. `__builtin_uaddl_overflow`,
+     `__builtin_umull_overflow`) — confirmed **genuine, real GCC
+     builtins** (unlike the `__builtin_atomic_arith_*` cluster above)
+     via a direct `gcc -c` check; rcc's parser silently accepts the
+     call syntax as an ordinary implicit-declaration external call,
+     producing a valid `.o` that then fails at _link_ time with
+     `undefined reference`, instead of expanding the arithmetic +
+     overflow-flag check inline. Confirmed blocking test_libgit2
+     (`src/util/alloc.c`, `filebuf.c`, `fs_path.c`). A genuine new
+     builtin-family implementation (parse each name into
+     op+signedness+width, emit the arithmetic plus the matching
+     overflow-flag codegen — `jo`/`jc`/`seto` after the op, or an
+     explicit range check for the mixed-width forms) — not attempted
+     this session, moderate scope.
+   - **Missing SSE/assembler instruction coverage**: `stmxcsr`/`ldmxcsr`
+     (test_libgc, test_rvvm), `adox`/`adcx` ADX instructions
+     (test_libressl, `bn/arch/amd64/*.S`), inline-asm
+     `pshufhw`/`pshuflw`/`pslld`/`psrld` (test_nettle), a
+     `salsa20_xmm6-asm.S` file the assembler can't process
+     (test_libsodium), `_mm_cvt_ss2si` intrinsic (test_libopus).
+   - **Parser rejects valid C in real project source** (each a distinct
+     construct, not one root cause): a C99 flexible array member inside
+     a struct (test_bfs, `struct ioq_thread threads[];`); a `static`
+     function definition with a typedef'd return type
+     (test_elk, `main.c:23`); an `extern` declaration using a
+     forward-declared opaque struct pointer type (test_emacs,
+     `xterm.h:1848`); an anonymous-union member pattern
+     (test_glib, `goption.c:212`); a system header's own struct closing
+     brace inside a nested context (test_liballegro5,
+     `gdtlsconnection.h:108`); an empty-body context
+     (test_lexbor, `normalization_forms.c:206`); designated-initializer
+     macro tables (test_mquickjs, test_njs); a token-pasting macro used
+     as a declarator (test_parrot); struct member access rcc reports as
+     "no such member" on legitimate code (test_php, test_cfitsio,
+     test_tcl); `sizeof` applied to an incomplete type inside a
+     `static_assert`-style macro idiom (test_utillinux); an unclosed
+     string literal lexer false-positive (test_gnutls,
+     `config.h:2359`); conflicting-types false-positive between a local
+     prototype and a generic-function expansion (test_gtar,
+     `xattrs.c`); a `_Generic` dispatch macro rejecting a valid
+     association (test_noplate); `dlfcn.h`'s `Dl_info` usage
+     (test_nqp); wolfSSL's macro-generated union member declaration
+     (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
+     intrinsics still gap in some header path (test_wuffs) — separate
+     from the fixed F16C cluster, needs its own look.
+   - **Wrong runtime output / crash in rcc-compiled code** (candidate
+     miscompiles — each needs its own dedicated repro+bisect, not
+     attempted this session): test_box2d (rc=139, confirmed the
+     crashing binary's C code was entirely rcc-compiled, not a non-rcc
+     C++ binary as the generic SIGSEGV/rc=139 heuristic assumes),
+     test_box3d, test_doom (linker drops global-variable definitions
+     from one large TU), test_espruino, test_femtolisp, test_gzip
+     (crashes running its own freshly-built binary to generate docs),
+     test_hare, test_wren (`free(): invalid pointer`), test_xz
+     (13/19 CTest failures incl. a SEGFAULT), test_zstd (SIGABRT during
+     its own regression tests), test_yyjson (`test_number` subprocess
+     crash, 11/12 other tests pass), test_libevent, test_libsamplerate,
+     test_libpng, test_tinycc (`-nan` from an unsigned-long-long→double
+     conversion), test_tomlc17, test_ruby (a `sizeof(char[1-2*cond])`
+     negative-array-size compile-time-assert trick mis-evaluated),
+     test_vlc (`stdckdint.h` probes abort), test_ocaml/test_mimalloc
+     (linker reports the rcc-produced static archive itself as
+     malformed — "file in wrong format"/"bad value" — worth checking
+     archive-writing first since it may be one shared root cause across
+     both), test_nanomsg (rcc misclassifies a `.so.N.N.N`-suffixed
+     shared-library dev symlink as a C source file to compile).
+
+   Every cluster above is grounded in a specific `file:line` and
+   quoted rcc/linker diagnostic captured in
+   `test/third_party/logs/<target>.log` from the 2026-08-14 batch run;
+   re-read the log for exact context before starting a fix.
 
 ---
 

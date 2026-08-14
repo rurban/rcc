@@ -1270,6 +1270,34 @@ VReg gen_ia32_builtin(Node *node) {
         x86_pmovmskb(cg_sec, (X86XmmReg)REG(r), X86_XMM0); // GP dst in reg field
         return r;
     }
+    // ================= F16C half-precision converts =================
+    // VEX-only (no legacy SSE encoding exists), and the 128<->256
+    // pairs are asymmetric: vcvtph2ps256 takes a 128-bit half-vector
+    // source but produces a 256-bit float result, vcvtps2ph256 takes a
+    // 256-bit float source but produces a 128-bit half-vector result
+    // (the destination is always <=128 bits, per the ISA), so these
+    // can't reuse ia32_load2's matched-width convention and are
+    // dispatched here on the exact (un-suffix-stripped) name instead.
+    if (!strcmp(n, "vcvtph2ps")) {
+        ia32_load1(a1, 16);
+        x86_vcvtph2ps(cg_sec, X86_XMM0, X86_XMM0);
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "vcvtph2ps256")) {
+        ia32_load1(a1, 16); // source is a 128-bit v8hi (8 packed halfs)
+        x86_vcvtph2ps256(cg_sec, X86_XMM0, X86_XMM0);
+        return ia32_store(32); // result is a 256-bit v8sf
+    }
+    if (!strcmp(n, "vcvtps2ph")) {
+        ia32_load1(a1, 16);
+        x86_vcvtps2ph(cg_sec, X86_XMM0, X86_XMM0, ia32_imm8(a2, "imm"));
+        return ia32_store(16);
+    }
+    if (!strcmp(n, "vcvtps2ph256")) {
+        avx_loadY(X86_XMM1, a1); // source is a 256-bit v8sf
+        x86_vcvtps2ph256(cg_sec, X86_XMM0, X86_XMM1, ia32_imm8(a2, "imm"));
+        return ia32_store(16); // result is a 128-bit v8hi
+    }
 
 
     // ================= AVX/AVX2: 256-bit names =================
@@ -2461,6 +2489,7 @@ VReg gen_ia32_builtin(Node *node) {
             }
         }
     }
+
 
     // ================= integer vector two-register ops =================
     {

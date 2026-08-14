@@ -490,6 +490,21 @@ int main(int argc, char **argv) {
             opt_funroll = true;
         } else if (!strcmp(argv[i], "-fno-unroll") || !strcmp(argv[i], "-fno-unroll-loops")) {
             opt_funroll = false;
+        } else if (!strcmp(argv[i], "-fno-builtin") || !strncmp(argv[i], "-fno-builtin-", 13) ||
+                   !strcmp(argv[i], "-fno-common") || !strcmp(argv[i], "-fcommon")) {
+            // -fno-builtin[-NAME]: disable recognizing NAME (or every
+            // libc function) as a compiler builtin with known semantics.
+            // rcc's own __builtin_* recognition is name-prefix-gated
+            // (only literal "__builtin_..." spellings, e.g. never treats
+            // a bare "memcpy" call as the builtin), so there is nothing
+            // for this flag to disable -- accepted as a no-op rather than
+            // falling through to the generic unknown-option path (found
+            // via test_micropython, test_jemalloc, which unconditionally
+            // pass -fno-builtin). -fno-common/-fcommon: controls whether
+            // uninitialized globals emit as COMMON symbols or plain BSS;
+            // rcc always emits plain BSS (see codegen.c/objfile.c), which
+            // is -fno-common's own behavior, so -fcommon is accepted the
+            // same way rather than rejected (found via test_mongoose).
         } else if (!strcmp(argv[i], "-W")) {
             opt_W = true;
         } else if (!strcmp(argv[i], "-Werror")) {
@@ -514,10 +529,32 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-fdump-ast")) {
             opt_fdump_ast = true;
         } else if (!strcmp(argv[i], "-g") || !strcmp(argv[i], "-g1") ||
-                   !strcmp(argv[i], "-g2") || !strcmp(argv[i], "-g3")) {
+                   !strcmp(argv[i], "-g2") || !strcmp(argv[i], "-g3") ||
+                   !strcmp(argv[i], "-ggdb") || !strcmp(argv[i], "-ggdb1") ||
+                   !strcmp(argv[i], "-ggdb2") || !strcmp(argv[i], "-ggdb3")) {
+            // -ggdb selects gdb-specific debug-info extensions on top of
+            // plain -g; rcc's own debug info is already gdb-oriented, so
+            // there is no separate format to select -- alias it to -g.
+            // Without this, real-world Makefiles that unconditionally
+            // pass -ggdb (found via test_rvvm, test_valkey) hit the
+            // generic unknown-option path, which is a hard error whenever
+            // -Werror is also active on the same command line.
             opt_g = true;
         } else if (!strcmp(argv[i], "-g0")) {
             opt_g = false;
+        } else if (!strcmp(argv[i], "-Os") || !strcmp(argv[i], "-Ofast") ||
+                   !strcmp(argv[i], "-Og")) {
+            // -Os/-Ofast/-Og: real GCC/clang optimization levels rcc has no
+            // distinct pass for (rcc's own passes aren't size- or
+            // fast-math-aware, and -Og's "debug-friendly" tuning is not a
+            // real deoptimization rcc implements) -- alias to -O1 rather
+            // than falling through to the generic unknown-option path
+            // (found via test_micropython, test_mpack, which unconditionally
+            // pass -Os to a subset of translation units).
+            opt_O0 = false;
+            opt_O1 = true;
+            opt_finline = false;
+            opt_funroll = false;
         } else if (!strcmp(argv[i], "-mms-bitfields")) {
             opt_ms_bitfields = true;
         } else if (!strcmp(argv[i], "-mno-ms-bitfields")) {
