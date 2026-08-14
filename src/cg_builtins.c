@@ -5,6 +5,11 @@
 // All function names come from tok->name which is str_interned by the lexer,
 // so pointer comparison is valid after we intern these literals once.
 #define _BI(s) keyword_interned(s, sizeof(s) - 1)
+// For __builtin_* names not registered in keywords.gperf (not lexer
+// keywords, just ordinary identifiers): intern directly via the same
+// hash-consing pool the lexer's non-keyword identifier path uses, so
+// pointer comparison against tok->name is still valid.
+#define _SI(s) str_intern(s, sizeof(s) - 1)
 
 char *bi_bswap16, *bi_bswap32, *bi_bswap64;
 char *bi_clz, *bi_clzl, *bi_clzll;
@@ -25,6 +30,14 @@ char *bi_fma, *bi_fmaf, *bi_fmal;
 char *bi_abs, *bi_labs, *bi_llabs;
 char *bi_add_overflow, *bi_sub_overflow;
 char *bi_mul_overflow, *bi_mul_overflow_p;
+// Fixed-width/signedness family (GCC "Built-in Functions to Perform
+// Arithmetic with Overflow Checking"): __builtin_{s,u}{add,sub,mul}{,l,ll}_overflow.
+char *bi_sadd_overflow, *bi_saddl_overflow, *bi_saddll_overflow;
+char *bi_uadd_overflow, *bi_uaddl_overflow, *bi_uaddll_overflow;
+char *bi_ssub_overflow, *bi_ssubl_overflow, *bi_ssubll_overflow;
+char *bi_usub_overflow, *bi_usubl_overflow, *bi_usubll_overflow;
+char *bi_smul_overflow, *bi_smull_overflow, *bi_smulll_overflow;
+char *bi_umul_overflow, *bi_umull_overflow, *bi_umulll_overflow;
 char *bi_memset, *bi_memcpy, *bi_memcmp;
 char *bi_strlen, *bi_strcmp, *bi_strchr;
 char *bi_s_abs, *bi_s_labs, *bi_s_llabs;
@@ -98,6 +111,24 @@ void init_builtin_names(void) {
     bi_sub_overflow = _BI("__builtin_sub_overflow");
     bi_mul_overflow = _BI("__builtin_mul_overflow");
     bi_mul_overflow_p = _BI("__builtin_mul_overflow_p");
+    bi_sadd_overflow = _SI("__builtin_sadd_overflow");
+    bi_saddl_overflow = _SI("__builtin_saddl_overflow");
+    bi_saddll_overflow = _SI("__builtin_saddll_overflow");
+    bi_uadd_overflow = _SI("__builtin_uadd_overflow");
+    bi_uaddl_overflow = _SI("__builtin_uaddl_overflow");
+    bi_uaddll_overflow = _SI("__builtin_uaddll_overflow");
+    bi_ssub_overflow = _SI("__builtin_ssub_overflow");
+    bi_ssubl_overflow = _SI("__builtin_ssubl_overflow");
+    bi_ssubll_overflow = _SI("__builtin_ssubll_overflow");
+    bi_usub_overflow = _SI("__builtin_usub_overflow");
+    bi_usubl_overflow = _SI("__builtin_usubl_overflow");
+    bi_usubll_overflow = _SI("__builtin_usubll_overflow");
+    bi_smul_overflow = _SI("__builtin_smul_overflow");
+    bi_smull_overflow = _SI("__builtin_smull_overflow");
+    bi_smulll_overflow = _SI("__builtin_smulll_overflow");
+    bi_umul_overflow = _SI("__builtin_umul_overflow");
+    bi_umull_overflow = _SI("__builtin_umull_overflow");
+    bi_umulll_overflow = _SI("__builtin_umulll_overflow");
     bi_memset = _BI("__builtin_memset");
     bi_memcpy = _BI("__builtin_memcpy");
     bi_memcmp = _BI("__builtin_memcmp");
@@ -210,9 +241,18 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             call_target == bi_s_abs ||
             call_target == bi_s_labs ||
             call_target == bi_s_llabs;
-        is_add_overflow = call_target == bi_add_overflow;
-        is_sub_overflow = call_target == bi_sub_overflow;
-        is_mul_overflow = call_target == bi_mul_overflow;
+        is_add_overflow = call_target == bi_add_overflow ||
+            call_target == bi_sadd_overflow || call_target == bi_saddl_overflow ||
+            call_target == bi_saddll_overflow || call_target == bi_uadd_overflow ||
+            call_target == bi_uaddl_overflow || call_target == bi_uaddll_overflow;
+        is_sub_overflow = call_target == bi_sub_overflow ||
+            call_target == bi_ssub_overflow || call_target == bi_ssubl_overflow ||
+            call_target == bi_ssubll_overflow || call_target == bi_usub_overflow ||
+            call_target == bi_usubl_overflow || call_target == bi_usubll_overflow;
+        is_mul_overflow = call_target == bi_mul_overflow ||
+            call_target == bi_smul_overflow || call_target == bi_smull_overflow ||
+            call_target == bi_smulll_overflow || call_target == bi_umul_overflow ||
+            call_target == bi_umull_overflow || call_target == bi_umulll_overflow;
         is_mul_overflow_p = call_target == bi_mul_overflow_p;
     }
 

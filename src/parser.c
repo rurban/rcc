@@ -6057,7 +6057,10 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                     while ((equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) ||
                            equalc(tok, "[")) {
                         if (equalc(tok, "[")) {
-                            // Array index designator: [N]
+                            // Array index designator: [N] or range [N ... M]
+                            // (GNU extension; terminal only), e.g.
+                            // opcodes/i386-dis.c's struct-member
+                            // array-range designators.
                             tok = tok->next;
                             long long idx = 0;
                             if (!equalc(tok, "]")) {
@@ -6066,10 +6069,28 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
                                 if (!eval_const_expr(idx_node, &idx))
                                     error_tok(tok, "expected constant expression for array index");
                             }
+                            long long eidx = idx;
+                            bool is_range = false;
+                            if (equalc(tok, "...")) {
+                                is_range = true;
+                                tok = tok->next;
+                                Node *idx2 = conditional(&tok, tok);
+                                check_type(idx2);
+                                if (!eval_const_expr(idx2, &eidx))
+                                    error_tok(tok, "expected constant expression for array range designator");
+                            }
                             tok = skip(tok, "]");
                             if (cur_ty->kind != TY_ARRAY)
                                 error_tok(tok, "array index designator for non-array type");
                             int elem_size = cur_ty->base->size;
+                            if (is_range) {
+                                tok = skip(tok, "=");
+                                Type *elem_ty = cur_ty->base;
+                                Token *val_start = tok;
+                                for (long long i = idx; i <= eidx; i++)
+                                    tok = global_init_one(val_start, var, elem_ty, chain_base + (int)(i * elem_size));
+                                break;
+                            }
                             chain_base += (int)(idx * elem_size);
                             cur_ty = cur_ty->base;
                             // Chain ends on an array index, e.g.
@@ -6714,17 +6735,62 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                 Member *first_dm = NULL;
                 Member *last_dm = NULL;
                 bool chain_ok = true;
+                bool range_handled = false;
                 while ((equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) ||
                        equalc(tok, "[")) {
                     if (equalc(tok, "[")) {
                         // Array-index step in a designator chain: .arr[idx]...
+                        // or the GNU range form .arr[LOW ... HIGH] = val
+                        // (C99 6.7.8p17-adjacent GNU extension; terminal
+                        // only -- sets every index in [LOW,HIGH] to the
+                        // same value), e.g. opcodes/i386-dis.c's
+                        // struct-member array-range designators.
                         Token *lb = tok;
                         Node *idx = expr(&tok, tok->next);
-                        tok = skip(tok, "]");
                         if (chain_ty->kind != TY_ARRAY && chain_ty->kind != TY_PTR) {
                             chain_ok = false;
                             break;
                         }
+                        if (equalc(tok, "...")) {
+                            long long sidx = 0, eidx = 0;
+                            if (!eval_const_expr(idx, &sidx))
+                                error_tok(lb, "expected constant expression for array range designator");
+                            tok = tok->next; // skip "..."
+                            Node *idx2 = assign(&tok, tok);
+                            eidx = sidx;
+                            if (!eval_const_expr(idx2, &eidx))
+                                error_tok(lb, "expected constant expression for array range designator");
+                            tok = skip(tok, "]");
+                            tok = skip(tok, "=");
+                            Type *elem_ty = chain_ty->base;
+                            Token *val_start = tok;
+                            if (!equalc(tok, "{")) {
+                                // Evaluate the value once into a temp so a
+                                // side-effecting RHS isn't re-run per index.
+                                Token *after_val = tok;
+                                Node *rhs = assign(&after_val, after_val);
+                                check_type(rhs);
+                                LVar *tmp = new_var("", rhs->ty, true);
+                                Node *tmp_assign = new_binary(ND_ASSIGN, new_var_node(tmp, tok), rhs, tok);
+                                check_type(tmp_assign);
+                                *cur = (*cur)->next = new_unary(ND_EXPR_STMT, tmp_assign, tok);
+                                for (long long i = sidx; i <= eidx; i++) {
+                                    Node *elem_lhs = new_array_elem_lvalue_node(chain_lhs, (int)i, tok);
+                                    Node *assign_node = new_binary(ND_ASSIGN, elem_lhs, new_var_node(tmp, tok), tok);
+                                    check_type(assign_node);
+                                    *cur = (*cur)->next = new_unary(ND_EXPR_STMT, assign_node, tok);
+                                }
+                                tok = after_val;
+                            } else {
+                                for (long long i = sidx; i <= eidx; i++) {
+                                    Node *elem_lhs = new_array_elem_lvalue_node(chain_lhs, (int)i, tok);
+                                    tok = local_init_one(val_start, elem_lhs, elem_ty, cur);
+                                }
+                            }
+                            range_handled = true;
+                            break;
+                        }
+                        tok = skip(tok, "]");
                         Node *sub = new_unary(ND_DEREF,
                                               new_binary(ND_ADD, chain_lhs, idx, lb), lb);
                         check_type(sub);
@@ -6747,13 +6813,17 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
                     last_dm = dm;
                     chain_ty = dm->ty;
                 }
-                tok = skip(tok, "=");
-                if (!chain_ok || !last_dm) {
-                    tok = skip_initializer(tok);
+                if (range_handled) {
+                    mem = first_dm ? first_dm->next : NULL;
                 } else {
-                    tok = local_init_one(tok, chain_lhs, chain_ty, cur);
+                    tok = skip(tok, "=");
+                    if (!chain_ok || !last_dm) {
+                        tok = skip_initializer(tok);
+                    } else {
+                        tok = local_init_one(tok, chain_lhs, chain_ty, cur);
+                    }
+                    mem = first_dm ? first_dm->next : NULL;
                 }
-                mem = first_dm ? first_dm->next : NULL;
             } else if (tok->kind == TK_IDENT && tok->next && equalc(tok->next, ":")) {
                 // GNU-style designated init: member: value
                 char *name = tok->name;

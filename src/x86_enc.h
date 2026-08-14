@@ -199,6 +199,10 @@ void x86_bsr_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
 void x86_popcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_lzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
 void x86_tzcnt(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_adcx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_adox_rr(SecBuf *s, int size, X86Reg dst, X86Reg src);
+void x86_adcx_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
+void x86_adox_rm(SecBuf *s, int size, X86Reg dst, X86Mem src);
 void x86_bswap(SecBuf *s, int size, X86Reg r); // size=4 or 8
 
 // BT/BTS/BTR/BTC r/m, r (memory or register bit-index destination)

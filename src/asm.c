@@ -2934,7 +2934,7 @@ static int suffix_size(const char *mnem) {
         "push", "pop", "call", "ret", "jmp", "nop", "xchg",
         "bsf", "bsr", "popcnt", "lzcnt", "tzcnt", "bswap",
         "movabs", "lock", "rep", "repe", "repne", "repz", "repnz", "cld", "mfence",
-        "rdfsbase", "rdgsbase", "wrfsbase", "wrgsbase", "crc32",
+        "rdfsbase", "rdgsbase", "wrfsbase", "wrgsbase", "crc32", "adcx", "adox",
         NULL};
     for (int i = 0; no_sfx[i]; i++)
         if (!strcmp(mnem, no_sfx[i])) return 0;
@@ -3404,18 +3404,36 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
-// ADD / SUB / AND / OR / XOR
-// AT&T order is src, dst — ops[0]=src, ops[1]=dst. Besides the
-// reg-dest forms, two memory-destination forms must go through the
-// dedicated mem-destination encoders, not fn_rm (which loads FROM memory
-// into a register — the opposite direction):
-// - reg source ("addl %eax, mem", kernel atomics like arch_atomic_add)
-//   goes through fn_mr.
-// - immediate source ("addl $0, mem", e.g. x86_64's __smp_mb() —
-//   "lock addl $0,-4(%rsp)" — used by every smp_mb()/wq_has_sleeper()
-//   call in the kernel) goes through fn_mi.
-// Without these cases the memory-destination forms matched no branch at
-// all and silently encoded nothing while still reporting success.
+    // ADD / SUB / AND / OR / XOR
+    // AT&T order is src, dst — ops[0]=src, ops[1]=dst. Besides the
+    // reg-dest forms, two memory-destination forms must go through the
+    // dedicated mem-destination encoders, not fn_rm (which loads FROM memory
+    // into a register — the opposite direction):
+    // - reg source ("addl %eax, mem", kernel atomics like arch_atomic_add)
+    //   goes through fn_mr.
+    // - immediate source ("addl $0, mem", e.g. x86_64's __smp_mb() —
+    //   "lock addl $0,-4(%rsp)" — used by every smp_mb()/wq_has_sleeper()
+    //   call in the kernel) goes through fn_mi.
+    // Without these cases the memory-destination forms matched no branch at
+    // all and silently encoded nothing while still reporting success.
+    // ADCX/ADOX (ADX extension) -- OpenSSL/LibreSSL asm bignum multiply
+    // loops (bn/arch/amd64/*.S) carry-chain partial products through CF
+    // (adcx) and OF (adox) independently. AT&T "adcx src, dst". Must be
+    // checked before the ALU_OP("adc", ...) prefix match below, which
+    // would otherwise swallow "adcx" as a bare "adc" (strncmp prefix,
+    // not exact match) and silently mis-encode it.
+    if (!strcmp(mnem, "adcx")) {
+        if (is_mem(0)) x86_adcx_rm(buf, sz, R(1), M(0));
+        else
+            x86_adcx_rr(buf, sz, R(1), R(0));
+        return true;
+    }
+    if (!strcmp(mnem, "adox")) {
+        if (is_mem(0)) x86_adox_rm(buf, sz, R(1), M(0));
+        else
+            x86_adox_rr(buf, sz, R(1), R(0));
+        return true;
+    }
 #define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr, fn_mi) \
     if (!strncmp(mnem, name, strlen(name))) { \
         if (is_imm(0)&&is_reg(1)) { fn_ri(buf,sz,R(1),(int32_t)IMM(0)); } \
@@ -4544,6 +4562,18 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "fnstcw")) {
         x86_fnstcw_m(buf, M(0));
+        return true;
+    }
+    // STMXCSR/LDMXCSR: read/write the SSE MXCSR control/status register.
+    // Real code (libgc's conservative-GC stack scan, rvvm's soft-float
+    // fallback) saves/restores it around code that must not observe the
+    // caller's rounding-mode/exception-mask state.
+    if (!strcmp(mnem, "stmxcsr")) {
+        x86_stmxcsr_m(buf, M(0));
+        return true;
+    }
+    if (!strcmp(mnem, "ldmxcsr")) {
+        x86_ldmxcsr_m(buf, M(0));
         return true;
     }
     if (!strcmp(mnem, "fstcw")) {

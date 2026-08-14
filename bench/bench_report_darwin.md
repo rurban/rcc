@@ -4,81 +4,81 @@ _Generated: August 2026_
 
 | Compiler  | Compile (ms) | Execute (ms) | Total (ms) |
 | :-------- | -----------: | -----------: | ---------: |
-| RCC       |           66 |          656 |        722 |
-| RCC -O1   |           67 |          649 |        716 |
-| RCC -O2   |           56 |          648 |        704 |
-| TCC       |           42 |          581 |        623 |
-| GCC -O0   |           71 |          498 |        569 |
-| GCC -O2   |          103 |          297 |        400 |
-| Clang -O0 |           66 |          489 |        555 |
-| Clang -O2 |          106 |          290 |        396 |
+| RCC       |          180 |          796 |        976 |
+| RCC -O1   |          111 |          836 |        947 |
+| RCC -O2   |          102 |          783 |        885 |
+| TCC       |           70 |          722 |        792 |
+| GCC -O0   |          149 |          594 |        743 |
+| GCC -O2   |          213 |          343 |        556 |
+| Clang -O0 |          137 |          601 |        738 |
+| Clang -O2 |          247 |          393 |        640 |
 
 ## RCC Substep Timing
 
 ```
 RCC:
-  preprocess  bench.c       :    660 us
-  parse       bench.c       :    138 us
-  typecheck   bench.c       :      4 us
-  codegen     bench.c       :    138 us
-  link        bench_rcc     :     71 us
-  link        bench_rcc     :  48294 us
+  preprocess  bench.c       :   1725 us
+  parse       bench.c       :    418 us
+  typecheck   bench.c       :      9 us
+  codegen     bench.c       :    311 us
+  link        bench_rcc     :    709 us
+  link        bench_rcc     :  76362 us
 
 RCC -O1:
-  preprocess  bench.c       :    751 us
-  parse       bench.c       :    145 us
+  preprocess  bench.c       :    766 us
+  parse       bench.c       :    157 us
   typecheck   bench.c       :      5 us
-  opt         bench.c       :     31 us
-  codegen     bench.c       :    125 us
-  link        bench_o1      :     98 us
-  link        bench_o1      :  50731 us
+  opt         bench.c       :     20 us
+  codegen     bench.c       :    154 us
+  link        bench_o1      :    201 us
+  link        bench_o1      :  88060 us
 
 RCC -O2:
-  preprocess  bench.c       :    593 us
-  parse       bench.c       :    131 us
-  typecheck   bench.c       :      4 us
-  opt         bench.c       :     20 us
-  codegen     bench.c       :    158 us
-  link        bench_o2      :    119 us
-  link        bench_o2      :  48912 us
+  preprocess  bench.c       :    798 us
+  parse       bench.c       :    156 us
+  typecheck   bench.c       :      5 us
+  opt         bench.c       :     23 us
+  codegen     bench.c       :    168 us
+  link        bench_o2      :    101 us
+  link        bench_o2      :  58996 us
 ```
 
 ## RCC Substep Timing -- sqlite3.c
 
 ```
 RCC:
-  preprocess  sqlite3.c     : 242622 us
-  parse       sqlite3.c     :  59803 us
-  typecheck   sqlite3.c     :  21571 us
-  codegen     sqlite3.c     : 126993 us
-  link        sqlite3.so    :  30516 us
+  preprocess  sqlite3.c     : 509585 us
+  parse       sqlite3.c     :  91640 us
+  typecheck   sqlite3.c     :  20020 us
+  codegen     sqlite3.c     : 177935 us
+  link        sqlite3.so    :  15928 us
 
 RCC -O1:
-  preprocess  sqlite3.c     : 236847 us
-  parse       sqlite3.c     :  53092 us
-  typecheck   sqlite3.c     :  15072 us
-  opt         sqlite3.c     : 153758 us
-  codegen     sqlite3.c     : 109952 us
-  link        sqlite3.so    :  15124 us
+  preprocess  sqlite3.c     : 464095 us
+  parse       sqlite3.c     : 109726 us
+  typecheck   sqlite3.c     :  20244 us
+  opt         sqlite3.c     : 288907 us
+  codegen     sqlite3.c     : 222363 us
+  link        sqlite3.so    :  19112 us
 
 RCC -O2:
-  preprocess  sqlite3.c     : 262816 us
-  parse       sqlite3.c     :  52422 us
-  typecheck   sqlite3.c     :  13997 us
-  opt         sqlite3.c     : 154459 us
-  codegen     sqlite3.c     : 124366 us
-  link        sqlite3.so    :  15994 us
+  preprocess  sqlite3.c     : 439961 us
+  parse       sqlite3.c     : 215758 us
+  typecheck   sqlite3.c     :  28968 us
+  opt         sqlite3.c     : 453813 us
+  codegen     sqlite3.c     : 304723 us
+  link        sqlite3.so    :  35735 us
 ```
 
 ## Large File Compile-Only (sqlite3.c)
 
 | Compiler  | Compile (ms) |
 | :-------- | -----------: |
-| RCC       |       689 ms |
-| RCC -O1   |       820 ms |
-| RCC -O2   |       847 ms |
-| TCC       |       107 ms |
-| GCC -O0   |      1155 ms |
-| GCC -O2   |     11108 ms |
-| Clang -O0 |      1079 ms |
-| Clang -O2 |     10651 ms |
+| RCC       |      1947 ms |
+| RCC -O1   |      1327 ms |
+| RCC -O2   |      1351 ms |
+| TCC       |       188 ms |
+| GCC -O0   |      1488 ms |
+| GCC -O2   |     16134 ms |
+| Clang -O0 |      1648 ms |
+| Clang -O2 |     17222 ms |

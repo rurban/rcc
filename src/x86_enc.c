@@ -643,6 +643,31 @@ static void bop_rm(SecBuf *s, int sz, uint8_t op2, X86Reg dst, X86Mem src) {
 }
 void x86_bsf_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbc, d, sm); }
 void x86_bsr_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbd, d, sm); }
+// ADCX/ADOX (ADX extension): unsigned-carry-only (ADCX, mandatory 66
+// prefix) resp. overflow-flag-only (ADOX, mandatory F3 prefix)
+// add-with-carry; 66/F3 [REX.W] 0F 38 F6 /r. Used by OpenSSL/LibreSSL's
+// asm bignum multiply loops (bn/arch/amd64/*.S) to carry-chain partial
+// products through two independent flags (CF via ADCX, OF via ADOX) in
+// parallel. dst is always a GPR; src is a GPR or memory.
+static void adx_op(SecBuf *s, uint8_t prefix, int sz, X86Reg dst, X86Reg src) {
+    emit1(s, prefix);
+    bool needrex = (sz == 8) || dst > X86_RDI || src > X86_RDI;
+    if (needrex) emit1(s, rex(sz == 8, dst > X86_RDI, 0, src > X86_RDI));
+    emit3(s, 0x0f, 0x38, 0xf6);
+    emit1(s, modrm(3, dst, src));
+}
+static void adx_op_rm(SecBuf *s, uint8_t prefix, int sz, X86Reg dst, X86Mem src) {
+    emit1(s, prefix);
+    bool needrex = (sz == 8) || dst > X86_RDI || src.base > X86_RDI ||
+        (src.index != X86_NOREG && src.index > X86_RDI);
+    if (needrex) emit1(s, rex(sz == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
+    emit3(s, 0x0f, 0x38, 0xf6);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+}
+void x86_adcx_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { adx_op(s, 0x66, sz, d, sr); }
+void x86_adox_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { adx_op(s, 0xf3, sz, d, sr); }
+void x86_adcx_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { adx_op_rm(s, 0x66, sz, d, sm); }
+void x86_adox_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { adx_op_rm(s, 0xf3, sz, d, sm); }
 void x86_bswap(SecBuf *s, int sz, X86Reg r) {
     if (sz == 8) emit1(s, rex(1, 0, 0, r > X86_RDI));
     else if (r > X86_RDI)
@@ -2150,15 +2175,21 @@ void x86_lddqu_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit2(s, 0x0f, 0xf0);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
-// ldmxcsr m32: 0F AE /2
+// ldmxcsr m32: 0F AE /2. maybe_rex() over-triggers on any base/index in
+// {RSP,RBP,RSI,RDI} (its B/X params take the raw register number rather
+// than a needs-REX bool); encode the REX condition directly here so
+// e.g. "ldmxcsr (%rdi)" matches GAS's REX-less "0f ae 17" instead of
+// carrying a redundant (harmless but non-minimal) 0x40 prefix byte.
 void x86_ldmxcsr_m(SecBuf *s, X86Mem m) {
-    maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
+    if (m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI))
+        emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, 0xae);
     emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
 }
 // stmxcsr m32: 0F AE /3
 void x86_stmxcsr_m(SecBuf *s, X86Mem m) {
-    maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
+    if (m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI))
+        emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, 0xae);
     emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
 }

@@ -40,6 +40,95 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-14, array-range designator / overflow builtins / ADX+mxcsr session)
+
+- **GNU C designated array-range initializer on a struct member array**
+  (`.field[LOW ... HIGH] = val,`) rejected with "expected specific
+  operator" — parser.c. The top-level "array with braces" initializer
+  path already supported `[LOW ... HIGH] = val` on a bare array target,
+  but the `.member[N]` designator-_chain_ loops used by both
+  `global_init_one()` (file-scope/`static`/`constexpr`) and
+  `local_init_one()` (auto locals) only ever parsed the `[N]` step as a
+  single constant index, with no `...` handling — so a range directly on
+  a struct member array (as opposed to a whole-array target) fell
+  through to "expected specific operator" on the `...`. Fixed by adding
+  range detection to both chain loops: `global_init_one()`'s emits one
+  relocation per covered index (each a fresh parse of the same value
+  tokens, matching the pattern the top-level array path already uses);
+  `local_init_one()`'s evaluates a non-brace value once into a temp
+  local (avoiding re-running side effects) and assigns it to every
+  covered element, or recurses per-element for a brace-enclosed value.
+  Found via test_binutils/test_binutils_gccverify
+  (`opcodes/i386-dis.c:9739`) and test_coreutils (`lib/utimecmp.c:344`).
+  Regression test: `test/test_designator_array_range_member.c` (new,
+  covers file-scope, `static` local, auto local, and single-evaluation
+  of a side-effecting value), PASS at -O0..-O3 on x86-64, ARM64
+  (qemu-aarch64) and mingw (wine).
+
+- **`__builtin_{s,u}{add,sub,mul}{,l,ll}_overflow` family (18 names)
+  entirely unrecognized** — `cg_builtins.c`, `rcc.h`. The type-generic
+  3-arg `__builtin_{add,sub,mul}_overflow` / `__builtin_mul_overflow_p`
+  were already implemented (codegen driven off the actual
+  argument/result-pointer types), but the fixed-width/signedness
+  family GCC also exposes (`__builtin_sadd_overflow`,
+  `__builtin_uaddl_overflow`, `__builtin_umull_overflow`, etc. —
+  confirmed genuine real GCC builtins via a direct `gcc -c` check) had
+  no name registered at all, so the parser fell back to an ordinary
+  implicit-declaration external call that produced a valid `.o`
+  failing at link time with "undefined reference". Fixed by interning
+  the 18 names and routing them through the exact same
+  add/sub/mul-overflow codegen already used by the generic form — that
+  codegen reads width/signedness from the actual argument and
+  result-pointer types rather than the call's spelling, so no new
+  codegen was needed, only the name-to-dispatch wiring. One subtlety:
+  these 18 names are ordinary identifiers, not lexer keywords (unlike
+  the generic `__builtin_*_overflow` names, which are registered in
+  `keywords.gperf`) — interning them via the keyword-table-only
+  `_BI()` / `keyword_interned()` helper silently returned NULL and
+  never matched, so they use a new `_SI()` helper (plain
+  `str_intern()`, the same hash-consing pool the lexer's non-keyword
+  identifier path already feeds into). Confirmed blocking
+  `test_libgit2` (`src/util/alloc.c`, `filebuf.c`, `fs_path.c`).
+  Regression test: `test/test_builtin_overflow_family.c` (new, all 18
+  variants plus the pre-existing generic form), PASS at -O0..-O3 on
+  x86-64, ARM64 and mingw.
+
+- **Missing SSE/assembler instruction coverage: ADCX/ADOX (ADX
+  extension) and STMXCSR/LDMXCSR** — `x86_enc.c`/`.h`, `asm.c`. Real
+  GNU inline-asm/`.S` mnemonics rejected with "unknown x86
+  instruction". ADCX/ADOX had no encoder at all; added
+  `x86_adcx_rr`/`x86_adcx_rm`/`x86_adox_rr`/`x86_adox_rm`
+  (66/F3 `[REX.W]` `0F 38 F6 /r`) and wired them into `asm.c`'s
+  dispatch before the existing `ALU_OP("adc", ...)` prefix match,
+  which otherwise silently swallowed "adcx" as a bare "adc" (`strncmp`
+  prefix match, not exact) and mis-encoded it as a 2-byte ADC — also
+  added "adcx"/"adox" to the operand-size-suffix exemption list so the
+  32-bit register forms (`%eax`) weren't forced to 64-bit width.
+  STMXCSR/LDMXCSR's encoders already existed (used by the
+  `__builtin_ia32_stmxcsr`/`__builtin_ia32_ldmxcsr` compiler-intrinsic
+  path) but were never wired into the inline-asm mnemonic dispatch;
+  also fixed a spurious REX prefix byte both encoders emitted whenever
+  the memory operand's base/index register was RSP/RBP/RSI/RDI
+  (`maybe_rex()`'s shared helper takes the raw register number rather
+  than a needs-REX bool in its B/X slots, over-triggering on any of
+  those four registers — harmless at runtime, a REX byte with
+  all-zero bits is architecturally a no-op, but non-minimal versus
+  real assemblers; fixed locally in these two encoders only, the
+  shared `maybe_rex()` helper itself has the same latent issue at
+  roughly 60 other call sites, out of scope here). All forms verified
+  byte-for-byte identical to `as`/objdump reference output. Found via
+  `test_libgc`/`test_rvvm` (STMXCSR/LDMXCSR) and `test_libressl`
+  (`bn/arch/amd64/*.S`, ADCX/ADOX). Regression test:
+  `test/test_asm_adx_mxcsr.c` (new; ADX flag-readback itself is not
+  checked — this session's test host has a documented AMD Zen/Zen+
+  erratum where ADCX/ADOX's flag output is unreliable even for
+  gcc-compiled code, confirmed by reproducing the same anomaly with a
+  hand-assembled `as` binary and a plain `gcc`-compiled one; only the
+  deterministic arithmetic sum is checked), PASS at -O0..-O3 on x86-64
+  (ADX/mxcsr are x86-only, guarded out on ARM64; verified the guard
+  compiles clean and the rest of the suite is unaffected on ARM64 and
+  mingw).
+
 ### Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance session)
 
 - **F16C half-precision convert intrinsics not implemented**
@@ -1054,35 +1143,17 @@ a multi-session effort, not a quick win.
    "Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance
    session)" above — the rest are open, listed by cluster, not
    individually fixed this session):
-   - **GNU C designated array-range initializers**
-     (`.field[0 ... N] = val,`) rejected — test_binutils/
-     test_binutils_gccverify (`opcodes/i386-dis.c:9739`), test_coreutils
-     (`lib/utimecmp.c:344`, inside a compound-literal array). A real
-     GNU C extension, not exotic — parser.c's array-designator handling
-     needs a range form (`[LOW ... HIGH] = val`) alongside the existing
-     single-index form.
-   - **`__builtin_*_overflow` family entirely unimplemented**
-     (`__builtin_add/sub/mul_overflow` and the `s`/`u` + `l`/`ll`-width
-     variants, e.g. `__builtin_uaddl_overflow`,
-     `__builtin_umull_overflow`) — confirmed **genuine, real GCC
-     builtins** (unlike the `__builtin_atomic_arith_*` cluster above)
-     via a direct `gcc -c` check; rcc's parser silently accepts the
-     call syntax as an ordinary implicit-declaration external call,
-     producing a valid `.o` that then fails at _link_ time with
-     `undefined reference`, instead of expanding the arithmetic +
-     overflow-flag check inline. Confirmed blocking test_libgit2
-     (`src/util/alloc.c`, `filebuf.c`, `fs_path.c`). A genuine new
-     builtin-family implementation (parse each name into
-     op+signedness+width, emit the arithmetic plus the matching
-     overflow-flag codegen — `jo`/`jc`/`seto` after the op, or an
-     explicit range check for the mixed-width forms) — not attempted
-     this session, moderate scope.
-   - **Missing SSE/assembler instruction coverage**: `stmxcsr`/`ldmxcsr`
-     (test_libgc, test_rvvm), `adox`/`adcx` ADX instructions
-     (test_libressl, `bn/arch/amd64/*.S`), inline-asm
-     `pshufhw`/`pshuflw`/`pslld`/`psrld` (test_nettle), a
-     `salsa20_xmm6-asm.S` file the assembler can't process
-     (test_libsodium), `_mm_cvt_ss2si` intrinsic (test_libopus).
+   - **GNU C designated array-range initializer, `__builtin_*_overflow`
+     family, and ADCX/ADOX/STMXCSR/LDMXCSR assembler gaps** — all three
+     **fixed**, see "Fixed (2026-08-14, array-range designator /
+     overflow builtins / ADX+mxcsr session)" above.
+   - **Remaining SSE/assembler instruction coverage gaps**: inline-asm
+     `pshufhw`/`pshuflw`/`pslld`/`psrld` (test_nettle — encoders already
+     exist in x86_enc.c/.h for the compiler-intrinsic path, just not
+     wired into asm.c's inline-asm dispatch, same shape as the
+     STMXCSR/LDMXCSR fix above), a `salsa20_xmm6-asm.S` file the
+     assembler can't process (test_libsodium), `_mm_cvt_ss2si`
+     intrinsic (test_libopus).
    - **Parser rejects valid C in real project source** (each a distinct
      construct, not one root cause): a C99 flexible array member inside
      a struct (test_bfs, `struct ioq_thread threads[];`); a `static`
