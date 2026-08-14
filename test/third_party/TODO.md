@@ -153,6 +153,96 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   see "Needs fixing" below), PASS at -O0..-O3 on x86-64, ARM64 and
   mingw.
 
+- **`_mm_cvt_ss2si`/`_mm_cvt_si2ss`/`_mm_cvtt_ss2si` (original,
+  pre-2001 SSE intrinsic names) and their modern equivalents
+  (`_mm_cvtss_si32`/`_mm_cvtsi32_ss`/`_mm_cvttss_si32`) missing from
+  xmmintrin.h** — `include/xmmintrin.h`. The underlying codegen
+  (`__builtin_ia32_cvtss2si`/`cvttss2si`/`cvtsi2ss`, and the 64-bit
+  `cvtss2si64`/`cvttss2si64`/`cvtsi642ss` forms) already existed —
+  `cg_builtins.c`'s scalar int<->float conversion dispatch and
+  `type.c`'s return-type classification both already recognized these
+  names — only the header-level `_mm_*` wrapper functions were
+  missing. Added both name spellings for all three operations (32-bit)
+  plus the 64-bit forms under `__x86_64__`/`_M_X64`. Along the way,
+  corrected a stale comment claiming "rcc has no MXCSR (stmxcsr/
+  ldmxcsr) support" (fixed in the prior "ADX+mxcsr session" above).
+  Found via test_libopus. Regression test: `test/test_mm_cvt_ss2si.c`
+  (new; x86-only body guarded like `test_ia32_pause.c`'s existing
+  convention, since `__builtin_ia32_cvtss2si` genuinely errors
+  "not implemented on this target" on ARM64 — real SSE, not portable),
+  PASS at -O0..-O3 on x86-64, ARM64 (compiles clean, guarded body
+  skipped) and mingw.
+
+### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
+
+- **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
+  crashed at runtime, then (once that was fixed) produced wrong
+  keystream output** — three distinct, entirely silent bugs in
+  `asm.c`/`x86_enc.c`'s raw-assembly-text mnemonic dispatch, all found
+  by tracing this one real-world file end to end (compile -> crash ->
+  fix -> wrong output -> fix -> byte-for-byte and functionally
+  verified correct):
+  1. **MOVDQA/MOVDQU/MOVD/MOVQ (xmm forms) had no correct dispatch
+     entry.** `asm.c`'s generic `"mov"`-prefix dispatch only excluded
+     `movsd`/`movss`, so any other `mov*` mnemonic — including these —
+     fell into the GP-register path first. That path's
+     `X86_ISREG()`/`R()` macros treat any `"%something"` operand as a
+     GP register: `parse_x86_reg64()` can't parse `"%xmmN"` and
+     silently returns `X86_NOREG` (-1), which aliases physical
+     register 7 (RDI) once masked into a ModRM field — `movdqa
+mem,%xmm0` silently became `mov mem,%rdi`, corrupting the stack
+     frame and crashing at runtime. Added a `X86_ISXMM()` operand
+     check, dispatched MOVDQA/MOVDQU/MOVD/MOVQ (mem and reg-reg forms)
+     before the generic `mov` path, and excluded them from it.
+  2. **The packed-integer arithmetic family's memory-operand form
+     silently dropped the memory operand.** PADDD/PSUBD/PADDQ/PSUBQ/
+     PADDW/PSUBW/PADDB/PSUBB/PAND/POR/PCMPEQD/PCMPGTD's dispatch always
+     called `parse_x86_xmm(ops[0])` unconditionally; for a real memory
+     operand, `parse_x86_xmm()` doesn't recognize a non-`"%xmmN"`
+     string and silently falls back to its `X86_XMM0` default — `paddd
+mem,%xmmN` silently became `paddd %xmm0,%xmmN` (added XMM0 to
+     itself instead of the real addend). Added `_rm` memory-operand
+     encoders for all twelve (`x86_enc.c`, via the shared `sse_rm()`
+     helper) and wired `is_mem(0)` checks into the dispatch.
+  3. **`x86_movd_xmm_r()`'s ModRM reg/rm fields were backwards** (the
+     xmm->GP32 store direction, `66 0F 7E /r`) — dead code before this
+     session (only the load direction, `x86_movd_r_xmm()`, was ever
+     called by `codegen.c`), newly exposed once "movd" got wired into
+     the dispatch: `movd %xmm3,%eax` encoded as garbage `movd
+%xmm0,%ebx` instead. Fixed the field order (and the matching REX
+     R/B assignment).
+     Along the way, fixed a **fourth**, related bug found via the same
+     byte-for-byte verification process: `maybe_rex()`'s widely-shared
+     helper (backing `sse_rr`/`sse_rm`/`sse_mr`/`sse_rr_np`/`sse_rr_66`/
+     `sse_rr_f3`/`sse_rr_f2`, `x86_movdqa_rm`/`_mr`, `x86_movdqu_rm`/`_mr`,
+     `x86_movq_rm`/`_mr`, `x86_movd_r_xmm`/`_xmm_r`) takes the raw
+     register number in its R/X/B parameters rather than a needs-REX
+     bool, over-triggering a spurious (harmless but non-minimal) REX byte
+     for any of XMM4-7 or a RSP/RBP/RSI/RDI memory base/index — the same
+     class of issue fixed locally for STMXCSR/LDMXCSR/PSLLD/PSRLD in the
+     prior session, this time fixed in the shared helpers themselves
+     since they're used by dozens of SSE instructions throughout the
+     file. `maybe_rex()` itself is untouched (still dual-purpose,
+     serving a genuine 8-bit-register-remap need for a few GP-register
+     callers with no size parameter to safely disambiguate — see
+     `rex_for_size()`'s own comment); only its callers that can never be
+     in an 8-bit GP context (XMM registers, memory addressing) were
+     updated to pre-guard their arguments.
+     All fixes verified: (a) byte-for-byte identical to real GNU `as`
+     output for isolated repros (`test/test_asm_movdqa_paddd_mem.c`,
+     new); (b) the real `salsa20_xmm6-asm.S`'s own compiled object
+     matches `as`'s output instruction-for-instruction (verified via the
+     `capstone` disassembler — GNU objdump 2.43.50 itself can't decode
+     large stretches of this file's _own, correct_ output at all,
+     independent of these fixes, and dumps raw hex instead; not an rcc
+     bug, capstone decodes the identical bytes cleanly and correctly);
+     (c) functionally, `stream_salsa20_xmm6_xor_ic()` linked from the
+     real file produces byte-identical Salsa20 keystream output to a
+     from-spec portable C reference implementation, for both a 256-byte
+     all-zero message (ic=0) and a 130-byte partial-block message (ic=5).
+     PASS at -O0..-O3 on x86-64, ARM64 and mingw; `make check-all`: 0
+     failed on all three targets.
+
 ### Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance session)
 
 - **F16C half-precision convert intrinsics not implemented**
@@ -1183,9 +1273,12 @@ a multi-session effort, not a quick win.
      `test_asm_aesni_sse2.c`'s existing convention) — needs its own
      dedicated repro+bisect into how inline-asm operand binding
      resolves register-class constraints for vector-typed C locals.
-   - **Remaining assembler gaps**: a `salsa20_xmm6-asm.S` file the
-     assembler can't process (test_libsodium), `_mm_cvt_ss2si`
-     intrinsic (test_libopus).
+   - **`_mm_cvt_ss2si` intrinsic (test_libopus)**: **fixed**, see
+     "Fixed (2026-08-14, array-range designator / overflow builtins /
+     ADX+mxcsr session)" above.
+   - **`salsa20_xmm6-asm.S` (test_libsodium)**: **fixed**, see "Fixed
+     (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer
+     memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
      construct, not one root cause): a C99 flexible array member inside
      a struct (test_bfs, `struct ioq_thread threads[];`); a `static`

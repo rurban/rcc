@@ -2961,6 +2961,14 @@ static int suffix_size(const char *mnem) {
 // is exactly the reinterpretation we want either way.
 #define X86_IMM(i)  ((i) < nops ? (int64_t)(ops[i][0]=='$' ? strtoull(ops[i]+1,NULL,0) : strtoull(ops[i],NULL,0)) : (int64_t)0)
 #define X86_ISREG(i) ((i)<nops && ops[i][0]=='%')
+// X86_ISREG's "starts with '%'" test also matches an XMM register
+// string ("%xmmN"), which parse_x86_reg64()/R() can't actually parse
+// (falls back to X86_NOREG == -1, which happens to alias physical
+// register 7/RDI once masked into a ModRM field -- silently
+// mis-encoding, not erroring). Mnemonics with a genuine XMM operand
+// (MOVDQA/MOVDQU/MOVD/MOVQ's xmm forms) must check this and dispatch
+// separately instead of falling into the generic GP-register path.
+#define X86_ISXMM(i) ((i)<nops && ops[i][0]=='%' && !strncmp(ops[i]+1,"xmm",3))
 #define X86_ISIMM(i) ((i)<nops && ops[i][0]=='$')
 #define X86_ISMEM(i) ((i)<nops && strchr(ops[i],'(')!=NULL)
 #define X86_ISSYM(i) ((i)<nops && ops[i][0]!='%' && ops[i][0]!='$' && \
@@ -3006,6 +3014,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 #define is_imm(i) X86_ISIMM(i)
 #define is_mem(i) X86_ISMEM(i)
 #define is_sym(i) X86_ISSYM(i)
+#define is_xmm(i) X86_ISXMM(i)
 
     // If no explicit suffix (sz==0), derive size from register operands
     if (sz == 0) {
@@ -3314,9 +3323,69 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
     }
 
-    // MOV variants (but not the SSE scalar moves movsd/movss, which are
-    // handled by their dedicated encoders below).
-    if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss")) {
+    // MOVDQA/MOVDQU (128-bit aligned/unaligned xmm move) and the xmm
+    // forms of MOVD/MOVQ. Must be checked before the generic "mov"
+    // dispatch below: X86_ISREG()'s "starts with '%'" test also
+    // (wrongly) matches an XMM operand string, and R()/parse_x86_reg64()
+    // can't parse "%xmmN" -- it silently falls back to X86_NOREG (-1),
+    // which happens to alias physical register 7 (RDI) once masked into
+    // a ModRM field, so the generic path was mis-encoding these as
+    // ordinary GP-register moves instead of erroring or doing the right
+    // thing. Found via test_libsodium's salsa20_xmm6-asm.S, which
+    // compiled with no error but crashed at runtime (a movdqa load
+    // becoming "mov mem,%rdi" desynced every following offset).
+    if (!strcmp(mnem, "movdqa")) {
+        if (is_mem(0) && is_xmm(1)) x86_movdqa_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        else if (is_xmm(0) && is_mem(1))
+            x86_movdqa_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else if (is_xmm(0) && is_xmm(1))
+            sse_rr_66(buf, 0x6f, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movdqu")) {
+        if (is_mem(0) && is_xmm(1)) x86_movdqu_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        else if (is_xmm(0) && is_mem(1))
+            x86_movdqu_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else if (is_xmm(0) && is_xmm(1))
+            sse_rr_f3(buf, 0x6f, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movd")) {
+        // GP<->xmm 32-bit forms. GAS also accepts a 64-bit GP register
+        // here (byte-identical to "movq" with REX.W set) -- real
+        // hand-written asm (this file included) relies on that.
+        if (is_xmm(0) && is_reg(1)) {
+            if (reg_size_x86(ops[1]) == 8) x86_movq_xmm_r(buf, R(1), parse_x86_xmm(ops[0]));
+            else
+                x86_movd_xmm_r(buf, R(1), parse_x86_xmm(ops[0]));
+        } else if (is_reg(0) && is_xmm(1)) {
+            if (reg_size_x86(ops[0]) == 8) x86_movq_r_xmm(buf, parse_x86_xmm(ops[1]), R(0));
+            else
+                x86_movd_r_xmm(buf, parse_x86_xmm(ops[1]), R(0));
+        }
+        return true;
+    }
+    if (!strcmp(mnem, "movq") && (is_xmm(0) || is_xmm(1))) {
+        // Plain GP-GP "movq" (no xmm operand) falls through to the
+        // generic mov dispatch below, unaffected.
+        if (is_mem(0) && is_xmm(1)) x86_movq_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        else if (is_xmm(0) && is_mem(1))
+            x86_movq_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else if (is_xmm(0) && is_reg(1))
+            x86_movq_xmm_r(buf, R(1), parse_x86_xmm(ops[0]));
+        else if (is_reg(0) && is_xmm(1))
+            x86_movq_r_xmm(buf, parse_x86_xmm(ops[1]), R(0));
+        else if (is_xmm(0) && is_xmm(1))
+            sse_rr_f3(buf, 0x7e, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+
+    // MOV variants (but not the SSE scalar moves movsd/movss, or the xmm
+    // forms of movdqa/movdqu/movd/movq above, which are handled by their
+    // own dedicated encoders).
+    if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss") &&
+        strcmp(mnem, "movdqa") && strcmp(mnem, "movdqu") && strcmp(mnem, "movd") &&
+        !(!strcmp(mnem, "movq") && (is_xmm(0) || is_xmm(1)))) {
         // AT&T: src, dst
         bool is_movabs = strstr(mnem, "abs") != NULL;
         bool is_movsx = strstr(mnem, "sx") != NULL || strstr(mnem, "sl") != NULL;
@@ -4068,52 +4137,83 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_pxor(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    // These twelve unconditionally called parse_x86_xmm() on ops[0]:
+    // for a real memory operand (e.g. "paddd 0x70(%rsp),%xmm0"),
+    // parse_x86_xmm() doesn't recognize a non-"%xmmN" string and
+    // silently falls back to its X86_XMM0 default -- dropping the
+    // actual addend and adding XMM0 to itself instead, with no error.
+    // Found via test_libsodium's salsa20_xmm6-asm.S (paddd's
+    // memory-operand form, used throughout its keystream generation).
     if (!strcmp(mnem, "paddd")) {
-        x86_paddd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_paddd_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_paddd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "psubd")) {
-        x86_psubd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_psubd_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_psubd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "paddq")) {
-        x86_paddq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_paddq_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_paddq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "psubq")) {
-        x86_psubq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_psubq_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_psubq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "paddw")) {
-        x86_paddw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_paddw_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_paddw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "psubw")) {
-        x86_psubw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_psubw_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_psubw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "paddb")) {
-        x86_paddb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_paddb_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_paddb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "psubb")) {
-        x86_psubb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_psubb_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_psubb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pand")) {
-        x86_pand(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_pand_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pand(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "por")) {
-        x86_por(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_por_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_por(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pcmpeqd")) {
-        x86_pcmpeqd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_pcmpeqd_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpeqd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pcmpgtd")) {
-        x86_pcmpgtd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_pcmpgtd_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else
+            x86_pcmpgtd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "shufps")) {

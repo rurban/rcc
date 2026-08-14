@@ -522,6 +522,18 @@ void x86_pand(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_por(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_pcmpeqd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_pcmpgtd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_paddd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_psubd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_paddq_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_psubq_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_paddw_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_psubw_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_paddb_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_psubb_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pand_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_por_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpeqd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
+void x86_pcmpgtd_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 // PSHUFB xmm, xmm (SSSE3): byte-lane shuffle/permute, dst = shuffle(dst, src)
 void x86_pshufb(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 // PSHUFD xmm, xmm, imm8 (SSE2, 66 0F 70 /r ib): dword-lane shuffle,

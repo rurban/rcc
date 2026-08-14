@@ -1250,20 +1250,26 @@ void x86_xbegin_rel32(SecBuf *s, int32_t rel32) {
 // SSE / FP helpers
 // ---------------------------------------------------------------------------
 // SSE2 prefix: F2=double, F3=single
+// d/sr/m.base are guarded "> X86_RDI ? v : 0" before maybe_rex(): its
+// R/X/B params take the raw register number rather than a needs-REX
+// bool, over-triggering a spurious (harmless but non-minimal) REX byte
+// for any of XMM4-7 or a RSP/RBP/RSI/RDI base register otherwise --
+// shared by dozens of SSE reg-reg/reg-mem instructions through these
+// three helpers, so fixed once here rather than at each call site.
 static void sse_rr(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, pfx);
-    maybe_rex(s, 0, d, 0, sr);
+    maybe_rex(s, 0, d > X86_RDI ? d : 0, 0, sr > X86_RDI ? sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 static void sse_rm(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86Mem m) {
     emit1(s, pfx);
-    maybe_rex(s, 0, d, m.index > X86_RDI ? m.index : 0, m.base);
+    maybe_rex(s, 0, d > X86_RDI ? d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, op);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)d);
 }
 static void sse_mr(SecBuf *s, uint8_t pfx, uint8_t op, X86Mem m, X86XmmReg sr) {
     emit1(s, pfx);
-    maybe_rex(s, 0, (int)sr, m.index > X86_RDI ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, op);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)sr);
 }
@@ -1352,7 +1358,7 @@ void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
 void x86_movdqu_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     // movdqu: F3 0F 7F /r (store, unaligned)
     emit1(s, 0xf3);
-    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7f);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
@@ -1367,23 +1373,24 @@ void x86_pxor(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
 // Packed SSE (128-bit vector) — used by __attribute__((vector_size(16)))
 // ---------------------------------------------------------------------------
 // Packed-single ops have no mandatory prefix (0F xx); packed-double add 0x66.
+// Same maybe_rex()-over-triggering fix as sse_rr/sse_rm/sse_mr above.
 void sse_rr_np(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 void sse_rr_66(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 void sse_rr_f3(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0xf3);
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 void sse_rr_f2(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0xf2);
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 
@@ -1471,6 +1478,27 @@ void x86_pand(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xdb, d, sr);
 void x86_por(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xeb, d, sr); }
 void x86_pcmpeqd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x76, d, sr); }
 void x86_pcmpgtd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x66, d, sr); }
+// Memory-operand (xmm, m128) forms of the packed-integer family above --
+// the reg-reg encoders existed, but asm.c's inline-asm dispatch always
+// called parse_x86_xmm() on a raw operand string unconditionally: for a
+// real memory operand (e.g. "paddd 0x70(%rsp), %xmm0"), parse_x86_xmm()
+// doesn't recognize it (doesn't start with "%xmm") and silently falls
+// back to its X86_XMM0 default, so the actual addend was dropped and
+// XMM0 got added to itself instead. Found via test_libsodium's
+// salsa20_xmm6-asm.S (paddd's memory-operand form, used throughout its
+// keystream-generation loop).
+void x86_paddd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xfe, d, m); }
+void x86_psubd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xfa, d, m); }
+void x86_paddq_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xd4, d, m); }
+void x86_psubq_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xfb, d, m); }
+void x86_paddw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xfd, d, m); }
+void x86_psubw_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xf9, d, m); }
+void x86_paddb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xfc, d, m); }
+void x86_psubb_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xf8, d, m); }
+void x86_pand_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xdb, d, m); }
+void x86_por_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0xeb, d, m); }
+void x86_pcmpeqd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x76, d, m); }
+void x86_pcmpgtd_rm(SecBuf *s, X86XmmReg d, X86Mem m) { sse_rm(s, 0x66, 0x66, d, m); }
 // movmskpd r32, xmm: 66 0F 50 /r (GP dst in the reg field; the index
 // trick matches movmskps — X86Reg and X86XmmReg share numbering)
 void x86_movmskpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x50, d, sr); }
@@ -2094,52 +2122,63 @@ void x86_pcmpistri(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit1(s, imm);
 }
 // === memory-form / special SSE encoders for __builtin_ia32_* support ===
-// movdqa m128, xmm: 66 0F 6F /r (aligned load)
+// movdqa m128, xmm: 66 0F 6F /r (aligned load). d/m.index/m.base are
+// guarded with "> 7 ? v : 0" before reaching maybe_rex(): its R/X/B
+// params take the raw register number rather than a needs-REX bool,
+// over-triggering a spurious (harmless but non-minimal) REX byte for
+// any of XMM4-7/RSP/RBP/RSI/RDI otherwise (see the pre-existing index
+// guard this mirrors).
 void x86_movdqa_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x6f);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
 // movdqa xmm, m128: 66 0F 7F /r (aligned store)
 void x86_movdqa_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7f);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
 // movdqu m128, xmm: F3 0F 6F /r (unaligned load)
 void x86_movdqu_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0xf3);
-    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x6f);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
 // movq m64, xmm: F3 0F 7E /r (64-bit load, zero-extends; also movq xmm,xmm)
 void x86_movq_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0xf3);
-    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7e);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
 // movq xmm, m64: 66 0F D6 /r (64-bit store)
 void x86_movq_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0xd6);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
 // movd r32, xmm: 66 0F 6E /r
 void x86_movd_r_xmm(SecBuf *s, X86XmmReg d, X86Reg sr) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, 0, (int)sr > 7 ? (int)sr : 0);
     emit3(s, 0x0f, 0x6e, modrxmm(3, d, (X86XmmReg)sr));
 }
-// movd xmm, r32: 66 0F 7E /r
+// movd xmm, r32: 66 0F 7E /r (store direction -- ModRM.reg is always the
+// XMM operand for this opcode, ModRM.rm the GP operand, regardless of
+// which is semantically "source" vs "dest"; this was backwards before
+// (reg<-d, rm<-sr), encoding e.g. "movd %xmm3,%eax" as garbage
+// "movd %xmm0,%ebx" -- dead code before this session (never called by
+// codegen.c, only by asm.c's new "movd" inline-asm dispatch), verified
+// against real `as` output byte-for-byte).
 void x86_movd_xmm_r(SecBuf *s, X86Reg d, X86XmmReg sr) {
     emit1(s, 0x66);
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x7e, modrxmm(3, (X86XmmReg)d, sr));
+    maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, 0, (int)d > 7 ? (int)d : 0);
+    emit3(s, 0x0f, 0x7e, modrxmm(3, sr, (X86XmmReg)d));
 }
 // movmskpd r32, xmm: 66 0F 50 /r
 // pextrw r32, xmm, imm8: 66 0F C5 /r ib

@@ -179,6 +179,33 @@ __rcc_inline void _mm_storeh_pi(__m64 *__p, __m128 __a) {
 // --- Conversions / extraction ----------------------------------------------
 __rcc_inline float _mm_cvtss_f32(__m128 __a) { return __a[0]; }
 
+// Scalar float<->int32 conversions. `_mm_cvtss_si32`/`_mm_cvtsi32_ss`
+// are the modern names; `_mm_cvt_ss2si`/`_mm_cvt_si2ss` are the
+// original (pre-2001) SSE intrinsic spelling real code (e.g. libopus)
+// still uses -- both map to the same instruction. The codegen for
+// these __builtin_ia32_* names already exists (cg_vectors.c's scalar
+// int<->float conversion dispatch); only the header-level wrappers
+// were missing.
+int __builtin_ia32_cvtss2si(__m128);
+int __builtin_ia32_cvttss2si(__m128);
+__m128 __builtin_ia32_cvtsi2ss(__m128, int);
+__rcc_inline int _mm_cvtss_si32(__m128 __a) { return __builtin_ia32_cvtss2si(__a); }
+__rcc_inline int _mm_cvt_ss2si(__m128 __a) { return __builtin_ia32_cvtss2si(__a); }
+__rcc_inline int _mm_cvttss_si32(__m128 __a) { return __builtin_ia32_cvttss2si(__a); }
+__rcc_inline int _mm_cvtt_ss2si(__m128 __a) { return __builtin_ia32_cvttss2si(__a); }
+__rcc_inline __m128 _mm_cvtsi32_ss(__m128 __a, int __b) { return __builtin_ia32_cvtsi2ss(__a, __b); }
+__rcc_inline __m128 _mm_cvt_si2ss(__m128 __a, int __b) { return __builtin_ia32_cvtsi2ss(__a, __b); }
+#if defined(__x86_64__) || defined(_M_X64)
+long long __builtin_ia32_cvtss2si64(__m128);
+long long __builtin_ia32_cvttss2si64(__m128);
+__m128 __builtin_ia32_cvtsi642ss(__m128, long long);
+__rcc_inline long long _mm_cvtss_si64(__m128 __a) { return __builtin_ia32_cvtss2si64(__a); }
+__rcc_inline long long _mm_cvttss_si64(__m128 __a) { return __builtin_ia32_cvttss2si64(__a); }
+__rcc_inline __m128 _mm_cvtsi64_ss(__m128 __a, long long __b) {
+    return __builtin_ia32_cvtsi642ss(__a, __b);
+}
+#endif
+
 __rcc_inline int _mm_movemask_ps(__m128 __a) {
     union {
         __m128 __v;
@@ -192,8 +219,11 @@ __rcc_inline int _mm_movemask_ps(__m128 __a) {
 // --- Prefetch / fences / streaming stores ----------------------------------
 // <winnt.h> (via <windows.h>) references these through StoreFence/_mm_sfence
 // and PreFetchCacheLine; mingw's <intrin.h> only declares them, so the
-// definitions must live here.  rcc has no MXCSR (stmxcsr/ldmxcsr) support, so
-// _mm_getcsr/_mm_setcsr are intentionally left to mingw's extern declaration.
+// definitions must live here. _mm_getcsr/_mm_setcsr are intentionally
+// left to mingw's own extern declaration/runtime on that target; on
+// other targets they'd need STMXCSR/LDMXCSR (now supported, see
+// __builtin_ia32_stmxcsr/__builtin_ia32_ldmxcsr and inline-asm), not
+// wired up here as no third-party target has needed them yet.
 #ifndef _MM_HINT_T0
 #define _MM_HINT_T0 3
 #define _MM_HINT_T1 2
