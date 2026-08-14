@@ -878,11 +878,22 @@ a multi-session effort, not a quick win.
    and run, but the project is not a target (no arbitrary-precision
    workload in scope).
 
-2. **lib/tempname.c pattern** (now partially fixed)
-   - `SIZE_WIDTH` undeclared in test_diffutils (project-specific macro, not stdint)
+2. **lib/tempname.c pattern** — **fixed** (2026-08-14, diffutils session):
+   test_diffutils now builds and passes its whole test suite (29 PASS).
+   Four stacked fixes: C23 `*_WIDTH` macros (`SIZE_WIDTH`/`PTRDIFF_WIDTH`/
+   ...) in include/stdint.h; `__builtin___mempcpy_chk` and
+   `__builtin___stpcpy_chk` fortify macros (the latter must keep stpcpy's
+   end-pointer return); a parenthesized string-literal-chain initializer
+   (`char s[] = ( "a" "b" )`, diffutils' C_ifdef_group_formats) that sized
+   to 0 and dropped the guard bytes; and glibc fortify `__REDIRECT`
+   (`readlinkat` → `__readlinkat_chk`) being wrongly applied to
+   address-of/function-pointer uses, so careadlinkat's `readlinkat`
+   function pointer called the 5-arg `_chk` variant with a garbage buflen
+   and aborted on a buffer-overflow check.
 
-3. **Object file passed as source** — test_heatshrink
-   - `.os` file compiled as C source (build system issue, not rcc)
+3. **Object file passed as source** — test_heatshrink **fixed** (2026-08-14):
+   `.os`/`.od` (PIC/PIE object) positional link inputs are now recognized
+   as object files, not C sources. test_heatshrink passes (rc=0).
 
 4. **Link failures (environment, not rcc)**: test_file, test_libgc, test_libjansson, ...
    - Missing system libs: libseccomp, libzstd, etc.

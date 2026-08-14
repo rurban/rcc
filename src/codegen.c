@@ -1388,10 +1388,29 @@ static const char *sym_name(const char *name) {
 #endif
 }
 
+// glibc's fortify headers (bits/string_fortified.h, bits/unistd.h, ...)
+// use `__REDIRECT`/`extern __inline` to map a plain name (readlinkat,
+// stpcpy, memcpy, ...) to its `__*_chk` counterpart for the CALL, where
+// the extra __builtin_object_size argument is synthesized. That redirect
+// must NOT apply when the function's ADDRESS is taken: `&readlinkat` is
+// the plain libc symbol (the _chk variant has a different 5-arg
+// signature, so a function-pointer call through it reads a garbage
+// buflen and glibc's fortify check aborts — diffutils' careadlinkat
+// passes `readlinkat` as a function pointer). A C-level name that does
+// not start with "__" and whose asm label ends in "_chk" is such a
+// redirect: use the C name for address-of purposes.
+static bool is_fortify_redirect(const char *cname, const char *asm_label) {
+    if (!asm_label || !cname || cname[0] == '_' && cname[1] == '_')
+        return false;
+    size_t n = strlen(asm_label);
+    return n > 4 && strcmp(asm_label + n - 4, "_chk") == 0;
+}
+
 // Assembly label for a variable: respects __asm__ names (used as-is) and
 // applies sym_name() to regular C identifiers.
 static const char *var_sym_label(LVar *var) {
-    if (var->asm_name) return var->asm_name;
+    if (var->asm_name && !is_fortify_redirect(var->name, var->asm_name))
+        return var->asm_name;
     if (is_asm_reserved(var->name)) return format(".L_rcc_%s", var->name);
     return sym_name(var->name);
 }
@@ -1403,7 +1422,7 @@ static const char *func_label(char *name) {
     uint32_t h = func_hash_name(name) % FUNC_HASH_SIZE;
     for (TLItem *item = func_htab[h]; item; item = item->hash_next)
         if (item->fn->name == name) {
-            if (item->fn->asm_name)
+            if (item->fn->asm_name && !is_fortify_redirect(item->fn->name, item->fn->asm_name))
                 return item->fn->asm_name;
             return asm_sym_name(sym_name(item->fn->name));
         }

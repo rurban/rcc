@@ -147,6 +147,42 @@ typedef uint64_t uint_fast64_t;
 #define UINT64_C(v) v ## ULL
 #define INTMAX_C(v) v ## LL
 #define UINTMAX_C(v) v ## ULL
+
+/* Width macros (C23 7.20.3). diffutils' lib/io.c uses SIZE_WIDTH and
+ * PTRDIFF_WIDTH; the general set covers every type with a limit macro. */
+#define INTPTR_WIDTH  64
+#define UINTPTR_WIDTH 64
+#define SIZE_WIDTH    64
+#define PTRDIFF_WIDTH 64
+#define WCHAR_WIDTH   32
+#define WINT_WIDTH    32
+#define SIG_ATOMIC_WIDTH 32
+#define INTMAX_WIDTH  64
+#define UINTMAX_WIDTH 64
+#define INT8_WIDTH    8
+#define UINT8_WIDTH   8
+#define INT16_WIDTH   16
+#define UINT16_WIDTH  16
+#define INT32_WIDTH   32
+#define UINT32_WIDTH  32
+#define INT64_WIDTH   64
+#define UINT64_WIDTH  64
+#define INT_LEAST8_WIDTH  8
+#define UINT_LEAST8_WIDTH 8
+#define INT_LEAST16_WIDTH 16
+#define UINT_LEAST16_WIDTH 16
+#define INT_LEAST32_WIDTH 32
+#define UINT_LEAST32_WIDTH 32
+#define INT_LEAST64_WIDTH 64
+#define UINT_LEAST64_WIDTH 64
+#define INT_FAST8_WIDTH  8
+#define UINT_FAST8_WIDTH 8
+#define INT_FAST16_WIDTH 16
+#define UINT_FAST16_WIDTH 16
+#define INT_FAST32_WIDTH 32
+#define UINT_FAST32_WIDTH 32
+#define INT_FAST64_WIDTH 64
+#define UINT_FAST64_WIDTH 64
 #if __STDC_VERSION__ >= 202311L
 #define __STDC_VERSION_STDINT_H__ 202311L
 #endif

@@ -734,7 +734,7 @@ int main(int argc, char **argv) {
             // argv order (interleaved with -Wl flags). They are caller
             // files: never delete them like our own temp objects.
             const char *ext = strrchr(argv[i], '.');
-            if ((ext && (!strcmp(ext, ".o") || !strcmp(ext, ".lo") || !strcmp(ext, ".a")
+            if ((ext && (!strcmp(ext, ".o") || !strcmp(ext, ".os") || !strcmp(ext, ".od") || !strcmp(ext, ".lo") || !strcmp(ext, ".a")
 #ifdef _WIN32
                          || !strcmp(ext, ".obj") || !strcmp(ext, ".dll") || !strcmp(ext, ".lib")
 #endif

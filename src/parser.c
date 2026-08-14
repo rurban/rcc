@@ -5555,6 +5555,23 @@ static Type *infer_array_type(Type *ty, Token *tok) {
         if (equalc(after, "}"))
             tok = tok->next; // unwrap: point straight at the string literal
     }
+    // A parenthesized string chain — `char s[] = ( "a" "b" )` — is still
+    // a string-literal initializer (C11 6.7.9p14), e.g. diffutils'
+    // C_ifdef_group_formats. Peek past the parens to size the array from
+    // the (first) string's length; do NOT advance `tok`, so the initializer
+    // itself still parses the parens as an ordinary expression.
+    if (scalarish_base && equalc(tok, "(") && tok->next && tok->next->kind == TK_STR) {
+        Token *inner = tok->next;
+        if (inner->string_literal_prefix == 0 || inner->string_literal_prefix == '8')
+            return array_of(ty->base, inner->len + 1);
+        int n = 0;
+        for (char *p = inner->str, *end = p + inner->len; p < end; n++) {
+            char *next_p;
+            decode_utf8(&next_p, p);
+            p = next_p;
+        }
+        return array_of(ty->base, n + 1);
+    }
     if (scalarish_base && tok->kind == TK_STR) {
         if (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')
             return array_of(ty->base, tok->len + 1);
@@ -5790,6 +5807,20 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION &&
         ty->base->kind != TY_PTR;
     Token *brace_close = NULL;
+    // A parenthesized string-literal chain — `char s[] = ( "a" "b" )` — is
+    // still a string literal (C11 6.7.9p14), e.g. diffutils'
+    // C_ifdef_group_formats. Unwrap the parens so the TK_STR branch below
+    // sees the chain (adjacent strings concatenate in the expression
+    // parser), and skip past the closing paren afterward.
+    if (scalarish_base && equalc(tok, "(") && tok->next && tok->next->kind == TK_STR) {
+        Token *t = tok->next;
+        while (t && t->kind == TK_STR)
+            t = t->next;
+        if (equalc(t, ")")) {
+            brace_close = t->next;
+            tok = tok->next;
+        }
+    }
     if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
         Token *after = tok->next->next;
         if (equalc(after, ",")) after = after->next;
@@ -5799,6 +5830,40 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         }
     }
     // String literal for char/char8_t array
+    // A parenthesized string-literal chain initializer — `char s[] =
+    // ( "a" "b" )` — is still a string literal (C11 6.7.9p14), e.g.
+    // diffutils' C_ifdef_group_formats. Concatenate the inner strings and
+    // write their bytes, then skip past the closing paren.
+    if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && equalc(tok, "(")) {
+        Token *t = tok->next;
+        int total = 0;
+        Token *first = NULL;
+        Token *last = NULL;
+        for (; t && t->kind == TK_STR; t = t->next) {
+            if (!first) first = t;
+            last = t;
+            total += t->len;
+        }
+        if (first && equalc(t, ")")) {
+            // Concat all inner string contents (they are already
+            // NUL-free decoded buffers) plus the terminator.
+            int len = total + 1;
+            if (ty->size > 0 && len > ty->size) len = ty->size;
+            char *buf = arena_alloc(len);
+            int pos = 0;
+            for (Token *u = first; u != last->next && pos < len; u = u->next) {
+                int n = u->len;
+                if (pos + n > len) n = len - pos;
+                memcpy(buf + pos, u->str, n);
+                pos += n;
+            }
+            if (pos < len) buf[pos] = 0;
+            ensure_init_size(var, offset, len);
+            memcpy(var->init_data + offset, buf, len);
+            return t->next;
+        }
+    }
+
     if (ty->kind == TY_ARRAY && ty->base->kind == TY_CHAR && tok->kind == TK_STR &&
         (tok->string_literal_prefix == 0 || tok->string_literal_prefix == '8')) {
         int len = tok->len + 1; // include embedded NULs and the terminator
@@ -6506,6 +6571,20 @@ static Token *local_init_one(Token *tok, Node *lhs, Type *ty, Node **cur) {
         ty->base->kind != TY_STRUCT && ty->base->kind != TY_UNION &&
         ty->base->kind != TY_PTR;
     Token *brace_close = NULL;
+    // A parenthesized string-literal chain — `char s[] = ( "a" "b" )` — is
+    // still a string literal (C11 6.7.9p14), e.g. diffutils'
+    // C_ifdef_group_formats. Unwrap the parens so the TK_STR branch below
+    // sees the chain (adjacent strings concatenate in the expression
+    // parser), and skip past the closing paren afterward.
+    if (scalarish_base && equalc(tok, "(") && tok->next && tok->next->kind == TK_STR) {
+        Token *t = tok->next;
+        while (t && t->kind == TK_STR)
+            t = t->next;
+        if (equalc(t, ")")) {
+            brace_close = t->next;
+            tok = tok->next;
+        }
+    }
     if (scalarish_base && equalc(tok, "{") && tok->next && tok->next->kind == TK_STR) {
         Token *after = tok->next->next;
         if (equalc(after, ",")) after = after->next;
@@ -11767,6 +11846,36 @@ static void global_initializer(Token **rest, Token *tok, LVar *var) {
         var->has_init = true;
         *rest = tok->next;
         return;
+    }
+
+    // A parenthesized string-literal chain — `char s[] = ( "a" "b" )` — is
+    // still a string literal (C11 6.7.9p14), e.g. diffutils'
+    // C_ifdef_group_formats. Concatenate the inner strings and store the
+    // bytes (embedded NULs included); skip past the closing paren.
+    if (var->ty->kind == TY_ARRAY && var->ty->base->kind == TY_CHAR && equalc(tok, "(")) {
+        Token *t = tok->next;
+        Token *first = NULL, *last = NULL;
+        int total = 0;
+        for (; t && t->kind == TK_STR; t = t->next) {
+            if (!first) first = t;
+            last = t;
+            total += t->len;
+        }
+        if (first && equalc(t, ")")) {
+            int len = total + 1;
+            char *buf = arena_alloc(len);
+            int pos = 0;
+            for (Token *u = first; u != last->next; u = u->next) {
+                memcpy(buf + pos, u->str, u->len);
+                pos += u->len;
+            }
+            buf[len - 1] = 0;
+            var->init_data = buf;
+            var->init_size = len;
+            var->has_init = true;
+            *rest = t->next;
+            return;
+        }
     }
 
     // codeql[cpp/commented-out-code]: doc comment naming the wide-string prefixes handled below, not dead code

@@ -2106,6 +2106,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin___getwd_warn",
         "__builtin___memcmp_chk",
         "__builtin___memcpy_chk",
+        "__builtin___mempcpy_chk",
         "__builtin___memmove_chk",
         "__builtin___memset_chk",
         "__builtin___pread_chk",
@@ -2121,6 +2122,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin___sprintf_chk",
         "__builtin___strcat_chk",
         "__builtin___strcpy_chk",
+        "__builtin___stpcpy_chk",
         "__builtin___strlen_chk",
         "__builtin___strncat_chk",
         "__builtin___strncpy_chk",
@@ -3428,8 +3430,10 @@ Token *preprocess(char *filename, char *p) {
         define_macro("__builtin_expect", true, builtin_expect_params, 2, "((void)(y),(x))");
         define_pre("__builtin_memcpy", "memcpy");
         define_pre("__builtin_memcmp", "memcmp");
+        define_pre("__builtin_mempcpy", "mempcpy");
         define_pre("__builtin_memset", "memset");
         define_pre("__builtin_strlen", "strlen");
+        define_pre("__builtin_stpcpy", "stpcpy");
         define_pre("__builtin_strcpy", "strcpy");
         define_pre("__builtin_strcmp", "strcmp");
         define_pre("__builtin_abort", "abort");
@@ -3454,11 +3458,13 @@ Token *preprocess(char *filename, char *p) {
         {
             char *p4[] = {"__dest", "__src", "__len", "__bos", NULL}, *p4m[] = {"__dest", "__src", "__len", "__bos", NULL};
             define_macro("__builtin___memcpy_chk", true, p4m, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memcpy(__dest,__src,__len))");
+            define_macro("__builtin___mempcpy_chk", true, p4m, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_mempcpy(__dest,__src,__len))");
             define_macro("__builtin___memmove_chk", true, p4m, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memmove(__dest,__src,__len))");
             define_macro("__builtin___memset_chk", true, p4, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_memset(__dest,__src,__len))");
             define_macro("__builtin___memcmp_chk", true, p4, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),0):__builtin_memcmp(__dest,__src,__len))");
             char *p3s[] = {"__dest", "__src", "__bos", NULL};
             define_macro("__builtin___strcpy_chk", true, p3s, 3, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcpy(__dest,__src))");
+            define_macro("__builtin___stpcpy_chk", true, p3s, 3, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_stpcpy(__dest,__src))");
             define_macro("__builtin___strncpy_chk", true, p4, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__len)?(abort(),(__dest)):__builtin_strncpy(__dest,__src,__len))");
             define_macro("__builtin___strcat_chk", true, p3s, 3, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__dest)+__builtin_strlen(__src)+1)?(abort(),(__dest)):__builtin_strcat(__dest,__src))");
             define_macro("__builtin___strncat_chk", true, p4, 4, "((__bos)!=(unsigned long long)-1&&(__bos)<(__builtin_strlen(__dest)+(__len)+1)?(abort(),(__dest)):__builtin_strncat(__dest,__src,__len))");
