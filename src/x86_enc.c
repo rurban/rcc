@@ -1505,6 +1505,19 @@ void x86_pslldq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 7
 void x86_psrldq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 3, imm); }
 void x86_psllq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 6, imm); }
 void x86_psrlq(SecBuf *s, X86XmmReg d, uint8_t imm) { group14_shift_imm(s, d, 2, imm); }
+// "Group 13" (66 0F 72 /ext ib) shift-by-immediate -- the 32-bit-lane
+// sibling of Group 14 above (PSLLD/PSRLD vs PSLLQ/PSRLQ). Encoded
+// locally rather than via maybe_rex() (whose B/X parameters take the
+// raw register number, over-triggering a spurious REX byte for
+// XMM4-XMM7) to match real assemblers byte-for-byte.
+static void group13_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) {
+    emit1(s, 0x66);
+    if ((int)d > X86_RDI) emit1(s, rex(0, 0, 0, 1));
+    emit3(s, 0x0f, 0x72, (uint8_t)((3 << 6) | (ext << 3) | ((int)d & 7)));
+    emit1(s, imm);
+}
+void x86_pslld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 6, imm); }
+void x86_psrld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 2, imm); }
 // AES-NI (66 0F 38 xx /r), all reg/reg -- real GAS also accepts an
 // xmm/m128 second operand, but every real caller (OpenSSL/LibreSSL's
 // aesni-x86_64.pl-generated .S files) only ever uses the register form.

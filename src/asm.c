@@ -4129,6 +4129,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_pshufd(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
+    if (!strcmp(mnem, "pshuflw")) {
+        x86_pshuflw(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pshufhw")) {
+        x86_pshufhw(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
     if (!strcmp(mnem, "pslldq")) {
         // pslldq $imm, reg -- single xmm operand, both source and dest.
         x86_pslldq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
@@ -4147,6 +4155,17 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "psrlq")) {
         x86_psrlq(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pslld")) {
+        // pslld $imm, reg -- Group 13 immediate-shift form (nettle's
+        // hand-written SIMD asm only uses this form, not the
+        // register-count form already served by x86_pslld_r).
+        x86_pslld(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "psrld")) {
+        x86_psrld(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
     if (!strcmp(mnem, "pshufb")) {

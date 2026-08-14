@@ -129,6 +129,30 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   compiles clean and the rest of the suite is unaffected on ARM64 and
   mingw).
 
+- **Remaining SSE/assembler instruction coverage: PSHUFLW/PSHUFHW and
+  PSLLD/PSRLD immediate-shift form** — `x86_enc.c`/`.h`, `asm.c`.
+  PSHUFLW/PSHUFHW encoders already existed (used by the
+  compiler-intrinsic path) but were never wired into `asm.c`'s
+  inline-asm mnemonic dispatch. PSLLD/PSRLD had only a
+  register-count-shift encoder (`x86_pslld_r`/`x86_psrld_r`), not the
+  immediate-shift "Group 13" form (`66 0F 72 /ext ib`) real
+  hand-written SIMD assembly actually uses; added `x86_pslld`/
+  `x86_psrld`, mirroring the existing Group 14 (`0F 73`) helper
+  backing `pslldq`/`psrldq`/`psllq`/`psrlq` — encoded locally (not via
+  the shared `maybe_rex()`) to avoid the same spurious-REX-byte issue
+  noted above for XMM4-XMM7. All forms verified byte-for-byte
+  identical to `as`/objdump reference output, including the REX.B case
+  for an XMM8-15 destination. Found via `test_nettle`. Regression
+  test: `test/test_asm_sse_shift_shuffle.c` (new, byte-verification
+  style matching `test_asm_aesni_sse2.c`'s convention — a
+  functional/runtime test using vector-typed C locals bound to `"x"`
+  inline-asm constraints hit a separate, pre-existing, unrelated bug:
+  the `"x"`/`"=x"` xmm-register constraint doesn't correctly bind a
+  `vector_size` C local to the asm's register operand at all, even for
+  a bare `movaps` copy — not attempted this session, out of scope,
+  see "Needs fixing" below), PASS at -O0..-O3 on x86-64, ARM64 and
+  mingw.
+
 ### Fixed (2026-08-14, F16C intrinsics / unknown-flag acceptance session)
 
 - **F16C half-precision convert intrinsics not implemented**
@@ -1144,14 +1168,22 @@ a multi-session effort, not a quick win.
    session)" above — the rest are open, listed by cluster, not
    individually fixed this session):
    - **GNU C designated array-range initializer, `__builtin_*_overflow`
-     family, and ADCX/ADOX/STMXCSR/LDMXCSR assembler gaps** — all three
-     **fixed**, see "Fixed (2026-08-14, array-range designator /
-     overflow builtins / ADX+mxcsr session)" above.
-   - **Remaining SSE/assembler instruction coverage gaps**: inline-asm
-     `pshufhw`/`pshuflw`/`pslld`/`psrld` (test_nettle — encoders already
-     exist in x86_enc.c/.h for the compiler-intrinsic path, just not
-     wired into asm.c's inline-asm dispatch, same shape as the
-     STMXCSR/LDMXCSR fix above), a `salsa20_xmm6-asm.S` file the
+     family, ADCX/ADOX/STMXCSR/LDMXCSR, and PSHUFLW/PSHUFHW/PSLLD/
+     PSRLD assembler gaps** — all **fixed**, see "Fixed (2026-08-14,
+     array-range designator / overflow builtins / ADX+mxcsr session)"
+     above.
+   - **Inline-asm `"x"`/`"=x"` (xmm register) constraint doesn't
+     correctly bind a `vector_size` C local to the asm operand** —
+     found while writing this session's PSHUFLW/PSHUFHW regression
+     test: even a bare `__asm__("movaps %1, %0" : "=x"(dst) :
+"x"(src))` between two `vector_size(16)` locals reads/writes
+     garbage instead of copying the vector. Not attempted this session
+     (worked around by testing the assembler/encoder in isolation via
+     a standalone `.S` file instead, matching
+     `test_asm_aesni_sse2.c`'s existing convention) — needs its own
+     dedicated repro+bisect into how inline-asm operand binding
+     resolves register-class constraints for vector-typed C locals.
+   - **Remaining assembler gaps**: a `salsa20_xmm6-asm.S` file the
      assembler can't process (test_libsodium), `_mm_cvt_ss2si`
      intrinsic (test_libopus).
    - **Parser rejects valid C in real project source** (each a distinct

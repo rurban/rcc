@@ -538,6 +538,8 @@ void x86_pslldq(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_psrldq(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_psllq(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_psrlq(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_pslld(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_psrld(SecBuf *s, X86XmmReg dst, uint8_t imm);
 // AES-NI (66 0F 38 xx /r): one round of AES encryption/decryption, or
 // the inverse-mix-columns step used when expanding a decryption key
 // schedule from an encryption one.
