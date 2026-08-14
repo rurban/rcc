@@ -300,6 +300,7 @@ bool opt_export_dynamic = false;
 // DLL this link produces. NULL when not requested.
 char *opt_out_implib = NULL;
 bool opt_time = false;
+bool opt_defer_ts = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
 #ifdef _WIN32
@@ -746,6 +747,8 @@ int main(int argc, char **argv) {
             ; // accepted, no effect (rcc always resolves includes)
         } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
             opt_exec_charset = argv[i] + 15;
+        } else if (!strcmp(argv[i], "-fdefer-ts")) {
+            opt_defer_ts = true;
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
                    !strncmp(argv[i], "-Werror=", 8)) {
             ; // silently ignored

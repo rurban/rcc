@@ -370,6 +370,11 @@ extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;
 extern bool opt_time;
+// -fdefer-ts (WG14 N3199 / TS 25755 experimental `defer` statement,
+// matching clang's own flag name): gates `defer` keyword recognition
+// in stmt() so ordinary code using `defer` as an identifier elsewhere
+// in the corpus is unaffected when the flag isn't passed.
+extern bool opt_defer_ts;
 // codeql[cpp/commented-out-code]: trailing note names the real pragma this flag mirrors, not dead code
 extern bool fenv_access; // #pragma STDC FENV_ACCESS state
 extern int pack_align;
@@ -439,6 +444,13 @@ struct LVar {
     int init_size;
     Reloc *relocs;
     char *cleanup_func; // __attribute__((__cleanup__(func)))
+    // C23 `defer` (WG14 N3199 / `-fdefer-ts`): a raw, already-parsed
+    // statement to run at scope exit, in the same LIFO position as an
+    // ordinary cleanup_func entry (this LVar is a zero-storage marker
+    // synthesized directly onto the `locals` chain at the `defer`
+    // statement's own point, not a real declaration -- see parser.c's
+    // `stmt()`). Mutually exclusive with cleanup_func.
+    Node *defer_stmt;
     bool is_tls; // __thread / _Thread_local
     bool is_register; // register compound literal, or a GCC global register variable
     bool is_global_reg; // `register TYPE name asm("regname");` at file scope (GCC
@@ -663,7 +675,15 @@ struct Node {
     LVar *cleanup_begin;
     LVar *cleanup_end;
     LVar *continue_cleanup_end;
-
+    // ND_RETURN only: a 16-byte scratch stack slot (lazily allocated by
+    // parser.c when this return has a non-empty cleanup_begin..
+    // cleanup_end range) codegen spills the return value's ABI
+    // register(s) into before running pending cleanup/defer code and
+    // reloads from afterward -- a defer body or __attribute__((cleanup))
+    // function is arbitrary code that can itself clobber the return
+    // register before the final jump to the epilogue. NULL when there
+    // is nothing pending on this return path (the common case).
+    LVar *defer_retspill;
     int64_t val; // Used if kind == ND_NUM
     int64_t val2; // Used if kind == ND_NUM: high 64 bits (TY_DECIMAL128)
     double fval; // Used if kind == ND_FNUM

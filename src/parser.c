@@ -218,6 +218,11 @@ static void enum_htab_add(EnumConst *ec) {
 
 static int stack_offset;
 static char *pending_cleanup_func;
+// C23 `defer` (-fdefer-ts): true while parsing a defer statement's own
+// substatement -- a `return` inside is ill-formed (WG14 N3199: a defer
+// body executes during scope unwind and cannot itself return a value
+// from the enclosing function).
+static bool in_defer_body;
 static Token *pending_cleanup_tok;
 static bool pending_constructor;
 static bool pending_destructor;
@@ -1399,9 +1404,12 @@ static Node *append_cleanup_flat(Node *body, LVar *begin, LVar *end, Token *tok)
     head.next = body;
     while (cur->next)
         cur = cur->next;
-    for (LVar *var = begin; var && var != end; var = var->next)
-        if (var->is_local && var->cleanup_func)
+    for (LVar *var = begin; var && var != end; var = var->next) {
+        if (var->is_local && var->defer_stmt)
+            cur = cur->next = var->defer_stmt;
+        else if (var->is_local && var->cleanup_func)
             cur = cur->next = make_cleanup_stmt(var, tok);
+    }
     return head.next;
 }
 
@@ -1416,7 +1424,9 @@ static Node *append_cleanup_range(Node *body, LVar *begin, LVar *end, Token *tok
     }
 
     for (LVar *var = begin; var && var != end; var = var->next) {
-        if (var->is_local && var->cleanup_func)
+        if (var->is_local && var->defer_stmt)
+            cur = cur->next = var->defer_stmt;
+        else if (var->is_local && var->cleanup_func)
             cur = cur->next = make_cleanup_stmt(var, tok);
         if (var->is_local && var->ty->kind == TY_VLA) {
             Node *v = new_node(ND_EXPR_STMT, tok);
@@ -8037,10 +8047,86 @@ static Node *stmt(Token **rest, Token *tok) {
         tok = skip_attributes(tok);
         return stmt(rest, tok);
     }
+    // C23 `defer` (WG14 N3199 / TS 25755, `-fdefer-ts`): `defer
+    // statement;` registers `statement` to run, LIFO with every other
+    // pending cleanup/defer, when the enclosing scope exits (fall-
+    // through, return, break, continue, or goto out of it). `defer {`
+    // is recognized unconditionally, without needing -fdefer-ts: an
+    // ordinary identifier can never be followed directly by `{` in
+    // valid C (not a declaration -- `defer` is never a typedef name --
+    // and not a continuable expression), so there is no real-world
+    // program this could misparse. Every other spelling (`defer
+    // <stmt>;` with no braces, e.g. nob.h's `defer if (f) fclose(f);`)
+    // stays gated behind the flag: `defer(x);` is genuinely ambiguous
+    // with a call to a function literally named `defer`.
+    if (equalc(tok, "defer") && (equalc(tok->next, "{") || opt_defer_ts)) {
+        // Modeled as a zero-storage marker LVar carrying the
+        // already-parsed statement, synthesized directly onto the same
+        // `locals` chain ordinary cleanup-attribute variables use --
+        // see append_cleanup_flat()/append_cleanup_range() (parse-time
+        // fall-through injection) and codegen.c's var_has_cleanup()/
+        // emit_cleanup_range() (return/break/continue/goto). The
+        // `defer` statement itself is a pure declaration: it contributes
+        // no code at its own point, only at scope-exit sites.
+        Token *defer_tok = tok;
+        bool saved_in_defer = in_defer_body;
+        in_defer_body = true;
+        Node *body = stmt(&tok, tok->next);
+        in_defer_body = saved_in_defer;
+        check_type(body);
+        LVar *marker = arena_alloc(sizeof(LVar));
+        memset(marker, 0, sizeof(LVar));
+        marker->is_local = true;
+        marker->ty = ty_void;
+        marker->defer_stmt = body;
+        marker->next = locals;
+        locals = marker;
+        // Match declaration()'s own convention for an ordinary top-level
+        // local (see its `if (current_block_depth == 1)
+        // current_fn_scope_locals = locals;`): a defer declared directly
+        // in the function's own outermost scope is exclusively fired by
+        // the shared epilogue's fn->locals scan (every exit path -- both
+        // real fall-through and every `return`, which all converge on
+        // .L.return<fn> -- reaches it there), not duplicated by each
+        // return's own emit_cleanup_range. Without this, a *later*
+        // top-level declaration's own advance would silently exclude
+        // this marker from any subsequent return's cleanup_begin..end
+        // range, and it would never fire at all (the epilogue skips
+        // defer_stmt entries it doesn't itself need to handle -- see
+        // codegen.c). A defer nested inside a block (block_depth > 1)
+        // is popped off `locals` when that block exits and so never
+        // reaches fn->locals's final snapshot; it stays covered by
+        // whichever return's own range is still in scope for it.
+        if (current_block_depth == 1)
+            current_fn_scope_locals = locals;
+        *rest = tok;
+        return new_node(ND_NULL, defer_tok);
+    }
     if (equalc(tok, "return")) {
+        if (in_defer_body)
+            error_tok(tok, "'return' not allowed inside a 'defer' statement");
         Node *node = new_node(ND_RETURN, tok);
         node->cleanup_begin = locals;
         node->cleanup_end = current_fn_scope_locals;
+        if (node->cleanup_begin != node->cleanup_end) {
+            // Pending cleanup/defer code runs (arbitrary calls, clobbers
+            // the ABI return register(s)) between materializing the
+            // return value and the actual jump to the epilogue -- see
+            // codegen.c's ND_RETURN. Reserve a scratch slot to spill it
+            // into first; harmless (if unusually placed) for a void
+            // return, since codegen only touches this slot when it
+            // actually wrote to the return register(s). Must be
+            // ty_llong, not ty_long: codegen unconditionally spills two
+            // 8-byte registers into this slot, but `long` is only 4
+            // bytes under Windows' LLP64 model -- `array_of(ty_long, 2)`
+            // there reserved just 8 bytes for a 16-byte write, silently
+            // overflowing into whatever local sat next to it on the
+            // stack (found via tinycc's 101_cleanup.c test_ret2() on
+            // the mingw target: a plain __attribute__((cleanup)) local
+            // one stack slot over got its stored string pointer
+            // clobbered by the second 8-byte spill).
+            node->defer_retspill = new_var("__defer_retspill", array_of(ty_llong, 2), true);
+        }
         if (equalc(tok->next, ";")) {
             *rest = tok->next->next;
             return node;

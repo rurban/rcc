@@ -1339,10 +1339,20 @@ void eliminate_unused_static_inline(Program *prog) {
 
     // BFS closure: scanning a live function's body may enqueue more:
     // wl_len grows in place as dce_scan_node()/dce_mark() append to it.
+    // A `defer <stmt>;` body (LVar.defer_stmt) is never a child of
+    // fn->body's own Node tree — it is a zero-storage marker on the
+    // locals chain, only ever reached via codegen's own dedicated
+    // gen(var->defer_stmt) call at each return/scope-exit site — so it
+    // needs its own explicit scan or a function called *only* from
+    // inside a defer body reads as dead and gets omitted, leaving a
+    // real call site with no definition to link against.
     for (int qi = 0; qi < wl_len; qi++) {
         Function *f = wl[qi];
         if (f->body)
             dce_scan_node(f->body, fns, n, &wl, &wl_len, &wl_cap);
+        for (LVar *v = f->locals; v; v = v->next)
+            if (v->defer_stmt)
+                dce_scan_node(v->defer_stmt, fns, n, &wl, &wl_len, &wl_cap);
     }
 
     // Splice out every candidate that never got marked live, tracking

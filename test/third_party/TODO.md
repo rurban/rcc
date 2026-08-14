@@ -25,6 +25,52 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-14, C `defer` session)
+
+- **C `defer` statement not implemented at all** (WG14 N3199 / TS 25755,
+  clang's experimental `-fdefer-ts` flag name) — parser.c, codegen.c,
+  opt.c, main.c. `defer { ... }` registers a statement to run, LIFO
+  with every other pending cleanup, on every exit from the enclosing
+  scope (fall-through, `return`, `break`, `continue`, `goto`).
+  Recognized unconditionally (`defer` followed directly by `{` can
+  never be valid C otherwise); the brace-less single-statement form
+  (`defer if (f) fclose(f);`, nob.h's own preferred style) is genuinely
+  ambiguous with a call to a function literally named `defer`, so it
+  stays gated behind `-fdefer-ts`. Implemented as a zero-storage marker
+  on the same `locals` chain `__attribute__((cleanup(...)))` already
+  uses, inheriting its existing LIFO/return/fall-through threading.
+  Found via test_nob (https://github.com/tsoding/nob.h), which uses
+  `defer` throughout its file-I/O helpers. Three stacked bugs found and
+  fixed along the way, each with its own regression case in the new
+  test/test_defer.c: (1) a defer body that itself calls a function
+  clobbered an already-computed scalar return value — codegen placed
+  the return value in the ABI return register(s) **before** running
+  cleanup; fixed by spilling to a scratch stack slot across cleanup and
+  reloading after. (2) a **later** top-level declaration after the
+  `defer` (e.g. a loop-local variable) silently excluded the defer
+  marker from every subsequent `return`'s own cleanup range while the
+  shared function epilogue also skipped it, so the defer body never
+  ran at all — found via test_nob's own `nob_write_entire_file()`
+  (`defer if (f) fclose(f);` followed by a `while` loop then
+  `return true;`, so the file was never actually flushed/closed);
+  fixed by advancing the same bookkeeping pointer
+  (`current_fn_scope_locals`) past a defer marker that ordinary
+  top-level declarations already advance past. (3) a function called
+  **only** from inside a `defer` body was invisible to
+  `opt.c`'s dead-code-elimination reachability scan (the defer body's
+  Node lives solely in `LVar.defer_stmt`, reached only via codegen's
+  own dedicated call at each scope-exit site, never as a child of the
+  function's ordinary body Node tree the DCE walk scans) and was wrongly
+  omitted at `-O1` and above, leaving a real call site with no
+  definition to link against; fixed by also scanning every live
+  function's locals chain for a `defer_stmt` during the DCE
+  reachability walk. Verified: `test/test_defer.c` (new) passes at
+  -O0/-O1/-O2/-O3 on x86-64, and under qemu-aarch64/wine (mingw)
+  emulation; full `make check-all` clean (0 failed) on all three
+  targets; test_nob's own test suite (12/14 `tests/*.c`, excluding a
+  Win32-only test and one with unstable directory-listing order) builds
+  and runs to completion under `rcc -fdefer-ts`.
+
 ### Fixed (2026-08-13, wide `_BitInt(N>64)` session)
 
 - **`_BitInt(N)` with N > 64 silently truncated to 64 bits** (codegen.c,
@@ -768,7 +814,7 @@ CC=$(pwd)/rcc bash test/linux*thirdparty.bash test*<name>
 | test_libgmp      | **shared/static library build now fully fixed** — was: configure-time "cannot determine 32-bit word directive" (stale, long-superseded by prior sessions' assembler fixes); this session found and fixed the last two real rcc bugs blocking the actual `libgmp.so`/`libgmp.a` link (forward-referenced local-label binding, `.hidden`/`.protected`/`.internal` ELF visibility — see "Fixed (2026-08-11, forward-referenced local-label binding / ELF visibility session)" below). The library's own `tests/mpn/t-*` runtime suite still shows 47 failures, confirmed **not an rcc bug** — bit-for-bit reproduces (identical exit codes) against the same GMP 6.3.0 source built with the system's real gcc+GNU as+GNU ld, a pre-existing GMP/environment incompatibility                                                                                                                                                                                                                                                                                                                                                     |
 | test_muon        | **all rcc-related self-test failures fixed; 384/387 (3 env/muon failures identical to gcc-built muon)** — was: 342/387 with ~22 rcc-related failures (link-command generation). Two-part fix: rcc now falls back to the external (gcc) linker whenever the internal ELF/PE/Mach-O linker cannot honor a linker command (any `-Wl,` option or `-nodefaultlibs` — previously silently dropped, producing links with no DT_RUNPATH/DT_SONAME or unresolvable archive groups; see "Fixed (2026-08-12, external-link fallback / muon toolchain detection session)" below), and a bare `-Wl,-v`/`-l` invocation is a link-only probe instead of "no input files"; the harness now registers `rcc` as a muon compiler toolchain (inherit posix, linker `ld`) exactly like the existing `slimcc` patch, so muon detects rcc's linker as GNU ld and generates the full `-Wl,--as-needed/-rpath/--start-group/-soname` args. Remaining 3: `muon/wayland` (needs wayland-scanner tool), `common/183 partial dependency` + `common/251 add_project_dependencies` (zlib link path) — all reproduce identically with a fully gcc-built muon |
 | test_neovim      | **investigated, not an rcc bug** — CMake configure fails before any compilation: `Could NOT find Luv (missing: LUV_LIBRARY LUV_INCLUDE_DIR)` (missing system Lua-libuv-binding dev package in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| test_nob         | needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized) — see "Needs fixing" item 5 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| test_nob         | **fixed** (2026-08-14, C `defer` session) — was: needs C's experimental `defer` statement (`-fdefer-ts`, WG14 N3199/TS 25755, not yet standardized); see "Fixed (2026-08-14, C `defer` session)" and "Needs fixing" item 5 above/below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | test_rsync       | **fixed** — was: `undefined reference to 'preserve_acls'`/`'preserve_xattrs'` at link time; block-scope-`extern`-inside-dead-`static-inline`-function DCE bug, see "Fixed (2026-08-09, block-scope extern DCE session)" below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | test_samba       | **two real rcc bugs found and fixed** (see "Fixed (2026-08-10, LONG_MAX/atomic-load session)" below) — configure now progresses far past its earlier `pyembed`/`Python.h` failure into unrelated dependency checks (pam, iconv, ncurses, readline, ...), currently blocked on `perl module "Parse::Yapp::Driver" not found` (missing build-time CPAN module in this sandbox, not an rcc issue)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | test_scrapscript | **fixed** — was: every test failed to even link (`undefined reference to '__start_const_heap'`); the `section()` attribute fix resolved linking (32/33 -> 17/33 failing), then the section sh_addralign fix below resolved the remaining 17 `SIGABRT`s (17/33 -> 0/33 failing, full suite green)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -899,24 +945,11 @@ a multi-session effort, not a quick win.
    - Missing system libs: libseccomp, libzstd, etc.
 
 5. **C `defer` statement (WG14 N3199 / TS 25755, `-fdefer-ts` /
-   `_Defer`)** — test_nob's own test suite requires it: `defer { ... }`
-   is not recognized at all (rcc doesn't know the `-fdefer-ts` flag
-   either, so it warns and silently ignores it, then parses the bare
-   `defer` keyword as an ordinary undeclared identifier). This is a
-   genuine WG14 feature under active standardization (Committee Draft
-   status as of mid-2026, targeting a future C revision, not yet part
-   of any ratified C standard) implemented experimentally in slimcc,
-   clang, and (in progress) gcc. A reference implementation exists at
-   `../slimcc/parse.c` (per this repo's own AGENTS.md, which explicitly
-   endorses cross-checking against slimcc) -- but it's not a
-   contained, drop-in patch: `defer` interacts with every statement
-   kind that can be a scope boundary (`if`/`switch`/`for`/`while`/`do`/
-   compound blocks), `goto` targets outside a defer's scope, VLA
-   cleanup ordering, and needs `return`-inside-`defer` rejected as
-   ill-formed -- correctly threading LIFO defer-stack unwinding through
-   every exit path (fall-through, `return`, `break`, `continue`,
-   `goto`) on both x86-64 and ARM64 codegen is a genuine new-feature
-   implementation, not a quick win.
+   `_Defer`)** — **fixed** (2026-08-14, C `defer` session): see "Fixed
+   (2026-08-14, C `defer` session)" above. test_nob's own test suite
+   (12 of its 14 `tests/*.c`, excluding a Win32-only test and one with
+   unstable directory-listing order) now builds and runs to completion
+   under `rcc -fdefer-ts`, output checksum matching exactly.
 
 ---
 
@@ -941,24 +974,15 @@ a multi-session effort, not a quick win.
 
 ## Quick Wins (next to fix)
 
-1. **AVX2/AVX-512 codegen** — test*blake3 (AVX-512), test_brotli (AVX2)
-   need rcc to ship its own `<immintrin.h>`/`<avxintrin.h>`/
-   `<avx2intrin.h>` (and, for blake3, AVX-512 mask-register codegen)
-   instead of falling through to GCC's real system headers; a
-   multi-session effort, see "Fixed (2026-08-08,
-   shufflevector/SSE2-baseline session)" above for what's already
-   covered (`__builtin_shufflevector`, the missing baseline-SSE2 tier —
-   both unblocked test_libwebp). Since the 2026-08-12 SIMD-intrinsics
-   session, the full base-SSE surface (SSE1/SSE2/SSE3/SSSE3/SSE4.1,
-   MMX, AES) is typed and codegen'd (`\_\_builtin_ia32*\*` dispatcher +
-   ~150 encoders) and the REAL glibc headers compile and run
-   byte-identical to gcc at -O0 and -O2 — what remains for blake3/
-   brotli is the 256/512-bit vector tiers (AVX/AVX-512 intrinsics,
-   mask registers) and 16-bit float/bf16 arithmetic.
-2. **C23 `_BitInt(N)`** — test_c23doku only now (test_cproc fixed, see
-   "Fixed (2026-08-08, root-cause/test_cproc-completion session)" below;
-   wide `_BitInt(N>64)` codegen fixed 2026-08-13 — test_c23doku stays
-   skipped by decision)
+**All previously listed quick wins are now fixed** — AVX2/AVX-512
+codegen (test_blake3, test_brotli: see "Fixed (2026-08-12, AVX/AVX2
+intrinsics session)" and "Fixed (2026-08-12, AVX-512 / EVEX intrinsics
+session)" below), C23 `_BitInt(N)` (see "Fixed (2026-08-13, wide
+`_BitInt(N>64)` session)" above), and C `defer` (see "Fixed
+(2026-08-14, C `defer` session)" above; test_nob); test_c23doku stays
+skipped by decision, arbitrary-precision bignum workload out of scope.
+This section is stale history kept for context — no remaining genuine
+gaps are tracked in "Needs fixing" above as of this session.
 
 ### Fixed (2026-08-08, VM-type evaluation-order session)
 

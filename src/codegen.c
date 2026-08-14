@@ -1562,6 +1562,7 @@ static void emit_bitint_call(char *fn) {
 
 static bool var_has_cleanup(LVar *var) {
     if (!var->is_local) return false;
+    if (var->defer_stmt) return true;
     if (var->cleanup_func) return true;
     return var->ty->kind == TY_ARRAY && var->ty->base && var->ty->base->cleanup_func;
 }
@@ -1623,6 +1624,20 @@ static void emit_cleanup_var(LVar *var) {
 
 static void emit_cleanup_range(LVar *begin, LVar *end) {
     for (LVar *var = begin; var && var != end; var = var->next) {
+        if (!var->is_local) continue;
+        if (var->defer_stmt) {
+            // A `defer` body is arbitrary code, not a fixed call shape --
+            // compile it in place (dispatches through the same gen()
+            // every other statement uses). Re-emitted once per exit path
+            // that reaches it (this range, plus a separate copy injected
+            // at parse time for the enclosing scope's own fall-through --
+            // see append_cleanup_range()), matching how VLA/cleanup_func
+            // teardown already duplicates its own code per exit path
+            // rather than outlining into a shared subroutine.
+            VReg r = gen(var->defer_stmt);
+            if (r != -1) free_reg(r);
+            continue;
+        }
         if (var_has_cleanup(var))
             emit_cleanup_var(var);
     }
@@ -10904,7 +10919,34 @@ VReg gen(Node *node) {
                 free_reg(r);
             }
         }
+        // A pending cleanup/defer runs arbitrary code (calls, etc.)
+        // between here and the actual jump to the epilogue -- protect
+        // whatever's already sitting in the ABI return register(s) (see
+        // parser.c's `return` handling, which only allocates
+        // defer_retspill when cleanup_begin..cleanup_end is non-empty).
+        if (node->defer_retspill) {
+            int off = node->defer_retspill->offset;
+#ifdef ARCH_ARM64
+            arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_XZR, ARM64_X0, ARM64_LSL, 0); // mov x16, x0
+            arm64_store_to_fp_minus(off);
+            arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_XZR, ARM64_X1, ARM64_LSL, 0); // mov x16, x1
+            arm64_store_to_fp_minus(off - 8);
+#else
+            asm_mov_phyreg_rbp(cg_sec, X86_RAX, 8, off); // mov [rbp-off], %rax
+            asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, off - 8); // mov [rbp-off+8], %rdx
+#endif
+        }
         emit_cleanup_range(node->cleanup_begin, node->cleanup_end);
+        if (node->defer_retspill) {
+            int off = node->defer_retspill->offset;
+#ifdef ARCH_ARM64
+            arm64_load_from_fp_minus(off, ARM64_X0);
+            arm64_load_from_fp_minus(off - 8, ARM64_X1);
+#else
+            asm_mov_rbp(cg_sec, X86_RAX, 8, off); // mov %rax, [rbp-off]
+            asm_mov_rbp(cg_sec, X86_RDX, 8, off - 8); // mov %rdx, [rbp-off+8]
+#endif
+        }
         size_t ret_off = asm_jmp_label(cg_sec); /* jmp/b .L.return.%s */ /* andl $%d, %eax\n */
         char *ret_lbl = format(".L.return.%s", current_fn_def->name);
         asm_fixup_add(cg_sec, ret_off, ret_lbl, 0); // fixup add for forward branch
@@ -16169,9 +16211,15 @@ struct ObjFile *codegen(Program *prog) {
             if (fn_ret_gp_pair)
                 asm_mov_phy_phy(cg_sec, ARM64_X20, ARM64_X1, 1); // mov x20, x1 (save 2nd eightbyte too)
         }
-        for (LVar *var = fn->locals; var; var = var->next)
+        for (LVar *var = fn->locals; var; var = var->next) {
+            if (var->defer_stmt) {
+                VReg r = gen(var->defer_stmt);
+                if (r != -1) free_reg(r);
+                continue;
+            }
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
+        }
         if (has_cleanup && fn_ret_nonvoid) {
             // Restore x0 from x19 after cleanup calls
             asm_mov_phy_phy(cg_sec, ARM64_X0, ARM64_X19, 1); // mov x0, x19 (restore return value)
@@ -16763,6 +16811,22 @@ struct ObjFile *codegen(Program *prog) {
         if (save_rdx_for_cleanup)
             asm_mov_phyreg_rbp(cg_sec, X86_RDX, 8, spill_offset(1)); // mov [rbp-spill_offset(1], X86_RDX)
         for (LVar *var = fn->locals; var; var = var->next) {
+            if (var->defer_stmt) {
+                // A top-level (block_depth == 1) defer is exclusively
+                // fired here: parser.c's `defer` handling advances
+                // current_fn_scope_locals past its own marker, the same
+                // way an ordinary top-level declaration does, so no
+                // return's own emit_cleanup_range range includes it --
+                // every exit path (fall-through and every return alike)
+                // converges on .L.return<fn>, reaching this once. A
+                // defer nested inside a block never reaches fn->locals
+                // (popped off when that block's own scope exits) and
+                // stays covered by whichever return's own range is
+                // still in scope for it instead.
+                VReg r = gen(var->defer_stmt);
+                if (r != -1) free_reg(r);
+                continue;
+            }
             if (var_has_cleanup(var))
                 emit_cleanup_var(var);
         }

@@ -69,17 +69,17 @@ didn't report every expected error line, `r` = runtime failure.
 
 | Compiler | Passed | Failed | Skipped | Notes                      |
 | -------- | ------ | ------ | ------- | -------------------------- |
-| rcc      | 4088   | 4      | 354     | 99%, 4e failures           |
-| gcc      | 4175   | 74     | 196     | 98%, 38c/1r failures       |
-| ccc      | 3814   | 217    | 413     | 94%, 151c/31r failures     |
-| clang    | 3618   | 635    | 191     | 85%, 530c/39e/15r failures |
-| tcc      | 2607   | 442    | 1395    | 85%, 383c/17r failures     |
-| kefir    | 2913   | 965    | 566     | 75%, 892c/15r failures     |
+| rcc      | 4195   | 0      | 354     | 100% pass rate             |
+| gcc      | 4271   | 86     | 196     | 98%, 39c/1r failures       |
+| ccc      | 3897   | 241    | 413     | 94%, 151c/31r failures     |
+| clang    | 3708   | 649    | 191     | 85%, 530c/36e/15r failures |
+| tcc      | 2676   | 480    | 1395    | 84%, 383c/17r failures     |
+| kefir    | 2989   | 996    | 566     | 74%, 892c/15r failures     |
 | antcc    | 1959   | 1091   | 1394    | 64%, 974c/23r failures     |
-| slimcc   | 1995   | 1372   | 1077    | 59%, 1324c/7r failures     |
+| slimcc   | 2077   | 1397   | 1077    | 59%, 1324c/7r failures     |
 | lacc     | 1403   | 1967   | 1073    | 41%, 1771c/14r failures    |
 | scc      | 1430   | 2569   | 444     | 35%, 2389c/31r failures    |
-| xcc      | 719    | 2468   | 1256    | 22%, 2123c failures        |
+| xcc      | 753    | 2541   | 1256    | 22%, 2123c failures        |
 | cproc    | 332    | 3707   | 404     | 8%, 3347c failures         |
 
 <!-- TEST_RESULTS_TABLE_END -->
@@ -113,7 +113,7 @@ All compilers but rcc fail the -Whomoglyph test/test_unicode.c
 
 ## Supported C Features
 
-Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, computed goto (`&&label`, including label-address differences `&&a - &&b` in `static` initializers), `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, C23 `_BitInt(N)` / `unsigned _BitInt(N)` (including N > 64 via an embedded multi-limb runtime), `_Decimal32`/`_Decimal64`/`_Decimal128` (IEEE 754-2008 decimal floating point via the bundled libdfp/libbid runtime), `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, `vector_size`, `section("name")`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, `target_clones` (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, `#embed`, `_BitInt`.
+Structs, unions, enums, typedefs, arrays (multi-dimensional), pointers (including function pointers), `for`/`while`/`do-while`/`switch`/`goto`, computed goto (`&&label`, including label-address differences `&&a - &&b` in `static` initializers), `sizeof`, `_Bool`, `static`, `extern`, C23 `constexpr`, `static_assert`, `nullptr`, `bool`/`true`/`false`, `[[attributes]]`, `__has_c_attribute`, `__has_include`, `<stdckdint.h>`, `0b` binary, digit separators, `u8` prefix, `__auto_type`, `__VA_OPT__`, `enum` > `int`, C23 `_BitInt(N)` / `unsigned _BitInt(N)` (including N > 64 via an embedded multi-limb runtime), `_Decimal32`/`_Decimal64`/`_Decimal128` (IEEE 754-2008 decimal floating point via the bundled libdfp/libbid runtime), `#warning`/`#error`/`#elifdef`/`#elifndef`, `__attribute__((warning/error/diagnose_if))`, `__builtin_object_size`/`__builtin_dynamic_object_size`, variadic `printf`, string literals, compound assignment operators, pre/post increment, ternary operator, comma operator, designated initializers, \_Generic, attribute `__cleanup__`, `__aligned__`, `__packed__`, `__constructor__`, `__destructor__`, `vector_size`, `section("name")`, c23 [[attribute]], Windows and SystemV long doubles (internally all using SSE), ARM64 long doubles (128-bit quad precision via register pairs in elf, 8 byte on APPLE), safe unicode identifiers and strings (unlike C11/C23), minimal `"wchar.h"`, inline, weak, `target_clones` (FMV with IFUNC resolver, asm .altinstr_replacements), gcc/enum/ms bitfields, old K&R function definitions, VLA's, atomics (LL/SC on ARM64, xadd/lock on x86), GNU alias, args... macro syntax, basic -g DWARF debugging support (line numbers only), most GCC extensions and builtins, -fpie, -fpic, TLS, int128, `_Complex`/`__complex__`, `_FORTIFY_SOURCE`, SIMD/NEON xmmintrin.h support, `#embed`, `_BitInt`, defer.
 
 TODO: full \_Float16/\_Float32/\_Float64/\_Float128 support (still aliased to float/double/long double), `__STDC_IEC_60559_TYPES__` and `__STDC_DEC_FP__` feature macros.
 
