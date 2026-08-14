@@ -17,6 +17,8 @@
 #include <sys/mman.h>
 #endif
 #include <errno.h>
+#include <stdarg.h>
+#include <ctype.h>
 
 // ---------------------------------------------------------------------------
 // COFF / PE constants
@@ -53,6 +55,9 @@
 #define IMAGE_SCN_MEM_EXECUTE            0x20000000
 #define IMAGE_SCN_MEM_READ               0x40000000
 #define IMAGE_SCN_MEM_WRITE              0x80000000
+
+// COFF characteristics
+#define IMAGE_FILE_DLL                    0x2000
 
 // Symbol storage class
 #define IMAGE_SYM_CLASS_EXTERNAL         2
@@ -116,6 +121,20 @@ static void pe_wzeros(FILE *f, size_t n) {
 }
 static uint64_t pe_align_up(uint64_t v, uint64_t a) {
     return (v + a - 1) & ~(a - 1);
+}
+
+// Format into a fresh malloc'd buffer (owned by the caller).
+static char *pe_xfmt(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    char *out = malloc((size_t)n + 1);
+    vsnprintf(out, (size_t)n + 1, fmt, ap2);
+    va_end(ap2);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,13 +513,16 @@ typedef struct {
 static int build_pe_imports(LinkState *s, int *idata_sec_out,
                             PePatch **patches_out, int *n_patches_out,
                             uint64_t *iat_off_out, uint64_t *iat_size_out,
-                            uint64_t *import_dir_size_out) {
+                            uint64_t *import_dir_size_out,
+                            const char ***imported_names_out, int *n_imported_out) {
     *idata_sec_out = -1;
     *patches_out = NULL;
     *n_patches_out = 0;
     *iat_off_out = 0;
     *iat_size_out = 0;
     *import_dir_size_out = 0;
+    *imported_names_out = NULL;
+    *n_imported_out = 0;
     // Collect distinct undefined strong symbol names.
     int n_undef = 0, cap_undef = 0;
     int *undef_idx = NULL;
@@ -672,8 +694,9 @@ static int build_pe_imports(LinkState *s, int *idata_sec_out,
     *iat_off_out = iat_region_off;
     *iat_size_out = iat_region_size;
     *import_dir_size_out = (uint64_t)(n_dlls + 1) * 20;
+    *imported_names_out = names;
+    *n_imported_out = n_undef;
 
-    free(names);
     free(owner_dll);
     free(undef_idx);
     free(dll_name_off);
@@ -694,6 +717,145 @@ static void pe_patch_idata(LinkState *s, int idata_sec, uint64_t image_base,
         pe_w32le_m(data + patches[i].off, v + (uint32_t)sec_rva);
     }
     free(patches);
+}
+
+// ---------------------------------------------------------------------------
+// -shared (.dll) output: PE export table (.edata)
+// ---------------------------------------------------------------------------
+
+// Build a DLL's export table. Real GNU ld's own default when a shared
+// library has no symbol explicitly marked for export (no
+// __declspec(dllexport) and no .def EXPORTS section -- rcc implements
+// neither yet): export every global, defined symbol
+// ("--export-all-symbols" is what binutils calls its own default in that
+// case). Mirror that here. `excl_names`/`n_excl` are the C-level names
+// build_pe_imports() redefined as trampolines into a system DLL -- those
+// must never be re-exported under our own DLL's name. Returns the new
+// section's index, or -1 if there is nothing to export.
+static int build_pe_exports(LinkState *s, const char *dll_name,
+                            const char **excl_names, int n_excl,
+                            PePatch **patches_out, int *n_patches_out) {
+    *patches_out = NULL;
+    *n_patches_out = 0;
+    int n_exp = 0, cap_exp = 0;
+    int *exp_idx = NULL;
+    for (int i = 0; i < s->n_syms; i++) {
+        LinkSym *sym = &s->syms[i];
+        if (sym->sec < 0 || sym->bind != 1 /* global */ || !sym->name[0]) continue;
+        if (!strncmp(sym->name, "__imp_", 6)) continue;
+        bool excluded = false;
+        for (int k = 0; k < n_excl; k++)
+            if (!strcmp(sym->name, excl_names[k])) {
+                excluded = true;
+                break;
+            }
+        if (excluded) continue;
+        if (n_exp == cap_exp) {
+            cap_exp = cap_exp ? cap_exp * 2 : 32;
+            exp_idx = realloc(exp_idx, (size_t)cap_exp * sizeof(int));
+        }
+        exp_idx[n_exp++] = i;
+    }
+    if (n_exp == 0) {
+        free(exp_idx);
+        return -1;
+    }
+    // Sort alphabetically by name: AddressOfNames must be sorted so a
+    // name-based binary search (real GetProcAddress, and any consumer
+    // that mimics it) resolves correctly.
+    for (int i = 0; i < n_exp; i++)
+        for (int j = i + 1; j < n_exp; j++)
+            if (strcmp(s->syms[exp_idx[j]].name, s->syms[exp_idx[i]].name) < 0) {
+                int t = exp_idx[i];
+                exp_idx[i] = exp_idx[j];
+                exp_idx[j] = t;
+            }
+
+    int edata_sec = link_find_or_create_sec(s, ".edata", true, false, false, false, false, 4);
+
+    // IMAGE_EXPORT_DIRECTORY (40 bytes). Its RVA fields (Name and the
+    // three AddressOf* table pointers) are self-relative -- they point
+    // within this same section -- so they use the same "offset-within-
+    // section written now, patched by += the section's own final RVA
+    // later" convention build_pe_imports() uses for .idata (see
+    // pe_patch_idata(), reused verbatim below by the caller).
+    size_t dir_off = link_sec_append(s, edata_sec, (const uint8_t *)"", 0, 4);
+    uint8_t dir[40] = {0};
+    link_sec_append(s, edata_sec, dir, sizeof(dir), 4);
+
+    size_t dllname_off = link_sec_append(s, edata_sec, (const uint8_t *)dll_name,
+                                         strlen(dll_name) + 1, 1);
+
+    PePatch *patches = malloc((size_t)(4 + n_exp) * sizeof(PePatch));
+    int n_patches = 0;
+
+    // Export Address Table: one RVA per export. Unlike the fields above,
+    // each entry's target lives in an arbitrary *other* section (.text/
+    // .data/.bss) whose final address isn't known here either -- resolve
+    // it with an ordinary deferred RL_ADDR32NB relocation against the
+    // exported symbol instead, the same mechanism normal code/data
+    // references use (see link_apply_relocs()'s later pass).
+    size_t eat_off = link_sec_append(s, edata_sec, (const uint8_t *)"", 0, 4);
+    uint8_t *zero_eat = calloc((size_t)n_exp, 4);
+    link_sec_append(s, edata_sec, zero_eat, (size_t)n_exp * 4, 4);
+    free(zero_eat);
+    for (int i = 0; i < n_exp; i++)
+        link_add_reloc(s, edata_sec, eat_off + (size_t)i * 4, RL_ADDR32NB, exp_idx[i], 0);
+
+    // Export name strings, then the (alphabetically sorted) name-pointer
+    // table and its parallel ordinal-index table (index into the EAT
+    // above -- names and functions share the same sorted order here, so
+    // ordinal[i] == i).
+    size_t *name_str_off = malloc((size_t)n_exp * sizeof(size_t));
+    for (int i = 0; i < n_exp; i++)
+        name_str_off[i] = link_sec_append(s, edata_sec,
+                                          (const uint8_t *)s->syms[exp_idx[i]].name,
+                                          strlen(s->syms[exp_idx[i]].name) + 1, 1);
+
+    size_t names_off = link_sec_append(s, edata_sec, (const uint8_t *)"", 0, 4);
+    for (int i = 0; i < n_exp; i++) {
+        uint8_t ent[4];
+        pe_w32le_m(ent, (uint32_t)name_str_off[i]); // placeholder: offset-within-section
+        link_sec_append(s, edata_sec, ent, 4, 4);
+        patches[n_patches++].off = s->secs[edata_sec].len - 4;
+    }
+    free(name_str_off);
+
+    size_t ords_off = link_sec_append(s, edata_sec, (const uint8_t *)"", 0, 2);
+    for (int i = 0; i < n_exp; i++) {
+        uint8_t ord[2];
+        ord[0] = (uint8_t)i;
+        ord[1] = (uint8_t)(i >> 8);
+        link_sec_append(s, edata_sec, ord, 2, 2);
+    }
+    // Real linkers' consumers (notably binutils' pe_print_edata(), the
+    // engine behind `objdump -p`'s export-table dump) flag the ordinal
+    // table as "invalid" when its end lands EXACTLY on the Export
+    // Directory's declared byte size (that check is `>=`, not `>` --
+    // see CVE-2014-8502's fix). Since the data-directory size we report
+    // is this section's exact final length and the ordinal table is the
+    // last thing appended, pad a few trailing bytes so there is always
+    // slack past it.
+    link_sec_append(s, edata_sec, (const uint8_t *)"\0\0\0\0", 4, 1);
+
+    // Fill in the directory now that every offset-within-.edata is known.
+    uint8_t *d = s->secs[edata_sec].data + dir_off;
+    pe_w32le_m(d + 12, (uint32_t)dllname_off); // Name
+    pe_w32le_m(d + 16, 1); // Base (ordinal base)
+    pe_w32le_m(d + 20, (uint32_t)n_exp); // NumberOfFunctions
+    pe_w32le_m(d + 24, (uint32_t)n_exp); // NumberOfNames
+    pe_w32le_m(d + 28, (uint32_t)eat_off); // AddressOfFunctions
+    pe_w32le_m(d + 32, (uint32_t)names_off); // AddressOfNames
+    pe_w32le_m(d + 36, (uint32_t)ords_off); // AddressOfNameOrdinals
+    patches[n_patches++].off = dir_off + 12;
+    patches[n_patches++].off = dir_off + 28;
+    patches[n_patches++].off = dir_off + 32;
+    patches[n_patches++].off = dir_off + 36;
+
+    free(exp_idx);
+    *patches_out = patches;
+    *n_patches_out = n_patches;
+    return edata_sec;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,132 +963,145 @@ static int build_pe_reloc(LinkState *s, uint64_t base) {
 }
 
 int link_pe(LinkState *s) {
-    // Static libgcc/libmingwex linking and DLL (.dll/-shared) output are not
-    // implemented -- only a dynamically-linked .exe against system DLLs via
-    // the synthesized CRT stub.  Fall back to the mingw toolchain for both.
-    if (s->opt_static || s->opt_shared) return -1;
+    // Static libgcc/libmingwex linking is not implemented -- only a
+    // dynamically-linked .exe (against system DLLs via the synthesized
+    // CRT stub) or .dll (-shared, with an auto-exported .edata table).
+    // Fall back to the mingw toolchain for static output.
+    if (s->opt_static) return -1;
     // Create standard sections
     link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
     link_find_or_create_sec(s, ".data", true, true, false, false, false, 16);
     link_find_or_create_sec(s, ".rdata", true, false, false, false, false, 16);
     link_find_or_create_sec(s, ".bss", true, true, false, true, false, 16);
 
-    // Find entry point
-    int entry_sym = link_find_sym(s, "mainCRTStartup");
-    if (entry_sym < 0) {
-        int main_sym = link_find_sym(s, "main");
-        if (main_sym < 0) main_sym = link_find_sym(s, "_main");
-        if (main_sym < 0) main_sym = link_find_sym(s, "WinMain");
-        if (main_sym < 0) {
-            // No known entry point at all: nothing we could run even with
-            // a synthesized stub. Fall back to the mingw toolchain.
-            return -1;
+    // Find entry point. A DLL's is optional: AddressOfEntryPoint == 0
+    // tells the loader to skip DLL_PROCESS_ATTACH/DETACH notifications
+    // entirely, which is fine for a DLL that only exports plain
+    // functions. If the user defined DllMain, its C signature already
+    // matches the loader's Win64 calling convention exactly (rcx =
+    // hinstDLL, rdx = fdwReason, r8 = lpvReserved, eax = BOOL return),
+    // so it can be used directly with no synthesized stub -- unlike an
+    // .exe's `main`, which needs argc/argv marshaled from the CRT.
+    int entry_sym = -1;
+    if (s->opt_shared) {
+        entry_sym = link_find_sym(s, "DllMain");
+    } else {
+        entry_sym = link_find_sym(s, "mainCRTStartup");
+        if (entry_sym < 0) {
+            int main_sym = link_find_sym(s, "main");
+            if (main_sym < 0) main_sym = link_find_sym(s, "_main");
+            if (main_sym < 0) main_sym = link_find_sym(s, "WinMain");
+            if (main_sym < 0) {
+                // No known entry point at all: nothing we could run even with
+                // a synthesized stub. Fall back to the mingw toolchain.
+                return -1;
+            }
+            // We don't auto-load mingw's own CRT startup (crt2.o pulls in
+            // libmingw32.a/libmingwex.a via full archive resolution, which
+            // this linker doesn't implement yet), so there is no real
+            // mainCRTStartup to call. Synthesize a minimal replacement that
+            // still gets real argc/argv: call msvcrt's own __getmainargs
+            // (exactly what a real mingw mainCRTStartup calls internally)
+            // rather than passing argc=0/argv=NULL and silently breaking
+            // every program that inspects its own arguments. Still skips
+            // what a real CRT would also do beyond that: atexit handlers,
+            // environ population, and C++ static initializers.
+            //
+            // int __cdecl __getmainargs(int *_Argc, char ***_Argv,
+            //     char ***_Env, int _DoWildCard, _startupinfo *_StartInfo);
+            // (_startupinfo is a single int, "newmode" -- zeroed, meaning
+            // "don't change the floating-point/heap error mode").
+            //
+            // Stack layout after `sub rsp, 0x50` (80 bytes, 16-aligned):
+            //   [rsp+0x00..0x1f]  32-byte shadow space (callee's, unused by us)
+            //   [rsp+0x20]        5th arg slot: &startinfo
+            //   [rsp+0x28]        padding
+            //   [rsp+0x30]        argc  (out)
+            //   [rsp+0x38]        argv  (out)
+            //   [rsp+0x40]        env   (out, unused after the call)
+            //   [rsp+0x48]        startinfo.newmode (in: 0, out: unused)
+            int text_sec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
+            int exitprocess_sym = link_add_sym(s, "ExitProcess", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
+            int getmainargs_sym = link_add_sym(s, "__getmainargs", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
+            uint8_t stub[] = {
+                0x48,
+                0x83,
+                0xE4,
+                0xF0, // and rsp, -16
+                0x48,
+                0x83,
+                0xEC,
+                0x50, // sub rsp, 0x50
+                0xC7,
+                0x44,
+                0x24,
+                0x48,
+                0x00,
+                0x00,
+                0x00,
+                0x00, // mov dword [rsp+0x48], 0  (newmode = 0)
+                0x48,
+                0x8D,
+                0x4C,
+                0x24,
+                0x30, // lea rcx, [rsp+0x30]      (&argc)
+                0x48,
+                0x8D,
+                0x54,
+                0x24,
+                0x38, // lea rdx, [rsp+0x38]      (&argv)
+                0x4C,
+                0x8D,
+                0x44,
+                0x24,
+                0x40, // lea r8,  [rsp+0x40]      (&env)
+                0x45,
+                0x31,
+                0xC9, // xor r9d, r9d                        (expand_wildcards = 0)
+                0x48,
+                0x8D,
+                0x44,
+                0x24,
+                0x48, // lea rax, [rsp+0x48]      (&startinfo)
+                0x48,
+                0x89,
+                0x44,
+                0x24,
+                0x20, // mov [rsp+0x20], rax      (5th arg on stack)
+                0xE8,
+                0,
+                0,
+                0,
+                0, // call __getmainargs                  (disp32 @ +0x2d)
+                0x8B,
+                0x4C,
+                0x24,
+                0x30, // mov ecx, [rsp+0x30]            (argc)
+                0x48,
+                0x8B,
+                0x54,
+                0x24,
+                0x38, // mov rdx, [rsp+0x38]      (argv)
+                0xE8,
+                0,
+                0,
+                0,
+                0, // call main                           (disp32 @ +0x3b)
+                0x89,
+                0xC1, // mov ecx, eax
+                0xE8,
+                0,
+                0,
+                0,
+                0, // call ExitProcess                    (disp32 @ +0x42)
+            };
+            uint64_t stub_off = link_sec_append(s, text_sec, stub, sizeof(stub), 16);
+            link_add_reloc(s, text_sec, stub_off + 0x2d, RL_PC32, getmainargs_sym, -4);
+            link_add_reloc(s, text_sec, stub_off + 0x3b, RL_PC32, main_sym, -4);
+            link_add_reloc(s, text_sec, stub_off + 0x42, RL_PC32, exitprocess_sym, -4);
+            entry_sym = link_add_sym(s, "_rcc_pe_start", text_sec, stub_off, sizeof(stub),
+                                     1 /* global */, 2 /* func */, -1);
         }
-        // We don't auto-load mingw's own CRT startup (crt2.o pulls in
-        // libmingw32.a/libmingwex.a via full archive resolution, which
-        // this linker doesn't implement yet), so there is no real
-        // mainCRTStartup to call. Synthesize a minimal replacement that
-        // still gets real argc/argv: call msvcrt's own __getmainargs
-        // (exactly what a real mingw mainCRTStartup calls internally)
-        // rather than passing argc=0/argv=NULL and silently breaking
-        // every program that inspects its own arguments. Still skips
-        // what a real CRT would also do beyond that: atexit handlers,
-        // environ population, and C++ static initializers.
-        //
-        // int __cdecl __getmainargs(int *_Argc, char ***_Argv,
-        //     char ***_Env, int _DoWildCard, _startupinfo *_StartInfo);
-        // (_startupinfo is a single int, "newmode" -- zeroed, meaning
-        // "don't change the floating-point/heap error mode").
-        //
-        // Stack layout after `sub rsp, 0x50` (80 bytes, 16-aligned):
-        //   [rsp+0x00..0x1f]  32-byte shadow space (callee's, unused by us)
-        //   [rsp+0x20]        5th arg slot: &startinfo
-        //   [rsp+0x28]        padding
-        //   [rsp+0x30]        argc  (out)
-        //   [rsp+0x38]        argv  (out)
-        //   [rsp+0x40]        env   (out, unused after the call)
-        //   [rsp+0x48]        startinfo.newmode (in: 0, out: unused)
-        int text_sec = link_find_or_create_sec(s, ".text", true, false, true, false, false, 16);
-        int exitprocess_sym = link_add_sym(s, "ExitProcess", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
-        int getmainargs_sym = link_add_sym(s, "__getmainargs", -1, 0, 0, 1 /* global */, 2 /* func */, -1);
-        uint8_t stub[] = {
-            0x48,
-            0x83,
-            0xE4,
-            0xF0, // and rsp, -16
-            0x48,
-            0x83,
-            0xEC,
-            0x50, // sub rsp, 0x50
-            0xC7,
-            0x44,
-            0x24,
-            0x48,
-            0x00,
-            0x00,
-            0x00,
-            0x00, // mov dword [rsp+0x48], 0  (newmode = 0)
-            0x48,
-            0x8D,
-            0x4C,
-            0x24,
-            0x30, // lea rcx, [rsp+0x30]      (&argc)
-            0x48,
-            0x8D,
-            0x54,
-            0x24,
-            0x38, // lea rdx, [rsp+0x38]      (&argv)
-            0x4C,
-            0x8D,
-            0x44,
-            0x24,
-            0x40, // lea r8,  [rsp+0x40]      (&env)
-            0x45,
-            0x31,
-            0xC9, // xor r9d, r9d                        (expand_wildcards = 0)
-            0x48,
-            0x8D,
-            0x44,
-            0x24,
-            0x48, // lea rax, [rsp+0x48]      (&startinfo)
-            0x48,
-            0x89,
-            0x44,
-            0x24,
-            0x20, // mov [rsp+0x20], rax      (5th arg on stack)
-            0xE8,
-            0,
-            0,
-            0,
-            0, // call __getmainargs                  (disp32 @ +0x2d)
-            0x8B,
-            0x4C,
-            0x24,
-            0x30, // mov ecx, [rsp+0x30]            (argc)
-            0x48,
-            0x8B,
-            0x54,
-            0x24,
-            0x38, // mov rdx, [rsp+0x38]      (argv)
-            0xE8,
-            0,
-            0,
-            0,
-            0, // call main                           (disp32 @ +0x3b)
-            0x89,
-            0xC1, // mov ecx, eax
-            0xE8,
-            0,
-            0,
-            0,
-            0, // call ExitProcess                    (disp32 @ +0x42)
-        };
-        uint64_t stub_off = link_sec_append(s, text_sec, stub, sizeof(stub), 16);
-        link_add_reloc(s, text_sec, stub_off + 0x2d, RL_PC32, getmainargs_sym, -4);
-        link_add_reloc(s, text_sec, stub_off + 0x3b, RL_PC32, main_sym, -4);
-        link_add_reloc(s, text_sec, stub_off + 0x42, RL_PC32, exitprocess_sym, -4);
-        entry_sym = link_add_sym(s, "_rcc_pe_start", text_sec, stub_off, sizeof(stub),
-                                 1 /* global */, 2 /* func */, -1);
     }
 
     // Resolve external symbols against system DLLs and synthesize the
@@ -935,25 +1110,51 @@ int link_pe(LinkState *s) {
     int idata_sec = -1, n_idata_patches = 0;
     PePatch *idata_patches = NULL;
     uint64_t iat_off = 0, iat_size = 0, import_dir_size = 0;
+    const char **imported_names = NULL;
+    int n_imported = 0;
     if (build_pe_imports(s, &idata_sec, &idata_patches, &n_idata_patches,
-                         &iat_off, &iat_size, &import_dir_size) != 0) {
+                         &iat_off, &iat_size, &import_dir_size,
+                         &imported_names, &n_imported) != 0) {
         // A strong symbol we can't resolve against any known DLL (or an
         // exotic construct like TLS/weak imports we don't model yet).
         // Fall back to the mingw toolchain's own linker.
         return -1;
     }
 
+    // For -shared, build the export table (.edata) before layout too, for
+    // the same reason: it may add a new section that layout must see.
+    // The DLL's own advertised name is its output file's basename (what
+    // a consumer's import table records and LoadLibrary searches for).
+    int edata_sec = -1, n_edata_patches = 0;
+    PePatch *edata_patches = NULL;
+    if (s->opt_shared) {
+        const char *base_name = strrchr(s->out_path, '/');
+#if defined(_WIN32) || defined(__MINGW32__)
+        const char *bslash = strrchr(s->out_path, '\\');
+        if (bslash && (!base_name || bslash > base_name)) base_name = bslash;
+#endif
+        base_name = base_name ? base_name + 1 : s->out_path;
+        edata_sec = build_pe_exports(s, base_name, imported_names, n_imported,
+                                     &edata_patches, &n_edata_patches);
+    }
+    free(imported_names);
+
     // Layout sections: one page per section (see pe_layout_sections), with
     // the first page reserved for the PE/COFF headers so .text starts at
     // RVA 0x1000, not RVA 0 (which would overlap the header region every
-    // PE loader always maps there).
-    uint64_t base = 0x140000000ULL;
+    // PE loader always maps there). DLLs default to a different preferred
+    // base than EXEs so a process that loads both at their preferred
+    // addresses (the common case: no .reloc data, so no ASLR rebasing)
+    // never collides.
+    uint64_t base = s->opt_shared ? 0x180000000ULL : 0x140000000ULL;
     pe_layout_sections(s, base + PE_SECTION_ALIGN);
 
-    // Fix up the import table's internal RVAs now that .idata has its
-    // final address, then apply ordinary relocations (this also resolves
-    // the trampolines' RIP-relative jumps into the IAT).
+    // Fix up the import/export tables' internal (self-relative) RVAs now
+    // that .idata/.edata have their final addresses, then apply ordinary
+    // relocations (this also resolves the trampolines' RIP-relative jumps
+    // into the IAT and the export table's per-symbol RL_ADDR32NB entries).
     pe_patch_idata(s, idata_sec, base, idata_patches, n_idata_patches);
+    pe_patch_idata(s, edata_sec, base, edata_patches, n_edata_patches);
     link_apply_relocs(s, base);
 
     // Build the base relocation table from every ABS64/ABS32 site now
@@ -1034,7 +1235,7 @@ int link_pe(LinkState *s) {
     pe_w32le(f, 0);
     pe_w32le(f, 0); // timestamp, symtab, nsyms
     pe_w16le(f, (uint16_t)opthdr_size); // sizeof optional header
-    pe_w16le(f, 0x0022); // EXECUTABLE | LARGE_ADDRESS_AWARE
+    pe_w16le(f, (uint16_t)(0x0022 | (s->opt_shared ? IMAGE_FILE_DLL : 0))); // EXECUTABLE | LARGE_ADDRESS_AWARE [| DLL]
 
     // --- Optional Header (PE32+) ---
     uint32_t size_of_code = 0, size_of_init_data = 0, size_of_uninit_data = 0;
@@ -1055,7 +1256,7 @@ int link_pe(LinkState *s) {
     pe_w32le(f, size_of_code);
     pe_w32le(f, size_of_init_data);
     pe_w32le(f, size_of_uninit_data);
-    pe_w32le(f, (uint32_t)(entry_addr - base)); // RVA of entry
+    pe_w32le(f, entry_addr ? (uint32_t)(entry_addr - base) : 0); // RVA of entry (0 = none, valid for a DLL)
     pe_w32le(f, 0x1000); // base of code RVA
     pe_w64le(f, base);
     pe_w32le(f, PE_SECTION_ALIGN);
@@ -1086,11 +1287,12 @@ int link_pe(LinkState *s) {
     pe_w32le(f, 0); // loader flags
     pe_w32le(f, 16); // number of directory entries
 
-    // Data directories (16 entries). Index 1 = Import Table, index 3 =
-    // Exception Table (.pdata, if our own COFF codegen emitted Win64 SEH
-    // unwind info for this object), index 5 = Base Relocation Table
-    // (.reloc), index 12 = IAT (per IMAGE_DIRECTORY_ENTRY_IMPORT /
-    // _EXCEPTION / _BASERELOC / _IAT).
+    // Data directories (16 entries). Index 0 = Export Table (.edata, DLL
+    // output only), index 1 = Import Table, index 3 = Exception Table
+    // (.pdata, if our own COFF codegen emitted Win64 SEH unwind info for
+    // this object), index 5 = Base Relocation Table (.reloc), index 12 =
+    // IAT (per IMAGE_DIRECTORY_ENTRY_EXPORT / _IMPORT / _EXCEPTION /
+    // _BASERELOC / _IAT).
     int pdata_sec = -1;
     for (int i = 0; i < s->n_secs; i++) {
         if (s->secs[i].alloc && s->secs[i].len > 0 &&
@@ -1110,6 +1312,10 @@ int link_pe(LinkState *s) {
                 rva = (uint32_t)(sec_base + iat_off);
                 size = (uint32_t)iat_size;
             }
+        }
+        if (i == 0 && edata_sec >= 0) {
+            rva = (uint32_t)(s->secs[edata_sec].addr - base);
+            size = (uint32_t)s->secs[edata_sec].len;
         }
         if (i == 3 && pdata_sec >= 0) {
             rva = (uint32_t)(s->secs[pdata_sec].addr - base);
@@ -1228,4 +1434,628 @@ int link_pe(LinkState *s) {
     fclose(f);
     chmod(s->out_path, 0755);
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// -Wl,--out-implib: Windows import library generation
+// ---------------------------------------------------------------------------
+
+static void pe_w16le_buf(uint8_t *p, uint16_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
+// Append `n` bytes to a growable buffer.
+static void pe_buf_append_bytes(uint8_t **bufp, size_t *len, size_t *cap,
+                                const void *data, size_t n) {
+    if (*len + n > *cap) {
+        size_t nc = *cap ? *cap * 2 : 256;
+        while (nc < *len + n) nc *= 2;
+        *bufp = realloc(*bufp, nc);
+        *cap = nc;
+    }
+    memcpy(*bufp + *len, data, n);
+    *len += n;
+}
+
+// Write one 60-byte ar member header. `name` may exceed 16 bytes: pass
+// `longname_off >= 0` (an offset into the archive's "//" GNU extended
+// filename table, already written) to use the `/<offset>` indirection
+// form instead of the inline name field.
+static void pe_ar_header(uint8_t **bufp, size_t *len, size_t *cap,
+                         const char *name, long longname_off, size_t data_size) {
+    char hdr[60];
+    memset(hdr, ' ', sizeof(hdr));
+    char namebuf[16];
+    size_t nlen;
+    if (longname_off >= 0) {
+        nlen = (size_t)snprintf(namebuf, sizeof(namebuf), "/%ld", longname_off);
+    } else {
+        nlen = strlen(name);
+        if (nlen > 16) nlen = 16;
+        memcpy(namebuf, name, nlen);
+    }
+    memcpy(hdr, namebuf, nlen);
+    char field[32];
+    int n = snprintf(field, sizeof(field), "0");
+    memcpy(hdr + 16, field, (size_t)n); // mtime
+    memcpy(hdr + 28, field, (size_t)n); // uid
+    memcpy(hdr + 34, field, (size_t)n); // gid
+    n = snprintf(field, sizeof(field), "%o", 33188 /* 0100644: regular file, rw-r--r-- */);
+    memcpy(hdr + 40, field, (size_t)n); // mode
+    n = snprintf(field, sizeof(field), "%zu", data_size);
+    memcpy(hdr + 48, field, (size_t)n); // size
+    hdr[58] = 0x60;
+    hdr[59] = 0x0a;
+    pe_buf_append_bytes(bufp, len, cap, hdr, sizeof(hdr));
+}
+
+// ---------------------------------------------------------------------------
+// Synthesize the GNU-ld "long form" import objects a real dlltool/
+// `ld --out-implib` writes: three or more plain relocatable COFF .o
+// members per DLL, built entirely from ordinary `.idata$2`.`.idata$7`
+// chunk sections that ld's *own* default PE linker script concatenates
+// into a real Import Directory Table + ILT + IAT + hint/name table at
+// final-link time (see docs/pe-coff-import-library-format.md-equivalent
+// knowledge captured here from disassembling a real reference archive:
+// the PE-COFF spec's compact single-member-per-symbol "short import"
+// format is also standardized and read by dumping tools, but this ld
+// version's actual `.idata` construction for a *link* only reliably
+// fires from these chunk objects -- verified empirically: a short-import
+// archive still resolves symbol names (so the link succeeds) but silently
+// produces no Import Directory Table entry at all, leaving the
+// synthesized `jmp [rip+__imp_x]` thunk's IAT slot never bound by the
+// loader). One "head" member owns the Import Directory Table entry
+// (.idata$2) plus the empty `.idata$5`/`.idata$4` anchor chunks that
+// ld's SORT(*) groups every other member's own $5/$4 slot after (by
+// member name, hence the zero-padded numeric suffixes below); one
+// "tail" member supplies the DLL name string and the ILT/IAT
+// null-terminator entries; and one member per exported symbol supplies
+// the `jmp` thunk plus that symbol's own ILT/IAT/hint-name slot.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    uint32_t offset;
+    int sym_index; // index into this object's own CoffMiniSym array
+    uint16_t type; // IMAGE_REL_AMD64_ADDR32NB(3) or _REL32(4)
+} CoffMiniReloc;
+
+typedef struct {
+    const char *name; // <=8 bytes; every section used here is
+    uint32_t characteristics;
+    const uint8_t *data; // section content, or NULL for zero-filled `size` bytes
+    uint32_t size;
+    CoffMiniReloc relocs[4];
+    int n_relocs;
+} CoffMiniSec;
+
+typedef struct {
+    const char *name;
+    uint32_t value;
+    int section; // 1-based index into this object's own section array; 0 = undefined external
+    uint8_t storage_class; // IMAGE_SYM_CLASS_EXTERNAL(2) or _STATIC(3)
+} CoffMiniSym;
+
+#define COFF_IDATA_CHAR 0xC0300000u // MEM_WRITE | MEM_READ | ALIGN_4BYTES
+#define COFF_TEXT_CHAR 0x60300020u  // CNT_CODE | MEM_EXECUTE | MEM_READ | ALIGN_4BYTES
+
+// Serialize one minimal relocatable COFF object (no aux symbol table
+// entries -- verified against a real dlltool-produced reference archive
+// that these synthetic objects skip them entirely, unlike a normal
+// compiled .o).
+static uint8_t *build_coff_obj(CoffMiniSec *secs, int n_secs, CoffMiniSym *syms,
+                               int n_syms, uint16_t machine, size_t *out_len) {
+    uint8_t *out = NULL;
+    size_t len = 0, cap = 0;
+
+    uint8_t hdr[20] = {0};
+    pe_w16le_buf(hdr + 0, machine);
+    pe_w16le_buf(hdr + 2, (uint16_t)n_secs);
+    pe_w16le_buf(hdr + 16, 0); // SizeOfOptionalHeader
+    pe_w16le_buf(hdr + 18, 0x0004); // IMAGE_FILE_LINE_NUMS_STRIPPED (matches dlltool)
+    pe_buf_append_bytes(&out, &len, &cap, hdr, sizeof(hdr));
+
+    size_t *sechdr_off = malloc((size_t)n_secs * sizeof(size_t));
+    for (int i = 0; i < n_secs; i++) {
+        sechdr_off[i] = len;
+        uint8_t sh[40] = {0};
+        size_t nl = strlen(secs[i].name);
+        memcpy(sh, secs[i].name, nl > 8 ? 8 : nl);
+        pe_w32le_m(sh + 36, secs[i].characteristics);
+        pe_buf_append_bytes(&out, &len, &cap, sh, sizeof(sh));
+    }
+
+    // Raw data immediately followed by that section's own relocations,
+    // per section in order (matches the reference archive's own layout).
+    for (int i = 0; i < n_secs; i++) {
+        uint32_t raw_ptr = 0, reloc_ptr = 0;
+        if (secs[i].size > 0) {
+            raw_ptr = (uint32_t)len;
+            if (secs[i].data) {
+                pe_buf_append_bytes(&out, &len, &cap, secs[i].data, secs[i].size);
+            } else {
+                uint8_t *z = calloc(secs[i].size, 1);
+                pe_buf_append_bytes(&out, &len, &cap, z, secs[i].size);
+                free(z);
+            }
+        }
+        if (secs[i].n_relocs > 0) {
+            reloc_ptr = (uint32_t)len;
+            for (int j = 0; j < secs[i].n_relocs; j++) {
+                uint8_t r[10];
+                pe_w32le_m(r + 0, secs[i].relocs[j].offset);
+                pe_w32le_m(r + 4, (uint32_t)secs[i].relocs[j].sym_index);
+                pe_w16le_buf(r + 8, secs[i].relocs[j].type);
+                pe_buf_append_bytes(&out, &len, &cap, r, sizeof(r));
+            }
+        }
+        uint8_t *sh = out + sechdr_off[i]; // re-fetch: `out` may have moved
+        pe_w32le_m(sh + 16, secs[i].size);
+        pe_w32le_m(sh + 20, raw_ptr);
+        pe_w32le_m(sh + 24, reloc_ptr);
+        pe_w16le_buf(sh + 32, (uint16_t)secs[i].n_relocs);
+    }
+    free(sechdr_off);
+
+    // String table for symbol names > 8 bytes: build its content first
+    // (in a scratch buffer, independent of `out`) so every symbol record
+    // below can embed its final strtab offset directly.
+    uint8_t *strtab = malloc(4);
+    size_t strtab_len = 4; // reserve the 4-byte size prefix
+    size_t strtab_cap = 4;
+    uint32_t *name_stroff = malloc((size_t)n_syms * sizeof(uint32_t));
+    for (int i = 0; i < n_syms; i++) {
+        size_t nl = strlen(syms[i].name);
+        if (nl <= 8) {
+            name_stroff[i] = 0;
+            continue;
+        }
+        name_stroff[i] = (uint32_t)strtab_len;
+        pe_buf_append_bytes(&strtab, &strtab_len, &strtab_cap, syms[i].name, nl + 1);
+    }
+    pe_w32le_m(strtab, (uint32_t)strtab_len);
+
+    uint32_t symtab_off = (uint32_t)len;
+    for (int i = 0; i < n_syms; i++) {
+        uint8_t sym[18] = {0};
+        size_t nl = strlen(syms[i].name);
+        if (nl <= 8) {
+            memcpy(sym, syms[i].name, nl);
+        } else {
+            pe_w32le_m(sym + 4, name_stroff[i]);
+        }
+        pe_w32le_m(sym + 8, syms[i].value);
+        pe_w16le_buf(sym + 12, (uint16_t)syms[i].section);
+        pe_w16le_buf(sym + 14, 0); // Type
+        sym[16] = syms[i].storage_class;
+        sym[17] = 0; // NumberOfAuxSymbols
+        pe_buf_append_bytes(&out, &len, &cap, sym, sizeof(sym));
+    }
+    free(name_stroff);
+    pe_buf_append_bytes(&out, &len, &cap, strtab, strtab_len);
+    free(strtab);
+
+    pe_w32le_m(out + 8, symtab_off);
+    pe_w32le_m(out + 12, (uint32_t)n_syms);
+
+    *out_len = len;
+    return out;
+}
+
+// Build the "head" member: owns the Import Directory Table entry
+// (.idata$2) plus the empty `.idata$5`/`.idata$4` chunks every other
+// member's own slot concatenates after.
+static uint8_t *build_import_head_obj(const char *dllid, uint16_t machine, size_t *out_len) {
+    char head_sym[128], iname_sym[128];
+    snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
+    snprintf(iname_sym, sizeof(iname_sym), "%s_iname", dllid);
+
+    CoffMiniSym syms[5] = {
+        {".idata$2", 0, 1, 3},
+        {".idata$5", 0, 2, 3},
+        {".idata$4", 0, 3, 3},
+        {head_sym, 0, 1, 2},
+        {iname_sym, 0, 0, 2}, // undefined: resolved from the tail member
+    };
+    uint8_t dir[20] = {0};
+    CoffMiniSec secs[3] = {
+        {".idata$2", COFF_IDATA_CHAR, dir, 20, {{0, 2, 3}, {12, 4, 3}, {16, 1, 3}}, 3}, // OriginalFirstThunk/Name/FirstThunk
+        {".idata$5", COFF_IDATA_CHAR, NULL, 0, {{0}}, 0},
+        {".idata$4", COFF_IDATA_CHAR, NULL, 0, {{0}}, 0},
+    };
+    return build_coff_obj(secs, 3, syms, 5, machine, out_len);
+}
+
+// Build the "tail" member: DLL name string + ILT/IAT null-terminator
+// entries.
+static uint8_t *build_import_tail_obj(const char *dllid, const char *dll_name,
+                                      uint16_t machine, size_t *out_len) {
+    char iname_sym[128];
+    snprintf(iname_sym, sizeof(iname_sym), "%s_iname", dllid);
+    size_t namelen = strlen(dll_name) + 1;
+
+    CoffMiniSym syms[4] = {
+        {".idata$4", 0, 1, 3},
+        {".idata$5", 0, 2, 3},
+        {".idata$7", 0, 3, 3},
+        {iname_sym, 0, 3, 2},
+    };
+    CoffMiniSec secs[3] = {
+        {".idata$4", COFF_IDATA_CHAR, NULL, 8, {{0}}, 0},
+        {".idata$5", COFF_IDATA_CHAR, NULL, 8, {{0}}, 0},
+        {".idata$7", COFF_IDATA_CHAR, (const uint8_t *)dll_name, (uint32_t)namelen, {{0}}, 0},
+    };
+    return build_coff_obj(secs, 3, syms, 4, machine, out_len);
+}
+
+// Build one per-symbol member: a `jmp [rip+__imp_<sym>]` thunk (bound to
+// `<sym>` itself, for a plain `extern` call site with no dllimport) plus
+// that symbol's own ILT/IAT/hint-name slot, and a forcing reference to
+// `_head_<dllid>` (an otherwise-unreferenced symbol -- this is what pulls
+// the head member into the link once any exported symbol is needed).
+static uint8_t *build_import_symbol_obj(const char *dllid, const char *sym_name,
+                                        uint16_t hint, uint16_t machine, size_t *out_len) {
+    char head_sym[128], imp_sym[300];
+    snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
+    snprintf(imp_sym, sizeof(imp_sym), "__imp_%s", sym_name);
+
+    CoffMiniSym syms[8] = {
+        {".text", 0, 1, 3},
+        {".idata$7", 0, 2, 3},
+        {".idata$5", 0, 3, 3},
+        {".idata$4", 0, 4, 3},
+        {".idata$6", 0, 5, 3},
+        {sym_name, 0, 1, 2},
+        {imp_sym, 0, 3, 2},
+        {head_sym, 0, 0, 2}, // undefined: forces the head member's pull-in
+    };
+    uint8_t stub[8] = {0xFF, 0x25, 0, 0, 0, 0, 0x90, 0x90}; // jmp *[rip+0]; nop; nop
+
+    size_t symlen = strlen(sym_name);
+    size_t hintname_len = 2 + symlen + 1;
+    size_t hintname_padded = (hintname_len + 3) & ~(size_t)3; // 4-byte aligned, matches reference
+    uint8_t *hintname = calloc(hintname_padded, 1);
+    hintname[0] = (uint8_t)hint;
+    hintname[1] = (uint8_t)(hint >> 8);
+    memcpy(hintname + 2, sym_name, symlen + 1);
+
+    CoffMiniSec secs[5] = {
+        {".text", COFF_TEXT_CHAR, stub, 8, {{2, 2, 4}}, 1}, // REL32 -> .idata$5 (own IAT slot)
+        {".idata$7", COFF_IDATA_CHAR, NULL, 4, {{0, 7, 3}}, 1}, // ADDR32NB -> _head_<dllid> (forcing ref)
+        {".idata$5", COFF_IDATA_CHAR, NULL, 8, {{0, 4, 3}}, 1}, // ADDR32NB -> .idata$6 (hint/name)
+        {".idata$4", COFF_IDATA_CHAR, NULL, 8, {{0, 4, 3}}, 1}, // ADDR32NB -> .idata$6 (hint/name)
+        {".idata$6", COFF_IDATA_CHAR, hintname, (uint32_t)hintname_padded, {{0}}, 0},
+    };
+    uint8_t *r = build_coff_obj(secs, 5, syms, 8, machine, out_len);
+    free(hintname);
+    return r;
+}
+
+// Build one per-symbol member for a *data* export: same ILT/IAT/hint-name
+// slot as build_import_symbol_obj(), but -- verified against a real
+// dlltool-produced reference archive -- with NO `.text` thunk and NO
+// plain `<sym>` alias defined anywhere. That absence is deliberate and
+// load-bearing: a plain `extern int gcount;` reference (no dllimport)
+// left genuinely undefined after every archive member is scanned, with
+// only `__imp_gcount` resolvable, is exactly the shape GNU ld's PE
+// "auto-import" pass looks for -- it rewrites each reference to load
+// through `__imp_gcount` via a runtime pseudo-relocation patched in at
+// process startup. Defining a `.text` jmp-thunk under the plain name
+// (correct for a *function* import, wrong for data) would satisfy the
+// reference directly instead and be read as raw machine-code bytes.
+// `__nm_<sym>` (naming the hint/name entry) has no established consumer
+// but is included for exact parity with the reference archive.
+static uint8_t *build_import_data_obj(const char *dllid, const char *sym_name,
+                                      uint16_t hint, uint16_t machine, size_t *out_len) {
+    char head_sym[128], imp_sym[300], nm_sym[300];
+    snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
+    snprintf(imp_sym, sizeof(imp_sym), "__imp_%s", sym_name);
+    snprintf(nm_sym, sizeof(nm_sym), "__nm_%s", sym_name);
+
+    CoffMiniSym syms[8] = {
+        {".text", 0, 1, 3},
+        {".idata$7", 0, 2, 3},
+        {".idata$5", 0, 3, 3},
+        {".idata$4", 0, 4, 3},
+        {".idata$6", 0, 5, 3},
+        {imp_sym, 0, 3, 2},
+        {nm_sym, 0, 5, 2},
+        {head_sym, 0, 0, 2}, // undefined: forces the head member's pull-in
+    };
+
+    size_t symlen = strlen(sym_name);
+    size_t hintname_len = 2 + symlen + 1;
+    size_t hintname_padded = (hintname_len + 3) & ~(size_t)3;
+    uint8_t *hintname = calloc(hintname_padded, 1);
+    hintname[0] = (uint8_t)hint;
+    hintname[1] = (uint8_t)(hint >> 8);
+    memcpy(hintname + 2, sym_name, symlen + 1);
+
+    CoffMiniSec secs[5] = {
+        {".text", COFF_TEXT_CHAR, NULL, 0, {{0}}, 0}, // deliberately empty
+        {".idata$7", COFF_IDATA_CHAR, NULL, 4, {{0, 7, 3}}, 1}, // ADDR32NB -> _head_<dllid>
+        {".idata$5", COFF_IDATA_CHAR, NULL, 8, {{0, 4, 3}}, 1}, // ADDR32NB -> .idata$6
+        {".idata$4", COFF_IDATA_CHAR, NULL, 8, {{0, 4, 3}}, 1}, // ADDR32NB -> .idata$6
+        {".idata$6", COFF_IDATA_CHAR, hintname, (uint32_t)hintname_padded, {{0}}, 0},
+    };
+    uint8_t *r = build_coff_obj(secs, 5, syms, 8, machine, out_len);
+    free(hintname);
+    return r;
+}
+
+// True if `rva` falls within a section whose Characteristics claims
+// IMAGE_SCN_MEM_EXECUTE -- the code/data distinction PE's export
+// directory itself doesn't record, used to decide which import-object
+// shape (build_import_symbol_obj vs _data_obj) an export needs.
+static bool pe_rva_is_exec(const uint8_t *img, uint32_t sec_hdr_off, uint16_t n_secs, uint32_t rva) {
+    for (uint16_t i = 0; i < n_secs; i++) {
+        const uint8_t *sh = img + sec_hdr_off + (uint32_t)i * 40;
+        uint32_t vsize = pe_r32le(sh + 8);
+        uint32_t vaddr = pe_r32le(sh + 12);
+        if (rva >= vaddr && rva < vaddr + vsize)
+            return (pe_r32le(sh + 36) & IMAGE_SCN_MEM_EXECUTE) != 0;
+    }
+    return true; // unknown: default to the function shape (the common case)
+}
+
+// Parse `dll_path`'s own PE export directory and emit `implib_path` as a
+// standard ar archive of GNU-ld-native import-chunk COFF objects (see
+// the block comment above) -- what a real dlltool/`ld --out-implib`
+// produces, and what this ld reliably builds a complete Import Directory
+// Table from at final-link time. Reading the export table back out of
+// the just-linked DLL (rather than threading the export list through
+// from build_pe_exports()) makes this work uniformly regardless of
+// which linker actually produced the DLL -- our own native one, or a
+// GCC/mingw-ld fallback. Returns 0 on success, -1 if `dll_path` couldn't
+// be read/parsed as a PE image with an export table.
+int pe_write_out_implib(const char *dll_path, const char *implib_path) {
+    FILE *f = fopen(dll_path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 64) {
+        fclose(f);
+        return -1;
+    }
+    uint8_t *img = malloc((size_t)sz);
+    if (!img || fread(img, 1, (size_t)sz, f) != (size_t)sz) {
+        free(img);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    if (img[0] != 'M' || img[1] != 'Z') {
+        free(img);
+        return -1;
+    }
+    uint32_t pe_off = pe_r32le(img + 0x3c);
+    if (pe_off + 24 >= (uint32_t)sz || memcmp(img + pe_off, "PE\0\0", 4) != 0) {
+        free(img);
+        return -1;
+    }
+    uint16_t machine = pe_r16le(img + pe_off + 4);
+    uint16_t n_secs = pe_r16le(img + pe_off + 6);
+    uint16_t opthdr_size = pe_r16le(img + pe_off + 20);
+    uint32_t opt_off = pe_off + 24;
+    if (opthdr_size < 2 || opt_off + 2 > (uint32_t)sz) {
+        free(img);
+        return -1;
+    }
+    uint16_t magic = pe_r16le(img + opt_off);
+    uint32_t datadir_off = opt_off + (magic == PE32PLUS_MAGIC ? 112 : 96);
+    uint32_t exp_rva = pe_r32le(img + datadir_off);
+    uint32_t sec_hdr_off = opt_off + opthdr_size;
+    if (!exp_rva) {
+        free(img);
+        return -1;
+    }
+    uint32_t exp_off = pe_rva_to_off(img, sec_hdr_off, n_secs, exp_rva);
+    if (!exp_off || exp_off + 40 > (uint32_t)sz) {
+        free(img);
+        return -1;
+    }
+
+    uint32_t name_rva = pe_r32le(img + exp_off + 12);
+    uint32_t name_off = pe_rva_to_off(img, sec_hdr_off, n_secs, name_rva);
+    const char *slash = strrchr(dll_path, '/');
+#if defined(_WIN32) || defined(__MINGW32__)
+    const char *bslash = strrchr(dll_path, '\\');
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+#endif
+    const char *dll_name = (name_off && name_off < (uint32_t)sz)
+        ? (const char *)(img + name_off)
+        : (slash ? slash + 1 : dll_path);
+    // A safe-for-identifiers copy of the DLL name (dlltool's own
+    // `_head_<id>`/`<id>_iname` convention: any character that can't
+    // appear in a COFF/asm-style identifier, e.g. the "." before the
+    // extension, becomes '_').
+    char dllid[300];
+    size_t dll_name_len = strlen(dll_name);
+    size_t dllid_len = dll_name_len < sizeof(dllid) - 1 ? dll_name_len : sizeof(dllid) - 1;
+    for (size_t i = 0; i < dllid_len; i++) {
+        char c = dll_name[i];
+        dllid[i] = (isalnum((unsigned char)c) || c == '_') ? c : '_';
+    }
+    dllid[dllid_len] = '\0';
+
+    uint32_t n_names = pe_r32le(img + exp_off + 24);
+    uint32_t names_rva = pe_r32le(img + exp_off + 32);
+    uint32_t names_off = pe_rva_to_off(img, sec_hdr_off, n_secs, names_rva);
+    uint32_t eat_rva = pe_r32le(img + exp_off + 28);
+    uint32_t eat_off = pe_rva_to_off(img, sec_hdr_off, n_secs, eat_rva);
+    if (!names_off || n_names == 0) {
+        free(img);
+        return -1;
+    }
+
+    // Build every member (head, one per export -- already alphabetically
+    // sorted, since that's how build_pe_exports() wrote AddressOfNames --
+    // then tail), strdup-ing each exported name so it outlives `img`.
+    // `AddressOfNames`/`AddressOfFunctions` share the same sorted index
+    // (build_pe_exports() built ordinal[i] == i), so is_data[k] can be
+    // read straight off the matching EAT entry.
+    int n_syms_exported = 0;
+    char **exported = malloc((size_t)n_names * sizeof(char *));
+    bool *is_data = malloc((size_t)n_names * sizeof(bool));
+    for (uint32_t k = 0; k < n_names; k++) {
+        uint32_t nrva = pe_r32le(img + names_off + k * 4);
+        uint32_t noff = pe_rva_to_off(img, sec_hdr_off, n_secs, nrva);
+        if (!noff || noff >= (uint32_t)sz) continue;
+        exported[n_syms_exported] = strdup((const char *)(img + noff));
+        uint32_t fn_rva = eat_off ? pe_r32le(img + eat_off + k * 4) : 0;
+        is_data[n_syms_exported] = eat_off && !pe_rva_is_exec(img, sec_hdr_off, n_secs, fn_rva);
+        n_syms_exported++;
+    }
+    free(img);
+
+    if (n_syms_exported == 0) {
+        free(exported);
+        free(is_data);
+        return -1;
+    }
+
+    int n_members = n_syms_exported + 2; // head + N symbols + tail
+    uint8_t **member_data = malloc((size_t)n_members * sizeof(uint8_t *));
+    size_t *member_len = malloc((size_t)n_members * sizeof(size_t));
+    char **member_name = malloc((size_t)n_members * sizeof(char *));
+    // Symbols this archive's own symbol table must expose so the linker
+    // can (a) pull in the right member for `<sym>`/`__imp_<sym>` when the
+    // main program references them, and (b) resolve the forcing/DLL-name
+    // cross-references each member makes into the head/tail members.
+    // A data export's member never defines the plain `<sym>` name (see
+    // build_import_data_obj()), so its own archive_sym entries omit it.
+    int n_archive_syms = 2 * n_syms_exported + 2;
+    char **archive_sym = malloc((size_t)n_archive_syms * sizeof(char *));
+    int *archive_sym_member = malloc((size_t)n_archive_syms * sizeof(int));
+    int n_as = 0;
+
+    member_data[0] = build_import_head_obj(dllid, machine, &member_len[0]);
+    member_name[0] = pe_xfmt("%s_d%06d.o", dllid, 0);
+    archive_sym[n_as] = pe_xfmt("_head_%s", dllid);
+    archive_sym_member[n_as++] = 0;
+
+    for (int i = 0; i < n_syms_exported; i++) {
+        if (is_data[i])
+            member_data[1 + i] = build_import_data_obj(dllid, exported[i], (uint16_t)i,
+                                                       machine, &member_len[1 + i]);
+        else
+            member_data[1 + i] = build_import_symbol_obj(dllid, exported[i], (uint16_t)i,
+                                                         machine, &member_len[1 + i]);
+        member_name[1 + i] = pe_xfmt("%s_d%06d.o", dllid, i + 1);
+        if (!is_data[i]) {
+            archive_sym[n_as] = strdup(exported[i]);
+            archive_sym_member[n_as++] = 1 + i;
+        }
+        archive_sym[n_as] = pe_xfmt("__imp_%s", exported[i]);
+        archive_sym_member[n_as++] = 1 + i;
+    }
+
+    member_data[n_members - 1] = build_import_tail_obj(dllid, dll_name, machine,
+                                                       &member_len[n_members - 1]);
+    member_name[n_members - 1] = pe_xfmt("%s_d%06d.o", dllid, n_syms_exported + 1);
+    archive_sym[n_as] = pe_xfmt("%s_iname", dllid);
+    archive_sym_member[n_as++] = n_members - 1;
+
+    for (int i = 0; i < n_syms_exported; i++) free(exported[i]);
+    free(exported);
+    free(is_data);
+
+
+    // GNU extended filename table ("//"): every member name here easily
+    // exceeds the ar header's 16-byte inline limit.
+    uint8_t *longnames = NULL;
+    size_t longnames_len = 0, longnames_cap = 0;
+    long *member_longoff = malloc((size_t)n_members * sizeof(long));
+    for (int i = 0; i < n_members; i++) {
+        member_longoff[i] = (long)longnames_len;
+        pe_buf_append_bytes(&longnames, &longnames_len, &longnames_cap, member_name[i],
+                            strlen(member_name[i]));
+        pe_buf_append_bytes(&longnames, &longnames_len, &longnames_cap, "/\n", 2);
+    }
+    size_t longnames_padded = longnames_len + (longnames_len & 1);
+
+    // Symbol-table member ("/"): maps every archive-visible symbol name
+    // to the byte offset of its member's ar header.
+    size_t symtab_names_len = 0;
+    for (int i = 0; i < n_as; i++) symtab_names_len += strlen(archive_sym[i]) + 1;
+    size_t symtab_content_len = 4 + (size_t)n_as * 4 + symtab_names_len;
+    size_t symtab_padded = symtab_content_len + (symtab_content_len & 1);
+
+    uint32_t *member_off = malloc((size_t)n_members * sizeof(uint32_t));
+    uint32_t cur = 8 + 60 + (uint32_t)symtab_padded + 60 + (uint32_t)longnames_padded;
+    for (int i = 0; i < n_members; i++) {
+        member_off[i] = cur;
+        size_t padded = member_len[i] + (member_len[i] & 1);
+        cur += (uint32_t)(60 + padded);
+    }
+
+    uint8_t *out = NULL;
+    size_t out_len = 0, out_cap = 0;
+    pe_buf_append_bytes(&out, &out_len, &out_cap, "!<arch>\n", 8);
+
+    pe_ar_header(&out, &out_len, &out_cap, "/", -1, symtab_content_len);
+    uint8_t cnt_be[4] = {
+        (uint8_t)((uint32_t)n_as >> 24),
+        (uint8_t)((uint32_t)n_as >> 16),
+        (uint8_t)((uint32_t)n_as >> 8),
+        (uint8_t)(uint32_t)n_as,
+    };
+    pe_buf_append_bytes(&out, &out_len, &out_cap, cnt_be, 4);
+    for (int i = 0; i < n_as; i++) {
+        uint32_t o = member_off[archive_sym_member[i]];
+        uint8_t off_be[4] = {
+            (uint8_t)(o >> 24),
+            (uint8_t)(o >> 16),
+            (uint8_t)(o >> 8),
+            (uint8_t)o,
+        };
+        pe_buf_append_bytes(&out, &out_len, &out_cap, off_be, 4);
+    }
+    for (int i = 0; i < n_as; i++)
+        pe_buf_append_bytes(&out, &out_len, &out_cap, archive_sym[i], strlen(archive_sym[i]) + 1);
+    if (symtab_content_len & 1) {
+        uint8_t pad = '\n';
+        pe_buf_append_bytes(&out, &out_len, &out_cap, &pad, 1);
+    }
+
+    pe_ar_header(&out, &out_len, &out_cap, "//", -1, longnames_len);
+    pe_buf_append_bytes(&out, &out_len, &out_cap, longnames, longnames_len);
+    if (longnames_len & 1) {
+        uint8_t pad = '\n';
+        pe_buf_append_bytes(&out, &out_len, &out_cap, &pad, 1);
+    }
+    free(longnames);
+
+    for (int i = 0; i < n_members; i++) {
+        pe_ar_header(&out, &out_len, &out_cap, NULL, member_longoff[i], member_len[i]);
+        pe_buf_append_bytes(&out, &out_len, &out_cap, member_data[i], member_len[i]);
+        if (member_len[i] & 1) {
+            uint8_t pad = '\n';
+            pe_buf_append_bytes(&out, &out_len, &out_cap, &pad, 1);
+        }
+    }
+
+    FILE *of = fopen(implib_path, "wb");
+    int rc = -1;
+    if (of) {
+        rc = (fwrite(out, 1, out_len, of) == out_len) ? 0 : -1;
+        fclose(of);
+    }
+    free(out);
+
+    for (int i = 0; i < n_members; i++) {
+        free(member_data[i]);
+        free(member_name[i]);
+    }
+    for (int i = 0; i < n_as; i++) free(archive_sym[i]);
+    free(member_data);
+    free(member_len);
+    free(member_name);
+    free(member_longoff);
+    free(member_off);
+    free(archive_sym);
+    free(archive_sym_member);
+    return rc;
 }

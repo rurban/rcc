@@ -296,6 +296,9 @@ bool opt_pic = false;
 bool opt_shared = false;
 bool opt_static = false;
 bool opt_export_dynamic = false;
+// -Wl,--out-implib,PATH (Windows/mingw): write an import library for the
+// DLL this link produces. NULL when not requested.
+char *opt_out_implib = NULL;
 bool opt_time = false;
 bool opt_v = false;
 bool opt_ms_bitfields =
@@ -339,6 +342,48 @@ static bool wl_has_token(const char *arg, const char *tok) {
         p = comma + 1;
     }
     return false;
+}
+
+// Scan a "-Wl,a,b,c" argument's comma-separated sub-options for `tok`
+// (e.g. "--out-implib") and return the sub-option immediately following
+// it (a fresh, owned copy), or the part after '=' when `tok` is spelled
+// attached (`--out-implib=path`). NULL if `tok` doesn't appear, or
+// appears with no following value. GNU ld accepts both `-Wl,--opt,val`
+// (gcc splits on commas into two separate argv words it forwards to ld)
+// and `-Wl,--opt=val`; supports both spellings here for the same reason.
+static char *wl_get_value(const char *arg, const char *tok) {
+    const char *p = arg + 4; // skip "-Wl,"
+    size_t tok_len = strlen(tok);
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len >= tok_len && !strncmp(p, tok, tok_len)) {
+            if (len == tok_len) {
+                // "...,tok,value,..." -- value is the next sub-option.
+                if (!comma) return NULL;
+                const char *val = comma + 1;
+                const char *next_comma = strchr(val, ',');
+                size_t val_len = next_comma ? (size_t)(next_comma - val) : strlen(val);
+                if (val_len == 0) return NULL;
+                char *out = malloc(val_len + 1);
+                memcpy(out, val, val_len);
+                out[val_len] = '\0';
+                return out;
+            }
+            if (p[tok_len] == '=') {
+                // "...,tok=value,..."
+                size_t val_len = len - tok_len - 1;
+                if (val_len == 0) return NULL;
+                char *out = malloc(val_len + 1);
+                memcpy(out, p + tok_len + 1, val_len);
+                out[val_len] = '\0';
+                return out;
+            }
+        }
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -531,6 +576,13 @@ int main(int argc, char **argv) {
             if (!strncmp(argv[i], "-Wl,", 4) &&
                 (wl_has_token(argv[i], "-E") || wl_has_token(argv[i], "--export-dynamic")))
                 opt_export_dynamic = true;
+            if (!strncmp(argv[i], "-Wl,", 4)) {
+                char *implib = wl_get_value(argv[i], "--out-implib");
+                if (implib) {
+                    free(opt_out_implib);
+                    opt_out_implib = implib;
+                }
+            }
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
             // A bare -Wl,<opt> / -l<name> with no source or object inputs
             // is a legitimate link-only invocation (real gcc runs the
@@ -1142,7 +1194,16 @@ int main(int argc, char **argv) {
                 const char *end = lp;
                 while (*end && *end != ' ') end++;
                 size_t len = (size_t)(end - lp);
-                if ((len >= 4 && !strncmp(lp, "-Wl,", 4)) ||
+                bool wl = len >= 4 && !strncmp(lp, "-Wl,", 4);
+                // -Wl,--out-implib,<path> is understood by the native PE
+                // linker (see pe_write_out_implib(), hooked in below);
+                // exempt it from the "can't honor arbitrary -Wl, options"
+                // bailout so `-shared` + `--out-implib` still takes the
+                // fast native path -- important since an external mingw
+                // toolchain may not even be reachable at runtime (e.g.
+                // rcc.exe running standalone under wine in CI).
+                bool recognized_wl = wl && len > 4 + 13 && !strncmp(lp + 4, "--out-implib,", 13);
+                if ((wl && !recognized_wl) ||
                     (len >= 14 && !strncmp(lp, "-nodefaultlibs", 14)))
                     native_link_capable = false;
                 lp = end;
@@ -1189,6 +1250,15 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "  link        %-20s: %6llu us\n", out_path,
                             (unsigned long long)(now_us() - t_link));
                 if (native == 0) {
+#if defined(_WIN32) || defined(__MINGW32__)
+                    if (opt_shared && opt_out_implib) {
+                        if (pe_write_out_implib(backend_out, opt_out_implib) != 0)
+                            fprintf(stderr,
+                                    "rcc: warning: -Wl,--out-implib,%s: %s has no exports, "
+                                    "import library not written\n",
+                                    opt_out_implib, backend_out);
+                    }
+#endif
                     if (opt_stdout) {
                         FILE *f = fopen(stdout_tmp, "rb");
                         if (f) {

@@ -190,4 +190,12 @@ int link_elf(LinkState *s);
 int link_macho(LinkState *s);
 int link_pe(LinkState *s);
 
+// Write a Windows import library (a `!<arch>\n` ar archive of COFF
+// "short import" members, one per DLL export) at `implib_path`, derived
+// from `dll_path`'s own PE export table (see -Wl,--out-implib).
+// Windows/mingw-only (implemented in link_pe.c, only compiled for that
+// target); returns 0 on success, -1 if `dll_path` has no usable export
+// table.
+int pe_write_out_implib(const char *dll_path, const char *implib_path);
+
 #endif // LINK_H

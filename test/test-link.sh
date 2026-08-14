@@ -25,10 +25,19 @@ fi
 RCC="$(cd "$(dirname "$RCC")" && pwd)/$(basename "$RCC")"
 ROOT="$(pwd)"
 
-case "$(uname -s)" in
-    Darwin)               SOEXT=dylib ;;
-    MINGW*|MSYS*|CYGWIN*) SOEXT=dll ;;
-    *)                    SOEXT=so ;;
+# SOEXT is driven by the *target* rcc binary, not the host: a mingw-cross
+# rcc.exe (invoked directly here -- binfmt_misc/wine runs a .exe
+# transparently on this Linux host, same as run_tests.exe does) still
+# targets Windows even though `uname -s` reports Linux.
+case "$RCC" in
+    *.exe) SOEXT=dll ;;
+    *)
+        case "$(uname -s)" in
+            Darwin)               SOEXT=dylib ;;
+            MINGW*|MSYS*|CYGWIN*) SOEXT=dll ;;
+            *)                    SOEXT=so ;;
+        esac
+        ;;
 esac
 
 TMP="$(mktemp -d)"
@@ -40,7 +49,25 @@ pass() { PASS=$((PASS + 1)); printf '  %-44s OK\n'   "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  %-44s FAIL (%s)\n' "$1" "$2"; }
 # Run a freshly linked program with the scratch dir on the library path so a
 # .so/.dll built there is found regardless of its recorded soname.
-runlib() { DYLD_LIBRARY_PATH="$TMP" LD_LIBRARY_PATH="$TMP" "$@"; }
+runlib() {
+    prog="$1"
+    shift
+    # gcc.exe's own mingw driver silently appends ".exe" to an extension-
+    # less -o name (rcc's native PE linker does not); resolve whichever
+    # one a given build step actually produced.
+    [ ! -f "$prog" ] && [ -f "$prog.exe" ] && prog="$prog.exe"
+    DYLD_LIBRARY_PATH="$TMP" LD_LIBRARY_PATH="$TMP" "$prog" "$@"
+}
+
+# Resolve a built program's actual on-disk path (see runlib()'s comment):
+# echoes "$1" unchanged unless only "$1.exe" exists.
+winprog() {
+    if [ ! -f "$1" ] && [ -f "$1.exe" ]; then
+        printf '%s' "$1.exe"
+    else
+        printf '%s' "$1"
+    fi
+}
 
 # sqlite amalgamation (cached in bench/), same source the benchmark uses.
 SQLITE_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
@@ -104,7 +131,7 @@ if "$RCC" -c "$TMP/a1.c" -o "$TMP/a1.o" 2>"$TMP/e2" \
     && "$RCC" -c "$TMP/a2.c" -o "$TMP/a2.o" 2>>"$TMP/e2" \
     && "$AR" rcs "$TMP/libmath.a" "$TMP/a1.o" "$TMP/a2.o" 2>>"$TMP/e2" \
     && "$RCC" "$TMP/amain.c" "$TMP/libmath.a" -o "$TMP/aprog" 2>>"$TMP/e2" \
-    && "$TMP/aprog"; then
+    && "$(winprog "$TMP/aprog")"; then
     pass "static archive build + link (.a)"
 else
     fail "static archive build + link (.a)" "$(tr '\n' ' ' < "$TMP/e2")"
@@ -149,7 +176,7 @@ EOF
         && "$AR" rcs "$TMP/libsqlite3.a" "$TMP/sqlite3.o" 2>>"$TMP/e4" \
         && "$RCC" -I"$ROOT/bench" "$TMP/sqdrv.c" "$TMP/libsqlite3.a" \
             -o "$TMP/sqar" 2>>"$TMP/e4" \
-        && [ "$("$TMP/sqar" 2>>"$TMP/e4" | sed -n 's/.*\(x=[0-9]*\)/\1/p')" = "x=42" ]; then
+        && [ "$("$(winprog "$TMP/sqar")" 2>>"$TMP/e4" | sed -n 's/.*\(x=[0-9]*\)/\1/p')" = "x=42" ]; then
         pass "sqlite3 static archive (.a)"
     else
         fail "sqlite3 static archive (.a)" "$(tr '\n' ' ' < "$TMP/e4")"
@@ -183,7 +210,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. -rdynamic: a dlopen()'d plugin calling back into a symbol *defined in
+# 6. Windows import library, GNU-idiomatic extension (.dll.a): same
+#    shape as case 5 but names the import library the way mingw/autotools
+#    build systems conventionally do (libfoo.dll.a, vs. MSVC-style
+#    libfoo.lib) -- confirms the driver's link-input classification (a
+#    positional file's *final* extension, ".a", already covers this; see
+#    main.c) and the linker's import-library resolution are extension-
+#    agnostic, not hardcoded to ".lib".
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dll ]; then
+    if "$RCC" -shared -fPIC "$TMP/greet.c" -o "$TMP/libgreet3.dll" \
+            -Wl,--out-implib,"$TMP/libgreet3.dll.a" 2>"$TMP/e5b" \
+        && [ -f "$TMP/libgreet3.dll.a" ] \
+        && "$RCC" "$TMP/gmain.c" "$TMP/libgreet3.dll.a" -o "$TMP/gprog3" 2>>"$TMP/e5b" \
+        && runlib "$TMP/gprog3"; then
+        pass "shared library + import lib link (.dll.a)"
+    else
+        fail "shared library + import lib link (.dll.a)" "$(tr '\n' ' ' < "$TMP/e5b")"
+    fi
+else
+    printf '  %-44s SKIP (not a Windows target)\n' "shared library + import lib link (.dll.a)"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Import library, data-only export: a DLL that exports a plain data
+#    symbol and no function at all, consumed as an ordinary `extern`
+#    (no __declspec(dllimport), the common case since rcc implements no
+#    dllimport semantics -- see test_declspec_native_reject.c). The
+#    generated import-library member for a *function* export defines a
+#    callable `jmp`-through-IAT thunk under the plain symbol name; doing
+#    that for a *data* export too would satisfy the reference with raw
+#    machine-code bytes read as an int instead of leaving it genuinely
+#    undefined so GNU ld's runtime-pseudo-relocation auto-import pass
+#    (which requires the plain name to stay unresolved, with only
+#    __imp_<name> defined) ever fires -- exactly the bug this case
+#    reproduces (found via case 5 sharing greet.c's `gcount` global,
+#    which happened to mask it because `add2`/`tag` also resolved
+#    correctly; isolated here with *no* function export at all).
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dll ]; then
+    cat > "$TMP/onlydata.c" <<'EOF'
+int answer = 42;
+EOF
+    cat > "$TMP/dmain.c" <<'EOF'
+extern int answer;
+int main(void) { return answer == 42 ? 0 : 1; }
+EOF
+    if "$RCC" -shared -fPIC "$TMP/onlydata.c" -o "$TMP/libonlydata.dll" \
+            -Wl,--out-implib,"$TMP/libonlydata.lib" 2>"$TMP/e5c" \
+        && [ -f "$TMP/libonlydata.lib" ] \
+        && "$RCC" "$TMP/dmain.c" "$TMP/libonlydata.lib" -o "$TMP/dprog" 2>>"$TMP/e5c" \
+        && runlib "$TMP/dprog"; then
+        pass "import lib data-only export (.lib)"
+    else
+        fail "import lib data-only export (.lib)" "$(tr '\n' ' ' < "$TMP/e5c")"
+    fi
+else
+    printf '  %-44s SKIP (not a Windows target)\n' "import lib data-only export (.lib)"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. -rdynamic: a dlopen()'d plugin calling back into a symbol *defined in
 #    the main executable* -- the shape bash's loadable builtins use
 #    (enable -f ./strmatch.so strmatch, which calls back into bash's own
 #    lib/glob/strmatch.c strmatch()). Without -rdynamic, a plain
@@ -221,7 +308,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Plain (non-extern) GNU89 `inline` + `__attribute__((gnu_inline))`:
+# 9. Plain (non-extern) GNU89 `inline` + `__attribute__((gnu_inline))`:
 #    a common glibc/gperf-generated-code portability idiom (`#ifdef
 #    __GNUC_STDC_INLINE__ __attribute__((gnu_inline)) #endif` right after
 #    an `inline` function definition, forcing GNU89 semantics regardless
@@ -250,14 +337,14 @@ EOF
 if "$RCC" -c "$TMP/gi_def.c" -o "$TMP/gi_def.o" 2>"$TMP/e7" \
     && "$RCC" -c "$TMP/gi_main.c" -o "$TMP/gi_main.o" 2>>"$TMP/e7" \
     && "$RCC" "$TMP/gi_def.o" "$TMP/gi_main.o" -o "$TMP/giprog" 2>>"$TMP/e7" \
-    && "$TMP/giprog"; then
+    && "$(winprog "$TMP/giprog")"; then
     pass "plain gnu_inline function export (2-TU link)"
 else
     fail "plain gnu_inline function export (2-TU link)" "$(tr '\n' ' ' < "$TMP/e7")"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Wide string literal alignment survives a 2-TU link. Each object's own
+# 10. Wide string literal alignment survives a 2-TU link. Each object's own
 #    .rodata can be internally self-padded so its wchar_t data starts on a
 #    4-byte boundary (Linux wchar_t is UTF-32), but elf_write.c used to
 #    hardcode .rodata's ELF sh_addralign to 1 in every .o it wrote -- so
@@ -294,7 +381,7 @@ EOF
 if "$RCC" -c "$TMP/wa.c" -o "$TMP/wa.o" 2>"$TMP/e8" \
     && "$RCC" -c "$TMP/wb.c" -o "$TMP/wb.o" 2>>"$TMP/e8" \
     && "$RCC" "$TMP/wa.o" "$TMP/wb.o" -o "$TMP/wprog" 2>>"$TMP/e8" \
-    && "$TMP/wprog"; then
+    && "$(winprog "$TMP/wprog")"; then
     pass "wide string alignment survives 2-TU link"
 else
     fail "wide string alignment survives 2-TU link" "$(tr '\n' ' ' < "$TMP/e8")"

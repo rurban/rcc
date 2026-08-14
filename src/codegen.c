@@ -1400,7 +1400,7 @@ static const char *sym_name(const char *name) {
 // not start with "__" and whose asm label ends in "_chk" is such a
 // redirect: use the C name for address-of purposes.
 static bool is_fortify_redirect(const char *cname, const char *asm_label) {
-    if (!asm_label || !cname || cname[0] == '_' && cname[1] == '_')
+    if (!asm_label || !cname || (cname[0] == '_' && cname[1] == '_'))
         return false;
     size_t n = strlen(asm_label);
     return n > 4 && strcmp(asm_label + n - 4, "_chk") == 0;
