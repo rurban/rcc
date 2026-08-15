@@ -510,7 +510,12 @@ test_glib() {
  github_branch fuhsnn glib main
  libtoolize
  sh autogen.sh
- fix_and_configure
+ # rcc defaults to -std=c23 (bool/true/false are keywords); real GCC/clang
+ # still default to a gnu17-equivalent standard, and glib's own source uses
+ # bool as an ordinary identifier (e.g. glib/goption.c's `gboolean bool;`
+ # union member), which is only legal before C23. Match the real-world
+ # default so glib compiles without requiring per-file source edits.
+ CC="$CC -std=gnu17" fix_and_configure
  replace_line "#if  __GNUC__ > 2 || (__GNUC__ == 2 && __GNUC_MINOR__ >= 7)" "#if 1" glib/gconstructor.h
  replace_line "#ifdef __GNUC__" "#if 1" glib/gmacros.h
  replace_line "#elif defined(__GNUC__) && (__GNUC__ >= 4)" "#elif 1" gio/tests/modules/symbol-visibility.h

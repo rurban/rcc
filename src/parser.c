@@ -9850,6 +9850,29 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
     return val;
 }
 
+// GCC inlines the libatomic helper names __atomic_<op>_<N> (N = 1/2/4/8/16)
+// as builtins, semantically identical to the __atomic_<op>_n / generic
+// __atomic_<op> forms rcc already handles -- glib's own gatomic.h calls
+// __atomic_load_4/8 and __atomic_store_4/8 directly. Recognize the _N
+// suffix so those calls lower to the same inline ND_ATOMIC_* nodes instead
+// of being emitted as unresolved libatomic symbols at link time.
+static bool atomic_lib_helper(Token *tok, const char *op) {
+    if (!tok || tok->kind != TK_IDENT || !tok->ptr) return false;
+    static const char *pfx = "__atomic_";
+    size_t pl = strlen(pfx), ol = strlen(op);
+    if (tok->len < (int)(pl + ol + 2) || tok->len > (int)(pl + ol + 3)) return false;
+    if (memcmp(tok->ptr, pfx, pl) != 0) return false;
+    if (memcmp(tok->ptr + pl, op, ol) != 0) return false;
+    if (tok->ptr[pl + ol] != '_') return false;
+    const char *sz = tok->ptr + pl + ol + 1;
+    int n = tok->len - (int)(pl + ol + 1);
+    if (n == 1)
+        return sz[0] == '1' || sz[0] == '2' || sz[0] == '4' || sz[0] == '8';
+    if (n == 2)
+        return sz[0] == '1' && sz[1] == '6';
+    return false;
+}
+
 static Node *unary(Token **rest, Token *tok) {
     if (equalc(tok, "__builtin_offsetof")) {
         Token *start = tok;
@@ -10301,7 +10324,7 @@ static Node *unary(Token **rest, Token *tok) {
         node->ty = ty_void;
         return node;
     }
-    if (equalc(tok, "__atomic_load_n") || equalc(tok, "__atomic_load")) {
+    if (equalc(tok, "__atomic_load_n") || equalc(tok, "__atomic_load") || atomic_lib_helper(tok, "load")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
@@ -10315,7 +10338,7 @@ static Node *unary(Token **rest, Token *tok) {
         }
         tok = skip(tok, ",");
         Node *ret_ptr = NULL;
-        if (!equalc(start, "__atomic_load_n")) {
+        if (!equalc(start, "__atomic_load_n") && !atomic_lib_helper(start, "load")) {
             // __atomic_load(ptr, retptr, order): the 2nd argument is a
             // *pointer to* where the loaded value is stored, unlike
             // __atomic_load_n's 2-argument form where the loaded value
@@ -10347,7 +10370,7 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return node;
     }
-    if (equalc(tok, "__atomic_store_n") || equalc(tok, "__atomic_store")) {
+    if (equalc(tok, "__atomic_store_n") || equalc(tok, "__atomic_store") || atomic_lib_helper(tok, "store")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
@@ -10355,7 +10378,7 @@ static Node *unary(Token **rest, Token *tok) {
         tok = skip(tok, ",");
         Node *val = assign(&tok, tok);
         check_type(val);
-        if (!equalc(start, "__atomic_store_n")) {
+        if (!equalc(start, "__atomic_store_n") && !atomic_lib_helper(start, "store")) {
             // __atomic_store(ptr, valptr, order): the 2nd argument is a
             // *pointer to* the value to store, unlike __atomic_store_n
             // where it's the value itself. Dereference it so codegen
@@ -10374,7 +10397,7 @@ static Node *unary(Token **rest, Token *tok) {
             if (base) {
                 if (ty_const(base))
                     warn_tok(start, "assignment of read-only location");
-                if (equalc(start, "__atomic_store_n")) {
+                if (equalc(start, "__atomic_store_n") || atomic_lib_helper(start, "store")) {
                     if (val->ty) {
                         if (is_integer(base) && (val->ty->kind == TY_PTR || val->ty->kind == TY_ARRAY))
                             warn_tok(start, "assignment makes integer from pointer without a cast");
@@ -10397,7 +10420,7 @@ static Node *unary(Token **rest, Token *tok) {
         node->ty = ty_void;
         return node;
     }
-    if (equalc(tok, "__atomic_exchange_n") || equalc(tok, "__atomic_exchange")) {
+    if (equalc(tok, "__atomic_exchange_n") || equalc(tok, "__atomic_exchange") || atomic_lib_helper(tok, "exchange")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
@@ -10422,7 +10445,7 @@ static Node *unary(Token **rest, Token *tok) {
             node->ty = ty_int;
         return node;
     }
-    if (equalc(tok, "__atomic_compare_exchange_n") || equalc(tok, "__atomic_compare_exchange")) {
+    if (equalc(tok, "__atomic_compare_exchange_n") || equalc(tok, "__atomic_compare_exchange") || atomic_lib_helper(tok, "compare_exchange")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);

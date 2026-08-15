@@ -454,6 +454,45 @@ int x;` — its alignment got silently discarded before reaching
   build still fails one layer deeper for an unrelated reason — see
   "Needs fixing" item 6's parser-rejects-valid-C cluster entry above.
 
+### Fixed (2026-08-15, libatomic helper-name + glib `-std=gnu17` session)
+
+- **Two independent root causes behind test*glib's `goption.c:212`
+  "declaration does not declare anything" and the subsequent undefined
+  `\_\_atomic*\*\_4/8` link failures** (not, as the earlier triage guessed,
+  an anonymous-union parser bug):
+  1. **rcc's default standard is `-std=c23`** (`main.c`,
+     `opt_std_version = "202311L"`), so `bool`/`true`/`false` are
+     reserved keywords even with no `-std=` flag on the command line.
+     Real GCC and Clang still default to a gnu17-equivalent standard, so
+     any pre-C23 codebase using `bool`/`true`/`false` as ordinary
+     identifiers breaks under rcc's default. glib's `goption.c` declares
+     a union member named `bool` (`gboolean bool;`), which is only
+     legal before C23; rcc's default made it fail with "declaration
+     does not declare anything". Fixed in the _harness_, not rcc: the
+     session decision was to keep rcc's C23 default and instead build
+     glib with `CC="$CC -std=gnu17"` (`test/linux_thirdparty.bash`'s
+     `test_glib()`), matching real-world compilers' actual default —
+     the same `CC="$CC <flag>"` override convention already used by
+     `test_nob`/`test_elfutils`/`test_sdl2` etc.
+  2. **GCC inlines the libatomic helper names `__atomic_<op>_<N>`
+     (`N` = 1/2/4/8/16) as builtins**, semantically identical to the
+     `__atomic_<op>_n` forms; rcc only recognized the `_n`/generic
+     spellings, so a direct call to e.g. `__atomic_load_4` (which glib's
+     own `gatomic.h` uses for `g_atomic_int_get`/`g_atomic_pointer_get`
+     and their `_set` counterparts) was emitted as an ordinary
+     unresolved function call — `undefined reference to
+   __atomic_load_4/__atomic_store_8/...` at link time. Fixed in
+     `parser.c` by adding `atomic_lib_helper(tok, op)`, which recognizes
+     the `__atomic_<op>_<N>` spelling (op = load/store/exchange/
+     compare*exchange) and routes it through the same `ND_ATOMIC*\*`   lowering as the`\_n`form (the`\_N`suffix is the 2-argument form,
+   exactly like`\_n`, not the 3-argument generic form).
+Regression test: `test/test_atomic_libatomic_helpers.c`(new: load/
+store 4 and 8, exchange 4, compare-exchange 4, and the exact glib`g_atomic_int_get`statement-expression shape), PASS on x86-64.`make check-all`: 0 failed. Verification: the whole glib library
+(`glib/glib/`) now compiles and links under `rcc -std=gnu17`,
+including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
+The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
+     fixing" item 6's parser-rejects-valid-C cluster entry).
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1553,8 +1592,7 @@ a multi-session effort, not a quick win.
      (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer
      memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
-     construct, not one root cause): an anonymous-union member pattern
-     (test_glib, `goption.c:212`); an empty-body context (test_lexbor,
+     construct, not one root cause): an empty-body context (test_lexbor,
      `normalization_forms.c:206`); designated-initializer macro tables
      (test_mquickjs, test_njs); struct member access rcc reports as
      "no such member" on legitimate code (test_php, test_cfitsio,
@@ -1600,7 +1638,21 @@ threads[];`) is fixed**, see "Fixed (2026-08-15, empty
      GTK/GDK/GObject-typed code is unreachable regardless of this fix
      — needs a fresh `./configure` (or manually adding
      `` `pkg-config --cflags gtk+-3.0` ``) to a future session before
-     test_emacs itself can be re-verified end to end.
+     test_emacs itself can be re-verified end to end. **An
+     anonymous-union member pattern (test_glib, `goption.c:212`) is
+     fixed** — but by two unrelated root causes, see "Fixed (2026-08-15,
+     libatomic helper-name + glib `-std=gnu17` session)" below: (1)
+     rcc's default `-std=c23` makes `bool`/`true`/`false` keywords, so
+     glib's `gboolean bool;` union member only parses under
+     `-std=gnu17` (now passed via the harness, matching real
+     GCC/Clang's actual default); (2) glib's `gatomic.h` calls the
+     libatomic helper names `__atomic_load_4/8`/`__atomic_store_4/8`
+     directly, which rcc emitted as unresolved link symbols instead of
+     inlining. Both fixed, and the whole `glib/` library now compiles
+     and links — the full glib tree is next blocked one layer deeper in
+     `gio/inotify` by glibc's `<sys/inotify.h>` (`char name
+     __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
+     `<stddef.h>`), a separate issue not yet investigated.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the
