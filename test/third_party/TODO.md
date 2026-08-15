@@ -493,6 +493,29 @@ including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
 The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
      fixing" item 6's parser-rejects-valid-C cluster entry).
 
+### Fixed (2026-08-15, large file read truncation session)
+
+- **Files larger than 10 MiB were silently truncated by the preprocessor
+  (and rejected by the main driver)**, causing rcc to mis-parse the tail
+  end as a bogus "expected specific operator" at EOF. `preprocess.c`
+  `read_pp_file()` used a fixed `10 * 1024 * 1024` `arena_alloc` buffer
+  and `fread()` without an EOF check, so any included file larger than
+  that cap was simply cut mid-declaration. lexbor's generated
+  `unicode_normalization_test_res.h` (12.2 MiB, 100170 `static const`
+  arrays + a 20034-entry designated-initializer table) was the real-world
+  trigger, reported as `test_lexbor` `normalization_forms.c:206`.
+  `main.c` `read_file()` had the same cap but at least errored with
+  "file too large". Fixed both to grow the buffer with `realloc`/`malloc`
+  until the entire file is read. The header itself compiles in isolation
+  (slowly — ~150 s for 100k+ globals), and a single 26 MiB source file
+  also passes; the full lexbor `normalization_forms.c` target is still
+  limited by the same 100k+ global parse time rather than the truncation
+  error.
+  Regression test: `test/test-link.sh` case 12 (new: a ~10.5 MiB file
+  that is mostly a comment so lexing stays cheap, with a sentinel
+  function at the very end that must survive to be linked/executed).
+  `make check-all`: 0 failed on native x86-64.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1593,7 +1616,9 @@ a multi-session effort, not a quick win.
      memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
      construct, not one root cause): an empty-body context (test_lexbor,
-     `normalization_forms.c:206`); designated-initializer macro tables
+     `normalization_forms.c:206` — **fixed**, actually a large-file
+     truncation in `read_pp_file()`, see "Fixed (2026-08-15, large file
+     read truncation session)" above); designated-initializer macro tables
      (test_mquickjs, test_njs); struct member access rcc reports as
      "no such member" on legitimate code (test_php, test_cfitsio,
      test_tcl); an unclosed string literal lexer false-positive

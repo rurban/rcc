@@ -1029,9 +1029,34 @@ static char *canonical_path(char *path) {
 static char *read_pp_file(char *path) {
     FILE *fp = fopen(path, "r");
     if (!fp) return NULL;
-    int cap = 10 * 1024 * 1024;
-    char *buf = arena_alloc(cap);
-    int size = fread(buf, 1, cap - 2, fp);
+    // Read the whole file with a growing buffer. A fixed 10 MiB cap used to
+    // silently truncate anything larger (fread() short-read, no EOF check)
+    // -- a generated header just over the cap (e.g. lexbor's 12.2 MiB
+    // unicode_normalization_test_res.h) then had its final declarations cut
+    // mid-token, leaving an unbalanced construct the parser reported as a
+    // bogus "expected specific operator" at end of input. Real compilers
+    // handle arbitrarily large translation units; so do we now.
+    size_t cap = 1 << 20, size = 0;
+    char *buf = malloc(cap);
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+    for (;;) {
+        if (size + 1 >= cap) {
+            cap *= 2;
+            char *nb = realloc(buf, cap);
+            if (!nb) {
+                free(buf);
+                fclose(fp);
+                return NULL;
+            }
+            buf = nb;
+        }
+        size_t n = fread(buf + size, 1, cap - size - 1, fp);
+        if (n == 0) break;
+        size += n;
+    }
     fclose(fp);
     if (size == 0 || buf[size - 1] != '\n') buf[size++] = '\n';
     buf[size] = '\0';

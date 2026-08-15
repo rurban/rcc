@@ -91,11 +91,21 @@ static char *read_file(char *path) {
     if (!fp)
         error("cannot open %s: %m", path);
 
-    int filemax = 10 * 1024 * 1024;
-    char *buf = arena_alloc(filemax);
-    size_t size = fread(buf, 1, filemax - 2, fp);
-    if (!feof(fp)) {
-        error("%s: file too large", path);
+    size_t filemax = 1 << 20, size = 0;
+    char *buf = malloc(filemax);
+    if (!buf)
+        error("out of memory reading %s", path);
+    for (;;) {
+        if (size + 1 >= filemax) {
+            filemax *= 2;
+            char *nb = realloc(buf, filemax);
+            if (!nb)
+                error("out of memory reading %s", path);
+            buf = nb;
+        }
+        size_t n = fread(buf + size, 1, filemax - size - 1, fp);
+        if (n == 0) break;
+        size += n;
     }
 
     if (size == 0 || buf[size - 1] != '\n') {
