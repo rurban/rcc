@@ -75,12 +75,12 @@ didn't report every expected error line, `r` = runtime failure.
 | clang    | 3708   | 649    | 191     | 85%, 530c/36e/15r failures |
 | tcc      | 2676   | 480    | 1395    | 84%, 383c/17r failures     |
 | kefir    | 2989   | 996    | 566     | 74%, 892c/15r failures     |
-| antcc    | 1959   | 1091   | 1394    | 64%, 974c/23r failures     |
+| antcc    | 1661   | 1040   | 1394    | 61%, 974c/23r failures     |
 | slimcc   | 2077   | 1397   | 1077    | 59%, 1324c/7r failures     |
-| lacc     | 1403   | 1967   | 1073    | 41%, 1771c/14r failures    |
-| scc      | 1430   | 2569   | 444     | 35%, 2389c/31r failures    |
-| xcc      | 753    | 2541   | 1256    | 22%, 2123c failures        |
-| cproc    | 332    | 3707   | 404     | 8%, 3347c failures         |
+| lacc     | 1468   | 2018   | 1073    | 42%, 1771c/14r failures    |
+| scc      | 1457   | 2658   | 444     | 35%, 2389c/31r failures    |
+| xcc      | 641    | 2197   | 1256    | 22%, 2123c failures        |
+| cproc    | 344    | 3811   | 404     | 8%, 3347c failures         |
 
 <!-- TEST_RESULTS_TABLE_END -->
 
