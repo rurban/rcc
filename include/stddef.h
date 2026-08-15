@@ -2,6 +2,13 @@
 
 #ifndef RCC_STDDEF_H
 #define RCC_STDDEF_H
+/* See include/stdint.h for why: this bundled header can also be the
+ * first standard header a TU includes, so it must trigger the same
+ * <features.h> feature-macro cascade (__GLIBC__ et al) real glibc
+ * headers would. Macro-only header, no type conflicts. */
+#ifdef __linux__
+#include <features.h>
+#endif
 #endif
 
 #ifndef __need_ptrdiff_t

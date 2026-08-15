@@ -1,6 +1,23 @@
 #ifndef RCC_STDINT_H
 #define RCC_STDINT_H
 
+/* This bundled header shadows glibc's own <stdint.h> -- the header
+ * virtually every non-trivial C translation unit includes first.
+ * Real gcc's <stdint.h> transitively pulls in glibc's <features.h>,
+ * which defines __GLIBC__/__USE_GNU/etc; a lot of real-world code
+ * gates GNU-extension declarations (e.g. <dlfcn.h>'s Dl_info/dladdr)
+ * behind `#if defined(__GLIBC__)`. Without this, that check silently
+ * evaluates false for the whole TU since our own headers never
+ * trigger it. <features.h> declares only feature-test macros (plus
+ * <sys/cdefs.h>/<gnu/stubs.h>, likewise macro-only) -- no types -- so
+ * pulling it in here cannot conflict with our own typedefs below.
+ * found via test/third_party/test_nqp: dyncall's dynload_syms_elf.c
+ * (`#if defined(__GLIBC__) #define _GNU_SOURCE ...`) never saw
+ * Dl_info/dladdr declared in <dlfcn.h>. */
+#ifdef __linux__
+#include <features.h>
+#endif
+
 typedef signed char int8_t;
 typedef unsigned char uint8_t;
 typedef short int16_t;

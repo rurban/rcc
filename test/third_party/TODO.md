@@ -793,6 +793,44 @@ native x86-64 (Unit 4213/4213, Torture 3605/3609 — 0 failed, 354
 skipped, 4 todo — Dg-error 34/34, Link 8/8); ARM64 and mingw cross-builds
 verified clean. New regression test: `test/test_unclosed_string_warn.c`.
 
+### Fixed (2026-08-15, bundled-header **GLIBC** feature-macro visibility session)
+
+- **`__GLIBC__` (and every macro glibc's own `<features.h>` derives from
+  it, e.g. `__USE_GNU`) stayed permanently undefined for the whole
+  translation unit** (`include/stdint.h`, `include/stddef.h`) — a
+  common real-world idiom gates GNU-extension declarations behind
+  `#if defined(__GLIBC__) #define _GNU_SOURCE ... #endif`, placed
+  _after_ an earlier system-header include (since `<features.h>` is
+  itself include-guarded, re-including it later can't retroactively
+  pick up a `_GNU_SOURCE` defined only after the first pass). Real gcc
+  satisfies this because glibc's own `<stdint.h>`/`<stddef.h>`
+  transitively `#include <bits/libc-header-start.h>` ->
+  `<features.h>`, which unconditionally defines `__GLIBC__` — and
+  `<stdint.h>` in particular is the header virtually every non-trivial
+  C file includes first. rcc's own bundled `<stdint.h>`/`<stddef.h>`
+  (which shadow glibc's by include search order, by design, to avoid
+  redeclaring conflicting typedefs) never triggered that cascade, so
+  `__GLIBC__` silently never became visible, and dependent chains like
+  `<dlfcn.h>`'s `Dl_info`/`dladdr` (gated on `__USE_GNU`) never got
+  declared -- "undeclared variable"/"expected specific operator" on
+  legitimate, real-gcc-clean code. Fixed by having both bundled headers
+  `#include <features.h>` (guarded to `__linux__` targets only, never
+  mingw/Windows) on first inclusion; `<features.h>` declares only
+  feature-test macros (plus `<sys/cdefs.h>`/`<gnu/stubs.h>`, likewise
+  macro-only) and no types, so this cannot conflict with either
+  header's own typedefs.
+  → found via test/third_party/test_nqp (MoarVM's vendored dyncall
+  library, `3rdparty/dyncall/dynload/dynload_syms_elf.c:52-61`); the
+  identical `Dl_info`/`__GLIBC__` idiom recurs in other real-world
+  codebases and was previously miscategorized as a candidate rcc bug
+  for test_nqp specifically in this file (see "Needs fixing" above,
+  now corrected). Verified directly: `dyncall/dynload`'s
+  `Makefile.embedded` now builds `libdynload_s.a` cleanly with rcc.
+  Regression test: `test/test_glibc_gated_gnu_source.c` (new).
+  `make check-all`: 0 failed on native x86-64 (Unit 4214/4214, Torture
+  3605/3609 -- 0 failed, 354 skipped, 4 todo -- Dg-error 34/34, Link
+  8/8); ARM64 cross-build verified clean.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1909,7 +1947,12 @@ a multi-session effort, not a quick win.
      NOT an rcc bug** — real gcc rejects the identical construct too
      (glibc's own `<sys/acl.h>` on this system already declares
      `acl_get_file_at`/etc. with different signatures than gtar's own
-     gnulib polyfill expects); `dlfcn.h`'s `Dl_info` usage (test_nqp).
+     gnulib polyfill expects). **`dlfcn.h`'s `Dl_info`/`dladdr` usage
+     (test_nqp, dyncall's `dynload_syms_elf.c`) is fixed** — see "Fixed
+     (2026-08-15, bundled-header `__GLIBC__` feature-macro visibility
+     session)" above (rcc's own bundled `<stdint.h>`/`<stddef.h>` never
+     made `__GLIBC__` visible, so the file's own `#if defined(__GLIBC__)`
+     guard around `_GNU_SOURCE`/`__USE_GNU` silently never fired).
      **wolfSSL's macro-generated union member declaration
      (test_wolfssl, `hash.h:109-254`) is fixed** — passes cleanly now
      (confirmed via a full CMake build plus a fresh run this session:
