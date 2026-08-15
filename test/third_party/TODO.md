@@ -639,6 +639,94 @@ New regression tests: `test/test_const_param_type_leak.c`; extended
 `permti256`/`lddqu256`/`pblendvb128`/`blendvps`/`blendvpd` coverage,
 all cross-checked against real `gcc -mavx2 -msse4.1` output.
 
+### Fixed (2026-08-15, test_noplate `_Generic` array/struct-tag session — 4 stacked bugs)
+
+- **`_Generic`/`__builtin_types_compatible_p` rejected an unsized array
+  `T[]` against a sized `T[N]`, and any array against a VLA of the same
+  element type** (`parser.c`, `type_equal()`) — C11 6.2.7p1 array
+  compatibility only requires matching sizes when BOTH sides specify a
+  constant one; an incomplete/unsized array (or a VLA, whose length is
+  never a compile-time criterion) is compatible with any size.
+  `type_equal()`'s `TY_ARRAY` case required an exact `->size` match and
+  the shared kind check upstream rejected `TY_ARRAY` vs `TY_VLA`
+  outright, even though the sibling `types_compatible_p_qual()` (backing
+  `__builtin_types_compatible_p`) already implemented the correct rule.
+  Restructured `type_equal()` to run the same array/VLA unification
+  before the strict kind check. Found via noplate's
+  `array_lengthof()`/`vec2array()` macros' `TYPE_CHECK(typeof(x[0])(*)[],
+&x)` idiom (assert "x is really some array of T", any length) and its
+  VLA-returning `vec2array()` helper, both of which always missed via
+  `_Generic`. Regression test: `test/test_generic_array_unsized.c` (new).
+- **A struct/union tag redeclared with a byte-for-byte identical body in
+  the SAME scope was always allocated a fresh, distinct `Type`** —
+  `parser.c`, `struct_or_union_specifier()`. Real GCC silently treats an
+  exact same-scope tag redefinition as the SAME type (a documented GNU/
+  C23 extension); rcc instead always shadowed with a brand-new `Type`,
+  so `_Generic`/`__builtin_types_compatible_p` (which key struct
+  identity on `members` pointer equality) never matched a later
+  occurrence against the type captured at an object's own declaration.
+  Load-bearing for macro libraries that re-emit a tag's full definition
+  at every use site (noplate's `#define span(T) struct CONCAT(span_, T)
+{ ... }`). Fixed by deferring `push_tag()` for this one case: parse
+  the redefinition's body into its own `Type` first, then compare
+  structurally against the existing tag's `Type`; reuse the original on
+  an exact match, else register the new one as an ordinary shadowing
+  definition (previous behavior). Correctness-critical scope guard
+  (found via the GCC torture regression this introduced,
+  `c23-tag-6`/`c23-tag-composite-2`): only applies when the existing tag
+  was declared at the SAME block depth — added a `depth` field to
+  `TagScope`, mirroring `EnumTag`'s existing identical convention, so a
+  NESTED-scope tag of the same name still gets ordinary shadowing (a
+  fresh, distinct, initially-incomplete type, per C11/C23 alike).
+  Regression test: `test/test_struct_tag_redef_identical.c` (new).
+- **`-iquote` was folded into the same include-search list as `-I`/
+  `-isystem`/`-idirafter`, so its directory leaked into `#include
+<...>` (angle-bracket) resolution** — `main.c`, `preprocess.c`.
+  `-iquote dir` must apply ONLY to `#include "..."` (confirmed against
+  real gcc); rcc's `-iquote` argument handling called the same
+  `add_include_path()` as `-I`, and `build_search_dirs()` had no
+  quote-vs-angle distinction at all. Added a separate
+  `add_quote_include_path()` / `quote_include_paths[]` list, consulted
+  by `build_search_dirs()` only when `is_angle` is false; threaded the
+  new `is_angle` parameter through `resolve_include_next()` (previously
+  missing it entirely) and its one call site.
+- **rcc's own bundled include dir (`RCC_INCDIR`) was searched before
+  ANY `-iquote` directory for a quote-form include**, so a project's own
+  same-named header (e.g. noplate's `#include "string.h"`, a file
+  outside its `-iquote ./src/` root) always resolved to rcc's unrelated
+  bundled compatibility shim instead — confirmed against real gcc (a
+  `-iquote dir` with `dir/stdarg.h` present satisfies `#include
+"stdarg.h"` ahead of gcc's own bundled one). Reordered
+  `build_search_dirs()` to put `-iquote` dirs before `RCC_INCDIR` for
+  the quote form ONLY; `-I`/`-isystem`/`-idirafter` and the angle form
+  both deliberately keep `RCC_INCDIR` first, unchanged — rcc's bundled
+  headers are also a deliberate injection layer several other
+  third-party projects rely on resolving ahead of `-I` (ast/ksh93's own
+  relative-escape `#include <../include/wchar.h>` idiom via
+  `#include_next`, covered by the pre-existing
+  `test_include_next_skips_user_dirs.c`/`test_include_next_dup_incdir.c`
+  — widening the reorder to `-I`/angle-form broke both). The two
+  positional (`dirs[0]`/`dirs[1]`) checks in `resolve_include()`'s
+  self-active guard and `resolve_include_next()`'s bundled-rung-skip
+  logic — both written assuming `RCC_INCDIR` never moves — were made
+  value-based (`is_bundled_incdir()`) so they stay correct regardless of
+  how many `-iquote` dirs now precede it. Regression test:
+  `test/test_iquote_precedes_bundled.c` (new; also asserts the angle
+  form is unaffected).
+
+All four bugs were found end-to-end via **test_noplate**
+(https://github.com/mrirobert/noplate — Martin Uecker's type-generic
+programming header library), which now builds its full library and all
+six of its own tests (`tests/{list,maybe,span,string,vec,variadic}`)
+cleanly and passes them all (`make test`, `CC=rcc`). `make check-all`:
+0 failed on native x86-64 (Unit 254/254, TCC 118/118, Compliance
+15/15, C-testsuite 220/220, Torture 3605/3609 — 0 failed, 354 skipped,
+4 todo — Dg-error 34/34, Link 8/8); ARM64 and mingw cross-builds
+verified clean. New regression tests:
+`test/test_generic_array_unsized.c`,
+`test/test_struct_tag_redef_identical.c`,
+`test/test_iquote_precedes_bundled.c`.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1747,10 +1835,16 @@ a multi-session effort, not a quick win.
      test_tcl); an unclosed string literal lexer false-positive
      (test_gnutls, `config.h:2359`); conflicting-types false-positive
      between a local prototype and a generic-function expansion
-     (test_gtar, `xattrs.c`); a `_Generic` dispatch macro rejecting a
-     valid association (test_noplate); `dlfcn.h`'s `Dl_info` usage
-     (test_nqp); wolfSSL's macro-generated union member declaration
-     (test_wolfssl, `hash.h:109-254`). **AVX2 header gap plus 5
+     (test_gtar, `xattrs.c`); `dlfcn.h`'s `Dl_info` usage (test_nqp);
+     wolfSSL's macro-generated union member declaration (test_wolfssl,
+     `hash.h:109-254`). **A `_Generic` dispatch macro rejecting a valid
+     association (test_noplate) is fixed**, see "Fixed (2026-08-15,
+     test_noplate `_Generic` array/struct-tag session — 4 stacked
+     bugs)" above — four stacked bugs (array/VLA `_Generic`
+     compatibility, identical-redefinition struct-tag reuse, `-iquote`
+     leaking into angle-form resolution, `-iquote` vs rcc's own bundled
+     include dir precedence), not just the one originally suspected.
+     **AVX2 header gap plus 5
      stacked codegen bugs (test_wuffs) are fixed**, see "Fixed
      (2026-08-15, test_wuffs AVX2/SSE4.1 session — 5 stacked bugs)"
      above. **A C99 flexible array member inside a struct (test_bfs,

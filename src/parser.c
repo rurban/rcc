@@ -55,6 +55,7 @@ struct TagScope {
     TagScope *hash_next;
     char *name;
     Type *ty;
+    int depth; // block depth of the declaration (same-scope redef detection)
 };
 
 struct EnumConst {
@@ -1310,6 +1311,7 @@ static TagScope *push_tag(char *name, Type *ty) {
     TagScope *tag = arena_alloc(sizeof(TagScope));
     tag->name = name;
     tag->ty = ty;
+    tag->depth = current_block_depth;
     tag->next = tags;
     tags = tag;
     tag_htab_add(tag);
@@ -3894,6 +3896,33 @@ static void check_duplicate_member(Member *list, Member *newm, Token *tok) {
     }
 }
 
+// Forward decl: type_equal() (member-type comparison for identical-
+// redefinition detection below) is defined much later, alongside the
+// rest of _Generic's compatible-type machinery.
+static bool type_equal(Type *a, Type *b);
+
+// True if `a` and `b` are structurally identical struct/union bodies —
+// same member count, each pair same name/type/offset/bitfield packing,
+// same overall size/align. Used only to recognize a byte-for-byte
+// identical same-scope tag redefinition (see struct_or_union_specifier's
+// `redef_of` handling) as the SAME type, matching real GCC.
+static bool struct_bodies_identical(Type *a, Type *b) {
+    if (a->size != b->size || a->align != b->align)
+        return false;
+    Member *ma = a->members, *mb = b->members;
+    for (; ma && mb; ma = ma->next, mb = mb->next) {
+        if (ma->name != mb->name)
+            return false;
+        if (ma->offset != mb->offset || ma->bit_width != mb->bit_width)
+            return false;
+        if (ma->bit_width && ma->bit_offset != mb->bit_offset)
+            return false;
+        if (!type_equal(ma->ty, mb->ty))
+            return false;
+    }
+    return !ma && !mb;
+}
+
 static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) {
     tok = tok->next;
     int struct_attr_align = 0;
@@ -3916,6 +3945,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         error_tok(tok, "expected '{' or ';' after attributes on struct or union tag");
 
     Type *ty = NULL;
+    Type *redef_of = NULL; // set only for "redefine an already-complete tag" (see below)
     if (tag_tok) {
         TagScope *tag = find_tag(tag_tok);
         if (tag && !equalc(tok, "{")) {
@@ -3925,6 +3955,34 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             // Completing a forward-declared (incomplete) type: reuse existing Type object
             // so all pointers to it (typedefs, etc.) see the completed definition.
             ty = tag->ty;
+        } else if (tag && equalc(tok, "{") && tag->ty->has_body && tag->depth == current_block_depth) {
+            // Redefining an ALREADY-complete tag with a fresh body — e.g.
+            // noplate's `#define span(T) struct CONCAT(span_, T) { ... }`
+            // idiom, which re-emits the full `struct span_float { ... }`
+            // body at every use site, relying on GCC's real (confirmed)
+            // behavior of silently treating a byte-for-byte identical
+            // redefinition as the SAME type rather than a distinct one —
+            // load-bearing for `_Generic`/`__builtin_types_compatible_p`,
+            // which key struct identity on this exact Type pointer
+            // (type_equal()'s `a->members == b->members`). Registering the
+            // new Type here immediately would make every later `span(T)*`
+            // reference a *different* pointer identity from the one
+            // captured at `vf`'s own declaration, so `_Generic` would
+            // never match. Parse this body into its own fresh Type first
+            // (below), then compare structurally against `tag->ty` once
+            // complete; push_tag() only runs, deferred, if they differ.
+            // Gated on `tag->depth == current_block_depth` (mirrors
+            // EnumTag's identical convention): a NESTED-scope tag of the
+            // same name is ordinary shadowing (always a fresh, distinct
+            // type per C11/C23 alike, initially incomplete during its own
+            // body parse) and must fall through to the plain "New
+            // definition" branch below instead.
+            ty = arena_alloc(sizeof(Type));
+            ty->kind = is_union ? TY_UNION : TY_STRUCT;
+            ty->size = 0;
+            ty->align = 1;
+            ty->bitfield_mode = struct_attr.bitfield_mode;
+            redef_of = tag->ty;
         } else {
             // New definition (possibly shadowing an outer-scope tag)
             ty = arena_alloc(sizeof(Type));
@@ -4492,6 +4550,20 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     } else {
         ty->size = is_union ? align_to(max_size, final_align) : align_to(offset, final_align);
     }
+    if (redef_of && struct_bodies_identical(redef_of, ty)) {
+        // Byte-for-byte identical redefinition (e.g. noplate's `span(T)`
+        // idiom): discard the freshly parsed Type and hand back the
+        // ORIGINAL one, so every _Generic/type-compat check keyed on
+        // pointer identity still matches across every use site.
+        *rest = tok;
+        return redef_of;
+    }
+    if (redef_of)
+        // Genuinely conflicting redefinition of the same tag: register
+        // the new (shadowing) definition now, deferred from the branch
+        // above so a self-referencing member during parsing still saw
+        // the OLD tag.
+        push_tag(tag_tok->name, ty);
     *rest = tok;
     return ty;
 }
@@ -8728,6 +8800,34 @@ static bool type_equal(Type *a, Type *b) {
         return true;
     if (!a || !b)
         return false;
+    // C11 6.2.7p1 array-type compatibility: element types must be
+    // compatible, and array size only has to match when BOTH sides
+    // specify a constant size — an incomplete/unsized array `T[]` (size
+    // 0) is compatible with any sized `T[N]`, and either side being a
+    // VLA (runtime-computed size, e.g. the `vec2array()`-style macros
+    // noplate uses, whose array size is `vec_length(...)`) makes the
+    // length irrelevant entirely. type_equal() backs both _Generic's
+    // association matching (C11 6.5.1.1p2, itself defined via
+    // "compatible type") and redeclaration-conflict checking — both need
+    // this relaxation, so it must run before the strict a->kind !=
+    // b->kind check below (a fixed array is comparable against a VLA of
+    // the same element type). types_compatible_p_qual() below already
+    // implements the identical rule; this mirrors it. Real bug: noplate's
+    // TYPE_CHECK(typeof(x[0])(*)[], &x) idiom always missed via
+    // _Generic, both on the unsized-`[]` side and the VLA side.
+    bool a_arr = a->kind == TY_ARRAY || a->kind == TY_VLA;
+    bool b_arr = b->kind == TY_ARRAY || b->kind == TY_VLA;
+    if (a_arr || b_arr) {
+        if (!a_arr || !b_arr)
+            return false;
+        if (a->qual != b->qual)
+            return false;
+        if (!type_equal(a->base, b->base))
+            return false;
+        if (a->kind == TY_VLA || b->kind == TY_VLA)
+            return true;
+        return a->size == 0 || b->size == 0 || a->size == b->size;
+    }
     if (a->kind != b->kind)
         return false;
     if (a->qual != b->qual)
@@ -8743,10 +8843,6 @@ static bool type_equal(Type *a, Type *b) {
     case TY_COMPLEX:
         return type_equal(a->base, b->base);
     case TY_PTR:
-        return type_equal(a->base, b->base);
-    case TY_ARRAY:
-        if (a->size != b->size)
-            return false;
         return type_equal(a->base, b->base);
     case TY_FUNC:
         if (!type_equal(a->return_ty, b->return_ty))

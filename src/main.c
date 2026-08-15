@@ -681,12 +681,15 @@ int main(int argc, char **argv) {
         } else if (!strncmp(argv[i], "-iquote", 7) || !strncmp(argv[i], "-isystem", 8) ||
                    !strncmp(argv[i], "-idirafter", 10)) {
             // GCC include-path variants, each taking a directory argument
-            // (attached, e.g. -isystem/usr/foo, or as the next argv). rcc
-            // keeps a single include search list, so fold the dir into it.
-            // The argument MUST be consumed: otherwise the bare directory
-            // was left to be misread as an input file, e.g. noplate's
-            // `-iquote ./src` produced "error: ./src: file too large".
+            // (attached, e.g. -isystem/usr/foo, or as the next argv).
+            // -iquote is quote-form-only ("..." includes, never <...>);
+            // -isystem/-idirafter (like -I) apply to both forms, so they
+            // still fold into the shared list. The argument MUST be
+            // consumed: otherwise the bare directory was left to be
+            // misread as an input file, e.g. noplate's `-iquote ./src`
+            // produced "error: ./src: file too large".
             size_t fl = argv[i][2] == 'q' ? 7 : (argv[i][2] == 's' ? 8 : 10);
+            bool is_quote = argv[i][2] == 'q';
             char *path = argv[i] + fl;
             if (*path == '\0') {
                 if (++i >= argc) {
@@ -695,7 +698,10 @@ int main(int argc, char **argv) {
                 }
                 path = argv[i];
             }
-            add_include_path(path);
+            if (is_quote)
+                add_quote_include_path(path);
+            else
+                add_include_path(path);
         } else if (!strcmp(argv[i], "-xc") || (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "c"))) {
             if (!strcmp(argv[i], "-x")) i++; // skip "c"
         } else if (!strcmp(argv[i], "-x") && i + 1 < argc && !strcmp(argv[i + 1], "none")) {

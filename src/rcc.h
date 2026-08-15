@@ -129,6 +129,7 @@ void add_define(char *def);
 void add_undef(char *name);
 void remove_cmdline_define(const char *name);
 void add_include_path(const char *path);
+void add_quote_include_path(const char *path); // -iquote: quote-form ("...") includes only
 // -nostdinc: skip system include paths
 extern bool opt_nostdinc;
 // Make dependency generation (-Wp,-MMD, / -MD / -MMD / -MF / -MT / -MQ / -MP)

@@ -160,11 +160,24 @@ static Macro *saved_macros;
 static MacroStack *macro_stack;
 static const char *user_include_paths[64];
 static int nb_user_include_paths;
+// -iquote dirs: GCC searches these ONLY for `#include "..."`, never for
+// `#include <...>` -- unlike -I/-isystem/-idirafter, which apply to both
+// forms and stay in user_include_paths above. Kept in a separate list so
+// build_search_dirs() can skip it for angle includes (see is_angle
+// param). Confirmed against real gcc: `-iquote dir` with `dir/foo.h`
+// present must NOT satisfy `#include <foo.h>`.
+static const char *quote_include_paths[64];
+static int nb_quote_include_paths;
 static bool macros_inited;
 
 void add_include_path(const char *path) {
     if (nb_user_include_paths < 64)
         user_include_paths[nb_user_include_paths++] = str_intern(path, strlen(path));
+}
+
+void add_quote_include_path(const char *path) {
+    if (nb_quote_include_paths < 64)
+        quote_include_paths[nb_quote_include_paths++] = str_intern(path, strlen(path));
 }
 
 static void clear_macros(void) {
@@ -186,6 +199,7 @@ void rcc_reset_state(void) {
     macro_stack = NULL;
     memset(macro_htab, 0, sizeof(macro_htab));
     nb_user_include_paths = 0;
+    nb_quote_include_paths = 0;
     macros_inited = false;
     pp_counter = 0;
     once_files = NULL;
@@ -594,12 +608,31 @@ static char *full_path(char *path);
 #define RCC_INCDIR "include"
 #endif
 
-// Build the ordered list of directories searched for <angle> includes:
-// bundled rcc include dir, then user -I paths, then system paths.
-// Quoted includes additionally probe the current file's directory first
-// (handled directly in resolve_include), so it is not part of this list.
-static int build_search_dirs(const char **dirs, int max) {
+// Build the ordered list of directories searched for an include:
+// (quote form only) -iquote dirs, then rcc's own bundled include dir
+// (RCC_INCDIR / its "include" source-tree fallback), then user -I/
+// -isystem/-idirafter paths, then system paths. Only -iquote moves
+// ahead of RCC_INCDIR: GCC lets a user's own -iquote file of the same
+// name shadow its private compiler headers for the quote form
+// specifically (confirmed directly against gcc: `-iquote dir` with
+// `dir/string.h` present satisfies `#include "string.h"` ahead of any
+// bundled one) -- load-bearing for noplate's own `#include "string.h"`
+// (a file OUTSIDE its `-iquote ./src/` root) needing to reach its own
+// src/string.h rather than rcc's unrelated bundled include/string.h.
+// -I/-isystem/-idirafter and the angle form both keep RCC_INCDIR
+// FIRST, unchanged from before -iquote existed: rcc's bundled headers
+// are also a deliberate *injection* layer several third-party projects
+// (ast/ksh93's own relative-escape `#include <../include/wchar.h>`
+// idiom, chaining via #include_next to the real system header) rely on
+// resolving to RCC_INCDIR before any -I directory -- widening the
+// override to -I too would break that. Quoted includes additionally
+// probe the current file's own directory first (handled directly in
+// resolve_include), so it is not part of this list.
+static int build_search_dirs(const char **dirs, int max, bool is_angle) {
     int n = 0;
+    if (!is_angle)
+        for (int i = 0; i < nb_quote_include_paths && n < max; i++)
+            dirs[n++] = quote_include_paths[i];
     if (n < max) dirs[n++] = RCC_INCDIR;
     if (strcmp(RCC_INCDIR, "include") != 0 && n < max) dirs[n++] = "include";
     for (int i = 0; i < nb_user_include_paths && n < max; i++)
@@ -608,6 +641,16 @@ static int build_search_dirs(const char **dirs, int max) {
         for (int i = 0; sys_include_paths[i] && n < max; i++)
             dirs[n++] = sys_include_paths[i];
     return n;
+}
+
+// True for a build_search_dirs() entry that is rcc's own bundled include
+// dir or its "include" source-tree fallback alias (see build_search_dirs
+// -- both name the SAME logical bundled-header set). Value-based, not
+// positional: unlike RCC_INCDIR's old fixed dirs[0]/dirs[1] slots, its
+// position within dirs[] now varies with how many -iquote dirs precede
+// it for the quote form.
+static bool is_bundled_incdir(const char *d) {
+    return !strcmp(d, RCC_INCDIR) || !strcmp(d, "include");
 }
 
 // `curr_file`/`curr_display` are the including file's absolute-identity
@@ -641,7 +684,7 @@ static char *resolve_include_raw(char *curr_file, char *curr_display, char *spec
         }
     }
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128);
+    int nd = build_search_dirs(dirs, 128, is_angle);
     for (int i = 0; i < nd; i++) {
         path = path_join(dirs[i], spec);
         if (file_exists(path)) return canonical_path(path);
@@ -689,12 +732,11 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
         }
     }
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128);
-    bool has_include_fallback = strcmp(RCC_INCDIR, "include") != 0;
+    int nd = build_search_dirs(dirs, 128, is_angle);
     for (int i = 0; i < nd; i++) {
         char *path = path_join(dirs[i], spec);
         if (!file_exists(path)) continue;
-        if (i == 0 || (i == 1 && has_include_fallback)) {
+        if (is_bundled_incdir(dirs[i])) {
             char *resolved = canonical_path(full_path(path));
             bool self_active = false;
             for (PPLvl *l = lvl; l; l = l->next)
@@ -794,9 +836,9 @@ static bool is_noop_forward_to_active(char *path) {
 // #include_next: search the same ordered list, but start *after* the directory
 // that supplied curr_file. Lets a bundled header (e.g. include/wchar.h) fall
 // through to the system header of the same name.
-static char *resolve_include_next(char *curr_file, char *spec) {
+static char *resolve_include_next(char *curr_file, char *spec, bool is_angle) {
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128);
+    int nd = build_search_dirs(dirs, 128, is_angle);
     // curr_file resolved from a spec with a subdirectory component (e.g.
     // <sys/stat.h>) lives at "<searchdir>/sys/stat.h": its directory is
     // "<searchdir>/sys", not the search-path entry "<searchdir>" itself.
@@ -814,28 +856,32 @@ static char *resolve_include_next(char *curr_file, char *spec) {
         file_dir[file_dir_len - spec_dir_len] = '\0';
     }
     char *cur_dir = canonical_path(full_path(file_dir));
-    // RCC_INCDIR (dirs[0]) and the "include" fallback (dirs[1], added
-    // only when it differs from RCC_INCDIR -- see build_search_dirs())
-    // are two alternate *physical* locations for the SAME logical
-    // bundled-header set: an installed copy (e.g. /usr/local/include/rcc,
-    // which every build -- installed or not -- defaults RCC_INCDIR to)
-    // and the source tree's own include/. A dev/test invocation of a
-    // non-installed binary on a machine that has ever run `make install`
-    // has BOTH present with byte-identical content. If the current file
-    // was found in *either* slot, #include_next must escape the whole
-    // bundled-header rung, not just the one physical path that matched:
-    // otherwise the *other* slot's identical copy is "found" next, its
-    // include guard (already set by the first copy) silently swallows
-    // its entire body -- including its own #include_next -- so the real
-    // system header underneath is never reached and #include_next
-    // resolves to a file that contributes no content at all.
-    bool has_include_fallback = strcmp(RCC_INCDIR, "include") != 0;
+    // RCC_INCDIR and its "include" source-tree fallback alias (see
+    // build_search_dirs() / is_bundled_incdir()) are two alternate
+    // *physical* locations for the SAME logical bundled-header set: an
+    // installed copy (e.g. /usr/local/include/rcc, which every build --
+    // installed or not -- defaults RCC_INCDIR to) and the source tree's
+    // own include/. A dev/test invocation of a non-installed binary on a
+    // machine that has ever run `make install` has BOTH present with
+    // byte-identical content. If the current file was found in *either*
+    // slot, #include_next must escape the whole bundled-header rung, not
+    // just the one physical path that matched: otherwise the *other*
+    // slot's identical copy is "found" next, its include guard (already
+    // set by the first copy) silently swallows its entire body --
+    // including its own #include_next -- so the real system header
+    // underneath is never reached and #include_next resolves to a file
+    // that contributes no content at all. bundled_end tracks where that
+    // whole rung ends within dirs[] (position varies with how many
+    // quote/user dirs precede it -- see build_search_dirs()).
+    int bundled_end = 0;
+    for (int i = 0; i < nd; i++)
+        if (is_bundled_incdir(dirs[i])) bundled_end = i + 1;
     int start = 0;
     for (int i = 0; i < nd; i++) {
         if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i])))) {
             start = i + 1;
-            if (has_include_fallback && (i == 0 || i == 1))
-                start = 2;
+            if (is_bundled_incdir(dirs[i]))
+                start = bundled_end;
         }
     }
     for (int i = start; i < nd; i++) {
@@ -2861,7 +2907,7 @@ static void do_directive(void) {
         }
         if (!spec) return;
         char *disp = NULL;
-        char *path = dn == dn_include_next ? resolve_include_next(lvl->fpath, spec)
+        char *path = dn == dn_include_next ? resolve_include_next(lvl->fpath, spec, is_angle)
                                            : resolve_include(lvl->fpath, lvl->filename, spec, is_angle, &disp, false);
         if (!path) {
             fprintf(stderr, "%s:%d: error: include file '%s' not found\n", lvl->fpath, lvl->reported_line, spec);
@@ -3412,6 +3458,7 @@ char *dump_macros_text(void) {
 }
 void print_search_dirs(const char *gcc) {
     printf("install: %s\n", RCC_INCDIR);
+    for (int i = 0; i < nb_quote_include_paths; i++) printf("include: =%s\n", quote_include_paths[i]);
     for (int i = 0; i < nb_user_include_paths; i++) printf("include: =%s\n", user_include_paths[i]);
     for (int i = 0; sys_include_paths[i]; i++) printf("include: =%s\n", sys_include_paths[i]);
     char cmd[512];
