@@ -261,6 +261,16 @@ static LVar *current_fn_scope_locals;
 static char *parser_current_fn;
 static bool current_fn_is_inline; // parsing body of a non-static inline fn
 static int current_block_depth;
+// True for the duration of global_initializer()'s call tree (a genuine
+// static/global-duration object's own initializer, including nested
+// compound literals reached through it) -- as opposed to merely being
+// AT block depth 0 syntactically, which is ALSO true while parsing a
+// function prototype's parameter-list array-size expression (C23
+// 6.5.2.5p10 gives a compound literal there automatic, not static,
+// storage duration -- torture/c23-complit-1.c's `void f(int
+// a[(int){x}]);` regressed when file-scope detection used
+// current_block_depth == 0 alone).
+static bool in_global_var_init;
 static bool suppress_fn_scope_update;
 static bool fn_uses_vla;
 
@@ -1550,6 +1560,7 @@ static Node *assign(Token **rest, Token *tok);
 bool eval_const_expr(Node *node, long long *val);
 static bool eval_const_fexpr(Node *node, long double *val);
 static bool eval_const_addr_expr(Node *node, long long *val);
+static void global_initializer_impl(Token **rest, Token *tok, LVar *var);
 static void global_initializer(Token **rest, Token *tok, LVar *var);
 
 static void maybe_update_align(int *align, int value) {
@@ -2506,7 +2517,21 @@ bool eval_const_expr(Node *node, long long *val) {
             return false;
         return eval_const_expr(lhs ? node->then : node->els, val);
     case ND_LVAR:
-        if (node->var && node->var->is_constexpr && node->var->has_init) {
+        // init_val only ever holds a SCALAR constexpr's folded value
+        // (set once, e.g. by the "(T){NUM}" scalar-compound-literal
+        // path); a struct/union/array-typed is_constexpr var's real
+        // data lives in init_data instead (populated by
+        // global_initializer()), so init_val is simply never written
+        // for one and stays its zero-initialized default. Without this
+        // guard, &(aggregate-typed compound literal) folded to the
+        // struct's own garbage "value" (0) here -- via eval_const_expr's
+        // ND_ADDR -> eval_const_addr_expr -> this case chain -- instead
+        // of correctly failing and falling through to extract_reloc()'s
+        // genuine address relocation. Found via njs's
+        // "(uintptr_t) &(njs_webcrypto_algorithm_t){...}": the anon
+        // struct compound literal silently "folded" to address 0.
+        if (node->var && node->var->is_constexpr && node->var->has_init &&
+            (!node->ty || (node->ty->kind != TY_STRUCT && node->ty->kind != TY_UNION && node->ty->kind != TY_ARRAY))) {
             *val = node->var->init_val;
             return true;
         }
@@ -2889,8 +2914,26 @@ static bool eval_double_const_expr(Node *node, double *val) {
         }
         return false;
     }
-    default:
+    default: {
+        // A double-typed initializer whose value is a purely-integer
+        // constant expression this switch doesn't otherwise fold (shifts,
+        // bitwise ops, mod, ...) -- e.g. njs's "NJS_MAX_SAFE_INTEGER"
+        // (`(njs_int64_t) ((1LL << 53) - 1)`) assigned to a `double`
+        // struct member. C's usual arithmetic/assignment conversions
+        // implicitly convert any integer constant to the target floating
+        // type, so fall back to the integer evaluator whenever the node's
+        // own type isn't itself a float (a genuine flonum operand that
+        // reached here has already failed every float-op case above and
+        // must not silently truncate through the integer path).
+        if (node->ty && !is_flonum(node->ty)) {
+            long long ival;
+            if (eval_const_expr(node, &ival)) {
+                *val = node->ty->is_unsigned ? (double)(unsigned long long)ival : (double)ival;
+                return true;
+            }
+        }
         return false;
+    }
     }
 }
 
@@ -6467,6 +6510,30 @@ static Token *global_init_one(Token *tok, LVar *var, Type *ty, int offset) {
         // "(&(type){...})", e.g. linux/hwmon.h's HWMON_CHANNEL_INFO() —
         // which a bare equalc(tok, "&") check misses entirely (tok is "("
         // here, not "&"); peel off that one layer first if present.
+        //
+        // A genuine CAST in front of "&(compound literal)" -- e.g.
+        // "(void *) &(T){...}" -- reinterprets the literal's address as a
+        // different pointer type; njs's njs_symval()/njs_ascii_strval()
+        // macros nest exactly this shape ("(void*) &(njs_value_t){...}").
+        // The address (and thus the relocation) is unaffected by the
+        // cast, so skip over any chain of leading casts first -- the
+        // existing wrapped_amp/bare-"&" detection below never looked past
+        // a leading "(" it couldn't itself resolve to "&".
+        while (equalc(tok, "(") && is_typename(tok->next)) {
+            Token *t2 = tok->next;
+            int depth = 1;
+            while (t2 && depth > 0) {
+                if (equalc(t2, "(")) depth++;
+                else if (equalc(t2, ")"))
+                    depth--;
+                if (depth > 0) t2 = t2->next;
+            }
+            if (!t2 || !equalc(t2, ")")) break;
+            Token *after = t2->next;
+            if (!(equalc(after, "&") && find_compound_literal_start(after->next)))
+                break;
+            tok = after;
+        }
         bool wrapped_amp = equalc(tok, "(") && equalc(tok->next, "&") &&
             find_compound_literal_start(tok->next->next);
         Token *amp_tok = wrapped_amp ? tok->next : tok;
@@ -11357,7 +11424,31 @@ static Node *unary(Token **rest, Token *tok) {
             static int anon_count;
             char *name = format(".Lanon.%d", anon_count++);
             LVar *var;
-            if (is_storage) {
+            // C11 6.5.2.5p10: a compound literal occurring OUTSIDE the
+            // body of a function has STATIC storage duration even
+            // without an explicit `static` keyword (only inside a
+            // function/block does it default to automatic). Without
+            // this, a non-static compound literal reached through this
+            // general expression path while still parsing a global
+            // initializer got materialized as a fake LOCAL object,
+            // whose address extract_reloc() correctly refuses to fold
+            // into a link-time relocation (is_local vars have no
+            // compile-time address) -- e.g. njs's
+            // "(uintptr_t) &(njs_webcrypto_algorithm_t){...}" nested
+            // inside a static njs_webcrypto_entry_t[] array element.
+            //
+            // Gated on in_global_var_init (are we inside
+            // global_initializer()'s call tree for a genuine
+            // static/global object?), NOT bare current_block_depth == 0:
+            // a function prototype's parameter-list array-size
+            // expression is ALSO parsed at block depth 0 but is never
+            // reached through global_initializer() -- a compound
+            // literal there gets automatic storage per C23 6.5.2.5p10
+            // regardless (torture/c23-complit-1.c's
+            // "void f(int a[(int){x}]);" -- this must stay a genuine
+            // local, not a bogus "constant" fold of a mutable global).
+            bool is_file_scope = in_global_var_init && !is_register_cl;
+            if (is_storage || is_file_scope) {
                 var = new_var(name, ty, false);
                 if (is_register_cl)
                     var->is_register = true;
@@ -11367,13 +11458,14 @@ static Node *unary(Token **rest, Token *tok) {
             } else {
                 var = new_var(name, ty, true);
             }
-            // Storage-class compound literal: initialize at compile time
-            if (is_storage) {
+            // Storage-class (or implicitly-static file-scope) compound
+            // literal: initialize at compile time.
+            if (is_storage || is_file_scope) {
                 tok = init_brace_tok;
                 global_initializer(&tok, tok, var);
             }
             Node *result = new_var_node(var, start);
-            if (is_storage)
+            if (is_storage || is_file_scope)
                 goto apply_postfix;
             // Zero-initialize aggregate compound literal like regular locals (C99 6.7.8p10)
             if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION ||
@@ -12170,6 +12262,18 @@ static LVar *parse_params(Token **rest, Token *tok, bool *is_variadic) {
 }
 
 static void global_initializer(Token **rest, Token *tok, LVar *var) {
+    // See in_global_var_init's own comment: set for the duration of this
+    // whole call tree (including nested recursive calls for compound
+    // literals) so the general expression-parser's compound-literal
+    // handling can tell "genuinely parsing a static/global object's
+    // initializer" apart from merely being at block depth 0.
+    bool saved_in_global_var_init = in_global_var_init;
+    in_global_var_init = true;
+    global_initializer_impl(rest, tok, var);
+    in_global_var_init = saved_in_global_var_init;
+}
+
+static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
     // C23 empty initializer `{}` — zero-initialize an object of any type.
     if (equalc(tok, "{") && equalc(tok->next, "}")) {
         var->init_data = arena_alloc(var->ty->size ? var->ty->size : 1);
@@ -13264,14 +13368,25 @@ Program *parse(Token *tok) {
                                     while (pa && pb) {
                                         if (pa->kind != TY_STRUCT && pa->kind != TY_UNION &&
                                             pb->kind != TY_STRUCT && pb->kind != TY_UNION) {
+                                            // C11 6.7.6.3p10: a parameter's declared
+                                            // qualified type is taken as its UNQUALIFIED
+                                            // version for function-type compatibility --
+                                            // a top-level const/volatile/restrict on a
+                                            // by-value parameter (including a function-
+                                            // pointer-typed one) differing between a
+                                            // declaration and its definition is NOT a
+                                            // conflict; real gcc/clang accept it silently
+                                            // even under -Wall -Wextra. njs's
+                                            // njs_vm_external_constructor() declares
+                                            // "njs_function_native_t native" but defines
+                                            // "const njs_function_native_t native" --
+                                            // legal, was previously misdiagnosed here.
                                             Type ta = *pa, tb = *pb;
                                             ta.qual = tb.qual = 0;
                                             if (!type_equal(&ta, &tb)) {
                                                 error_tok(tok, "conflicting types for '%s'", name);
                                                 break;
                                             }
-                                            if (opt_W && pa->qual != pb->qual)
-                                                warn_tok(tok, "conflicting type qualifiers for '%s'", name);
                                         }
                                         pa = pa->param_next;
                                         pb = pb->param_next;

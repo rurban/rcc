@@ -221,6 +221,102 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-15, njs macro-driven initializer session — 6 stacked bugs)
+
+- **A CAST wrapping `&(compound literal)` in a static/global pointer
+  initializer** (e.g. `(void *) &(T){...}`) **was never recognized** —
+  `parser.c`, `global_init_one()`'s pointer-field path. The special
+  token-level `&(compound literal)` detection only matched a bare
+  leading `&` (or one redundant wrapping paren directly around it,
+  `"(&(T){...})"`); a genuine type cast in front (`"(void*) &(T){...}"`)
+  fell straight through to the general expression parser and failed
+  with "expected constant expression in initializer". Fixed by skipping
+  any chain of leading casts (their target type doesn't change the
+  underlying address/relocation) before the existing detection.
+  → njs's `njs_symval()`/`njs_ascii_strval()` macros nest exactly this
+  shape.
+- **A `double`-typed static initializer whose value is a purely-integer
+  constant expression that `eval_double_const_expr()` doesn't itself
+  fold** (shifts, bitwise ops — e.g. `(1LL << 53) - 1`) **hard-errored**
+  instead of converting, since C's usual conversions implicitly convert
+  any integer constant to the target floating type. Fixed by falling
+  back to the integer evaluator (`eval_const_expr()`) whenever the
+  node's own type isn't itself a float.
+  → njs's `NJS_MAX_SAFE_INTEGER` (`(1LL << 53) - 1`) assigned to a
+  `double` struct member.
+- **A top-level `const`/`volatile`/`restrict` qualifier difference on a
+  BY-VALUE function parameter between a declaration and its definition
+  was misdiagnosed as "conflicting type qualifiers"** under `-W`
+  (promoted to a hard error by `-Werror`) — `parser.c`'s redeclaration
+  check compared raw (unstripped) parameter qualifiers. C11 6.7.6.3p10
+  explicitly takes a parameter's declared qualified type as its
+  UNQUALIFIED version for function-type compatibility; real gcc/clang
+  accept this silently even under `-Wall -Wextra`. Removed the
+  false-positive qualifier check entirely (it never matched any real
+  compiler's behavior).
+  → njs's `njs_vm_external_constructor()`, declared with a plain
+  `njs_function_native_t native` parameter but defined with
+  `const njs_function_native_t native`.
+- **rcc's bundled `<math.h>` was missing `M_SQRT1_2` and `M_2_SQRTPI`**
+  — every other standard POSIX/XSI `M_*` constant (`M_PI`, `M_E`,
+  `M_LN2`, ..., `M_2_PI`) was present, these two alone were silently
+  absent. Added both, matching glibc's exact values.
+  → njs's Math object property table (`Math.SQRT1_2`).
+- **A non-`static`-qualified compound literal reached through the
+  general expression-parser path while genuinely parsing a
+  static/global object's own initializer was always treated as having
+  automatic (local) storage duration**, regardless of context — C11
+  6.5.2.5p10 gives a compound literal STATIC storage duration when it
+  occurs outside the body of a function. The resulting fake local var's
+  address can't fold into a link-time relocation, so `.value = 0` got
+  silently written instead of the real address. Initially gated on
+  `current_block_depth == 0`, but that's ALSO true while parsing a
+  function prototype's parameter-list array-size expression (a
+  compound literal there legitimately gets automatic storage per the
+  same C23 rule) — caught as a regression in GCC torture's
+  `c23-complit-1.c` (`void f(int a[(int){x}]);`). Fixed properly with a
+  new `in_global_var_init` flag, true only for the duration of
+  `global_initializer()`'s own call tree (renamed to
+  `global_initializer_impl()`, wrapped), which precisely distinguishes
+  "genuinely parsing a static/global initializer" from "merely at block
+  depth 0".
+  → njs's `(uintptr_t) &(njs_webcrypto_algorithm_t){...}` nested inside
+  a static `njs_webcrypto_entry_t[]` array element.
+- **`eval_const_expr()`'s `ND_LVAR` case read a struct/union/array-typed
+  `is_constexpr` var's `init_val` field** (meaningless for an
+  aggregate — its real data lives in `init_data`, populated by
+  `global_initializer()`; `init_val` stays its zero-initialized
+  default) — via `ND_ADDR` -> `eval_const_addr_expr()` -> this case
+  chain, `&(aggregate-typed compound literal)` silently "folded" to the
+  struct's own garbage value (0) instead of correctly failing and
+  falling through to `extract_reloc()`'s genuine address relocation.
+  This surfaced once the previous fix started creating `is_constexpr`
+  struct-typed static compound literals in this position. Fixed by
+  guarding the fold to exclude `TY_STRUCT`/`TY_UNION`/`TY_ARRAY`.
+  Regression tests: `test/test_cast_addr_compound_literal.c`,
+  `test/test_double_const_shift.c`,
+  `test/test_param_toplevel_qual_redecl.c` (drives rcc as a subprocess
+  under `-W -Werror`, the only way to exercise the qualifier bug),
+  `test/test_math_constants_gnu.c`,
+  `test/test_file_scope_compound_literal_static.c` (all new). PASS at
+  -O0..-O3 on x86-64, ARM64 (qemu-aarch64) and mingw (wine); `make
+check-all`: 0 failed on all three targets (4577/4577, Torture
+  3605/3609 — 0 failed, 354 skipped, 4 todo, Dg-error 34/34, Link 8/8);
+  `c23-complit-1` (the regression these bugs' fixes initially
+  introduced, then fixed properly) re-verified passing. Full
+  verification: njs's ENTIRE `libnjs.a` (lexer, parser, VM, generator,
+  every builtin including `njs_atom.c`/`njs_symbol.c`/`njs_number.c`/
+  `njs_math.c`/`njs_extern.c`/`external/njs_webcrypto_module.c`) now
+  compiles and links cleanly with rcc under its own real build flags
+  (`-W -Werror -std=...`); the full `njs` CLI and unit-test binary
+  built with rcc (only `njs_unit_test.c`/`njs_shell.c` themselves and
+  the final link step used the host `cc`, per njs's own Makefile) pass
+  njs's own real test suite completely: **6054/6054** ("script tests",
+  "externals", "fs module", "backtraces", "vm_internal_api", etc, all
+  100%), and the built `njs` shell interactively evaluates
+  `Number.MAX_SAFE_INTEGER` (`9007199254740991`, the exact shift-based
+  double-constant fix) and `Math.PI` correctly.
+
 ### Fixed (2026-08-15, empty attribute-specifier-sequence before a tag declarator session)
 
 - **A C23 `[[attrs]]` immediately before `struct`/`union`/`enum` was
@@ -1933,8 +2029,10 @@ a multi-session effort, not a quick win.
      construct, not one root cause): an empty-body context (test_lexbor,
      `normalization_forms.c:206` — **fixed**, actually a large-file
      truncation in `read_pp_file()`, see "Fixed (2026-08-15, large file
-     read truncation session)" above); designated-initializer macro tables
-     (test_mquickjs, test_njs); struct member access rcc reports as
+     read truncation session)" above); **designated-initializer macro
+     tables (test_mquickjs) remain open** (test_njs is fixed, see "Fixed
+     (2026-08-15, njs macro-driven initializer session — 6 stacked
+     bugs)" above); struct member access rcc reports as
      "no such member" on legitimate code (test_php, test_cfitsio,
      test_tcl). **An unclosed string literal lexer false-positive
      (test_gnutls, `config.h:2359`) is fixed**, see "Fixed (2026-08-15,

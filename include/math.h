@@ -153,6 +153,8 @@ long double modfl(long double, long double *);
 #define M_PI_4  0.78539816339744830962
 #define M_1_PI  0.31830988618379067154
 #define M_2_PI  0.63661977236758134308
+#define M_2_SQRTPI 1.12837916709551257390
+#define M_SQRT1_2 0.70710678118654752440
 
 // INFINITY / NAN are required by C11 7.12p3/p5 to be constant
 // expressions of type float (glibc: __builtin_inff() / __builtin_nanf
