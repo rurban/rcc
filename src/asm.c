@@ -3385,6 +3385,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // own dedicated encoders).
     if (!strncmp(mnem, "mov", 3) && strcmp(mnem, "movsd") && strcmp(mnem, "movss") &&
         strcmp(mnem, "movdqa") && strcmp(mnem, "movdqu") && strcmp(mnem, "movd") &&
+        strcmp(mnem, "movaps") && strcmp(mnem, "movups") &&
         !(!strcmp(mnem, "movq") && (is_xmm(0) || is_xmm(1)))) {
         // AT&T: src, dst
         bool is_movabs = strstr(mnem, "abs") != NULL;
@@ -4130,7 +4131,19 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
     if (!strcmp(mnem, "movaps")) {
-        x86_movaps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        if (is_mem(0)) x86_movaps_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else if (is_mem(1))
+            x86_movaps_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else
+            x86_movaps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movups")) {
+        if (is_mem(0)) x86_movups_rm(buf, parse_x86_xmm(ops[1]), M(0));
+        else if (is_mem(1))
+            x86_movups_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else
+            sse_rr_np(buf, 0x10, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pxor")) {

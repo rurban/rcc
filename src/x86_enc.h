@@ -458,6 +458,7 @@ void x86_cvtss2sd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_xorpd(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_xorps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
 void x86_movaps(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_movaps_rm(SecBuf *s, X86XmmReg dst, X86Mem src);
 void x86_movaps_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movdqu_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_pxor(SecBuf *s, X86XmmReg dst, X86XmmReg src);

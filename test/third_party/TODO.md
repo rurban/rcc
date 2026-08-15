@@ -173,6 +173,54 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   PASS at -O0..-O3 on x86-64, ARM64 (compiles clean, guarded body
   skipped) and mingw.
 
+### Fixed (2026-08-14, inline-asm XMM constraint session)
+
+- **Inline-asm `"x"`/`"=x"`/`"+x"` (XMM register class) constraint
+  entirely unhandled** — `codegen.c`'s x86-64 GNU inline-asm operand
+  binding. The constraint-matching logic only recognized the fixed
+  single-letter GP register constraints (`"a"`/`"b"`/`"c"`/`"d"`/
+  `"S"`/`"D"`) plus `"m"`/`"i"`/`"n"`; anything else — including
+  `"x"` — silently fell through to the plain `"r"` (GP register)
+  path, which called `alloc_reg()` (an ordinary integer virtual
+  register) and substituted a GP register name (e.g. `"%eax"`) into
+  the template. A real SSE instruction like `__asm__("movaps %1, %0"
+: "=x"(dst) : "x"(src))` between two `vector_size(16)` locals then
+  fed the assembler garbage operand text; the `movaps`/`movdqa`/etc.
+  dispatch's `parse_x86_xmm()` silently falls back to XMM0 for
+  anything not literally `"%xmmN"`, so the instruction became a
+  self-copy that never touched `src`/`dst` at all — no error
+  anywhere. Fixed by recognizing the `"x"` constraint and binding it
+  to a scratch register from xmm8-xmm15 (never touched by this
+  compiler's own vector codegen, which always keeps `vector_size`
+  values in memory and only ever uses xmm0/xmm1 as its own ad-hoc
+  scratch — see `gen_vector()`'s convention), loading the C-level
+  vector value into it before the asm executes (input/read-write) and
+  storing it back after (output/read-write) — mirroring the existing
+  `"m"`/`"=r"`/`"+r"` binding shapes exactly. Found while writing the
+  prior session's PSHUFLW/PSHUFHW regression test.
+  Along the way, exposed and fixed a **second**, separate bug: MOVAPS/
+  MOVUPS had no exclusion from the generic `"mov"`-prefix dispatch
+  (the same class of bug MOVDQA/MOVDQU/MOVD/MOVQ got fixed for in the
+  prior session) — so even a _raw_ `.S`-file `movaps %xmm9,%xmm8`,
+  unrelated to inline-asm, silently mis-assembled as `mov %rdi,%rdi`.
+  Added the exclusion, a missing `x86_movaps_rm` (load-direction)
+  encoder, memory-operand dispatch for MOVAPS/MOVUPS, and applied the
+  same REX over-triggering fix (see the prior session's `maybe_rex()`
+  writeup) to `x86_movaps`/`x86_movaps_rm`/`x86_movaps_mr`/
+  `x86_movups_rm`/`x86_movups_mr` since the xmm8-15 scratch range this
+  fix specifically exercises needs correct REX bits.
+  Regression test: `test/test_asm_xmm_constraint.c` (new: `"=x"`
+  register-to-register copy, `"+x"` read-write, a real SSE2 shuffle
+  through `"x"` operands matching the shape that surfaced the bug, and
+  multiple simultaneous `"x"` operands to exercise the scratch-register
+  counter), cross-checked against real `gcc`-compiled output for every
+  case. PASS at -O0..-O3 on x86-64, ARM64 and mingw; `make check-all`:
+  0 failed on all three targets. Digit-matching constraints (e.g. a
+  separate input using `"0"` to refer back to an `"x"`-constrained
+  output) are not handled — no real-world case in this session's
+  triage needed it; would hit the existing GP-only second-pass logic
+  unmodified if attempted.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1262,17 +1310,9 @@ a multi-session effort, not a quick win.
      PSRLD assembler gaps** — all **fixed**, see "Fixed (2026-08-14,
      array-range designator / overflow builtins / ADX+mxcsr session)"
      above.
-   - **Inline-asm `"x"`/`"=x"` (xmm register) constraint doesn't
-     correctly bind a `vector_size` C local to the asm operand** —
-     found while writing this session's PSHUFLW/PSHUFHW regression
-     test: even a bare `__asm__("movaps %1, %0" : "=x"(dst) :
-"x"(src))` between two `vector_size(16)` locals reads/writes
-     garbage instead of copying the vector. Not attempted this session
-     (worked around by testing the assembler/encoder in isolation via
-     a standalone `.S` file instead, matching
-     `test_asm_aesni_sse2.c`'s existing convention) — needs its own
-     dedicated repro+bisect into how inline-asm operand binding
-     resolves register-class constraints for vector-typed C locals.
+   - **Inline-asm `"x"`/`"=x"` (xmm register) constraint (test_libopus,
+     test_nettle, and likely others)**: **fixed**, see "Fixed
+     (2026-08-14, inline-asm XMM constraint session)" above.
    - **`_mm_cvt_ss2si` intrinsic (test_libopus)**: **fixed**, see
      "Fixed (2026-08-14, array-range designator / overflow builtins /
      ADX+mxcsr session)" above.

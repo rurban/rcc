@@ -1345,12 +1345,18 @@ void x86_xorps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
 }
 void x86_movaps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // movaps: 0F 28 /r
-    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, 0x28, modrxmm(3, d, sr));
+}
+// movaps xmm, m128 (load, aligned): 0F 28 /r
+void x86_movaps_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
+    emit2(s, 0x0f, 0x28);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
 void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     // movaps: 0F 29 /r (store)
-    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x29);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
@@ -1396,13 +1402,13 @@ void sse_rr_f2(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
 
 // movups xmm, m128 (load, unaligned): 0F 10 /r
 void x86_movups_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
-    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x10);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }
 // movups m128, xmm (store, unaligned): 0F 11 /r
 void x86_movups_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
-    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x11);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }

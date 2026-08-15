@@ -12150,6 +12150,12 @@ VReg gen(Node *node) {
 #define ASM_X86_REG(r) (-((int)(r)) - 3)
 #define ASM_IS_X86_REG(v) ((v) <= -3 && (v) >= -18)
 #define ASM_GET_X86_REG(v) ((X86Reg)(-((v)) - 3))
+// "x" (XMM/SSE register) constraint: reserves a scratch register from
+// xmm8-xmm15 for a vector_size C operand, encoded as sentinels
+// disjoint from both virtual regs (0..7) and the GP sentinels above.
+#define ASM_XMM_REG(n) (-(100 + (n)))
+#define ASM_IS_XMM_REG(v) ((v) <= -100 && (v) >= -107)
+#define ASM_GET_XMM_IDX(v) (-((v)) - 100)
         static const char *x86_phy_reg64[] = {
             "%rax", "%rcx", "%rdx", "%rbx", "%rsp", "%rbp", "%rsi", "%rdi",
             "%r8", "%r9", "%r10", "%r11", "%r12", "%r13", "%r14", "%r15"};
@@ -12162,6 +12168,7 @@ VReg gen(Node *node) {
 #define X86REG_CASE(ch, reg) case ch: xreg = reg; is_x86_reg = true; break
         // First pass: allocate registers for outputs and memory operands.
         // Defer matching input constraints (digit) to second pass.
+        int xmm_scratch_count = 0;
         for (int i = 0; i < node->asm_noperands; i++) {
             AsmOperand *op = &node->asm_ops[i];
             const char *c = op->constraint;
@@ -12208,6 +12215,61 @@ VReg gen(Node *node) {
                     op->reg = -1;
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
                 }
+            } else if (*c == 'x') {
+                // "x" (XMM/SSE register) constraint for a vector_size C
+                // operand -- previously unhandled at all, so any "=x"/
+                // "+x"/"x" operand silently fell into the plain
+                // GP-register path below: alloc_reg() grabbed an
+                // ordinary integer virtual register and the substituted
+                // template text became a GP register name (e.g. "%eax")
+                // instead of an xmm one, so a real SSE instruction like
+                // "movaps %1, %0" then hit the assembler's own
+                // parse_x86_xmm() silent-default-to-XMM0 fallback --
+                // reading/writing garbage with no error anywhere.
+                // Reserves a scratch register from xmm8-xmm15 (never
+                // used by ordinary vector codegen, which always keeps
+                // vector_size values in memory and only ever touches
+                // xmm0/xmm1 as its own ad-hoc scratch -- see
+                // gen_vector()'s convention) so binding can't collide
+                // with surrounding code. Vector values always live in
+                // memory here (never natively in a virtual register), so
+                // binding is a load/store around the scratch xmm
+                // register, mirroring the "m"/"=r"/"+r" paths.
+                if (xmm_scratch_count >= 8)
+                    error_tok(node->tok, "too many \"x\" (xmm) inline-asm operands (max 8)");
+                int xn = 8 + xmm_scratch_count;
+                X86XmmReg xmmreg = (X86XmmReg)xn;
+                snprintf(op->asm_str, sizeof(op->asm_str), "%%xmm%d", xn);
+                if (op->is_output && !op->is_rw) {
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    op_regs[i] = ASM_XMM_REG(xmm_scratch_count);
+                    op->reg = -1;
+                } else if (op->is_rw) {
+                    VReg r_addr = gen_addr(op->expr);
+                    op_addr[i] = r_addr;
+                    x86_movups_rm(cg_sec, xmmreg, x86_mem(REG(r_addr), 0));
+                    op_regs[i] = ASM_XMM_REG(xmm_scratch_count);
+                    op->reg = -1;
+                } else {
+                    // Input: a plain lvalue takes its address directly;
+                    // a non-lvalue vector expression (e.g. a function
+                    // call result or compound literal) still resolves to
+                    // a valid address here -- vector_size values are
+                    // never held natively in a virtual register in this
+                    // compiler, only ever addressed in memory (see
+                    // gen_vector()'s own alloc_int128_addr() convention),
+                    // so gen()'s return value for any vector-typed node
+                    // is already the same kind of address gen_addr()
+                    // gives for an lvalue.
+                    VReg r_addr = gen_addr(op->expr);
+                    if (r_addr < 0) r_addr = gen(op->expr);
+                    x86_movups_rm(cg_sec, xmmreg, x86_mem(REG(r_addr), 0));
+                    free_reg(r_addr);
+                    op_regs[i] = ASM_XMM_REG(xmm_scratch_count);
+                    op->reg = -1;
+                }
+                xmm_scratch_count++;
             } else if (op->is_memory) {
                 // "m" constraint: compute address, use as memory ref in template.
                 VReg r = gen_addr(op->expr);
@@ -12555,6 +12617,9 @@ VReg gen(Node *node) {
                 // overwritten with an unrelated operand's address).
                 x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), REG(op_saved[i]));
                 free_reg(op_saved[i]);
+            } else if (ASM_IS_XMM_REG(op_regs[i])) {
+                X86XmmReg xmmreg = (X86XmmReg)(8 + ASM_GET_XMM_IDX(op_regs[i]));
+                x86_movups_mr(cg_sec, x86_mem(REG(op_addr[i]), 0), xmmreg);
             } else if (sz == 1)
                 asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 1); // movb op_regs[i], (%op_addr[i])
             else if (sz == 2)
