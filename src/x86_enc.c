@@ -1819,22 +1819,25 @@ void x86_pabsd(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit3(s, 0x0f, 0x38, 0x1e);
     emit1(s, modrxmm(3, d, sr));
 }
+// pblendvb/blendvps/blendvpd: 66 0F 38 10/14/15 /r (implicit XMM0 mask
+// operand, NOT the same opcode space as the 0F3A imm8-mask blendps/blendpd
+// below -- 0x0c/0x0d/0x0e there are a completely different instruction).
 void x86_pblendvb(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x38, 0x0c);
+    emit3(s, 0x0f, 0x38, 0x10);
     emit1(s, modrxmm(3, d, sr));
 }
 void x86_blendvps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x38, 0x0d);
+    emit3(s, 0x0f, 0x38, 0x14);
     emit1(s, modrxmm(3, d, sr));
 }
 void x86_blendvpd(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
-    emit3(s, 0x0f, 0x38, 0x0e);
+    emit3(s, 0x0f, 0x38, 0x15);
     emit1(s, modrxmm(3, d, sr));
 }
 void x86_ptest(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
@@ -2859,8 +2862,10 @@ VEX256_GP(x86_vmovmskps, 0, 0x50) // 0F/0F38/0F3A VEX.256 macro
 VEX256_GP(x86_vmovmskpd, 1, 0x50) // 0F/0F38/0F3A VEX.256 macro
 VEX256_GP(x86_vpmovmskb256, 1, 0xd7) // 0F/0F38/0F3A VEX.256 macro
 // memory 2-op forms: vlddqu, vmovntdqa (dst=reg, mem=rm)
+// VLDDQU is F2-prefixed (pp=3), unlike VMOVDQU's F3 (pp=2) -- easy to
+// confuse since they share the same 0F escape map.
 void x86_vlddqu256(SecBuf *s, X86XmmReg d, X86Mem m) {
-    vex3(s, 2, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
+    vex3(s, 3, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0xf0);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
 }

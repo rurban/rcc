@@ -14,6 +14,9 @@ typedef short v16hi __attribute__((vector_size(32), aligned(32)));
 typedef signed char v32qi __attribute__((vector_size(32), aligned(32)));
 typedef int v4si __attribute__((vector_size(16), aligned(16)));
 typedef float v4sf __attribute__((vector_size(16), aligned(16)));
+typedef double v2df __attribute__((vector_size(16), aligned(16)));
+typedef long long v2di __attribute__((vector_size(16), aligned(16)));
+typedef signed char v16qi __attribute__((vector_size(16), aligned(16)));
 
 static int fails = 0;
 #define CHECK(cond)                                                           \
@@ -170,6 +173,58 @@ int main(void) {
         CHECK(e[0] == 5 && e[3] == 8);
         v8si ins = (v8si)__builtin_ia32_vinsertf128_si256((v4di)x, (v4si){9, 9, 9, 9}, 1);
         CHECK(ins[0] == 1 && ins[4] == 9 && ins[7] == 9);
+    }
+    // 256->128 truncating "cast" intrinsics (_mm256_castX256_X128): the
+    // trailing "256" here names the SOURCE width, not the (128-bit)
+    // result's -- ia32_builtin_ret() used to size these as 32-byte
+    // (ps_ps256/pd_pd256) or fall through to plain `int` (si_si256,
+    // not a vector at all), corrupting the declaration/inline chain
+    // downstream (found via test_wuffs' JPEG IDCT AVX2 path).
+    {
+        v2di lo = (v2di)__builtin_ia32_si_si256((v8si)x);
+        CHECK(lo[0] == 0x200000001LL && lo[1] == 0x400000003LL);
+        v4sf lof = (v4sf)__builtin_ia32_ps_ps256(a);
+        CHECK(lof[0] == 1 && lof[3] == 4);
+        v2df lod = (v2df)__builtin_ia32_pd_pd256(ad);
+        CHECK(lod[0] == 1.5 && lod[1] == 2.5);
+    }
+    // vperm2i128 (permute2x128_si256): also missing from ia32_builtin_ret,
+    // fell through to plain `int`.
+    {
+        v8si p = (v8si)__builtin_ia32_permti256((v4di)x, (v4di)y, 0x21);
+        CHECK(p[0] == 5 && p[1] == 6 && p[2] == 7 && p[3] == 8 &&
+              p[4] == 8 && p[5] == 7 && p[6] == 6 && p[7] == 5); // gcc-verified
+    }
+    // vlddqu ymm, m256 (VLDDQU is F2-prefixed, unlike VMOVDQU's F3 --
+    // rcc's x86_vlddqu256 used the wrong VEX.pp and SIGILL'd on real
+    // hardware).
+    {
+        v8si mem[1] = {{1, 2, 3, 4, 5, 6, 7, 8}};
+        v8si l = (v8si)__builtin_ia32_lddqu256((const char *)mem);
+        CHECK(l[0] == 1 && l[7] == 8);
+    }
+    // pblendvb/blendvps/blendvpd (128-bit legacy, implicit-XMM0-mask
+    // forms): rcc had the SSE4.1 0F38 opcode wrong (reused the 0F3A
+    // imm8-blend opcodes) and stored the wrong register as the result.
+    {
+        v16qi va = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+        v16qi vb = {100, 101, 102, 103, 104, 105, 106, 107,
+                    108, 109, 110, 111, 112, 113, 114, 115};
+        v16qi mask = {(signed char)0x80, 0, (signed char)0x80, 0, (signed char)0x80, 0,
+                      (signed char)0x80, 0, (signed char)0x80, 0, (signed char)0x80, 0,
+                      (signed char)0x80, 0, (signed char)0x80, 0};
+        v16qi bl = (v16qi)__builtin_ia32_pblendvb128(va, vb, mask);
+        CHECK(bl[0] == 100 && bl[1] == 1 && bl[2] == 102 && bl[15] == 15);
+
+        v4sf pa = {0, 1, 2, 3}, pb = {100, 101, 102, 103};
+        v4sf pmask = {-1.0f, 0.0f, -1.0f, 0.0f};
+        v4sf pbl = (v4sf)__builtin_ia32_blendvps(pa, pb, pmask);
+        CHECK(pbl[0] == 100 && pbl[1] == 1 && pbl[2] == 102 && pbl[3] == 3);
+
+        v2df da = {0, 1}, db = {100, 101};
+        v2df dmask = {-1.0, 0.0};
+        v2df dbl = (v2df)__builtin_ia32_blendvpd(da, db, dmask);
+        CHECK(dbl[0] == 100 && dbl[1] == 1);
     }
     printf(fails ? "%d FAILURES\n" : "ALL PASS\n", fails);
     return fails != 0;

@@ -921,9 +921,12 @@ static int ia32_int38_op(const char *root) {
         {"phsubsw", 0x07},
         {"pmaddubsw", 0x04},
         {"pmulhrsw", 0x0b},
-        {"pblendvb", 0x0c},
-        {"blendvps", 0x0d},
-        {"blendvpd", 0x0e},
+        // pblendvb/blendvps/blendvpd are 3-operand (implicit XMM0 mask)
+        // ops the generic 2-operand ia32_load2()+ia32_emit38() path below
+        // can't express (it never loads the mask into XMM0) -- handled by
+        // their own dedicated case further down instead. Do NOT list them
+        // here: this table is scanned first, so a matching entry would
+        // silently steal the name into the wrong-arity codegen path.
         {"ptest", 0x17},
         {"pmovsxbw", 0x20},
         {"pmovsxbd", 0x21},
@@ -2585,7 +2588,7 @@ VReg gen_ia32_builtin(Node *node) {
         free_reg(p);
         return ia32_store(16);
     }
-    if (!strcmp(n, "blendvps") || !strcmp(n, "blendvpd") || !strcmp(n, "pblendvb")) {
+    if (!strcmp(n, "blendvps") || !strcmp(n, "blendvpd") || !strcmp(n, "pblendvb") || !strcmp(n, "pblendvb128")) {
         // implicit xmm0 mask: dst[i] = (xmm0[i] & 0x80) ? src2[i] : src1[i].
         // Instruction operand encoding: reg field = arg1, rm field = arg2.
         VReg da = ia32_vaddr(a1);
@@ -2597,12 +2600,21 @@ VReg gen_ia32_builtin(Node *node) {
         VReg dm = ia32_vaddr(a3);
         x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(dm), 0));
         free_reg(dm);
-        int op = !strcmp(n, "blendvps") ? 0x0d : !strcmp(n, "blendvpd") ? 0x0e
-                                                                        : 0x0c;
-        emit1(cg_sec, 0x66);
-        maybe_rex(cg_sec, 0, (int)X86_XMM1, 0, (int)X86_XMM2);
-        emit3(cg_sec, 0x0f, 0x38, (uint8_t)op);
-        emit1(cg_sec, modrxmm(3, X86_XMM1, X86_XMM2));
+        // PBLENDVB/BLENDVPS/BLENDVPD's ModRM.reg operand is BOTH the
+        // destination and the first source (dst[i] = XMM0[i] & 0x80 ?
+        // src2[i] : reg[i]), so the blended result lands in XMM1, not
+        // XMM0 -- ia32_store() always reads XMM0, so copy the result
+        // there before storing (XMM0's mask value is dead after this).
+        if (!strcmp(n, "blendvps")) {
+            x86_blendvps(cg_sec, X86_XMM1, X86_XMM2);
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        } else if (!strcmp(n, "blendvpd")) {
+            x86_blendvpd(cg_sec, X86_XMM1, X86_XMM2);
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        } else {
+            x86_pblendvb(cg_sec, X86_XMM1, X86_XMM2);
+            x86_movaps(cg_sec, X86_XMM0, X86_XMM1);
+        }
         return ia32_store(16);
     }
     if (!strcmp(n, "vec_ext_v4sf") || !strcmp(n, "vec_ext_v4si") ||

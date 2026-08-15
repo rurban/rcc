@@ -516,6 +516,129 @@ The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<
   function at the very end that must survive to be linked/executed).
   `make check-all`: 0 failed on native x86-64.
 
+### Fixed (2026-08-15, test_wuffs AVX2/SSE4.1 session — 5 stacked bugs)
+
+- **`<x86intrin.h>`/`<immintrin.h>` had no AVX/AVX2 coverage at all**
+  (`include/x86intrin.h`, new `include/immintrin.h`) — rcc's own
+  `x86intrin.h` only pulled in its bundled SSE/SSE2/SSSE3 headers; any
+  TU that included `<immintrin.h>` (directly, or transitively via
+  `<x86intrin.h>`) fell through to the host GCC's real header, which
+  in turn pulls in `<smmintrin.h>` — whose `extern __inline`
+  `_mm_extract_epi{8,16,32,64}`/`_mm_clmulepi64_si128` definitions (only
+  emitted under `__OPTIMIZE__`) pass a runtime parameter to a
+  `__builtin_ia32_vec_ext_*`/`pclmulqdq` builtin that rcc requires to be
+  an immediate constant, hard-erroring on the header itself. Added a new
+  `include/immintrin.h` umbrella that pulls in rcc's own SSE-family
+  headers plus the host's `<avxintrin.h>`/`<avx2intrin.h>`/etc.
+  (guard-compatible with both GCC's `_IMMINTRIN_H_INCLUDED` and clang's
+  `__IMMINTRIN_H`), and hides `__OPTIMIZE__` around exactly the handful
+  of headers (`<smmintrin.h>`, `<wmmintrin.h>`, `<avxintrin.h>`,
+  `<avx2intrin.h>`, `<f16cintrin.h>`) whose immediate-only inline
+  definitions rcc can't compile — every one of those blocks has a
+  macro-based `#else` alternative that still works for a real (constant)
+  caller, so nothing is lost. Found via test_wuffs's AVX2 YCbCr/JPEG
+  IDCT path (`_mm256_set1_epi16` and friends).
+- **A `const T *` function parameter mutated the shared struct/union
+  Type object of `T` itself** (parser.c, `declspec()`) — resolving a
+  typedef name aliases the SAME `Type*` every time (`ty = td->ty`), and
+  applying a leading `const`/`volatile`/`restrict` qualifier is supposed
+  to clone before setting `->qual`. It called `copy_type()` for this,
+  but `copy_type()` _intentionally_ returns a struct/union type's own
+  pointer unchanged (so an incomplete forward declaration can still be
+  completed later through every reference — the identical class of bug
+  as `apply_type_align()`'s struct/union case, see
+  `test_align_type_leak.c`). `const wuffs_base__io_buffer *buf`
+  parameters (used throughout wuffs's own header) silently
+  const-qualified the SHARED `wuffs_base__io_buffer` type, so a plain,
+  genuinely mutable `wuffs_base__io_buffer g_src = {0};` global elsewhere
+  in the file got its OWN type const-qualified too — making every read of
+  its fields eligible for `eval_const_expr()`'s "fold from the static
+  initializer" fast path, permanently blind to real runtime writes.
+  `if (g_src.meta.wi == g_src.data.len)` (after `g_src.data.len` was set
+  to a real runtime value elsewhere) folded to the _initializer's_
+  "0 == 0" at every `-O1`+ build, an always-taken branch with no runtime
+  comparison at all — dropping I/O and corrupting every JPEG/PNG decode.
+  Fixed by only reusing `copy_type()`'s struct/union identity-sharing for
+  a genuinely _incomplete_ aggregate (matching `apply_type_align()`'s own
+  exemption); a complete struct/union now gets its own qualified clone
+  before `->qual` is set. Regression test:
+  `test/test_const_param_type_leak.c` (new).
+- **PBLENDVB/BLENDVPS/BLENDVPD (128-bit legacy, implicit-XMM0-mask
+  forms) used the wrong opcode and stored the wrong result register**
+  (`x86_enc.c`, `cg_vectors.c`) — `x86_pblendvb`/`x86_blendvps`/
+  `x86_blendvpd` emitted `66 0F 38 0C/0D/0E`, which is actually
+  VPERMILPS/VPERMILPD's opcode space repurposed by mistake; the real
+  encoding is `66 0F 38 10/14/15` (verified byte-for-byte against GNU
+  `as`). The wrong (illegal, no-VEX) opcode SIGILL'd on real hardware.
+  Separately, `cg_vectors.c`'s generic 2-operand `ia32_int38_op` table
+  also listed `pblendvb`/`blendvps`/`blendvpd`, silently routing all
+  three through a 2-operand codegen path that never loads the mask
+  argument into XMM0 at all — removed from that table (they need their
+  own dedicated 3-operand handler) and the dedicated handler's suffix
+  matching extended to cover `__builtin_ia32_pblendvb128` (the actual
+  GCC-header name, with the `128` suffix `blendvps`/`blendvpd` don't
+  carry). PBLENDVB's ModRM.reg operand is _both_ the destination and the
+  first source (`dst[i] = XMM0[i] & 0x80 ? src2[i] : reg[i]`), so the
+  blended result lands in XMM1 (the handler's chosen ModRM.reg), not
+  XMM0 — but the shared `ia32_store()` always reads XMM0; the handler
+  wasn't copying the result there, so it stored the (unrelated,
+  unmodified) mask value XMM0 still held instead of the actual blend.
+  Found via test_wuffs's PNG unfilter path
+  (`wuffs_png__decoder__filter_4_distance_4_x86_sse42`, `_mm_blendv_epi8`
+  SIGILL). Regression coverage added to `test/test_avx2_intrinsics.c`.
+- **VLDDQU (256-bit) used the wrong VEX.pp prefix bit, SIGILL'ing on
+  real hardware** (`x86_enc.c`, `x86_vlddqu256`) — VLDDQU is
+  F2-prefixed (VEX.pp=3); this codebase's convention (matching every
+  other `vex3()` caller, e.g. `x86_vmovdqu_rm256`) is `pp=2` for F3,
+  `pp=3` for F2, but `x86_vlddqu256` was passing `pp=2` (F3, VMOVDQU's
+  prefix) instead. Verified byte-for-byte against GNU `as`. Found via
+  test_wuffs's JPEG IDCT AVX2 path (`_mm256_lddqu_si256`). Regression
+  coverage added to `test/test_avx2_intrinsics.c`.
+- **`__builtin_ia32_si_si256`/`ps_ps256`/`pd_pd256`/`permti256` had
+  missing or wrong return types** (`type.c`, `ia32_builtin_ret()`) —
+  these back `_mm256_castsi256_si128`/`_mm256_castps256_ps128`/
+  `_mm256_castpd256_pd128` (256->128 truncating "cast" intrinsics,
+  whose name's trailing `"256"` names the SOURCE width, not the
+  128-bit _result_'s) and `_mm256_permute2x128_si256`. None of the
+  four matched any existing pattern: `si_si256`/`permti256` have no
+  b/w/d/q lane letter anywhere in the name and fell all the way through
+  to the plain-`int` catch-all (not a vector at all); `ps_ps256`/
+  `pd_pd256` coincidentally matched the generic `ends_ps`/`ends_pd`
+  float-family suffix check, which (correctly, for every OTHER `ps`/`pd`
+  name) sizes the result using the trailing `256` as if it named the
+  RESULT width too — 32 bytes instead of the correct 16. An untyped
+  (int-typed) return made every `(__m128i) __builtin_ia32_si_si256(...)`
+  header wrapper, once inlined by `-finline`'s always-inline substitution,
+  materialize its result as a **scalar broadcast** (`movq` the vector
+  slot's own address into XMM0, `punpcklqdq` to double it into both
+  lanes) instead of the intended 16-byte slot copy — silently corrupting
+  every value derived from `_mm256_castsi256_si128`/`_mm256_castps256_
+ps128`/`_mm256_castpd256_pd128`. Added explicit entries for all four
+  ahead of the generic matchers. Found via test_wuffs's JPEG IDCT AVX2
+  path (`_mm256_castsi256_si128`, `_mm256_permute2x128_si256`).
+  Regression coverage added to `test/test_avx2_intrinsics.c`.
+
+All five bugs were found end-to-end via **test_wuffs**
+(https://github.com/google/wuffs) — real-world AVX2 JPEG IDCT + SSE4.1
+PNG unfilter code, the first target in this corpus to exercise this
+specific combination of legacy-128-bit-blendv, VLDDQU, and 256->128
+cast/permute intrinsics together. `example-convert-to-nia`'s own
+`print-nia-checksums.sh`/`print-mzcat-checksums.sh` regression suite
+(203 real image files: PNG/JPEG/GIF/WebP/BMP/QOI/TGA/etc.) now passes
+byte-for-byte against the expected CRC-32 checksums, matching a real
+`gcc -mavx2 -msse4.1` reference build for both `test/data/49.png`
+(the PNG unfilter path) and `test/data/hat.jpeg` (the AVX2 IDCT path)
+specifically. `make check-all`: 0 failed on native x86-64 (Unit
+4209/4209, TCC 118/118, Compliance 251/251, C-testsuite 220/220,
+Torture 3605/3609 — 0 failed, 354 skipped, 4 todo — Dg-error 34/34,
+Link 8/8); ARM64 cross-build verified clean (these are x86-only VEX/SSE
+encoders, guarded out on `ARCH_ARM64`, but the shared `declspec()`/
+`ia32_builtin_ret()` changes needed re-verification there too).
+New regression tests: `test/test_const_param_type_leak.c`; extended
+`test/test_avx2_intrinsics.c` with `si_si256`/`ps_ps256`/`pd_pd256`/
+`permti256`/`lddqu256`/`pblendvb128`/`blendvps`/`blendvpd` coverage,
+all cross-checked against real `gcc -mavx2 -msse4.1` output.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1627,11 +1750,12 @@ a multi-session effort, not a quick win.
      (test_gtar, `xattrs.c`); a `_Generic` dispatch macro rejecting a
      valid association (test_noplate); `dlfcn.h`'s `Dl_info` usage
      (test_nqp); wolfSSL's macro-generated union member declaration
-     (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
-     intrinsics still gap in some header path (test_wuffs) — separate
-     from the fixed F16C cluster, needs its own look. **A C99 flexible
-     array member inside a struct (test_bfs, `struct ioq_thread
-threads[];`) is fixed**, see "Fixed (2026-08-15, empty
+     (test_wolfssl, `hash.h:109-254`). **AVX2 header gap plus 5
+     stacked codegen bugs (test_wuffs) are fixed**, see "Fixed
+     (2026-08-15, test_wuffs AVX2/SSE4.1 session — 5 stacked bugs)"
+     above. **A C99 flexible array member inside a struct (test_bfs,
+     `struct ioq_thread threads[];`) is fixed**, see "Fixed (2026-08-15,
+     empty
      attribute-specifier-sequence before a tag declarator session)"
      above — turned out to be a distinct, general parser bug (not
      specific to flexible array members). **A `static` function
@@ -1676,7 +1800,7 @@ threads[];`) is fixed**, see "Fixed (2026-08-15, empty
      inlining. Both fixed, and the whole `glib/` library now compiles
      and links — the full glib tree is next blocked one layer deeper in
      `gio/inotify` by glibc's `<sys/inotify.h>` (`char name
-     __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
+__flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      `<stddef.h>`), a separate issue not yet investigated.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not

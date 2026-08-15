@@ -4939,9 +4939,37 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     tok = skip_attributes(tok);
     quals |= collect_type_quals(&tok, tok);
     if (quals) {
-        ty = (ty->kind == TY_ARRAY || ty->kind == TY_VLA)
-            ? qualify_array_elem(ty, quals)
-            : copy_type(ty);
+        if (ty->kind == TY_ARRAY || ty->kind == TY_VLA) {
+            ty = qualify_array_elem(ty, quals);
+        } else {
+            // copy_type() deliberately returns a COMPLETE struct/union
+            // type's own pointer unchanged (see its comment) so an
+            // incomplete forward declaration can still be completed later
+            // through every existing reference. That identity-sharing is
+            // wrong here: we are about to set ->qual for THIS declaration
+            // only (e.g. `const wuffs_base__io_buffer *buf`), and mutating
+            // the shared typedef's Type object in place silently
+            // const-qualifies every OTHER use of the same struct/union in
+            // the translation unit too - including an unrelated, genuinely
+            // mutable `wuffs_base__io_buffer g_src = {0};` global, whose
+            // reads eval_const_expr() then treated as permanently equal to
+            // their static initializer, folding away real runtime branches
+            // (test/third_party test_wuffs: `if (g_src.meta.wi ==
+            // g_src.data.len)` always taken at -O1+, an `if (g_src.meta.
+            // closed)` check always dropped). A complete struct/union can
+            // safely get its own qualified clone - members/has_body are
+            // already final and shared through the copy; only an
+            // INCOMPLETE aggregate still needs the shared identity
+            // (matching apply_type_align's own exemption above).
+            bool incomplete_aggregate = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->has_body;
+            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !incomplete_aggregate) {
+                Type *ret = arena_alloc(sizeof(Type));
+                *ret = *ty;
+                ty = ret;
+            } else {
+                ty = copy_type(ty);
+            }
+        }
         if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
             ty->qual |= quals;
     }

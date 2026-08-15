@@ -537,6 +537,18 @@ static Type *ia32_builtin_ret(const char *fullname) {
     if (!strcmp(n, "mpsadbw128") || !strcmp(n, "pblendvb128")) return ia32_vec_ty(2, 16);
     if (!strcmp(n, "phminposuw128")) return ia32_vec_ty(3, 16); // v8hi
     if (!strcmp(n, "pslldqi128") || !strcmp(n, "psrldqi128")) return ia32_vec_ty(5, 16); // v2di
+    // 256->128 truncating "cast" intrinsics (_mm256_castX256_X128): the
+    // trailing "256" here names the SOURCE width, not the result's -- the
+    // generic float/int-family matchers below key off the SAME trailing
+    // letters (ends_ps/ends_pd) or scan for a b/w/d/q lane letter, and
+    // would otherwise size these as 32-byte (ps_ps256/pd_pd256, wrong
+    // width) or fall through to plain `ty_int` (si_si256, not even a
+    // vector) -- the latter made `__m128i x = _mm256_castsi256_si128(y);`
+    // codegen a scalar-broadcast (movq+punpcklqdq) of the result slot's
+    // own address into `x` instead of copying the low 128 bits.
+    if (!strcmp(n, "ps_ps256")) return ia32_vec_ty(0, 16); // v4sf
+    if (!strcmp(n, "pd_pd256")) return ia32_vec_ty(1, 16); // v2df
+    if (!strcmp(n, "si_si256")) return ia32_vec_ty(5, 16); // v2di
     // vec_init_*/vec_set_*: return the named vector type. The suffix
     // starts right after "vec_init_v" (10 chars) / "vec_set_v" (9 chars).
     {
@@ -584,6 +596,7 @@ static Type *ia32_builtin_ret(const char *fullname) {
         if (ROOT("vpermilvarpd")) return ia32_vec_ty(1, 32); // v4df
         if (ROOT("vpermilps")) return ia32_vec_ty(0, 32); // v8sf (imm form)
         if (ROOT("vpermilpd")) return ia32_vec_ty(1, 32); // v4df (imm form)
+        if (ROOT("permti")) return ia32_vec_ty(5, 32); // v4di (permute2x128_si256)
         if (ROOT("vperm2f128_si")) return ia32_vec_ty(5, 32); // v4di
         if (ROOT("vperm2f128_pd")) return ia32_vec_ty(1, 32); // v4df
         if (ROOT("vperm2f128_ps")) return ia32_vec_ty(0, 32); // v8sf
