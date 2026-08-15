@@ -1853,7 +1853,32 @@ static void expand_token(Token *t) {
             return;
         }
         m->disabled = true;
-        push_expansion(m->body, m, t);
+        // An object-like macro's replacement list can still use ##
+        // (C11 6.10.3.3p1 applies to both object-like and function-like
+        // macros) -- e.g. `#define FOO a ## b`, or config.h's own
+        // `#define X val ## SUFFIX`. The plain push_expansion() path
+        // below just re-scans the raw body tokens, so a literal `##`
+        // token passed through unresolved, AND (with no ##-adjacency
+        // awareness at all outside subst_range()) its neighboring
+        // identifiers got ordinary macro expansion first -- backwards
+        // from the standard's "## operands are not pre-expanded" rule.
+        // Route through subst_range() (with no parameters/arguments;
+        // safe since every args/raw_args access there is gated on
+        // m->is_variadic or an in-range parameter index, neither of
+        // which an object-like macro ever has) whenever the body
+        // actually contains a `##`, to paste it the same way a
+        // function-like macro's body would. Skipped otherwise to keep
+        // the overwhelmingly common plain-value object-like macro on
+        // its original, cheaper path.
+        bool has_hashhash = false;
+        for (Token *b = m->body; b && b->kind != TK_EOF; b = b->next) {
+            if (b->kind == TK_PUNCT && b->len == 2 && b->ptr[0] == '#' && b->ptr[1] == '#') {
+                has_hashhash = true;
+                break;
+            }
+        }
+        Token *body = has_hashhash ? subst_range(m, m->body, NULL, NULL, NULL, 0) : m->body;
+        push_expansion(body, m, t);
         // The macro name `t` may have been immediately followed (no source
         // whitespace) by the next token in the enclosing scan, e.g.
         // "TRACE_INCLUDE_PATH/system.h" in the kernel's define_trace.h.

@@ -361,6 +361,55 @@ struct/union/enum ... name;` -- most commonly triggered by a
 check-all`: 0 failed on native x86-64, all 8 previously-regressed
   torture tests re-verified passing.
 
+### Fixed (2026-08-15, object-like macro `##` token-paste session)
+
+- **`##` (token-paste) was silently ignored in an object-like macro's
+  replacement list** — `preprocess.c`, `expand_token()`. C11 6.10.3.3p1
+  applies `##` to both object-like and function-like macro replacement
+  lists, but rcc's object-like expansion path simply re-scanned the raw
+  body tokens (`push_expansion(m->body, ...)`), never routing through
+  `subst_range()` -- the function that actually implements `##`/`#`
+  processing, only ever called from the function-like macro-call path.
+  A literal `##` token in an object-like macro's body therefore passed
+  straight through unresolved into the output, AND -- since there was
+  no `##`-adjacency awareness at all outside `subst_range()` -- its
+  neighboring identifiers received ordinary, unsuppressed macro
+  expansion first, exactly backwards from the standard's "`##`
+  operands are never pre-expanded" rule.
+  Found via Parrot's own `include/parrot/config.h`:
+  `#define PARROT_CORE_OPLIB_INIT Parrot_DynOp_core_ ## PARROT_PBC_MAJOR ## _ ## PARROT_PBC_MINOR`
+  (an object-like macro, no parameters at all) used directly as a
+  function name in `include/parrot/oplib/core_ops.h`'s prototype --
+  rcc left the `##` punctuators completely unresolved and expanded the
+  adjacent macro names (`13`, `1`) instead of pasting their literal
+  spelling, producing a malformed token sequence that broke the
+  surrounding declaration's parse ("expected ';' or ','"). Verified
+  against real GCC that the STANDARD-correct (and Parrot's own
+  intended, if unconventional) expansion is the literal pasted
+  identifier `Parrot_DynOp_core_PARROT_PBC_MAJOR_PARROT_PBC_MINOR`, not
+  `Parrot_DynOp_core_13_1`.
+  Fixed by routing an object-like macro's body through `subst_range()`
+  (called with no parameters/arguments -- every `args`/`raw_args`
+  access inside that function is gated on `m->is_variadic` or an
+  in-range parameter index, neither of which an object-like macro ever
+  has, so this is safe) whenever the body actually contains a `##`,
+  gated behind a cheap one-time body scan so the overwhelmingly common
+  plain-value object-like macro (`#define X 42`) stays on its original,
+  cheaper path.
+  Regression test: `test/test_object_like_macro_hashhash.c` (new: the
+  exact Parrot two-level-indirection shape, a plain single-level paste,
+  and a no-`##` sanity case), cross-checked against real `gcc -E`
+  output. PASS at -O0..-O3 on x86-64, ARM64 (qemu-aarch64) and mingw
+  (wine). Full verification: the two files named in the original
+  diagnostic (`src/string/api.c`, `src/ops/core_ops.c`) now compile
+  cleanly with their exact original `-Werror=...` flag set, and a real
+  `make -j$(nproc)` of the whole Parrot tree with `rcc` as `CC`
+  progresses well past the entire C-compile phase (every `.c`/`.so`
+  target, including `core_ops.c`, builds and links) into bytecode
+  compilation of its own `.pir` runtime libraries via the freshly
+  built `parrot` binary -- confirming the originally-reported blocker
+  is gone. `make check-all`: 0 failed on native x86-64.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1466,11 +1515,10 @@ a multi-session effort, not a quick win.
      `goption.c:212`); a system header's own struct closing brace inside
      a nested context (test_liballegro5, `gdtlsconnection.h:108`); an
      empty-body context (test_lexbor, `normalization_forms.c:206`);
-     designated-initializer macro tables (test_mquickjs, test_njs); a
-     token-pasting macro used as a declarator (test_parrot); struct
-     member access rcc reports as "no such member" on legitimate code
-     (test_php, test_cfitsio, test_tcl); an unclosed string literal
-     lexer false-positive (test_gnutls, `config.h:2359`);
+     designated-initializer macro tables (test_mquickjs, test_njs);
+     struct member access rcc reports as "no such member" on legitimate
+     code (test_php, test_cfitsio, test_tcl); an unclosed string
+     literal lexer false-positive (test_gnutls, `config.h:2359`);
      conflicting-types false-positive between a local prototype and a
      generic-function expansion (test_gtar, `xattrs.c`); a `_Generic`
      dispatch macro rejecting a valid association (test_noplate);
@@ -1489,9 +1537,13 @@ a multi-session effort, not a quick win.
      cross-TU state leak, not a return-type parsing bug. **`sizeof`
      applied to an incomplete type inside a `static_assert`-style macro
      idiom (test_utillinux) is fixed**, see "Fixed (2026-08-15,
-     zero-width-bitfield-only struct completeness session)" below —
+     zero-width-bitfield-only struct completeness session)" above —
      turned out to be a struct/union completeness-detection bug, not
-     specific to `static_assert`.
+     specific to `static_assert`. **A token-pasting macro used as a
+     declarator (test_parrot) is fixed**, see "Fixed (2026-08-15,
+     object-like macro `##` token-paste session)" below — turned out
+     to be a general object-like-macro preprocessing bug, not specific
+     to declarator position.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the
