@@ -387,6 +387,45 @@ else
     fail "wide string alignment survives 2-TU link" "$(tr '\n' ' ' < "$TMP/e8")"
 fi
 
+# ---------------------------------------------------------------------------
+# 11. `#pragma once` must be scoped per translation unit, not per process.
+#    preprocess() (called once per input file by main()'s multi-file
+#    compile loop) already reset macro state via clear_macros(), but
+#    never reset the separate once_files list -- so a single invocation
+#    compiling more than one .c file directly to an executable (no -c,
+#    e.g. `rcc a.c b.c -o prog`, exactly how many real-world Makefiles
+#    build a multi-file program in one command) silently dropped a
+#    #pragma-once'd header's entire contents (typedefs, prototypes,
+#    macros) for every file after the first one that included it --
+#    found via elk's own `main.c`/`elk.c` build (elk.h uses `#pragma
+#    once`), which mis-parsed with "expected ';' or ','" on the very
+#    first use of a typedef the header defines.
+# ---------------------------------------------------------------------------
+cat > "$TMP/po_hdr.h" <<'EOF'
+#pragma once
+typedef unsigned long po_typedef_t;
+int po_func(int x);
+#define PO_MACRO 42
+EOF
+cat > "$TMP/po_a.c" <<'EOF'
+#include "po_hdr.h"
+int po_func(int x) { return x + PO_MACRO; }
+EOF
+cat > "$TMP/po_b.c" <<'EOF'
+#include "po_hdr.h"
+int main(void) {
+    po_typedef_t v = 5;
+    return (int)v == 5 ? po_func(0) - PO_MACRO : 1;
+}
+EOF
+if ( cd "$TMP" && "$RCC" -I"$TMP" -c "$TMP/po_a.c" "$TMP/po_b.c" ) 2>"$TMP/e9" \
+    && "$RCC" "$TMP/po_a.o" "$TMP/po_b.o" -o "$TMP/poprog" 2>>"$TMP/e9" \
+    && "$(winprog "$TMP/poprog")"; then
+    pass "#pragma once scoped per-TU in a multi-file single invocation"
+else
+    fail "#pragma once scoped per-TU in a multi-file single invocation" "$(tr '\n' ' ' < "$TMP/e9")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

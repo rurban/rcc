@@ -3381,6 +3381,12 @@ void print_search_dirs(const char *gcc) {
 
 Token *preprocess(char *filename, char *p) {
     clear_macros();
+    // #pragma once is scoped per translation unit, not per process: a
+    // multi-file single invocation (`rcc a.c b.c -o prog`, no -c) calls
+    // preprocess() once per input file in the same process, so this must
+    // reset here or a header #pragma-once'd while compiling a.c is
+    // silently (and wrongly) skipped when b.c tries to #include it too.
+    once_files = NULL;
     static char *builtin_expect_params[] = {"x", "y"};
     if (!macros_inited) {
 #define define_pre(name, value) define_macro(name, false, NULL, 0, value)

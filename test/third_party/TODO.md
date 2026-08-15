@@ -264,6 +264,52 @@ struct/union/enum ... name;` -- most commonly triggered by a
   mounts, capabilities, and specific regex-library availability -- 0
   fail).
 
+### Fixed (2026-08-15, #pragma once per-TU scoping session)
+
+- **`#pragma once` state leaked across translation units in a single
+  multi-file invocation** — `preprocess.c`. `#pragma once` is scoped
+  per translation unit in every real compiler: `gcc a.c b.c -o prog`
+  independently re-preprocesses each file, so a `#pragma once`'d header
+  included by `a.c` has zero effect on whether `b.c` can include that
+  same header. rcc's `preprocess()` (called once per input file by
+  `main()`'s multi-file compile loop, all in one process) already reset
+  macro state at entry via `clear_macros()`, but never reset the
+  separate `once_files` list `#pragma once` tracks — so once any
+  earlier file in the same invocation had `#include`'d a given header,
+  every later file's `#include` of that same header was silently
+  skipped entirely, dropping every typedef/prototype/macro it would
+  have provided. `rcc_reset_state()` (which does reset `once_files`)
+  already existed but was only ever called from the library-mode entry
+  point (`lib.c`), never from `main()`'s own driver loop. Found via
+  elk's real build (`elk.c` + `examples/cmdline/main.c` compiled
+  together in one `rcc ... -o elk` invocation, exactly how elk's own
+  Makefile builds it): `main.c`'s `#include "elk.h"` (which uses
+  `#pragma once`) was silently dropped because `elk.c` — compiled
+  first on the same command line — had already included it, so
+  `jsval_t` (a typedef from that header) parsed as an undeclared
+  identifier, cascading into "expected ';' or ','" on the very
+  function signature that uses it and "undeclared variable" for every
+  `js_*` API call afterward. Fixed by resetting `once_files = NULL` at
+  the top of `preprocess()`, alongside the existing `clear_macros()`
+  call, so it resets exactly once per input file.
+  Side effect found while cross-target-verifying this fix: the mingw
+  target's direct multi-`.c`-to-executable compile path has a
+  separate, pre-existing output-naming/permission bug (missing `.exe`
+  suffix and execute bit) — not fixed this session, see "Needs fixing"
+  item 7 above.
+  Regression test: `test/test-link.sh` case 11 (new: two `.c` files
+  compiled together in one invocation, both including the same
+  `#pragma once`'d header, checking the header's typedef/prototype/
+  macro are all visible to the second file). Full verification:
+  test_elk now builds its real CLI (`elk.c` + `examples/cmdline/main.c`
+  in one invocation, matching its own Makefile's `elk:` target) and
+  correctly evaluates JS expressions (`1+2` -> `3`); its own
+  `test/unit_test.c` suite (`make test`, `CC=rcc`) passes in full
+  ("SUCCESS. All tests passed"). PASS at -O0..-O3 on x86-64, and
+  verified compiling correctly (via `-c` multi-file, sidestepping the
+  separate mingw exe-naming bug above) on ARM64 (qemu-aarch64) and
+  mingw (wine). `make check-all`: 0 failed on native x86-64.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1363,24 +1409,23 @@ a multi-session effort, not a quick win.
      (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer
      memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
-     construct, not one root cause): a `static` function definition with
-     a typedef'd return type (test_elk, `main.c:23`); an `extern`
-     declaration using a forward-declared opaque struct pointer type
-     (test_emacs, `xterm.h:1848`); an anonymous-union member pattern
-     (test_glib, `goption.c:212`); a system header's own struct closing
-     brace inside a nested context (test_liballegro5,
-     `gdtlsconnection.h:108`); an empty-body context (test_lexbor,
-     `normalization_forms.c:206`); designated-initializer macro tables
-     (test_mquickjs, test_njs); a token-pasting macro used as a
-     declarator (test_parrot); struct member access rcc reports as "no
-     such member" on legitimate code (test_php, test_cfitsio, test_tcl);
-     `sizeof` applied to an incomplete type inside a `static_assert`-style
-     macro idiom (test_utillinux); an unclosed string literal lexer
-     false-positive (test_gnutls, `config.h:2359`); conflicting-types
-     false-positive between a local prototype and a generic-function
-     expansion (test_gtar, `xattrs.c`); a `_Generic` dispatch macro
-     rejecting a valid association (test_noplate); `dlfcn.h`'s `Dl_info`
-     usage (test_nqp); wolfSSL's macro-generated union member declaration
+     construct, not one root cause): an `extern` declaration using a
+     forward-declared opaque struct pointer type (test_emacs,
+     `xterm.h:1848`); an anonymous-union member pattern (test_glib,
+     `goption.c:212`); a system header's own struct closing brace inside
+     a nested context (test_liballegro5, `gdtlsconnection.h:108`); an
+     empty-body context (test_lexbor, `normalization_forms.c:206`);
+     designated-initializer macro tables (test_mquickjs, test_njs); a
+     token-pasting macro used as a declarator (test_parrot); struct
+     member access rcc reports as "no such member" on legitimate code
+     (test_php, test_cfitsio, test_tcl); `sizeof` applied to an
+     incomplete type inside a `static_assert`-style macro idiom
+     (test_utillinux); an unclosed string literal lexer false-positive
+     (test_gnutls, `config.h:2359`); conflicting-types false-positive
+     between a local prototype and a generic-function expansion
+     (test_gtar, `xattrs.c`); a `_Generic` dispatch macro rejecting a
+     valid association (test_noplate); `dlfcn.h`'s `Dl_info` usage
+     (test_nqp); wolfSSL's macro-generated union member declaration
      (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
      intrinsics still gap in some header path (test_wuffs) — separate
      from the fixed F16C cluster, needs its own look. **A C99 flexible
@@ -1388,7 +1433,11 @@ a multi-session effort, not a quick win.
 threads[];`) is fixed**, see "Fixed (2026-08-15, empty
      attribute-specifier-sequence before a tag declarator session)"
      above — turned out to be a distinct, general parser bug (not
-     specific to flexible array members).
+     specific to flexible array members). **A `static` function
+     definition with a typedef'd return type (test_elk, `main.c:23`) is
+     fixed**, see "Fixed (2026-08-15, #pragma once per-TU scoping
+     session)" below — turned out to be a `#pragma once` cross-TU state
+     leak, not a return-type parsing bug.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the
@@ -1415,6 +1464,25 @@ threads[];`) is fixed**, see "Fixed (2026-08-15, empty
    quoted rcc/linker diagnostic captured in
    `test/third_party/logs/<target>.log` from the 2026-08-14 batch run;
    re-read the log for exact context before starting a fix.
+
+7. **mingw target: direct multi-`.c`-file-to-executable compile produces
+   a broken output** (found as a side effect of verifying the
+   `#pragma once` fix below via `test-link.sh` on `./rcc.exe`) — `rcc
+a.c b.c -o prog` on the mingw cross target (external `gcc.exe`
+   linker fallback, not rcc's native PE writer) produced a file named
+   exactly `prog` (no `.exe` suffix) with mode `0644` (no execute bit),
+   whereas the equivalent two-step `rcc -c a.c -c b.c && rcc a.o b.o -o
+prog` correctly produces `prog.exe` with mode `0755`. Not
+   investigated further this session (out of scope for the `#pragma
+once` fix); likely main.c's external-linker invocation path handles
+   `.c`-source inputs and `.o`-object inputs differently when deciding
+   the final link command / output naming for the mingw target
+   specifically. No production Makefile pattern in this repo's own
+   third-party corpus was confirmed blocked by it yet (elk's own
+   Makefile only builds this way on the _native_ target in its `elk:`
+   rule; its `mingw:`/`linux:` targets go through a Docker cross-image
+   this sandbox doesn't have), but it's a real, reproducible target-mode
+   gap worth fixing before it silently breaks a real mingw target build.
 
 ---
 
