@@ -17,16 +17,18 @@
  */
 #include <stdint.h>
 
+#ifdef __linux__
 #if defined(__GLIBC__)
 #define _GNU_SOURCE
 #define __USE_GNU
 #endif
 
 #include <dlfcn.h>
+#endif
 #include <stdio.h>
 
 const char *name_from_value(void *value) {
-#ifdef __USE_GNU
+#if defined(__linux__) && defined(__USE_GNU)
     Dl_info info;
     return (dladdr(value, &info) && (value == info.dli_saddr)) ? info.dli_sname : "?";
 #else
