@@ -1554,7 +1554,34 @@ static void maybe_update_align(int *align, int value) {
     if (align && value > *align)
         *align = value;
 }
-
+// C23 6.7.13: an attribute-specifier-sequence immediately before a
+// struct/union/enum specifier is only a constraint violation when the
+// declaration is genuinely empty (nothing after the specifier but ';') --
+// e.g. `[[]] struct s { int a; };` or `[[]] struct s;`. A real member/
+// variable declaration with a declarator after the specifier (e.g.
+// `[[_counted_by(n)]] struct thread threads[];`) is valid and must not
+// be flagged. Scans past the optional tag name, an optional enum fixed
+// underlying type, and an optional `{ ... }` body to see what follows.
+static bool is_empty_tag_decl(Token *after_attr) {
+    Token *t = after_attr->next; // skip struct/union/enum keyword
+    if (t && t->kind == TK_IDENT) t = t->next; // optional tag name
+    if (t && equalc(t, ":")) { // enum e : int
+        t = t->next;
+        while (t && t->kind != TK_EOF && !equalc(t, "{") && !equalc(t, ";"))
+            t = t->next;
+    }
+    if (t && equalc(t, "{")) { // optional definition body
+        int depth = 1;
+        t = t->next;
+        while (t && t->kind != TK_EOF && depth > 0) {
+            if (equalc(t, "{")) depth++;
+            else if (equalc(t, "}"))
+                depth--;
+            t = t->next;
+        }
+    }
+    return t && equalc(t, ";");
+}
 static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
     while (true) {
 
@@ -1677,11 +1704,13 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 }
             }
             if (tok) tok = tok->next->next; // skip ]]
-            // Empty [[]] before struct/union/enum/; is only invalid in C23+
+            // Empty [[]] before struct/union/enum is only invalid in C23+,
+            // and only when the declaration truly has no declarator.
             if (empty_attr && after_attr && opt_std_version &&
                 strcmp(opt_std_version, "202311L") >= 0 &&
                 (equalc(after_attr, "struct") || equalc(after_attr, "union") ||
-                 equalc(after_attr, "enum")))
+                 equalc(after_attr, "enum")) &&
+                is_empty_tag_decl(after_attr))
                 error_tok(after_attr, "empty declaration");
             continue;
         }
@@ -7681,11 +7710,13 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
                 }
                 t = t->next;
             }
-            // Empty [[]] before struct/union/enum/; is only invalid in C23+
+            // Empty [[]] before struct/union/enum is only invalid in C23+,
+            // and only when the declaration truly has no declarator.
             if (empty_attr && after_attr && opt_std_version &&
                 strcmp(opt_std_version, "202311L") >= 0 &&
                 (equalc(after_attr, "struct") || equalc(after_attr, "union") ||
-                 equalc(after_attr, "enum")))
+                 equalc(after_attr, "enum")) &&
+                is_empty_tag_decl(after_attr))
                 error_tok(after_attr, "empty declaration");
             // Attributes cannot prefix a static_assert-declaration
             if (opt_std_version && strcmp(opt_std_version, "202311L") >= 0 &&

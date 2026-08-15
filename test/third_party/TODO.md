@@ -221,6 +221,49 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-15, empty attribute-specifier-sequence before a tag declarator session)
+
+- **A C23 `[[attrs]]` immediately before `struct`/`union`/`enum` was
+  flagged as an "empty declaration" even when a real declarator followed
+  the specifier** — `parser.c`, `read_type_attrs()` (two independent
+  call sites: the main declspec loop and a top-level lookahead scanner).
+  C23 6.7.13 genuinely forbids an attribute-specifier-sequence
+  appertaining to nothing (`[[]] struct s { int a; };` or `[[]] struct
+s;`, both already covered by `test/torture/c23-attr-syntax-3.c`), but
+  the check as written looked only at the single token immediately after
+  the attribute list: any `struct`/`union`/`enum` there was rejected
+  unconditionally, without checking whether the specifier was actually
+  followed by a real declarator (member/variable name) rather than `;`.
+  This misfired on any legitimate declaration shaped like `[[attr]]
+struct/union/enum ... name;` -- most commonly triggered by a
+  feature-detected attribute macro (`__has_c_attribute`-gated) that
+  correctly expands to nothing on a compiler that doesn't advertise the
+  extended attribute, directly preceding a struct-typed flexible array
+  member: `[[_counted_by(nthreads)]] struct ioq_thread threads[];` (a
+  plain `int`-typed or attribute-carrying FAM in the same position
+  already worked -- only a struct/union/enum-typed FAM with a preceding
+  _empty_ attribute list hit this). Fixed by adding `is_empty_tag_decl()`,
+  which scans past the optional tag name, an optional enum fixed
+  underlying type (`enum e : int`), and an optional `{ ... }` definition
+  body to see whether the specifier is immediately followed by `;`
+  (genuinely empty -- still an error) or by a declarator (a real
+  declaration -- not an error), and gating both call sites on it.
+  Found via test_bfs's `src/ioq.c:597-598`
+  (`[[_counted_by(nthreads)]]\n\tstruct ioq_thread threads[];`, from
+  `bfs.h`'s `_counted_by` macro, which rcc's `__has_c_attribute`
+  correctly reports unsupported for both `clang::counted_by` and
+  `gnu::counted_by` and macro-expands to nothing). Regression test:
+  `test/test_attr_before_tag_declarator.c` (new: empty and non-empty
+  attributes before a struct-typed and an int-typed flexible array
+  member); `test/torture/c23-attr-syntax-3.c`'s genuine empty-declaration
+  cases re-verified still correctly error. PASS at -O0..-O3 on x86-64,
+  ARM64 and mingw; `make check-all`: 0 failed on native x86-64. Full
+  verification: test_bfs now builds, links, and runs completely under
+  rcc (`bin/bfs`, `bin/tests/units`, `bin/tests/xtouch`), and its own
+  test suite passes 516/547 (31 SKIP are all environment-gated: sudo
+  mounts, capabilities, and specific regex-library availability -- 0
+  fail).
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1320,30 +1363,32 @@ a multi-session effort, not a quick win.
      (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer
      memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
-     construct, not one root cause): a C99 flexible array member inside
-     a struct (test_bfs, `struct ioq_thread threads[];`); a `static`
-     function definition with a typedef'd return type
-     (test_elk, `main.c:23`); an `extern` declaration using a
-     forward-declared opaque struct pointer type (test_emacs,
-     `xterm.h:1848`); an anonymous-union member pattern
+     construct, not one root cause): a `static` function definition with
+     a typedef'd return type (test_elk, `main.c:23`); an `extern`
+     declaration using a forward-declared opaque struct pointer type
+     (test_emacs, `xterm.h:1848`); an anonymous-union member pattern
      (test_glib, `goption.c:212`); a system header's own struct closing
      brace inside a nested context (test_liballegro5,
-     `gdtlsconnection.h:108`); an empty-body context
-     (test_lexbor, `normalization_forms.c:206`); designated-initializer
-     macro tables (test_mquickjs, test_njs); a token-pasting macro used
-     as a declarator (test_parrot); struct member access rcc reports as
-     "no such member" on legitimate code (test_php, test_cfitsio,
-     test_tcl); `sizeof` applied to an incomplete type inside a
-     `static_assert`-style macro idiom (test_utillinux); an unclosed
-     string literal lexer false-positive (test_gnutls,
-     `config.h:2359`); conflicting-types false-positive between a local
-     prototype and a generic-function expansion (test_gtar,
-     `xattrs.c`); a `_Generic` dispatch macro rejecting a valid
-     association (test_noplate); `dlfcn.h`'s `Dl_info` usage
-     (test_nqp); wolfSSL's macro-generated union member declaration
+     `gdtlsconnection.h:108`); an empty-body context (test_lexbor,
+     `normalization_forms.c:206`); designated-initializer macro tables
+     (test_mquickjs, test_njs); a token-pasting macro used as a
+     declarator (test_parrot); struct member access rcc reports as "no
+     such member" on legitimate code (test_php, test_cfitsio, test_tcl);
+     `sizeof` applied to an incomplete type inside a `static_assert`-style
+     macro idiom (test_utillinux); an unclosed string literal lexer
+     false-positive (test_gnutls, `config.h:2359`); conflicting-types
+     false-positive between a local prototype and a generic-function
+     expansion (test_gtar, `xattrs.c`); a `_Generic` dispatch macro
+     rejecting a valid association (test_noplate); `dlfcn.h`'s `Dl_info`
+     usage (test_nqp); wolfSSL's macro-generated union member declaration
      (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
      intrinsics still gap in some header path (test_wuffs) — separate
-     from the fixed F16C cluster, needs its own look.
+     from the fixed F16C cluster, needs its own look. **A C99 flexible
+     array member inside a struct (test_bfs, `struct ioq_thread
+threads[];`) is fixed**, see "Fixed (2026-08-15, empty
+     attribute-specifier-sequence before a tag declarator session)"
+     above — turned out to be a distinct, general parser bug (not
+     specific to flexible array members).
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the
