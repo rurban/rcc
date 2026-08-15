@@ -727,6 +727,72 @@ verified clean. New regression tests:
 `test/test_struct_tag_redef_identical.c`,
 `test/test_iquote_precedes_bundled.c`.
 
+### Fixed (2026-08-15, unclosed-string-literal warning + lexer line-number session)
+
+- **A string literal missing its closing quote at end-of-line was a hard
+  error, aborting the whole translation unit** (`lexer.c`, `lex_one()`'s
+  string-literal scan) — real gcc only WARNS here ("missing terminating
+  \" character") and recovers by treating the token as ending right at
+  the newline, promoting to a hard error only if the malformed token is
+  later actually parsed as an expression (never, if the macro/string it
+  belongs to is simply unreferenced). Confirmed directly: gcc accepts
+  `-E`-preprocessing this exact shape cleanly, and even a real compile
+  only fails if the malformed macro is textually expanded somewhere.
+  rcc's own hard error unconditionally broke any translation unit that
+  merely _included_ a header with this shape, regardless of whether the
+  malformed macro was ever used. Found via gnutls's own
+  `config.h`: `#define M_LIBRARY_SONAME "libm.so.6` with no closing
+  quote — a genuine upstream config-generation truncation (verified:
+  `M_LIBRARY_SONAME` itself is never referenced by any compiled gnutls
+  source), reproducing identically as a real-gcc warning. Fixed by
+  adding `lex_warn_at()` (mirrors `lex_error_at()`'s formatting, never
+  fatal, never counts toward `-Wfatal-errors`/`-fmax-errors`) and
+  switching this one diagnostic to it, matching gcc's own wording. The
+  same truncated-string-literal shape recurs throughout large generated
+  data tables (confirmed independently unblocked in test_php's
+  `ext/fileinfo/libmagic/data_file.c`, a giant embedded binary-magic-
+  database string literal — not individually re-triaged to a full build
+  this session, blocked on unrelated issues deeper in that file).
+- **Every `lex_error_at()`/`lex_warn_at()` diagnostic raised while
+  scanning an `#include`d file reported the WRONG line number** (found
+  investigating the fix above: gnutls's own diagnostic named line 2359
+  while quoting line 2382's actual source text) — `lexer.c`,
+  `compute_line_no()`. Both functions fell back to `compute_line_no()`,
+  which walks from `current_input`/`current_line_offset`/`line_num` --
+  globals exclusively maintained by `tokenize()`'s own naive, standalone
+  `#line`-directive scan (`lex_pp_mode == false`). Real preprocessing
+  (`#include`-driven, `lex_pp_mode == true`) tracks `#line` state
+  entirely separately in `preprocess.c`'s own `PPLvl.reported_line`, so
+  those globals sit stale — leftover from whatever buffer `tokenize()`
+  last ran on (e.g. the parser's synthetic-prelude sources) — for the
+  entire duration of real compilation. `lex_one()`'s own local
+  `cur_lineno`, by contrast, is always correct at any point during its
+  scan (seeded from the caller-tracked `*plineno` each call, and a
+  single call never crosses a raw newline mid-token). Fixed by mirroring
+  it into a new file-static `lex_one_lineno` at the top of every
+  `lex_one()` loop iteration and having `lex_error_at()`/`lex_warn_at()`
+  pass it through explicitly instead of relying on the broken fallback.
+  Regression test: `test/test_unclosed_string_warn.c` (new) — verifies
+  both the warning-not-error recovery and, indirectly, that later
+  declarations in the same file still parse; the correct-line-number fix
+  was additionally confirmed directly (`gnutls/config.h:2382`, and a
+  fresh `0b29` invalid-integer-suffix repro after an `#include`).
+
+**test_gnutls** (https://gnupg.org/software/gnutls) now gets substantially
+further into its real `./configure && make` build (unblocking every
+`gl/`-directory translation unit that merely includes `config.h`) before
+hitting a separate, deeper, **confirmed-not-an-rcc-bug** blocker one
+layer down: `src/gl/tests/sys/ioctl.h`'s own gnulib-generated `ioctl`
+redeclaration (`int ioctl(int, int, ...)`) genuinely conflicts with
+glibc's real prototype (`int ioctl(int, unsigned long int, ...)`) —
+verified byte-for-byte reproducible with a real `gcc -c` on the identical
+construct (`conflicting types for 'ioctl'`), a real upstream
+gnulib/glibc-version mismatch in this specific gnutls checkout's
+`src/gl/tests` module, not an rcc gap. `make check-all`: 0 failed on
+native x86-64 (Unit 4213/4213, Torture 3605/3609 — 0 failed, 354
+skipped, 4 todo — Dg-error 34/34, Link 8/8); ARM64 and mingw cross-builds
+verified clean. New regression test: `test/test_unclosed_string_warn.c`.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1832,13 +1898,29 @@ a multi-session effort, not a quick win.
      read truncation session)" above); designated-initializer macro tables
      (test_mquickjs, test_njs); struct member access rcc reports as
      "no such member" on legitimate code (test_php, test_cfitsio,
-     test_tcl); an unclosed string literal lexer false-positive
-     (test_gnutls, `config.h:2359`); conflicting-types false-positive
-     between a local prototype and a generic-function expansion
-     (test_gtar, `xattrs.c`); `dlfcn.h`'s `Dl_info` usage (test_nqp);
-     wolfSSL's macro-generated union member declaration (test_wolfssl,
-     `hash.h:109-254`). **A `_Generic` dispatch macro rejecting a valid
-     association (test_noplate) is fixed**, see "Fixed (2026-08-15,
+     test_tcl). **An unclosed string literal lexer false-positive
+     (test_gnutls, `config.h:2359`) is fixed**, see "Fixed (2026-08-15,
+     unclosed-string-literal warning + lexer line-number session)"
+     above — real gcc only warns and recovers there; test_gnutls now
+     gets substantially further before hitting a separate, confirmed
+     upstream (not rcc) gnulib/glibc `ioctl` prototype mismatch. **A
+     conflicting-types false-positive between a local prototype and a
+     generic-function expansion (test_gtar, `xattrs.c`) is confirmed
+     NOT an rcc bug** — real gcc rejects the identical construct too
+     (glibc's own `<sys/acl.h>` on this system already declares
+     `acl_get_file_at`/etc. with different signatures than gtar's own
+     gnulib polyfill expects); `dlfcn.h`'s `Dl_info` usage (test_nqp).
+     **wolfSSL's macro-generated union member declaration
+     (test_wolfssl, `hash.h:109-254`) is fixed** — passes cleanly now
+     (confirmed via a full CMake build plus a fresh run this session:
+     builds 100%, `wolfcrypt/test/testwolfcrypt`'s full algorithm
+     self-test suite passes every test, `tests/unit.test`'s full TLS
+     handshake suite runs real client/server sessions with no
+     failures); no dedicated rcc change was needed specifically for
+     it, resolved by the accumulated struct-tag/pragma/`_Generic`
+     fixes from earlier in this session. **A `_Generic` dispatch macro
+     rejecting a valid association (test_noplate) is fixed**, see "Fixed
+     (2026-08-15,
      test_noplate `_Generic` array/struct-tag session — 4 stacked
      bugs)" above — four stacked bugs (array/VLA `_Generic`
      compatibility, identical-redefinition struct-tag reuse, `-iquote`

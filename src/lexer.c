@@ -67,6 +67,18 @@ int line_num = 1;
 bool lex_pp_mode = false;
 bool lex_asm_cpp_mode = false;
 static int pp_pending_cnl; // comment newlines owed to the PP as TK_CNL
+// The physical line lex_one() is currently scanning, kept in sync with its
+// own `cur_lineno` local at every call (see lex_one()'s first statement).
+// lex_error_at()/lex_warn_at() -- called only from within lex_one() itself,
+// for a raw source pointer with no Token to carry its own ->lineno -- use
+// this instead of compute_line_no()'s current_input/current_line_offset/
+// line_num globals, which are exclusively maintained by tokenize()'s naive
+// #line-directive scan and stay stale (leftover from whatever buffer that
+// path last ran on) for the entire duration of real preprocessing
+// (lex_pp_mode == true, driven by preprocess.c's own #line tracking
+// instead) -- every lexer-level diagnostic hit while lexing an #include'd
+// file previously reported the wrong line number as a result.
+static int lex_one_lineno = 1;
 
 // Registry of all lexed source buffers (main file + every include), so error
 // reporting can bound its line scan to the buffer that actually owns `loc`.
@@ -213,11 +225,16 @@ static int compute_line_no(char *loc) {
 // `file` / `lineno` come from the offending token (tok->filename / tok->lineno),
 // captured when the token was created so they stay correct after tokenizing has
 // advanced the global #line state. Pass file=NULL / lineno=0 to fall back to the
-// current lexer position.
+// current lexer position. `is_warning` swaps the red "error:" label for a plain
+// "warning:" one (used by lex_warn_at) -- the caret/source-line formatting is
+// otherwise identical.
 static void verror_at(char *loc, int len, const char *file, int lineno,
-                      char *fmt, va_list ap) {
+                      bool is_warning, char *fmt, va_list ap) {
     if (!loc) {
-        fprintf(stderr, "\033[1;31merror:\033[0m ");
+        if (is_warning)
+            fprintf(stderr, "warning: ");
+        else
+            fprintf(stderr, "\033[1;31merror:\033[0m ");
         vfprintf(stderr, fmt, ap);
         fprintf(stderr, "\n");
         return;
@@ -237,7 +254,10 @@ static void verror_at(char *loc, int len, const char *file, int lineno,
 
     // Print filename and line info
     fprintf(stderr, "\033[1;37m%s:%d: \033[0m", display_filename(file), reported_line);
-    fprintf(stderr, "\033[1;31merror:\033[0m ");
+    if (is_warning)
+        fprintf(stderr, "warning: ");
+    else
+        fprintf(stderr, "\033[1;31merror:\033[0m ");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
 
@@ -249,9 +269,9 @@ static void verror_at(char *loc, int len, const char *file, int lineno,
     for (int i = 0; i < pos; i++) fprintf(stderr, " "); // Indent
 
     int tilde_len = len > 0 ? len : 1;
-    fprintf(stderr, "\033[1;31m^");
+    fprintf(stderr, is_warning ? "^" : "\033[1;31m^");
     for (int i = 1; i < tilde_len; i++) fprintf(stderr, "~");
-    fprintf(stderr, "\033[0m\n");
+    fprintf(stderr, is_warning ? "\n" : "\033[0m\n");
 }
 
 // Reports an error location and exit or recover.
@@ -260,7 +280,7 @@ static void verror_at(char *loc, int len, const char *file, int lineno,
 void error_at(char *loc, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    verror_at(loc, 1, NULL, 0, fmt, ap);
+    verror_at(loc, 1, NULL, 0, false, fmt, ap);
     error_recovery_tok = NULL; // no token to resume from
     error_finish();
 }
@@ -288,13 +308,13 @@ void error_tok(Token *tok, char *fmt, ...) {
     if (!tok) {
         va_list ap;
         va_start(ap, fmt);
-        verror_at(NULL, 0, NULL, 0, fmt, ap);
+        verror_at(NULL, 0, NULL, 0, false, fmt, ap);
         error_recovery_tok = NULL;
         error_finish();
     }
     va_list ap;
     va_start(ap, fmt);
-    verror_at(tok->ptr, tok->len, tok->filename, tok->lineno, fmt, ap);
+    verror_at(tok->ptr, tok->len, tok->filename, tok->lineno, false, fmt, ap);
     error_recovery_tok = tok;
     error_finish();
 }
@@ -367,12 +387,26 @@ void warn_tok(Token *tok, char *fmt, ...) {
 static void lex_error_at(char *loc, char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    verror_at(loc, 1, NULL, 0, fmt, ap);
+    verror_at(loc, 1, NULL, lex_one_lineno, false, fmt, ap);
     va_end(ap);
     error_count++;
     if (opt_Wfatal_errors ||
         (opt_fmax_errors && error_count >= opt_fmax_errors))
         exit(1);
+}
+
+// Lexer-level recoverable WARNING (never fatal, never counts toward
+// error_count/-Wfatal-errors/-fmax-errors): same file:line + caret
+// formatting as lex_error_at, for a malformed token real gcc itself only
+// warns about rather than hard-erroring (e.g. a string literal missing
+// its closing quote at end-of-line -- gcc's own diagnostic is a plain
+// "missing terminating \" character" warning, not an error, and it
+// recovers by treating the token as ending right at the newline).
+static void lex_warn_at(char *loc, char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    verror_at(loc, 1, NULL, lex_one_lineno, true, fmt, ap);
+    va_end(ap);
 }
 
 // Create a new token.
@@ -530,6 +564,7 @@ Token *lex_one(char **pp, int *plineno) {
     }
 
     while (*p) {
+        lex_one_lineno = cur_lineno;
         if (cur != &head)
             break; // a token was emitted on the previous round
         // Skip whitespace characters.
@@ -1131,7 +1166,18 @@ Token *lex_one(char **pp, int *plineno) {
                 }
             }
             if (*p != '"')
-                lex_error_at(start, "unclosed string literal");
+                // Real gcc only WARNS here ("missing terminating \"
+                // character") and recovers by treating the token as
+                // ending right at the newline -- promoting to a hard
+                // error only if the malformed token is later actually
+                // parsed as an expression (which happens naturally once
+                // it reaches the parser; no special-casing needed here).
+                // A hard error unconditionally broke real-world configure-
+                // generated headers with a genuinely truncated #define
+                // (e.g. gnutls's own config.h: `#define X "libm.so.6`
+                // with no closing quote) even when the malformed macro is
+                // never actually referenced by any compiled source.
+                lex_warn_at(start, "missing terminating \" character");
             else
                 p++;
 
