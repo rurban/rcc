@@ -310,6 +310,57 @@ struct/union/enum ... name;` -- most commonly triggered by a
   separate mingw exe-naming bug above) on ARM64 (qemu-aarch64) and
   mingw (wine). `make check-all`: 0 failed on native x86-64.
 
+### Fixed (2026-08-15, zero-width-bitfield-only struct completeness session)
+
+- **A struct whose only member(s) are anonymous zero-width bitfields
+  (`int : 0;`), or a genuinely empty struct (`struct {}`, a GNU
+  extension), was wrongly treated as an incomplete (forward-declared)
+  type** — `parser.c`, eight call sites (`sizeof(type-name)`,
+  `sizeof expr`, `_Alignof`/`alignas`, `_Generic`, tag-completion, and
+  type-cloning), all sharing one heuristic: `ty->size == 0 &&
+!ty->members`. An anonymous zero-width bitfield never creates a
+  `Member` node at all (it only advances internal layout bookkeeping),
+  so a struct containing only such bitfields has both `size == 0` and
+  `members == NULL` despite having a real `{ ... }` body -- exactly
+  the same shape the heuristic used to identify a genuine `struct S;`
+  forward declaration. `sizeof`, `_Alignof`, etc. hard-errored on
+  every use, even though real GCC/clang correctly treat this as a
+  complete, zero-sized type. Fixed by adding a genuine `Type.has_body`
+  flag, set only when a struct/union `{ ... }` body was actually
+  parsed to completion (regardless of whether it produced any `Member`
+  nodes or a nonzero size, in `struct_union_decl()`'s body-close and
+  in the synthetic `vector_size` type builder, `make_vector_type()`,
+  which also produces the `size==0`-impossible-but-`has_body`-unset
+  shape for one degenerate case), and switching every completeness
+  check from the old heuristic to `!ty->has_body`.
+  Found via this session's exact real-world idiom, util-linux's
+  `include/c.h`:
+  `#define UL_BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:(-!!(e)); }))`
+  (a compile-time-assert trick: `e` false -> a legal `int : 0;`
+  zero-width bitfield, `sizeof` yields 0; `e` true -> an illegal
+  negative bitfield width, a genuine compile error) chained through
+  `__must_be_array()`/`ARRAY_SIZE()` in `text-utils/more.c`. Every
+  `ARRAY_SIZE()` use in the file hard-errored on `sizeof` itself,
+  regardless of `e`'s value. A regression caught during verification
+  (GCC torture: `20060420-1`, `pr53645`, `pr53645-2`, `pr60960`,
+  `pr65427`, `simd-5`, `vect/pr71264`, `vect/vect-div-bitmask-4`, 8
+  tests) traced to the same root cause from the other direction:
+  `vector_size` types are internally represented as a synthetic
+  `TY_STRUCT` (`make_vector_type()`), and `has_body` needed setting
+  there too or every `vector_size` type's own `sizeof` broke instead.
+  Values verified byte-for-byte against real `gcc`/`x86_64-w64-mingw32-gcc`
+  for both bitfield-packing ABIs (SysV vs. MS bitfields differ once a
+  real member precedes the `:0`, though the all-bitfield/empty-struct
+  case is `0` on both). Regression test:
+  `test/test_zero_width_bitfield_struct.c` (new: the exact
+  `UL_BUILD_BUG_ON_ZERO`/`ARRAY_SIZE` macro chain, plain zero-width
+  and empty-struct `sizeof`, `_Alignof`; genuine incompleteness still
+  rejected, covered by the pre-existing GCC torture dg-error suite
+  `c11-align-3.c`/`c11-generic-2.c`/`c23-align-10.c`). PASS at
+  -O0..-O3 on x86-64, ARM64 (qemu-aarch64) and mingw (wine); `make
+check-all`: 0 failed on native x86-64, all 8 previously-regressed
+  torture tests re-verified passing.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1418,26 +1469,29 @@ a multi-session effort, not a quick win.
      designated-initializer macro tables (test_mquickjs, test_njs); a
      token-pasting macro used as a declarator (test_parrot); struct
      member access rcc reports as "no such member" on legitimate code
-     (test_php, test_cfitsio, test_tcl); `sizeof` applied to an
-     incomplete type inside a `static_assert`-style macro idiom
-     (test_utillinux); an unclosed string literal lexer false-positive
-     (test_gnutls, `config.h:2359`); conflicting-types false-positive
-     between a local prototype and a generic-function expansion
-     (test_gtar, `xattrs.c`); a `_Generic` dispatch macro rejecting a
-     valid association (test_noplate); `dlfcn.h`'s `Dl_info` usage
-     (test_nqp); wolfSSL's macro-generated union member declaration
-     (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
-     intrinsics still gap in some header path (test_wuffs) — separate
-     from the fixed F16C cluster, needs its own look. **A C99 flexible
-     array member inside a struct (test_bfs, `struct ioq_thread
-threads[];`) is fixed**, see "Fixed (2026-08-15, empty
-     attribute-specifier-sequence before a tag declarator session)"
-     above — turned out to be a distinct, general parser bug (not
-     specific to flexible array members). **A `static` function
-     definition with a typedef'd return type (test_elk, `main.c:23`) is
-     fixed**, see "Fixed (2026-08-15, #pragma once per-TU scoping
-     session)" below — turned out to be a `#pragma once` cross-TU state
-     leak, not a return-type parsing bug.
+     (test_php, test_cfitsio, test_tcl); an unclosed string literal
+     lexer false-positive (test_gnutls, `config.h:2359`);
+     conflicting-types false-positive between a local prototype and a
+     generic-function expansion (test_gtar, `xattrs.c`); a `_Generic`
+     dispatch macro rejecting a valid association (test_noplate);
+     `dlfcn.h`'s `Dl_info` usage (test_nqp); wolfSSL's macro-generated
+     union member declaration (test_wolfssl, `hash.h:109-254`); AVX2
+     `_mm256_set1_epi16`-family intrinsics still gap in some header
+     path (test_wuffs) — separate from the fixed F16C cluster, needs
+     its own look. **A C99 flexible array member inside a struct
+     (test_bfs, `struct ioq_thread threads[];`) is fixed**, see "Fixed
+     (2026-08-15, empty attribute-specifier-sequence before a tag
+     declarator session)" above — turned out to be a distinct, general
+     parser bug (not specific to flexible array members). **A `static`
+     function definition with a typedef'd return type (test_elk,
+     `main.c:23`) is fixed**, see "Fixed (2026-08-15, #pragma once
+     per-TU scoping session)" above — turned out to be a `#pragma once`
+     cross-TU state leak, not a return-type parsing bug. **`sizeof`
+     applied to an incomplete type inside a `static_assert`-style macro
+     idiom (test_utillinux) is fixed**, see "Fixed (2026-08-15,
+     zero-width-bitfield-only struct completeness session)" below —
+     turned out to be a struct/union completeness-detection bug, not
+     specific to `static_assert`.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the

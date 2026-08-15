@@ -290,6 +290,12 @@ struct Type {
     unsigned char qual; // TypeQual flags: const/volatile/restrict
     Type *base; // for pointer/array
     Member *members; // for struct
+    bool has_body; // struct/union: a `{ ... }` body was parsed (distinct
+    // from `members != NULL`: a GNU empty struct `{}` or a struct whose
+    // only member is an anonymous zero-width bitfield `int : 0;` has no
+    // Member nodes at all, `size == 0`, yet is a genuinely COMPLETE type,
+    // not a forward declaration -- `size == 0 && !members` alone can't
+    // tell those apart.
     Type *return_ty; // for function
     Type *param_types; // linked list of parameter types (for function)
     Type *param_next; // next in parameter type list

@@ -689,7 +689,7 @@ static Type *apply_type_align(Type *ty, int align) {
     // still-incomplete type, where a real clone would freeze size/members
     // at 0 forever and never see the later completion.
     bool incomplete_aggregate = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
-        ty->size == 0 && !ty->members;
+        !ty->has_body;
     if (incomplete_aggregate)
         return ty;
     Type *ret = arena_alloc(sizeof(Type));
@@ -1731,7 +1731,7 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                 if (ty->kind == TY_VOID)
                     error_tok(aty_tok, "alignment specified for void type");
                 if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
-                    ty->size == 0 && !ty->members)
+                    !ty->has_body)
                     error_tok(aty_tok, "alignment specified for incomplete type");
                 maybe_update_align(align, ty->align);
             } else {
@@ -3251,6 +3251,7 @@ static Type *make_vector_type(Type *elem, int total_size) {
         cur = cur->next = m;
     }
     ty->members = head.next;
+    ty->has_body = true; // synthetic type, always complete
     return ty;
 }
 
@@ -3920,7 +3921,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
         if (tag && !equalc(tok, "{")) {
             // Forward-reference use: return existing type
             ty = tag->ty;
-        } else if (tag && equalc(tok, "{") && tag->ty->size == 0 && !tag->ty->members) {
+        } else if (tag && equalc(tok, "{") && !tag->ty->has_body) {
             // Completing a forward-declared (incomplete) type: reuse existing Type object
             // so all pointers to it (typedefs, etc.) see the completed definition.
             ty = tag->ty;
@@ -4444,6 +4445,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     if (type_cleanup)
         ty->cleanup_func = type_cleanup;
     ty->members = head.next;
+    ty->has_body = true;
     int final_align = max_align;
     if (struct_pack > 0 && struct_pack < max_align)
         final_align = struct_pack;
@@ -8907,7 +8909,7 @@ static Node *primary(Token **rest, Token *tok) {
                         error_tok(aty_tok, "_Generic association has variable length type");
                     if (ty->kind == TY_VOID ||
                         ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
-                         ty->size == 0 && !ty->members))
+                         !ty->has_body))
                         error_tok(aty_tok, "_Generic association has incomplete type");
                 }
                 // Duplicate-type check on scalar non-pointer types only:
@@ -11047,7 +11049,7 @@ static Node *unary(Token **rest, Token *tok) {
             // ksh93's own configure-time probe generator) relies on
             // exactly this rejection to tell an opaque struct apart from
             // a real one.
-            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members)
+            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->has_body)
                 error_tok(sty_tok, "invalid application of 'sizeof' to incomplete type");
             *rest = tok;
             if (ty->kind == TY_VLA) {
@@ -11076,7 +11078,7 @@ static Node *unary(Token **rest, Token *tok) {
         // itself invalid for the same reason, but rcc doesn't yet reject
         // that at declaration time, so this is the last line of defense).
         if (node->ty && (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) &&
-            node->ty->size == 0 && !node->ty->members)
+            !node->ty->has_body)
             error_tok(node->tok, "invalid application of 'sizeof' to incomplete type");
         if (node->ty->kind == TY_VLA) {
             // C11 6.5.3.4p2: sizeof evaluates its operand when the
@@ -11122,7 +11124,7 @@ static Node *unary(Token **rest, Token *tok) {
             // Enforced with -pedantics/-Werror; gcc accepts as extension.
             if (ty->kind == TY_FUNC)
                 warn_tok(aty_tok, "'_Alignof' applied to a function type");
-            if (ty->kind == TY_VOID || ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size == 0 && !ty->members))
+            if (ty->kind == TY_VOID || ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->has_body))
                 warn_tok(aty_tok, "'_Alignof' applied to an incomplete type");
             *rest = tok;
             Node *n = new_num(ty->align, start);
