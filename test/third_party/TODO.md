@@ -410,6 +410,50 @@ check-all`: 0 failed on native x86-64, all 8 previously-regressed
   built `parrot` binary -- confirming the originally-reported blocker
   is gone. `make check-all`: 0 failed on native x86-64.
 
+### Fixed (2026-08-15, trailing `_Pragma` before a struct's closing brace session)
+
+- **A trailing `_Pragma(...)` (or `__attribute__`/`[[...]]`) immediately
+  before a struct/union's closing `}`, with no further member after
+  it, broke the surrounding declaration's parse** — `parser.c`, the
+  struct/union member-list loop (`struct_union_decl()`). The loop
+  unconditionally called `declspec()` at the top of every iteration;
+  `declspec()` internally consumes a trailing `_Pragma` via
+  `read_type_attrs()`, finds no real type keyword left before `}`,
+  silently falls back to implicit `int` (C89-style), and returns with
+  `tok` still pointing at `}` — which the surrounding member-parsing
+  code then handed to `declarator()` as if `}` could start a member
+  name, producing "expected specific operator".
+  Found via test_emacs (`xterm.h`'s `extern void
+x_scroll_bar_configure (GdkEvent *);`, behind `#ifdef HAVE_GTK3`,
+  transitively pulling in glib's real `<gio/gdtlsconnection.h>`) and
+  independently by test_liballegro5 (same header, same shape) — both
+  hit the identical `gdtlsconnection.h:108` diagnostic. The real
+  header's trigger is glib's own
+  `G_GNUC_BEGIN_IGNORE_DEPRECATIONS`/`G_GNUC_END_IGNORE_DEPRECATIONS`
+  macros (`_Pragma("GCC diagnostic push/pop")`) wrapping a deprecated
+  vtable member, with `G_GNUC_END_IGNORE_DEPRECATIONS` sitting
+  directly before the struct's final `};`.
+  Fixed by peeking (non-destructively) past any leading attrs/pragmas
+  at the top of each member-list iteration; only actually consuming
+  them there — and ending the member loop — when nothing but `}`
+  follows. A first attempt unconditionally consumed leading attrs at
+  the top of every iteration regardless of what followed, which
+  regressed a real member's own leading attribute (e.g. `alignas(128)
+int x;` — its alignment got silently discarded before reaching
+  `declspec()`'s own `&attr_align`); caught by `make check-all` (GCC
+  torture `c23-tag-9.c`/`c23-tag-composite-6.c`, both alignment-based)
+  before landing, and fixed by making the skip a lookahead-only check.
+  Regression test: `test/test_struct_trailing_pragma.c` (new: a
+  trailing-pragma-only struct, a trailing-pragma-with-member-after
+  struct, and a real `alignas` member to guard the regression),
+  cross-checked against real `gcc`. PASS at -O0..-O3 on x86-64, ARM64
+  (qemu-aarch64) and mingw (wine); `make check-all`: 0 failed on
+  native x86-64. Full verification: the exact declaration pattern from
+  `xterm.h:1848` now compiles cleanly against the real system GTK3
+  headers (`pkg-config --cflags gtk+-3.0`). test_emacs's own full
+  build still fails one layer deeper for an unrelated reason — see
+  "Needs fixing" item 6's parser-rejects-valid-C cluster entry above.
+
 ### Fixed (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer memory-operand session)
 
 - **`salsa20_xmm6-asm.S` (test_libsodium) compiled with no error but
@@ -1509,41 +1553,54 @@ a multi-session effort, not a quick win.
      (2026-08-14, MOVDQA/MOVDQU/MOVD/MOVQ + packed-integer
      memory-operand session)" above.
    - **Parser rejects valid C in real project source** (each a distinct
-     construct, not one root cause): an `extern` declaration using a
-     forward-declared opaque struct pointer type (test_emacs,
-     `xterm.h:1848`); an anonymous-union member pattern (test_glib,
-     `goption.c:212`); a system header's own struct closing brace inside
-     a nested context (test_liballegro5, `gdtlsconnection.h:108`); an
-     empty-body context (test_lexbor, `normalization_forms.c:206`);
-     designated-initializer macro tables (test_mquickjs, test_njs);
-     struct member access rcc reports as "no such member" on legitimate
-     code (test_php, test_cfitsio, test_tcl); an unclosed string
-     literal lexer false-positive (test_gnutls, `config.h:2359`);
-     conflicting-types false-positive between a local prototype and a
-     generic-function expansion (test_gtar, `xattrs.c`); a `_Generic`
-     dispatch macro rejecting a valid association (test_noplate);
-     `dlfcn.h`'s `Dl_info` usage (test_nqp); wolfSSL's macro-generated
-     union member declaration (test_wolfssl, `hash.h:109-254`); AVX2
-     `_mm256_set1_epi16`-family intrinsics still gap in some header
-     path (test_wuffs) — separate from the fixed F16C cluster, needs
-     its own look. **A C99 flexible array member inside a struct
-     (test_bfs, `struct ioq_thread threads[];`) is fixed**, see "Fixed
-     (2026-08-15, empty attribute-specifier-sequence before a tag
-     declarator session)" above — turned out to be a distinct, general
-     parser bug (not specific to flexible array members). **A `static`
-     function definition with a typedef'd return type (test_elk,
-     `main.c:23`) is fixed**, see "Fixed (2026-08-15, #pragma once
-     per-TU scoping session)" above — turned out to be a `#pragma once`
-     cross-TU state leak, not a return-type parsing bug. **`sizeof`
-     applied to an incomplete type inside a `static_assert`-style macro
-     idiom (test_utillinux) is fixed**, see "Fixed (2026-08-15,
+     construct, not one root cause): an anonymous-union member pattern
+     (test_glib, `goption.c:212`); an empty-body context (test_lexbor,
+     `normalization_forms.c:206`); designated-initializer macro tables
+     (test_mquickjs, test_njs); struct member access rcc reports as
+     "no such member" on legitimate code (test_php, test_cfitsio,
+     test_tcl); an unclosed string literal lexer false-positive
+     (test_gnutls, `config.h:2359`); conflicting-types false-positive
+     between a local prototype and a generic-function expansion
+     (test_gtar, `xattrs.c`); a `_Generic` dispatch macro rejecting a
+     valid association (test_noplate); `dlfcn.h`'s `Dl_info` usage
+     (test_nqp); wolfSSL's macro-generated union member declaration
+     (test_wolfssl, `hash.h:109-254`); AVX2 `_mm256_set1_epi16`-family
+     intrinsics still gap in some header path (test_wuffs) — separate
+     from the fixed F16C cluster, needs its own look. **A C99 flexible
+     array member inside a struct (test_bfs, `struct ioq_thread
+threads[];`) is fixed**, see "Fixed (2026-08-15, empty
+     attribute-specifier-sequence before a tag declarator session)"
+     above — turned out to be a distinct, general parser bug (not
+     specific to flexible array members). **A `static` function
+     definition with a typedef'd return type (test_elk, `main.c:23`)
+     is fixed**, see "Fixed (2026-08-15, #pragma once per-TU scoping
+     session)" above — turned out to be a `#pragma once` cross-TU
+     state leak, not a return-type parsing bug. **`sizeof` applied to
+     an incomplete type inside a `static_assert`-style macro idiom
+     (test_utillinux) is fixed**, see "Fixed (2026-08-15,
      zero-width-bitfield-only struct completeness session)" above —
      turned out to be a struct/union completeness-detection bug, not
      specific to `static_assert`. **A token-pasting macro used as a
      declarator (test_parrot) is fixed**, see "Fixed (2026-08-15,
-     object-like macro `##` token-paste session)" below — turned out
+     object-like macro `##` token-paste session)" above — turned out
      to be a general object-like-macro preprocessing bug, not specific
-     to declarator position.
+     to declarator position. **A system header's own struct closing
+     brace inside a nested context (test_liballegro5,
+     `gdtlsconnection.h:108`) is fixed**, see "Fixed (2026-08-15,
+     trailing `_Pragma` before a struct's closing brace session)"
+     below — a real glib system header (`<gio/gdtlsconnection.h>`)
+     bug, also independently blocking test_emacs's `xterm.h:1848`
+     (same header, transitively pulled in via `<gtk/gtk.h>` behind
+     `#ifdef HAVE_GTK3`) — **that exact cited diagnostic is fixed and
+     independently reverified against the real system header**, but
+     emacs's own full build hits a separate, deeper issue: its
+     `src/Makefile` (generated by an earlier session's `./configure`)
+     defines `HAVE_GTK3` in `config.h` yet never wired any GTK
+     `-I`/`pkg-config` cflags into `CFLAGS`, so the rest of `xterm.c`'s
+     GTK/GDK/GObject-typed code is unreachable regardless of this fix
+     — needs a fresh `./configure` (or manually adding
+     `` `pkg-config --cflags gtk+-3.0` ``) to a future session before
+     test_emacs itself can be re-verified end to end.
    - **Wrong runtime output / crash in rcc-compiled code** (candidate
      miscompiles — each needs its own dedicated repro+bisect, not
      attempted this session): test_box2d (rc=139, confirmed the

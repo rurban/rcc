@@ -4003,6 +4003,23 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     int ms_prev_bit_width = 0;
 
     while (!equalc(tok, "}")) {
+        // A trailing _Pragma(...)/__attribute__/[[...]] with nothing but
+        // the closing brace after it (e.g. glib's own
+        // G_GNUC_END_IGNORE_DEPRECATIONS right before a struct's final
+        // "};") must not be mistaken for the start of one more member
+        // declaration -- declspec() would otherwise consume it, find no
+        // real type keyword left, silently fall back to implicit int,
+        // and hand the following "}" to declarator() as if it were a
+        // member name. Peek (non-destructively) past any leading attrs/
+        // pragmas; only actually consume them here if nothing but "}"
+        // follows. A *real* member's own leading attribute (e.g.
+        // "alignas(128) int x;") must reach declspec() untouched, so its
+        // alignment is recorded via that call's own &attr_align/&attr
+        // rather than silently discarded by a throwaway skip here.
+        if (equalc(skip_attributes(tok), "}")) {
+            tok = skip_attributes(tok);
+            break;
+        }
         VarAttr attr = {};
         pending_constructor = false;
         pending_destructor = false;
