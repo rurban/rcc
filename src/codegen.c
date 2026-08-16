@@ -8329,7 +8329,7 @@ static VReg gen_bitint(Node *node) {
                 asm_fcvtzu_x16(cg_sec); // fcvtzu x16, d0
             else
                 asm_fcvtzs_x16(cg_sec); // fcvtzs x16, d0
-            asm_mov_phy_phy(cg_sec, ARM64_X0, ARM64_X16, 0); // mov x0, x16
+            asm_mov_phy_phy(cg_sec, ARM64_X0, ARM64_X16, 1); // mov x0, x16
             VReg rv = alloc_reg();
             asm_mov_retval(cg_sec, rv, 8); // mov x{rv}, x0
             return widen_to_bitint(rv, to, to->is_unsigned);

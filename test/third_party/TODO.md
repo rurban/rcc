@@ -1501,6 +1501,14 @@ mem,%xmmN` silently became `paddd %xmm0,%xmmN` (added XMM0 to
   `test/test_decimal.c` additions `test_decimal128_trunc` and
   `test_decimal_bool`.
 
+- **macOS lacked `<stdbit.h>`** (new `include/stdbit.h`) — the C23
+  `test/test_bit.c` unit test included `<stdbit.h>`; glibc provides it,
+  but Apple's SDK does not. Added a bundled minimal C23 `<stdbit.h>`
+  (type-generic `stdc_leading_zeros`/`stdc_trailing_zeros`/
+  `stdc_count_ones` plus the suffixed `_uc`/`_us`/`_ui`/`_ul`/`_ull`
+  forms) implemented with rcc's existing `__builtin_clz`/`ctz`/
+  `popcount` builtins.
+
 ### Fixed (2026-08-07, blosc2 session)
 
 - **Inline-asm multi-output register clobber** (codegen.c) — a
