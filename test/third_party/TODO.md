@@ -1486,6 +1486,21 @@ mem,%xmmN` silently became `paddd %xmm0,%xmmN` (added XMM0 to
   bignum workload; the runtime is width-agnostic but that project is not
   a target).
 
+  **Follow-up (2026-08-16)**: the new `test_float_cast` in
+  `test/test_wide_bitint.c` exposed that the "int → bitint" cast branch
+  in `gen_bitint()` also matched flonum sources, shadowing the
+  dedicated float→bitint conversion and reinterpreting the raw IEEE-754
+  bits as an integer. Fixed by excluding flonum sources from that
+  branch; x86-64 float→bitint now loads the source double into `%xmm0`
+  before `cvttsd2si`. The same test pass added coverage for
+  `_Decimal128` truncation to `_Decimal32/64` (previously copied the
+  low 64 bits instead of calling `__bid_trunctd{sd,dd}2`) and
+  `_Decimal128` → `_Bool` truthiness (previously tested only the low
+  64 bits, so negative values whose coefficient fit entirely in the
+  high word were wrongly falsy). Regression tests:
+  `test/test_decimal.c` additions `test_decimal128_trunc` and
+  `test_decimal_bool`.
+
 ### Fixed (2026-08-07, blosc2 session)
 
 - **Inline-asm multi-output register clobber** (codegen.c) — a

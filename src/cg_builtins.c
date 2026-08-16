@@ -181,7 +181,10 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
     bool is_parity = false, is_parityl = false, is_parityll = false;
     bool is_clrsb = false, is_clrsbl = false, is_clrsbll = false;
     bool is_ffs = false, is_ffsl = false, is_ffsll = false;
-    bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false, is_thread_pointer = false;
+    bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
+#ifndef _WIN32
+    bool is_thread_pointer = false;
+#endif
     bool is_setjmp = false, is_longjmp = false;
     bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_fma_builtin = false, is_abs_builtin = false;
     bool is_isfinite = false;
@@ -213,7 +216,9 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         is_prefetch = call_target == bi_prefetch;
         is_frame_addr = call_target == bi_frame_address;
         is_ret_addr = call_target == bi_return_address;
+#ifndef _WIN32
         is_thread_pointer = call_target == bi_thread_pointer;
+#endif
         is_setjmp = call_target == bi_setjmp;
         is_longjmp = call_target == bi_longjmp;
         is_signbit = call_target == bi_signbit ||

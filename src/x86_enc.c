@@ -1258,12 +1258,12 @@ void x86_xbegin_rel32(SecBuf *s, int32_t rel32) {
 // three helpers, so fixed once here rather than at each call site.
 static void sse_rr(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86XmmReg sr) {
     emit1(s, pfx);
-    maybe_rex(s, 0, d > X86_RDI ? d : 0, 0, sr > X86_RDI ? sr : 0);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, 0, (int)sr > X86_RDI ? (int)sr : 0);
     emit3(s, 0x0f, op, modrxmm(3, d, sr));
 }
 static void sse_rm(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86Mem m) {
     emit1(s, pfx);
-    maybe_rex(s, 0, d > X86_RDI ? d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
+    maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, op);
     emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)d);
 }
@@ -2282,7 +2282,7 @@ void x86_crc32si(SecBuf *s, X86Reg d, X86Reg sr, int size) {
 
 // ===== VEX (AVX/AVX2) encoders =====
 // 2-byte VEX: C5 + R~vvvvLpp (map implied 0F). pp: 0=none 1=66 2=F3 3=F2.
-static void vex2(SecBuf *s, int pp, int L, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+static void vex2(SecBuf *s, int pp, int L, X86XmmReg d, X86XmmReg v, __attribute__((unused)) X86XmmReg rm) {
     int R = (int)d >> 3;
     int vvvv = (~(int)v) & 15;
     emit1(s, 0xc5);
@@ -2379,10 +2379,10 @@ void x86_vmovups_mr512(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
 }
 // vpbroadcastd/q: EVEX.512.66.0F38.W0 58/59 (xmm source -> zmm dest)
-void x86_vpbroadcastd512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+void x86_vpbroadcastd512(SecBuf *s, X86XmmReg d, __attribute__((unused)) X86XmmReg v, X86XmmReg rm, int k) {
     evex_rr(s, 1, 2, 0, 0x58, k, d, X86_XMM0, rm);
 }
-void x86_vpbroadcastq512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, int k) {
+void x86_vpbroadcastq512(SecBuf *s, X86XmmReg d, __attribute__((unused)) X86XmmReg v, X86XmmReg rm, int k) {
     evex_rr(s, 1, 2, 1, 0x59, k, d, X86_XMM0, rm);
 }
 // kmovw r32, k1 (VEX.128.0F.W0 90 /r): move a k-mask to a GP register.

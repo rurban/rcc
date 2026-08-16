@@ -1682,7 +1682,7 @@ static uint8_t *build_coff_obj(CoffMiniSec *secs, int n_secs, CoffMiniSym *syms,
 // (.idata$2) plus the empty `.idata$5`/`.idata$4` chunks every other
 // member's own slot concatenates after.
 static uint8_t *build_import_head_obj(const char *dllid, uint16_t machine, size_t *out_len) {
-    char head_sym[128], iname_sym[128];
+    char head_sym[320], iname_sym[320];
     snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
     snprintf(iname_sym, sizeof(iname_sym), "%s_iname", dllid);
 
@@ -1706,7 +1706,7 @@ static uint8_t *build_import_head_obj(const char *dllid, uint16_t machine, size_
 // entries.
 static uint8_t *build_import_tail_obj(const char *dllid, const char *dll_name,
                                       uint16_t machine, size_t *out_len) {
-    char iname_sym[128];
+    char iname_sym[320];
     snprintf(iname_sym, sizeof(iname_sym), "%s_iname", dllid);
     size_t namelen = strlen(dll_name) + 1;
 
@@ -1731,7 +1731,7 @@ static uint8_t *build_import_tail_obj(const char *dllid, const char *dll_name,
 // the head member into the link once any exported symbol is needed).
 static uint8_t *build_import_symbol_obj(const char *dllid, const char *sym_name,
                                         uint16_t hint, uint16_t machine, size_t *out_len) {
-    char head_sym[128], imp_sym[300];
+    char head_sym[320], imp_sym[300];
     snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
     snprintf(imp_sym, sizeof(imp_sym), "__imp_%s", sym_name);
 
@@ -1783,7 +1783,7 @@ static uint8_t *build_import_symbol_obj(const char *dllid, const char *sym_name,
 // but is included for exact parity with the reference archive.
 static uint8_t *build_import_data_obj(const char *dllid, const char *sym_name,
                                       uint16_t hint, uint16_t machine, size_t *out_len) {
-    char head_sym[128], imp_sym[300], nm_sym[300];
+    char head_sym[320], imp_sym[300], nm_sym[300];
     snprintf(head_sym, sizeof(head_sym), "_head_%s", dllid);
     snprintf(imp_sym, sizeof(imp_sym), "__imp_%s", sym_name);
     snprintf(nm_sym, sizeof(nm_sym), "__nm_%s", sym_name);

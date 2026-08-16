@@ -87,6 +87,38 @@ static int test_casts(void)
     return 0;
 }
 
+static int test_decimal128_trunc(void)
+{
+    /* _Decimal128 truncated DIRECTLY to _Decimal32/_Decimal64 -- a
+     * separate codegen path from dd->sd (td source keeps the value in a
+     * 16-byte slot instead of a GP register; ARM64's helper mis-copied
+     * the truncated low word via a wrong register index). */
+    D128 x = 3.75dl;
+    D64 y = (D64)x;
+    if (y != 3.75dd) return 1;
+    D32 z = (D32)x;
+    if (z != 3.75df) return 2;
+    return 0;
+}
+
+static int test_decimal_bool(void)
+{
+    /* decimal -> _Bool: nonzero BID bits are truthy. */
+    D32 a = 0.0df;
+    D64 b = 1.5dd;
+    D128 c = 0.0dl;
+    D128 d = -2.5dl;
+    _Bool ba = (_Bool)a;
+    _Bool bb = (_Bool)b;
+    _Bool bc = (_Bool)c;
+    _Bool bd = (_Bool)d;
+    if (ba) return 1;
+    if (!bb) return 2;
+    if (bc) return 3;
+    if (!bd) return 4;
+    return 0;
+}
+
 static int test_neg(void)
 {
     D64 x = 1.25dd;
@@ -115,6 +147,8 @@ int main(void)
     if ((rc = test_decimal128())) return 200 + rc;
     if ((rc = test_compare())) return 300 + rc;
     if ((rc = test_casts())) return 400 + rc;
+    if ((rc = test_decimal128_trunc())) return 450 + rc;
+    if ((rc = test_decimal_bool())) return 470 + rc;
     if ((rc = test_neg())) return 500 + rc;
     if ((rc = test_funcall())) return 600 + rc;
     return 0;

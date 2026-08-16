@@ -608,10 +608,12 @@ static void strip_local_label_suffix(char *tok) {
 // undefined-symbol name, which GNU ld then misparses as its own
 // "symbol@VERSION_NODE" versioned-symbol-reference syntax ("no symbol
 // version section for versioned symbol `foo@PLT'").
+#ifndef ARCH_ARM64
 static void strip_plt_suffix(char *tok) {
     char *at = strchr(tok, '@');
     if (at) *at = '\0';
 }
+#endif
 
 // Full assembler-time integer expression evaluator (defined below, after
 // the ExprCtx/expr_* recursive-descent chain) with "." resolving to the

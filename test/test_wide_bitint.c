@@ -120,6 +120,29 @@ static int test_cast(void)
     return 0;
 }
 
+static int test_float_cast(void)
+{
+    /* _BitInt(N>64) <-> double: ARM64's gen_bitint used the wrong
+     * register-move/load helpers here (an unrelated VReg-indirection
+     * function applied to already-physical register numbers), so this
+     * either crashed with "Invalid register" or silently produced a
+     * garbage value depending on which VReg happened to be live. */
+    B200 x = 42;
+    double d = (double)x;
+    if (d != 42.0) return 1;
+    B200 y = (B200)3.0;
+    if (y != 3) return 2;
+    B200 neg = -17;
+    double d2 = (double)neg;
+    if (d2 != -17.0) return 3;
+    UB200 u = 9;
+    double d3 = (double)u;
+    if (d3 != 9.0) return 4;
+    B200 z = (B200)(-8.0);
+    if (z != -8) return 5;
+    return 0;
+}
+
 static int test_wide_loop(void)
 {
     /* Build a wide value incrementally: each iteration does a 200-bit
@@ -144,6 +167,7 @@ int main(void)
     if ((rc = test_unsigned())) return rc;
     if ((rc = test_funcall())) return rc;
     if ((rc = test_cast())) return rc;
+    if ((rc = test_float_cast())) return rc;
     if ((rc = test_wide_loop())) return rc;
     return 0;
 }
