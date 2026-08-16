@@ -221,6 +221,43 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-16, versioned-SONAME SemVer-prerelease-suffix session)
+
+- **rcc's linker-input classification rejected a versioned shared
+  library whose SONAME carries a SemVer-style prerelease tag after the
+  version digits** (`main.c`, `is_shared_lib_path()`) — the existing
+  check accepted a bare `.so`/`.dylib` suffix, or one followed by one or
+  more `.<digits>` version components, but required end-of-string
+  immediately after the last digit group. A positional link input like
+  `libnng.so.2.0.0-dev` — nng's own CMake build embeds its
+  `NNG_PRERELEASE` tag (`-dev`, `-rc1`, ...) straight into
+  `NNG_ABI_VERSION`, producing the real SONAME symlink chain
+  `libnng.so` -> `libnng.so.1` -> `libnng.so.2.0.0-dev` — fell through
+  the digit loop with `-dev` unconsumed, so the whole path was
+  classified as a compilable C source file instead of a link input:
+  `libnng.so.2.0.0-dev:1: error: invalid token` on the file's own ELF
+  magic bytes. Fixed by optionally consuming a trailing `-<tag>` after
+  the version-digit loop, where `<tag>` is a non-empty run of
+  alphanumeric/`.`/`-` characters (SemVer 2.0's own prerelease-tag
+  grammar) — a charset that can never itself look like a compilable
+  source extension.
+  Found via test_nanomsg (nng)'s own real `cmake --build` failing to
+  link `nngcat` (and every other target consuming `libnng.so`
+  positionally) against its own freshly-built library.
+  Regression test: `test/test-link.sh` case 13 (new: a shared library
+  built and linked under a `libfoo.$SOEXT.2.0.0-dev`-style name).
+  PASS at -O0..-O3 on x86-64; `make check-all`: 0 failed on native
+  x86-64 (4578/4578, Torture 3605/3609 — 0 failed, 354 skipped, 4 todo,
+  Dg-error 34/34, Link tests 10/10 incl. the new case); ARM64 and mingw
+  cross-builds verified clean (the fix is target-independent string
+  logic in `main.c`'s own driver, no `#ifdef`-guarded code). Full
+  verification: nng's real `cmake --build` now completes 100%
+  (previously failing exactly at the `nngcat` link step); the built
+  `nngcat` tool runs correctly; nng's own `ctest` suite passes 75/76
+  (the sole exclusion, `nng.httpclient`, depends on a live connection to
+  the public `httpbin.org` service, independently confirmed flaky
+  — `curl` to it returns HTTP 503 — unrelated to rcc).
+
 ### Fixed (2026-08-16, self-referential global array initializer session)
 
 - **A static/global array referencing itself by name within its own
@@ -2311,8 +2348,11 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      (linker reports the rcc-produced static archive itself as
      malformed — "file in wrong format"/"bad value" — worth checking
      archive-writing first since it may be one shared root cause across
-     both), test_nanomsg (rcc misclassifies a `.so.N.N.N`-suffixed
-     shared-library dev symlink as a C source file to compile).
+     both), **test_nanomsg is fixed** — see "Fixed (2026-08-16,
+     versioned-SONAME SemVer-prerelease-suffix session)" below (rcc
+     misclassified a `libfoo.so.N.N.N-dev`-style versioned shared
+     library, with a trailing SemVer prerelease tag after the version
+     digits, as a C source file to compile).
 
    Every cluster above is grounded in a specific `file:line` and
    quoted rcc/linker diagnostic captured in

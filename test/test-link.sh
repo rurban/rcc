@@ -467,6 +467,31 @@ else
     fail "direct multi-.c single-invocation executable link" "$(tr '\n' ' ' < "$TMP/e10")"
 fi
 
+# ---------------------------------------------------------------------------
+# 13. A versioned shared-library SONAME with a trailing SemVer-style
+#    "-<prerelease>" tag (e.g. "libfoo.so.2.0.0-dev") passed as a
+#    positional link input -- main.c's is_shared_lib_path() only
+#    recognized a bare ".so"/".dylib" suffix, or one followed by
+#    ".<digits>" version components, so anything after the version
+#    digits (even just a trailing "-dev") fell through and rcc tried to
+#    compile the binary .so as C source ("invalid token \x7fELF").
+#    Found via nng's own CMake build (NNG_ABI_VERSION embeds a "-dev"/
+#    "-rc1"-style NNG_PRERELEASE suffix straight into the SONAME:
+#    libnng.so -> libnng.so.1 -> libnng.so.2.0.0-dev), which broke
+#    every link step consuming the library positionally.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" != dll ]; then
+    if "$RCC" -shared -fPIC "$TMP/greet.c" -o "$TMP/libgreet4.$SOEXT.2.0.0-dev" 2>"$TMP/e11" \
+        && "$RCC" "$TMP/gmain.c" "$TMP/libgreet4.$SOEXT.2.0.0-dev" -o "$TMP/gprog4" 2>>"$TMP/e11" \
+        && runlib "$TMP/gprog4"; then
+        pass "versioned SONAME with SemVer prerelease suffix"
+    else
+        fail "versioned SONAME with SemVer prerelease suffix" "$(tr '\n' ' ' < "$TMP/e11")"
+    fi
+else
+    printf '  %-44s SKIP (not applicable to Windows SONAMEs)\n' "versioned SONAME with SemVer prerelease suffix"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
