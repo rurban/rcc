@@ -13725,12 +13725,18 @@ Program *parse(Token *tok) {
                         ty = var->ty;
                     else
                         var->ty = ty;
-                    // A redeclaration of an already-defined (initialized) global
-                    // must not drop its definition or change its linkage: e.g.
-                    // `int i = 1; extern int i;` keeps i defined, and
-                    // `static auto u = 10U; extern unsigned u;` keeps u static.
+                    // A redeclaration of an already-defined global (either an
+                    // initialized definition, or a prior non-extern tentative
+                    // definition like `int i;`) must not drop its definition
+                    // or change its linkage: e.g. `int i = 1; extern int i;`
+                    // keeps i defined, `int i; extern int i;` keeps i defined
+                    // (C11 6.9.2), and `static auto u = 10U; extern unsigned
+                    // u;` keeps u static. Only a genuinely new name, or one
+                    // still `extern`-only so far, may pick up this
+                    // declaration's own `extern`-ness.
                     if (!var->has_init) {
-                        var->is_extern = attr.is_extern;
+                        if (var_is_new || var->is_extern)
+                            var->is_extern = attr.is_extern;
                         var->is_static = attr.is_static;
                         var->is_tls = attr.is_tls;
                         // __attribute__((weak)) may appear either as a

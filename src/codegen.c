@@ -318,7 +318,7 @@ static size_t asm_mov_got_rip_reg(SecBuf *s, int r, const char *label) {
     asm_record(ASM_MOV_RRBP, off, s->len - off, r, -1, -1, 8, 0, 0, label, 0, -1, false);
     return s->len - off;
 }
-__attribute__((unused)) static size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
+size_t asm_mov_fs0_reg(SecBuf *s, VReg r) {
     X86Reg reg = REG(r);
     EMIT_GUARD;
     size_t off = s->len;
@@ -337,22 +337,54 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
     X86Reg rb = REG(base);
     EMIT_GUARD;
     if (opt_pic) {
-        // Initial-exec TLS model for shared objects:
-        //   mov var@GOTTPOFF(%rip), dst ; add base, dst
-        // (base holds %fs:0). Local-exec TPOFF32 relocs are rejected by
-        // the linker when building a .so.
+        // Initial-exec TLS model for shared objects/PIC code:
+        //   mov %fs:0, %rdx
+        //   mov var@GOTTPOFF(%rip), %rax
+        //   add %rdx, %rax
+        // Local-exec TPOFF32 relocs are rejected by the linker when
+        // building a .so.
+        //
+        // MUST use exactly %rax/%rdx (REX.W-only prefixes, no REX.R/B
+        // extension bits) here, matching the x86-64 psABI's documented
+        // IE-access idiom byte-for-byte (verified against real gcc -S
+        // output) -- NOT whatever VReg the caller/allocator happened to
+        // pick. The linker's GOTTPOFF->TPOFF32 relaxation pattern-
+        // matches the raw instruction bytes following the relocation;
+        // rcc's general register allocator maps VRegs onto r10-r15
+        // (needing REX.R/B) the overwhelming majority of the time, and
+        // a REX.R/B-bearing `mov`/`add` here is not a recognized
+        // relaxation candidate -- binutils ld hard-errors ("TLS
+        // transition from R_X86_64_GOTTPOFF to R_X86_64_TPOFF32 ...
+        // failed") instead of just skipping the optimization. Callers
+        // still pre-load `base` (VReg) with %fs:0 for the non-PIC
+        // branch below; that computation is simply unused on this path
+        // -- %rdx is loaded fresh here instead. rax/rdx are never a
+        // live VReg's home in this codegen (see reg64[]), so clobbering
+        // them as scratch here is safe.
+        (void)rb;
         size_t off = s->len;
-        X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
-        x86_mov_rm(s, 8, rd, m); // mov var@GOTTPOFF(%rip), dst
+        secbuf_emit8(s, 0x64); // %fs: segment override
+        secbuf_emit8(s, 0x48); // REX.W
+        secbuf_emit8(s, 0x8B); // mov r64, r/m64
+        secbuf_emit8(s, 0x14); // ModRM: reg=rdx(010), rm=100(SIB)
+        secbuf_emit8(s, 0x25); // SIB: no index/base, disp32
+        secbuf_emit32le(s, 0); // mov %fs:0, %rdx
+        size_t mov_off = s->len;
+        secbuf_emit8(s, 0x48); // REX.W (no R/X/B -- must match gcc's exact byte-for-byte
+        secbuf_emit8(s, 0x8B); // pattern; x86_mov_rm's generic RIP-relative encoder sets a
+        secbuf_emit8(s, 0x05); // spurious REX.B here since X86_RIP's sentinel value is > X86_RDI)
+        secbuf_emit32le(s, 0); // mov var@GOTTPOFF(%rip), %rax
         if (!cg_dry_run) {
             int sidx = objfile_find_sym(cg_obj, label);
             if (sidx < 0) {
                 bool il = label[0] == '.';
                 sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_TLS);
             }
-            objfile_add_reloc(cg_obj, SEC_TEXT, off + 3, sidx, R_X86_64_GOTTPOFF, -4);
+            objfile_add_reloc(cg_obj, SEC_TEXT, mov_off + 3, sidx, R_X86_64_GOTTPOFF, -4);
         }
-        x86_add_rr(s, 8, rd, rb); // add base, dst
+        x86_add_rr(s, 8, X86_RAX, X86_RDX); // add %rdx, %rax
+        if (rd != X86_RAX)
+            x86_mov_rr(s, 8, rd, X86_RAX); // mov %rax, dst
         return s->len - off;
     }
     size_t off = s->len;
@@ -373,7 +405,7 @@ __attribute__((unused)) static size_t asm_lea_tpoff_base_reg(SecBuf *s, VReg dst
         int sidx = objfile_find_sym(cg_obj, label);
         if (sidx < 0) {
             bool il = label[0] == '.';
-            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_NOTYPE);
+            sidx = objfile_add_sym(cg_obj, label, SEC_UNDEF, 0, 0, il ? SB_LOCAL : SB_GLOBAL, ST_TLS);
         }
         objfile_add_reloc(cg_obj, SEC_TEXT, disp_off, sidx, R_X86_64_TPOFF32, 0);
     }

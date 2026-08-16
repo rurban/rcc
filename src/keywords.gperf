@@ -236,6 +236,7 @@ __builtin_strchr, ID___BUILTIN_STRCHR, KW_BUILTIN, NULL
 __builtin_strcmp, ID___BUILTIN_STRCMP, KW_BUILTIN, NULL
 __builtin_strlen, ID___BUILTIN_STRLEN, KW_BUILTIN, NULL
 __builtin_sub_overflow, ID___BUILTIN_SUB_OVERFLOW, KW_BUILTIN, NULL
+__builtin_thread_pointer, ID___BUILTIN_THREAD_POINTER, KW_BUILTIN, NULL
 __builtin_types_compatible_p, ID___BUILTIN_TYPES_COMPATIBLE_P, KW_BUILTIN, NULL
 __builtin_va_arg, ID___BUILTIN_VA_ARG, KW_SPECIAL, NULL
 __builtin_va_arg_pack, ID___BUILTIN_VA_ARG_PACK, KW_SPECIAL, NULL

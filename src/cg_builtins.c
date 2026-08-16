@@ -18,7 +18,7 @@ char *bi_popcount, *bi_popcountl, *bi_popcountll;
 char *bi_parity, *bi_parityl, *bi_parityll;
 char *bi_clrsb, *bi_clrsbl, *bi_clrsbll;
 char *bi_ffs, *bi_ffsl, *bi_ffsll;
-char *bi_prefetch, *bi_frame_address, *bi_return_address;
+char *bi_prefetch, *bi_frame_address, *bi_return_address, *bi_thread_pointer;
 char *bi_setjmp, *bi_longjmp;
 char *bi_signbit, *bi_signbitf, *bi_signbitl;
 char *bi_isinf, *bi_isinff, *bi_isinfl;
@@ -81,6 +81,7 @@ void init_builtin_names(void) {
     bi_prefetch = _BI("__builtin_prefetch");
     bi_frame_address = _BI("__builtin_frame_address");
     bi_return_address = _BI("__builtin_return_address");
+    bi_thread_pointer = _BI("__builtin_thread_pointer");
     bi_setjmp = _BI("__builtin_setjmp");
     bi_longjmp = _BI("__builtin_longjmp");
     bi_signbit = _BI("__builtin_signbit");
@@ -180,7 +181,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
     bool is_parity = false, is_parityl = false, is_parityll = false;
     bool is_clrsb = false, is_clrsbl = false, is_clrsbll = false;
     bool is_ffs = false, is_ffsl = false, is_ffsll = false;
-    bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false;
+    bool is_prefetch = false, is_frame_addr = false, is_ret_addr = false, is_thread_pointer = false;
     bool is_setjmp = false, is_longjmp = false;
     bool is_signbit = false, is_isinf = false, is_copysign_builtin = false, is_fma_builtin = false, is_abs_builtin = false;
     bool is_isfinite = false;
@@ -212,6 +213,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         is_prefetch = call_target == bi_prefetch;
         is_frame_addr = call_target == bi_frame_address;
         is_ret_addr = call_target == bi_return_address;
+        is_thread_pointer = call_target == bi_thread_pointer;
         is_setjmp = call_target == bi_setjmp;
         is_longjmp = call_target == bi_longjmp;
         is_signbit = call_target == bi_signbit ||
@@ -799,6 +801,30 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
 #endif
         return r;
     }
+    // Real GCC/Clang do NOT support __builtin_thread_pointer() on mingw
+    // at all (verified: `x86_64-w64-mingw32-gcc` rejects it as an
+    // implicit-declaration, unresolved identifier) -- Windows x86-64
+    // uses the GS segment for its TEB, not FS, and mimalloc's own
+    // source never calls this builtin under _WIN32 (it uses
+    // NtCurrentTeb() there instead). Leaving this call unintercepted
+    // under _WIN32 falls through to the same "undefined reference"
+    // link failure real GCC produces, rather than silently emitting
+    // FS-based code that reads the wrong segment on that target.
+#ifndef _WIN32
+    if (is_thread_pointer) {
+        // __builtin_thread_pointer(): returns the current thread's TLS
+        // base pointer. GCC/Clang implement this as a real compiler
+        // builtin (no library call); mimalloc's _mi_thread_id() fast
+        // path calls it directly.
+        int r = alloc_reg();
+#ifdef ARCH_ARM64
+        arm64_mrs(cg_sec, REG(r), 0x5e82); // mrs x{r}, tpidr_el0
+#else
+        asm_mov_fs0_reg(cg_sec, r); // mov %fs:0, r
+#endif
+        return r;
+    }
+#endif
     if (is_setjmp) {
         // Inline __builtin_setjmp: save fp, resume_addr, sp to buf; return 0 or 1 (longjmp)
         int rbuf = arg_gen(node->args);

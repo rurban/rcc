@@ -2365,6 +2365,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin_strncpy",
         "__builtin_strrchr",
         "__builtin_sub_overflow",
+        "__builtin_thread_pointer",
         "__builtin_trap",
         "__builtin_types_compatible_p",
         "__builtin_unreachable",

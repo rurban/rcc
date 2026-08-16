@@ -2259,6 +2259,71 @@ rcc shipping its own`<immintrin.h>`/`<avxintrin.h>`/`<avx2intrin.h>`(the way it 
 of falling through to GCC's real, AVX-512-chaining system headers —
 a multi-session effort, not a quick win.
 
+### Fixed (2026-08-16, TLS symbol-type / extern-redeclaration session)
+
+Found while chasing test_ocaml/test_mimalloc's real link failures (both
+previously misdiagnosed as "the rcc-produced static archive itself is
+malformed" — the archive format was fine; three separate codegen/parser
+bugs corrupted individual member object files).
+
+- **A global variable's own definition, followed by a same-TU `extern`
+  redeclaration, silently dropped the definition** (parser.c) —
+  `int i; extern int i;` (or the TLS equivalent, `_Thread_local int i;
+extern _Thread_local int i;`) unconditionally re-stamped
+  `var->is_extern = attr.is_extern` whenever `!var->has_init`. `has_init`
+  is only set by an explicit `= value` initializer, so a plain _tentative_
+  definition (has_init false) hit this guard too — the later `extern`
+  redeclaration downgraded it back to a bare declaration and the symbol
+  vanished from the object file entirely (not even emitted weak/local;
+  simply absent). C11 6.9.2 requires the entity to stay defined once any
+  earlier declaration in the same TU committed to defining it. Fixed by
+  only letting a redeclaration's `extern`-ness take effect when the name
+  is brand new or was itself still extern-only so far
+  (`var_is_new || var->is_extern`) — once a real/tentative definition
+  exists, a later `extern` can no longer un-define it.
+- **x86-64 non-PIC (local-exec) TLS variable reference registered the
+  wrong symbol type** (codegen.c, `asm_lea_tpoff_base_reg`) — the
+  function's PIC/initial-exec branch (GOTTPOFF) correctly registered a
+  first-seen undefined reference as `ST_TLS`; the sibling non-PIC/
+  local-exec branch (TPOFF32) registered the identical case as plain
+  `ST_NOTYPE`. The generated _code_ was always correct (a real
+  `%fs:`-relative TPOFF32 access) — only the object file's own symbol-
+  table entry was mistyped. Invisible compiling a single TU alone; it
+  only surfaces once the linker cross-checks this object's undefined
+  reference against another object's genuine `STT_TLS` definition of the
+  same name — exactly OCaml's `runtime/libcamlrun.a`, where `domain.b.o`
+  defines `__thread`-qualified `caml_state` and `alloc.b.o` (compiled
+  without `-fPIC`, i.e. local-exec) only references it: `ld` hard-errors
+  "TLS definition ... mismatches non-TLS reference". Fixed by registering
+  the local-exec branch's new symbol as `ST_TLS` too.
+- **`__builtin_thread_pointer()` was entirely unimplemented** (a real
+  GCC/Clang builtin; mimalloc's `_mi_prim_thread_id()` fast path calls it
+  directly when available) — `mimalloc-test-stress`'s TLS-heavy
+  multithreaded build failed to compile outright. Implemented in
+  cg_builtins.c: `mrs x{r}, tpidr_el0` on ARM64, `mov %fs:0, r` on
+  x86-64 (excluded on `_WIN32`/mingw, matching real GCC/Clang's own
+  behavior — verified `x86_64-w64-mingw32-gcc` rejects the builtin
+  outright as an unresolved identifier there; mingw's TEB uses the GS
+  segment via a completely different ABI this builtin was never meant to
+  address).
+
+Verified end-to-end: mimalloc's real CMake build (native rcc as
+`CMAKE_C_COMPILER`) now links `libmimalloc.a`/`.so`, and
+`mimalloc-test-api`/`mimalloc-test-stress` both pass cleanly at runtime
+(the stress test exercises heavy multithreaded TLS access). A minimal
+repro of OCaml's exact `domain.b.o`/`alloc.b.o` archive-link shape (two
+objects, one owning a `_Thread_local` definition, the other only
+referencing it, linked into a non-PIE executable exactly like
+`runtime/ocamlrun`) now links and the value round-trips correctly
+through TLS. `make check-all`: Unit 265/265 (new test included), TCC
+118/118, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 (0
+failed), Dg-error 34/34, Link 10/10. ARM64 (qemu-aarch64) and mingw
+cross-builds verified.
+
+New regression test: `test/test_global_extern_redecl_link.c` (drives
+rcc as a subprocess, inspects `readelf -sW` symbol types directly, and
+performs a real end-to-end TLS link+run for the archive-link case).
+
 ### Needs fixing
 
 1. **C23 `_BitInt(N)`** — **test_cproc fixed** (see "Fixed (2026-08-08,
@@ -2482,15 +2547,19 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      mixed-width builtin overflow session)" below (`ckd_mul(&res,
 LLONG_MAX, -1)`, a `long long` times `int` mix, corrupted both the
      result and the overflow flag),
-     test_ocaml/test_mimalloc
-     (linker reports the rcc-produced static archive itself as
-     malformed — "file in wrong format"/"bad value" — worth checking
-     archive-writing first since it may be one shared root cause across
-     both), **test_nanomsg is fixed** — see "Fixed (2026-08-16,
-     versioned-SONAME SemVer-prerelease-suffix session)" below (rcc
-     misclassified a `libfoo.so.N.N.N-dev`-style versioned shared
-     library, with a trailing SemVer prerelease tag after the version
-     digits, as a C source file to compile).
+     **test_ocaml/test_mimalloc are fixed** — see "Fixed (2026-08-16,
+     TLS symbol-type / extern-redeclaration session)" above (three
+     stacked bugs: a global definition followed by a same-TU `extern`
+     redeclaration silently dropped the definition entirely; x86-64
+     non-PIC/local-exec TLS references registered their undefined
+     symbol as `ST_NOTYPE` instead of `ST_TLS`, tripping `ld`'s "TLS
+     definition ... mismatches non-TLS reference" on OCaml's
+     `caml_state`; and `__builtin_thread_pointer()` was unimplemented,
+     needed by mimalloc's TLS fast path), **test_nanomsg is fixed** —
+     see "Fixed (2026-08-16, versioned-SONAME SemVer-prerelease-suffix
+     session)" below (rcc misclassified a `libfoo.so.N.N.N-dev`-style
+     versioned shared library, with a trailing SemVer prerelease tag
+     after the version digits, as a C source file to compile).
 
    Every cluster above is grounded in a specific `file:line` and
    quoted rcc/linker diagnostic captured in

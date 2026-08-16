@@ -151,7 +151,6 @@ static inline size_t cg_label_ht_get(const char *name) {
             return n->offset;
     return (size_t)-1;
 }
-
 // ---------------------------------------------------------------------------
 // Forward-fixup chain for local flow-control labels (.L.*)
 // Faster than hash table: no strcmp, no hash, just a linked list of
@@ -4152,6 +4151,7 @@ extern int rcc_label_count;
 extern void cg_def_label(const char *name);
 #ifndef ARCH_ARM64
 extern size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label);
+extern size_t asm_mov_fs0_reg(SecBuf *s, VReg r);
 #endif
 #ifdef ARCH_ARM64
 extern void emit_mov_imm64(Arm64Reg reg, uint64_t val);

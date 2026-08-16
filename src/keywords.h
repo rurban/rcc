@@ -36,7 +36,7 @@
 #line 6 "src/keywords.gperf"
 struct keyword_entry { const char *name; int id; unsigned flags; char *interned; };
 
-#define TOTAL_KEYWORDS 271
+#define TOTAL_KEYWORDS 272
 #define MIN_WORD_LENGTH 1
 #define MAX_WORD_LENGTH 28
 #define MIN_HASH_VALUE 2
@@ -60,13 +60,13 @@ hash (const char *str, size_t len)
       575, 575, 575, 575, 575, 575, 575, 575, 575, 575,
       575, 575, 575, 575, 575, 575, 575, 575, 575, 575,
       575, 575, 575, 575, 575, 575, 575, 575, 575, 575,
-       31, 575,  87, 575,   1, 575,  53, 575, 575, 575,
+      112, 575,  87, 575,   1, 575,   4, 575, 575, 575,
       575, 575, 575, 575, 575, 575, 575, 575,   5, 575,
       575,   0,   3,   0, 575, 575,   0,   0,   0, 575,
       575,   1, 575,   0, 575,   0, 575, 575, 575,   0,
       575, 575, 575, 575, 575,  13,   5,  67,  49,   6,
        70,   8,   2,   8, 102,   2, 183,  45,   0, 237,
-      110, 110,  84,  37,  86,  22,   4, 160, 164, 113,
+      110, 110,  84,  37,  86,  22,   4, 160, 187, 113,
         9,  77,   8,   0, 575, 575, 575, 575, 575
     };
   unsigned int hval = len & UINT_MAX;
@@ -144,40 +144,40 @@ static const unsigned char lengthtable[] =
   {
      0,  0,  2,  2,  4,  2,  2,  2,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  5,  0,  0,  0,  0,  4,  5,  4,  0,  9,  1,
-     0,  0,  6,  0,  4,  7,  0,  8,  0,  0,  0, 14, 15, 14,
+     0,  0,  6,  0,  4,  7, 11,  8,  0,  0,  0, 14, 15, 14,
     15, 16, 17, 14, 15,  8, 13,  6,  7, 10, 13,  7,  6,  8,
-    10,  0, 15, 19, 13, 16, 15, 16, 12,  0,  0, 18, 19, 18,
+     0,  0, 15, 19, 13, 16, 15, 16, 12,  0,  0, 18, 19, 18,
     17,  8, 19, 23,  0, 18,  5,  0,  5,  0,  6,  0,  7,  6,
      0,  0,  0,  7, 12,  7,  7, 15,  6, 11,  7,  5,  3,  9,
     10,  7,  6,  5,  5,  0,  0, 12,  8, 11,  0,  7, 10, 17,
     10,  3, 13,  5, 17,  0,  9,  0,  6, 10,  4,  8, 14,  5,
-     0,  0, 11,  0, 18, 19, 11,  0,  6, 19,  6,  0, 11,  0,
+     0,  0, 11,  0, 18, 19,  0,  0,  6, 19,  6, 10, 11,  0,
      8,  0,  0, 10,  0,  4, 10, 16,  0, 16,  0, 16, 21,  0,
     21,  7,  0,  8, 13,  0,  6,  0,  0,  0, 19,  8,  0,  0,
-    19,  3,  0, 17, 13, 16, 10,  5, 14, 19,  0, 12,  0, 18,
-     2,  9,  0,  8,  7,  0,  0, 17, 18, 13,  4,  5,  4,  7,
+    19,  3,  0,  0, 13, 16, 10,  5, 14, 19,  0, 12,  0, 18,
+     2,  9,  0,  8,  7,  0,  0, 17, 18, 13,  4,  0,  4,  0,
      0,  4, 10,  0,  6,  0,  0,  4, 14,  0,  6,  7,  3, 11,
-     0,  4,  0,  8, 10, 21,  0,  0,  0, 21,  8,  0,  0,  0,
-    12,  0, 24, 10, 20,  0,  6, 21,  0,  0, 14,  0,  0,  0,
-    18,  0,  0, 16,  0,  0, 24,  0,  0,  0,  6, 13, 10,  0,
+     0,  4,  8,  0, 10, 21,  5,  0,  7, 21,  8,  0,  0,  0,
+    12,  0, 24, 10, 20,  0,  6, 21,  0,  0, 14,  0,  8,  0,
+    18,  0,  0, 16,  0,  0, 24,  0,  0,  0,  0, 13, 10,  0,
     10,  6,  0,  0, 12,  4, 21,  7,  8,  9,  8, 18, 15, 16,
-    28,  0,  0, 17,  4,  0,  0, 18,  0,  6, 16,  5, 18,  7,
+    28,  0,  0, 17,  4,  6,  0, 18,  0,  6,  0,  5, 18,  7,
     11,  0,  4, 17,  6,  9, 16,  0,  0, 20,  7, 23,  0,  0,
-    18,  9, 13,  0, 21,  9, 20,  0,  8, 22,  5, 11, 19, 18,
-    16,  5,  8, 15,  8,  6, 14,  0, 17, 18,  0,  0,  8,  8,
-     0,  0,  0,  0,  9,  7, 13,  0, 19, 19,  0,  0, 18,  0,
-     0, 15, 16,  0, 20,  4,  0,  9, 19, 20,  0, 18, 22,  0,
-     0,  0,  0,  0,  0,  9, 20,  6,  7, 16, 18,  0,  6,  0,
-    20, 17, 16,  0,  8, 20, 15,  0,  0,  0, 18,  0, 13,  6,
-     0,  0,  0,  0,  0,  0,  0,  0, 18,  0, 17,  0, 18,  0,
-     0,  0,  0,  0,  0, 21, 21,  0,  0,  0,  0, 18, 14,  0,
-     0,  0,  0,  0, 27,  0,  0,  4,  0,  0,  0,  3,  0,  0,
-     0,  4,  0, 17,  0,  8,  0,  0,  0,  0,  6,  0,  8,  0,
-     0,  0,  0,  6,  0,  0,  7, 13,  0,  0,  0,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0, 28,  5,  0,  0,  0,
-     0,  0,  0,  0,  0, 25,  0,  0, 25,  0, 19,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
-     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    18,  9, 13,  0, 21, 16, 20,  0,  8, 22,  5, 11, 19, 18,
+    16,  5,  0, 15,  8,  6, 14,  0, 17, 18,  0,  0,  0,  8,
+     0,  0,  0,  0,  9,  7, 13,  0, 19, 19,  0, 17, 18,  0,
+     0, 15,  0,  0, 20,  4,  0,  0, 19, 20,  0, 18, 22,  0,
+     0,  0,  0,  0,  0,  9, 20,  6,  7, 16, 24, 16,  6,  0,
+    20, 17, 16,  0,  8, 20, 15,  0,  0,  0, 18,  9, 13,  6,
+     0,  0,  9,  0,  0, 18,  0,  0, 18,  0, 17,  0, 18,  0,
+     0,  0,  0,  0,  0, 21,  0,  0,  0,  0,  0, 18, 14,  0,
+     0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  3,  0,  0,
+     0, 21,  0,  0,  0,  0,  0,  0,  0,  0,  6,  0,  8, 27,
+     0,  0,  4,  6,  0,  0,  7, 13,  0,  0,  4,  0, 17,  0,
+     8,  0,  0,  0,  0,  0,  0,  0,  0, 28,  5,  0,  0,  0,
+     0,  0,  0,  0,  0,  0,  0,  0, 25,  0, 19,  0,  0,  0,
+     0,  0,  0,  0,  0,  0,  8,  0,  0,  0,  0,  0,  0,  0,
+    25,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
      0,  0,  0,  0, 24,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -230,7 +230,8 @@ static const struct keyword_entry keyword_table[] =
     {"labs", ID_LABS, KW_BUILTIN, NULL},
 #line 159 "src/keywords.gperf"
     {"fprintf", ID_FPRINTF, KW_BUILTIN, NULL},
-    {(char*)0},
+#line 66 "src/keywords.gperf"
+    {"_Decimal128", ID__DECIMAL128, KW_TYPE, NULL},
 #line 123 "src/keywords.gperf"
     {"_Generic", ID__GENERIC, KW_SPECIAL, NULL},
     {(char*)0}, {(char*)0}, {(char*)0},
@@ -268,9 +269,7 @@ static const struct keyword_entry keyword_table[] =
     {"struct", ID_STRUCT, KW_TYPE, NULL},
 #line 128 "src/keywords.gperf"
     {"__func__", ID___FUNC__, KW_SPECIAL, NULL},
-#line 64 "src/keywords.gperf"
-    {"_Decimal32", ID__DECIMAL32, KW_TYPE, NULL},
-    {(char*)0},
+    {(char*)0}, {(char*)0},
 #line 214 "src/keywords.gperf"
     {"__builtin_llabs", ID___BUILTIN_LLABS, KW_BUILTIN, NULL},
 #line 127 "src/keywords.gperf"
@@ -371,7 +370,7 @@ static const struct keyword_entry keyword_table[] =
     {"_Thread_local", ID__THREAD_LOCAL, KW_STORAGE, NULL},
 #line 86 "src/keywords.gperf"
     {"short", ID_SHORT, KW_TYPE, NULL},
-#line 251 "src/keywords.gperf"
+#line 252 "src/keywords.gperf"
     {"__atomic_exchange", ID___ATOMIC_EXCHANGE, KW_ATOMIC, NULL},
     {(char*)0},
 #line 42 "src/keywords.gperf"
@@ -397,16 +396,15 @@ static const struct keyword_entry keyword_table[] =
     {"__builtin_isnormal", ID___BUILTIN_ISNORMAL, KW_BUILTIN, NULL},
 #line 212 "src/keywords.gperf"
     {"__builtin_isnormall", ID___BUILTIN_ISNORMALL, KW_BUILTIN, NULL},
-#line 66 "src/keywords.gperf"
-    {"_Decimal128", ID__DECIMAL128, KW_TYPE, NULL},
-    {(char*)0},
+    {(char*)0}, {(char*)0},
 #line 173 "src/keywords.gperf"
     {"strcmp", ID_STRCMP, KW_BUILTIN, NULL},
 #line 211 "src/keywords.gperf"
     {"__builtin_isnormalf", ID___BUILTIN_ISNORMALF, KW_BUILTIN, NULL},
 #line 174 "src/keywords.gperf"
     {"strchr", ID_STRCHR, KW_BUILTIN, NULL},
-    {(char*)0},
+#line 64 "src/keywords.gperf"
+    {"_Decimal32", ID__DECIMAL32, KW_TYPE, NULL},
 #line 88 "src/keywords.gperf"
     {"__attribute", ID___ATTRIBUTE, KW_ATTR, NULL},
     {(char*)0},
@@ -453,9 +451,7 @@ static const struct keyword_entry keyword_table[] =
     {"__builtin_copysignf", ID___BUILTIN_COPYSIGNF, KW_BUILTIN, NULL},
 #line 53 "src/keywords.gperf"
     {"int", ID_INT, KW_TYPE, NULL},
-    {(char*)0},
-#line 180 "src/keywords.gperf"
-    {"__builtin_bswap32", ID___BUILTIN_BSWAP32, KW_BUILTIN, NULL},
+    {(char*)0}, {(char*)0},
 #line 175 "src/keywords.gperf"
     {"__builtin_abs", ID___BUILTIN_ABS, KW_BUILTIN, NULL},
 #line 237 "src/keywords.gperf"
@@ -464,15 +460,15 @@ static const struct keyword_entry keyword_table[] =
     {"destructor", ID_DESTRUCTOR, KW_ATTR, NULL},
 #line 139 "src/keywords.gperf"
     {"undef", ID_UNDEF, KW_PREPROC, NULL},
-#line 248 "src/keywords.gperf"
+#line 249 "src/keywords.gperf"
     {"__atomic_clear", ID___ATOMIC_CLEAR, KW_ATOMIC, NULL},
-#line 278 "src/keywords.gperf"
+#line 279 "src/keywords.gperf"
     {"__sync_lock_release", ID___SYNC_LOCK_RELEASE, KW_SYNC, NULL},
     {(char*)0},
 #line 45 "src/keywords.gperf"
     {"__volatile__", ID___VOLATILE__, KW_QUAL, NULL},
     {(char*)0},
-#line 280 "src/keywords.gperf"
+#line 281 "src/keywords.gperf"
     {"__sync_synchronize", ID___SYNC_SYNCHRONIZE, KW_SYNC, NULL},
 #line 18 "src/keywords.gperf"
     {"do", ID_DO, KW_CONTROL, NULL},
@@ -488,17 +484,14 @@ static const struct keyword_entry keyword_table[] =
     {"__builtin_parityl", ID___BUILTIN_PARITYL, KW_BUILTIN, NULL},
 #line 224 "src/keywords.gperf"
     {"__builtin_parityll", ID___BUILTIN_PARITYLL, KW_BUILTIN, NULL},
-#line 284 "src/keywords.gperf"
+#line 285 "src/keywords.gperf"
     {"__fprintf_chk", ID___FPRINTF_CHK, KW_BUILTIN, NULL},
 #line 146 "src/keywords.gperf"
     {"once", ID_ONCE, KW_PREPROC, NULL},
-#line 163 "src/keywords.gperf"
-    {"fputs", ID_FPUTS, KW_BUILTIN, NULL},
+    {(char*)0},
 #line 148 "src/keywords.gperf"
     {"push", ID_PUSH, KW_PREPROC, NULL},
-#line 160 "src/keywords.gperf"
-    {"vprintf", ID_VPRINTF, KW_BUILTIN, NULL},
-    {(char*)0},
+    {(char*)0}, {(char*)0},
 #line 143 "src/keywords.gperf"
     {"elif", ID_ELIF, KW_PREPROC, NULL},
 #line 78 "src/keywords.gperf"
@@ -509,7 +502,7 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0}, {(char*)0},
 #line 147 "src/keywords.gperf"
     {"pack", ID_PACK, KW_PREPROC, NULL},
-#line 265 "src/keywords.gperf"
+#line 266 "src/keywords.gperf"
     {"__atomic_store", ID___ATOMIC_STORE, KW_ATOMIC, NULL},
     {(char*)0},
 #line 145 "src/keywords.gperf"
@@ -523,15 +516,19 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0},
 #line 107 "src/keywords.gperf"
     {"weak", ID_WEAK, KW_ATTR, NULL},
+#line 58 "src/keywords.gperf"
+    {"__int128", ID___INT128, KW_TYPE, NULL},
     {(char*)0},
-#line 161 "src/keywords.gperf"
-    {"vfprintf", ID_VFPRINTF, KW_BUILTIN, NULL},
 #line 150 "src/keywords.gperf"
     {"push_macro", ID_PUSH_MACRO, KW_PREPROC, NULL},
-#line 268 "src/keywords.gperf"
+#line 269 "src/keywords.gperf"
     {"__atomic_test_and_set", ID___ATOMIC_TEST_AND_SET, KW_ATOMIC, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0},
-#line 264 "src/keywords.gperf"
+#line 163 "src/keywords.gperf"
+    {"fputs", ID_FPUTS, KW_BUILTIN, NULL},
+    {(char*)0},
+#line 160 "src/keywords.gperf"
+    {"vprintf", ID_VPRINTF, KW_BUILTIN, NULL},
+#line 265 "src/keywords.gperf"
     {"__atomic_signal_fence", ID___ATOMIC_SIGNAL_FENCE, KW_ATOMIC, NULL},
 #line 31 "src/keywords.gperf"
     {"__inline", ID___INLINE, KW_STORAGE, NULL},
@@ -539,7 +536,7 @@ static const struct keyword_entry keyword_table[] =
 #line 112 "src/keywords.gperf"
     {"__vectorcall", ID___VECTORCALL, KW_ASM, NULL},
     {(char*)0},
-#line 279 "src/keywords.gperf"
+#line 280 "src/keywords.gperf"
     {"__sync_lock_test_and_set", ID___SYNC_LOCK_TEST_AND_SET, KW_SYNC, NULL},
 #line 32 "src/keywords.gperf"
     {"__inline__", ID___INLINE__, KW_STORAGE, NULL},
@@ -548,13 +545,16 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0},
 #line 105 "src/keywords.gperf"
     {"packed", ID_PACKED, KW_ATTR, NULL},
-#line 259 "src/keywords.gperf"
+#line 260 "src/keywords.gperf"
     {"__atomic_is_lock_free", ID___ATOMIC_IS_LOCK_FREE, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0},
 #line 50 "src/keywords.gperf"
     {"_Static_assert", ID__STATIC_ASSERT, KW_SPECIAL, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0},
-#line 253 "src/keywords.gperf"
+    {(char*)0},
+#line 161 "src/keywords.gperf"
+    {"vfprintf", ID_VFPRINTF, KW_BUILTIN, NULL},
+    {(char*)0},
+#line 254 "src/keywords.gperf"
     {"__atomic_fetch_add", ID___ATOMIC_FETCH_ADD, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0},
 #line 229 "src/keywords.gperf"
@@ -562,9 +562,7 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0}, {(char*)0},
 #line 230 "src/keywords.gperf"
     {"__builtin_return_address", ID___BUILTIN_RETURN_ADDRESS, KW_BUILTIN, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0},
-#line 57 "src/keywords.gperf"
-    {"double", ID_DOUBLE, KW_TYPE, NULL},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
 #line 49 "src/keywords.gperf"
     {"static_assert", ID_STATIC_ASSERT, KW_SPECIAL, NULL},
 #line 111 "src/keywords.gperf"
@@ -575,7 +573,7 @@ static const struct keyword_entry keyword_table[] =
 #line 30 "src/keywords.gperf"
     {"inline", ID_INLINE, KW_STORAGE, NULL},
     {(char*)0}, {(char*)0},
-#line 282 "src/keywords.gperf"
+#line 283 "src/keywords.gperf"
     {"__printf_chk", ID___PRINTF_CHK, KW_BUILTIN, NULL},
 #line 103 "src/keywords.gperf"
     {"mode", ID_MODE, KW_ATTR, NULL},
@@ -595,24 +593,25 @@ static const struct keyword_entry keyword_table[] =
     {"__builtin_apply", ID___BUILTIN_APPLY, KW_BUILTIN, NULL},
 #line 222 "src/keywords.gperf"
     {"__builtin_parity", ID___BUILTIN_PARITY, KW_BUILTIN, NULL},
-#line 271 "src/keywords.gperf"
+#line 272 "src/keywords.gperf"
     {"__sync_bool_compare_and_swap", ID___SYNC_BOOL_COMPARE_AND_SWAP, KW_SYNC, NULL},
     {(char*)0}, {(char*)0},
-#line 256 "src/keywords.gperf"
+#line 257 "src/keywords.gperf"
     {"__atomic_fetch_or", ID___ATOMIC_FETCH_OR, KW_ATOMIC, NULL},
 #line 162 "src/keywords.gperf"
     {"puts", ID_PUTS, KW_BUILTIN, NULL},
-    {(char*)0}, {(char*)0},
+#line 57 "src/keywords.gperf"
+    {"double", ID_DOUBLE, KW_TYPE, NULL},
+    {(char*)0},
 #line 191 "src/keywords.gperf"
     {"__builtin_copysign", ID___BUILTIN_COPYSIGN, KW_BUILTIN, NULL},
     {(char*)0},
 #line 158 "src/keywords.gperf"
     {"printf", ID_PRINTF, KW_BUILTIN, NULL},
-#line 240 "src/keywords.gperf"
-    {"__builtin_va_arg", ID___BUILTIN_VA_ARG, KW_SPECIAL, NULL},
+    {(char*)0},
 #line 91 "src/keywords.gperf"
     {"alias", ID_ALIAS, KW_ATTR, NULL},
-#line 254 "src/keywords.gperf"
+#line 255 "src/keywords.gperf"
     {"__atomic_fetch_and", ID___ATOMIC_FETCH_AND, KW_ATOMIC, NULL},
 #line 118 "src/keywords.gperf"
     {"alignas", ID_ALIGNAS, KW_ATTR, NULL},
@@ -637,18 +636,18 @@ static const struct keyword_entry keyword_table[] =
 #line 203 "src/keywords.gperf"
     {"__builtin_frame_address", ID___BUILTIN_FRAME_ADDRESS, KW_BUILTIN, NULL},
     {(char*)0}, {(char*)0},
-#line 258 "src/keywords.gperf"
+#line 259 "src/keywords.gperf"
     {"__atomic_fetch_xor", ID___ATOMIC_FETCH_XOR, KW_ATOMIC, NULL},
 #line 35 "src/keywords.gperf"
     {"constexpr", ID_CONSTEXPR, KW_STORAGE, NULL},
-#line 283 "src/keywords.gperf"
+#line 284 "src/keywords.gperf"
     {"__vprintf_chk", ID___VPRINTF_CHK, KW_BUILTIN, NULL},
     {(char*)0},
-#line 274 "src/keywords.gperf"
+#line 275 "src/keywords.gperf"
     {"__sync_fetch_and_nand", ID___SYNC_FETCH_AND_NAND, KW_SYNC, NULL},
-#line 69 "src/keywords.gperf"
-    {"_Float32x", ID__FLOAT32X, KW_TYPE, NULL},
-#line 272 "src/keywords.gperf"
+#line 241 "src/keywords.gperf"
+    {"__builtin_va_arg", ID___BUILTIN_VA_ARG, KW_SPECIAL, NULL},
+#line 273 "src/keywords.gperf"
     {"__sync_fetch_and_add", ID___SYNC_FETCH_AND_ADD, KW_SYNC, NULL},
     {(char*)0},
 #line 117 "src/keywords.gperf"
@@ -659,32 +658,29 @@ static const struct keyword_entry keyword_table[] =
     {"__asm", ID___ASM, KW_SPECIAL, NULL},
 #line 97 "src/keywords.gperf"
     {"constructor", ID_CONSTRUCTOR, KW_ATTR, NULL},
-#line 255 "src/keywords.gperf"
+#line 256 "src/keywords.gperf"
     {"__atomic_fetch_nand", ID___ATOMIC_FETCH_NAND, KW_ATOMIC, NULL},
-#line 257 "src/keywords.gperf"
+#line 258 "src/keywords.gperf"
     {"__atomic_fetch_sub", ID___ATOMIC_FETCH_SUB, KW_ATOMIC, NULL},
-#line 266 "src/keywords.gperf"
+#line 267 "src/keywords.gperf"
     {"__atomic_store_n", ID___ATOMIC_STORE_N, KW_ATOMIC, NULL},
 #line 17 "src/keywords.gperf"
     {"while", ID_WHILE, KW_CONTROL, NULL},
-#line 58 "src/keywords.gperf"
-    {"__int128", ID___INT128, KW_TYPE, NULL},
+    {(char*)0},
 #line 98 "src/keywords.gperf"
     {"__constructor__", ID___CONSTRUCTOR__, KW_ATTR, NULL},
 #line 85 "src/keywords.gperf"
     {"unsigned", ID_UNSIGNED, KW_TYPE, NULL},
 #line 20 "src/keywords.gperf"
     {"switch", ID_SWITCH, KW_CONTROL, NULL},
-#line 285 "src/keywords.gperf"
+#line 286 "src/keywords.gperf"
     {"__vfprintf_chk", ID___VFPRINTF_CHK, KW_BUILTIN, NULL},
     {(char*)0},
 #line 215 "src/keywords.gperf"
     {"__builtin_longjmp", ID___BUILTIN_LONGJMP, KW_BUILTIN, NULL},
 #line 228 "src/keywords.gperf"
     {"__builtin_prefetch", ID___BUILTIN_PREFETCH, KW_BUILTIN, NULL},
-    {(char*)0}, {(char*)0},
-#line 68 "src/keywords.gperf"
-    {"_Float32", ID__FLOAT32, KW_TYPE, NULL},
+    {(char*)0}, {(char*)0}, {(char*)0},
 #line 37 "src/keywords.gperf"
     {"__thread", ID___THREAD, KW_STORAGE, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
@@ -692,29 +688,27 @@ static const struct keyword_entry keyword_table[] =
     {"pop_macro", ID_POP_MACRO, KW_PREPROC, NULL},
 #line 93 "src/keywords.gperf"
     {"aligned", ID_ALIGNED, KW_ATTR, NULL},
-#line 260 "src/keywords.gperf"
+#line 261 "src/keywords.gperf"
     {"__atomic_load", ID___ATOMIC_LOAD, KW_ATOMIC, NULL},
     {(char*)0},
-#line 252 "src/keywords.gperf"
+#line 253 "src/keywords.gperf"
     {"__atomic_exchange_n", ID___ATOMIC_EXCHANGE_N, KW_ATOMIC, NULL},
-#line 275 "src/keywords.gperf"
+#line 276 "src/keywords.gperf"
     {"__sync_fetch_and_or", ID___SYNC_FETCH_AND_OR, KW_SYNC, NULL},
-    {(char*)0}, {(char*)0},
-#line 246 "src/keywords.gperf"
+    {(char*)0},
+#line 180 "src/keywords.gperf"
+    {"__builtin_bswap32", ID___BUILTIN_BSWAP32, KW_BUILTIN, NULL},
+#line 247 "src/keywords.gperf"
     {"__atomic_add_fetch", ID___ATOMIC_ADD_FETCH, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0},
 #line 75 "src/keywords.gperf"
     {"__typeof_unqual", ID___TYPEOF_UNQUAL, KW_TYPE, NULL},
-#line 244 "src/keywords.gperf"
-    {"__builtin_va_end", ID___BUILTIN_VA_END, KW_SPECIAL, NULL},
-    {(char*)0},
-#line 273 "src/keywords.gperf"
+    {(char*)0}, {(char*)0},
+#line 274 "src/keywords.gperf"
     {"__sync_fetch_and_and", ID___SYNC_FETCH_AND_AND, KW_SYNC, NULL},
 #line 34 "src/keywords.gperf"
     {"auto", ID_AUTO, KW_STORAGE, NULL},
-    {(char*)0},
-#line 72 "src/keywords.gperf"
-    {"_Float128", ID__FLOAT128, KW_TYPE, NULL},
+    {(char*)0}, {(char*)0},
 #line 226 "src/keywords.gperf"
     {"__builtin_popcountl", ID___BUILTIN_POPCOUNTL, KW_BUILTIN, NULL},
 #line 227 "src/keywords.gperf"
@@ -728,7 +722,7 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0}, {(char*)0},
 #line 71 "src/keywords.gperf"
     {"_Float64x", ID__FLOAT64X, KW_TYPE, NULL},
-#line 277 "src/keywords.gperf"
+#line 278 "src/keywords.gperf"
     {"__sync_fetch_and_xor", ID___SYNC_FETCH_AND_XOR, KW_SYNC, NULL},
 #line 169 "src/keywords.gperf"
     {"memset", ID_MEMSET, KW_BUILTIN, NULL},
@@ -736,9 +730,10 @@ static const struct keyword_entry keyword_table[] =
     {"unicode", ID_UNICODE, KW_PREPROC, NULL},
 #line 217 "src/keywords.gperf"
     {"__builtin_memcpy", ID___BUILTIN_MEMCPY, KW_BUILTIN, NULL},
+#line 239 "src/keywords.gperf"
+    {"__builtin_thread_pointer", ID___BUILTIN_THREAD_POINTER, KW_BUILTIN, NULL},
 #line 245 "src/keywords.gperf"
-    {"__builtin_va_start", ID___BUILTIN_VA_START, KW_SPECIAL, NULL},
-    {(char*)0},
+    {"__builtin_va_end", ID___BUILTIN_VA_END, KW_SPECIAL, NULL},
 #line 25 "src/keywords.gperf"
     {"return", ID_RETURN, KW_CONTROL, NULL},
     {(char*)0},
@@ -751,65 +746,64 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0},
 #line 33 "src/keywords.gperf"
     {"register", ID_REGISTER, KW_STORAGE, NULL},
-#line 276 "src/keywords.gperf"
+#line 277 "src/keywords.gperf"
     {"__sync_fetch_and_sub", ID___SYNC_FETCH_AND_SUB, KW_SYNC, NULL},
-#line 261 "src/keywords.gperf"
+#line 262 "src/keywords.gperf"
     {"__atomic_load_n", ID___ATOMIC_LOAD_N, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0}, {(char*)0},
-#line 247 "src/keywords.gperf"
+#line 248 "src/keywords.gperf"
     {"__atomic_and_fetch", ID___ATOMIC_AND_FETCH, KW_ATOMIC, NULL},
-    {(char*)0},
+#line 72 "src/keywords.gperf"
+    {"_Float128", ID__FLOAT128, KW_TYPE, NULL},
 #line 129 "src/keywords.gperf"
     {"__has_include", ID___HAS_INCLUDE, KW_SPECIAL, NULL},
 #line 157 "src/keywords.gperf"
     {"alloca", ID_ALLOCA, KW_BUILTIN, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0},
+#line 69 "src/keywords.gperf"
+    {"_Float32x", ID__FLOAT32X, KW_TYPE, NULL},
+    {(char*)0}, {(char*)0},
+#line 246 "src/keywords.gperf"
+    {"__builtin_va_start", ID___BUILTIN_VA_START, KW_SPECIAL, NULL},
+    {(char*)0}, {(char*)0},
 #line 130 "src/keywords.gperf"
     {"__has_include_next", ID___HAS_INCLUDE_NEXT, KW_SPECIAL, NULL},
     {(char*)0},
-#line 263 "src/keywords.gperf"
+#line 264 "src/keywords.gperf"
     {"__atomic_or_fetch", ID___ATOMIC_OR_FETCH, KW_ATOMIC, NULL},
     {(char*)0},
-#line 270 "src/keywords.gperf"
+#line 271 "src/keywords.gperf"
     {"__atomic_xor_fetch", ID___ATOMIC_XOR_FETCH, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0},
-#line 269 "src/keywords.gperf"
+#line 270 "src/keywords.gperf"
     {"__atomic_thread_fence", ID___ATOMIC_THREAD_FENCE, KW_ATOMIC, NULL},
-#line 241 "src/keywords.gperf"
-    {"__builtin_va_arg_pack", ID___BUILTIN_VA_ARG_PACK, KW_SPECIAL, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-#line 267 "src/keywords.gperf"
+    {(char*)0},
+#line 268 "src/keywords.gperf"
     {"__atomic_sub_fetch", ID___ATOMIC_SUB_FETCH, KW_ATOMIC, NULL},
 #line 100 "src/keywords.gperf"
     {"__destructor__", ID___DESTRUCTOR__, KW_ATTR, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0},
-#line 281 "src/keywords.gperf"
-    {"__sync_val_compare_and_swap", ID___SYNC_VAL_COMPARE_AND_SWAP, KW_SYNC, NULL},
-    {(char*)0}, {(char*)0},
-#line 81 "src/keywords.gperf"
-    {"enum", ID_ENUM, KW_TYPE, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
 #line 134 "src/keywords.gperf"
     {"asm", ID_ASM, KW_SPECIAL, NULL},
     {(char*)0}, {(char*)0}, {(char*)0},
-#line 55 "src/keywords.gperf"
-    {"void", ID_VOID, KW_TYPE, NULL},
-    {(char*)0},
-#line 243 "src/keywords.gperf"
-    {"__builtin_va_copy", ID___BUILTIN_VA_COPY, KW_SPECIAL, NULL},
-    {(char*)0},
-#line 43 "src/keywords.gperf"
-    {"volatile", ID_VOLATILE, KW_QUAL, NULL},
+#line 242 "src/keywords.gperf"
+    {"__builtin_va_arg_pack", ID___BUILTIN_VA_ARG_PACK, KW_SPECIAL, NULL},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
 #line 170 "src/keywords.gperf"
     {"memcpy", ID_MEMCPY, KW_BUILTIN, NULL},
     {(char*)0},
 #line 70 "src/keywords.gperf"
     {"_Float64", ID__FLOAT64, KW_TYPE, NULL},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+#line 282 "src/keywords.gperf"
+    {"__sync_val_compare_and_swap", ID___SYNC_VAL_COMPARE_AND_SWAP, KW_SYNC, NULL},
+    {(char*)0}, {(char*)0},
+#line 81 "src/keywords.gperf"
+    {"enum", ID_ENUM, KW_TYPE, NULL},
 #line 171 "src/keywords.gperf"
     {"memcmp", ID_MEMCMP, KW_BUILTIN, NULL},
     {(char*)0}, {(char*)0},
@@ -817,40 +811,50 @@ static const struct keyword_entry keyword_table[] =
     {"nullptr", ID_NULLPTR, KW_SPECIAL, NULL},
 #line 74 "src/keywords.gperf"
     {"typeof_unqual", ID_TYPEOF_UNQUAL, KW_TYPE, NULL},
+    {(char*)0}, {(char*)0},
+#line 55 "src/keywords.gperf"
+    {"void", ID_VOID, KW_TYPE, NULL},
+    {(char*)0},
+#line 244 "src/keywords.gperf"
+    {"__builtin_va_copy", ID___BUILTIN_VA_COPY, KW_SPECIAL, NULL},
+    {(char*)0},
+#line 43 "src/keywords.gperf"
+    {"volatile", ID_VOLATILE, KW_QUAL, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0},
-#line 239 "src/keywords.gperf"
+#line 240 "src/keywords.gperf"
     {"__builtin_types_compatible_p", ID___BUILTIN_TYPES_COMPATIBLE_P, KW_BUILTIN, NULL},
 #line 80 "src/keywords.gperf"
     {"union", ID_UNION, KW_TYPE, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-#line 242 "src/keywords.gperf"
-    {"__builtin_va_arg_pack_len", ID___BUILTIN_VA_ARG_PACK_LEN, KW_SPECIAL, NULL},
-    {(char*)0}, {(char*)0},
-#line 249 "src/keywords.gperf"
+    {(char*)0}, {(char*)0}, {(char*)0},
+#line 250 "src/keywords.gperf"
     {"__atomic_compare_exchange", ID___ATOMIC_COMPARE_EXCHANGE, KW_ATOMIC, NULL},
     {(char*)0},
-#line 262 "src/keywords.gperf"
+#line 263 "src/keywords.gperf"
     {"__atomic_nand_fetch", ID___ATOMIC_NAND_FETCH, KW_ATOMIC, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
-    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0},
+#line 68 "src/keywords.gperf"
+    {"_Float32", ID__FLOAT32, KW_TYPE, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0},
+#line 243 "src/keywords.gperf"
+    {"__builtin_va_arg_pack_len", ID___BUILTIN_VA_ARG_PACK_LEN, KW_SPECIAL, NULL},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
+    {(char*)0},
 #line 220 "src/keywords.gperf"
     {"__builtin_mul_overflow_p", ID___BUILTIN_MUL_OVERFLOW_P, KW_BUILTIN, NULL},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
@@ -865,7 +869,7 @@ static const struct keyword_entry keyword_table[] =
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0}, {(char*)0}, {(char*)0},
     {(char*)0}, {(char*)0},
-#line 250 "src/keywords.gperf"
+#line 251 "src/keywords.gperf"
     {"__atomic_compare_exchange_n", ID___ATOMIC_COMPARE_EXCHANGE_N, KW_ATOMIC, NULL}
   };
 #if (defined __GNUC__ && __GNUC__ + (__GNUC_MINOR__ >= 6) > 4) || (defined __clang__ && __clang_major__ >= 3)
