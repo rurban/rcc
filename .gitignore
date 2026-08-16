@@ -10,6 +10,10 @@ a.arm64
 lib/rcc_darwin.dylib
 rcc_lib.dll
 rcc_lib.so
+lib/libdfp.a
+lib/libdfp.lib
+lib/libdfp-arm64.a
+lib/libdfp-darwin.a
 a.out
 *.o
 *.obj
@@ -99,5 +103,4 @@ bench/bench
 # macOS debug symbols
 *.dSYM
 *.dSYM/
-lib/libdfp.a
 build/

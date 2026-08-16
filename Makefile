@@ -70,6 +70,7 @@ TARGET_EXT += $(MINGW_O)
 endif
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 TARGET_DEPS = $(OBJS) $(wildcard src/*.h)
+LIBDFP_A = lib/libdfp.a
 
 # Build-time include directory: absolute path to the source include/ dir.
 # Override this when installing to a different prefix.
@@ -99,12 +100,14 @@ BINDIR = $(PREFIX)
 INCDIR = $(PREFIX)/include
 LIBDIR = $(PREFIX)/lib
 DOCDIR = $(PREFIX)/doc
+LIBDFP_A = lib/libdfp.lib
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET = rcc.exe
 RUN_TESTS = run_tests.exe
 MINGW_O = lib/rcc_mingw$(OBJ_EXT)
 TARGET_EXT += -lpthread
 OBJ_EXT = .obj
+LIBDFP_A = lib/libdfp.lib
 # See the native-Windows block above for why LTO is excluded here too.
 CFLAGS := $(filter-out -flto=auto -flto=thin,$(CFLAGS))
 EXE_EXT = .exe
@@ -122,6 +125,7 @@ RUN_TESTS = run_tests_arm64
 SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
+LIBDFP_A = lib/libdfp-arm64.a
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
 ARM64_SYSROOT := /usr/aarch64-redhat-linux/sys-root/fc43
@@ -153,11 +157,15 @@ ifeq ($(shell uname -s),Darwin)
 DARWIN_O = lib/rcc_darwin.dylib
 LDFLAGS += -Wl,-rpath,@executable_path/lib
 OBJS += $(DARWIN_O)
+LIBDFP_A = lib/libdfp.a
+else
+LIBDFP_A = lib/libdfp-darwin.a
 endif
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
 else ifneq ($(findstring mingw,$(MACHINE)),)
 TARGET_DEPS += $(OBJS) $(MINGW_O) $(wildcard src/*.h)
 OBJS += $(MINGW_O)
+LIBDFP_A = lib/libdfp.lib
 else
 OBJS += $(MINGW_O)
 TARGET_DEPS += $(OBJS) $(wildcard src/*.h)
@@ -180,7 +188,6 @@ all: $(TARGET) $(RUN_TESTS) $(RCC_ALL) $(RCC_LIB) $(LIBDFP_A)
 # rcc_dec_rt.c declares no _Decimal types (BID bit-pattern ABI), so it
 # compiles even where the C compiler has no decimal support (aarch64 gcc).
 LIBDFP_DIR = lib/libdfp
-LIBDFP_A = lib/libdfp.a
 # No TLS: the decimal rounding/exception globals are plain (single-threaded
 # semantics are fine for rcc's use), which keeps the archive free of TLS
 # relocs rcc's native linker doesn't handle on every target (x86-64 LE is
