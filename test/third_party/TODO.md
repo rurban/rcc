@@ -221,6 +221,47 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-16, self-referential global array initializer session)
+
+- **A static/global array referencing itself by name within its own
+  initializer** (e.g. `static const T arr[] = { ..., &arr[N], ... };`
+  — legal per C11 6.2.1p7: an identifier's scope begins immediately
+  after its declarator completes, well before its initializer list is
+  parsed) **hard-errored "undeclared variable"** — the top-level
+  global-declaration parser registered the array's own `LVar`/symbol
+  only _after_ fully parsing its initializer, but an unsized array's
+  initializer is first scanned by `infer_array_type()`'s
+  `count_array_initializer()` purely to COUNT elements —
+  `skip_initializer()` calls `assign()` on every element just to skip
+  its tokens correctly — and that counting pass ran _before_ the array
+  was registered, so any element referencing the array by name failed
+  even though the later, real value-writing pass would have resolved
+  it fine. Fixed by registering the `LVar` immediately (with its
+  not-yet-sized type) before calling `infer_array_type()`, reconciling
+  the properly-sized type into it afterward exactly as the existing
+  redeclaration-merge logic already did.
+  → found via test/third_party/test_mquickjs's real generated
+  `mqjs_stdlib.h`: `static const uint64_t js_stdlib_table[] = { ...,
+JS_VALUE_FROM_PTR(&js_stdlib_table[offset]), ... }` (a self-indexing
+  ROM-table idiom, ~2700 lines, referencing itself dozens of times).
+  Regression test: `test/test_self_referential_array_init.c` (new;
+  `uint64_t`/`uintptr_t`, not `long` — on LLP64/mingw `long` is only 4
+  bytes, too narrow for a real address, and real gcc/clang reject that
+  cast there too — confirmed directly against `x86_64-w64-mingw32-gcc`,
+  "initializer element is not constant", matching rcc). PASS at
+  -O0..-O3 on x86-64, ARM64 (qemu-aarch64) and mingw (wine); `make
+check-all`: 0 failed on all three targets (Unit 4220/4220, Torture
+  3605/3609 — 0 failed, 354 skipped, 4 todo, Dg-error 34/34, Link
+  8/8). Full verification: mquickjs's real `mqjs.c`/`mquickjs.c` now
+  compile cleanly with rcc; a full `make CC=rcc` of the project builds
+  both `mqjs` and `example` binaries, which correctly evaluate JS
+  (`1+2*3` -> `7`, `Math.PI`, `Number.MAX_SAFE_INTEGER` ->
+  `9007199254740991`, `JSON.stringify`); its own `make test` suite
+  (`tests/test_closure.js`/`test_language.js`/`test_loop.js`/
+  `test_builtin.js` via `mqjs`, `test_rect.js` via `example`, the
+  latter needing the custom `Rectangle` native class only `example`
+  registers) passes all 5/5.
+
 ### Fixed (2026-08-15, njs macro-driven initializer session — 6 stacked bugs)
 
 - **A CAST wrapping `&(compound literal)` in a static/global pointer
@@ -2029,12 +2070,15 @@ a multi-session effort, not a quick win.
      construct, not one root cause): an empty-body context (test_lexbor,
      `normalization_forms.c:206` — **fixed**, actually a large-file
      truncation in `read_pp_file()`, see "Fixed (2026-08-15, large file
-     read truncation session)" above); **designated-initializer macro
-     tables (test_mquickjs) remain open** (test_njs is fixed, see "Fixed
-     (2026-08-15, njs macro-driven initializer session — 6 stacked
-     bugs)" above); struct member access rcc reports as
-     "no such member" on legitimate code (test_php, test_cfitsio,
-     test_tcl). **An unclosed string literal lexer false-positive
+     read truncation session)" above). **A self-referential static
+     array initializer (test_mquickjs, mqjs_stdlib.h's generated
+     `js_stdlib_table[]` ROM table) is fixed** — see "Fixed
+     (2026-08-16, self-referential global array initializer session)"
+     above (test_njs is fixed too, see "Fixed (2026-08-15, njs
+     macro-driven initializer session — 6 stacked bugs)" above); struct
+     member access rcc reports as "no such member" on legitimate code
+     (test_php, test_cfitsio, test_tcl). **An unclosed string literal
+     lexer false-positive
      (test_gnutls, `config.h:2359`) is fixed**, see "Fixed (2026-08-15,
      unclosed-string-literal warning + lexer line-number session)"
      above — real gcc only warns and recovers there; test_gnutls now

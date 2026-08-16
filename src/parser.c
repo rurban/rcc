@@ -13611,8 +13611,29 @@ Program *parse(Token *tok) {
                 if (attr.is_typedef) {
                     add_typedef(name, ty);
                 } else {
-                    if (equalc(tok, "="))
-                        ty = infer_array_type(ty, tok->next);
+                    LVar *var = find_global_name(name);
+                    bool var_is_new = false;
+                    if (!var) {
+                        // Register EARLY (before infer_array_type()'s own
+                        // initializer skip/count pass below), so a
+                        // self-referential initializer resolves --
+                        // e.g. mquickjs's/njs's ROM-table idiom
+                        // "static const T arr[] = { ..., &arr[N], ... };",
+                        // referencing the array being defined from within
+                        // its own initializer. Legal per C11 6.2.1p7 (an
+                        // identifier's scope begins right after its
+                        // declarator completes, well before the
+                        // initializer is parsed), but
+                        // count_array_initializer()/skip_initializer()
+                        // below still call assign() on each element to
+                        // skip it correctly -- which resolves `arr` via
+                        // the ordinary identifier lookup and previously
+                        // hard-errored "undeclared variable" since `var`
+                        // wasn't registered until after this whole
+                        // initializer-sizing pass ran.
+                        var = new_var(name, ty, false);
+                        var_is_new = true;
+                    }
                     // C23 `constexpr auto x = other;`: infer x's type from a
                     // simple identifier initializer naming another global,
                     // since declspec() left `ty` as the ty_int placeholder.
@@ -13623,19 +13644,16 @@ Program *parse(Token *tok) {
                         if (src)
                             ty = src->ty;
                     }
-                    LVar *var = find_global_name(name);
+                    if (equalc(tok, "="))
+                        ty = infer_array_type(ty, tok->next);
                     // C11 6.2.2: thread-local must agree across declarations
-                    if (var && !var->is_function && var->is_tls != attr.is_tls)
+                    if (!var_is_new && !var->is_function && var->is_tls != attr.is_tls)
                         error_tok(tok, "'%s' redeclared with different thread-local storage",
                                   name);
-                    if (var) {
-                        if (var->ty->kind == TY_ARRAY && ty->kind == TY_ARRAY && var->ty->size > 0)
-                            ty = var->ty;
-                        else
-                            var->ty = ty;
-                    } else {
-                        var = new_var(name, ty, false);
-                    }
+                    if (!var_is_new && var->ty->kind == TY_ARRAY && ty->kind == TY_ARRAY && var->ty->size > 0)
+                        ty = var->ty;
+                    else
+                        var->ty = ty;
                     // A redeclaration of an already-defined (initialized) global
                     // must not drop its definition or change its linkage: e.g.
                     // `int i = 1; extern int i;` keeps i defined, and
