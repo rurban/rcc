@@ -11290,6 +11290,22 @@ VReg gen(Node *node) {
     }
 */
     case ND_COND: {
+        // Fold a provably-constant condition and generate ONLY the taken
+        // branch -- critical for `sizeof(char[1-2*STATIC_COND])!=1 ?
+        // error_fn() : ...`-style static-assert-via-negative-array-size
+        // idioms (e.g. ruby's rb_scan_args_verify): the untaken branch's
+        // call to a __attribute__((error(...)))-marked function must
+        // never reach gen()'s ND_FUNCALL diag_error check below, or the
+        // diagnostic wrongly fires for genuinely dead code. Every
+        // eval_const_expr() success case recurses only through
+        // side-effect-free constructs (literals, string-literal
+        // indexing, arithmetic on those, a lenient-folded VLA sizeof,
+        // ...), so skipping node->cond's own codegen entirely here is
+        // safe -- there is no side effect left to lose.
+        long long condval;
+        if (eval_const_expr(node->cond, &condval))
+            return gen(condval ? node->then : node->els);
+
         int c = ++rcc_label_count;
         const char *else_label = format(".L.cond_else.%d", c);
         const char *end_label = format(".L.cond_end.%d", c);
@@ -11373,7 +11389,15 @@ VReg gen(Node *node) {
         }
         // Fold constant integer conditions to avoid dead code emission,
         // but keep blocks that contain labels (may be targets of goto).
-        if (node->cond->kind == ND_NUM) {
+        // eval_const_expr (not just a raw ND_NUM literal) so e.g. `if
+        // (sizeof(char[1-2*STATIC_COND]) != 1)`-style static-assert-via-
+        // negative-array-size idioms guarding a
+        // __attribute__((error(...))) call also fold, matching ND_COND's
+        // ternary sibling below. eval_const_expr only ever succeeds
+        // through side-effect-free constructs, so skipping node->cond's
+        // own codegen here is safe.
+        long long if_condval;
+        if (eval_const_expr(node->cond, &if_condval)) {
             // Recursively check if a node tree contains any label or goto
             bool has_label = false;
             {
@@ -11405,7 +11429,7 @@ VReg gen(Node *node) {
                 }
             }
             if (!has_label) {
-                if (node->cond->val) {
+                if (if_condval) {
                     VReg r = gen(node->then);
                     if (r != -1) free_reg(r);
                 } else if (node->els) {
@@ -11437,7 +11461,7 @@ VReg gen(Node *node) {
             // `if(1)` unconditionally enters its then-branch anyway, so a
             // plain fall-through already has the right semantics with no
             // special-casing needed.
-            if (!node->cond->val) {
+            if (!if_condval) {
                 // Find outermost block body
                 Node *list = node->then;
                 while (list && list->kind == ND_BLOCK && list->body &&

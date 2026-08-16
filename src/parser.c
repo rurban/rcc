@@ -1560,6 +1560,7 @@ static Node *assign(Token **rest, Token *tok);
 bool eval_const_expr(Node *node, long long *val);
 static bool eval_const_fexpr(Node *node, long double *val);
 static bool eval_const_addr_expr(Node *node, long long *val);
+static Node *type_size_node(Type *ty, Token *tok);
 static void global_initializer_impl(Token **rest, Token *tok, LVar *var);
 static void global_initializer(Token **rest, Token *tok, LVar *var);
 
@@ -2399,13 +2400,32 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_NE:
     case ND_LT:
     case ND_LE: {
-        // Decimal comparisons must NOT fold as raw-bit compares: the BID
-        // encoding is not canonical (7 as int and 7.0 as a string literal
-        // produce different bit patterns for the same value), so bitwise
-        // equality is wrong. Route to the runtime __bid_*2 helper instead.
         if ((node->lhs->ty && is_decimal(node->lhs->ty)) ||
             (node->rhs->ty && is_decimal(node->rhs->ty)))
             return false;
+        // A flonum operand must be compared in genuine floating point,
+        // not silently truncated to `long long` first (an out-of-range
+        // value like INFINITY, or any float too large for long long's
+        // range, is UB to convert and would misjudge the comparison
+        // entirely) -- found via GCC torture's c23-float-3.c, `INFINITY
+        // > FLT_MAX`.
+        if ((node->lhs->ty && is_flonum(node->lhs->ty)) ||
+            (node->rhs->ty && is_flonum(node->rhs->ty))) {
+            long double flhs, frhs;
+            if (!eval_const_fexpr(node->lhs, &flhs) || !eval_const_fexpr(node->rhs, &frhs))
+                return false;
+            // codeql[cpp/equality-on-floats]: implements C's own ==/!=
+            // for float constant-folding -- must be bit-exact IEEE754
+            // comparison to match runtime evaluation, not fuzzy/epsilon.
+            if (node->kind == ND_EQ) *val = flhs == frhs;
+            else if (node->kind == ND_NE)
+                *val = flhs != frhs;
+            else if (node->kind == ND_LT)
+                *val = flhs < frhs;
+            else
+                *val = flhs <= frhs;
+            return true;
+        }
         if (!eval_const_expr(node->lhs, &lhs) || !eval_const_expr(node->rhs, &rhs))
             return false;
         bool uns = (node->lhs->ty && node->lhs->ty->is_unsigned) ||
@@ -2472,18 +2492,34 @@ bool eval_const_expr(Node *node, long long *val) {
         }
         return true;
     }
-    case ND_SIZEOF:
-        if (node->lhs && node->lhs->ty) {
-            if (node->lhs->ty->kind == TY_VLA)
-                return false;
-            return (*val = node->lhs->ty->size), true;
-        }
-        if (node->ty) {
-            if (node->ty->kind == TY_VLA)
-                return false;
-            return (*val = node->ty->size), true;
-        }
-        return false;
+    case ND_SIZEOF: {
+        // A VLA's dimension expression fails the strict C integer-
+        // constant-expression test whenever it involves string-literal
+        // indexing (6.6p6 explicitly excludes string literals from an
+        // ICE), even when every value along the way is genuinely
+        // resolvable at compile time -- the classic GNU
+        // `sizeof(char[1-2*COND])` negative-array-size static-assert
+        // trick (e.g. ruby's `rb_scan_args_verify`, walking a format
+        // string literal through nested-ternary macros). Real GCC/Clang
+        // only resolve this via their optimizer (constant propagation +
+        // dead-code elimination at -O2, matching the fact that this
+        // fails identically at -O0). rcc has no such optimizer, but the
+        // type itself is intentionally left as a genuine VLA here
+        // (matching the frontend's own classification, so runtime
+        // VLA/`alloca` behavior for a truly-variable dimension is
+        // unaffected) -- only THIS constant-expression fold is lenient:
+        // recompute the VLA's runtime size expression and try folding
+        // THAT (now reachable via the ND_DEREF string-indexing case
+        // below), so a caller asking "is this sizeof provably constant"
+        // (e.g. the ND_COND dead-branch check in codegen.c) can still
+        // get a definite answer without ever touching the type itself.
+        Type *ty = (node->lhs && node->lhs->ty) ? node->lhs->ty : node->ty;
+        if (!ty)
+            return false;
+        if (ty->kind != TY_VLA)
+            return (*val = ty->size), true;
+        return eval_const_expr(type_size_node(ty, node->tok), val);
+    }
     case ND_STR:
         // A string literal used as a value in a constant-expression
         // context (almost always a ternary/logical condition, e.g. the
@@ -2503,6 +2539,41 @@ bool eval_const_expr(Node *node, long long *val) {
             return eval_const_expr(node->lhs->lhs, val);
         // offsetof: &((struct S*)0)->member
         return eval_const_addr_expr(node->lhs, val);
+    case ND_DEREF: {
+        // String-literal indexing at a constant offset (`"foo"[N]`, or
+        // `N["foo"]` -- C allows either operand order since `a[b]`
+        // desugars to `*(a+b)`), a GNU-extension-style fold: NOT a
+        // strict C integer-constant-expression (6.6p6 excludes string
+        // literals from an ICE), so this must never be reachable from a
+        // context requiring a genuine ICE (array-declarator sizing keeps
+        // classifying this as a real VLA, matching GCC's own frontend --
+        // see the ND_SIZEOF lenient-fold above, the only caller that
+        // benefits from this case for a VLA dimension chain like ruby's
+        // rb_scan_args_count nested-ternary macros walking a format
+        // string literal).
+        if (node->lhs->kind != ND_ADD)
+            return false;
+        Node *base = node->lhs->lhs, *idx = node->lhs->rhs;
+        if (base->kind != ND_STR && idx->kind == ND_STR) {
+            Node *t = base;
+            base = idx;
+            idx = t;
+        }
+        // Only a plain (narrow, 1-byte-per-character) string literal:
+        // L"..."/u"..."/U"..." store multi-byte code units, not raw
+        // bytes, so `base->str[off]` would read the wrong element
+        // entirely (found via GCC torture's 20010325-1.c,
+        // `L"a" "b"[1] != L'b'`, wrongly folding to a narrow byte read).
+        if (base->kind != ND_STR || !base->ty || base->ty->kind != TY_ARRAY ||
+            !base->ty->base || base->ty->base->size != 1)
+            return false;
+        long long off;
+        if (!eval_const_expr(idx, &off) || off < 0)
+            return false;
+        size_t slen = strlen(base->str);
+        *val = (off <= (long long)slen) ? (unsigned char)base->str[off] : 0;
+        return true;
+    }
     case ND_COMMA: {
         // A comma expr is only foldable (no runtime evaluation needed)
         // when BOTH operands are themselves constant; if lhs has side

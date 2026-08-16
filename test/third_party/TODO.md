@@ -221,6 +221,84 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-16, constant-fold dead-branch-elimination session)
+
+- **`sizeof(char[1-2*COND])`-negative-array-size static-assert idiom**
+  (used by ruby's `rb_scan_args_verify()`, walking a format-string
+  literal through nested-ternary macros to compute `COND` at compile
+  time) always errored with a wrongly-reachable
+  `__attribute__((error(...)))` diagnostic. Two independent gaps, both
+  needed together:
+  1. `eval_const_expr()` (parser.c) had no way to fold string-literal
+     indexing at a constant offset (`"foo"[N]`). Per C11 6.6p6 a string
+     literal is explicitly excluded from a strict integer-constant-
+     expression, so the array declarator correctly keeps classifying
+     `char[1-2*COND]` as a genuine `TY_VLA` here (matching real GCC's
+     own frontend -- confirmed this fails identically at `-O0` in real
+     GCC too, only resolving at `-O2` via its optimizer's constant
+     propagation + dead-code elimination). But `ND_SIZEOF`'s fold
+     unconditionally bailed on any `TY_VLA` operand, so `sizeof` on this
+     array was never foldable even when every value along the dimension
+     chain was genuinely compile-time-constant. Fixed by adding a new
+     `ND_DEREF` case (string-literal indexing, guarded to only apply to
+     narrow 1-byte-per-character strings -- see the regression below)
+     and having `ND_SIZEOF` recompute a `TY_VLA`'s runtime size
+     expression (`type_size_node()`, already used for real
+     `sizeof(vla)` codegen) and try folding _that_ -- a lenient fold
+     used only when something is already asking "is this provably
+     constant", never changing the type's own VLA classification, so a
+     genuinely-variable dimension is completely unaffected.
+  2. `ND_COND` (ternary) codegen always generated BOTH branches
+     unconditionally, relying purely on a runtime compare+jump to skip
+     the untaken one -- so even once the sizeof/comparison chain folded
+     to a compile-time-constant condition, the untaken branch's call to
+     an `__attribute__((error(...)))`-marked function still reached
+     `gen()`'s `ND_FUNCALL` diagnostic check and wrongly fired. `ND_IF`
+     had a _partial_ version of the right optimization (skip dead code
+     for a constant condition) but only recognized a bare `ND_NUM`
+     token, not a folded expression like `sizeof(...) != 1`. Fixed by
+     having both `ND_COND` and `ND_IF` call `eval_const_expr()` on the
+     condition and, when it succeeds, skip codegen for the condition
+     and the untaken branch entirely -- safe because every
+     `eval_const_expr()` success case recurses only through side-
+     effect-free constructs, so there is never a side effect to lose.
+     This is a narrow, always-on extension of rcc's existing constant-
+     folding machinery, not a general inliner/optimizer: it never performs
+     cross-function constant propagation or SSA-style dataflow (unlike
+     GCC's actual `-O2` mechanism for this exact idiom) -- it only
+     recognizes provably-constant expressions built from literals,
+     string-literal indexing, and lenient-folded VLA sizeofs, exactly
+     matching what rcc's own front-end can already see in the AST.
+     Two regressions surfaced fixing this, both fixed in the same session:
+  - String-literal indexing must reject wide/`char16_t`/`char32_t`
+    strings (multi-byte code units, not raw bytes) -- GCC torture's
+    `20010325-1.c`, `L"a" "b"[1] != L'b'` wrongly folded via the narrow
+    single-byte read path. Fixed by requiring the base string's element
+    type be exactly 1 byte before folding.
+  - A flonum-operand comparison (`==`, `!=`, `<`, `<=`) folded by
+    truncating both operands to `long long` first via the existing
+    integer path -- correct for ordinary values, but converting
+    `INFINITY` (or any float outside `long long`'s range) to an integer
+    is undefined behavior and silently misjudged the comparison. GCC
+    torture's `c23-float-3.c`, `INFINITY > FLT_MAX`, surfaced this once
+    `ND_IF` started actually reaching the fold. Fixed by routing any
+    comparison with a flonum operand through `eval_const_fexpr()`
+    (genuine floating-point compare) instead.
+    → found via test_ruby: `compar.c:236`/`box.c:852`,
+    `rb_scan_args(argc, argv, "11", &min, &max)` expanding to
+    `rb_scan_args_verify("11", 2)`.
+    Regression test: `test/test_static_assert_negative_array.c` (new;
+    covers the ternary form, the plain-`if` form, and both regressions).
+    PASS at -O0..-O3 on x86-64; verified directly against rcc-built ARM64
+    (qemu-aarch64) with the reproducer and the new test; ARM64 and mingw
+    cross-builds compile clean; `make check-all` on native x86-64: 0
+    failed (Unit 4580/4580 incl. the new test, TCC 118/118, Compliance
+    15/15, c-testsuite 220/220, Torture 3605/3609 -- 0 failed, 354
+    skipped, 4 todo, Dg-error 34/34, Link 10/10). Full verification:
+    fetched ruby v4.0.6 fresh, ran its real `./configure` with `CC=rcc`,
+    and `make compar.o box.o` (the exact two files the original diagnosis
+    cited) -- both now compile cleanly to valid ELF relocatable objects.
+
 ### Fixed (2026-08-16, mixed-width builtin overflow session)
 
 - **`__builtin_add_overflow`/`__builtin_sub_overflow`/
@@ -810,12 +888,12 @@ __atomic_load_4/__atomic_store_8/...` at link time. Fixed in
      `parser.c` by adding `atomic_lib_helper(tok, op)`, which recognizes
      the `__atomic_<op>_<N>` spelling (op = load/store/exchange/
      compare*exchange) and routes it through the same `ND_ATOMIC*\*` lowering as the`\_n`form (the`\_N`suffix is the 2-argument form,
-    exactly like`\_n`, not the 3-argument generic form).
-    Regression test: `test/test_atomic_libatomic_helpers.c`(new: load/
-    store 4 and 8, exchange 4, compare-exchange 4, and the exact glib`g_atomic_int_get`statement-expression shape), PASS on x86-64.`make check-all`: 0 failed. Verification: the whole glib library
-    (`glib/glib/`) now compiles and links under `rcc -std=gnu17`,
-    including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
-    The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
+     exactly like`\_n`, not the 3-argument generic form).
+     Regression test: `test/test_atomic_libatomic_helpers.c`(new: load/
+     store 4 and 8, exchange 4, compare-exchange 4, and the exact glib`g_atomic_int_get`statement-expression shape), PASS on x86-64.`make check-all`: 0 failed. Verification: the whole glib library
+     (`glib/glib/`) now compiles and links under `rcc -std=gnu17`,
+     including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
+     The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
      fixing" item 6's parser-rejects-valid-C cluster entry).
 
 ### Fixed (2026-08-15, large file read truncation session)
@@ -2394,19 +2472,16 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      codegen stores long-double literal constants as plain 8-byte
      doubles on purpose). A real fix needs genuine x87-register-backed
      long-double arithmetic throughout codegen, not a local patch; out
-     of scope this session), test_tomlc17, test_ruby (a negative-array-
-     size sizeof compile-time-assert trick mis-evaluated -- **root-
-     caused, not fixed**: confirmed with a minimal repro that even real
-     GCC only resolves this at -O2 (it rejects the same source at -O0
-     too) by inlining the whole nested-ternary format-string-counting
-     macro chain through a real function call and constant-folding the
-     result down to a dead branch before its error-attributed call
-     target is reachable; rcc has no general inlining plus constant-
-     propagation plus dead-branch-elimination optimizer, so this needs a
-     real optimizing-compiler pass, not a quick fix), **test_vlc is
-     fixed** -- see "Fixed (2026-08-16, mixed-width builtin overflow
-     session)" below (`ckd_mul(&res, LLONG_MAX, -1)`, a `long long`
-     times `int` mix, corrupted both the result and the overflow flag),
+     of scope this session), test_tomlc17, **test_ruby is fixed** -- see
+     "Fixed (2026-08-16, constant-fold dead-branch-elimination session)"
+     below (its negative-array-size sizeof static-assert trick needed
+     both a lenient constant fold through string-literal indexing and a
+     ternary/if dead-branch skip that GCC only gets from its optimizer
+     at -O2 -- rcc's fix is narrower and always-on, not a general
+     inliner), **test_vlc is fixed** -- see "Fixed (2026-08-16,
+     mixed-width builtin overflow session)" below (`ckd_mul(&res,
+LLONG_MAX, -1)`, a `long long` times `int` mix, corrupted both the
+     result and the overflow flag),
      test_ocaml/test_mimalloc
      (linker reports the rcc-produced static archive itself as
      malformed — "file in wrong format"/"bad value" — worth checking
