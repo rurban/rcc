@@ -1229,6 +1229,24 @@ int main(int argc, char **argv) {
             snprintf(stdout_tmp, sizeof(stdout_tmp), "rcc_tmp_%d_stdout.out", _getpid());
             backend_out = stdout_tmp;
         }
+#if defined(_WIN32) || defined(__MINGW32__)
+        // Real gcc/mingw auto-appends ".exe" to an executable's -o name
+        // when it lacks a recognized extension (every third-party
+        // Makefile that does `$(CC) ... -o prog` expects `prog.exe` to
+        // exist afterward). The external gcc.exe fallback below does
+        // this itself via its own driver, but rcc_link()'s native PE
+        // writer writes verbatim to whatever path it's given, so it has
+        // to happen here to keep the native and external link paths
+        // consistent with each other and with real gcc.
+        char backend_out_exe[512];
+        if (!opt_shared && !opt_stdout) {
+            size_t blen = strlen(backend_out);
+            if (blen < 4 || strcmp(backend_out + blen - 4, ".exe") != 0) {
+                snprintf(backend_out_exe, sizeof(backend_out_exe), "%s.exe", backend_out);
+                backend_out = backend_out_exe;
+            }
+        }
+#endif
         // Try the native linker first.
         // The native ELF/PE/Mach-O linker understands only -l/-L/-static
         // inputs (plus bare .a/.so positionals) and the -pie/-pic/-shared/

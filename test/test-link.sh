@@ -52,9 +52,10 @@ fail() { FAIL=$((FAIL + 1)); printf '  %-44s FAIL (%s)\n' "$1" "$2"; }
 runlib() {
     prog="$1"
     shift
-    # gcc.exe's own mingw driver silently appends ".exe" to an extension-
-    # less -o name (rcc's native PE linker does not); resolve whichever
-    # one a given build step actually produced.
+    # A cross-built rcc.exe or a Windows-hosted rcc always produces
+    # "$prog.exe" for a plain executable link (both the native PE
+    # linker and the external gcc.exe fallback append it); resolve
+    # whichever name a given build step actually produced.
     [ ! -f "$prog" ] && [ -f "$prog.exe" ] && prog="$prog.exe"
     DYLD_LIBRARY_PATH="$TMP" LD_LIBRARY_PATH="$TMP" "$prog" "$@"
 }
@@ -424,6 +425,46 @@ if ( cd "$TMP" && "$RCC" -I"$TMP" -c "$TMP/po_a.c" "$TMP/po_b.c" ) 2>"$TMP/e9" \
     pass "#pragma once scoped per-TU in a multi-file single invocation"
 else
     fail "#pragma once scoped per-TU in a multi-file single invocation" "$(tr '\n' ' ' < "$TMP/e9")"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. Direct single-invocation multi-.c-to-executable link (`rcc a.c b.c
+#    -o prog`, no -c) -- distinct from every case above, which either
+#    links pre-built .o/.a inputs or (case 11) still separately -c's each
+#    file first. This is the exact shape of a plain `$(CC) a.c b.c -o
+#    prog` Makefile rule (e.g. elk's native `elk:` target): codegen
+#    produces each file's object data in-process and hands it straight
+#    to rcc_link() without ever writing an intermediate .o to disk.
+#    rcc's native PE writer (link_pe.c) merges multiple COFF objects'
+#    same-named sections (.text/.data/...) by concatenation, and did
+#    correctly rebase each object's own RELOCATION offsets by where its
+#    bytes landed in the merged section -- but never applied that same
+#    rebase to its SYMBOL VALUES, so any symbol defined in the second (or
+#    later) linked object resolved to the wrong address: main.o's call to
+#    an external bfn() defined in a separately-compiled bfn.o landed on
+#    whatever code happened to sit at bfn's offset WITHIN bfn.o's own
+#    object (here, offset 0 -- main's own address), so main() silently
+#    called itself and stack-overflowed instead of calling bfn(). ELF's
+#    loader (link_elf.c) already rebases symbol values correctly; PE's
+#    did not. b.c's function is deliberately defined AFTER a.c's own use
+#    of it, and BOTH files carry an unrelated top-level global so the
+#    two objects' merged .data offsets also differ from zero, so a
+#    latent bug here cannot hide behind an all-zero coincidence.
+# ---------------------------------------------------------------------------
+cat > "$TMP/mca.c" <<'EOF'
+int a_pad = 7;
+extern int mc_bfn(void);
+int main(void) { return mc_bfn() == 42 ? 0 : 1; }
+EOF
+cat > "$TMP/mcb.c" <<'EOF'
+int b_pad = 9;
+int mc_bfn(void) { return 42; }
+EOF
+if "$RCC" "$TMP/mca.c" "$TMP/mcb.c" -o "$TMP/mcprog" 2>"$TMP/e10" \
+    && "$(winprog "$TMP/mcprog")"; then
+    pass "direct multi-.c single-invocation executable link"
+else
+    fail "direct multi-.c single-invocation executable link" "$(tr '\n' ' ' < "$TMP/e10")"
 fi
 
 echo ""

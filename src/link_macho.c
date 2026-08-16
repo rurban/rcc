@@ -630,6 +630,26 @@ int link_load_object(LinkState *s, const char *path) {
     int n_sections = 0;
     int *sym_map = NULL; // symbol index → LinkSym index
     int n_syms = 0;
+    // Byte offset within the (possibly already non-empty, shared-by-name)
+    // output section where each of THIS object's own Mach-O sections
+    // begins -- see the identical `out_sec_off` comment in link_pe.c's
+    // link_load_object(): a later-loaded object's bytes are appended
+    // AFTER an earlier object's, so a symbol's raw nlist value (an
+    // offset within its OWN object's un-merged section) must be rebased
+    // by this amount to become a correct offset within the merged
+    // output section. Grown alongside `sec_map` below, same indexing.
+    uint64_t *sec_base_off = NULL;
+    // Snapshot every already-loaded output section's reloc count before
+    // this object contributes any of its own, so the remap pass below
+    // can scope itself to only the relocations THIS object just added --
+    // `s->secs[]` is a single array shared (by section name) across
+    // every loaded object, so remapping the whole thing on every load
+    // would reinterpret an earlier object's already-resolved global
+    // symbol indices as raw indices into this object's unrelated
+    // symbol table.
+    int old_n_secs = s->n_secs;
+    int *reloc_base = calloc((size_t)old_n_secs, sizeof(int));
+    for (int i = 0; i < old_n_secs; i++) reloc_base[i] = s->secs[i].n_relocs;
 
     for (uint32_t i = 0; i < ncmds; i++) {
         uint32_t cmd = mo_r32(lc);
@@ -702,10 +722,12 @@ int link_load_object(LinkState *s, const char *path) {
                                                       is_bss, false, sec_align);
                 sec_map = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
                 sec_map[n_sections] = out_idx;
+                sec_base_off = realloc(sec_base_off, (size_t)(n_sections + 1) * sizeof(uint64_t));
 
                 if (!is_bss && size > 0 && offset > 0) {
                     uint64_t base_off = link_sec_append(s, out_idx,
                                                         image + offset, (size_t)size, 16);
+                    sec_base_off[n_sections] = base_off;
                     // Parse relocations
                     for (uint32_t k = 0; k < nreloc; k++) {
                         // Mach-O relocation entry: 8 bytes (int32 addr, uint32 sym+type)
@@ -724,7 +746,10 @@ int link_load_object(LinkState *s, const char *path) {
                                        (uint32_t)rl, r_sym, 0);
                     }
                 } else if (is_bss && size > 0) {
+                    sec_base_off[n_sections] = s->secs[out_idx].len;
                     s->secs[out_idx].len += (size_t)size;
+                } else {
+                    sec_base_off[n_sections] = s->secs[out_idx].len;
                 }
                 n_sections++;
                 sc += 80;
@@ -774,7 +799,7 @@ int link_load_object(LinkState *s, const char *path) {
                     continue;
                 }
 
-                uint64_t sym_value = (out_sec >= 0) ? n_value : 0;
+                uint64_t sym_value = (out_sec >= 0) ? n_value + sec_base_off[n_sect - 1] : 0;
                 int sym_idx = link_add_sym(s, name, out_sec, sym_value,
                                            0, bind, type, -1);
                 sym_map[j] = sym_idx;
@@ -783,11 +808,16 @@ int link_load_object(LinkState *s, const char *path) {
         lc += cmdsize;
     }
 
-    // Re-map relocations from object symbol index to LinkSym index
+    // Re-map relocations from object symbol index to LinkSym index. Scoped
+    // to just the relocations THIS object added -- see reloc_base's
+    // comment above for why remapping the whole shared sec->relocs[]
+    // array on every object load would corrupt an earlier object's
+    // already-resolved cross-object relocations.
     if (sym_map) {
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
-            for (int j = 0; j < sec->n_relocs; j++) {
+            int start = (i < old_n_secs) ? reloc_base[i] : 0;
+            for (int j = start; j < sec->n_relocs; j++) {
                 int ms = sec->relocs[j].sym;
                 if (ms >= 0 && ms < n_syms)
                     sec->relocs[j].sym = sym_map[ms];
@@ -795,6 +825,8 @@ int link_load_object(LinkState *s, const char *path) {
         }
         free(sym_map);
     }
+    free(reloc_base);
+    free(sec_base_off);
     free(sec_map);
     munmap(image, (size_t)st.st_size);
     return 0;

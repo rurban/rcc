@@ -262,6 +262,115 @@ check-all`: 0 failed on all three targets (Unit 4220/4220, Torture
   latter needing the custom `Rectangle` native class only `example`
   registers) passes all 5/5.
 
+### Fixed (2026-08-16, native linker cross-object symbol-value session — PE and Mach-O)
+
+- **rcc's native PE linker (`link_pe.c`, `link_load_object()`) resolved
+  every symbol DEFINED in the second (or later) object of a multi-object
+  link to the wrong address** — when merging same-named sections
+  (`.text`/`.data`/...) across several loaded COFF objects by
+  concatenation, relocation offsets were correctly rebased by where each
+  object's bytes landed in the shared output section (`link_sec_append()`'s
+  return value), but SYMBOL VALUES were not: a symbol's value was taken
+  verbatim from its defining object's own raw COFF entry (an offset
+  within THAT OBJECT's OWN un-merged section, almost always starting at
+  0), with no adjustment for the earlier objects' bytes already occupying
+  the front of the merged section. Every symbol defined in the first
+  loaded object happened to be correct by coincidence (offset 0 within
+  its own section == offset 0 within the still-empty merged section);
+  every symbol in any later object was silently wrong by exactly that
+  earlier content's length. Concretely: `main.o`'s call to an external
+  `bfn()` defined in a separately-compiled `bfn.o` resolved to `bfn.o`'s
+  own offset-0 address, i.e. wherever `main.o`'s bytes happened to start
+  — `main()` silently called itself and stack-overflowed instead of
+  calling `bfn()`. `link_elf.c`'s ELF loader already rebases symbol
+  values by the identical per-section append offset (`sec_base_off[]`);
+  `link_pe.c`'s loader diverged from that correct pattern. Fixed by
+  tracking each COFF section's own append offset within its merged
+  output section (`out_sec_off[]`, populated alongside the existing
+  relocation-offset rebase) and adding it to every symbol's value when
+  building the merged symbol table, mirroring `link_elf.c` exactly.
+  A second, independent bug in the same function: the "COFF sym index →
+  merged LinkSym index" relocation remap pass re-scanned and rewrote
+  EVERY relocation in EVERY output section on every single object load
+  (not just the relocations the object being loaded had just added) —
+  since output sections are a single accumulating array shared across
+  every loaded object once they merge by name, this reinterpreted an
+  earlier object's already-correctly-resolved global symbol indices as
+  raw COFF-local indices into the CURRENT object's unrelated symbol
+  table whenever the numeric ranges happened to overlap, silently
+  corrupting cross-object relocations a second, unrelated way. Fixed by
+  snapshotting each output section's relocation count before an object
+  contributes its own, and scoping the remap to only the relocations
+  added since that snapshot.
+  **The identical pair of bugs was independently confirmed in the darwin
+  native linker too** (`link_macho.c`, `link_load_object()`) — its
+  symbol-table loop likewise used the raw Mach-O nlist value verbatim
+  (`n_value`, an offset within the defining object's OWN un-merged
+  section) with no rebase, and its own relocation-remap pass had the
+  same unscoped whole-array rescan bug. Real macOS CI (`macos-latest`,
+  genuinely arm64 hardware) caught this live: the new regression test
+  below (case 12, added for the mingw/PE bug, deliberately not gated to
+  any one target) SIGSEGV'd there — `test-link.sh: line 468: Segmentation
+fault`. Fixed identically: `sec_base_off[]` tracked alongside
+  `sec_map[]` in the `LC_SEGMENT_64` section-processing loop and added to
+  every symbol's `n_value`, and the relocation remap scoped via the same
+  per-load reloc-count snapshot as the PE fix. (This sandbox has no real
+  macOS hardware and no `osxcross`/`gotson/crossbuild` container image to
+  assemble+link darwin output locally; the fix was verified by code
+  review — an exact structural mirror of `link_elf.c`'s already-correct,
+  already-battle-tested pattern applied identically to both other native
+  linkers — and by the real macOS CI run this fix was pushed for.)
+  Separately, the driver (`main.c`) never auto-appended `.exe` to an
+  executable's `-o` name lacking a recognized extension for the PE native
+  link path — real gcc/mingw always does (matching every third-party
+  Makefile's `$(CC) ... -o prog` → `prog.exe` expectation), and the
+  external `gcc.exe` fallback link path already got this for free from
+  its own driver, so only the native path was affected. Fixed by
+  appending `.exe` to the link output path before invoking either
+  linker when building a plain (non-`-shared`, non-stdout) executable
+  for the Windows/mingw target. This incidentally also fixes the
+  originally-reported missing execute permission bit: Wine's own
+  filesystem layer infers a file's Unix-executable bit from a
+  recognized Windows executable extension (`.exe`) rather than from any
+  chmod call — `link_pe.c`'s existing `chmod(out_path, 0755)` call was
+  never actually the problem.
+  Found via a from-scratch minimal repro (a `main()`/`bfn()` split
+  across two files, direct single-invocation `rcc a.c b.c -o prog`
+  link) while re-investigating "Needs fixing" item 7's cross-object
+  mingw link bug; ARM64/native ELF was unaffected throughout
+  (`link_elf.c` was already correct — the reference pattern both other
+  fixes now match); the PE-side changes are entirely inside
+  `#if defined(_WIN32) || defined(__MINGW32__)`-gated code, compiled
+  only into the mingw-hosted `rcc.exe`, and the Mach-O-side changes are
+  entirely inside `link_macho.c`, compiled only into a darwin-targeted
+  build.
+  Regression test: `test/test-link.sh` case 12 (new: direct
+  single-invocation two-`.c`-file executable link, with both files
+  carrying an unrelated leading global so a latent offset bug can't
+  hide behind an all-zero coincidence; deliberately runs on every
+  target, not gated by `$SOEXT` — this is exactly what caught the
+  darwin bug that local testing in this sandbox could never have
+  found). PASS at -O0..-O3 on x86-64, ARM64 (qemu-aarch64) and mingw
+  (wine); `make check-all`: 0 failed on native x86-64 (4578/4578,
+  Torture 3605/3609 — 0 failed, 354 skipped, 4 todo, Dg-error 34/34,
+  Link tests 9/9 incl. the new case). ARM64 cross-build clean (249/251
+  unit tests; the 2 failures are
+  `test_link_archive_so`/`test_link_versioned_so`, confirmed
+  pre-existing and unrelated — identical failures reproduce on the
+  pre-fix commit, caused by `system("cc")` inside this sandbox's
+  qemu-aarch64 user-mode emulation finding no native aarch64 host
+  compiler, nothing to do with this session's `_WIN32`/`__MINGW32__`-
+  gated changes). mingw cross-build (`test/test-link.sh ./rcc.exe`):
+  the new case 12 and every previously-passing case still pass; the
+  pre-existing, unrelated `sqlite3 shared library`/`sqlite3 static
+archive` failures (external `gcc.exe`/`ld.exe`'s `clock_nanosleep64`/
+  `clock_getres64`/`clock_gettime64`/`clock_settime64`
+  undefined references, a 64-bit-time UCRT/mingw64-runtime version
+  mismatch in this sandbox's toolchain) reproduce identically on the
+  pre-fix commit too. macOS CI: the darwin fix's own verification is
+  the CI run itself (`test (macos-latest)`), since this sandbox cannot
+  execute or fully cross-assemble Mach-O.
+
 ### Fixed (2026-08-15, njs macro-driven initializer session — 6 stacked bugs)
 
 - **A CAST wrapping `&(compound literal)` in a static/global pointer
@@ -2190,24 +2299,15 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
    `test/third_party/logs/<target>.log` from the 2026-08-14 batch run;
    re-read the log for exact context before starting a fix.
 
-7. **mingw target: direct multi-`.c`-file-to-executable compile produces
-   a broken output** (found as a side effect of verifying the
-   `#pragma once` fix below via `test-link.sh` on `./rcc.exe`) — `rcc
-a.c b.c -o prog` on the mingw cross target (external `gcc.exe`
-   linker fallback, not rcc's native PE writer) produced a file named
-   exactly `prog` (no `.exe` suffix) with mode `0644` (no execute bit),
-   whereas the equivalent two-step `rcc -c a.c -c b.c && rcc a.o b.o -o
-prog` correctly produces `prog.exe` with mode `0755`. Not
-   investigated further this session (out of scope for the `#pragma
-once` fix); likely main.c's external-linker invocation path handles
-   `.c`-source inputs and `.o`-object inputs differently when deciding
-   the final link command / output naming for the mingw target
-   specifically. No production Makefile pattern in this repo's own
-   third-party corpus was confirmed blocked by it yet (elk's own
-   Makefile only builds this way on the _native_ target in its `elk:`
-   rule; its `mingw:`/`linux:` targets go through a Docker cross-image
-   this sandbox doesn't have), but it's a real, reproducible target-mode
-   gap worth fixing before it silently breaks a real mingw target build.
+7. **mingw target: direct multi-`.c`-file-to-executable compile produced
+   a broken output** — **fixed**, see "Fixed (2026-08-16, mingw native
+   PE linker cross-object symbol-value session)" below. Root cause was
+   deeper than the naming/permission symptom originally reported: rcc's
+   own native PE linker (`link_pe.c`, only reachable when the mingw
+   target compiles 2+ `.c` files directly to an executable in one
+   invocation) mis-resolved every symbol DEFINED in the second or later
+   linked object to the wrong address, silently miscompiling any
+   multi-TU mingw executable.
 
 ---
 
