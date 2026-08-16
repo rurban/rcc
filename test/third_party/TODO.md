@@ -2324,6 +2324,83 @@ New regression test: `test/test_global_extern_redecl_link.c` (drives
 rcc as a subprocess, inspects `readelf -sW` symbol types directly, and
 performs a real end-to-end TLS link+run for the archive-link case).
 
+### Fixed (2026-08-16, SysV x86-64 struct-by-value argument ABI session)
+
+- **Every struct/union argument passed BY VALUE and larger than 8 bytes
+  used Win64's by-reference convention (pointer in a GP register/stack
+  slot) unconditionally on x86-64, even when targeting genuine SysV**
+  (`codegen.c`: caller-side argument marshalling around
+  `gen_funcall()`'s classification loop, both callee-side prologue
+  passes, and `__builtin_va_arg`'s struct-reading path). Real SysV
+  x86-64 classifies a struct/union argument by size/composition: ≤16
+  bytes and entirely INTEGER-class fields pass as raw bytes in up to 2
+  GP registers (never a pointer); >16 bytes (or any FLOAT/`long
+double`/mixed-class member) is MEMORY class, passed as raw bytes on
+  the stack (never a pointer either) — Win64's "always a hidden
+  pointer above 8 bytes" rule never applies. rcc had silently reused
+  the Win64 convention on both platforms, so any real SysV C library
+  taking a struct argument by value (not by pointer) miscompiled: the
+  callee read a garbage pointer dereference instead of the actual
+  struct bytes. Found via test_tomlc17's `toml_datum_t seek(...)`
+  entry point (a 40-byte struct returned/passed by value, isolated
+  down to a minimal `gcc`-caller / `rcc`-callee ABI-mismatch repro
+  before finding the root cause in rcc's own classification). Fixed by
+  adding the missing SysV size/class dispatch to all four call-site
+  shapes that previously assumed "struct >8 bytes is always a
+  pointer": the caller's argument-staging/register-placement loop
+  (raw-bytes-in-registers for 9-16-byte all-integer structs, raw
+  stack-byte copy — not a pushed pointer — for the true MEMORY class),
+  both prologue passes' struct-parameter reception (mirroring the
+  caller-side classification when reading incoming register/stack
+  arguments), and `__builtin_va_arg`'s own struct-reading logic (same
+  classification, reading from the register-save area or overflow
+  area as raw bytes instead of dereferencing a stored pointer). Win64
+  (`_WIN32`) code paths are entirely unchanged — this only adds the
+  previously-missing non-Windows branches. One regression surfaced
+  while adding the new classification helper (`struct_returns_in_gp_regs`
+  used by every branch above) and fixed in the same session: it did
+  not exclude `is_vector` types (`__m128`/`__m128i`/`__m128d`, 16 bytes,
+  internally represented as `TY_STRUCT` with an all-integer-sized
+  member for the vector-lane type system) from the new 9-16-byte
+  all-integer-struct dispatch, wrongly routing SSE vector arguments
+  through the new GP-register raw-value path instead of their
+  pre-existing, correct SSE-register convention —
+  `test_ia32_intrinsics` caught this immediately (SIGSEGV); fixed by
+  excluding `is_vector` from every new classification branch (4 call
+  sites) and from `struct_returns_in_gp_regs` itself.
+  Regression test: `test/test_struct_arg_sysv_abi.c` (new; a >16-byte
+  MEMORY-class struct and a 9-16-byte all-integer struct, each linked
+  against a real system `cc`-compiled caller to prove genuine
+  cross-compiler ABI compatibility — skipped on Darwin, `_WIN32`
+  (Win64's own by-reference convention is the unchanged baseline
+  there), and under aarch64-qemu cross-testing where the host `cc`
+  found via PATH is the wrong architecture to link against an
+  rcc-arm64-compiled callee; plus a 13-byte struct forced to overflow
+  past the 6 GP argument registers onto the stack, compiled
+  end-to-end by rcc alone on every platform, matching the real
+  GCC-torture `va-arg-22`/`pr92904` regressions' own shape). PASS at
+  -O0 on x86-64 (native `cc` caller cases) and ARM64 (qemu-aarch64,
+  case 3); ARM64 and mingw cross-builds compile clean.
+  **test_tomlc17 is fixed** — re-fetched the real tomlc17 project
+  fresh (both C and C++ test drivers), rebuilt `libtomlc17.a`/
+  `libtomlc17.so` and the `simple`/`simplecpp` example binaries with
+  the fixed `rcc`, and reran the project's own full test suite
+  end-to-end: C tests 214/214 passed, encoder tests (`stdtest`) all
+  passed, C++ (`simplecpp`, g++-compiled, linked against the
+  rcc-built shared library) round-trips the same TOML config
+  correctly. Along the way also confirmed the ABI-mismatch symptom
+  independently against a torture-derived case: GCC torture's
+  `va-arg-22`/`va-arg-pack-1`/`stdarg-3`/`20020412-1`/`pr92904` (5
+  tests, previously regressed by an over-broad interim version of
+  this same fix during development, now all pass again) exercise the
+  identical struct-by-value-argument and `va_arg`-struct-reading
+  paths from the other direction (variadic call sites), confirming
+  the fix is the correct general SysV classification, not a
+  tomlc17-specific patch. `make check-all`: 0 failed (Unit 4224/4224
+  incl. the new test, TCC 118/118, Compliance 15/15, C-testsuite
+  220/220, Torture 3605/3609 — 0 failed, 354 skipped, 4 todo,
+  Dg-error 34/34, Link 10/10).
+
 ### Needs fixing
 
 1. **C23 `_BitInt(N)`** — **test_cproc fixed** (see "Fixed (2026-08-08,
@@ -2537,7 +2614,9 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      codegen stores long-double literal constants as plain 8-byte
      doubles on purpose). A real fix needs genuine x87-register-backed
      long-double arithmetic throughout codegen, not a local patch; out
-     of scope this session), test_tomlc17, **test_ruby is fixed** -- see
+     of scope this session), **test_tomlc17 is fixed** -- see "Fixed
+     (2026-08-16, SysV x86-64 struct-by-value argument ABI session)"
+     above, **test_ruby is fixed** -- see
      "Fixed (2026-08-16, constant-fold dead-branch-elimination session)"
      below (its negative-array-size sizeof static-assert trick needed
      both a lenient constant fold through string-literal indexing and a

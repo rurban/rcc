@@ -1908,7 +1908,7 @@ static bool type_is_all_integer(Type *ty) {
 // the pre-existing hidden-pointer path unchanged -- full SSE/HFA-class
 // register return isn't implemented here.
 static bool struct_returns_in_gp_regs(Type *ty) {
-    return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) &&
+    return ty && (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->is_vector &&
         ty->size > 0 && ty->size <= 16 && type_is_all_integer(ty);
 }
 
@@ -2817,6 +2817,34 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             }
             continue;
         }
+        // SysV x86-64: a struct/union argument >8 bytes is NEVER passed
+        // as a pointer in a register (that is Win64's convention, wrongly
+        // reused here before this fix). Real ABI: <=16 bytes and entirely
+        // INTEGER-class (struct_returns_in_gp_regs, mirroring the return
+        // path's identical simplification) is a raw VALUE in up to 2
+        // consecutive GP registers, or 2 raw stack slots on overflow;
+        // >16 bytes is unconditionally MEMORY class -- raw bytes on the
+        // stack only, consuming zero GP registers regardless of
+        // availability. Anything else (9-16 bytes with a float/complex
+        // member) keeps the pre-existing by-pointer approximation below,
+        // same limitation the return path already accepts.
+        if ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8) {
+            if (struct_returns_in_gp_regs(argv[i]->ty)) {
+                if (gp_reg_args + 1 < max_gp_args) {
+                    arg_gp_idx[i] = gp_reg_args;
+                    gp_reg_args += 2;
+                } else {
+                    if (argv[i]->ty->align > 8 && (stack_args & 1)) stack_args++;
+                    arg_stack_idx[i] = stack_args;
+                    stack_args += 2;
+                }
+                continue;
+            } else if (argv[i]->ty->size > 16 && !argv[i]->ty->is_vector) {
+                arg_stack_idx[i] = stack_args;
+                stack_args += (argv[i]->ty->size + 7) / 8;
+                continue;
+            }
+        }
 
         if (gp_reg_args < max_gp_args)
             arg_gp_idx[i] = gp_reg_args++;
@@ -3688,10 +3716,30 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             used_regs |= reg_arg_mask;
             continue;
         }
-        if (is_complex(argv[i]->ty) || ((argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8))
+        bool struct_gt8 = (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8 &&
+            ((argv[i]->ty->size > 16 && !argv[i]->ty->is_vector) || struct_returns_in_gp_regs(argv[i]->ty));
+        bool struct_ptr8 = (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) && argv[i]->ty->size > 8 && !struct_gt8;
+        if (is_complex(argv[i]->ty) || struct_gt8 || struct_ptr8)
             r = gen_addr(argv[i]);
         else
             r = gen(argv[i]);
+        if (struct_gt8) {
+            // SysV: raw-bytes copy from the struct's own storage onto the
+            // outgoing stack argument slots -- covers both the >16-byte
+            // MEMORY class (any field types) and a 9-16-byte all-integer
+            // struct that overflowed past the GP argument registers.
+            // Never a pointer.
+            int nslots = (argv[i]->ty->size + 7) / 8;
+            for (int s = 0; s < nslots; s++) {
+                int chunk = argv[i]->ty->size - s * 8;
+                int ld = chunk <= 4 ? 4 : 8;
+                x86_mov_rm(cg_sec, ld, X86_RAX, x86_mem(REG(r), s * 8));
+                x86_mov_mr(cg_sec, 8, x86_mem(X86_RSP, shadow_space + (arg_stack_idx[i] + s) * 8), X86_RAX);
+            }
+            free_reg(r);
+            used_regs |= reg_arg_mask;
+            continue;
+        }
         if (is_complex(argv[i]->ty)) {
             int sz = argv[i]->ty->size;
             int base_sz = argv[i]->ty->base->size;
@@ -3838,7 +3886,15 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 // before reading REG(arg_regs[i]).
                 materialize_reg(arg_regs[i]);
             }
-            if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
+            if (argv[i]->ty && (argv[i]->ty->kind == TY_STRUCT || argv[i]->ty->kind == TY_UNION) &&
+                argv[i]->ty->size > 8 && struct_returns_in_gp_regs(argv[i]->ty)) {
+                // SysV: 9-16 byte all-integer struct passed as a raw
+                // VALUE in 2 consecutive GP registers (never a pointer) --
+                // mirrors is_int128_like just below.
+                x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0));
+                int hi_sz = argv[i]->ty->size - 8 <= 4 ? 4 : 8;
+                x86_mov_rm(cg_sec, hi_sz, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8));
+            } else if (argv[i]->ty && is_int128_like(argv[i]->ty)) {
                 // lo in argreg64[arg_gp_idx[i]], hi in argreg64[arg_gp_idx[i]+1]
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // movq (%s), %s
                 x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), 8)); // movq 8(%s), %s
@@ -12991,13 +13047,41 @@ VReg gen(Node *node) {
         }
 #else
         r = gen(node->lhs);
-        bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8;
+        // SysV struct classification for va_arg, mirroring the matching
+        // call-site/prologue fix: >16 bytes is unconditionally MEMORY
+        // class (always the overflow area, raw bytes, never a register);
+        // <=16 bytes and entirely INTEGER-class (struct_returns_in_gp_regs)
+        // is 2 consecutive raw eightbytes, contiguous in either the
+        // register-save area or the overflow area (no pointer at all --
+        // the va_arg result is simply that address, exactly like
+        // TY_INT128 below); anything else (9-16 bytes with a float
+        // member) keeps the pre-existing by-pointer approximation, same
+        // limitation the call-site/prologue fix already accepts.
+        bool is_big_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 16 && !ty->is_vector;
+        bool is_reg_val_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8 && ty->size <= 16 && struct_returns_in_gp_regs(ty);
+        bool is_ptr_struct = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && ty->size > 8 && !is_big_struct && !is_reg_val_struct;
         // va_arg x86: r points to va_list struct {gr_offs, fp_offs, overflow_arg_area, reg_save_area}
         X86Reg xr = REG(r);
         int vaf = is_fp ? 4 : 0; // offset of fp_offs or gr_offs
         int limit = is_fp ? 160 : 40; // max offset before overflow
         int step = is_fp ? 16 : 8; // increment
-        if (ty->kind == TY_LDOUBLE) {
+        if (is_big_struct) {
+            // SysV MEMORY class (>16 bytes): ALWAYS in the overflow
+            // area, never the register-save area, regardless of
+            // gr_offs/fp_offs -- read overflow_arg_area's current value
+            // as the struct's own address (raw bytes now, never a
+            // pointer -- matches the call-site/prologue fix), advance
+            // by the struct's own rounded-up size. Mirrors TY_LDOUBLE's
+            // identical always-overflow bypass just below.
+            int ovf = (ty->size + 7) & ~7;
+            x86_mov_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 8)); // movq 8(r), %rcx
+            x86_lea(cg_sec, 8, X86_RDX, x86_mem(X86_RCX, ovf)); // leaq ovf(%rcx), %rdx
+            x86_mov_mr(cg_sec, 8, x86_mem(xr, 8), X86_RDX); // movq %rdx, 8(r)
+            {
+                size_t _jmp = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
+            }
+        } else if (ty->kind == TY_LDOUBLE) {
             // long double (80-bit extended in a 16-byte slot) is classified
             // as MEMORY by the x86-64 SysV ABI and is never passed in SSE
             // registers, even for variadic calls — read it straight from the
@@ -13026,6 +13110,27 @@ VReg gen(Node *node) {
             x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(xr, 4)); // movl 4(r), %ecx
             x86_add_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 16)); // addq 16(r), %rcx
             x86_add_mi(cg_sec, 4, x86_mem(xr, 4), step); // addl $16, 4(r)
+            {
+                size_t _jmp = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
+            }
+        } else if (is_reg_val_struct) {
+            // SysV: 9-16 byte all-integer struct -- 2 consecutive raw
+            // eightbytes, already contiguous in the register-save area
+            // (va_start's prologue saves RDI,RSI,RDX,RCX,R8,R9 in order
+            // into consecutive slots) -- no value copy needed, just hand
+            // back that address. Mirrors TY_INT128 exactly, minus its
+            // 16-byte overflow-alignment (this struct's natural
+            // alignment is <=8, being built from int/long/pointer
+            // fields only).
+            x86_cmp_mi(cg_sec, 4, x86_mem(xr, 0), 32); // cmpl $32, (r)
+            {
+                size_t _cj = asm_jcc_label(cg_sec, X86_A);
+                asm_fixup_add(cg_sec, _cj, format(".L.va_overflow.%d", rcc_label_count), 1);
+            }
+            x86_mov_rm(cg_sec, 4, X86_RCX, x86_mem(xr, 0)); // movl (r), %ecx
+            x86_add_rm(cg_sec, 8, X86_RCX, x86_mem(xr, 16)); // addq 16(r), %rcx
+            x86_add_mi(cg_sec, 4, x86_mem(xr, 0), 16); // addl $16, (r)
             {
                 size_t _jmp = asm_jmp_label(cg_sec);
                 asm_fixup_add(cg_sec, _jmp, format(".L.va_done.%d", rcc_label_count), 0);
@@ -13078,6 +13183,18 @@ VReg gen(Node *node) {
             // int128 overflow: 16-byte aligned, advance by 16
             x86_add_ri(cg_sec, 8, X86_RCX, 15); // addq $15, %rcx
             x86_and_ri(cg_sec, 8, X86_RCX, -16); // andq $-16, %rcx
+            x86_lea(cg_sec, 8, X86_RDX, x86_mem(X86_RCX, 16)); // leaq 16(%rcx), %rdx
+            x86_mov_mr(cg_sec, 8, x86_mem(xr, 8), X86_RDX); // movq %rdx, 8(r)
+        } else if (is_reg_val_struct) {
+            // 9-16 byte all-integer struct overflow: 2 raw eightbytes.
+            // Realign only if the struct's own alignment genuinely
+            // exceeds 8 (e.g. `__attribute__((aligned(16)))`) -- must
+            // match the caller-side classification fix exactly, or the
+            // reader desyncs from what the caller actually wrote.
+            if (ty->align > 8) {
+                x86_add_ri(cg_sec, 8, X86_RCX, 15); // addq $15, %rcx
+                x86_and_ri(cg_sec, 8, X86_RCX, -16); // andq $-16, %rcx
+            }
             x86_lea(cg_sec, 8, X86_RDX, x86_mem(X86_RCX, 16)); // leaq 16(%rcx), %rdx
             x86_mov_mr(cg_sec, 8, x86_mem(xr, 8), X86_RDX); // movq %rdx, 8(r)
         } else {
@@ -15734,6 +15851,38 @@ struct ObjFile *codegen(Program *prog) {
                         }
                     }
                 }
+            } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) &&
+                       var->ty->size > 8 && struct_returns_in_gp_regs(var->ty)) {
+                // SysV: 9-16 byte all-integer struct received as a raw
+                // VALUE in 2 consecutive GP registers, or 2 raw stack
+                // slots on overflow -- mirrors the TY_INT128 branch above.
+                if (param_index + 1 < max_param_regs) {
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), cg_x86_paramreg[param_index]); // movq param, -off(%rbp)
+                    int hi_sz = var->ty->size - 8 <= 4 ? 4 : 8;
+                    x86_mov_mr(cg_sec, hi_sz, x86_mem(X86_RBP, -(var->offset - 8)), cg_x86_paramreg[param_index + 1]); // movq param+1, -(off-8)(%rbp)
+                    param_index += 2;
+                } else {
+                    int stack_off = 16 + stack_param_index * 8;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off)); // movq stack_off(%rbp), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                    int hi_sz = var->ty->size - 8 <= 4 ? 4 : 8;
+                    x86_mov_rm(cg_sec, hi_sz, X86_RAX, x86_mem(X86_RBP, stack_off + 8)); // movq stack_off+8(%rbp), %rax
+                    x86_mov_mr(cg_sec, hi_sz, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX); // movq %rax, -(off-8)(%rbp)
+                    stack_param_index += 2;
+                }
+            } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 16 && !var->ty->is_vector) {
+                // SysV MEMORY class: unconditionally on the stack as raw
+                // bytes, consuming zero GP registers regardless of
+                // availability -- never a pointer.
+                int stack_off = 16 + stack_param_index * 8;
+                int nslots = (var->ty->size + 7) / 8;
+                for (int s = 0; s < nslots; s++) {
+                    int chunk = var->ty->size - s * 8;
+                    int ld = chunk <= 4 ? 4 : 8;
+                    x86_mov_rm(cg_sec, ld, X86_RAX, x86_mem(X86_RBP, stack_off + s * 8));
+                    x86_mov_mr(cg_sec, ld, x86_mem(X86_RBP, -(var->offset - s * 8)), X86_RAX);
+                }
+                stack_param_index += nslots;
             } else if (param_index < max_param_regs) {
                 int psz = var->ty->size == 1 ? 1 : var->ty->size == 2 ? 2
                     : var->ty->size <= 4                              ? 4
@@ -16754,7 +16903,42 @@ struct ObjFile *codegen(Program *prog) {
                     continue;
                 }
 #endif
-                if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8)) {
+#ifndef _WIN32
+                if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) &&
+                    var->ty->size > 8 && struct_returns_in_gp_regs(var->ty)) {
+                    // SysV: 9-16 byte all-integer struct received as a
+                    // raw VALUE in 2 consecutive GP registers (never a
+                    // pointer) -- mirrors the TY_INT128 branch above --
+                    // or 2 raw stack slots when the registers run out.
+                    int hi_sz = var->ty->size - 8 <= 4 ? 4 : 8;
+                    if (gp + 1 < max_gp) {
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]);
+                        x86_mov_mr(cg_sec, hi_sz, x86_mem(X86_RBP, -(var->offset - 8)), greg[gp + 1]);
+                        gp += 2;
+                    } else {
+                        int stack_off2 = 16 + stack_param_index2 * 8;
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
+                        x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
+                        x86_mov_rm(cg_sec, hi_sz, X86_RAX, x86_mem(X86_RBP, stack_off2 + 8));
+                        x86_mov_mr(cg_sec, hi_sz, x86_mem(X86_RBP, -(var->offset - 8)), X86_RAX);
+                        stack_param_index2 += 2;
+                    }
+                } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION) && var->ty->size > 16 && !var->ty->is_vector) {
+                    // SysV MEMORY class: unconditionally on the stack as
+                    // raw bytes, consuming zero GP registers regardless
+                    // of availability -- never a pointer.
+                    int stack_off2 = 16 + stack_param_index2 * 8;
+                    int nslots = (var->ty->size + 7) / 8;
+                    for (int s = 0; s < nslots; s++) {
+                        int chunk = var->ty->size - s * 8;
+                        int ld = chunk <= 4 ? 4 : 8;
+                        x86_mov_rm(cg_sec, ld, X86_RAX, x86_mem(X86_RBP, stack_off2 + s * 8));
+                        x86_mov_mr(cg_sec, ld, x86_mem(X86_RBP, -(var->offset - s * 8)), X86_RAX);
+                    }
+                    stack_param_index2 += nslots;
+                } else
+#endif
+                    if (!is_flonum(var->ty) && gp < max_gp && !((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8)) {
                     int sz = var->ty->size <= 4 ? 4 : 8;
                     x86_mov_mr(cg_sec, sz, x86_mem(X86_RBP, -var->offset), greg[gp]); // %s:
                     gp++;
