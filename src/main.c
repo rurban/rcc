@@ -128,7 +128,12 @@ static char *read_file(char *path) {
 // e.g. ".2") misses these entirely and rcc would try to compile the
 // binary .so as C source ("invalid token \x7fELF"). Accept a bare
 // ".so"/".dylib" suffix, or ".so"/".dylib" followed by one or more
-// ".<digits>" version components.
+// ".<digits>" version components, optionally followed by a SemVer-style
+// "-<prerelease>" tag (e.g. "libnng.so.2.0.0-dev", produced verbatim by
+// nng's own CMake build: NNG_ABI_VERSION embeds a "-dev"/"-rc1"-style
+// NNG_PRERELEASE suffix straight into the SONAME). The prerelease tag's
+// charset (alnum, '.', '-') matches SemVer 2.0's own grammar and can
+// never itself look like a compilable-source extension.
 static bool is_shared_lib_path(const char *path) {
     const char *so = strstr(path, ".so");
     if (!so) {
@@ -146,6 +151,12 @@ static bool is_shared_lib_path(const char *path) {
         const char *p = so + 1;
         if (!isdigit((unsigned char)*p)) return false;
         while (isdigit((unsigned char)*p)) p++;
+        so = p;
+    }
+    if (*so == '-') {
+        const char *p = so + 1;
+        if (!*p) return false;
+        while (isalnum((unsigned char)*p) || *p == '.' || *p == '-') p++;
         so = p;
     }
     return *so == '\0';

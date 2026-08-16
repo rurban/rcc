@@ -2184,10 +2184,30 @@ a multi-session effort, not a quick win.
      `js_stdlib_table[]` ROM table) is fixed** — see "Fixed
      (2026-08-16, self-referential global array initializer session)"
      above (test_njs is fixed too, see "Fixed (2026-08-15, njs
-     macro-driven initializer session — 6 stacked bugs)" above); struct
-     member access rcc reports as "no such member" on legitimate code
-     (test_php, test_cfitsio, test_tcl). **An unclosed string literal
-     lexer false-positive
+     macro-driven initializer session — 6 stacked bugs)" above); **struct
+     member access "no such member" cluster (test_php, test_cfitsio,
+     test_tcl) is resolved — confirmed NOT an rcc bug in 2 of 3, 1
+     already fixed by prior sessions**: test_cfitsio's
+     `drvrsmem.c:82/334` (`union semun.val`) and test_tcl's
+     `tclUnixFCmd.c:349` (`struct dirent64.d_name`) both reproduce
+     identically against real `gcc` with the exact same build-provided
+     `-D` flags — both projects' own `./configure` baked in a stale
+     feature-detection result (`HAVE_UNION_SEMUN=1`,
+     `HAVE_STRUCT_DIRENT64=1`) for a glibc that no longer unconditionally
+     provides that type: modern glibc's `<bits/sem.h>` never defines
+     `union semun` at all (`_SEM_SEMUN_UNDEFINED`, by design since 2.2 —
+     the caller must define it, exactly as each project's own header
+     does when `HAVE_UNION_SEMUN` is unset), and `struct dirent64` is
+     `#ifdef __USE_LARGEFILE64`-gated, never enabled by this exact build
+     command (no `_GNU_SOURCE`/`_LARGEFILE64_SOURCE`/`_DEFAULT_SOURCE`
+     define anywhere in it) — both genuinely incomplete types on this
+     system, `.val`/`.d_name` correctly rejected as "no such member" of
+     a zero-member type by rcc and real gcc alike. test_php's
+     `apprentice.c`/`data_file.c` (`struct type_tbl_s`) now compiles
+     cleanly with the current `rcc` — already fixed by the large-file
+     read-truncation and unclosed-string-literal-warning sessions noted
+     above (both landed after this cluster was first reported); no
+     further change needed. **An unclosed string literal
      (test_gnutls, `config.h:2359`) is fixed**, see "Fixed (2026-08-15,
      unclosed-string-literal warning + lexer line-number session)"
      above — real gcc only warns and recovers there; test_gnutls now
