@@ -221,6 +221,48 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   triage needed it; would hit the existing GP-only second-pass logic
   unmodified if attempted.
 
+### Fixed (2026-08-16, mixed-width builtin overflow session)
+
+- **`__builtin_add_overflow`/`__builtin_sub_overflow`/
+  `__builtin_mul_overflow` codegen computed the native operation width
+  from the first operand's type alone** (both the `cg_builtins.c` x86-64
+  and ARM64 branches) -- when the two operands have different natural
+  widths (e.g. `__builtin_mul_overflow(LLONG_MAX, -1, &res)`: `LLONG_MAX`
+  is `long long`, 8 bytes, but the literal `-1` is a plain `int`, 4
+  bytes), the computed width ended up 8 purely from the first operand,
+  and the "widen the narrower operand" step never fired for the second
+  operand, because the computed width already matched the target width.
+  The second operand's register was left holding only its own natural
+  32-bit value -- on both x86-64 and ARM64, a 32-bit register write
+  implicitly zeroes the upper 32 bits of the full 64-bit register rather
+  than sign-extending it -- so a subsequent 64-bit multiply or add/sub
+  read `-1` as 4294967295 instead of the correctly sign-extended -1,
+  corrupting both the arithmetic result and the overflow flag. Fixed by
+  computing the native width as the wider of both operands' natural
+  sizes (matching C's usual arithmetic conversions) and widening each
+  operand independently, per its own type's signedness, whenever its own
+  natural size is narrower than that computed width -- instead of only
+  widening when both operands shared the same narrow size.
+  Found via test_vlc: `compat/test/ckd.c`'s
+  `assert(!ckd_mul(&res, LLONG_MAX, -1) && res == -LLONG_MAX)` (VLC's
+  C23 stdckdint.h `ckd_mul`/`ckd_add`/`ckd_sub` macros expand to the
+  matching GCC/Clang overflow builtins, including on rcc); both
+  `test_ckd_ckd` (system stdckdint.h) and `test_ckd_builtin` (VLC's own
+  builtin-backed polyfill) aborted on this exact assert, while
+  `test_ckd_compat` (VLC's pure-C fallback, no builtins) passed --
+  isolating the bug to the builtin codegen itself.
+  Regression test: `test/test_builtin_overflow_mixed_width.c` (new).
+  PASS at -O0..-O3 on x86-64; verified directly against rcc-built ARM64
+  (qemu-aarch64) with the reproducer; ARM64 and mingw cross-builds
+  compile clean; `make check-all` on native x86-64: 0 failed (Unit
+  4579/4579 incl. the new test, TCC 118/118, Compliance 15/15,
+  c-testsuite 220/220, Torture 3605/3609 -- 0 failed, 354 skipped, 4
+  todo, Dg-error 34/34, Link 10/10). Full verification: rebuilt VLC's
+  real `compat/test/ckd.c` in all three of its own build configurations
+  (system stdckdint.h, VLC's builtin polyfill, VLC's pure-C compat
+  fallback) directly against the fetched vlc-3.0.23-2 source -- all
+  three now compile and run to completion with exit code 0.
+
 ### Fixed (2026-08-16, versioned-SONAME SemVer-prerelease-suffix session)
 
 - **rcc's linker-input classification rejected a versioned shared
@@ -739,7 +781,7 @@ int x;` — its alignment got silently discarded before reaching
 
 ### Fixed (2026-08-15, libatomic helper-name + glib `-std=gnu17` session)
 
-- **Two independent root causes behind test*glib's `goption.c:212`
+- **Two independent root causes behind test\*glib's `goption.c:212`
   "declaration does not declare anything" and the subsequent undefined
   `\_\_atomic*\*\_4/8` link failures** (not, as the earlier triage guessed,
   an anonymous-union parser bug):
@@ -764,16 +806,16 @@ int x;` — its alignment got silently discarded before reaching
      own `gatomic.h` uses for `g_atomic_int_get`/`g_atomic_pointer_get`
      and their `_set` counterparts) was emitted as an ordinary
      unresolved function call — `undefined reference to
-   __atomic_load_4/__atomic_store_8/...` at link time. Fixed in
+__atomic_load_4/__atomic_store_8/...` at link time. Fixed in
      `parser.c` by adding `atomic_lib_helper(tok, op)`, which recognizes
      the `__atomic_<op>_<N>` spelling (op = load/store/exchange/
-     compare*exchange) and routes it through the same `ND_ATOMIC*\*`   lowering as the`\_n`form (the`\_N`suffix is the 2-argument form,
-   exactly like`\_n`, not the 3-argument generic form).
-Regression test: `test/test_atomic_libatomic_helpers.c`(new: load/
-store 4 and 8, exchange 4, compare-exchange 4, and the exact glib`g_atomic_int_get`statement-expression shape), PASS on x86-64.`make check-all`: 0 failed. Verification: the whole glib library
-(`glib/glib/`) now compiles and links under `rcc -std=gnu17`,
-including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
-The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
+     compare*exchange) and routes it through the same `ND_ATOMIC*\*` lowering as the`\_n`form (the`\_N`suffix is the 2-argument form,
+    exactly like`\_n`, not the 3-argument generic form).
+    Regression test: `test/test_atomic_libatomic_helpers.c`(new: load/
+    store 4 and 8, exchange 4, compare-exchange 4, and the exact glib`g_atomic_int_get`statement-expression shape), PASS on x86-64.`make check-all`: 0 failed. Verification: the whole glib library
+    (`glib/glib/`) now compiles and links under `rcc -std=gnu17`,
+    including `goption.c`(the originally-cited failure) and`libglib-2.0.so`.
+    The full glib tree is next blocked one layer deeper in `gio/inotify`by glibc's`<sys/inotify.h>` (`char name **flexarr;`expanding to a`[]`flexible array member) plus`**PTRDIFF_TYPE\_\_`in rcc's own`<stddef.h>` — a separate, not-yet-investigated issue (see "Needs
      fixing" item 6's parser-rejects-valid-C cluster entry).
 
 ### Fixed (2026-08-15, large file read truncation session)
@@ -2341,10 +2383,31 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      (13/19 CTest failures incl. a SEGFAULT), test_zstd (SIGABRT during
      its own regression tests), test_yyjson (`test_number` subprocess
      crash, 11/12 other tests pass), test_libevent, test_libsamplerate,
-     test_libpng, test_tinycc (`-nan` from an unsigned-long-long→double
-     conversion), test_tomlc17, test_ruby (a `sizeof(char[1-2*cond])`
-     negative-array-size compile-time-assert trick mis-evaluated),
-     test_vlc (`stdckdint.h` probes abort), test_ocaml/test_mimalloc
+     test_libpng, test_tinycc (`-nan` from an unsigned-long-long to
+     double conversion -- **root-caused, not fixed**: traces to
+     `__floatundisf`-style helpers computing a signed-long-long-to-long-
+     double cast plus 2^64 at genuine 80-bit x87 precision inside TCC's
+     own JIT-compiled target program, but rcc's `long double` is
+     architecturally double-precision internally end to end (arithmetic
+     goes through SSE addsd/subsd, never real x87 fadd) -- a deliberate,
+     already-documented limitation (the increment/decrement long-double
+     codegen stores long-double literal constants as plain 8-byte
+     doubles on purpose). A real fix needs genuine x87-register-backed
+     long-double arithmetic throughout codegen, not a local patch; out
+     of scope this session), test_tomlc17, test_ruby (a negative-array-
+     size sizeof compile-time-assert trick mis-evaluated -- **root-
+     caused, not fixed**: confirmed with a minimal repro that even real
+     GCC only resolves this at -O2 (it rejects the same source at -O0
+     too) by inlining the whole nested-ternary format-string-counting
+     macro chain through a real function call and constant-folding the
+     result down to a dead branch before its error-attributed call
+     target is reachable; rcc has no general inlining plus constant-
+     propagation plus dead-branch-elimination optimizer, so this needs a
+     real optimizing-compiler pass, not a quick fix), **test_vlc is
+     fixed** -- see "Fixed (2026-08-16, mixed-width builtin overflow
+     session)" below (`ckd_mul(&res, LLONG_MAX, -1)`, a `long long`
+     times `int` mix, corrupted both the result and the overflow flag),
+     test_ocaml/test_mimalloc
      (linker reports the rcc-produced static archive itself as
      malformed — "file in wrong format"/"bad value" — worth checking
      archive-writing first since it may be one shared root cause across

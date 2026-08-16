@@ -867,7 +867,30 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         Node *argres = argb ? argb->next : NULL;
         int ra = arg_gen(arga);
         int rb = arg_gen(argb);
-        int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
+        // sz: native operation size -- the WIDER of the two operands (see
+        // the x86-64 branch below for the full mixed-width rationale:
+        // e.g. `__builtin_mul_overflow(LLONG_MAX, -1, &res)` mixes an
+        // 8-byte `long long` with a 4-byte `int` literal).
+        int sz_a = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
+        int sz_b = argb && argb->ty && argb->ty->size > 4 ? 8 : 4;
+        int sz = sz_a > sz_b ? sz_a : sz_b;
+        // Widen whichever operand is narrower than `sz` per its own
+        // signedness -- a 32-bit ARM64 register write also zeroes the
+        // upper 32 bits of the Xn register (not sign-extends), so a
+        // narrower operand's full 64-bit value is wrong for a later
+        // 64-bit add/sub/mul unless explicitly extended here first.
+        if (sz == 8) {
+            if (sz_a == 4) {
+                if (arga->ty && arga->ty->is_unsigned) asm_uxtw_phy(cg_sec, REG(ra), REG(ra));
+                else
+                    asm_sxtw(cg_sec, REG(ra), REG(ra));
+            }
+            if (sz_b == 4) {
+                if (argb->ty && argb->ty->is_unsigned) asm_uxtw_phy(cg_sec, REG(rb), REG(rb));
+                else
+                    asm_sxtw(cg_sec, REG(rb), REG(rb));
+            }
+        }
         // Result type determines overflow check signedness and store width
         int res_sz = sz;
         bool res_unsigned = arga && arga->ty && arga->ty->is_unsigned;
@@ -1083,10 +1106,21 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         Node *argres = argb ? argb->next : NULL;
         int ra = arg_gen(arga);
         int rb = arg_gen(argb);
-        // sz: operation size from the operands (at least 4).
+        // sz: native operation size -- the WIDER of the two operands (at
+        // least 4), matching C's usual arithmetic conversions. Using only
+        // arga's size here previously mis-widened mixed-width operands
+        // (e.g. `__builtin_mul_overflow(LLONG_MAX, -1, &res)`: arga is
+        // `long long` (8 bytes) but argb's literal `-1` is a plain `int`
+        // (4 bytes) -- sz_op ended up == sz (8) so the "widen if narrower"
+        // check below never fired for argb, leaving its register holding
+        // only the 32-bit value with x86-64's implicit zero-extension
+        // (0x00000000FFFFFFFF, not the sign-extended -1) for a 64-bit
+        // imulq/add/sub that reads the full 64-bit register).
         // sz_store: result pointer's pointed-to type (may differ).
         // sz_op: compute in max(sz, sz_store) so we can range-check the result.
-        int sz = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
+        int sz_a = arga && arga->ty && arga->ty->size > 4 ? 8 : 4;
+        int sz_b = argb && argb->ty && argb->ty->size > 4 ? 8 : 4;
+        int sz = sz_a > sz_b ? sz_a : sz_b;
         int sz_store = sz;
         bool is_unsigned_store = arga && arga->ty && arga->ty->is_unsigned;
         // is_unsigned_op: true only when BOTH operands are unsigned (affects mul instruction
@@ -1107,12 +1141,17 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         bool store_to_int128 = argres && argres->ty && argres->ty->kind == TY_PTR &&
             argres->ty->base && argres->ty->base->kind == TY_INT128;
         int sz_op = sz > sz_store ? sz : sz_store; // compute in larger size
-        // If operands are narrower than sz_op, widen them per-operand signedness.
-        if (sz_op > sz && sz == 4) {
+        // Widen each operand INDEPENDENTLY to sz_op bits per its own
+        // natural size and signedness -- narrower-than-sz_op is possible
+        // for either operand alone (mixed-width arithmetic), not just
+        // when both share the same narrow `sz`.
+        if (sz_op > sz_a) {
             if (ra_unsigned)
                 asm_movzx(cg_sec, ra, ra, 8, 4); // movl ra, ra (zero-ext)
             else
                 asm_movsx(cg_sec, ra, ra, 8, 4);
+        }
+        if (sz_op > sz_b) {
             if (rb_unsigned)
                 asm_mov_reg_reg(cg_sec, rb, rb, 4);
             else
