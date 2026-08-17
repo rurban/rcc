@@ -1,5 +1,6 @@
 #!/bin/sh
 # Cross-build ARM64 rcc and run the TCC test suite against it.
+# NOTE: Rather use arm64-test.sh instead
 set -e
 trap 'rm -f src/sysinc_paths.h src/gcc_predefined.h' EXIT
 
@@ -24,8 +25,7 @@ export QEMU_LD_PREFIX="$SYSROOT"
 unset LD_PRELOAD
 
 make leanclean
-make -s CC=aarch64-linux-gnu-gcc
-make -s run_tests_arm64
-ln -sf rcc-arm64 rcc
+make CC=aarch64-linux-gnu-gcc
+make run_tests_arm64
 export GCC_FOR_TESTS=aarch64-linux-gnu-gcc
-timeout 10m qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 --tcc --no-color
+timeout 10m qemu-aarch64 ${SYSROOT:+-L "$SYSROOT"} ./run_tests_arm64 ./rcc-arm64 --tcc --no-color --parallel

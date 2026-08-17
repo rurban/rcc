@@ -6108,3 +6108,61 @@ Unit tests 233/233, TCC 118/118, Compliance 15/15, C-testsuite
 Link 7/7 — 0 failed (native Linux x86-64). The 8-byte vector and
 vector→scalar codegen paths are additionally covered on arm64 by the
 same test (guard skipped there).
+
+### Fixed (2026-08-17, inline-asm op_addr register-pressure / matching-constraint session)
+
+**test_busybox fixed** — busybox's `sha1sum`/`sha256sum` (via
+`get_shaNI()` → `cpuid_eax_ebx_ecx()`) segfaulted in
+`cpuid_eax_ebx_ecx()` itself. Two stacked codegen.c bugs in the x86-64
+`ND_ASM` output/store-back path, both in the same function:
+
+- **Register-pressure regression from an in-flight fix**: every
+  output/read-write operand's store-back address (`op_addr[i]`) is
+  computed and left live in a virtual register through the rest of
+  `ND_ASM` codegen; busybox's 4-simultaneous-output `cpuid_eax_ebx_ecx`
+  maxed out the 8-slot x86-64 virtual-register pool while the
+  `x86_reserved_mask` protection (see 2026-08-14's cpuid fix above) was
+  _also_ held for both codegen passes, forcing `alloc_reg()`'s spill
+  path — and the store-back loop reads `op_addr[i]` via a raw `REG()`
+  without `materialize_reg()`, so a spilled address silently read back
+  stale data. Fixed by stashing every `op_addr[i]` to the real machine
+  stack (`asm_push`/`free_reg`) immediately after computing it in the
+  first pass, relieving register pressure for the remaining operands.
+- **The restore-from-stack step then reintroduced the _original_
+  2026-08-14 clobber bug**: popping every stashed `op_addr[i]` back
+  into a fresh register happened _after_ releasing the
+  `x86_reserved_mask` reservation, so `alloc_reg()` was again free to
+  hand a physical a/b/c/d/S/D register to an unrelated operand's
+  address — exactly what the reservation exists to prevent. The second
+  pass (matching constraints `"0"`/`"1"`/`"2"`, as
+  `cpuid_eax_ebx_ecx(unsigned *eax, unsigned *ebx, unsigned *ecx,
+unsigned *edx)` uses) moves values directly into physical registers via
+  raw `x86_mov_rr()`, bypassing `used_regs` bookkeeping entirely, so
+  this silently clobbered `op_addr[]` before the final store-back read
+  it. Fixed by moving the restore-from-stack loop to run _before_ the
+  reservation is released, not after.
+
+Also fixed while isolating this (both pre-existing, latent gaps
+unrelated to the above, but reached by the same crash investigation):
+
+- **`x86_mov_rr()` (x86_enc.c) never emitted a REX prefix for 16-bit
+  register-to-register `mov`** (`size == 2`, e.g. `movw %r10w,
+%r11w`) — only the `size == 8` and `size == 4 || size == 1` cases were
+  handled. Any 16-bit move between two R8-R15 registers silently
+  encoded the wrong (legacy, REX-less) register pair instead — e.g.
+  `movw %r10w, %r11w` assembled as `mov %dx, %bx`. Exposed by
+  `test_x86_asm`'s pre-existing `%w1` size-modifier case once the
+  register-pressure fix above changed allocation to put both operands
+  in the r8-r15 range.
+
+New regression tests: `test/test_asm_multi_output_clobber.c` extended
+with a second case reproducing the exact matching-constraint clobber
+via a `cpuid_ptrs()` helper mirroring busybox's
+`cpuid_eax_ebx_ecx()` signature/constraint list byte-for-byte;
+`test_x86_asm.c` already had the `%w1` 16-bit-modifier case (case 2)
+that caught the REX regression. Verified: fresh busybox rebuild's
+`sha1sum`/`sha256sum` on empty and non-empty files now byte-identical
+to real `sha1sum`/`sha256sum`. `make check-all`: 0 failed (Unit
+4231/4231 incl. both tests, TCC 118/118, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 — 0 failed, 354 skipped, 4
+todo, Dg-error 34/34, Link 10/10). mingw cross-build: 0 failed.

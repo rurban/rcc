@@ -575,14 +575,18 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[i], "-g0")) {
             opt_g = false;
         } else if (!strcmp(argv[i], "-Os") || !strcmp(argv[i], "-Ofast") ||
-                   !strcmp(argv[i], "-Og")) {
-            // -Os/-Ofast/-Og: real GCC/clang optimization levels rcc has no
-            // distinct pass for (rcc's own passes aren't size- or
+                   !strcmp(argv[i], "-Og") || !strcmp(argv[i], "-Oz")) {
+            // -Os/-Ofast/-Og/-Oz: real GCC/clang optimization levels rcc has
+            // no distinct pass for (rcc's own passes aren't size- or
             // fast-math-aware, and -Og's "debug-friendly" tuning is not a
             // real deoptimization rcc implements) -- alias to -O1 rather
             // than falling through to the generic unknown-option path
             // (found via test_micropython, test_mpack, which unconditionally
-            // pass -Os to a subset of translation units).
+            // pass -Os to a subset of translation units; -Oz via busybox's
+            // own `cc-option = if $CC ... -S -o /dev/null ...` Kbuild
+            // probe, which tries -Oz first and silently landed on it since
+            // an unrecognized flag is a warning, not a hard error -- see
+            // the -Werror-gated catch-all far below).
             opt_O0 = false;
             opt_O1 = true;
             opt_finline = false;
@@ -1137,9 +1141,16 @@ int main(int argc, char **argv) {
                         (unsigned long long)(now_us() - t0));
             }
             // Write binary .o file
+            // A scratch object file, disassembled below to produce the
+            // ".s" text and then discarded. Named from pid+fi in the CWD
+            // rather than as "<asm_path>.tmp.o": asm_path is caller-
+            // controlled (-o) and may be a device node or a read-only
+            // directory (e.g. Kbuild's cc-option probe uses "-S -o
+            // /dev/null"), where appending ".tmp.o" to it is not a
+            // writable path at all.
             char *tmp_obj_path = asm_path;
             if (opt_S) {
-                tmp_obj_path = format("%s.tmp.o", asm_path);
+                tmp_obj_path = format("rcc_tmp_%d_%d.tmp.o", _getpid(), fi);
             }
             int wr;
 #ifdef _WIN32

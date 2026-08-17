@@ -964,6 +964,26 @@ static Node *optimize_node(Program *prog, Node *node) {
         else
             node->body = o;
         prev_body = o;
+        // A sibling that reduces to a bare `return` (either literally, or
+        // via the ND_IF const-fold below collapsing `if (const-true)
+        // return X;` down to its `return X;` then-branch) makes every
+        // statement after it in this SAME list dead: it can never be
+        // reached by ordinary fall-through. Drop them here rather than
+        // leaving them for codegen to emit as unreachable-but-still-
+        // referenced straight-line code -- real busybox regression:
+        // include/xatonum.h's bb_strtou32() is
+        //   if (sizeof(uint32_t)==sizeof(unsigned)) return bb_strtou(...);
+        //   if (sizeof(uint32_t)==sizeof(unsigned long)) return bb_strtoul(...);
+        //   return BUG_bb_strtou32_unimplemented();
+        // On an LP64 host the first condition is always true, so only
+        // the first `return` is ever reachable, but without this the
+        // never-defined BUG_bb_strtou32_unimplemented() call still
+        // linked in and failed the link. Never drop past a label/case a
+        // goto or enclosing switch can still jump straight into.
+        if (o && o->kind == ND_RETURN && !subtree_has_label(n->next)) {
+            o->next = NULL;
+            break;
+        }
     }
     Node *prev_arg = NULL;
     for (Node *n = node->args; n; n = n->next) {
@@ -1009,6 +1029,43 @@ static Node *optimize_node(Program *prog, Node *node) {
                 noop->kind = ND_NULL;
                 noop->tok = node->tok;
                 return noop;
+            }
+        }
+    }
+
+    // Short-circuit constant folding for && / ||: when the LHS is a
+    // compile-time constant that alone determines the result (0 for &&,
+    // nonzero for ||), the RHS is -- by C's own short-circuit evaluation
+    // rules -- never evaluated at runtime, so replace the whole node with
+    // the resulting 0/1 literal and drop the RHS subtree (and any calls
+    // inside it) entirely, rather than leaving codegen to emit a real
+    // (if dynamically dead) branch that still references it. Unlike the
+    // ND_IF fold above this composes through arbitrary nesting -- the
+    // recursive node->lhs/node->rhs optimize_node() calls above already
+    // ran, so a "FEATURE_X && f()" guard buried inside a larger, only
+    // partially constant `||` chain still gets f() dropped even though
+    // the enclosing chain as a whole never folds to a plain constant.
+    // eval_const_expr only ever succeeds through side-effect-free
+    // constructs, so LHS's own evaluation is never lost by skipping it.
+    // Real busybox regressions this fixes: util-linux/fdisk.c's
+    // `LABEL_IS_SGI && !sgi_get_num_sectors(i)` (sgi_get_num_sectors is
+    // declared but only ever DEFINED under `#if ENABLE_FEATURE_SGI_LABEL`
+    // -- same "impossible case" idiom as the ND_IF fold's own
+    // compiletime_assert example, one level down inside a `&&`),
+    // util-linux/mount.c's `ENABLE_FEATURE_CLEAN_UP && fslist`, util-
+    // linux/umount.c's `ENABLE_FEATURE_MTAB_SUPPORT && ...`, and
+    // archival/libarchive/open_transformer.c's
+    // `ENABLE_FEATURE_SEAMLESS_Z && magic[0]==COMPRESS_MAGIC`.
+    if ((node->kind == ND_LOGAND || node->kind == ND_LOGOR) && !expr_has_float(node->lhs)) {
+        long long lv;
+        if (eval_const_expr(node->lhs, &lv)) {
+            bool short_circuits = (node->kind == ND_LOGAND) ? (lv == 0) : (lv != 0);
+            if (short_circuits) {
+                Node *fold = arena_alloc(sizeof(Node));
+                fold->kind = ND_NUM;
+                fold->val = (node->kind == ND_LOGOR); // && -> 0, || -> 1
+                fold->ty = node->ty;
+                return fold;
             }
         }
     }
@@ -1140,6 +1197,10 @@ void optimize(Program *prog) {
             else
                 fn->body = o;
             prev = o;
+            if (o && o->kind == ND_RETURN && !subtree_has_label(n->next)) {
+                o->next = NULL;
+                break;
+            }
         }
     }
 }

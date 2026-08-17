@@ -152,7 +152,7 @@ void x86_mov_rr(SecBuf *s, int size, X86Reg dst, X86Reg src) {
     size16_pfx(s, size);
     if (size == 8)
         emit1(s, rex(1, src > X86_RDI, 0, dst > X86_RDI));
-    else if (size == 4 || size == 1)
+    else if (size == 4 || size == 2 || size == 1)
         maybe_rex(s, 0, src, 0, dst);
     emit1(s, opsize(0x88, size));
     emit1(s, modrm(3, src, dst));
@@ -1606,6 +1606,86 @@ void x86_pinsrw_rm(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
     emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
     emit1(s, imm);
 }
+// Intel SHA extensions (SHA1MSG1/MSG2/NEXTE/RNDS4): NP-prefixed, no 66/F2/F3.
+// SHA1MSG1 xmm1, xmm2/m128: 0F 38 C9 /r
+void x86_sha1msg1(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xc9);
+    emit1(s, modrxmm(3, d, sr));
+}
+// SHA1MSG2 xmm1, xmm2/m128: 0F 38 CA /r
+void x86_sha1msg2(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xca);
+    emit1(s, modrxmm(3, d, sr));
+}
+// SHA1NEXTE xmm1, xmm2/m128: 0F 38 C8 /r
+void x86_sha1nexte(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xc8);
+    emit1(s, modrxmm(3, d, sr));
+}
+// SHA1RNDS4 xmm1, xmm2/m128, imm8: 0F 3A CC /r ib
+void x86_sha1rnds4(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x3a, 0xcc);
+    emit1(s, modrxmm(3, d, sr));
+    emit1(s, imm);
+}
+// PEXTRD r/m32, xmm2, imm8: 66 0F 3A 16 /r ib -- ModRM.reg is the xmm
+// source, ModRM.rm the GP-register or memory destination. REX.W would
+// select the r/m64 form (PEXTRQ, same opcode) but rcc has no user of
+// that width yet.
+void x86_pextrd_r(SecBuf *s, X86Reg d, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)sr, 0, (int)d);
+    emit3(s, 0x0f, 0x3a, 0x16);
+    emit1(s, modrxmm(3, sr, (X86XmmReg)d));
+    emit1(s, imm);
+}
+void x86_pextrd_m(SecBuf *s, X86Mem m, X86XmmReg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
+    emit3(s, 0x0f, 0x3a, 0x16);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit1(s, imm);
+}
+// SHA256RNDS2 xmm1, xmm2/m128, <XMM0>: NP 0F 38 CB /r (3rd operand is
+// always the implicit XMM0, not encoded).
+void x86_sha256rnds2(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xcb);
+    emit1(s, modrxmm(3, d, sr));
+}
+// SHA256MSG1 xmm1, xmm2/m128: NP 0F 38 CC /r
+void x86_sha256msg1(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xcc);
+    emit1(s, modrxmm(3, d, sr));
+}
+// SHA256MSG2 xmm1, xmm2/m128: NP 0F 38 CD /r
+void x86_sha256msg2(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x38, 0xcd);
+    emit1(s, modrxmm(3, d, sr));
+}
+// PINSRD xmm1, r/m32, imm8: 66 0F 3A 22 /r ib -- insert a 32-bit dword
+// lane (imm8 selects which of 4) from a GP register or memory.
+void x86_pinsrd_r(SecBuf *s, X86XmmReg d, X86Reg sr, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, 0, (int)sr);
+    emit3(s, 0x0f, 0x3a, 0x22);
+    emit1(s, modrxmm(3, d, (X86XmmReg)sr));
+    emit1(s, imm);
+}
+void x86_pinsrd_m(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
+    emit1(s, 0x66);
+    maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
+    emit3(s, 0x0f, 0x3a, 0x22);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit1(s, imm);
+}
+
 
 // === SSE1/SSE2/SSSE3/SSE4 encoders added for __builtin_ia32_* intrinsic support ===
 // two-register forms

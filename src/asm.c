@@ -625,6 +625,14 @@ static void strip_plt_suffix(char *tok) {
 // the evaluator itself.
 static int64_t eval_asm_expr_here(AsmState *as, const char *expr);
 
+// Forward-declared: evaluates one arithmetic TERM (mul/div precedence,
+// so "8*16" parses as a single value, not just "8") starting at *pp,
+// advancing *pp past what it consumed and setting *err on failure.
+// Needed by try_parse_symbol_disp() below to correctly evaluate a
+// "SYMBOL+N*M"-shaped displacement's numeric part; defined far below
+// (after ExprCtx's own type, which isn't complete yet here).
+static int64_t eval_asm_term(AsmState *as, const char **pp, bool *err);
+
 // Ensure a symbol is in the object's symbol table (for extern refs in relocs)
 static int ensure_sym(AsmState *as, const char *name) {
     int idx = objfile_find_sym(as->obj, name);
@@ -1028,9 +1036,10 @@ static char g_last_mem_sym[128];
 // match; false (leaving both untouched) for anything fancier, a bare
 // numeric expression, or more than one identifier -- the caller falls
 // back to its existing pure-arithmetic eval_asm_expr_here() path.
-static bool try_parse_symbol_disp(const char *disp_s, char *sym_out, size_t sym_out_sz, int64_t *addend_out) {
+static bool try_parse_symbol_disp(AsmState *as, const char *disp_s, char *sym_out, size_t sym_out_sz, int64_t *addend_out) {
     int64_t total = 0;
     bool have_sym = false;
+    char sym_buf[128];
     const char *p = disp_s;
     while (*p) {
         while (isspace((unsigned char)*p)) p++;
@@ -1047,21 +1056,39 @@ static bool try_parse_symbol_disp(const char *disp_s, char *sym_out, size_t sym_
             const char *start = p;
             while (isalnum((unsigned char)*p) || *p == '_' || *p == '.' || *p == '$') p++;
             size_t len = (size_t)(p - start);
-            if (len == 0 || len >= sym_out_sz) return false;
-            memcpy(sym_out, start, len);
-            sym_out[len] = '\0';
+            if (len == 0 || len >= sizeof(sym_buf)) return false;
+            // Buffer locally, not directly into sym_out (the caller's
+            // g_last_mem_sym): a later term in this same expression may
+            // still fail (e.g. "*", a second symbol, ...), and this
+            // function must leave sym_out untouched on ANY failure --
+            // writing straight into it let a partially-parsed symbol
+            // name leak out even though the overall parse failed,
+            // which the caller (which only checks "is sym_out
+            // non-empty?") then wrongly treated as a resolved symbol
+            // reference with a bogus (default 0) addend.
+            memcpy(sym_buf, start, len);
+            sym_buf[len] = '\0';
             have_sym = true;
-        } else if (isdigit((unsigned char)*p)) {
-            char *endp;
-            long long v = strtoll(p, &endp, 0);
-            if (endp == p) return false;
+        } else if (isdigit((unsigned char)*p) || *p == '(') {
+            // A numeric TERM, possibly itself an arithmetic sub-
+            // expression involving * or / (e.g. "K256+8*16", busybox's
+            // own SHA256 hwaccel asm's "leaq K256+8*16(%rip),
+            // SHA256CONSTANTS") -- evaluate with the real term-level
+            // (mul/div-precedence) evaluator, not a bare strtoll() that
+            // silently stopped at the first '*' and dropped the rest of
+            // the expression (folding "8*16" down to just 8).
+            const char *tp = p;
+            bool err = false;
+            int64_t v = eval_asm_term(as, &tp, &err);
+            if (err) return false;
             total += neg ? -v : v;
-            p = endp;
+            p = tp;
         } else {
-            return false; // parens, '*', etc. -- not this shape
+            return false; // an operator this shape doesn't support
         }
     }
-    if (!have_sym) return false;
+    if (!have_sym || strlen(sym_buf) >= sym_out_sz) return false;
+    memcpy(sym_out, sym_buf, strlen(sym_buf) + 1);
     *addend_out = total;
     return true;
 }
@@ -1084,7 +1111,7 @@ static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
         if (buf[0]) {
             char *disp_s = skip_ws(buf);
             int64_t sym_addend = 0;
-            if (try_parse_symbol_disp(disp_s, g_last_mem_sym, sizeof(g_last_mem_sym), &sym_addend)) {
+            if (try_parse_symbol_disp(as, disp_s, g_last_mem_sym, sizeof(g_last_mem_sym), &sym_addend)) {
                 // "SYMBOL(%rip)" / "-512+SYMBOL(%rip)" / "SYMBOL+16(%rip)":
                 // stash the symbol for the caller (see g_last_mem_sym's own
                 // comment) and carry the numeric part as the disp, exactly
@@ -1115,8 +1142,20 @@ static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
             *c = 0;
             p = c + 1;
         }
-        if (np > 0) m->base = parse_x86_reg64(skip_ws(parts[0]));
-        if (np > 1) m->index = parse_x86_reg64(skip_ws(parts[1]));
+        // trim_end, not just skip_ws: rcc's own C-preprocessor macro
+        // expansion (unlike gcc's) inserts a space on EITHER side of a
+        // substituted token, e.g. "#define DATA_PTR %rdi" then
+        // "0*16(DATA_PTR)" expands to "0*16( %rdi )" -- skip_ws alone
+        // strips only the LEADING space, leaving "rdi " (trailing
+        // space) reach parse_x86_reg64()'s exact strcmp(s,"rdi") and
+        // silently fail to X86_NOREG, which emit_mem() then encodes as
+        // a bogus RIP-relative/absolute access instead of the real
+        // register-based one. Real crash: busybox's SHA256-NI asm's
+        // own "movu128 0*16(DATA_PTR), MSG"/"paddd N*16-8*16
+        // (SHA256CONSTANTS), MSG" macros, corrupting every data/round-
+        // constant load in sha256_process_block64_shaNI.
+        if (np > 0) m->base = parse_x86_reg64(trim_end(skip_ws(parts[0])));
+        if (np > 1) m->index = parse_x86_reg64(trim_end(skip_ws(parts[1])));
         if (np > 2) m->scale = (int)strtol(parts[2], NULL, 10);
         return true;
     }
@@ -2961,7 +3000,25 @@ static int suffix_size(const char *mnem) {
 // unsigned 64-bit value (or, for a leading '-', the standard-mandated
 // two's-complement negation of the magnitude), and casting that to int64_t
 // is exactly the reinterpretation we want either way.
-#define X86_IMM(i)  ((i) < nops ? (int64_t)(ops[i][0]=='$' ? strtoull(ops[i]+1,NULL,0) : strtoull(ops[i],NULL,0)) : (int64_t)0)
+//
+// Tried first, whole-string only: an immediate operand is sometimes a
+// full assembler-time arithmetic expression, not a bare number -- e.g.
+// busybox's own SHA1/SHA256 hwaccel asm defines "SHUF(a,b,c,d)" as
+// "$((a)+((b)<<2)+((c)<<4)+((d)<<6))", which after cpp macro expansion
+// is literally "$((1)+((0)<<2)+((1)<<4)+((0)<<6))". strtoull() on that
+// stops at the very first '(' (no digits consumed) and silently returns
+// 0 instead of the real value 17, corrupting every shufps/pshufd/etc.
+// immediate built that way. Fall back to eval_asm_expr_here() -- the
+// same shift/paren/arithmetic-aware evaluator already used for memory
+// displacements -- whenever strtoull doesn't consume the whole operand.
+static int64_t x86_parse_imm(AsmState *as, const char *s) {
+    if (*s == '$') s++;
+    char *end;
+    uint64_t v = strtoull(s, &end, 0);
+    if (*end == '\0') return (int64_t)v;
+    return eval_asm_expr_here(as, s);
+}
+#define X86_IMM(i)  ((i) < nops ? x86_parse_imm(as, ops[i]) : (int64_t)0)
 #define X86_ISREG(i) ((i)<nops && ops[i][0]=='%')
 // X86_ISREG's "starts with '%'" test also matches an XMM register
 // string ("%xmmN"), which parse_x86_reg64()/R() can't actually parse
@@ -3367,6 +3424,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         }
         return true;
     }
+    if (!strcmp(mnem, "movhlps")) {
+        x86_movhlps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "movlhps")) {
+        x86_movlhps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "movq") && (is_xmm(0) || is_xmm(1))) {
         // Plain GP-GP "movq" (no xmm operand) falls through to the
         // generic mov dispatch below, unaffected.
@@ -3506,8 +3571,23 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_adox_rr(buf, sz, R(1), R(0));
         return true;
     }
+// ALU_OP prefix-matches "name" then requires the REMAINING suffix to be
+// empty (bare "xor") or exactly one AT&T size-suffix letter (b/w/l/q,
+// e.g. "xorl") -- not an arbitrary longer tail. Without this, "xorps"/
+// "xorpd"/"addps"/"subpd"/"andps"/"orpd" etc. (real SSE mnemonics that
+// happen to start with these 2-3 letter ALU names) matched here FIRST
+// via the bare strncmp/strlen prefix test, misencoding an SSE register-
+// register op as a GP-register ALU op with garbage operands (parse_x86_
+// reg64() on an unrecognized "%xmm1" string silently falls back to
+// X86_NOREG, which aliases physical register 7/RDI once masked into a
+// ModRM field). Real crash: busybox's SHA1 hwaccel asm's `xorps %xmm1,
+// %xmm1` (the `xor128` macro) assembled as `xor %rdi,%rdi`, and the
+// very next instruction then dereferenced 0x60(%rdi) == 0x60, segfaulting.
+#define ALU_SUFFIX_OK(name) \
+    (mnem[strlen(name)] == '\0' || \
+     (mnem[strlen(name) + 1] == '\0' && strchr("bwlq", mnem[strlen(name)])))
 #define ALU_OP(name, fn_rr, fn_ri, fn_rm, fn_mr, fn_mi) \
-    if (!strncmp(mnem, name, strlen(name))) { \
+    if (!strncmp(mnem, name, strlen(name)) && ALU_SUFFIX_OK(name)) { \
         if (is_imm(0)&&is_reg(1)) { fn_ri(buf,sz,R(1),(int32_t)IMM(0)); } \
         else if (is_reg(0)&&is_reg(1)) { fn_rr(buf,sz,R(1),R(0)); } \
         else if (is_mem(0)&&is_reg(1)) { fn_rm(buf,sz,R(1),M(0)); } \
@@ -3522,6 +3602,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     ALU_OP("xor", x86_xor_rr, x86_xor_ri, x86_xor_rm, x86_xor_mr, x86_xor_mi)
     ALU_OP("adc", x86_adc_rr, x86_adc_ri, x86_adc_rm, x86_adc_mr, x86_adc_mi)
     ALU_OP("sbb", x86_sbb_rr, x86_sbb_ri, x86_sbb_rm, x86_sbb_mr, x86_sbb_mi)
+#undef ALU_SUFFIX_OK
 #undef ALU_OP
 
     // MUL (F6/F7 group /4): implicit RDX:RAX = RAX * r/m. Excludes the SSE
@@ -4132,17 +4213,46 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         x86_xorps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    // movaps/movups load direction: a RIP-relative memory operand naming
+    // a SYMBOL (e.g. this file's own hash_sha1_hwaccel_x86-64.S "mova128
+    // PSHUFFLE_BYTE_FLIP_MASK(%rip), %xmm7") has nowhere to carry that
+    // symbol through X86Mem/parse_x86_mem -- same gap the LEA fix above
+    // documents. Without this, M(0) alone silently folds the whole
+    // displacement down to a bare integer (0, since the symbol term
+    // isn't resolvable at parse time), producing a load RIP-relative to
+    // *itself* with no relocation recorded -- rcc-built busybox's own
+    // SHA1-NI codepath (test_busybox's sha1sum) read that self-relative
+    // garbage as its byte-flip mask and segfaulted a few instructions
+    // later dereferencing it as a pointer.
     if (!strcmp(mnem, "movaps")) {
-        if (is_mem(0)) x86_movaps_rm(buf, parse_x86_xmm(ops[1]), M(0));
-        else if (is_mem(1))
+        if (is_mem(0)) {
+            X86Mem m = M(0);
+            if (g_last_mem_sym[0] && m.base == X86_RIP) {
+                x86_movaps_rm(buf, parse_x86_xmm(ops[1]), x86_mem(X86_RIP, 0));
+                int sidx = ensure_sym(as, g_last_mem_sym);
+                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
+                                  R_X86_64_PC32, m.disp - 4);
+            } else {
+                x86_movaps_rm(buf, parse_x86_xmm(ops[1]), m);
+            }
+        } else if (is_mem(1))
             x86_movaps_mr(buf, M(1), parse_x86_xmm(ops[0]));
         else
             x86_movaps(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "movups")) {
-        if (is_mem(0)) x86_movups_rm(buf, parse_x86_xmm(ops[1]), M(0));
-        else if (is_mem(1))
+        if (is_mem(0)) {
+            X86Mem m = M(0);
+            if (g_last_mem_sym[0] && m.base == X86_RIP) {
+                x86_movups_rm(buf, parse_x86_xmm(ops[1]), x86_mem(X86_RIP, 0));
+                int sidx = ensure_sym(as, g_last_mem_sym);
+                objfile_add_reloc(as->obj, as->cur_sec, buf->len - 4, sidx,
+                                  R_X86_64_PC32, m.disp - 4);
+            } else {
+                x86_movups_rm(buf, parse_x86_xmm(ops[1]), m);
+            }
+        } else if (is_mem(1))
             x86_movups_mr(buf, M(1), parse_x86_xmm(ops[0]));
         else
             sse_rr_np(buf, 0x10, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
@@ -4319,6 +4429,67 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         // pinsrw $imm, mem, xmm (rc4's own fast path never uses the
         // register-source form).
         x86_pinsrw_rm(buf, parse_x86_xmm(ops[2]), M(1), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "sha1msg1")) {
+        x86_sha1msg1(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "sha1msg2")) {
+        x86_sha1msg2(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "sha1nexte")) {
+        x86_sha1nexte(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "sha1rnds4")) {
+        // sha1rnds4 $imm, src, dst
+        x86_sha1rnds4(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pextrd")) {
+        // pextrd $imm, src_xmm, dst (GP register or memory)
+        if (is_mem(2))
+            x86_pextrd_m(buf, M(2), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        else
+            x86_pextrd_r(buf, R(2), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "sha256rnds2")) {
+        // Two AT&T spellings, byte-identical per real GAS: the implicit
+        // <XMM0> 3rd source may be OMITTED ("sha256rnds2 src, dst") or
+        // spelled out explicitly as a leading operand ("sha256rnds2
+        // %xmm0, src, dst", e.g. busybox's own SHA256 hwaccel asm's
+        // "sha256rnds2 MSG, STATE0, STATE1" with MSG #defined to
+        // %xmm0) -- when 3 operands are given, ops[0] is that
+        // hardware-mandated-xmm0 placeholder (unused/unchecked here,
+        // exactly as real GAS treats it) and the real src/dst are
+        // ops[1]/ops[2].
+        int src_i = nops >= 3 ? 1 : 0;
+        int dst_i = nops >= 3 ? 2 : 1;
+        x86_sha256rnds2(buf, parse_x86_xmm(ops[dst_i]), parse_x86_xmm(ops[src_i]));
+        return true;
+    }
+    if (!strcmp(mnem, "sha256msg1")) {
+        x86_sha256msg1(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "sha256msg2")) {
+        x86_sha256msg2(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "palignr")) {
+        // palignr $imm, src, dst
+        x86_palignr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "pinsrd")) {
+        // pinsrd $imm, src (GP register or memory), dst xmm
+        if (is_mem(1))
+            x86_pinsrd_m(buf, parse_x86_xmm(ops[2]), M(1), (uint8_t)IMM(0));
+        else
+            x86_pinsrd_r(buf, parse_x86_xmm(ops[2]), R(1), (uint8_t)IMM(0));
         return true;
     }
     if (!strcmp(mnem, "fldl")) {
@@ -5144,7 +5315,7 @@ static void asmvar_set(AsmState *as, const char *name, int64_t val) {
 // Small recursive-descent evaluator for .set/.if expressions: integer
 // literals, \param / bare-name variable references (via asmvar_get), the
 // usual C-ish binary operators by precedence, unary -/!, and parens.
-typedef struct {
+typedef struct ExprCtx {
     const char *p;
     AsmState *as;
     const ParamMap *map;
@@ -5442,6 +5613,20 @@ static int64_t eval_asm_expr(AsmState *as, const ParamMap *map, const char *text
 static int64_t eval_asm_expr_here(AsmState *as, const char *text) {
     ExprCtx c = {text, as, NULL, false, true};
     return expr_or(&c);
+}
+
+// Term-level (mul/div precedence) evaluator for one arithmetic term
+// starting at *pp. Used by try_parse_symbol_disp() to correctly handle
+// a "*"/"/" inside a numeric term mixed with a symbol (e.g. "K256+
+// 8*16") -- the caller's own per-term "+"/"-" loop already handles the
+// addition level; this fills in the tighter-binding multiplication
+// level it can't see through a bare strtoll().
+static int64_t eval_asm_term(AsmState *as, const char **pp, bool *err) {
+    ExprCtx c = {*pp, as, NULL, false, true};
+    int64_t v = expr_mul(&c);
+    *pp = c.p;
+    *err = c.err;
+    return v;
 }
 
 // True if `text` is a *complete* assembler-time integer expression — the

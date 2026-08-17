@@ -567,6 +567,24 @@ void x86_aeskeygenassist(SecBuf *s, X86XmmReg dst, X86XmmReg src, uint8_t imm);
 // PINSRW xmm, r32/m16, imm8 (66 0F C4 /r ib): insert a 16-bit word
 // into one of the xmm register's 8 word lanes (imm8 selects which).
 void x86_pinsrw_rm(SecBuf *s, X86XmmReg dst, X86Mem srcm, uint8_t imm);
+// Intel SHA extensions.
+void x86_sha1msg1(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_sha1msg2(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_sha1nexte(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_sha1rnds4(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm);
+// PEXTRD r/m32, xmm, imm8 (66 0F 3A 16 /r ib): extract a 32-bit dword
+// lane (imm8 selects which of 4) from an xmm register to a GP register
+// or memory.
+void x86_pextrd_r(SecBuf *s, X86Reg d, X86XmmReg sr, uint8_t imm);
+void x86_pextrd_m(SecBuf *s, X86Mem m, X86XmmReg sr, uint8_t imm);
+// SHA256RNDS2/MSG1/MSG2 (implicit XMM0 3rd operand for RNDS2).
+void x86_sha256rnds2(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_sha256msg1(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+void x86_sha256msg2(SecBuf *s, X86XmmReg d, X86XmmReg sr);
+// PINSRD xmm, r/m32, imm8 (66 0F 3A 22 /r ib): insert a 32-bit dword
+// lane (imm8 selects which of 4) from a GP register or memory.
+void x86_pinsrd_r(SecBuf *s, X86XmmReg d, X86Reg sr, uint8_t imm);
+void x86_pinsrd_m(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm);
 
 void x86_minpd(SecBuf *s, X86XmmReg d, X86XmmReg sr);
 void x86_maxpd(SecBuf *s, X86XmmReg d, X86XmmReg sr);

@@ -12264,9 +12264,15 @@ VReg gen(Node *node) {
         // op_addr[i]: address register for store-back after asm (-1 if none)
         VReg op_regs[MAX_ASM_OPERANDS];
         VReg op_addr[MAX_ASM_OPERANDS];
+        // True for operand i once its op_addr[i] has been pushed to the
+        // REAL machine stack (not the virtual-register spill-slot
+        // mechanism) and its virtual register freed -- see the "stash
+        // every op_addr[] to the real stack" comment below for why.
+        bool addr_pushed[MAX_ASM_OPERANDS];
         for (int i = 0; i < node->asm_noperands; i++) {
             op_regs[i] = -1;
             op_addr[i] = -1;
+            addr_pushed[i] = false;
         }
 
         // x86-64 specific register constraints: "a"=rax, "b"=rbx, "c"=rcx,
@@ -12293,6 +12299,51 @@ VReg gen(Node *node) {
         // Helper: map constraint char to X86Reg; returns true on match.
         // Inline switch avoids block/nested-function portability issues.
 #define X86REG_CASE(ch, reg) case ch: xreg = reg; is_x86_reg = true; break
+
+        // Reserve every physical x86 GP register this asm statement's
+        // operands will force a value into (direct "a"/"b"/"c"/"d"/"S"/"D"
+        // constraints, and matching-constraint ("0".."9") inputs that
+        // resolve to one of those) BEFORE computing any operand's
+        // address below. Without this, the general allocator can hand
+        // one of those same physical registers to an UNRELATED
+        // operand's store-back address (op_addr[], via gen_addr()'s
+        // ordinary alloc_reg()), which then gets silently clobbered
+        // later in this same function when a DIFFERENT operand's input
+        // value is forced into that fixed register. Real crash: busybox
+        // sha1sum segfaulted because cpuid_eax_ebx_ecx()'s 4-output/3-
+        // matched-input inline asm ("=a","=b","=c","=d" : "0","1","2")
+        // happened to place &ecx's store-back address in virtual-
+        // register slot RBX; the "1"(*ebx) input load then overwrote
+        // physical %ebx (== that same slot) while moving *ebx_ptr's
+        // value in, corrupting the address `mov %ecx_result, (%rbx)`
+        // writes through at the very end.
+        unsigned x86_reserved_mask = 0;
+        for (int i = 0; i < node->asm_noperands; i++) {
+            const char *c = node->asm_ops[i].constraint;
+            while (*c == '=' || *c == '+' || *c == '&') c++;
+            if (*c >= '0' && *c <= '9') {
+                int ref = *c - '0';
+                if (ref < 0 || ref >= node->asm_noperands) continue;
+                c = node->asm_ops[ref].constraint;
+                while (*c == '=' || *c == '+' || *c == '&') c++;
+            }
+            X86Reg xreg = X86_RAX;
+            bool is_x86_reg = false;
+            switch (*c) {
+                X86REG_CASE('a', X86_RAX);
+                X86REG_CASE('b', X86_RBX);
+                X86REG_CASE('c', X86_RCX);
+                X86REG_CASE('d', X86_RDX);
+                X86REG_CASE('S', X86_RSI);
+                X86REG_CASE('D', X86_RDI);
+            default: break;
+            }
+            if (is_x86_reg)
+                x86_reserved_mask |= (1u << (int)xreg);
+        }
+        unsigned x86_already_reserved = used_regs & x86_reserved_mask;
+        used_regs |= x86_reserved_mask;
+
         // First pass: allocate registers for outputs and memory operands.
         // Defer matching input constraints (digit) to second pass.
         int xmm_scratch_count = 0;
@@ -12325,6 +12376,9 @@ VReg gen(Node *node) {
                     op_regs[i] = ASM_X86_REG(xreg);
                     op->reg = -1;
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                    asm_push(cg_sec, REG(op_addr[i]));
+                    free_reg(op_addr[i]);
+                    addr_pushed[i] = true;
                 } else if (op->is_rw) {
                     // Read-write x86 reg: load current value into physical reg
                     VReg r_addr = gen_addr(op->expr);
@@ -12333,6 +12387,9 @@ VReg gen(Node *node) {
                     op_regs[i] = ASM_X86_REG(xreg);
                     op->reg = -1;
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                    asm_push(cg_sec, REG(op_addr[i]));
+                    free_reg(op_addr[i]);
+                    addr_pushed[i] = true;
                 } else {
                     // Input x86 reg: move value into physical register
                     VReg r_in = gen(op->expr);
@@ -12372,12 +12429,18 @@ VReg gen(Node *node) {
                     op_addr[i] = r_addr;
                     op_regs[i] = ASM_XMM_REG(xmm_scratch_count);
                     op->reg = -1;
+                    asm_push(cg_sec, REG(op_addr[i]));
+                    free_reg(op_addr[i]);
+                    addr_pushed[i] = true;
                 } else if (op->is_rw) {
                     VReg r_addr = gen_addr(op->expr);
                     op_addr[i] = r_addr;
                     x86_movups_rm(cg_sec, xmmreg, x86_mem(REG(r_addr), 0));
                     op_regs[i] = ASM_XMM_REG(xmm_scratch_count);
                     op->reg = -1;
+                    asm_push(cg_sec, REG(op_addr[i]));
+                    free_reg(op_addr[i]);
+                    addr_pushed[i] = true;
                 } else {
                     // Input: a plain lvalue takes its address directly;
                     // a non-lvalue vector expression (e.g. a function
@@ -12437,6 +12500,9 @@ VReg gen(Node *node) {
                 op->reg = r;
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                asm_push(cg_sec, REG(op_addr[i]));
+                free_reg(op_addr[i]);
+                addr_pushed[i] = true;
             } else if (op->is_rw) {
                 // Read-write "+r": load current value, store back after asm.
                 VReg r_addr = gen_addr(op->expr);
@@ -12447,6 +12513,9 @@ VReg gen(Node *node) {
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
                 emit_load(op->expr->ty, r, r_addr, 0);
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                asm_push(cg_sec, REG(op_addr[i]));
+                free_reg(op_addr[i]);
+                addr_pushed[i] = true;
             } else if (*c == 'i' || *c == 'n') {
                 // Immediate constraint: emit numeric value, or (for an
                 // address-of-global, e.g. jump_label.h's arch_static_branch
@@ -12478,6 +12547,40 @@ VReg gen(Node *node) {
                 snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
             }
         }
+
+        // Pop every op_addr[] stashed to the real stack above back into a
+        // fresh virtual register (reverse of push order), still WHILE the
+        // reservation below is held. Must happen before the reservation
+        // is released: the second pass (matching constraints "0".."9")
+        // moves values directly into physical a/b/c/d/S/D registers via
+        // raw x86_mov_rr(), bypassing the virtual-register allocator's
+        // used_regs bookkeeping entirely -- if alloc_reg() here were
+        // allowed to hand out one of those same physical registers'
+        // virtual slot for a freshly-restored op_addr[], that raw move
+        // would silently clobber it before the store-back loop reads it.
+        // Real crash: busybox's cpuid_eax_ebx_ecx() (4 fixed-reg outputs,
+        // 3 "0"/"1"/"2" matched inputs) -- &ecx's store-back address
+        // landing in %rbx's virtual slot, then the "1"(*ebx) input load
+        // overwriting physical %rbx while that address was still unread.
+        for (int i = node->asm_noperands - 1; i >= 0; i--) {
+            if (!addr_pushed[i]) continue;
+            VReg r = alloc_reg();
+            asm_pop(cg_sec, REG(r));
+            op_addr[i] = r;
+        }
+
+        // Release the reservation now: every operand's store-back
+        // address (op_addr[]) that needed protecting from a fixed-
+        // register write has already been allocated to a non-
+        // conflicting register, both in the first pass above and in
+        // the restore-from-stack loop just above. Only the second pass
+        // below still forces values into these physical registers, and
+        // it never itself allocates a NEW op_addr[] (no gen_addr()
+        // calls there) -- only transient, immediately-freed value
+        // temps (gen()) -- so keeping the reservation past this point
+        // would just needlessly shrink the (already small, 8-slot)
+        // x86-64 virtual-register pool for those temps.
+        used_regs &= ~(x86_reserved_mask & ~x86_already_reserved);
 
         // Second pass: resolve matching constraints ("0".."9").
         // Load the input value into the same register as the referenced output.
