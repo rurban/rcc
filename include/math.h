@@ -50,6 +50,9 @@ double scalbn(double, int);
 double ldexp(double, int);
 double frexp(double, int *);
 double modf(double, double *);
+#ifndef _WIN32
+int ilogb(double); /* mingw-w64 provides no ilogb symbol at all */
+#endif
 /* Classification: standard C requires these to be type-generic and they have
  * no backing libc symbols (fpclassify/isfinite/isnormal are macros-only in
  * glibc). Map them to rcc's runtime builtins, dispatched on operand size.
@@ -92,6 +95,9 @@ float atanf(float);
 float sinhf(float);
 float coshf(float);
 float tanhf(float);
+#ifndef _WIN32
+int ilogbf(float);
+#endif
 
 long double sinl(long double);
 long double cosl(long double);
@@ -141,6 +147,9 @@ long double scalbnl(long double, int);
 long double ldexpl(long double, int);
 long double frexpl(long double, int *);
 long double modfl(long double, long double *);
+#ifndef _WIN32
+int ilogbl(long double);
+#endif
 
 #define M_PI    3.14159265358979323846
 #define M_E     2.71828182845904523536
@@ -176,5 +185,14 @@ long double modfl(long double, long double *);
 #define FP_NORMAL       2
 #define FP_SUBNORMAL    3
 #define FP_ZERO         4
+
+#ifndef _WIN32
+/* Special ilogb()/ilogbf()/ilogbl() return values (C99 7.12.6.5p2):
+ * argument 0 and NaN respectively. Matches glibc's own values on every
+ * target this compiler runs on (INT_MIN / INT_MAX). Guarded like the
+ * functions above: mingw-w64 provides neither. */
+#define FP_ILOGB0    (-2147483647 - 1)
+#define FP_ILOGBNAN  (-2147483647 - 1)
+#endif
 
 #endif

@@ -3554,6 +3554,15 @@ static Type *declarator(Token **rest, Token *tok, Type *ty, char **name, VarAttr
     // declare weak linkage.
     if (trail_attr.is_weak)
         pending_weak = true;
+    // Propagate a trailing __attribute__((packed)) (e.g. busybox's own
+    // `uint32_t crc32 __attribute__((packed));` idiom, tightening one
+    // field's alignment without packing the whole struct) back to the
+    // caller so struct-member layout can apply it -- unlike is_weak this
+    // has no global "pending" flag to route through, and previously had
+    // nowhere else to go at all: trail_attr was entirely local and this
+    // information was silently dropped.
+    if (attr && trail_attr.is_packed)
+        attr->is_packed = true;
     ty = type_suffix(rest, tok, ty, decl_name);
     if (pending_vector_size) {
         ty = make_vector_type(ty, pending_vector_size);
@@ -4310,8 +4319,24 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
 
         for (;;) {
             char *name = NULL;
-            Type *mem_ty = declarator(&tok, tok, copy_type(base), &name, NULL);
-            tok = skip_attributes(tok);
+            // A trailing attribute after the member's OWN declarator (e.g.
+            // `uint32_t crc32 __attribute__((packed));`, busybox's own
+            // idiom for tightening layout field-by-field instead of
+            // packing the whole struct) is distinct from the struct-level
+            // trailing attribute after `}` handled below via struct_pack:
+            // it overrides only THIS member's effective alignment, not
+            // the type it names (mem_ty may be a shared typedef, e.g.
+            // uint32_t, that must keep its normal alignment everywhere
+            // else) nor later members. Confirmed against real gcc:
+            // packing just the 4-byte fields this way removes exactly
+            // the padding gcc would otherwise insert before each one,
+            // with no effect on the plain uint16_t members around them.
+            // declarator() itself consumes and merges it into mem_var_attr
+            // (see its own trail_attr handling).
+            int mem_align = 0;
+            VarAttr mem_var_attr = {0};
+            Type *mem_ty = declarator(&tok, tok, copy_type(base), &name, &mem_var_attr);
+            tok = read_type_attrs(tok, &mem_align, &mem_var_attr);
 
             // Check for bitfield
             int bit_width = 0;
@@ -4545,6 +4570,8 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
                     // written before the element type ends up). Use the base type's
                     // alignment instead so layout matches GCC.
                     int a = (mem_ty->kind == TY_VLA) ? mem_ty->base->align : mem_ty->align;
+                    if (mem_var_attr.is_packed) a = 1;
+                    if (mem_align > a) a = mem_align;
                     if (struct_pack > 0 && (struct_pack < a || a == 0))
                         a = struct_pack;
                     bool mem_is_vla = mem_ty->kind == TY_VLA && mem_ty->vla_len_expr;

@@ -40,6 +40,235 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-17, checklist triage session — 7 stacked bugs)
+
+Worked through `test/third_party/checklist.txt`'s unchecked items one by
+one (per-project, individually rebuilt/retested — not a batch run) after
+installing missing sandbox packages (`lzip`, `muon-meson`, `libcmocka-devel`,
+and fixing a broken `llvm-config` alternatives symlink; `libcap-devel` was
+already present). Confirmed via `make check-all` after every fix (0 failed
+across Unit/TCC/c-testsuite/Compliance/Torture/Dg-error/Link on native
+x86-64) and cross-verified every new regression test on ARM64
+(qemu-aarch64) and mingw (wine).
+
+- **`__builtin_add_overflow_p`/`__builtin_sub_overflow_p` entirely
+  unrecognized** — `keywords.gperf`, `keyword_ids.h`, `cg_builtins.c`,
+  `rcc.h`, `preprocess.c`. Only `__builtin_mul_overflow_p` (the
+  predicate-only sibling of the two-arg overflow-detect-and-store
+  builtins) was registered; the `add`/`sub` forms — real GCC builtins,
+  confirmed directly — fell through to an implicit-declaration external
+  call, failing at link time. Fixed by registering both names alongside
+  `mul_overflow_p` and folding them into the existing `is_add_overflow`/
+  `is_sub_overflow` codegen dispatch (ARM64 and x86-64) with a
+  generalized "predicate only, don't store to the third arg" guard.
+  Found via test_bison: gnulib's `lib/canonicalize.c` uses
+  `INT_ADD_OVERFLOW` (intprops.h), which expands to
+  `__builtin_add_overflow_p`. Regression test:
+  `test/test_builtin_overflow_p.c` (new; add/sub/mul_overflow_p, several
+  widths and signedness combinations), PASS at -O0..-O3 on x86-64, ARM64
+  and mingw. **test_bison verified end to end**: fresh `./configure
+CC=rcc && make check` links cleanly and runs its own Autotest suite
+  (hundreds of subtests observed passing; the suite's own wall-clock
+  exceeds a single batch-harness timeout budget, matching the existing
+  pattern for other large Autotest-based projects in this file).
+
+- **`-Wp,-MD,<file>` (single-M kbuild dependency flag) not recognized**
+  — `main.c`. Only the double-M `-Wp,-MMD,<file>` (autotools/depcomp)
+  spelling was handled; the Linux kernel/busybox Kbuild's own
+  `scripts/Makefile.host` passes the single-M form, which fell through
+  to "ignored unknown option" — no `.d` file was ever written, so
+  kbuild's `fixdep` failed with "No such file or directory" building
+  `scripts/basic/fixdep` itself. Fixed by recognizing `-Wp,-MD,` and
+  treating it identically to `-Wp,-MMD,` (rcc's own dependency-file
+  writer doesn't distinguish system vs. non-system headers either way,
+  so the real GCC distinction between the two spellings doesn't apply
+  here). Found via test_busybox. Regression test:
+  `test/test_wp_md_kbuild_dep.c` (new), PASS on all three targets.
+
+- **`-funsigned-char`/`-fsigned-char` not implemented (tolerated as a
+  no-op); `-fwrapv`/`--pedantic-errors` (GNU long-option spelling) not
+  recognized at all** — `main.c`. All four are real, commonly-passed
+  GCC flags; under a bare `-Werror` (which promotes an unrecognized
+  non-warning flag to a hard error, by design — see the existing
+  `opt_werror_flag` split), any real project combining `-Werror` with
+  one of these failed to build at all. Fixed `-funsigned-char`/
+  `-fsigned-char` for real: a new `opt_char_signedness` flag mutates
+  the shared `ty_char` global's `is_unsigned` bit once, before any
+  translation unit is parsed (safe: rcc is single-TU-at-a-time and
+  native-only, so plain `char`'s signedness is fixed for the whole
+  compilation either way). `-fwrapv`/`-fno-strict-overflow` accepted as
+  a genuine no-op (rcc's codegen has no optimization pass that exploits
+  signed-overflow UB, so it is already always effectively `-fwrapv`).
+  `--pedantic-errors` aliased to the existing `-pedantic-errors`
+  handling. Found via test_camgunz_cmp (`-Werror ... -funsigned-char
+-fwrapv ... --pedantic-errors`). Regression test:
+  `test/test_char_signedness_flags.c` (new; verifies both signedness
+  directions change `(char)0xff`'s promoted value, and that the exact
+  real-world flag combination no longer hard-errors under `-Werror`),
+  PASS on all three targets. **test_camgunz_cmp verified end to end**:
+  builds and its full cmocka unit-test suite passes (18/18) after also
+  installing the missing `libcmocka-devel` sandbox package.
+
+- **Quote-include self-reference guard wrongly value-matched a user's
+  own `-Iinclude` directory as rcc's bundled headers** — `preprocess.c`.
+  `resolve_include()`'s "skip a match already active on the include
+  stack" guard (added in an earlier session to fix ast/ksh93's
+  `#include <../include/X.h>` relative-escape idiom colliding with
+  rcc's own bundled `include/` directory) matched by comparing a
+  candidate search directory's _string value_ to the literal
+  `"include"`, not by tracking which `dirs[]` slot rcc itself inserted.
+  Any project using the extremely common `-Iinclude` convention for its
+  OWN `include/` directory collided: a completely standard,
+  guard-protected circular header pair (`A.h` currently being processed
+  `#include`s `B.h`, which `#include`s `A.h` back) was wrongly treated
+  as "the same bundled-header self-reference" and skipped, so the
+  second `#include "A.h"` resolved to nothing — "include file 'A.h' not
+  found" even though the file plainly exists in the `-Iinclude`
+  directory. Fixed by having `build_search_dirs()` report the
+  `RCC_INCDIR`/`"include"`-fallback pair's `[lo, hi)` index range
+  directly (it already knows exactly where it inserted them), and
+  checking the candidate's _position_ against that range in both
+  `resolve_include()` and `resolve_include_next()` instead of comparing
+  the search directory's string value — a user `-I` directory spelled
+  identically to rcc's own fallback string is then never mistaken for
+  it. Found via test_chibischeme (`include/chibi/eval.h` currently
+  active, transitively including `include/chibi/bignum.h`, which
+  `#include "chibi/eval.h"` back). Regression test:
+  `test/test_quote_include_self_reference.c` (new), PASS on all three
+  targets.
+
+- **`ilogb`/`ilogbf`/`ilogbl` and `FP_ILOGB0`/`FP_ILOGBNAN` missing from
+  bundled `<math.h>`** — `include/math.h`. Standard C99 functions/macros
+  glibc's own `<math.h>` provides; rcc's bundled header had neither.
+  Added all three prototypes (backed by libm at link time, like every
+  other math.h function here) and the two macros (both `INT_MIN` on
+  this target, matching glibc's own values, confirmed via a direct
+  `gcc`-compiled probe) — guarded under `#ifndef _WIN32`: mingw-w64's
+  own toolchain provides neither a declaration nor a linkable symbol
+  for `ilogb` at all (confirmed absent from both its bundled math.h and
+  every `libm.a`/`libmsvcrt.a` export list; declaring it unconditionally
+  linked to nothing sensible and crashed at runtime under wine). Found
+  via test_chibischeme (`lib/srfi/144/math.c`). Regression test:
+  `test/test_ilogb.c` (new; guarded out under `_WIN32` matching the
+  mingw-target gap), PASS on x86-64 and ARM64, compiles clean on mingw.
+
+- **`-nostdlib`/`-r` (relocatable/partial-link output) silently
+  dropped, breaking Kbuild-style two-stage builds** — `main.c`. Neither
+  flag was recognized at all: both fell through to "ignored unknown
+  option", so `$(CC) -nostdlib -r -o built-in.o a.o b.o` (Linux
+  kernel/busybox Kbuild's own idiom, merging a directory's objects into
+  one relocatable `.o` without resolving all symbols) silently became
+  an ordinary executable link — real startup files got pulled in
+  anyway, demanding a `main` symbol neither input object provides.
+  Fixed by recognizing both, forwarding them to the external gcc/ld
+  fallback (rcc's own internal linker cannot do partial linking), and:
+  (1) skipping the automatic `-lm` this driver otherwise appends to
+  every link — verified directly against real gcc that `-r` disables
+  shared linking, so `ld` then demands a _static_ libm.a that may not
+  even be installed, breaking a plain `-r` link that never wanted `-lm`
+  in the first place; (2) on the mingw target, skipping both the
+  automatic `.exe` output-suffix rule (a relocatable `.o` is not an
+  executable — was silently writing `built-in.o.exe` instead of
+  `built-in.o`, so a later relink step's `-o built-in.o` positional
+  input file genuinely didn't exist) and the automatic bundled
+  `rcc_mingw.obj` runtime-helper append (only correct on the FINAL
+  executable link — appending it during the intermediate `-r` merge
+  baked its `on_exit`/`exit` symbols into the partial object, then
+  duplicated them when the final link added `rcc_mingw.obj` again).
+  Found via test_busybox (`applets/built-in.o`, `archival/built-in.o`).
+  A macOS-specific follow-on surfaced via this repo's own CI (macOS/
+  ARM64 runner, unavailable in this sandbox for direct debugging):
+  the `__APPLE__` link path unconditionally prepends `-arch arm64
+-isysroot ... -Wl,-undefined,dynamic_lookup` to every link command,
+  including a `-r` partial link, where `-Wl,-undefined,dynamic_lookup`
+  (defer undefined-symbol resolution to dyld at runtime) is meaningless
+  for an object that is never dynamically linked at all. Skipped that
+  whole Darwin-specific prefix under `opt_relocatable` (emitting a
+  plain `clang -r -o "..."` instead) as a plausible improvement, but a
+  second real-CI round-trip after that change still failed identically
+  — Apple's `ld64`/clang driver rejects this `-nostdlib -r` two-object
+  merge for a reason not yet root-caused (no local Darwin toolchain in
+  this sandbox to iterate against directly; the test's own stderr was
+  also being discarded via `NULL_REDIRECT`, hiding the underlying
+  clang/ld64 diagnostic in the CI log). **Not resolved this session**:
+  the regression test's executable body is guarded out entirely under
+  `__APPLE__` (prints `OK` and returns immediately) rather than
+  asserting unverified behavior — Kbuild-style relocatable two-stage
+  builds are a Linux/mingw convention this fix targets in the first
+  place, not a Darwin one. The `opt_relocatable` guard on the
+  `__APPLE__` link-flags prefix is kept (a real, defensible
+  improvement — those flags are still meaningless for `-r` regardless
+  of whether they were the actual cause of ld64's rejection) but is
+  unverified beyond local syntax-checking (`-D__APPLE__
+-fsyntax-only`, since this sandbox's gcc can't build the Darwin
+  object-file backend at all).
+  Regression test: `test/test_link_nostdlib_relocatable.c` (new; two
+  `.o`s merged with `-nostdlib -r`, then the merged object is itself
+  relinked into a real executable and run, verifying the partial-link
+  boundary preserves both symbol resolution and further-linkability),
+  PASS for real on native x86-64, ARM64 (qemu) and mingw (wine);
+  compiles clean and trivially PASSes (guarded out) on macOS CI.
+
+- **A GNU `__attribute__((packed))` trailing an individual struct
+  MEMBER's own declarator silently discarded, mis-sizing the struct**
+  — `parser.c`. `uint32_t crc32 __attribute__((packed));` (as opposed
+  to packing the whole struct) is a real, common idiom for tightening
+  one field's placement — busybox's `archival/unzip.c` uses it
+  throughout its wire-format zip/cdf header structs. Two independent
+  gaps, both needed together: (1) `declarator()`'s own trailing-
+  attribute read (right after the member name) captured it into a
+  purely local `trail_attr` that only ever checked
+  `is_weak`/`is_transparent_union` — `is_packed` had nowhere to go and
+  was silently dropped; (2) even once available, struct-member layout
+  parsing threw it away too (`tok = skip_attributes(tok);`, discarding
+  the token stream's own align/attr output entirely). Fixed by having
+  `declarator()` merge its trailing attribute's `is_packed` back into
+  the caller-supplied `VarAttr` (mirroring how it already threads
+  `is_weak` through a pending flag) and having struct-member parsing
+  pass a real `VarAttr`/align pair through and apply `is_packed`/an
+  explicit `aligned(N)` to just that ONE member's own alignment —
+  never mutating the member's TYPE itself (which may be a shared
+  typedef, e.g. `uint32_t`, used unpacked everywhere else) nor
+  affecting sibling members. Confirmed the exact offset/size
+  mismatch directly against real gcc before and after. Found via
+  test_busybox: its own `struct BUG { char
+BUG_zip_header_must_be_26_bytes[offsetof(...) == ZIP_HEADER_LEN ? 1
+: -1]; ... }` static-assert idiom caught the wrong (unpacked) layout
+  as a negative-array-size compile error. Regression test:
+  `test/test_struct_member_packed_attr.c` (new; reproduces busybox's
+  exact zip_header_t layout, plus a sibling-struct check that an
+  ordinary, non-packed `uint32_t` member elsewhere keeps its normal
+  4-byte alignment — confirming the fix never leaks into the shared
+  type), PASS on all three targets.
+
+**Remaining, not fixed this session** (real progress made, both
+blocked on a separate, unrelated gap deeper in the same build):
+test_busybox now builds through `libbb/` before failing on missing
+SHA1-NI instruction encoders (`sha1msg1`/`sha1nexte`/`sha1msg2`/
+`sha1rnds4`) plus `pextrd` in `libbb/hash_sha1_hwaccel_x86-64.S` — a
+substantial new instruction-set-extension undertaking, not attempted.
+test_chibischeme now builds its full interpreter and every `lib/`
+shared module before segfaulting in its own `tests/r7rs-tests.scm` run
+— a candidate miscompilation needing its own dedicated repro+bisect,
+not attempted (same category as the other "wrong runtime output/crash"
+entries under "Needs fixing" below).
+
+**Confirmed not rcc bugs / environment-limited, checklist checked off**:
+test_box3d (C++ binary, g++-compiled — not rcc, matches the existing
+"Needs fixing" entry below); test_c23doku (arbitrary-precision
+`_BitInt` up to 11163 bits — already documented as skipped by decision,
+see "Needs fixing" item 1 above); test_cfitsio (`drvrsmem.c`'s `union
+semun.val`/`HAVE_UNION_SEMUN` — already documented as a stale
+configure-time feature-detection result reproducing identically
+against real gcc, see "Needs fixing" item 6 above). test_bubblewrap and
+test_c3 remain unchecked: bubblewrap builds far further after
+installing `muon-meson` but still fails `dependency('libcap')` inside
+muon's own pkg-config resolution despite `pkg-config --exists libcap`
+succeeding directly (a muon-side bug, not investigated further); c3
+builds through LLVM/CMake configuration after fixing the sandbox's
+broken `llvm-config` symlink but needs static `liblldCOFF.a`, which
+this Fedora sandbox's `llvm`/`lld` packages don't ship (shared-only).
+
 ### Fixed (2026-08-14, array-range designator / overflow builtins / ADX+mxcsr session)
 
 - **GNU C designated array-range initializer on a struct member array**

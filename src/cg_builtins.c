@@ -29,6 +29,7 @@ char *bi_copysign, *bi_copysignf, *bi_copysignl;
 char *bi_fma, *bi_fmaf, *bi_fmal;
 char *bi_abs, *bi_labs, *bi_llabs;
 char *bi_add_overflow, *bi_sub_overflow;
+char *bi_add_overflow_p, *bi_sub_overflow_p;
 char *bi_mul_overflow, *bi_mul_overflow_p;
 // Fixed-width/signedness family (GCC "Built-in Functions to Perform
 // Arithmetic with Overflow Checking"): __builtin_{s,u}{add,sub,mul}{,l,ll}_overflow.
@@ -110,6 +111,8 @@ void init_builtin_names(void) {
     bi_llabs = _BI("__builtin_llabs");
     bi_add_overflow = _BI("__builtin_add_overflow");
     bi_sub_overflow = _BI("__builtin_sub_overflow");
+    bi_add_overflow_p = _BI("__builtin_add_overflow_p");
+    bi_sub_overflow_p = _BI("__builtin_sub_overflow_p");
     bi_mul_overflow = _BI("__builtin_mul_overflow");
     bi_mul_overflow_p = _BI("__builtin_mul_overflow_p");
     bi_sadd_overflow = _SI("__builtin_sadd_overflow");
@@ -190,6 +193,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
     bool is_isfinite = false;
     bool is_isnormal = false, is_fpclassify = false;
     bool is_add_overflow = false, is_sub_overflow = false;
+    bool is_add_overflow_p = false, is_sub_overflow_p = false;
     bool is_mul_overflow = false, is_mul_overflow_p = false;
     if (maybe_builtin) {
         is_bswap16 = call_target == bi_bswap16;
@@ -256,6 +260,8 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             call_target == bi_ssub_overflow || call_target == bi_ssubl_overflow ||
             call_target == bi_ssubll_overflow || call_target == bi_usub_overflow ||
             call_target == bi_usubl_overflow || call_target == bi_usubll_overflow;
+        is_add_overflow_p = call_target == bi_add_overflow_p;
+        is_sub_overflow_p = call_target == bi_sub_overflow_p;
         is_mul_overflow = call_target == bi_mul_overflow ||
             call_target == bi_smul_overflow || call_target == bi_smull_overflow ||
             call_target == bi_smulll_overflow || call_target == bi_umul_overflow ||
@@ -892,7 +898,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
         return 0; // handled, void
     }
 #ifdef ARCH_ARM64
-    if (is_add_overflow || is_sub_overflow || is_mul_overflow || is_mul_overflow_p) {
+    if (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p || is_mul_overflow || is_mul_overflow_p) {
         Node *arga = node->args;
         Node *argb = arga ? arga->next : NULL;
         Node *argres = argb ? argb->next : NULL;
@@ -930,7 +936,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             res_unsigned = argres->ty->base->is_unsigned;
         }
         int r_result = alloc_reg();
-        if (is_add_overflow) {
+        if (is_add_overflow || is_add_overflow_p) {
             if (res_sz == sz) {
                 asm_adds(cg_sec, ra, rb, sz); // adds ra, ra, rb
                 asm_cset(cg_sec, r_result, res_unsigned ? ARM64_CS : ARM64_VS); // cset r_result, cs/vs
@@ -977,7 +983,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     asm_cset(cg_sec, r_result, res_unsigned ? ARM64_CS : ARM64_VS); // cset r_result, cs/vs
                 }
             }
-        } else if (is_sub_overflow) {
+        } else if (is_sub_overflow || is_sub_overflow_p) {
             if (res_sz == sz) {
                 asm_subs(cg_sec, ra, rb, sz); // subs ra, ra, rb
                 asm_cset(cg_sec, r_result, res_unsigned ? ARM64_CC : ARM64_VS); // cset r_result, cc/vs
@@ -1113,7 +1119,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     free_reg(r2);
             }
         }
-        if (argres && !is_mul_overflow_p) {
+        if (argres && !is_mul_overflow_p && !is_add_overflow_p && !is_sub_overflow_p) {
             VReg rr = arg_gen(argres);
             if (argres->ty && argres->ty->kind == TY_PTR && argres->ty->base &&
                 argres->ty->base->kind == TY_INT128) {
@@ -1131,7 +1137,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
     }
 #endif
 #ifndef ARCH_ARM64
-    if (is_add_overflow || is_sub_overflow || is_mul_overflow || is_mul_overflow_p) {
+    if (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p || is_mul_overflow || is_mul_overflow_p) {
         Node *arga = node->args;
         Node *argb = arga ? arga->next : NULL;
         Node *argres = argb ? argb->next : NULL;
@@ -1188,8 +1194,8 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
             else
                 asm_movsx(cg_sec, rb, rb, 8, 4);
         }
-        if (is_add_overflow || is_sub_overflow) {
-            if (is_add_overflow)
+        if (is_add_overflow || is_sub_overflow || is_add_overflow_p || is_sub_overflow_p) {
+            if (is_add_overflow || is_add_overflow_p)
                 asm_add_reg_reg(cg_sec, ra, rb, sz_op); // add rb, ra
             else
                 asm_sub_reg_reg(cg_sec, ra, rb, sz_op); // sub rb, ra
@@ -1226,7 +1232,7 @@ VReg gen_builtin_call(Node *node, const char *call_target, VReg (*arg_gen)(Node 
                     asm_setcc(cg_sec, X86_RAX, X86_NE);
                 }
             }
-            if (argres) {
+            if (argres && !is_add_overflow_p && !is_sub_overflow_p) {
                 int rr = arg_gen(argres);
                 if (store_to_int128) {
                     asm_mov_reg_mem(cg_sec, ra, rr, 8); // movq ra, (rr)

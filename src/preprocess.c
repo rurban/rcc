@@ -628,29 +628,28 @@ static char *full_path(char *path);
 // override to -I too would break that. Quoted includes additionally
 // probe the current file's own directory first (handled directly in
 // resolve_include), so it is not part of this list.
-static int build_search_dirs(const char **dirs, int max, bool is_angle) {
+static int build_search_dirs(const char **dirs, int max, bool is_angle, int *bundled_lo, int *bundled_hi) {
     int n = 0;
     if (!is_angle)
         for (int i = 0; i < nb_quote_include_paths && n < max; i++)
             dirs[n++] = quote_include_paths[i];
+    // RCC_INCDIR and its "include" source-tree fallback occupy a known,
+    // fixed range right here -- tracked positionally (not by comparing
+    // dirs[i]'s string value) so a user -I/project include dir that
+    // happens to also be spelled "include" (extremely common convention:
+    // chibi-scheme, many others) is never mistaken for rcc's own bundled
+    // headers below.
+    int lo = n;
     if (n < max) dirs[n++] = RCC_INCDIR;
     if (strcmp(RCC_INCDIR, "include") != 0 && n < max) dirs[n++] = "include";
+    if (bundled_lo) *bundled_lo = lo;
+    if (bundled_hi) *bundled_hi = n;
     for (int i = 0; i < nb_user_include_paths && n < max; i++)
         dirs[n++] = user_include_paths[i];
     if (!opt_nostdinc)
         for (int i = 0; sys_include_paths[i] && n < max; i++)
             dirs[n++] = sys_include_paths[i];
     return n;
-}
-
-// True for a build_search_dirs() entry that is rcc's own bundled include
-// dir or its "include" source-tree fallback alias (see build_search_dirs
-// -- both name the SAME logical bundled-header set). Value-based, not
-// positional: unlike RCC_INCDIR's old fixed dirs[0]/dirs[1] slots, its
-// position within dirs[] now varies with how many -iquote dirs precede
-// it for the quote form.
-static bool is_bundled_incdir(const char *d) {
-    return !strcmp(d, RCC_INCDIR) || !strcmp(d, "include");
 }
 
 // `curr_file`/`curr_display` are the including file's absolute-identity
@@ -684,7 +683,7 @@ static char *resolve_include_raw(char *curr_file, char *curr_display, char *spec
         }
     }
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128, is_angle);
+    int nd = build_search_dirs(dirs, 128, is_angle, NULL, NULL);
     for (int i = 0; i < nd; i++) {
         path = path_join(dirs[i], spec);
         if (file_exists(path)) return canonical_path(path);
@@ -732,11 +731,12 @@ static char *resolve_include(char *curr_file, char *curr_display, char *spec, bo
         }
     }
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128, is_angle);
+    int bundled_lo = 0, bundled_hi = 0;
+    int nd = build_search_dirs(dirs, 128, is_angle, &bundled_lo, &bundled_hi);
     for (int i = 0; i < nd; i++) {
         char *path = path_join(dirs[i], spec);
         if (!file_exists(path)) continue;
-        if (is_bundled_incdir(dirs[i])) {
+        if (i >= bundled_lo && i < bundled_hi) {
             char *resolved = canonical_path(full_path(path));
             bool self_active = false;
             for (PPLvl *l = lvl; l; l = l->next)
@@ -838,7 +838,8 @@ static bool is_noop_forward_to_active(char *path) {
 // through to the system header of the same name.
 static char *resolve_include_next(char *curr_file, char *spec, bool is_angle) {
     const char *dirs[128];
-    int nd = build_search_dirs(dirs, 128, is_angle);
+    int bundled_lo = 0, bundled_hi = 0;
+    int nd = build_search_dirs(dirs, 128, is_angle, &bundled_lo, &bundled_hi);
     // curr_file resolved from a spec with a subdirectory component (e.g.
     // <sys/stat.h>) lives at "<searchdir>/sys/stat.h": its directory is
     // "<searchdir>/sys", not the search-path entry "<searchdir>" itself.
@@ -856,32 +857,27 @@ static char *resolve_include_next(char *curr_file, char *spec, bool is_angle) {
         file_dir[file_dir_len - spec_dir_len] = '\0';
     }
     char *cur_dir = canonical_path(full_path(file_dir));
-    // RCC_INCDIR and its "include" source-tree fallback alias (see
-    // build_search_dirs() / is_bundled_incdir()) are two alternate
-    // *physical* locations for the SAME logical bundled-header set: an
-    // installed copy (e.g. /usr/local/include/rcc, which every build --
-    // installed or not -- defaults RCC_INCDIR to) and the source tree's
-    // own include/. A dev/test invocation of a non-installed binary on a
-    // machine that has ever run `make install` has BOTH present with
-    // byte-identical content. If the current file was found in *either*
-    // slot, #include_next must escape the whole bundled-header rung, not
-    // just the one physical path that matched: otherwise the *other*
-    // slot's identical copy is "found" next, its include guard (already
-    // set by the first copy) silently swallows its entire body --
-    // including its own #include_next -- so the real system header
-    // underneath is never reached and #include_next resolves to a file
-    // that contributes no content at all. bundled_end tracks where that
-    // whole rung ends within dirs[] (position varies with how many
-    // quote/user dirs precede it -- see build_search_dirs()).
-    int bundled_end = 0;
-    for (int i = 0; i < nd; i++)
-        if (is_bundled_incdir(dirs[i])) bundled_end = i + 1;
+    // RCC_INCDIR and its "include" source-tree fallback occupy the fixed
+    // [bundled_lo, bundled_hi) range from build_search_dirs() -- two
+    // alternate *physical* locations for the SAME logical bundled-header
+    // set: an installed copy (e.g. /usr/local/include/rcc, which every
+    // build -- installed or not -- defaults RCC_INCDIR to) and the source
+    // tree's own include/. A dev/test invocation of a non-installed
+    // binary on a machine that has ever run `make install` has BOTH
+    // present with byte-identical content. If the current file was found
+    // in *either* slot, #include_next must escape the whole bundled-
+    // header rung, not just the one physical path that matched:
+    // otherwise the *other* slot's identical copy is "found" next, its
+    // include guard (already set by the first copy) silently swallows
+    // its entire body -- including its own #include_next -- so the real
+    // system header underneath is never reached and #include_next
+    // resolves to a file that contributes no content at all.
     int start = 0;
     for (int i = 0; i < nd; i++) {
         if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i])))) {
             start = i + 1;
-            if (is_bundled_incdir(dirs[i]))
-                start = bundled_end;
+            if (i >= bundled_lo && i < bundled_hi)
+                start = bundled_hi;
         }
     }
     for (int i = start; i < nd; i++) {
@@ -2230,6 +2226,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin_abort",
         "__builtin_abs",
         "__builtin_add_overflow",
+        "__builtin_add_overflow_p",
         "__builtin_alloca",
         "__builtin_apply",
         "__builtin_apply_args",
@@ -2365,6 +2362,7 @@ static int64_t has_builtin_val(const char *name) {
         "__builtin_strncpy",
         "__builtin_strrchr",
         "__builtin_sub_overflow",
+        "__builtin_sub_overflow_p",
         "__builtin_thread_pointer",
         "__builtin_trap",
         "__builtin_types_compatible_p",

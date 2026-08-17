@@ -172,6 +172,7 @@ extern char *bi_copysign, *bi_copysignf, *bi_copysignl;
 extern char *bi_fma, *bi_fmaf, *bi_fmal;
 extern char *bi_abs, *bi_labs, *bi_llabs;
 extern char *bi_add_overflow, *bi_sub_overflow;
+extern char *bi_add_overflow_p, *bi_sub_overflow_p;
 extern char *bi_mul_overflow, *bi_mul_overflow_p;
 extern char *bi_sadd_overflow, *bi_saddl_overflow, *bi_saddll_overflow;
 extern char *bi_uadd_overflow, *bi_uaddl_overflow, *bi_uaddll_overflow;

@@ -226,13 +226,15 @@ void help(void) {
            "-Uname              undefine a macro\n"
            "-include file       pre-include file before main source\n"
            "-nostdinc           do not search system include directories\n"
-           "-Wp,-MMD,file       write Make dependency rules\n"
+           "-Wp,-MD,file / -Wp,-MMD,file  write Make dependency rules\n"
            "-MD / -MMD          write Make dependency rules to a .d file\n"
            "-MF file            set the dependency output file\n"
            "-MT target          set the dependency rule target\n"
            "-MQ target          like -MT, quoting make metacharacters\n"
            "-MP                 add phony targets for each prerequisite\n"
            "-fmacro-prefix-map=old=new  remap paths in diagnostics\n"
+           "-funsigned-char     make plain char unsigned by default\n"
+           "-fsigned-char       make plain char signed by default\n"
            "-E                  preprocessor-only\n"
            "-S                  assemble-only\n"
            "-c                  compile-only\n"
@@ -288,6 +290,10 @@ bool opt_funroll = false; // -funroll / enabled at -O2+
 const char *opt_std_version = "202311L"; /* rcc defaults to C23 */
 bool opt_gnu_mode = false; // -std=gnu* enables GNU extensions like typeof, ({})
 const char *opt_exec_charset = NULL; /* -fexec-charset=NAME (e.g. IBM1047) */
+// -funsigned-char / -fsigned-char: override plain `char`'s default
+// signedness (ARM64 ABI default unsigned, x86-64 default signed).
+// 0 = unset (keep ty_char's arch default), 1 = force unsigned, -1 = force signed.
+int opt_char_signedness = 0;
 bool opt_W = false;
 bool opt_Werror = false;
 // Set only by the literal "-Werror" flag below, deliberately distinct
@@ -298,8 +304,8 @@ bool opt_Werror = false;
 // currently the unrecognized-flag rejection below and preprocess.c's
 // #warning handling -- must gate on this instead. rcc's own
 // -pedantic-errors torture/compliance tests intentionally combine it
-// with real GCC flags rcc doesn't implement (-fsigned-char,
-// -ffreestanding, -fno-asm, ...) and rely on those being tolerated
+// with real GCC flags rcc doesn't implement (-ffreestanding, -fno-asm,
+// ...) and rely on those being tolerated
 // (warned, not rejected) -- unlike bare -Werror, whose only realistic
 // caller is a build-system capability probe (see the muon-derived
 // tests) that specifically wants an unrecognized flag or diagnostic
@@ -317,6 +323,11 @@ bool opt_pic = false;
 bool opt_shared = false;
 bool opt_static = false;
 bool opt_export_dynamic = false;
+// -r: produce a relocatable/partial-linked object (multiple .o merged,
+// not a final executable) -- needs its own flag since it changes both
+// mingw's automatic ".exe" output-suffix logic and the automatic -lm
+// this driver otherwise appends to every link (see both use sites).
+bool opt_relocatable = false;
 // -Wl,--out-implib,PATH (Windows/mingw): write an import library for the
 // DLL this link produces. NULL when not requested.
 char *opt_out_implib = NULL;
@@ -630,8 +641,11 @@ int main(int argc, char **argv) {
             opt_export_dynamic = true;
             xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
         } else if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-L", 2) ||
-                   !strcmp(argv[i], "-nodefaultlibs") ||
+                   !strcmp(argv[i], "-nodefaultlibs") || !strcmp(argv[i], "-nostdlib") ||
+                   !strcmp(argv[i], "-r") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
+            if (!strcmp(argv[i], "-r"))
+                opt_relocatable = true;
             if (!strncmp(argv[i], "-Wl,", 4) &&
                 (wl_has_token(argv[i], "-E") || wl_has_token(argv[i], "--export-dynamic")))
                 opt_export_dynamic = true;
@@ -770,6 +784,12 @@ int main(int argc, char **argv) {
         } else if (!strncmp(argv[i], "-Wp,-MMD,", 9)) {
             opt_depfile = argv[i] + 9;
             opt_gen_deps = true;
+        } else if (!strncmp(argv[i], "-Wp,-MD,", 8)) {
+            // Same as -Wp,-MMD, for our purposes (rcc doesn't distinguish
+            // system vs. non-system headers in the .d output either way).
+            // Used by Linux kernel/busybox Kbuild's scripts/Makefile.host.
+            opt_depfile = argv[i] + 8;
+            opt_gen_deps = true;
         } else if (!strcmp(argv[i], "-MD") || !strcmp(argv[i], "-MMD")) {
             // GCC/Clang: generate a Make .d as a side effect of compiling.
             // (-MMD omits system headers; rcc does not track that split, so
@@ -811,12 +831,20 @@ int main(int argc, char **argv) {
             ; // accepted, no effect (rcc always resolves includes)
         } else if (!strncmp(argv[i], "-fexec-charset=", 15)) {
             opt_exec_charset = argv[i] + 15;
+        } else if (!strcmp(argv[i], "-funsigned-char")) {
+            opt_char_signedness = 1; // unsigned
+        } else if (!strcmp(argv[i], "-fsigned-char")) {
+            opt_char_signedness = -1; // signed
         } else if (!strcmp(argv[i], "-fdefer-ts")) {
             opt_defer_ts = true;
+        } else if (!strcmp(argv[i], "-fwrapv") || !strcmp(argv[i], "-fno-strict-overflow")) {
+            ; // accepted, no effect: rcc's codegen never exploits signed-overflow
+            // UB (no such optimization pass exists), so it is already
+            // effectively -fwrapv at all times.
         } else if (!strncmp(argv[i], "-Wno-", 5) ||
                    !strncmp(argv[i], "-Werror=", 8)) {
             ; // silently ignored
-        } else if (!strcmp(argv[i], "-pedantic-errors")) {
+        } else if (!strcmp(argv[i], "-pedantic-errors") || !strcmp(argv[i], "--pedantic-errors")) {
             opt_Werror = true;
             opt_pedantic = true;
         } else if (!strcmp(argv[i], "-pedantic") || !strcmp(argv[i], "-Wpedantic")) {
@@ -911,6 +939,12 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+
+    // Apply -funsigned-char/-fsigned-char before any TU is parsed: plain
+    // `char`'s signedness must be fixed for the whole compilation (it
+    // affects literal typing, integer promotions and codegen throughout).
+    if (opt_char_signedness != 0)
+        ty_char->is_unsigned = opt_char_signedness > 0;
 
     // Process each input file
     for (int fi = 0; fi < n_inputs; fi++) {
@@ -1250,7 +1284,7 @@ int main(int argc, char **argv) {
         // to happen here to keep the native and external link paths
         // consistent with each other and with real gcc.
         char backend_out_exe[512];
-        if (!opt_shared && !opt_stdout) {
+        if (!opt_shared && !opt_stdout && !opt_relocatable) {
             size_t blen = strlen(backend_out);
             if (blen < 4 || strcmp(backend_out + blen - 4, ".exe") != 0) {
                 snprintf(backend_out_exe, sizeof(backend_out_exe), "%s.exe", backend_out);
@@ -1289,7 +1323,9 @@ int main(int argc, char **argv) {
                 // rcc.exe running standalone under wine in CI).
                 bool recognized_wl = wl && len > 4 + 13 && !strncmp(lp + 4, "--out-implib,", 13);
                 if ((wl && !recognized_wl) ||
-                    (len >= 14 && !strncmp(lp, "-nodefaultlibs", 14)))
+                    (len >= 14 && !strncmp(lp, "-nodefaultlibs", 14)) ||
+                    (len == 9 && !strncmp(lp, "-nostdlib", 9)) ||
+                    (len == 2 && !strncmp(lp, "-r", 2)))
                     native_link_capable = false;
                 lp = end;
             }
@@ -1396,11 +1432,21 @@ int main(int argc, char **argv) {
             }
         }
 #ifdef __APPLE__
-        xappendf(&cmd, &cmd_len, &cmd_cap,
-                 GCC " -o \"%s\" -arch arm64"
-                     " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
-                     " -Wl,-undefined,dynamic_lookup",
-                 backend_out);
+        if (opt_relocatable) {
+            // `-r` produces a relocatable object, not an executable or
+            // shared library -- the flags below are meaningless (or
+            // actively rejected by ld64) in that mode: `-arch`/`-isysroot`
+            // only matter for resolving/linking against real system
+            // frameworks, and `-Wl,-undefined,dynamic_lookup` (defer
+            // undefined-symbol resolution to runtime dyld) makes no sense
+            // for an object that isn't being dynamically linked at all.
+            xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -r -o \"%s\"", backend_out);
+        } else
+            xappendf(&cmd, &cmd_len, &cmd_cap,
+                     GCC " -o \"%s\" -arch arm64"
+                         " -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+                         " -Wl,-undefined,dynamic_lookup",
+                     backend_out);
 #else
         if (opt_pie)
             xappendf(&cmd, &cmd_len, &cmd_cap, GCC " -pie -o \"%s\"", backend_out);
@@ -1415,7 +1461,7 @@ int main(int argc, char **argv) {
             xappendf(&cmd, &cmd_len, &cmd_cap, " \"%s\"", p->path);
 
 #if defined(_WIN32) || defined(__MINGW32__)
-        {
+        if (!opt_relocatable) {
             struct stat libst;
 #ifdef RCC_INCDIR
             const char *rcc_lib = RCC_INCDIR "/../lib/rcc_mingw.obj";
@@ -1468,6 +1514,13 @@ int main(int argc, char **argv) {
         // Only add it when the user didn't already pass -lm: a duplicate
         // makes recent macOS ld warn "ignoring duplicate libraries:
         // '-lm'", which pollutes callers that capture the link output.
+        // `-r` (partial/relocatable link, e.g. busybox's own two-stage
+        // `applets/built-in.o` build) must never get an auto-added -lm:
+        // `-r` disables shared linking, so `ld` demands a *static*
+        // libm.a -- which this system may not even have installed
+        // (verified directly against real gcc: `gcc -r -lm a.o b.o`
+        // fails "cannot find -lm" here even though `-lm` alone links
+        // fine against the shared libm.so in every other mode).
         bool have_lm = false;
         for (const char *p = libs; p && (p = strstr(p, "-lm")); p += 3) {
             bool start_ok = (p == libs) || p[-1] == ' ';
@@ -1477,7 +1530,7 @@ int main(int argc, char **argv) {
                 break;
             }
         }
-        if (!have_lm)
+        if (!have_lm && !opt_relocatable)
             xappendf(&cmd, &cmd_len, &cmd_cap, " -lm");
 
         if (opt_dryrun) {
