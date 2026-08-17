@@ -275,4 +275,15 @@ __rcc_inline void _mm_stream_ps(float *__p, __m128 __a) { *(__m128 *)__p = __a; 
 #define _CMP_TRUE_US 0x1f
 
 #undef __rcc_inline
+
+// Real GCC/Clang's <xmmintrin.h> auto-chains to <emmintrin.h> once SSE2 is
+// enabled (the default on x86-64) -- third-party code commonly includes
+// only <xmmintrin.h> and then freely uses SSE2-only intrinsics
+// (_mm_storeu_si128/_mm_loadu_si128/__m128i/...), relying on that chain
+// rather than including <emmintrin.h> itself. Safe against the reciprocal
+// `#include <xmmintrin.h>` at the top of emmintrin.h: both headers guard
+// their own body with an include-guard macro.
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
 #endif // _XMMINTRIN_H_INCLUDED
