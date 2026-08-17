@@ -6215,3 +6215,59 @@ baseline's step-by-step body transforms. `make check-all`: 0 failed
 (Unit 4232/4232 incl. the new test, TCC 118/118, Compliance 15/15,
 C-testsuite 220/220, Torture 3605/3609 — 0 failed, 354 skipped, 4
 todo, Dg-error 34/34, Link 10/10).
+
+### Fixed (2026-08-17, loop-unroll induction-variable final-value session)
+
+**test_gzip fixed** — `gzip -c <anything>` segfaulted unconditionally
+(`Error 139`, reproduced even on the project's own `make check`'s
+`gzip.doc.gz` generation step). Root cause: `-funroll` (enabled at
+`-O2`+, gzip's own build uses `-O2`) unrolls small constant-count
+`for` loops by cloning the body N times and substituting every read of
+the induction variable inside each clone with its compile-time
+constant value — correct for the clones themselves, since the loop's
+own `inc` clause is discarded by unrolling. But `try_unroll()` never
+wrote the induction variable's _real_ runtime storage past its `init`
+value; any code textually after the loop that still reads the same
+(function-scope) variable saw whatever `init` left it at, not the
+value a real, non-unrolled loop's exit would leave it at
+(`start + count`).
+
+gzip's `trees.c: ct_init()` has exactly this shape: `for (code = 0;
+code < 16; code++) { ...dist_code[dist++] = code... }` immediately
+followed by a second loop reusing the same variable via an empty init
+clause, `for (; code < D_CODES; code++) { ... }`, relying on `code`
+continuing from 16. The first loop unrolled (16 iterations, under
+`MAX_UNROLL_ITERS`) and left `code` at 0 instead of 16. The second
+loop's own body, `dist_code[256 + dist++] = code` guarded by `1 <<
+(extra_dbits[code] - 7)`, then read `extra_dbits[0] - 7 = -7`; x86's
+SHL masks the shift count to 5 bits, so `1 << -7` became `1 << 25 =
+33554432` — the inner loop ran 33 million times, writing far past
+`dist_code`'s 512-byte array and crashing a few thousand iterations
+in.
+
+Isolated via a from-scratch bisection: attaching gdb to the crashing
+`gzip` binary showed `ct_init`'s disassembly fully unrolled (16
+near-identical blocks, one per `code` value, confirmed by counting
+repeated `cmp %r11d,%r10d` patterns spaced a fixed number of bytes
+apart); a hand-built standalone reproducer of `ct_init`'s exact
+dist-code-mapping shape reproduced nothing at the default optimization
+level but crashed identically once compiled with the same `-O2` gzip's
+build actually uses, narrowing the search to `-funroll`'s
+implementation directly.
+
+Fixed by having `try_unroll()` (`src/opt.c`) append one extra
+assignment, `ivar = start_val + count`, after the last unrolled body
+copy — materializing the same final value a genuine loop's exit would
+leave the induction variable at, for any later code that still reads
+it.
+
+New regression test: `test/test_unroll_ivar_final_value.c` — the
+exact two-loops-reusing-one-variable shape plus three narrower cases
+(bare read after the loop, non-zero start value, `<=` condition),
+each checked at `-O0` and `-O2`. Verified: gzip 1.14's own `make
+check` now passes its full 30/30 test suite (previously crashed
+before a single test could run), and a direct `./gzip -c gzip.doc |
+gzip -d | diff - gzip.doc` round-trips byte-identical. `make
+check-all`: 0 failed (Unit 4234/4234 incl. the new test, TCC 118/118,
+Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 — 0 failed,
+354 skipped, 4 todo, Dg-error 34/34, Link 10/10).

@@ -903,6 +903,36 @@ static Node *try_unroll(Node *node) {
         }
     }
 
+    // Materialize the induction variable's real final value (start_val +
+    // count) after the last unrolled copy. subst_lvar() above only
+    // replaces READS of ivar *inside* each cloned body with compile-time
+    // constants -- the loop's own `inc` clause is gone (unrolling
+    // replaced it), so ivar's actual runtime storage is never touched
+    // again after the `init` statement and is left holding start_val
+    // forever. Any code textually AFTER this loop that still reads ivar
+    // (a subsequent `for (; ivar < END2; ivar++)` reusing the same
+    // variable with an empty init clause, e.g. gzip's ct_init():
+    // `for(code=0;code<16;code++){...} dist>>=7;
+    // for(;code<D_CODES;code++){...}`) must see the same value a real,
+    // non-unrolled loop would have left ivar at on exit -- otherwise the
+    // second loop starts from whatever start_val was (often 0) instead
+    // of the true continuation point, corrupting every index it derives
+    // from ivar (segfaulted gzip: dist_code[] writes ran off the end of
+    // its 512-byte array).
+    Node *ivar_ref = clone_expr(node->init->lhs);
+    Node *final_val = arena_alloc(sizeof(Node));
+    final_val->kind = ND_NUM;
+    final_val->val = start_val + count;
+    final_val->ty = ivar_ref->ty;
+    Node *final_assign = arena_alloc(sizeof(Node));
+    final_assign->kind = ND_ASSIGN;
+    final_assign->lhs = ivar_ref;
+    final_assign->rhs = final_val;
+    final_assign->ty = ivar_ref->ty;
+    final_assign->tok = node->tok;
+    tail->next = final_assign;
+    tail = final_assign;
+
     return head.next; // the first statement (init), with the rest chained
 }
 
