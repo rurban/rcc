@@ -6500,3 +6500,78 @@ failed, 354 skipped, 4 todo, Dg-error 34/34, Link 10/10). mingw cross:
 0 failed. **mimalloc now passes its full test suite: 4/4 ctest targets
 (`test-api`, `test-api-fill`, `test-stress`, `test-stress-dynamic`)
 pass, 100%** — checked off in `checklist.txt`.
+
+### Fixed (2026-08-17, xmmintrin.h SSE2 auto-chain + C99 inline-linkage session)
+
+**test_pixman substantially unblocked** — its `test/utils/utils-prng.c`
+(`#include <xmmintrin.h>` then freely calling SSE2-only
+`_mm_storeu_si128`/`_mm_loadu_si128`/`__m128i`, relying on real
+GCC/Clang's `<xmmintrin.h>` auto-chaining to `<emmintrin.h>` once
+`__SSE2__` is defined) failed "undeclared variable" — rcc's bundled
+`<xmmintrin.h>` had no such chain. Fixed by adding the identical
+`#ifdef __SSE2__ #include <emmintrin.h> #endif` real GCC/Clang carry.
+New test: `test/test_xmmintrin_emmintrin_chain.c`. pixman's build now
+reaches 98/118 steps (was a complete blocker at step ~30); the one
+remaining failure (`matrix-test`/`glyph-test`, a static-archive
+link-order artifact: `libtestutils.a` referencing `libpixman-1.a`
+symbols but placed after it on the link line) reproduces
+byte-for-byte identically against the system's real GCC + the exact
+same objects/link line — confirmed not an rcc bug, out of scope, not
+checked off.
+
+**mimalloc's real-world trigger led to a second, deeper bug**:
+`test_mpack`'s own unit-test suite SIGABRT'd on
+`TEST_TRUE(fn_mpack_tag_nil == &mpack_tag_nil)` — the previous
+session's `.rela.tdata` fix (immediately above) made a non-exported
+`inline` function's address compare equal across TUs when
+_genuinely address-taken_, by emitting it `SB_WEAK` unconditionally —
+but that broke the _other_ half of C99 inline linkage: a plain
+`inline` function that's only ever _called_ (never address-taken,
+e.g. `104_inline.c`'s `inline_inline_undeclared()` et al., real GCC's
+own tinycc regression test) is supposed to keep the narrower,
+never-externally-visible binding real GCC/Clang effectively give it
+too — `SB_WEAK` made it wrongly visible to a
+`__attribute__((weak))`-declared cross-TU probe
+(`104+_inline.c`'s `GOT()` macro), regressing `104_inline` from
+118/118 TCC-compat passes to 117/118.
+
+Root-caused and fixed properly: added `LVar.addr_taken`
+(`src/rcc.h`), set whenever a global initializer's relocation
+(`append_reloc()`, `src/parser.c`) or a runtime `&fn` expression
+(the unary `&` operator, `src/parser.c`) targets a function — codegen
+now only emits `SB_WEAK` for a non-exported `inline` function when
+its address was genuinely taken somewhere in the TU; a call-only (or
+entirely unused) one keeps `SB_LOCAL` (`src/codegen.c`, both ARM64
+and x86-64 prologue-emission sites). Also fixed a second, independent
+bug this surfaced: `eliminate_unused_static_inline()`
+(`src/opt.c`) used `f->body` (the `Node*` head of a function's
+statement list) as a "has a definition" proxy — wrong for a
+textually empty `{}` definition (`body == NULL` legitimately), which
+kept every empty-bodied omittable candidate alive unconditionally;
+removed that check (every `fns[]` entry is a genuine definition by
+construction, regardless of body content) and added a third
+omittable category (plain non-static `inline`, no forcing
+declaration, genuinely unreferenced — matching `static inline`'s
+existing unconditional-at-every--O-level omission, real GCC/Clang's
+own behavior, C11 6.7.4p7).
+
+Also taught rcc's own native linker (`link_add_sym()`, `src/link.c`)
+strong-overrides-weak duplicate-symbol precedence, matching its
+already-documented `link.h` contract ("strong overrides weak,"
+never actually implemented): multiple TUs' identical `SB_WEAK`
+inline-function copies previously hit a hard "duplicate definition"
+error in the native linker (silently falling back to the external
+`gcc`/`ld` linker, which handles it correctly) instead of resolving
+cleanly in-process.
+
+New regression test: `test/test-link.sh` case 14 ("plain C99 inline
+function address uniqueness (3-TU link)"). Verified against a real
+GCC-built baseline throughout. `mpack`'s own unit-test suite passes
+954/954 build+test configurations, 0 failures across ~50M individual
+checks (was SIGABRT). tinycc's `104_inline`/`104+_inline.c` matches
+its `.expect` file exactly (byte-for-byte) again.
+
+`make check-all`: 0 failed (Unit 4240/4240 incl. the new tests, TCC
+118/118, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 —
+0 failed, 354 skipped, Dg-error 34/34, Link 11/11). mingw cross: 0
+failed.

@@ -492,6 +492,47 @@ else
     printf '  %-44s SKIP (not applicable to Windows SONAMEs)\n' "versioned SONAME with SemVer prerelease suffix"
 fi
 
+# ---------------------------------------------------------------------------
+# 14. Plain C99 `inline` (no `extern`, no `gnu_inline`) function whose
+#    address is taken in more than one TU. Under standard C99 inline
+#    linkage, an `inline`-only definition provides no forcing external
+#    definition, so `&fn` in any such TU still needs a real out-of-line
+#    body somewhere (taking an address can never be satisfied by pure
+#    inlining) -- resolved at link time against whichever TU's identical
+#    body the linker keeps, so every TU's `&fn` compares equal. rcc's
+#    codegen emitted each non-exported TU's own copy as SB_LOCAL (a
+#    private, non-collapsible per-TU symbol), so `&fn` differed across
+#    TUs -- found via mpack's own test suite, which explicitly asserts
+#    `&mpack_tag_nil` compares equal between two TUs that each only see
+#    the plain-`inline` definition (SIGABRT on the assertion failure).
+#    Fixed by emitting these as SB_WEAK instead (codegen.c) plus teaching
+#    rcc's own native linker's duplicate-symbol check strong-overrides-
+#    weak precedence (link.c), matching real GCC/Clang's final linked
+#    behavior without the larger surgery of never emitting a body at all
+#    (which is what GCC/Clang's own object files do).
+# ---------------------------------------------------------------------------
+cat > "$TMP/ilp.c" <<'EOF'
+extern inline int il_answer(void) { return 42; }
+EOF
+cat > "$TMP/ila.c" <<'EOF'
+inline int il_answer(void) { return 42; }
+int (*il_pa)(void) = &il_answer;
+EOF
+cat > "$TMP/ilb.c" <<'EOF'
+inline int il_answer(void) { return 42; }
+extern int (*il_pa)(void);
+int (*il_pb)(void) = &il_answer;
+int main(void) {
+    return (il_pa == il_pb && il_pb == &il_answer && il_answer() == 42) ? 0 : 1;
+}
+EOF
+if "$RCC" "$TMP/ilp.c" "$TMP/ila.c" "$TMP/ilb.c" -o "$TMP/ilprog" 2>"$TMP/e12" \
+    && "$(winprog "$TMP/ilprog")"; then
+    pass "plain C99 inline function address uniqueness (3-TU link)"
+else
+    fail "plain C99 inline function address uniqueness (3-TU link)" "$(tr '\n' ' ' < "$TMP/e12")"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

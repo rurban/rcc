@@ -5315,6 +5315,15 @@ static void append_reloc(LVar *var, int offset, char *label, int addend) {
     rel->label = label;
     rel->addend = addend;
     insert_reloc_sorted(var, rel);
+    // Mark the target function (if any) address-taken: codegen.c's
+    // plain-inline-with-no-forcing-declaration SB_LOCAL/SB_WEAK choice
+    // (see rcc.h's LVar.addr_taken doc comment) consults this so `&fn`
+    // in a global initializer gets a linker-collapsible symbol, while a
+    // same-shaped function only ever *called* keeps the narrower,
+    // no-cross-TU-visibility-needed SB_LOCAL binding.
+    LVar *target = find_global_name(label);
+    if (target && target->is_function)
+        target->addr_taken = true;
 }
 
 // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
@@ -11444,6 +11453,14 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(node);
         if (node->kind == ND_LVAR && node->var && node->var->is_register)
             error_tok(tok, "address of register compound literal requested");
+        // `&fn`: same address-taken tracking as append_reloc() (static
+        // initializers) below, but for a runtime expression -- e.g.
+        // mpack's own test suite compares `fn_mpack_tag_nil ==
+        // &mpack_tag_nil` inside a function body, which never goes
+        // through a global initializer's relocation path at all. See
+        // rcc.h's LVar.addr_taken doc comment.
+        if (node->kind == ND_LVAR && node->var && node->var->is_function)
+            node->var->addr_taken = true;
         return new_unary(ND_ADDR, node, tok);
     }
     if (equalc(tok, "*"))

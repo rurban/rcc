@@ -16224,11 +16224,13 @@ struct ObjFile *codegen(Program *prog) {
         // Symbol linkage
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
+        bool inline_addr_taken = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
                     if (g->has_init) has_noninline_decl = true;
                     if (g->is_extern && !g->is_weak) had_extern_decl = true;
+                    inline_addr_taken = g->addr_taken;
                     break;
                 }
             }
@@ -16265,8 +16267,35 @@ struct ObjFile *codegen(Program *prog) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported)
             cg_global_label(fn_sym_name); // .globl %s
+        else if (inline_addr_taken)
+            // C99 inline-linkage, address genuinely taken somewhere in
+            // this TU (a global initializer's `&fn`, see rcc.h's
+            // LVar.addr_taken doc comment): every TU that can't fully
+            // inline every call/address-of still emits its own copy of
+            // the body, and real GCC/Clang, given identical bodies
+            // (mandatory for the same inline function across TUs), just
+            // reference an external symbol and let exactly one other TU
+            // provide it. rcc instead always emits a body per TU;
+            // SB_LOCAL (a plain, non-address-comparable private copy)
+            // made `&fn` differ across TUs -- the standard library's own
+            // multiple-inclusion idiom (e.g. mpack's `mpack_tag_nil`)
+            // explicitly compares such addresses for identity. SB_WEAK
+            // instead lets the linker collapse every TU's copy (plus any
+            // single non-weak/GLOBAL definition, which always wins over
+            // weak per ELF rules) down to one program-wide symbol,
+            // matching GCC's final linked behavior.
+            cg_weak_label(fn_sym_name);
         else
-            cg_def_fn_label(fn_sym_name); // .weak %s
+            // Never address-taken, only ever called (or fully unused —
+            // see opt.c's eliminate_unused_static_inline, which omits
+            // this case entirely when unreferenced): no cross-TU address
+            // comparison is possible, so the narrower SB_LOCAL binding
+            // real GCC/Clang effectively give it too (their own copy,
+            // never externally visible) is correct and keeps a same-TU
+            // call sited via the fast label-hashtable direct branch
+            // (cg_def_fn_label, unlike cg_weak_label) instead of forcing
+            // every call through a real relocation.
+            cg_def_fn_label(fn_sym_name);
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
@@ -16708,6 +16737,7 @@ struct ObjFile *codegen(Program *prog) {
         // 2. If prior non-weak declaration had extern (LVar is_extern=true)
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
+        bool inline_addr_taken = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
@@ -16716,6 +16746,7 @@ struct ObjFile *codegen(Program *prog) {
                     // Only consider non-weak extern declarations
                     if (g->is_extern && !g->is_weak)
                         had_extern_decl = true;
+                    inline_addr_taken = g->addr_taken;
                     break;
                 }
             }
@@ -16733,8 +16764,17 @@ struct ObjFile *codegen(Program *prog) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported) {
             cg_global_label(fn_sym_name); // .globl %s
+        } else if (inline_addr_taken) {
+            // See the identical ARM64 comment above this function's
+            // mirror decision: address genuinely taken somewhere in this
+            // TU (rcc.h's LVar.addr_taken) needs SB_WEAK so `&fn`
+            // compares equal across every TU that takes it.
+            cg_weak_label(fn_sym_name);
         } else {
-            cg_def_fn_label(fn_sym_name); // .weak %s
+            // Never address-taken, only ever called: SB_LOCAL, matching
+            // real GCC/Clang's own effectively-private copy and keeping
+            // same-TU calls on the fast label-hashtable direct branch.
+            cg_def_fn_label(fn_sym_name);
         }
 #ifdef _WIN32
         uw_begin(); // .seh_proc

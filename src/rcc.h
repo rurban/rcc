@@ -457,6 +457,18 @@ struct LVar {
     bool is_weak;
     bool is_used; // __attribute__((used)) — see Function.is_used
     bool has_init;
+    // True when append_reloc() (parser.c) records a relocation whose
+    // target names this LVar and this LVar is_function: some global
+    // variable's initializer takes this function's address (`&fn`,
+    // possibly through a chain of const-index/member accesses).
+    // Consulted only for a plain (non-static, non-extern, no forcing
+    // redeclaration) `inline` function's SB_LOCAL-vs-SB_WEAK choice in
+    // codegen.c: address-taking needs a linker-collapsible symbol so
+    // `&fn` compares equal across every TU that takes it (see that
+    // comment); a function only ever *called*, never address-taken,
+    // keeps the narrower SB_LOCAL binding real GCC/Clang effectively
+    // give it too (own copy, no cross-TU visibility needed).
+    bool addr_taken;
     bool is_constexpr; // C23 constexpr object
     int64_t init_val;
     char *init_data;
