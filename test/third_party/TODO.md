@@ -6166,3 +6166,52 @@ to real `sha1sum`/`sha256sum`. `make check-all`: 0 failed (Unit
 4231/4231 incl. both tests, TCC 118/118, Compliance 15/15,
 C-testsuite 220/220, Torture 3605/3609 — 0 failed, 354 skipped, 4
 todo, Dg-error 34/34, Link 10/10). mingw cross-build: 0 failed.
+
+### Fixed (2026-08-17, missing float-precision math.h declarations session)
+
+**test_box2d fixed** — box2d's `test/test_determinism.c` (DeterminismTest)
+hung indefinitely instead of crashing. Root cause: `include/math.h`
+declared most ISO C99 `<math.h>` functions for `double`/`long double`
+but was missing 27 of their `float`-precision (`f`-suffixed) variants:
+`log2f`, `truncf`, `asinhf`, `acoshf`, `atanhf`, `exp2f`, `expm1f`,
+`log1pf`, `cbrtf`, `hypotf`, `erff`, `erfcf`, `copysignf`,
+`remainderf`, `fdimf`, `fmaxf`, `fminf`, `nearbyintf`, `rintf`,
+`lroundf`, `lrintf`, `llroundf`, `llrintf`, `scalbnf`, `ldexpf`,
+`frexpf`, `modff` — same class of bug as the already-documented
+`erf`/`erfc` gap (see test_math_erf.c): an undeclared external call
+falls back to an implicit `int` return, so the caller reads the
+result out of RAX instead of XMM0, silently corrupting it.
+
+box2d's own `b2UnwindAngle()` calls `remainderf(radians, 2*pi)` with
+no other prototype in scope. `remainderf(-1.0f, 2*pi)` returned `0`
+instead of `-1.0f` (other inputs returned values in the billions), so
+every dynamic body's initial rotation came out as identity instead of
+the intended angle. The falling-hinges determinism test's tightly
+packed initial layout then badly overlapped, the contact solver
+exploded body positions into the millions within one physics step,
+and the simulation never settled — the test's outer loop has no step
+cap, waiting for all bodies to sleep, so this presented as an
+apparent infinite hang rather than an obvious crash or wrong-output
+diff. Isolated via targeted instrumentation (printing body 0's
+transform each step) compared against a real-gcc-built baseline
+(passes in ~2s), which narrowed the divergence to `remainderf`
+specifically within one debugging pass.
+
+Fixed by adding the 27 missing float-precision declarations to
+include/math.h, matching the existing double/long-double lists.
+
+New regression test: `test/test_math_float_variants.c` — covers
+`remainderf` (the exact real-world trigger) plus a representative
+sample of the other 26 newly-declared functions, each asserted
+against a mathematically exact expected value (powers of two,
+Pythagorean triples, domain endpoints) with a tight `1e-6` epsilon,
+not just "plausible range" (implicit-int garbage can itself look
+deceptively plausible — see test_math_erf.c's own note on this).
+Verified: fresh box2d rebuild (`cmakebuild/bin/test`, box2d v3.1.1)
+now passes its full unit-test suite end to end, settling the
+determinism scene at exactly step 288 (matching upstream's own
+`EXPECTED_SLEEP_STEP`), byte-for-byte matching the real-gcc-built
+baseline's step-by-step body transforms. `make check-all`: 0 failed
+(Unit 4232/4232 incl. the new test, TCC 118/118, Compliance 15/15,
+C-testsuite 220/220, Torture 3605/3609 — 0 failed, 354 skipped, 4
+todo, Dg-error 34/34, Link 10/10).
