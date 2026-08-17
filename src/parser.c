@@ -1539,7 +1539,19 @@ static bool is_typename(Token *tok) {
     if (tok->kw == ID_ASM || tok->kw == ID___ASM || tok->kw == ID___ASM__)
         return false;
     tok = skip_attributes(tok);
-    if (kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE))
+    // "thread_local"/"constexpr" are keywords only from C23 onward (C11
+    // has no equivalent identifier reservation for either spelling) —
+    // don't let a pre-C23 parameter/variable named "thread_local" or
+    // "constexpr" be mistaken for the start of a type-name, e.g. inside
+    // "(thread_local)" used to disambiguate a cast/compound-literal from
+    // a parenthesized expression (kefir's own boolean-parameter check
+    // `if (thread_local) ...`). Falls through to the ordinary shadowing
+    // checks below, same as any other plain identifier.
+    bool is_std_kw = kw_is(tok, KW_TYPE | KW_QUAL | KW_STORAGE);
+    if (is_std_kw && (tok->kw == ID_THREAD_LOCAL || tok->kw == ID_CONSTEXPR) &&
+        (!opt_std_version || strcmp(opt_std_version, "202311L") < 0))
+        is_std_kw = false;
+    if (is_std_kw)
         return true;
     // A typedef name is an ordinary identifier (C11 6.2.3): a local
     // variable or parameter of the same name declared in an enclosing
@@ -4783,7 +4795,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "constexpr")) {
+        if (equalc(tok, "constexpr") && opt_std_version && strcmp(opt_std_version, "202311L") >= 0) {
             attr->is_constexpr = true;
             tok = tok->next;
             continue;
@@ -4821,7 +4833,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "__thread") || equalc(tok, "_Thread_local") || equalc(tok, "thread_local")) {
+        if (equalc(tok, "__thread") || equalc(tok, "_Thread_local") ||
+            (equalc(tok, "thread_local") && opt_std_version && strcmp(opt_std_version, "202311L") >= 0)) {
             if (attr->is_tls)
                 error_tok(tok, "duplicate 'thread_local'");
             if (attr->is_register)
@@ -8143,6 +8156,26 @@ static KRParam *parse_kr_param_list(Token **rest, Token *tok) {
             char *dname = NULL;
             Type *ddecl = declarator(&tok, tok, copy_type(dty), &dname, &dattr);
             if (dname) {
+                // C11 6.7.6.3p7: array/VLA/function parameter types decay
+                // to pointer — same adjustment declarator_params() already
+                // applies for modern prototype-style parameters. Without
+                // it, a K&R-style `int x[][4];` param stayed a genuine
+                // (incomplete, size-0) array type, corrupting every
+                // `x[i][j]` index computation (wrong element stride) and
+                // the parameter's own register/stack ABI slot (arrays
+                // aren't passed by value at all). Found via cc65's own
+                // LCC-derived K&R test corpus (test/ref/array.c).
+                if (ddecl->kind == TY_VLA) {
+                    unsigned char pqual = ddecl->qual;
+                    ddecl = pointer_to(ddecl->base);
+                    ddecl->qual |= pqual;
+                } else if (ddecl->kind == TY_ARRAY) {
+                    unsigned char pqual = ddecl->qual;
+                    ddecl = pointer_to(ddecl->base);
+                    ddecl->qual |= pqual;
+                } else if (ddecl->kind == TY_FUNC) {
+                    ddecl = pointer_to(ddecl);
+                }
                 for (KRParam *krp = kr_head.next; krp; krp = krp->next) {
                     if (krp->name == dname) {
                         krp->ty = ddecl;
@@ -9903,6 +9936,11 @@ static Node *vector_lower(Node *node) {
     return chain;
 }
 
+// Forward-declared: defined below, used by assign_nested_struct_init's
+// nested array-member branch above it.
+static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
+                                       Token *start, int *anon_count);
+
 // Assign a brace-enclosed initializer into the struct/union member `mem` of
 // lvalue `base` (i.e. `base.mem = { ... }`), appending ND_ASSIGN nodes onto
 // `result`. Recurses when a sub-member is itself a struct/union with its own
@@ -9910,7 +9948,7 @@ static Node *vector_lower(Node *node) {
 // the kernel (atomic_t -> arch_spinlock_t -> raw_spinlock_t -> spinlock_t,
 // e.g. `{ { .val = { 0 } } }`) — parse instead of only one level deep.
 static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
-                                       Token **rest, Token *tok, Token *start) {
+                                       Token **rest, Token *tok, Token *start, int *anon_count) {
     tok = skip(tok, "{");
     Node *member_access = new_node(ND_MEMBER, start);
     member_access->lhs = base;
@@ -10008,7 +10046,67 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                     }
                 }
             } else if ((target->ty->kind == TY_STRUCT || target->ty->kind == TY_UNION) && equalc(tok, "{")) {
-                result = assign_nested_struct_init(result, target_base, target, &tok, tok, start);
+                result = assign_nested_struct_init(result, target_base, target, &tok, tok, start, anon_count);
+            } else if (target->ty->kind == TY_ARRAY && equalc(tok, "{")) {
+                // Nested array member given as its own brace-enclosed
+                // initializer, one level deeper than the top-level
+                // array-member case — positional and/or [N]/[N...M]=val
+                // designated elements, e.g. kefir's
+                // ".parameters = {.refs = {condition_ref, ref1, ref2}}".
+                Node *inner_access = new_node(ND_MEMBER, start);
+                inner_access->lhs = target_base;
+                inner_access->member = target;
+                inner_access->ty = target->ty;
+                tok = tok->next; // skip "{"
+                int len = array_len(target->ty);
+                int aidx = 0;
+                while (!equalc(tok, "}")) {
+                    int sidx = aidx, eidx = aidx;
+                    if (equalc(tok, "[")) {
+                        tok = tok->next;
+                        Node *n = assign(&tok, tok);
+                        long long sv = 0;
+                        eval_const_expr(n, &sv);
+                        sidx = (int)sv;
+                        eidx = sidx;
+                        if (equalc(tok, "...")) {
+                            tok = tok->next;
+                            Node *n2 = assign(&tok, tok);
+                            long long ev = sidx;
+                            eval_const_expr(n2, &ev);
+                            eidx = (int)ev;
+                        }
+                        tok = skip(tok, "]");
+                        tok = skip(tok, "=");
+                        aidx = sidx;
+                    }
+                    Token *val_start = tok;
+                    for (int i = sidx; i <= eidx; i++) {
+                        if (len == 0 || i < len) {
+                            Node *offset = new_num(i, start);
+                            Node *elem_ptr = new_binary(ND_ADD, inner_access, offset, start);
+                            Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                            check_type(elem_lhs);
+                            tok = val_start;
+                            Node *val = (equalc(tok, "{") && target->ty->base &&
+                                         (target->ty->base->kind == TY_STRUCT || target->ty->base->kind == TY_UNION))
+                                ? synth_struct_elem_literal(target->ty->base, &tok, tok, start, anon_count)
+                                : assign(&tok, tok);
+                            check_type(val);
+                            Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
+                            check_type(asgn);
+                            result = new_binary(ND_COMMA, result, asgn, start);
+                        }
+                    }
+                    aidx = eidx + 1;
+                    if (equalc(tok, ",")) {
+                        tok = tok->next;
+                        if (equalc(tok, "}")) break;
+                        continue;
+                    }
+                    break;
+                }
+                tok = skip(tok, "}");
             } else {
                 // A lone extra brace layer around a non-aggregate value is a
                 // legal GNU/C11 redundant-brace idiom, e.g. `{ { 0 } }`.
@@ -11725,6 +11823,9 @@ static Node *unary(Token **rest, Token *tok) {
                         while (idx < len && !equalc(tok, "}")) {
                             int sidx = idx, eidx = idx;
                             // Designated initializer: [N] = val or [N ... M] = val
+                            Member *elem_mem = NULL;
+                            Type *elem_chain_ty = mem->ty->base;
+                            int elem_chain_offset = 0;
                             if (equalc(tok, "[")) {
                                 tok = tok->next;
                                 Node *n = assign(&tok, tok);
@@ -11740,6 +11841,24 @@ static Node *unary(Token **rest, Token *tok) {
                                     eidx = (int)ev;
                                 }
                                 tok = skip(tok, "]");
+                                // A struct/union array element may itself
+                                // carry a chained member designator:
+                                // ".args[0].type = val" (C99 6.7.8p17's
+                                // designator chain continuing through an
+                                // array-index step) -- e.g. kefir's
+                                // DEF_OPCODE macros' compound literals.
+                                // Walk it to a leaf member instead of
+                                // demanding "=" right after "]".
+                                while (elem_chain_ty &&
+                                       (elem_chain_ty->kind == TY_STRUCT || elem_chain_ty->kind == TY_UNION) &&
+                                       equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                                    Member *sm = find_member_by_name(elem_chain_ty, tok->next->name);
+                                    if (!sm) break;
+                                    elem_mem = sm;
+                                    elem_chain_offset += sm->offset;
+                                    elem_chain_ty = sm->ty;
+                                    tok = tok->next->next;
+                                }
                                 tok = skip(tok, "=");
                                 idx = sidx;
                             }
@@ -11753,9 +11872,25 @@ static Node *unary(Token **rest, Token *tok) {
                                     Node *offset = new_num(i, start);
                                     Node *elem_ptr = new_binary(ND_ADD, member_access, offset, start);
                                     Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                                    if (elem_mem) {
+                                        check_type(elem_lhs);
+                                        Member *leaf = elem_mem;
+                                        if (elem_chain_offset != leaf->offset) {
+                                            Member *syn = arena_alloc(sizeof(Member));
+                                            *syn = *leaf;
+                                            syn->offset = elem_chain_offset;
+                                            leaf = syn;
+                                        }
+                                        Node *sub_access = new_node(ND_MEMBER, start);
+                                        sub_access->lhs = elem_lhs;
+                                        sub_access->member = leaf;
+                                        sub_access->ty = leaf->ty;
+                                        elem_lhs = sub_access;
+                                    }
+                                    Type *elem_val_ty = elem_mem ? elem_chain_ty : mem->ty->base;
                                     Token *val_start = tok;
-                                    Node *val = (equalc(tok, "{") && (mem->ty->base->kind == TY_STRUCT || mem->ty->base->kind == TY_UNION))
-                                        ? synth_struct_elem_literal(mem->ty->base, &tok, tok, start, &anon_count)
+                                    Node *val = (equalc(tok, "{") && (elem_val_ty->kind == TY_STRUCT || elem_val_ty->kind == TY_UNION))
+                                        ? synth_struct_elem_literal(elem_val_ty, &tok, tok, start, &anon_count)
                                         : assign(&tok, tok);
                                     check_type(val);
                                     Node *asgn = new_binary(ND_ASSIGN, elem_lhs, val, start);
@@ -11796,7 +11931,7 @@ static Node *unary(Token **rest, Token *tok) {
                         // Struct/union member with brace-enclosed initializer
                         // (recurses for further nested struct/union members).
                         Node *var_node = new_var_node(var, start);
-                        result = assign_nested_struct_init(result, var_node, mem, &tok, tok, start);
+                        result = assign_nested_struct_init(result, var_node, mem, &tok, tok, start, &anon_count);
                         result->ty = ty;
                     } else if (equalc(tok, "{")) {
                         // Extra braces around a scalar initializer (e.g. { { } } for int*)

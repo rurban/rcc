@@ -132,11 +132,14 @@ void add_include_path(const char *path);
 void add_quote_include_path(const char *path); // -iquote: quote-form ("...") includes only
 // -nostdinc: skip system include paths
 extern bool opt_nostdinc;
-// Make dependency generation (-Wp,-MMD, / -MD / -MMD / -MF / -MT / -MQ / -MP)
+// Make dependency generation (-Wp,-MMD, / -MD / -MMD / -MF / -MT / -MQ / -MP
+// / -M / -MM)
 extern const char *opt_depfile;
 extern const char *opt_dep_target;
 extern bool opt_gen_deps;
 extern bool opt_dep_phony;
+// -M/-MM: dependency-rule-only mode, no compilation at all (see main.c)
+extern bool opt_deps_only;
 // -fmacro-prefix-map=old=new
 extern const char *opt_prefix_map_old;
 extern const char *opt_prefix_map_new;
@@ -145,6 +148,8 @@ void add_preinclude(const char *path);
 void add_prefix_map(const char *old, const char *new_str);
 // Write dependency file after preprocessing
 void write_dep_file(const char *out_path, const char *main_fpath);
+// -M/-MM: print the dependency rule directly to an open stream
+void print_dep_rule(FILE *f, const char *out_path, const char *main_fpath);
 void rcc_reset_state(void);
 void print_search_dirs(const char *gcc);
 Token *tokenize(char *filename, char *p);

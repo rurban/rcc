@@ -40,6 +40,179 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-17, this session — 5 bugs via test_kefir/test_cc65/linux_thirdparty.bash CC=gcc audit)
+
+Triggered by auditing `test/linux_thirdparty.bash` for hardcoded `gcc`
+that bypasses rcc (weakening third-party coverage): most existing
+hardcodes turned out deliberate (host-toolchain reference oracles —
+`test_binutils_gccverify`'s own name says so; kefir's
+`scripts/detect-host-env.sh` needs literal GCC `-print-search-dirs`/
+`-Wp,-v` output rcc doesn't replicate; tinycc's `make test` is gated on
+`if gcc --version` specifically to use a second, independent compiler as
+its own cross-check oracle). Two were genuine, unconditional bypasses
+with no such justification and got switched to `CC="$CC"`:
+`test_cc65`'s `make ... test` (compiles LCC-derived reference programs
+for output comparison — using rcc there doubles as a codegen check) and
+`test_kefir`'s `make CC=gcc test` (build/test phase, as opposed to the
+`CC=gcc scripts/detect-host-env.sh` host-env probe, correctly left
+alone). Rebuilding both against rcc surfaced 5 real, previously-hidden
+rcc bugs, all confirmed via minimal repros cross-checked against real
+gcc, fixed, and covered by new regression tests:
+
+- **Bare `-M`/`-MM` (dependency-rule-only mode) entirely unrecognized**
+  — `main.c`, `preprocess.c`. Only `-MD`/`-MMD`/`-Wp,-MMD,` (compile
+  normally AND write a `.d` side file) were implemented; the
+  preprocess-only `-M`/`-MM` forms (no compilation at all — print a Make
+  rule to stdout/`-MF`/`-o`) fell through to "ignored unknown option",
+  so rcc proceeded to a full, spurious compile-and-link of the single
+  translation unit instead. Found via kefir's own dependency-generation
+  idiom, `$(CC) -MM -MT '<obj>' <src> > <dep>.d` (`Makefile.mk`), used
+  for every one of its ~800 source files — this alone blocked the build
+  entirely. Fixed by adding an `opt_deps_only` mode: skip codegen/
+  assembly/link for every input, and print the dependency rule via a new
+  shared `emit_dep_rule()`/`print_dep_rule()` (factored out of
+  `write_dep_file()`) to `-MF` if given, else wherever `-E` output would
+  go (stdout, or `-o`'s file). Regression test:
+  `test/test_dep_only_mm.c` (new), PASS on x86-64, ARM64 (qemu-aarch64)
+  and mingw (wine).
+
+- **`thread_local`/`constexpr` treated as unconditional reserved
+  keywords regardless of `-std=`, corrupting pre-C23 code that uses
+  either as a plain identifier** — `parser.c`. Both are real keywords
+  only from C23 onward (C11/C17 have no `constexpr` at all, and only
+  `_Thread_local`/a `<threads.h>` macro for the other); rcc's keyword
+  table classified the bare spellings unconditionally, bypassing the
+  codebase's own established C23-gating pattern already used for
+  `typeof`/`alignas`/`bool`. Two independent breakages, found via
+  kefir's `source/ast/local_context.c`: (1) the declaration-specifier
+  scanner accepted `thread_local`/`constexpr` as storage-class keywords
+  pre-C23 too, so `int thread_local;`/a same-named parameter
+  mis-declared ("expected variable name" or a swallowed declarator
+  name); (2) even past that, `is_typename()` — used to disambiguate a
+  parenthesized cast/compound-literal from a plain parenthesized
+  expression — independently checked the same unconditional keyword
+  classification, so a bare `(thread_local)`, e.g. inside `if
+(thread_local) ...` where `thread_local` is an `int` parameter, was
+  silently misparsed as a bogus type-name/cast: no error, but the
+  parameter's real value was never read (always evaluated as 0) — a
+  genuine miscompilation, not just a diagnostic gap. Fixed by gating
+  both sites on `opt_std_version >= C23` for exactly these two
+  spellings. Regression test: `test/test_pre_c23_thread_local_ident.c`
+  (new; verifies both correct pre-C23 identifier use — including the
+  miscompile — and correct C23 keyword rejection), PASS on x86-64, ARM64
+  and mingw.
+
+- **Designated initializer chain continuing past an array-index step
+  with a further `.member` designator, and a nested struct member that
+  is itself an array given as its own brace list, both unsupported
+  specifically inside an EXPRESSION-CONTEXT compound literal** —
+  `parser.c`. `(Type){...}` used as a plain expression (e.g. a function
+  argument, as opposed to a whole variable's own initializer, which
+  `local_init_one()`/`global_init_one()` already handled correctly) has
+  its own, simpler struct/array-member parser. Two related gaps found
+  via kefir: (1) `source/codegen/amd64/asmcmp.c`'s `DEF_OPCODE_*` macros
+  build `&(const struct ...) {.opcode = ..., .args[0].type = ..., ...}`
+  hundreds of times — the array-element loop always demanded `=`
+  directly after `]`, hard-erroring ("expected specific operator") on
+  the `.type` continuation; once fixed, the synthesized member-access
+  node's `ND_DEREF` sub-node never got `check_type()` called on it
+  (every other fresh-`ND_DEREF` call site in the file does), leaving its
+  `->ty` NULL and segfaulting codegen the first time it was inspected.
+  (2) `source/optimizer/builder.c`'s `.parameters = {.condition_variant
+= v, .refs = {a, b, c}}` — a nested struct member that is itself an
+  array, given as a plain positional brace list one level deeper — fell
+  through `assign_nested_struct_init()`'s generic "lone extra brace
+  around a scalar" path, which only ever consumed one element before
+  demanding the closing `}`. Fixed by (1) walking the chained
+  `.member` designator after an array index the same way the file's
+  existing top-level struct-designator chain already does, with the
+  missing `check_type()`; (2) a new nested-array-member branch in
+  `assign_nested_struct_init()` (threaded an `anon_count` parameter
+  through for its own nested-struct-element support), mirroring the
+  top-level array-member loop. Regression test:
+  `test/test_compound_literal_array_member_designator.c` (new; covers
+  both bugs plus a range-designator variant and an explicit nested
+  `[idx]` designator), PASS on x86-64, ARM64 and mingw.
+
+- **Bare "-L path" / "-l name" (as two separate argv elements, as
+  opposed to the glued "-Lpath"/"-lname" form) silently dropped the
+  path/name** — `main.c`. Both real GCC/ld syntax, commonly emitted by
+  build systems from a Make variable — e.g. kefir's own final link step,
+  `$(CCLD) ... -L $(LIB_DIR) -lkefir $(LDFLAGS)`. The `-l`/`-L` handling
+  only ever forwarded `argv[i]` verbatim to the linker; a bare `-L`/`-l`
+  (nothing glued after it) went through with no path/name at all, and
+  the actual value in the next argv slot fell through as an unrelated
+  positional input file — so kefir's link command literally became `-L
+-lkefir` (no search directory), and `libkefir.so`/`.a` was never
+  found, failing with a wall of unrelated "undefined reference" errors.
+  Fixed by joining the bare `-L`/`-l` with the following argv element
+  into one token before any of the existing glued-form handling runs.
+  Regression test: `test/test_bare_L_l_linker_args.c` (new; links
+  against a static archive findable only via a separated `-L dir`/`-l
+name` pair), PASS on x86-64, ARM64 and mingw.
+
+- **K&R (old-style) array-typed parameters kept their raw, undecayed
+  array type instead of decaying to a pointer (C11 6.7.6.3p7)** —
+  `parser.c`. The modern prototype-style parameter parser
+  (`declarator_params()`) already applied the array/VLA/function
+  parameter-to-pointer decay; the old-style K&R parameter-declaration-
+  list parser (`parse_kr_param_list()`, used for `void g(x) int x[][4];
+{ ... }` definitions) stored the declarator's type verbatim, with no
+  decay at all — every `x[i][j]` index used the wrong element stride,
+  and the parameter's own ABI slot was wrong (arrays are never passed by
+  value). Found via cc65's own LCC-derived K&R test corpus
+  (`test/ref/array.c`, part of `test/third_party`'s test_cc65 -- one of
+  the `ref/Makefile`-driven "compile a reference program with $(CC),
+  compare its stdout against cc65's own 6502-cross-compiled-and-emulated
+  output" tests): a 2D-array K&R parameter produced garbage instead of
+  the expected values (a SIGSEGV in the full cc65 corpus's `array.c`,
+  which additionally chains a scalar K&R param through an already-
+  garbage pointer). Fixed by applying the identical decay
+  `declarator_params()` already does. Regression test:
+  `test/test_kr_array_param_decay.c` (new; 1D and 2D K&R array
+  parameters, plus the mixed array+array-of-pointer comma-list shape
+  cc65's own test uses), PASS on x86-64, ARM64 and mingw.
+
+**test_kefir now builds and links completely** (~800 source files) and
+passes 503/504 of its own unit tests; the one remaining failure
+(`BigInt - signed to long double conversion #1`) is a real, but
+separate and out-of-scope, architectural limitation: rcc represents
+`long double` internally as double precision (64-bit) everywhere except
+at ABI call boundaries (where it correctly narrows/widens through
+genuine 80-bit x87 `fldt`/`fstpt` to match the SysV calling convention),
+documented at length throughout `codegen.c`. kefir's test constructs a
+bit-exact 80-bit extended value via its own (real, gcc-compiled)
+bigint-to-float routine and writes it directly through a `long double *`
+the rcc-compiled test code owns — a raw memory boundary the ABI dance
+doesn't cover. This never surfaces in an all-rcc-compiled program (every
+`long double` value both written and read by rcc-compiled code agrees
+on the same, consistently-narrowed representation); it's specific to
+mixing rcc-compiled and gcc-compiled code that shares raw `long double`
+storage across the boundary. Not attempted this session: implementing
+genuine 80-bit-precision `long double` storage/arithmetic throughout
+codegen is a large, separate undertaking, not a regression.
+**test_cc65 makes substantial further progress** end to end: its
+`asm`/`dasm`/`val` suites (thousands of individual regression-test
+programs, cross-compiled by cc65 and run under the sim6502 emulator)
+now run to completion, and the `array.c` crash this fix directly
+targets is confirmed gone. `make test` still ultimately fails partway
+through `ref/` (which compiles LCC-testsuite reference programs with
+`$(CC)` for output comparison against cc65's own cross-compiled+
+emulated output) on `yacc.c` — a ~40-year-old hand-rolled, byte-packed
+DFA lexer/parser table (`ncform`/`yacc` 1983 vintage, per its own
+header comment) that produces a different, and for rcc empty, parse
+trace vs. real gcc. Bisected far enough to rule out several
+hypotheses (the table-walk's pointer-into-array arithmetic itself is
+correct — confirmed via injected debug prints; not an optimization-
+level artifact — reproduces identically at `-O0`; not `char`
+signedness — reproduces identically under `-funsigned-char`) but not
+root-caused to a specific miscompiled construct this session — a
+candidate miscompilation needing its own dedicated bisect of the
+DFA table-walk's `struct yywork{char verify,advance;}` pointer-offset
+dereferences, not attempted further given the scope. **Not the same
+bug** as the `array.c` K&R-array-parameter-decay fix above (confirmed
+independently: `array.c` now passes standalone).
+
 ### Fixed (2026-08-17, checklist triage session — 7 stacked bugs)
 
 Worked through `test/third_party/checklist.txt`'s unchecked items one by

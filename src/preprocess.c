@@ -3843,13 +3843,43 @@ Token *preprocess(char *filename, char *p) {
     return result;
 }
 
-// Write Make dependency rules. Driven by -Wp,-MMD,<file> (autotools) or
-// the bare -MD/-MMD/-MF/-MT/-MQ/-MP forms (CMake/ninja). The rule target
-// defaults to the -o object (or a.out); -MT/-MQ override it. The ".d"
-// filename comes from -MF, else is derived from the object path by
-// replacing its extension with ".d" (matching GCC's -MD-without-MF).
+// Emit one Make dependency rule ("target: prereqs", plus -MP phony rules)
+// to an already-open stream. Shared by write_dep_file() (side .d file, for
+// -MD/-MMD/-Wp,-MMD,/-MF) and print_dep_rule() (-M/-MM's own stdout/-o
+// output, no side file involved).
+static void emit_dep_rule(FILE *f, const char *target, const char *main_fpath) {
+    // Input read from stdin ("-") isn't a real path on disk — GCC omits it
+    // from the prerequisite list rather than emitting an unopenable "-"
+    // entry (which trips up kbuild's fixdep).
+    fprintf(f, "%s:", target);
+    if (strcmp(main_fpath, "-") != 0)
+        fprintf(f, " %s", main_fpath);
+    for (DepEntry *d = dep_files; d; d = d->next) {
+        if (d->path) fprintf(f, " %s", d->path);
+    }
+    fprintf(f, "\n");
+    // -MP: emit an empty phony rule for each prerequisite so a deleted
+    // header doesn't break the build with "No rule to make target".
+    if (opt_dep_phony) {
+        if (strcmp(main_fpath, "-") != 0)
+            fprintf(f, "%s:\n", main_fpath);
+        for (DepEntry *d = dep_files; d; d = d->next) {
+            if (d->path) fprintf(f, "%s:\n", d->path);
+        }
+    }
+}
+
+// Write Make dependency rules to a side ".d" file. Driven by -Wp,-MMD,<file>
+// (autotools), the bare -MD/-MMD/-MF/-MT/-MQ/-MP forms (CMake/ninja), or
+// -M/-MM combined with an explicit -MF. The rule target defaults to the -o
+// object (or a.out); -MT/-MQ override it. The ".d" filename comes from -MF,
+// else is derived from the object path by replacing its extension with
+// ".d" (matching GCC's -MD-without-MF).
 void write_dep_file(const char *out_path, const char *main_fpath) {
     if ((!opt_depfile && !opt_gen_deps) || !main_fpath) return;
+    // -M/-MM without -MF print the rule to stdout/-o instead, via
+    // print_dep_rule() from main.c — no side .d file in that case.
+    if (opt_deps_only && !opt_depfile) return;
 
     // Resolve the output ".d" path.
     char derived[4096];
@@ -3876,27 +3906,16 @@ void write_dep_file(const char *out_path, const char *main_fpath) {
         fprintf(stderr, "rcc: error: cannot open dependency file '%s'\n", depfile);
         return;
     }
-    // Target: the object (or -MT/-MQ override) depends on the main source
-    // plus every included file. Input read from stdin ("-") isn't a real
-    // path on disk — GCC omits it from the prerequisite list rather than
-    // emitting an unopenable "-" entry (which trips up kbuild's fixdep).
     const char *target = opt_dep_target ? opt_dep_target
                                         : (out_path ? out_path : "a.out");
-    fprintf(f, "%s:", target);
-    if (strcmp(main_fpath, "-") != 0)
-        fprintf(f, " %s", main_fpath);
-    for (DepEntry *d = dep_files; d; d = d->next) {
-        if (d->path) fprintf(f, " %s", d->path);
-    }
-    fprintf(f, "\n");
-    // -MP: emit an empty phony rule for each prerequisite so a deleted
-    // header doesn't break the build with "No rule to make target".
-    if (opt_dep_phony) {
-        if (strcmp(main_fpath, "-") != 0)
-            fprintf(f, "%s:\n", main_fpath);
-        for (DepEntry *d = dep_files; d; d = d->next) {
-            if (d->path) fprintf(f, "%s:\n", d->path);
-        }
-    }
+    emit_dep_rule(f, target, main_fpath);
     fclose(f);
+}
+
+// -M/-MM without -MF: print the dependency rule to `f` (stdout, or -o's
+// file — wherever -E's own output would go) instead of a side .d file.
+void print_dep_rule(FILE *f, const char *out_path, const char *main_fpath) {
+    const char *target = opt_dep_target ? opt_dep_target
+                                        : (out_path ? out_path : "a.out");
+    emit_dep_rule(f, target, main_fpath);
 }

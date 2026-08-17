@@ -227,6 +227,7 @@ void help(void) {
            "-include file       pre-include file before main source\n"
            "-nostdinc           do not search system include directories\n"
            "-Wp,-MD,file / -Wp,-MMD,file  write Make dependency rules\n"
+           "-M / -MM            print Make dependency rule only, no compile\n"
            "-MD / -MMD          write Make dependency rules to a .d file\n"
            "-MF file            set the dependency output file\n"
            "-MT target          set the dependency rule target\n"
@@ -350,10 +351,14 @@ bool opt_nostdinc = false;
 // derived from -o); opt_dep_target overrides the rule target (-MT/-MQ);
 // opt_gen_deps is set by -MD/-MMD when no explicit -MF filename was given
 // so write_dep_file() can derive one; opt_dep_phony adds -MP phony rules.
+// opt_deps_only is set by the bare -M/-MM forms: like -E, no compilation
+// happens at all — only the dependency rule is emitted (to -MF, else the
+// same place -E output would go).
 const char *opt_depfile = NULL;
 const char *opt_dep_target = NULL;
 bool opt_gen_deps = false;
 bool opt_dep_phony = false;
+bool opt_deps_only = false;
 // -fmacro-prefix-map=old=new
 const char *opt_prefix_map_old = NULL;
 const char *opt_prefix_map_new = NULL;
@@ -648,19 +653,32 @@ int main(int argc, char **argv) {
                    !strcmp(argv[i], "-nodefaultlibs") || !strcmp(argv[i], "-nostdlib") ||
                    !strcmp(argv[i], "-r") ||
                    !strncmp(argv[i], "-Wl,", 4)) {
-            if (!strcmp(argv[i], "-r"))
+            // Bare "-L path" / "-l name" (path/name as its own separate
+            // argv element, as opposed to the glued "-Lpath"/"-lname"
+            // form) is real GCC/ld syntax that build systems commonly
+            // emit from a Make variable (e.g. kefir's own "-L
+            // $(LIB_DIR) -lkefir"). Without joining it here, the bare
+            // "-L"/"-l" alone was forwarded to the linker with nothing
+            // after it, and the actual path/name silently fell through
+            // as if it were an unrelated positional input file.
+            char *larg = argv[i];
+            if ((!strcmp(argv[i], "-l") || !strcmp(argv[i], "-L")) && i + 1 < argc) {
+                char *flag = argv[i];
+                larg = format("%s%s", flag, argv[++i]);
+            }
+            if (!strcmp(larg, "-r"))
                 opt_relocatable = true;
-            if (!strncmp(argv[i], "-Wl,", 4) &&
-                (wl_has_token(argv[i], "-E") || wl_has_token(argv[i], "--export-dynamic")))
+            if (!strncmp(larg, "-Wl,", 4) &&
+                (wl_has_token(larg, "-E") || wl_has_token(larg, "--export-dynamic")))
                 opt_export_dynamic = true;
-            if (!strncmp(argv[i], "-Wl,", 4)) {
-                char *implib = wl_get_value(argv[i], "--out-implib");
+            if (!strncmp(larg, "-Wl,", 4)) {
+                char *implib = wl_get_value(larg, "--out-implib");
                 if (implib) {
                     free(opt_out_implib);
                     opt_out_implib = implib;
                 }
             }
-            xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
+            xappendf(&libs, &libs_len, &libs_cap, " %s", larg);
             // A bare -Wl,<opt> / -l<name> with no source or object inputs
             // is a legitimate link-only invocation (real gcc runs the
             // linker for these instead of failing with "no input files" —
@@ -669,7 +687,7 @@ int main(int argc, char **argv) {
             // linker's "GNU ld version" banner). Mark it as having link
             // inputs so the "no input files" fatal below doesn't fire
             // before the link step gets to run.
-            if (!strncmp(argv[i], "-Wl,", 4) || !strncmp(argv[i], "-l", 2))
+            if (!strncmp(larg, "-Wl,", 4) || !strncmp(larg, "-l", 2))
                 have_link_inputs = true;
         } else if (!strcmp(argv[i], "-soname")) {
             if (++i >= argc) {
@@ -793,6 +811,15 @@ int main(int argc, char **argv) {
             // system vs. non-system headers in the .d output either way).
             // Used by Linux kernel/busybox Kbuild's scripts/Makefile.host.
             opt_depfile = argv[i] + 8;
+            opt_gen_deps = true;
+        } else if (!strcmp(argv[i], "-M") || !strcmp(argv[i], "-MM")) {
+            // Dependency-rule-only mode: like -E, no compilation/codegen/
+            // link happens at all for this input; only a Make dependency
+            // rule is emitted (see opt_deps_only handling in the main
+            // per-file loop and print_dep_rule() in preprocess.c). -MM
+            // omits system headers on real GCC; rcc doesn't track that
+            // split (see -MD/-MMD below), so it behaves like -M either way.
+            opt_deps_only = true;
             opt_gen_deps = true;
         } else if (!strcmp(argv[i], "-MD") || !strcmp(argv[i], "-MMD")) {
             // GCC/Clang: generate a Make .d as a side effect of compiling.
@@ -932,7 +959,7 @@ int main(int argc, char **argv) {
     // (arch/x86/entry/vdso/*/vdso64.lds, built via `$(CPP) ... -o $@ $<`)
     // with no output file at all.
     FILE *pp_out = stdout;
-    if (opt_E && opt_o && !opt_stdout) {
+    if ((opt_E || opt_deps_only) && opt_o && !opt_stdout) {
         // codeql[cpp/path-injection,cpp/world-writable-file-creation]:
         // -o is the compiler's own output destination, same trust model
         // as every other compiler's -o (relies on umask, not a sandboxed
@@ -993,8 +1020,17 @@ int main(int argc, char **argv) {
         if (opt_time)
             fprintf(stderr, "  preprocess  %-20s: %6llu us\n", cur_path,
                     (unsigned long long)(now_us() - t0));
-        // Write Make dependency file (-Wp,-MMD,<file>)
+        // Write Make dependency file (-Wp,-MMD,<file> / -MD / -MMD, and
+        // -M/-MM combined with an explicit -MF).
         write_dep_file(out_path, cur_path);
+
+        if (opt_deps_only) {
+            // -M/-MM: no compilation at all — just the dependency rule,
+            // to -MF if given (already written above), else wherever -E
+            // output would go (pp_out: stdout, or -o's file).
+            if (!opt_depfile) print_dep_rule(pp_out, out_path, cur_path);
+            continue;
+        }
 
         if (opt_dM) {
             printf("%s", dump_macros_text());
@@ -1246,7 +1282,7 @@ int main(int argc, char **argv) {
         return 1;
 
     // Assemble / Link if not just compiling to assembly or preprocessing
-    if (!opt_S && !opt_E) {
+    if (!opt_S && !opt_E && !opt_deps_only) {
         if (opt_dryrun) {
             // Print what we would do
             char cmd[1024];

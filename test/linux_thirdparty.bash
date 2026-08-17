@@ -266,7 +266,7 @@ test_camgunz_cmp() {
 test_cc65() {
  git_fetch https://github.com/cc65/cc65 547d923588d870aacf0b0016c67d0f6a92a70f83 cc65
  make QUIET=1 CC="$CC"
- make QUIET=1 CC=gcc test
+ make QUIET=1 CC="$CC" test
 }
 
 test_cello() {
@@ -690,7 +690,7 @@ test_kefir() {
  url_tar https://git.sr.ht/~jprotopopov/kefir/archive/v0.5.0.tar.gz kefir
  mkdir bin && CC=gcc scripts/detect-host-env.sh --header > bin/config.h
  make CC="$CC"
- LC_ALL=C.UTF-8 make CC=gcc test
+ LC_ALL=C.UTF-8 make CC="$CC" test
 }
 
 test_ksh93() {
