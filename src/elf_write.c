@@ -201,6 +201,7 @@ int elf_write(ObjFile *obj, const char *path) {
     bool has_rela_text = obj->text_reloc_count > 0;
     bool has_rela_data = obj->data_reloc_count > 0;
     bool has_rela_rodata = obj->rodata_reloc_count > 0;
+    bool has_rela_tdata = obj->data_tls_reloc_count > 0;
     bool has_rela_init = obj->init_array_reloc_count > 0;
     bool has_rela_fini = obj->fini_array_reloc_count > 0;
     bool has_rela_debug_info = has_debug && obj->debug_has_low_pc;
@@ -243,6 +244,7 @@ int elf_write(ObjFile *obj, const char *path) {
     uint32_t shn_rela_txt = strtab_add(&shstrtab, ".rela.text");
     uint32_t shn_rela_dat = strtab_add(&shstrtab, ".rela.data");
     uint32_t shn_rela_rod = strtab_add(&shstrtab, ".rela.rodata");
+    uint32_t shn_rela_tdata = strtab_add(&shstrtab, ".rela.tdata");
     uint32_t shn_rela_init = strtab_add(&shstrtab, ".rela.init_array");
     uint32_t shn_rela_fini = strtab_add(&shstrtab, ".rela.fini_array");
     uint32_t shn_rela_debug_info = strtab_add(&shstrtab, ".rela.debug_info");
@@ -269,7 +271,7 @@ int elf_write(ObjFile *obj, const char *path) {
     // then optional .debug_line, .debug_info, .debug_abbrev, .debug_aranges
     // then optional .init_array, .fini_array
     // then any dynamically-registered sections (PROGBITS)
-    // then optional .rela.text, .rela.data, .rela.rodata
+    // then optional .rela.text, .rela.data, .rela.rodata, .rela.tdata
     // then any dynamically-registered sections' .rela.<name>
     // then optional .rela.debug_info, .rela.debug_aranges, .rela.debug_line
     // then optional .rela.init_array, .rela.fini_array
@@ -286,6 +288,7 @@ int elf_write(ObjFile *obj, const char *path) {
     int sh_rela_text_idx = has_rela_text ? shidx++ : -1;
     int sh_rela_data_idx = has_rela_data ? shidx++ : -1;
     int sh_rela_rodata_idx = has_rela_rodata ? shidx++ : -1;
+    int sh_rela_tdata_idx = has_rela_tdata ? shidx++ : -1;
     for (int i = 0; i < nextra; i++)
         sh_extra_rela_idx[i] = extra_has_relocs[i] ? shidx++ : -1;
     int sh_rela_debug_info_idx = has_rela_debug_info ? shidx++ : -1;
@@ -300,6 +303,7 @@ int elf_write(ObjFile *obj, const char *path) {
     (void)sh_rela_text_idx;
     (void)sh_rela_data_idx;
     (void)sh_rela_rodata_idx;
+    (void)sh_rela_tdata_idx;
     (void)sh_debug_line_idx;
     (void)sh_debug_aranges_idx;
     (void)sh_debug_info_idx;
@@ -443,8 +447,10 @@ int elf_write(ObjFile *obj, const char *path) {
     uint64_t rela_dat_size = (uint64_t)obj->data_reloc_count * 24;
     uint64_t rela_rod_off = align16(rela_dat_off + rela_dat_size);
     uint64_t rela_rod_size = (uint64_t)obj->rodata_reloc_count * 24;
+    uint64_t rela_tdata_off = align16(rela_rod_off + rela_rod_size);
+    uint64_t rela_tdata_size = (uint64_t)obj->data_tls_reloc_count * 24;
 
-    running = rela_rod_off + rela_rod_size;
+    running = rela_tdata_off + rela_tdata_size;
     for (int i = 0; i < nextra; i++) {
         if (!extra_has_relocs[i]) continue;
         extra_rela_off[i] = align16(running);
@@ -554,8 +560,17 @@ int elf_write(ObjFile *obj, const char *path) {
         w64(f, ELF64_R_INFO((uint32_t)es, r->type));
         wi64(f, r->addend);
     }
+    wzeros(f, rela_tdata_off - (rela_rod_off + rela_rod_size));
 
-    written_to = rela_rod_off + rela_rod_size;
+    for (int i = 0; i < obj->data_tls_reloc_count; i++) {
+        ObjReloc *r = &obj->data_tls_relocs[i];
+        int es = r->sym_idx >= 0 ? sym_map[r->sym_idx] : 0;
+        w64(f, r->offset);
+        w64(f, ELF64_R_INFO((uint32_t)es, r->type));
+        wi64(f, r->addend);
+    }
+
+    written_to = rela_tdata_off + rela_tdata_size;
     for (int i = 0; i < nextra; i++) {
         if (!extra_has_relocs[i]) continue;
         wzeros(f, extra_rela_off[i] - written_to);
@@ -685,6 +700,10 @@ int elf_write(ObjFile *obj, const char *path) {
         write_shdr(f, shn_rela_rod, SHT_RELA, SHF_INFO_LINK,
                    rela_rod_off, rela_rod_size,
                    (uint32_t)sh_symtab_idx, 4 /* .rodata */, 8, 24);
+    if (has_rela_tdata)
+        write_shdr(f, shn_rela_tdata, SHT_RELA, SHF_INFO_LINK,
+                   rela_tdata_off, rela_tdata_size,
+                   (uint32_t)sh_symtab_idx, 5 /* .tdata */, 8, 24);
 
     for (int i = 0; i < nextra; i++)
         if (extra_has_relocs[i])

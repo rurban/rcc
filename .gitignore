@@ -87,11 +87,15 @@ amazon_bug_bounty/
 /AGENTS.md
 /CLAUDE.md
 /kimi-export*.md
+/kimi-export*.md.gz
 /session-ses*.md
+/session-ses*.md.gz
 /omp-*.html
+/omp-*.html.gz
 pngout.png
 rcc-preview2.png
 /chat_export*.md
+/chat_export*.md.gz
 .gortex.yaml
 .gortex
 

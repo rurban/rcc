@@ -6271,3 +6271,59 @@ gzip -d | diff - gzip.doc` round-trips byte-identical. `make
 check-all`: 0 failed (Unit 4234/4234 incl. the new test, TCC 118/118,
 Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 — 0 failed,
 354 skipped, 4 todo, Dg-error 34/34, Link 10/10).
+
+### Fixed (2026-08-17, missing `.rela.tdata` ELF section session)
+
+**mimalloc `test-stress` SIGSEGV, fixed** — root cause: `src/elf_write.c`
+built a `.rela.<name>` relocation section for every other data-bearing
+built-in section (`.rela.text`, `.rela.data`, `.rela.rodata`,
+`.rela.init_array`, `.rela.fini_array`, plus every dynamically-registered
+section) but never emitted one for `.tdata` at all — no section header,
+no reloc entries, nothing. `codegen.c`'s global-initializer emission
+already correctly appended a TLS pointer's initializer relocation to
+`obj->data_tls_relocs` (`objfile_add_reloc(cg_obj, SEC_TDATA, ...)`), so
+the bug was entirely on the writer side: any `_Thread_local`/`__thread`
+variable whose initializer is the address of an ordinary (non-TLS)
+global — e.g. mimalloc's `src/init.c`:
+`mi_decl_thread mi_heap_t* _mi_heap_default = (mi_heap_t*)&_mi_heap_empty;`
+— got a NULL/garbage pointer instead of the real address in every
+thread's TLS block, main thread included, since the linker had no
+relocation to patch the value in. mimalloc dereferences that pointer on
+essentially every allocation, so `test-stress`'s first background thread
+SIGSEGV'd almost immediately. (A regular, non-TLS global doing the exact
+same `&other_global` initializer worked fine, routed through
+`.rela.data` — which is why this class of bug survived so long.)
+
+Fix: added the missing `.rela.tdata` section end-to-end in
+`elf_write.c` — `has_rela_tdata`, its `.shstrtab` name, section-header
+index slot (right after `.rela.rodata`, before any dynamically-
+registered sections' own `.rela.<name>`), file-offset/size computation,
+the actual reloc-entry write loop (mirrors `.rela.data`/`.rela.rodata`
+byte-for-byte), and the `SHT_RELA` section header itself (`sh_info`
+hardcoded to `5`, `.tdata`'s fixed section index, matching how `.text`/
+`.data`/`.rodata` are already hardcoded `1`/`2`/`4` there). No parser or
+codegen change was needed — both were already correct.
+
+New unit test: `test/test_tls_ptr_init.c` (a `_Thread_local` pointer
+statically initialized to the address of a plain global, checked in both
+the main thread and a `pthread_create`d thread). Verified against a real
+GCC-built baseline first (confirms the pattern is valid C and pins the
+expected behavior — the reverse, a TLS variable pointing at _another_
+TLS object, is correctly rejected by GCC as "initializer element is not
+constant", since each thread's copy would need a different, only-known-
+at-runtime value). Confirmed the fix is real by reverting `elf_write.c`
+alone (`git stash`) and rebuilding: the test drops from rc=0 to rc=1.
+
+`.rela.tdata` is shared ELF-writer code (`elf_write.c` serves both
+native x86-64 and the `arm64-check.sh` aarch64 cross-target); mingw
+never touches it at all (a completely separate `coff_write.c` PE
+writer), so no mingw-side change was needed or possible — confirmed via
+`mingw-check.sh` that the mingw cross-build still compiles clean and its
+own test suite (including `144_tls`) still passes 0 failed.
+
+`make check-all`: 0 failed (Unit 4234/4234 incl. the new test, TCC
+118/118, Compliance 15/15, C-testsuite 220/220, Torture 3605/3609 — 0
+failed, 354 skipped, 4 todo, Dg-error 34/34, Link 10/10). mingw cross:
+0 failed. **mimalloc now passes its full test suite: 4/4 ctest targets
+(`test-api`, `test-api-fill`, `test-stress`, `test-stress-dynamic`)
+pass, 100%** — checked off in `checklist.txt`.
