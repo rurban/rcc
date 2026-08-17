@@ -33,9 +33,16 @@ static uint8_t rex(int W, int R, int X, int B) {
 #define REX_WB 0x49
 #define REX_WRB 0x4d
 
-// ModRM byte
+// A legacy 8-bit "high byte" pseudo-register (AH/CH/DH/BH, X86_AH..X86_BH)
+// never actually needs/wants a REX prefix -- see the X86Reg comment.
+static bool x86_is_high8(X86Reg r) { return r >= X86_AH && r <= X86_BH; }
+
+// ModRM byte. A high8 pseudo-register maps to its real 3-bit field
+// (4-7, same as SPL/BPL/SIL/DIL -- the two only differ by whether a REX
+// prefix is present, decided by maybe_rex()/the callers below, never here).
+static int gpreg_field(X86Reg r) { return x86_is_high8(r) ? (int)(r - X86_AH) + 4 : (int)r; }
 static uint8_t modrm(int mod, X86Reg reg, X86Reg rm) {
-    return (uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7));
+    return (uint8_t)((mod << 6) | ((gpreg_field(reg) & 7) << 3) | (gpreg_field(rm) & 7));
 }
 uint8_t modrxmm(int mod, X86XmmReg reg, X86XmmReg rm) {
     return (uint8_t)((mod << 6) | ((reg & 7) << 3) | (rm & 7));
@@ -51,8 +58,14 @@ static uint8_t sib(int scale, int index, int base) {
 
 // Emit REX if any register is >= 4 (RSP) — needed for both the 8-bit
 // register remap (SPL/BPL/SIL/DIL vs. AH/CH/DH/BH) and for extended
-// registers R8-R15.
+// registers R8-R15. A high8 pseudo-register (X86_AH..X86_BH) is the
+// *other* side of that remap: it must never itself force or contribute
+// to a REX byte (that would silently turn %ah into %spl instead), so it
+// reads here as if it were a plain low register (X86_RAX).
 void maybe_rex(SecBuf *s, int W, int R, int X, int B) {
+    if (x86_is_high8(R)) R = X86_RAX;
+    if (x86_is_high8(X)) X = X86_RAX;
+    if (x86_is_high8(B)) B = X86_RAX;
     if (W || R >= X86_RSP || X >= X86_RSP || B >= X86_RSP)
         emit1(s, rex(W, R > X86_RDI, X > X86_RDI, B > X86_RDI));
 }
@@ -189,19 +202,22 @@ void x86_movabs(SecBuf *s, X86Reg dst, uint64_t imm64) {
 
 void x86_mov_rm(SecBuf *s, int size, X86Reg dst, X86Mem src) {
     size16_pfx(s, size);
-    int needrex = (size == 8) || dst > X86_RDI || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
-    if (needrex) emit1(s, rex(size == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
+    bool dst_gt = !x86_is_high8(dst) && dst > X86_RDI;
+    int needrex = (size == 8) || dst_gt || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
+    if (needrex) emit1(s, rex(size == 8, dst_gt, src.index > X86_RDI, src.base > X86_RDI));
     emit1(s, opsize(0x8a, size));
     emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
 }
 
 void x86_mov_mr(SecBuf *s, int size, X86Mem dst, X86Reg src) {
     size16_pfx(s, size);
-    int needrex = (size == 8) || src > X86_RDI || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
-    if (needrex) emit1(s, rex(size == 8, src > X86_RDI, dst.index > X86_RDI, dst.base > X86_RDI));
+    bool src_gt = !x86_is_high8(src) && src > X86_RDI;
+    int needrex = (size == 8) || src_gt || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
+    if (needrex) emit1(s, rex(size == 8, src_gt, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x88, size));
     emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
 }
+
 
 void x86_mov_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     size16_pfx(s, size);
@@ -2368,13 +2384,19 @@ static void vex2(SecBuf *s, int pp, int L, X86XmmReg d, X86XmmReg v, __attribute
     emit1(s, 0xc5);
     emit1(s, (uint8_t)(((~R & 1) << 7) | (vvvv << 3) | ((L & 1) << 2) | (pp & 3)));
 }
-// 3-byte VEX: C4 + R~X~B~mmmmm + W~vvvvLpp. map: 1=0F 2=0F38 3=0F3A.
+// 3-byte VEX: C4 + R~X~B~mmmmm + WvvvvLpp. map: 1=0F 2=0F38 3=0F3A.
+// Unlike R/X/B/vvvv, W is stored literally (NOT ones'-complement) --
+// confirmed against real GNU `as`'s own output for a W1 case (BMI2
+// shrxq/shlxq/sarxq, the first W=1 caller this encoder ever had; every
+// prior caller here is a WIG -- "W Ignored" -- AVX2 op, so the previous
+// inverted W=0 bit (wrongly emitting the byte for W=1) was silently
+// harmless: real hardware ignores VEX.W for those specific opcodes).
 static void vex3(SecBuf *s, int pp, int map, int W, int L, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
     int R = (int)d >> 3, B = (int)rm >> 3;
     int vvvv = (~(int)v) & 15;
     emit1(s, 0xc4);
     emit1(s, (uint8_t)(((~R & 1) << 7) | (1 << 6) | ((~B & 1) << 5) | (map & 31)));
-    emit1(s, (uint8_t)(((~W & 1) << 7) | (vvvv << 3) | ((L & 1) << 2) | (pp & 3)));
+    emit1(s, (uint8_t)(((W & 1) << 7) | (vvvv << 3) | ((L & 1) << 2) | (pp & 3)));
 }
 // reg/reg/reg VEX op (256-bit unless L=0). vvvv = first source.
 static void vex_rr(SecBuf *s, int pp, int map, int W, int L, int op, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
@@ -2390,6 +2412,15 @@ static void vex_rr(SecBuf *s, int pp, int map, int W, int L, int op, X86XmmReg d
     }
     emit1(s, modrxmm(3, d, rm));
 }
+// BMI2 register-count shifts: VEX.NDS.LZ.pp.0F38.W? F7 /r. dst=ModRM.reg,
+// src=ModRM.rm, count=VEX.vvvv (the NDS "first source"). pp: 66=SHLX,
+// F2=SHRX, F3=SARX. W selects 32- vs 64-bit operand size, same as REX.W.
+static void bmi2_shift_rr(SecBuf *s, int size, int pp, X86Reg dst, X86Reg src, X86Reg count) {
+    vex_rr(s, pp, 2, size == 8, 0, 0xf7, (X86XmmReg)dst, (X86XmmReg)count, (X86XmmReg)src);
+}
+void x86_shlx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 1, dst, src, count); }
+void x86_shrx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 3, dst, src, count); }
+void x86_sarx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 2, dst, src, count); }
 // ===================== EVEX (AVX-512) =====================
 // 4-byte EVEX prefix (0x62) for 512-bit ops: P0 = R X B R' 0 0 mmmmm,
 // P1 = W vvvv 1 pp, P2 = z L'L b V' aaa. L'L=10 selects 512-bit. aaa is

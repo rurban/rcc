@@ -958,6 +958,21 @@ static const char *parse_arm64_sym_reloc(const char *s, uint32_t *rel_type) {
 static X86Reg parse_x86_reg64(const char *s) {
     if (!s || *s != '%') return X86_NOREG;
     s++;
+    // rcc's own C-preprocessor macro expansion (unlike gcc's) inserts a
+    // space between a macro invocation and adjacent punctuation on either
+    // side (see parse_x86_mem()'s matching comment) -- e.g.
+    // "#define ip0 r8" then "movq 0(%rax), %ip0" expands to
+    // "movq 0(%rax), % r8". The whole "% r8" operand token survives
+    // split_operands()'s outer skip_ws()/trim_end() untouched (they only
+    // trim the token's own boundaries, not whitespace *inside* it), so
+    // without this every register operand built from such a macro was
+    // silently misparsed to X86_NOREG (== -1), which every caller's
+    // "& 7"-style ModRM/REX encoding then aliases to physical register
+    // 7/RDI -- a silent wrong-register miscompile, not a parse error.
+    // Real crash: zstd's own hand-written huf_decompress_amd64.S
+    // (lib/decompress/) uses exactly this "#define ip0 r8" register-
+    // alias idiom throughout its BMI2 fast Huffman decode loop.
+    while (isspace((unsigned char)*s)) s++;
     if (!strcmp(s, "rax") || !strcmp(s, "eax") || !strcmp(s, "ax") || !strcmp(s, "al")) return X86_RAX;
     if (!strcmp(s, "rcx") || !strcmp(s, "ecx") || !strcmp(s, "cx") || !strcmp(s, "cl")) return X86_RCX;
     if (!strcmp(s, "rdx") || !strcmp(s, "edx") || !strcmp(s, "dx") || !strcmp(s, "dl")) return X86_RDX;
@@ -974,6 +989,18 @@ static X86Reg parse_x86_reg64(const char *s) {
     if (!strcmp(s, "r13") || !strcmp(s, "r13d") || !strcmp(s, "r13w") || !strcmp(s, "r13b")) return X86_R13;
     if (!strcmp(s, "r14") || !strcmp(s, "r14d") || !strcmp(s, "r14w") || !strcmp(s, "r14b")) return X86_R14;
     if (!strcmp(s, "r15") || !strcmp(s, "r15d") || !strcmp(s, "r15w") || !strcmp(s, "r15b")) return X86_R15;
+    // Legacy 8-bit "high byte" registers (AH/CH/DH/BH) -- distinct
+    // pseudo-values from X86_RSP..X86_RDI (which the same 4-7 ModRM
+    // field means under a REX prefix): x86_enc.c's modrm()/maybe_rex()/
+    // x86_mov_{rr,rm,mr}() special-case this range so it encodes the
+    // real 4-7 field without ever forcing a REX byte. Real use: zstd's
+    // huf_decompress_amd64.S DECODE_FROM_DELT macro's "movb %ah, idx(%opN)"
+    // (moves the just-looked-up Huffman symbol byte out of %ah -- every
+    // decode of every symbol in the hot loop).
+    if (!strcmp(s, "ah")) return X86_AH;
+    if (!strcmp(s, "ch")) return X86_CH;
+    if (!strcmp(s, "dh")) return X86_DH;
+    if (!strcmp(s, "bh")) return X86_BH;
     // "(%rip)" -- RIP-relative addressing (base=NOREG happens to encode
     // byte-for-byte identically via emit_mem's own X86_RIP/X86_NOREG
     // branches, but only X86_RIP lets the LEA dispatch above tell "this
@@ -987,6 +1014,7 @@ static X86Reg parse_x86_reg64(const char *s) {
 static X86XmmReg parse_x86_xmm(const char *s) {
     if (!s || *s != '%') return X86_XMM0;
     s++;
+    while (isspace((unsigned char)*s)) s++; // see parse_x86_reg64()'s comment
     if (strncmp(s, "xmm", 3) != 0) return X86_XMM0;
     return (X86XmmReg)(X86_XMM0 + atoi(s + 3));
 }
@@ -994,6 +1022,7 @@ static X86XmmReg parse_x86_xmm(const char *s) {
 static int reg_size_x86(const char *s) {
     if (!s || *s != '%') return 8;
     s++;
+    while (isspace((unsigned char)*s)) s++; // see parse_x86_reg64()'s comment
     if (s[0] == 'r' && isdigit((unsigned char)s[1])) {
         // r8..r15: check suffix (e.g. r10d→4, r10w→2, r10b→1, r10→8)
         char *end = (char *)(s + 1);
@@ -3039,6 +3068,36 @@ static X86Mem x86_get_mem(AsmState *as, char **ops, int nops, int i) {
 }
 #define X86_M(i)    x86_get_mem(as, ops, nops, (i))
 
+// Parse a Jcc/SETcc/CMOVcc condition-code suffix (e.g. "e", "ne", "a",
+// "nbe", ...) into its X86Cond encoding. Shared by all three so a gap in
+// one doesn't silently reappear in another -- CMOVcc used to carry only
+// its own truncated 2-entry copy of this table ("nz"/"ne"/"z"/"e", with
+// every other real condition falling through to a hardcoded X86_NE
+// default), so any of the other 12 conditions -- e.g. zstd's own hand-
+// written BMI2 Huffman decoder (huf_decompress_amd64.S), which uses
+// "cmova" to clamp an iteration-count estimate -- silently mis-encoded
+// as CMOVNE instead, corrupting the computed value whenever the real
+// condition and NE disagreed.
+static X86Cond parse_x86_cc(const char *cc_s) {
+    if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z")) return X86_E;
+    if (!strcmp(cc_s, "ne") || !strcmp(cc_s, "nz")) return X86_NE;
+    if (!strcmp(cc_s, "l") || !strcmp(cc_s, "nge")) return X86_L;
+    if (!strcmp(cc_s, "le") || !strcmp(cc_s, "ng")) return X86_LE;
+    if (!strcmp(cc_s, "g") || !strcmp(cc_s, "nle")) return X86_G;
+    if (!strcmp(cc_s, "ge") || !strcmp(cc_s, "nl")) return X86_GE;
+    if (!strcmp(cc_s, "b") || !strcmp(cc_s, "c") || !strcmp(cc_s, "nae")) return X86_B;
+    if (!strcmp(cc_s, "be") || !strcmp(cc_s, "na")) return X86_BE;
+    if (!strcmp(cc_s, "a") || !strcmp(cc_s, "nbe")) return X86_A;
+    if (!strcmp(cc_s, "ae") || !strcmp(cc_s, "nc")) return X86_AE;
+    if (!strcmp(cc_s, "s")) return X86_S;
+    if (!strcmp(cc_s, "ns")) return X86_NS;
+    if (!strcmp(cc_s, "p") || !strcmp(cc_s, "pe")) return X86_P;
+    if (!strcmp(cc_s, "np") || !strcmp(cc_s, "po")) return X86_NP;
+    if (!strcmp(cc_s, "o")) return X86_O;
+    if (!strcmp(cc_s, "no")) return X86_NO;
+    return X86_E;
+}
+
 static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     char ops_buf[512];
     strncpy(ops_buf, ops_str, 511);
@@ -3665,6 +3724,30 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         return true;
     }
 
+    // SHLX/SHRX/SARX (BMI2 register-count shifts) — must be checked
+    // BEFORE the legacy shl/shr/sar/rol/ror block below, whose condition
+    // prefix-matches only the mnemonic's first 3 characters ("shr" also
+    // matches "shrx"/"shrxq"/...) and would otherwise silently swallow
+    // these as the classic 2-operand "shift %cl, reg" form, discarding
+    // the real count operand and the third operand's own register
+    // entirely. AT&T operand order: "shrx %count, %src, %dst" (count is
+    // the VEX.vvvv "NDS" operand, not ModRM.reg/.rm). Real crash: zstd's
+    // hand-written BMI2 Huffman fast-decode loop
+    // (huf_decompress_amd64.S's GET_NEXT_DELT/RELOAD_BITS macros use
+    // "shrxq %var, %bits, %var" throughout).
+    if (!strncmp(mnem, "shlx", 4) || !strncmp(mnem, "shrx", 4) || !strncmp(mnem, "sarx", 4)) {
+        if (nops >= 3 && is_reg(0) && is_reg(1) && is_reg(2)) {
+            X86Reg count = R(0), src = R(1), dst = R(2);
+            if (mnem[2] == 'l')
+                x86_shlx_rr(buf, sz, dst, src, count);
+            else if (mnem[1] == 'h')
+                x86_shrx_rr(buf, sz, dst, src, count);
+            else
+                x86_sarx_rr(buf, sz, dst, src, count);
+            return true;
+        }
+    }
+
     // SHIFTS/ROTATES (AT&T: shl/shr/sar/rol/ror). Three operand shapes,
     // matching real GAS: bare "shr reg" (1 operand, implicit shift-by-1
     // -- the D0/D1 opcode form, distinct from an explicit "$1, reg"),
@@ -3763,49 +3846,13 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
 
     // SETcc
     if (!strncmp(mnem, "set", 3)) {
-        const char *cc_s = mnem + 3;
-        X86Cond cc = X86_E;
-        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z"))
-            cc = X86_E;
-        else if (!strcmp(cc_s, "ne") || !strcmp(cc_s, "nz"))
-            cc = X86_NE;
-        else if (!strcmp(cc_s, "l") || !strcmp(cc_s, "nge"))
-            cc = X86_L;
-        else if (!strcmp(cc_s, "le") || !strcmp(cc_s, "ng"))
-            cc = X86_LE;
-        else if (!strcmp(cc_s, "g") || !strcmp(cc_s, "nle"))
-            cc = X86_G;
-        else if (!strcmp(cc_s, "ge") || !strcmp(cc_s, "nl"))
-            cc = X86_GE;
-        else if (!strcmp(cc_s, "b") || !strcmp(cc_s, "c") || !strcmp(cc_s, "nae"))
-            cc = X86_B;
-        else if (!strcmp(cc_s, "be") || !strcmp(cc_s, "na"))
-            cc = X86_BE;
-        else if (!strcmp(cc_s, "a") || !strcmp(cc_s, "nbe"))
-            cc = X86_A;
-        else if (!strcmp(cc_s, "ae") || !strcmp(cc_s, "nc"))
-            cc = X86_AE;
-        else if (!strcmp(cc_s, "s"))
-            cc = X86_S;
-        else if (!strcmp(cc_s, "ns"))
-            cc = X86_NS;
-        else if (!strcmp(cc_s, "p"))
-            cc = X86_P;
-        else if (!strcmp(cc_s, "np") || !strcmp(cc_s, "po"))
-            cc = X86_NP;
-        x86_setcc(buf, cc, R(0));
+        x86_setcc(buf, parse_x86_cc(mnem + 3), R(0));
         return true;
     }
 
     // CMOVcc
     if (!strncmp(mnem, "cmov", 4)) {
-        const char *cc_s = mnem + 4;
-        X86Cond cc = X86_NE;
-        if (!strcmp(cc_s, "nz") || !strcmp(cc_s, "ne"))
-            cc = X86_NE;
-        else if (!strcmp(cc_s, "z") || !strcmp(cc_s, "e"))
-            cc = X86_E;
-        // others...
+        X86Cond cc = parse_x86_cc(mnem + 4);
         if (is_reg(0) && is_reg(1))
             x86_cmovcc(buf, sz, cc, R(1), R(0));
         return true;
@@ -3867,36 +3914,8 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // Jcc
     if (mnem[0] == 'j' && strlen(mnem) <= 6) {
         const char *cc_s = mnem + 1;
-        X86Cond cc = X86_E;
-        if (!strcmp(cc_s, "e") || !strcmp(cc_s, "z"))
-            cc = X86_E;
-        else if (!strcmp(cc_s, "ne") || !strcmp(cc_s, "nz"))
-            cc = X86_NE;
-        else if (!strcmp(cc_s, "l") || !strcmp(cc_s, "nge"))
-            cc = X86_L;
-        else if (!strcmp(cc_s, "le") || !strcmp(cc_s, "ng"))
-            cc = X86_LE;
-        else if (!strcmp(cc_s, "g") || !strcmp(cc_s, "nle"))
-            cc = X86_G;
-        else if (!strcmp(cc_s, "ge") || !strcmp(cc_s, "nl"))
-            cc = X86_GE;
-        else if (!strcmp(cc_s, "b") || !strcmp(cc_s, "c") || !strcmp(cc_s, "nae"))
-            cc = X86_B;
-        else if (!strcmp(cc_s, "be") || !strcmp(cc_s, "na"))
-            cc = X86_BE;
-        else if (!strcmp(cc_s, "a") || !strcmp(cc_s, "nbe"))
-            cc = X86_A;
-        else if (!strcmp(cc_s, "ae") || !strcmp(cc_s, "nc"))
-            cc = X86_AE;
-        else if (!strcmp(cc_s, "s"))
-            cc = X86_S;
-        else if (!strcmp(cc_s, "ns"))
-            cc = X86_NS;
-        else if (!strcmp(cc_s, "p"))
-            cc = X86_P;
-        else if (!strcmp(cc_s, "np") || !strcmp(cc_s, "po"))
-            cc = X86_NP;
-        else if (!strcmp(cc_s, "mp")) { // jmp → already handled
+        X86Cond cc = parse_x86_cc(cc_s);
+        if (!strcmp(cc_s, "mp")) { // jmp → already handled
             x86_jmp_rel32(buf, 0);
             return true;
         }

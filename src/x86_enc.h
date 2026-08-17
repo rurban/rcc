@@ -28,6 +28,18 @@ typedef enum {
     X86_R14 = 14,
     X86_R15 = 15,
     X86_RIP = 16,
+    // Legacy 8-bit "high byte" pseudo-registers (AH/CH/DH/BH): only ever
+    // valid as an 8-bit operand with NO REX prefix present (a REX prefix
+    // repurposes indices 4-7 as SPL/BPL/SIL/DIL instead). Given distinct
+    // values here (not reusing 4-7) so the encoder can tell "the user
+    // wrote %spl" from "the user wrote %ah" -- x86_enc.c's modrm()/
+    // maybe_rex()/x86_mov_{rr,rm,mr}() special-case this range: encode
+    // the real 4-7 ModRM field but never let it force/contribute to a
+    // REX byte.
+    X86_AH = 17,
+    X86_CH = 18,
+    X86_DH = 19,
+    X86_BH = 20,
     X86_NOREG = -1,
 } X86Reg;
 
@@ -169,6 +181,13 @@ void x86_shr_rcl(SecBuf *s, int size, X86Reg r);
 void x86_sar_rcl(SecBuf *s, int size, X86Reg r);
 void x86_ror_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
 void x86_rol_ri(SecBuf *s, int size, X86Reg r, uint8_t imm);
+// BMI2 register-count shifts (VEX.NDS.LZ.pp.0F38.W? F7 /r): unlike the
+// legacy shl/shr/sar-by-CL forms, the shift count is an explicit third
+// operand (any GP register, not just CL) and neither source register nor
+// FLAGS are clobbered. AT&T operand order is "shrx %count, %src, %dst".
+void x86_shlx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
+void x86_shrx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
+void x86_sarx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count);
 // RCL/RCR (rotate-through-carry): opcode group 2, /r == 2/3. Real GAS
 // accepts both "rcr $imm, reg" (or the bare-register form implying
 // $1, e.g. GMP's own mpn/x86_64/*.asm) and "rcr %cl, reg".
