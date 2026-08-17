@@ -1385,14 +1385,47 @@ void eliminate_unused_static_inline(Program *prog) {
     // undefined `__SCK__*` static-call-key symbols and failing the link.
     for (int k = 0; k < n; k++) {
         Function *f = fns[k];
-        bool omittable = f->body && !f->is_used && !f->is_weak &&
+        // A plain (non-static) `inline` function with no forcing
+        // declaration anywhere in this TU (no `extern`, no non-inline
+        // redeclaration, not `gnu_inline`) has no C99 external
+        // definition of its own -- real GCC/Clang emit it NOT AT ALL
+        // when genuinely unreferenced (confirmed: it shows up as
+        // neither a defined nor an undefined symbol in the object
+        // file), same standing as `static inline`. codegen.c now emits
+        // these SB_WEAK when actually needed (so `&fn` compares equal
+        // across TUs that all take its address with no forcing decl --
+        // see its own comment), but an UNUSED one must still be
+        // omitted entirely here or it becomes a spurious weak-visible
+        // symbol that a `__attribute__((weak))`-declared cross-TU probe
+        // (e.g. tinycc's 104_inline.c/104+_inline.c GOT() check) would
+        // then wrongly find "exported".
+        bool inline_no_forcing_decl = false;
+        if (f->is_inline && !f->is_static && !f->is_extern && !f->is_gnu_inline) {
+            inline_no_forcing_decl = true;
+            for (LVar *g = prog->globals; g; g = g->next) {
+                if (g->is_function && g->name == f->name) {
+                    if (g->has_init || (g->is_extern && !g->is_weak))
+                        inline_no_forcing_decl = false;
+                    break;
+                }
+            }
+        }
+        // NOTE: no `f->body` check here -- every fns[] entry came from a
+        // TL_FUNC item, which is created only for genuine definitions
+        // (see parser.c's function-definition path); `f->body` is the
+        // Node* head of the body's statement list, which is legitimately
+        // NULL for a textually empty `{}` definition -- NOT a "no
+        // definition" signal. Using it as one here previously kept every
+        // empty-bodied static/inline candidate alive unconditionally.
+        bool omittable = !f->is_used && !f->is_weak &&
             !f->is_constructor && !f->is_destructor &&
             ((f->is_static && (f->is_inline || opt_O1)) ||
              // GNU `extern __inline __gnu_inline__`: the body is an inline
              // definition only — emitted as a per-TU local copy only when
              // something actually calls it (see codegen.c's
              // fn_emitting_local_copy), never as a global symbol.
-             (f->is_inline && f->is_extern && f->is_gnu_inline));
+             (f->is_inline && f->is_extern && f->is_gnu_inline) ||
+             inline_no_forcing_decl);
         if (!omittable)
             dce_mark(f, &wl, &wl_len, &wl_cap);
     }
@@ -1458,9 +1491,14 @@ void eliminate_unused_static_inline(Program *prog) {
     TLItem **link = &prog->items;
     for (TLItem *item = prog->items; item;) {
         TLItem *next = item->next;
-        if (item->kind == TL_FUNC && item->fn->body && !item->fn->dce_live &&
-            (item->fn->is_static ||
-             (item->fn->is_inline && item->fn->is_extern && item->fn->is_gnu_inline))) {
+        if (item->kind == TL_FUNC && !item->fn->dce_live) {
+            // Every non-omittable function was unconditionally rooted
+            // live above, so `!dce_live` here can only mean: this was
+            // one of the three omittable categories (static [-inline or
+            // -O1], extern-gnu_inline, or plain inline with no forcing
+            // declaration) and nothing ever referenced it. (No `body`
+            // check: a textually empty `{}` definition is still a
+            // genuine definition -- see the root-loop comment above.)
             omitted[n_omitted++] = item->fn->name;
             *link = next;
         } else {

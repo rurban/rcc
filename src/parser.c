@@ -5315,6 +5315,15 @@ static void append_reloc(LVar *var, int offset, char *label, int addend) {
     rel->label = label;
     rel->addend = addend;
     insert_reloc_sorted(var, rel);
+    // Mark the target function (if any) address-taken: codegen.c's
+    // plain-inline-with-no-forcing-declaration SB_LOCAL/SB_WEAK choice
+    // (see rcc.h's LVar.addr_taken doc comment) consults this so `&fn`
+    // in a global initializer gets a linker-collapsible symbol, while a
+    // same-shaped function only ever *called* keeps the narrower,
+    // no-cross-TU-visibility-needed SB_LOCAL binding.
+    LVar *target = find_global_name(label);
+    if (target && target->is_function)
+        target->addr_taken = true;
 }
 
 // Label-address DIFFERENCE (GCC's `&&label_a - &&label_b` computed-goto
@@ -7864,7 +7873,44 @@ static Token *sync_stmt(Token *tok) {
     return tok;
 }
 
-static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
+// Skip to the closing '}' of the statement-expression block the error token
+// sits in, returning that '}' (unconsumed) so the block's statement loop
+// exits normally and scopes restore. Statement-expressions are parsed as
+// nested compound statements with their own statement-level recovery point;
+// without this the recovery resumed at the next INNER statement (sync_stmt
+// stops at the block's own ';'s), so an error inside a macro like
+// atomic_load_explicit's ({ ... }) cascaded into the macro's remaining
+// statements (re-reporting the builtin failure and an undeclared temp),
+// while tinycc aborts after the first error (125_atomic_misc).
+static Token *sync_stmt_expr_block(Token *tok) {
+    int brace_depth = 0;
+    int stmt_expr_parens = 0;
+    while (tok->kind != TK_EOF) {
+        if (equalc(tok, "(") && tok->next && equalc(tok->next, "{")) {
+            stmt_expr_parens++;
+            tok = tok->next; // skip '('; the '{' is counted below
+        } else if (equalc(tok, "{")) {
+            brace_depth++;
+        } else if (equalc(tok, "}")) {
+            if (brace_depth == 0) {
+                if (stmt_expr_parens > 0 && tok->next && equalc(tok->next, ")")) {
+                    // closing "})" of a nested statement-expression
+                    stmt_expr_parens--;
+                    tok = tok->next; // skip ')'
+                } else {
+                    return tok; // this block's closing '}'
+                }
+            } else {
+                brace_depth--;
+            }
+        }
+        tok = tok->next;
+    }
+    return tok;
+}
+
+static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals,
+                              bool is_stmt_expr) {
     LVar *saved_locals = locals;
     Typedef *saved_typedefs = typedefs;
     TagScope *saved_tags = tags;
@@ -7895,7 +7941,12 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
         enum_scope_restore(stmt_rec_enum);
         pending_vla_struct_capture = NULL;
         pending_cleanup_func = NULL;
-        tok = sync_stmt(error_recovery_tok);
+        if (is_stmt_expr)
+            // Skip the rest of the ({ ... }) block; the enclosing statement
+            // finishes normally, no cascading errors (see sync_stmt_expr_block).
+            tok = sync_stmt_expr_block(error_recovery_tok);
+        else
+            tok = sync_stmt(error_recovery_tok);
         if (tok == stmt_iter_tok && tok->kind != TK_EOF)
             tok = sync_stmt(tok->next); // no forward progress: force a skip
 
@@ -8104,7 +8155,7 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals) {
 }
 
 static Node *compound_stmt(Token **rest, Token *tok) {
-    return compound_stmt_ex(rest, tok, NULL);
+    return compound_stmt_ex(rest, tok, NULL, false);
 }
 
 // Parse a K&R (old-style) parameter-name list and its following
@@ -8254,7 +8305,7 @@ static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
     }
 
     LVar *fn_locals = NULL;
-    Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
+    Node *body = compound_stmt_ex(&tok, tok, &fn_locals, false);
 
     Function *fn = arena_alloc(sizeof(Function));
     fn->name = decl_name;
@@ -9286,7 +9337,7 @@ static Node *primary(Token **rest, Token *tok) {
         if (equalc(tok->next, "{")) {
             node = new_node(ND_STMT_EXPR, tok);
             LVar *block_locals = NULL;
-            Node *block = compound_stmt_ex(&tok, tok->next, &block_locals);
+            Node *block = compound_stmt_ex(&tok, tok->next, &block_locals, true);
             node->body = block->body;
             // Find result BEFORE cleanup nodes are appended
             Node *last = node->body;
@@ -9453,6 +9504,33 @@ static Node *primary(Token **rest, Token *tok) {
             node->args = head.next;
             tok = skip(tok, ")");
             cast_funcall_args(node);
+            // creal/crealf/creall and cimag/cimagf/cimagl are pure component
+            // loads. glibc declares them as real libm functions, and calling
+            // them with a _Complex long double argument is an ABI trap: SysV
+            // passes the 32-byte value on the stack as x87 80-bit components,
+            // which rcc neither pushes nor represents (its internal long
+            // double is a plain double in a 16-byte slot), so libm's
+            // creall/cimagl returned garbage — mpc's mpc_set_ldc/get_ldc
+            // produced @NaN@ values. Lower them inline like the __builtin_
+            // forms. The names are reserved (C11 7.31.7) and glibc's
+            // prototype (via complex.h) resolves to the same libm functions,
+            // so rewriting regardless of the declared symbol is safe; a
+            // caller passing anything but a complex value gets the standard
+            // diagnostic from the ND_REAL/ND_IMAG typing.
+            // fn_tok->name, not node->funcname: the latter is only set for
+            // undeclared calls — complex.h's prototype resolves creall to a
+            // global LVar, leaving funcname NULL.
+            if (fn_tok->name && node->args && !node->args->next &&
+                (!strcmp(fn_tok->name, "creal") ||
+                 !strcmp(fn_tok->name, "crealf") ||
+                 !strcmp(fn_tok->name, "creall") ||
+                 !strcmp(fn_tok->name, "cimag") ||
+                 !strcmp(fn_tok->name, "cimagf") ||
+                 !strcmp(fn_tok->name, "cimagl"))) {
+                bool is_imag = fn_tok->name[0] == 'c' && fn_tok->name[1] == 'i';
+                node = new_unary(is_imag ? ND_IMAG : ND_REAL, node->args, fn_tok);
+                check_type(node);
+            }
             if (!var || !var->is_local) {
                 InlinePackFn *ipf = find_inline_pack_fn(fn_tok->name);
                 if (ipf)
@@ -10482,6 +10560,29 @@ static Node *unary(Token **rest, Token *tok) {
         Type *base = re->ty && is_flonum(re->ty) ? re->ty : ty_double;
         return new_complex_val(re, im, complex_type(base), start);
     }
+    // __builtin_creal/crealf/creall(z) and __builtin_cimag/cimagf/cimagl(z) —
+    // extract the real/imag component inline as a pure component load.
+    // Never call libm's creal/cimag: rcc's internal complex layout and the
+    // external ABI disagree for _Complex long double (SysV passes the
+    // 32-byte value on the stack as x87 80-bit components, which rcc
+    // neither pushes nor represents), so glibc's creall/cimagl returned
+    // garbage and corrupted every mpc value that passed through them
+    // (mpc_set_ldc/mpc_get_ldc produced @NaN@ components).
+    if (equalc(tok, "__builtin_creal") || equalc(tok, "__builtin_crealf") ||
+        equalc(tok, "__builtin_creall") || equalc(tok, "__builtin_cimag") ||
+        equalc(tok, "__builtin_cimagf") || equalc(tok, "__builtin_cimagl")) {
+        Token *start = tok;
+        bool is_imag = equalc(tok, "__builtin_cimag") ||
+            equalc(tok, "__builtin_cimagf") ||
+            equalc(tok, "__builtin_cimagl");
+        tok = skip(tok->next, "(");
+        Node *arg = assign(&tok, tok);
+        *rest = skip(tok, ")");
+        check_type(arg);
+        Node *n = new_unary(is_imag ? ND_IMAG : ND_REAL, arg, start);
+        check_type(n);
+        return n;
+    }
     // __builtin_conjf/conj/conjl(z) — complex conjugate: negate the imaginary part
     if (equalc(tok, "__builtin_conjf") || equalc(tok, "__builtin_conj") ||
         equalc(tok, "__builtin_conjl")) {
@@ -10809,6 +10910,13 @@ static Node *unary(Token **rest, Token *tok) {
     }
     if (equalc(tok, "__atomic_exchange_n") || equalc(tok, "__atomic_exchange") || atomic_lib_helper(tok, "exchange")) {
         Token *start = tok;
+        // __atomic_exchange_n(ptr, val, order) and the libatomic sized
+        // forms __atomic_exchange_<N> return the old value; the generic
+        // __atomic_exchange(ptr, val, ret, order) stores the old value
+        // into *ret and is void (GCC semantics). The ret argument was
+        // being misparsed as the memory order, blowing up the comma skip
+        // with "expected specific operator" (tinycc's 125_atomic_misc).
+        bool four_arg = equalc(tok, "__atomic_exchange");
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
         check_type(ptr);
@@ -10820,6 +10928,20 @@ static Node *unary(Token **rest, Token *tok) {
             if (base && ty_const(base))
                 warn_tok(start, "assignment of read-only location");
         }
+        Node *ret_ptr = NULL;
+        if (four_arg) {
+            // __atomic_exchange takes *pointers* to both the value and the
+            // old-value slot (unlike _n/_N which take the value directly):
+            // dereference them so the exchange uses *val and stores *ret.
+            tok = skip(tok, ",");
+            ret_ptr = assign(&tok, tok);
+            check_type(ret_ptr);
+            if (ret_ptr->ty->kind != TY_PTR && ret_ptr->ty->kind != TY_ARRAY)
+                error_tok_simple(start, "pointer expected");
+            Node *val_deref = new_unary(ND_DEREF, val, start);
+            check_type(val_deref);
+            val = val_deref;
+        }
         Node *node = new_node(ND_ATOMIC_EXCHANGE, start);
         node->lhs = ptr;
         node->rhs = val;
@@ -10830,10 +10952,28 @@ static Node *unary(Token **rest, Token *tok) {
             node->ty = ptr->ty->base;
         else
             node->ty = ty_int;
+        if (ret_ptr) {
+            // *ret = <old value>; the whole expression is void
+            Node *deref = new_unary(ND_DEREF, ret_ptr, start);
+            check_type(deref);
+            Node *store = new_binary(ND_ASSIGN, deref, node, start);
+            check_type(store);
+            return store;
+        }
         return node;
     }
     if (equalc(tok, "__atomic_compare_exchange_n") || equalc(tok, "__atomic_compare_exchange") || atomic_lib_helper(tok, "compare_exchange")) {
         Token *start = tok;
+        // __atomic_compare_exchange_n and the libatomic sized
+        // __atomic_compare_exchange_<N> forms take the desired value
+        // directly (rcc's own test_atomic_libatomic_helpers passes e.g.
+        // `__atomic_compare_exchange_4(&x, &expected, 99, ...)`); only the
+        // generic __atomic_compare_exchange takes a *pointer to* the desired
+        // value (GCC signature: bool f(type *ptr, type **expected,
+        // type *desired, bool weak, int success, int failure)). Without the
+        // deref the pointer bits were exchanged into *ptr (tinycc's
+        // 125_atomic_misc: a became garbage after a strong exchange).
+        bool desired_is_ptr = equalc(tok, "__atomic_compare_exchange");
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
         check_type(ptr);
@@ -10843,6 +10983,11 @@ static Node *unary(Token **rest, Token *tok) {
         tok = skip(tok, ",");
         Node *desired = assign(&tok, tok);
         check_type(desired);
+        if (desired_is_ptr) {
+            Node *desired_deref = new_unary(ND_DEREF, desired, start);
+            check_type(desired_deref);
+            desired = desired_deref;
+        }
         if ((ptr->ty->kind == TY_PTR || ptr->ty->kind == TY_ARRAY) && ptr->ty->base) {
             Type *base = ptr->ty->base;
             if ((expected->ty->kind == TY_PTR || expected->ty->kind == TY_ARRAY) && expected->ty->base) {
@@ -11444,6 +11589,14 @@ static Node *unary(Token **rest, Token *tok) {
         check_type(node);
         if (node->kind == ND_LVAR && node->var && node->var->is_register)
             error_tok(tok, "address of register compound literal requested");
+        // `&fn`: same address-taken tracking as append_reloc() (static
+        // initializers) below, but for a runtime expression -- e.g.
+        // mpack's own test suite compares `fn_mpack_tag_nil ==
+        // &mpack_tag_nil` inside a function body, which never goes
+        // through a global initializer's relocation path at all. See
+        // rcc.h's LVar.addr_taken doc comment.
+        if (node->kind == ND_LVAR && node->var && node->var->is_function)
+            node->var->addr_taken = true;
         return new_unary(ND_ADDR, node, tok);
     }
     if (equalc(tok, "*"))
@@ -13657,7 +13810,7 @@ Program *parse(Token *tok) {
                     LVar *fn_locals = NULL;
                     current_fn_is_inline = attr.is_inline && !attr.is_static &&
                         !attr.is_gnu_inline;
-                    Node *body = compound_stmt_ex(&tok, tok, &fn_locals);
+                    Node *body = compound_stmt_ex(&tok, tok, &fn_locals, false);
                     current_fn_is_inline = false;
                     // Implicit return 0 for main if no explicit return
                     if (name == kw_main) {

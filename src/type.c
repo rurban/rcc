@@ -295,10 +295,21 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
             if (common_base == rhs->base) return rhs;
             return complex_type(common_base);
         }
-        // One complex, one scalar: promote scalar to complex
+        // One complex, one scalar (C11 6.3.1.8p1): if the scalar is a real
+        // floating type whose rank exceeds the complex operand's base rank,
+        // the complex operand converts to the scalar's type and the result
+        // is complex with that (wider) base; otherwise the scalar converts
+        // to the complex base and the complex type is kept. Integer scalars
+        // always convert to the base (never widen it). Previously every
+        // scalar promoted *to* the complex type, so `_Complex float * double`
+        // stayed `_Complex float` and the wrongly-narrow result was then
+        // mis-marshalled at call/return boundaries (mpc's mpc_get_dc
+        // segfault: `I * mpfr_get_d(...)` stayed float complex).
         Type *cx = is_complex(lhs) ? lhs : rhs;
         Type *sc = is_complex(lhs) ? rhs : lhs;
         if (!is_number(sc)) return cx;
+        if (is_flonum(sc) && cx->base && sc->size > cx->base->size)
+            return complex_type(sc);
         return cx; // scalar promotes to complex
     }
     if (is_flonum(lhs) || is_flonum(rhs))
@@ -940,7 +951,20 @@ static void add_type_internal(Node *node) {
         Type *rty = node->rhs->ty;
         if (is_number(lty) && is_number(rty)) {
             node->ty = usual_arith_type(lty, rty);
-            if (is_flonum(node->ty) || is_decimal(node->ty)) {
+            if (is_complex(node->ty)) {
+                // Complex result: codegen's complex-arith handler copies the
+                // operands component-wise with the RESULT's base size, so a
+                // complex operand whose base differs (e.g. _Complex float
+                // lhs of `I * b` after the usual arithmetic conversions
+                // widened the result to _Complex double) must be cast to the
+                // result type first; otherwise the handler over-reads the
+                // smaller operand (mpc's mpc_get_dc segfault). Scalars stay
+                // uncast — the handler converts them itself.
+                if (is_complex(lty) && lty->base != node->ty->base)
+                    insert_arith_cast(&node->lhs, node->ty);
+                if (is_complex(rty) && rty->base != node->ty->base)
+                    insert_arith_cast(&node->rhs, node->ty);
+            } else if (is_flonum(node->ty) || is_decimal(node->ty)) {
                 if (lty != node->ty)
                     insert_arith_cast(&node->lhs, node->ty);
                 if (rty != node->ty)
@@ -1029,7 +1053,15 @@ static void add_type_internal(Node *node) {
     case ND_BITXOR:
     case ND_BITOR:
         node->ty = usual_arith_type(node->lhs->ty, node->rhs->ty);
-        if (is_flonum(node->ty)) {
+        if (is_complex(node->ty)) {
+            // See the ND_ADD/ND_SUB case above: cast complex operands whose
+            // base differs from the result's base so codegen's complex-arith
+            // handler reads correctly-sized components.
+            if (is_complex(node->lhs->ty) && node->lhs->ty->base != node->ty->base)
+                insert_arith_cast(&node->lhs, node->ty);
+            if (is_complex(node->rhs->ty) && node->rhs->ty->base != node->ty->base)
+                insert_arith_cast(&node->rhs, node->ty);
+        } else if (is_flonum(node->ty)) {
             if (is_integer(node->lhs->ty))
                 insert_arith_cast(&node->lhs, node->ty);
             if (is_integer(node->rhs->ty))
@@ -1100,6 +1132,22 @@ static void add_type_internal(Node *node) {
                        node->rhs->ty->kind == TY_INT128 && node->lhs->ty->kind != TY_INT128) {
                 // Truncation from int128 to smaller: insert explicit cast so codegen
                 // knows to extract the value from the 128-bit slot.
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->rhs;
+                cast->ty = node->lhs->ty;
+                cast->tok = node->rhs->tok;
+                node->rhs = cast;
+            } else if (is_complex(node->lhs->ty) && is_complex(node->rhs->ty) &&
+                       node->lhs->ty->base && node->rhs->ty->base &&
+                       (node->lhs->ty->base->size != node->rhs->ty->base->size ||
+                        is_flonum(node->lhs->ty->base) != is_flonum(node->rhs->ty->base))) {
+                // Complex-to-complex with a different base (e.g. assigning a
+                // _Complex double to a _Complex long double): without the
+                // cast the assign codegen copies node->lhs->ty->size raw
+                // bytes from the smaller rhs slot, over-reading it and
+                // dropping the imaginary component (mpc's
+                // `LONG_DOUBLE_COMPLEX lc = c` zeroed/garbage'd cimagl(lc)).
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->rhs;
@@ -1357,7 +1405,11 @@ static void add_type_internal(Node *node) {
             return;
         }
         if (node->lhs->ty->kind != TY_PTR && node->lhs->ty->kind != TY_ARRAY && node->lhs->ty->kind != TY_VLA) {
-            error_tok(node->tok, "invalid pointer dereference\n\033[1;36mnote\033[0m: cannot apply '*' to a non-pointer type");
+            // "pointer expected" matches tinycc's diagnostic for non-pointer
+            // dereferences (tinycc tests/tests2/125_atomic_misc asserts this
+            // exact text), and error_tok_simple emits no source echo/caret,
+            // also matching tinycc's single-line format.
+            error_tok_simple(node->tok, "pointer expected");
         }
         node->ty = node->lhs->ty->base;
         return;

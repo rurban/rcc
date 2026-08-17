@@ -199,8 +199,27 @@ int link_add_sym(LinkState *s, const char *name, int sec, uint64_t value,
                     // the existing definition defensively.
                     return idx;
                 }
-                fprintf(stderr, "rcc: link error: duplicate definition of '%s'\n", name);
-                return -1;
+                // Strong (GLOBAL, bind==1) overrides weak (bind==2): a
+                // weak definition may legally be shadowed by a strong
+                // one, or by another weak one (multiple TUs' identical
+                // inline-function bodies, emitted SB_WEAK so `&fn`
+                // compares equal across translation units -- see
+                // codegen.c's C99 inline-linkage comment). Only two
+                // GLOBAL (strong) definitions of the same symbol is a
+                // genuine conflict.
+                if (sym->bind == 2 && bind == 1) {
+                    // new strong definition replaces the old weak one
+                } else if (sym->bind == 1 && bind == 2) {
+                    // old strong definition wins; keep it, ignore new weak
+                    return idx;
+                } else if (sym->bind == 2 && bind == 2) {
+                    // both weak: bodies must be identical (ODR); keep
+                    // whichever was seen first
+                    return idx;
+                } else {
+                    fprintf(stderr, "rcc: link error: duplicate definition of '%s'\n", name);
+                    return -1;
+                }
             }
             if (new_def) {
                 sym->sec = sec;

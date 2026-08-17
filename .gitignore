@@ -72,14 +72,16 @@ test-*.summary
 test/*.out
 /compile_commands.json
 /tools/__pycache__
-/muon
 /test/third_party/test_*
+/test/third_party/binutils
+/test/third_party/muon
 
 # agents
 .claude/
 .kimi-code/
 .omp/
 .opencode
+.codewhale
 .mcp.json
 opencode.json
 amazon_bug_bounty/

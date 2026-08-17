@@ -76,6 +76,9 @@
 #define N_EXT   0x01
 #define N_PEXT  0x10
 
+// n_desc flags
+#define N_WEAK_DEF 0x0080 // defined symbol is a weak (coalesced) definition
+
 // PLATFORM_MACOS = 1
 #define PLATFORM_MACOS 1
 
@@ -769,9 +772,16 @@ int link_load_object(LinkState *s, const char *path) {
                 uint32_t n_strx = mo_r32(nl);
                 uint8_t n_type = nl[4];
                 uint8_t n_sect = nl[5];
-                int16_t n_desc = (int16_t)((nl[6] << 8) | nl[7]);
+                int16_t n_desc = (int16_t)(nl[6] | (nl[7] << 8)); // n_desc is little-endian (macho_write.c's w16)
                 uint64_t n_value = mo_r64(nl + 8);
-                (void)n_desc;
+                // N_WEAK_DEF (n_desc bit 0x80): a weak (coalesced)
+                // definition -- macho_write.c emits it for SB_WEAK symbols,
+                // e.g. multiple TUs' identical C99 inline-function bodies
+                // (codegen.c's addr-taken SB_WEAK). Map to bind 2 (link.c's
+                // weak binding, same as the ELF reader's STB_WEAK), or the
+                // linker's strong-overrides-weak duplicate check in
+                // link_add_sym() treats every TU's copy as a conflicting
+                // strong definition ("duplicate definition of '...'").
 
                 const char *name = strbase + n_strx;
                 if (!name[0]) {
@@ -786,11 +796,11 @@ int link_load_object(LinkState *s, const char *path) {
                     type = 0;
                     out_sec = -1;
                 } else if (nt == N_SECT && n_sect > 0 && n_sect <= n_sections) {
-                    bind = (n_type & N_EXT) ? 1 : 0;
+                    bind = (n_type & N_EXT) ? ((n_desc & N_WEAK_DEF) ? 2 : 1) : 0;
                     type = 0;
                     out_sec = sec_map[n_sect - 1];
                 } else if (nt == N_ABS) {
-                    bind = (n_type & N_EXT) ? 1 : 0;
+                    bind = (n_type & N_EXT) ? ((n_desc & N_WEAK_DEF) ? 2 : 1) : 0;
                     type = 0;
                     out_sec = -1;
                     n_value = 0;
@@ -798,7 +808,6 @@ int link_load_object(LinkState *s, const char *path) {
                     sym_map[j] = -1;
                     continue;
                 }
-
                 uint64_t sym_value = (out_sec >= 0) ? n_value + sec_base_off[n_sect - 1] : 0;
                 int sym_idx = link_add_sym(s, name, out_sec, sym_value,
                                            0, bind, type, -1);

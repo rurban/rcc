@@ -3663,7 +3663,25 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                 addr = alloc_reg();
                 asm_lea_rbp_reg(cg_sec, addr, 8, tmp_slot); // lea [rbp-8], raddr
                 VReg val = gen(argv[i]);
-                asm_mov_mem_via_reg(cg_sec, val, addr, argv[i]->ty->size > 4 ? 8 : argv[i]->ty->size); // mov val, (addr)
+                if (argv[i]->ty && is_complex(argv[i]->ty)) {
+                    // gen() returns the ADDRESS of the complex value (unlike
+                    // scalars, which return the value in a register); copy
+                    // the value bytes from [val] into the temp, or the
+                    // placement pass below would dereference the temp and
+                    // pass the address bits as the argument. Real bug:
+                    // mpc's tset segfaulted on a _Complex float expression
+                    // argument (1.5f + 2.5f*I) whose address was passed as
+                    // the 8-byte value, corrupting the callee's state.
+                    int cbsz = argv[i]->ty->base ? argv[i]->ty->base->size : 8;
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(val), 0)); // movq (val), %rax
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX); // movq %rax, (addr)
+                    if (argv[i]->ty->size > 8) {
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(val), cbsz)); // movq cbsz(val), %rax
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), cbsz), X86_RAX); // movq %rax, cbsz(addr)
+                    }
+                } else {
+                    asm_mov_mem_via_reg(cg_sec, val, addr, argv[i]->ty->size > 4 ? 8 : argv[i]->ty->size); // mov val, (addr)
+                }
                 free_reg(val);
             }
             arg_regs[i] = addr;
@@ -4607,46 +4625,51 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
 // e.g. a smaller hidden-retbuf result being widened in place) is safe even
 // when to->size > from->size.
 static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
-    (void)to; // used via to->base->size in ARCH_ARM64 path
-    int fsz = from->base->size;
-#ifdef ARCH_ARM64
+    int fsz = from->base->size; // 4 (float), 8 (double), 16 (long double slot)
     int tsz = to->base->size;
-    if (fsz == 4) {
+    bool from_single = (fsz == 4);
+    bool to_single = (tsz == 4);
+    // Internal layout: components at offset 0 and <base size>, each 4 bytes
+    // for float bases and 8 bytes otherwise (long double bases hold the
+    // 8-byte internal value in a 16-byte slot). Previously the destination
+    // offsets were hardcoded for _Complex double (imag at 8), so widening
+    // _Complex float to _Complex long double stored the imaginary part at
+    // the wrong offset and every consumer (arith, args, returns) read
+    // garbage — mpc's mpc_get_ldc produced @NaN@ real parts.
+#ifdef ARCH_ARM64
+    if (from_single) {
         asm_ldr_fp(cg_sec, ARM64_S0, src, 4); // ldr s0, [x{src}]
         arm64_ldr_fp(cg_sec, 2, (Arm64Reg)(ARM64_S0 + 1), REG(src), 4); // ldr s1, [x{src}, #4]
         asm_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
         asm_fcvt(cg_sec, 1, 0, (Arm64Reg)(ARM64_D0 + 1), (Arm64Reg)(ARM64_S0 + 1)); // fcvt d1, s1
     } else {
         asm_ldr_fp(cg_sec, ARM64_D0, src, 8); // ldr d0, [x{src}]
-        arm64_ldr_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(src), 8); // ldr d1, [x{src}, #8]
+        arm64_ldr_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(src), fsz); // ldr d1, [x{src}, #fsz]
+    }
+    if (to_single) {
         asm_fcvt(cg_sec, 0, 1, ARM64_S0, ARM64_D0); // fcvt s0, d0
         asm_fcvt(cg_sec, 0, 1, (Arm64Reg)(ARM64_S0 + 1), (Arm64Reg)(ARM64_D0 + 1)); // fcvt s1, d1
     }
-    if (tsz == 4) {
+    if (to_single) {
         asm_str_fp(cg_sec, ARM64_S0, dst, 4); // str s0, [x{dst}]
         arm64_str_fp(cg_sec, 2, (Arm64Reg)(ARM64_S0 + 1), REG(dst), 4); // str s1, [x{dst}, #4]
     } else {
         asm_str_fp(cg_sec, ARM64_D0, dst, 8); // str d0, [x{dst}]
-        arm64_str_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(dst), 8); // str d1, [x{dst}, #8]
+        arm64_str_fp(cg_sec, 3, (Arm64Reg)(ARM64_D0 + 1), REG(dst), tsz); // str d1, [x{dst}, #tsz]
     }
 #else
-    if (fsz == 4) {
-        // _Complex float → _Complex double: load singles, widen to doubles
-        asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 0)); // movss (src), %xmm0
-        asm_mov_fp_rm(cg_sec, 4, X86_XMM1, x86_mem(REG(src), 4)); // movss 4(src), %xmm1
+    asm_mov_fp_rm(cg_sec, from_single ? 4 : 8, X86_XMM0, x86_mem(REG(src), 0)); // mov[s|s]s/d (src), %xmm0
+    asm_mov_fp_rm(cg_sec, from_single ? 4 : 8, X86_XMM1, x86_mem(REG(src), fsz)); // mov[s|s]s/d fsz(src), %xmm1
+    if (from_single) {
         x86_cvtss2sd(cg_sec, X86_XMM0, X86_XMM0); // cvtss2sd %xmm0, %xmm0
         x86_cvtss2sd(cg_sec, X86_XMM1, X86_XMM1); // cvtss2sd %xmm1, %xmm1
-        asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_XMM0); // movsd %xmm0, (dst)
-        asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_XMM1); // movsd %xmm1, 8(dst)
-    } else {
-        // _Complex double → _Complex float: load doubles, narrow to singles
-        asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
-        asm_mov_fp_rm(cg_sec, 8, X86_XMM1, x86_mem(REG(src), 8)); // movsd 8(src), %xmm1
+    }
+    if (to_single) {
         x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0); // cvtsd2ss %xmm0, %xmm0
         x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1); // cvtsd2ss %xmm1, %xmm1
-        asm_mov_fp_mr(cg_sec, 4, x86_mem(REG(dst), 0), X86_XMM0); // movss %xmm0, (dst)
-        asm_mov_fp_mr(cg_sec, 4, x86_mem(REG(dst), 4), X86_XMM1); // movss %xmm1, 4(dst)
     }
+    asm_mov_fp_mr(cg_sec, to_single ? 4 : 8, x86_mem(REG(dst), 0), X86_XMM0); // mov[s|s]s/d %xmm0, (dst)
+    asm_mov_fp_mr(cg_sec, to_single ? 4 : 8, x86_mem(REG(dst), tsz), X86_XMM1); // mov[s|s]s/d %xmm1, tsz(dst)
 #endif
 }
 
@@ -6548,10 +6571,12 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         return;
     }
 
-    // Complex types: gen() returns address, need to load and OR components.
-    // Exception: ND_ASSIGN with complex funcall RHS already returns a
-    // boolean truthiness value from its own inline check.
-    if (cond->ty && is_complex(cond->ty) && cond->kind != ND_ASSIGN) {
+    // Complex types: gen() returns the value's address, load and OR the
+    // components. Applies to every complex condition, including ND_ASSIGN
+    // (gen(ND_ASSIGN) returns the destination address of the assigned value;
+    // a removed special case used to return a precomputed truthiness, which
+    // broke value uses of the assignment expression like (d = f()) != c).
+    if (cond->ty && is_complex(cond->ty)) {
         VReg addr = gen(cond);
         int base_sz = cond->ty->base ? cond->ty->base->size : 8;
 #ifdef ARCH_ARM64
@@ -9238,35 +9263,10 @@ VReg gen(Node *node) {
                      (is_flonum(node->ty->base) && is_integer(node->rhs->ty->base)))) {
                     emit_complex_convert_mixed(dst, dst, node->rhs->ty, node->ty);
                 }
-                // For complex return values used as a condition (e.g. if (c = f())),
-                // test whether the value is non-zero.
-                if (node->ty->kind == TY_COMPLEX) {
-                    int base_sz = node->ty->base->size;
-                    int rt = alloc_reg();
-#ifdef ARCH_ARM64
-                    asm_ldr_reg_off(cg_sec, rt, dst, 8, 0);
-                    if (node->ty->size > base_sz) {
-                        int rt2 = alloc_reg();
-                        asm_ldr_reg_off(cg_sec, rt2, dst, 8, base_sz); // ldr rt2, [dst, #base_sz]
-                        arm64_orr_reg(cg_sec, 1, REG(rt), REG(rt), REG(rt2), ARM64_LSL, 0); // orr rt, rt, rt2
-                        free_reg(rt2);
-                    }
-                    asm_cmp_zero(cg_sec, rt, 8);
-                    asm_cset(cg_sec, rt, ARM64_NE);
-#else
-                    // The whole complex value fits in 8 bytes (_Complex float)
-                    // or two 8-byte halves (_Complex double): load (and OR
-                    // together) the raw bits and test against zero.
-                    x86_mov_rm(cg_sec, 8, REG(rt), x86_mem(REG(dst), 0)); // movq (dst), rt
-                    if (node->ty->size > 8)
-                        x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(dst), base_sz)); // orq base_sz(dst), rt
-                    asm_cmp_zero(cg_sec, rt, 8); // cmp $0, rt
-                    asm_setcc(cg_sec, X86_RAX, X86_NE); // setne %al
-                    asm_movzx_phys(cg_sec, rt, X86_RAX, 4, 1); // movzbl %al, rt
-#endif
-                    free_reg(dst);
-                    return rt;
-                }
+                // NOTE: no truthiness conversion here. gen() must return the
+                // assigned complex VALUE's address so value uses ((d = f()) != c,
+                // return d = f(), d2 = (d = f())) see the real data. The
+                // condition path (gen_cond) performs the non-zero test itself.
                 return dst;
             }
             // String literal → char array: limit copy to actual string size, zero-fill rest
@@ -10453,6 +10453,16 @@ VReg gen(Node *node) {
     case ND_CAST: {
         if (node->ty && node->ty->is_vector)
             return gen_addr(node); // vectors are slot-resident
+        // Complex-to-complex cast (possibly with a differently-sized base):
+        // gen_addr materializes the converted copy (emit_complex_convert_float
+        // / _int / _mixed) and returns its address. The generic scalar path
+        // below would otherwise treat the source complex value's ADDRESS as a
+        // scalar and bitcast it — the _Complex double -> _Complex long double
+        // assignment (`lc = c`, mpc's `LONG_DOUBLE_COMPLEX lc = c`) silently
+        // dropped the imaginary component and over-read the source slot.
+        if (node->lhs && node->lhs->ty && node->ty &&
+            is_complex(node->lhs->ty) && is_complex(node->ty))
+            return gen_addr(node);
         // 8-byte vector -> scalar bitcast (e.g. `(long long)__m64`):
         // the vector VALUE is a slot address, so load the bytes out.
         if (node->lhs && node->lhs->ty && node->lhs->ty->is_vector &&
@@ -10647,6 +10657,25 @@ VReg gen(Node *node) {
                 ((is_integer(node->lhs->ty) && is_integer(ret_ty)) ||
                  (is_flonum(node->lhs->ty) && is_flonum(ret_ty))) &&
                 (node->lhs->ty->size != ret_ty->size || node->lhs->ty->is_unsigned != ret_ty->is_unsigned)) {
+                Node *cast = arena_alloc(sizeof(Node));
+                cast->kind = ND_CAST;
+                cast->lhs = node->lhs;
+                cast->ty = ret_ty;
+                cast->tok = node->lhs->tok;
+                node->lhs = cast;
+            }
+            // Complex expression returned from a complex function with a
+            // differently-sized / differently-kind base (e.g. _Complex float
+            // expr from a _Complex double function): without the cast the
+            // return path below keys on the expression's own size and emits
+            // the 8-byte packed float as a single double (xmm0) with garbage
+            // xmm1. The ND_CAST complex->complex path (gen_addr) performs the
+            // per-component widen/narrow via emit_complex_convert_float.
+            if (node->lhs->ty && ret_ty &&
+                is_complex(node->lhs->ty) && is_complex(ret_ty) &&
+                node->lhs->ty->base && ret_ty->base &&
+                (node->lhs->ty->base->size != ret_ty->base->size ||
+                 is_flonum(node->lhs->ty->base) != is_flonum(ret_ty->base))) {
                 Node *cast = arena_alloc(sizeof(Node));
                 cast->kind = ND_CAST;
                 cast->lhs = node->lhs;
@@ -16224,11 +16253,13 @@ struct ObjFile *codegen(Program *prog) {
         // Symbol linkage
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
+        bool inline_addr_taken = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
                     if (g->has_init) has_noninline_decl = true;
                     if (g->is_extern && !g->is_weak) had_extern_decl = true;
+                    inline_addr_taken = g->addr_taken;
                     break;
                 }
             }
@@ -16265,8 +16296,35 @@ struct ObjFile *codegen(Program *prog) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported)
             cg_global_label(fn_sym_name); // .globl %s
+        else if (inline_addr_taken)
+            // C99 inline-linkage, address genuinely taken somewhere in
+            // this TU (a global initializer's `&fn`, see rcc.h's
+            // LVar.addr_taken doc comment): every TU that can't fully
+            // inline every call/address-of still emits its own copy of
+            // the body, and real GCC/Clang, given identical bodies
+            // (mandatory for the same inline function across TUs), just
+            // reference an external symbol and let exactly one other TU
+            // provide it. rcc instead always emits a body per TU;
+            // SB_LOCAL (a plain, non-address-comparable private copy)
+            // made `&fn` differ across TUs -- the standard library's own
+            // multiple-inclusion idiom (e.g. mpack's `mpack_tag_nil`)
+            // explicitly compares such addresses for identity. SB_WEAK
+            // instead lets the linker collapse every TU's copy (plus any
+            // single non-weak/GLOBAL definition, which always wins over
+            // weak per ELF rules) down to one program-wide symbol,
+            // matching GCC's final linked behavior.
+            cg_weak_label(fn_sym_name);
         else
-            cg_def_fn_label(fn_sym_name); // .weak %s
+            // Never address-taken, only ever called (or fully unused —
+            // see opt.c's eliminate_unused_static_inline, which omits
+            // this case entirely when unreferenced): no cross-TU address
+            // comparison is possible, so the narrower SB_LOCAL binding
+            // real GCC/Clang effectively give it too (their own copy,
+            // never externally visible) is correct and keeps a same-TU
+            // call sited via the fast label-hashtable direct branch
+            // (cg_def_fn_label, unlike cg_weak_label) instead of forcing
+            // every call through a real relocation.
+            cg_def_fn_label(fn_sym_name);
 
         // Stack frame: stp fp,lr; mov fp,sp; sub sp,sp,#frame_size
         asm_stp_fp_lr(cg_sec); // stp x29, x30, [sp, #-16]!
@@ -16708,6 +16766,7 @@ struct ObjFile *codegen(Program *prog) {
         // 2. If prior non-weak declaration had extern (LVar is_extern=true)
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
+        bool inline_addr_taken = false;
         if (fn->is_inline && !fn->is_extern) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
@@ -16716,6 +16775,7 @@ struct ObjFile *codegen(Program *prog) {
                     // Only consider non-weak extern declarations
                     if (g->is_extern && !g->is_weak)
                         had_extern_decl = true;
+                    inline_addr_taken = g->addr_taken;
                     break;
                 }
             }
@@ -16733,8 +16793,17 @@ struct ObjFile *codegen(Program *prog) {
             cg_weak_label(fn_sym_name); // .weak_definition %s
         } else if (fn_exported) {
             cg_global_label(fn_sym_name); // .globl %s
+        } else if (inline_addr_taken) {
+            // See the identical ARM64 comment above this function's
+            // mirror decision: address genuinely taken somewhere in this
+            // TU (rcc.h's LVar.addr_taken) needs SB_WEAK so `&fn`
+            // compares equal across every TU that takes it.
+            cg_weak_label(fn_sym_name);
         } else {
-            cg_def_fn_label(fn_sym_name); // .weak %s
+            // Never address-taken, only ever called: SB_LOCAL, matching
+            // real GCC/Clang's own effectively-private copy and keeping
+            // same-TU calls on the fast label-hashtable direct branch.
+            cg_def_fn_label(fn_sym_name);
         }
 #ifdef _WIN32
         uw_begin(); // .seh_proc
