@@ -411,7 +411,7 @@ lint:
 
 lint-changed:
 	if command -v prek > /dev/null 2>&1; then prek run -s HEAD~1; \
-	elif command -v pre-commit > /dev/null 2>&1; then pre-commit run -s HEAD~1; fi
+	elif command -v pre-commit > /dev/null 2>&1; then pre-commit run --from-ref HEAD~1 --to-ref HEAD; fi
 
 tcc: tinycc/tcc tinycc/lib/tcc/include
 

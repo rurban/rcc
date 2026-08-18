@@ -74,6 +74,7 @@ test/*.out
 /tools/__pycache__
 /test/third_party/test_*
 /test/third_party/binutils
+/muon
 /test/third_party/muon
 
 # agents
