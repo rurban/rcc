@@ -502,6 +502,48 @@ static int from_hex(char c) {
     return -1;
 }
 
+// Parse the digits of an integer literal [q,p) into its value, honoring
+// base prefixes, C23 digit separators and u/U/l/L (C23 wb/WB) suffixes.
+// Shared by TK_NUM and integer imaginary (TK_FNUM|4|8) literals.
+static uint64_t parse_int_literal(const char *q, const char *p, bool dsep) {
+    if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
+        uint64_t val = 0;
+        const char *bp = q + 2;
+        while (*bp == '0' || *bp == '1' || *bp == '\'') {
+            if (*bp != '\'') val = val * 2 + (uint64_t)(*bp - '0');
+            bp++;
+        }
+        return val;
+    } else if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
+        uint64_t val = 0;
+        // i/I/j/J are hex digit chars ('i'-'a'+10 == 18) but terminate an
+        // imaginary literal (`0x10i` == 16i, not 0x10*16+18)
+        for (const char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L' &&
+             *rp != 'i' && *rp != 'I' && *rp != 'j' && *rp != 'J' &&
+             !((*rp == 'w' || *rp == 'W') && (rp[1] == 'b' || rp[1] == 'B'));
+             rp++)
+            if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
+        return val;
+    } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {
+        uint64_t val = 0;
+        for (const char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+            if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
+        return val;
+    } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
+        // Octal: leading 0 followed by digit (not x/b/o), possibly with a
+        // digit separator right after the 0
+        uint64_t val = 0;
+        for (const char *rp = q + 1; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+            if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
+        return val;
+    } else {
+        uint64_t val = 0;
+        for (const char *rp = q; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
+            if (isdigit(*rp)) val = val * 10 + (uint64_t)(*rp - '0');
+        return val;
+    }
+}
+
 static char read_escaped_char(char **new_pos, char *p) {
     if (*p == 'x') {
         p++;
@@ -934,60 +976,13 @@ Token *lex_one(char **pp, int *plineno) {
             } else if (is_imag) {
                 cur = cur->next = new_token(TK_FNUM, q, p, cur_lineno);
                 cur->val = 4 | 8;
-                if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
-                    int64_t iv = 0;
-                    char *bp = q + 2;
-                    while (*bp == '0' || *bp == '1' || *bp == '\'') {
-                        if (*bp != '\'') iv = iv * 2 + (*bp - '0');
-                        bp++;
-                    }
-                    cur->fval = (double)iv;
-                } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {
-                    int64_t iv = 0;
-                    for (char *rp = q + 2; rp < p; rp++)
-                        if (*rp >= '0' && *rp <= '7') iv = iv * 8 + (*rp - '0');
-                    cur->fval = (double)iv;
-                } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
-                    int64_t iv = 0;
-                    for (char *rp = q + 1; rp < p; rp++)
-                        if (*rp >= '0' && *rp <= '7') iv = iv * 8 + (*rp - '0');
-                    cur->fval = (double)iv;
-                }
+                // Integer imaginary: value must cover every base (binary,
+                // hex, octal, decimal), not just the 0b/0o/0-prefixed ones —
+                // a plain `1i` left fval at 0 and dropped the imaginary part.
+                cur->fval = (double)parse_int_literal(q, p, dsep);
             } else {
                 cur = cur->next = new_token(TK_NUM, q, p, cur_lineno);
-                if (q[0] == '0' && (q[1] == 'b' || q[1] == 'B')) {
-                    uint64_t val = 0;
-                    char *bp = q + 2;
-                    while (*bp == '0' || *bp == '1' || *bp == '\'') {
-                        if (*bp != '\'') val = val * 2 + (uint64_t)(*bp - '0');
-                        bp++;
-                    }
-                    cur->val = (int64_t)val;
-                } else if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) {
-                    uint64_t val = 0;
-                    for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L' &&
-                         !((*rp == 'w' || *rp == 'W') && (rp[1] == 'b' || rp[1] == 'B'));
-                         rp++)
-                        if (*rp != '\'') val = val * 16 + (uint64_t)(isdigit(*rp) ? *rp - '0' : ((*rp | 32) - 'a' + 10));
-                    cur->val = (int64_t)val;
-                } else if (q[0] == '0' && (q[1] == 'o' || q[1] == 'O')) {
-                    uint64_t val = 0;
-                    for (char *rp = q + 2; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
-                    cur->val = (int64_t)val;
-                } else if (q[0] == '0' && (isdigit(q[1]) || (dsep && q[1] == '\'' && isdigit(q[2])))) {
-                    // Octal: leading 0 followed by digit (not x/b),
-                    // possibly with a digit separator right after the 0
-                    uint64_t val = 0;
-                    for (char *rp = q + 1; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (*rp != '\'' && *rp >= '0' && *rp <= '7') val = val * 8 + (uint64_t)(*rp - '0');
-                    cur->val = (int64_t)val;
-                } else {
-                    uint64_t val = 0;
-                    for (char *rp = q; rp < p && *rp != 'u' && *rp != 'U' && *rp != 'l' && *rp != 'L'; rp++)
-                        if (isdigit(*rp)) val = val * 10 + (uint64_t)(*rp - '0');
-                    cur->val = (int64_t)val;
-                }
+                cur->val = (int64_t)parse_int_literal(q, p, dsep);
             }
             cur->len = (int)(p - q);
             continue;

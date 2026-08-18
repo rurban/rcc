@@ -268,7 +268,7 @@ static void uw_endproc(void) { // .seh_endproc
 #ifndef ARCH_ARM64
 size_t asm_lea_rip_reg(SecBuf *s, int r, const char *label) {
     size_t off = s->len;
-    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+    X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
     x86_lea(s, 8, REG(r), m);
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, label);
@@ -303,7 +303,7 @@ static size_t asm_movsd_rip_xmm(SecBuf *s, const char *label) {
 // mov (which would dereference whatever lands at that resolved address).
 static size_t asm_mov_got_rip_reg(SecBuf *s, int r, const char *label) {
     size_t off = s->len;
-    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+    X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
 #ifdef _WIN32
     x86_lea(s, 8, REG(r), m); // lea sym(%rip), reg
 #else
@@ -1395,7 +1395,7 @@ static const char *cg_emit_refptr_slot(const char *sym_name) {
 static size_t asm_mov_refptr_rip_reg(SecBuf *s, int r, const char *sym_name) {
     const char *refptr = cg_emit_refptr_slot(sym_name);
     size_t off = s->len;
-    X86Mem m = {X86_RIP, X86_NOREG, 1, 0};
+    X86Mem m = {X86_RIP, X86_NOREG, 1, 0, 0};
     x86_mov_rm(s, 8, REG(r), m);
     if (!cg_dry_run) {
         int sidx = objfile_find_sym(cg_obj, refptr);
@@ -3240,9 +3240,22 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             asm_mov_phy_phy(cg_sec, arg_gp_idx[i], ARM64_X16, 1); // mov x{gp_idx}, x16
             asm_mov_phy_phy(cg_sec, arg_gp_idx[i] + 1, ARM64_X17, 1); // mov x{gp_idx+1}, x17
         } else if (arg_sizes[i] == 1 || arg_sizes[i] == 2) {
-            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
+#ifdef ARCH_ARM64
+            if (argv[i]->ty && is_complex(argv[i]->ty)) {
+                // small _Complex char/short: load the value from the slot
+                arm64_ldr_uoff(cg_sec, arg_sizes[i] == 1 ? 0 : 1, (Arm64Reg)arg_gp_idx[i], REG(arg_regs[i]), 0); // ldr b/h{gp_idx}, [arg_regs[i]]
+            } else
+#endif
+                asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
         } else if (arg_sizes[i] == 4) {
-            asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
+#ifdef ARCH_ARM64
+            if (argv[i]->ty && is_complex(argv[i]->ty)) {
+                // 4-byte _Complex short: load the value (mov would pass the
+                // slot ADDRESS, which cs_add's stur w0 then treated as data)
+                arm64_ldr_uoff(cg_sec, 2, (Arm64Reg)arg_gp_idx[i], REG(arg_regs[i]), 0); // ldr w{gp_idx}, [arg_regs[i]]
+            } else
+#endif
+                asm_mov_phy_reg(cg_sec, arg_gp_idx[i], arg_regs[i], 1); // mov x{gp_idx}, x{arg_reg}
 
         } else {
 #ifdef ARCH_ARM64
@@ -3970,8 +3983,10 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
                         x86_movsd_rm(cg_sec, (X86XmmReg)(arg_fp_idx[i] + 1), x86_mem(REG(arg_regs[i]), base_sz));
                     }
                 } else {
-                    // Integer complex
-                    x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // mov %s, %s
+                    // Integer complex (exact width: an 8-byte load would
+                    // over-read a 4-byte _Complex short arg)
+                    int psz = argv[i]->ty->size <= 4 ? 4 : 8;
+                    x86_mov_rm(cg_sec, psz, cg_x86_argreg[arg_gp_idx[i]], x86_mem(REG(arg_regs[i]), 0)); // mov %s, %s
                     if (argv[i]->ty->size > 8) {
                         int base_sz = argv[i]->ty->base ? argv[i]->ty->base->size : 8;
                         x86_mov_rm(cg_sec, 8, cg_x86_argreg[arg_gp_idx[i] + 1], x86_mem(REG(arg_regs[i]), base_sz));
@@ -4023,7 +4038,7 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
             if (node->lhs->chain_depth == 0) {
                 x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
             } else {
-                X86Mem chain_m = {CG_X86_FP, X86_NOREG, 1, -CHAIN_SLOT_OFFSET};
+                X86Mem chain_m = {CG_X86_FP, X86_NOREG, 1, -CHAIN_SLOT_OFFSET, 0};
                 x86_mov_rm(cg_sec, 8, X86_R10, chain_m); // mov -CHAIN_SLOT_OFFSET(rbp), r10
             }
         }
@@ -4109,15 +4124,28 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
 #endif
 #ifndef _WIN32
     // Linux SysV: _Complex double returns in xmm0:xmm1,
-    // _Complex float returns in xmm0 (packed as two singles).
+    // _Complex float returns in xmm0 (packed as two singles);
+    // integer-complex (e.g. _Complex int/short/long) returns in RAX,
+    // with RDX carrying the imag half when the value is 16 bytes.
     if (node->ty && is_complex(node->ty)) {
         int addr = hidden_ret_reg != -1 ? hidden_ret_reg : alloc_int128_addr();
         int base_sz = node->ty->base ? node->ty->base->size : 8;
-        if (node->ty->size <= 8) {
-            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+        if (is_flonum(node->ty->base)) {
+            if (node->ty->size <= 8) {
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+            } else {
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
+                x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1);
+            }
         } else {
-            x86_movsd_mr(cg_sec, x86_mem(REG(addr), 0), X86_XMM0);
-            x86_movsd_mr(cg_sec, x86_mem(REG(addr), base_sz), X86_XMM1);
+            // exact width: moving a 4-byte _Complex short as 8 bytes
+            // (movsd) over-stored into the neighboring stack slot
+            int lo_sz = node->ty->size <= 4 ? 4 : 8;
+            x86_mov_mr(cg_sec, lo_sz, x86_mem(REG(addr), 0), X86_RAX);
+            if (node->ty->size > 8) {
+                int hi_sz = node->ty->size - 8 <= 4 ? 4 : 8;
+                x86_mov_mr(cg_sec, hi_sz, x86_mem(REG(addr), 8), X86_RDX);
+            }
         }
         return addr;
     }
@@ -4539,6 +4567,10 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
             asm_fcvt(cg_sec, 0, 1, ARM64_S0, ARM64_D0); // fcvt s0, d0
             asm_str_fp(cg_sec, ARM64_S0, addr, 4); // str s0, [x{addr}]
             arm64_str_uoff(cg_sec, 2, ARM64_XZR, REG(addr), 1); // str wzr, [x{addr}, #4]
+        } else if (base_sz == 16) {
+            // _Complex long double: double payload at 0, imag at byte 16
+            asm_str_fp(cg_sec, ARM64_D0, addr, 8); // str d0, [x{addr}]
+            arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr), 2); // str xzr, [x{addr}, #16]
         } else {
             asm_str_fp(cg_sec, ARM64_D0, addr, 8); // str d0, [x{addr}]
             arm64_str_uoff(cg_sec, 3, ARM64_XZR, REG(addr), 1); // str xzr, [x{addr}, #8]
@@ -4771,48 +4803,66 @@ static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
 #else
     // x86-64: convert between int and float complex components
     if (from_int) {
-        // int complex -> float complex: load ints, cvtsi2sd, store doubles
-        if (fsz == 4) {
-            VReg r1 = alloc_reg(), r2 = alloc_reg();
-            if (from->base->is_unsigned) {
-                x86_mov_rm(cg_sec, 4, REG(r1), x86_mem(REG(src), 0)); // movl (src), r1
-                x86_mov_rm(cg_sec, 4, REG(r2), x86_mem(REG(src), 4)); // movl 4(src), r2
+        // int complex -> float complex: convert each component exactly
+        // like the scalar int->float path (sign/zero-extension, u64
+        // halving), store at the target precision and component offset.
+        VReg r1 = alloc_reg(), r2 = alloc_reg();
+        int load_sz = fsz <= 4 ? 4 : 8;
+        int tsz16 = tsz == 16; // long double complex: double payload at 16
+        for (int c = 0; c < 2; c++) {
+            VReg r = c == 0 ? r1 : r2;
+            int off = c == 0 ? 0 : fsz;
+            if (from->base->is_unsigned && fsz == 8) {
+                x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(src), off));
+                int lab = ++rcc_label_count;
+                asm_test_reg_reg(cg_sec, r, r, 8); // test r, r
+                char *l_high = format(".L.u2cx.high.%d", lab);
+                char *l_end = format(".L.u2cx.end.%d", lab);
+                size_t off_js = asm_jcc_label(cg_sec, X86_S);
+                asm_fixup_add(cg_sec, off_js, l_high, 1); // js .L.u2cx.high.%d
+                x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // cvtsi2sd r, %xmm0
+                size_t off_jmp = asm_jmp_label(cg_sec);
+                asm_fixup_add(cg_sec, off_jmp, l_end, 0); // jmp .L.u2cx.end.%d
+                cg_def_label(l_high); // .L.u2cx.high.%d:
+                x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
+                x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
+                cg_def_label(l_end); // .L.u2cx.end.%d:
+            } else if (from->base->is_unsigned) {
+                x86_mov_rm(cg_sec, fsz <= 4 ? 4 : 8, REG(r), x86_mem(REG(src), off)); // zero-extends
+                x86_cvtsi2sd(cg_sec, 8, X86_XMM0, REG(r)); // r64 form = unsigned value
             } else {
-                asm_movsx_base_off_reg(cg_sec, r1, src, 0, 8, 4); // movslq (src), r1
-                asm_movsx_base_off_reg(cg_sec, r2, src, 4, 8, 4); // movslq 4(src), r2
+                x86_movsx_rm(cg_sec, load_sz, fsz, REG(r), x86_mem(REG(src), off));
+                x86_cvtsi2sd(cg_sec, fsz <= 4 ? 4 : 8, X86_XMM0, REG(r));
             }
-            // Save real to xmm0, then store
-            asm_cvtsi2sd(cg_sec, r1, 4); // cvtsi2sd r1, %xmm0
-            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 0), X86_XMM0); // movsd %xmm0, (dst)
-            // Save imag to xmm0, then store
-            asm_cvtsi2sd(cg_sec, r2, 4); // cvtsi2sd r2, %xmm0
-            asm_mov_fp_mr(cg_sec, 8, x86_mem(REG(dst), 8), X86_XMM0); // movsd %xmm0, 8(dst)
-            free_reg(r1);
-            free_reg(r2);
+            if (tsz == 4)
+                x86_cvtsd2ss(cg_sec, X86_XMM0, X86_XMM0);
+            if (tsz == 4)
+                x86_movss_mr(cg_sec, x86_mem(REG(dst), c * 4), X86_XMM0);
+            else
+                x86_movsd_mr(cg_sec, x86_mem(REG(dst), c * (tsz16 ? 16 : 8)), X86_XMM0);
         }
+        free_reg(r1);
+        free_reg(r2);
     } else {
-        // float complex -> int complex: load doubles, cvttsd2si, store ints
-        if (fsz == 8) {
-            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 0)); // movsd (src), %xmm0
-            VReg r = alloc_reg();
-            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r (32-bit)
-            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
-            asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), 8)); // movsd 8(src), %xmm0
-            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
-            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
-            free_reg(r);
-        } else if (fsz == 4) {
-            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 0)); // movss (src), %xmm0
-            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
-            VReg r = alloc_reg();
-            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
-            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 0), REG(r)); // movl r, (dst)
-            asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), 4)); // movss 4(src), %xmm0
-            asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
-            asm_cvttsd2si(cg_sec, r, 4); // cvttsd2si %xmm0, r
-            x86_mov_mr(cg_sec, 4, x86_mem(REG(dst), 4), REG(r)); // movl r, 4(dst)
-            free_reg(r);
+        // float complex -> int complex: load at the source component
+        // width/precision, cvttsd2si, store truncated to the target width.
+        VReg r = alloc_reg();
+        int tsz16 = fsz == 16; // long double complex source: doubles at 0/16
+        for (int c = 0; c < 2; c++) {
+            int off = c == 0 ? 0 : (tsz16 ? 16 : fsz);
+            if (fsz == 4) {
+                asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(src), off)); // movss off(src), %xmm0
+                asm_cvtss2sd(cg_sec); // cvtss2sd %xmm0, %xmm0
+            } else {
+                asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(src), off)); // movsd off(src), %xmm0
+            }
+            asm_cvttsd2si(cg_sec, r, tsz <= 4 ? 4 : 8); // cvttsd2si %xmm0, r
+            int dst_off = c == 0 ? 0 : tsz;
+            x86_mov_mr(cg_sec, tsz <= 4 ? 4 : 8, x86_mem(REG(dst), dst_off), REG(r));
         }
+        free_reg(r);
     }
 #endif
 }
@@ -5866,8 +5916,12 @@ VReg gen_addr(Node *node) {
     case ND_IMAG: {
         int r = gen_addr(node->lhs);
         if (r < 0) {
-            /* rvalue: eval compound expression, extract real/imag from slot */
-            r = gen_to_int128(node->lhs);
+            /* rvalue: eval compound expression, extract real/imag from slot.
+             * Complex expressions come back as an ADDRESS (gen_to_int128
+             * would widen the pointer itself into a bogus int128). */
+            r = (node->lhs->ty && is_complex(node->lhs->ty))
+                ? gen(node->lhs)
+                : gen_to_int128(node->lhs);
         }
         int offset = (node->kind == ND_IMAG) ? node->lhs->ty->base->size : 0;
         if (offset > 0) {
@@ -6033,8 +6087,7 @@ VReg gen_addr(Node *node) {
             // address as-is would make callers read/write past the smaller
             // object. Materialize a converted copy on the stack instead.
             if (node->ty->kind == TY_COMPLEX && node->lhs->ty && node->lhs->ty->kind == TY_COMPLEX &&
-                (node->lhs->ty->base->size != node->ty->base->size ||
-                 is_flonum(node->lhs->ty->base) != is_flonum(node->ty->base))) {
+                node->lhs->ty->base != node->ty->base) {
                 VReg src = gen_addr(node->lhs);
                 if (src < 0)
                     src = gen(node->lhs); // gen() for complex exprs also returns an address
@@ -6081,15 +6134,35 @@ VReg gen_addr(Node *node) {
                             x86_cvtsd2ss(cg_sec, X86_XMM1, X86_XMM1);
                             x86_movss_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
                             x86_movss_mr(cg_sec, x86_mem(REG(dst), 4), X86_XMM1);
+                        } else if (tsz == 16) {
+                            // _Complex long double: double payloads at 0/16
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+                            x86_movsd_mr(cg_sec, x86_mem(REG(dst), 16), X86_XMM1);
                         } else {
                             x86_movsd_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
                             x86_movsd_mr(cg_sec, x86_mem(REG(dst), 8), X86_XMM1);
                         }
                     } else {
-                        // float complex -> int complex: load doubles, convert to ints
+                        // float complex -> int complex: load at the source
+                        // component width (movsd was hardcoded, so a
+                        // _Complex float source's 4-byte components at 0/4
+                        // were read as 8-byte doubles and the imag slot
+                        // over-read past the object)
                         int tsz = node->ty->base->size;
-                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
-                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
+                        int fsz = node->lhs->ty->base->size;
+                        if (fsz == 4) {
+                            x86_movss_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                            asm_cvtss2sd(cg_sec);
+                            x86_movss_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 4));
+                            x86_cvtss2sd(cg_sec, X86_XMM1, X86_XMM1);
+                        } else if (fsz == 16) {
+                            // _Complex long double source: doubles at 0/16
+                            x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                            x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 16));
+                        } else {
+                            x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                            x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), 8));
+                        }
                         x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RAX, X86_XMM0);
                         x86_cvttsd2si(cg_sec, tsz <= 4 ? 4 : 8, X86_RCX, X86_XMM1);
                         if (tsz == 8) {
@@ -6118,6 +6191,14 @@ VReg gen_addr(Node *node) {
             // Non-lvalue cast to complex/struct: materialize on stack
             if (node->ty->kind == TY_COMPLEX) {
                 Type *from = node->lhs->ty;
+                if (from && from->kind == TY_COMPLEX)
+                    // Same-base complex -> complex cast of a non-lvalue
+                    // expression (e.g. `(_Complex long)(2 + 3i)` on LLP64,
+                    // where long and int are both 4 bytes): the representation
+                    // is already correct, so just evaluate the operand into a
+                    // slot (gen() for a complex expression returns its
+                    // address). Delegating to gen(node) here would recurse.
+                    return gen(node->lhs);
                 if (from && (is_flonum(from) || is_integer(from)))
                     // Scalar -> complex: delegate to gen(), which performs the
                     // proper int/float conversion to the complex base type and
@@ -6844,7 +6925,7 @@ static VReg gen_int128(Node *node) {
         free_reg(t);
 #else
         if (lo == (int32_t)lo) {
-            X86Mem m = {REG(addr), X86_NOREG, 1, 0};
+            X86Mem m = {REG(addr), X86_NOREG, 1, 0, 0};
             x86_mov_mi(cg_sec, 8, m, lo); // movq $%lld, (%s)
         } else {
             asm_movabs_phy(cg_sec, X86_RAX, lo); // movabsq $%lld, %%rax
@@ -7898,14 +7979,38 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
         // complex → float/int: load real part from address
         if (is_flonum(to)) {
             if (is_integer(from->base)) {
-                // int complex → float: convert via cvtsi2ss/cvtsi2sd
+                // int complex → float: convert the real part to double
+                // (cvtsi2ss previously emitted the float form for every
+                // 32-bit base, so `(double)(2+3i)` carried float(2)'s bit
+                // pattern and came out as a denormal ~0.0)
 #ifndef ARCH_ARM64
                 if (from->base->size <= 4) {
-                    x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
-                    asm_cvtsi2ss(cg_sec, REG(r), 4); // cvtsi2ss r32, %xmm0
+                    x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r (zero-extends)
+                    // unsigned 32-bit: the zero-extension makes the r64 form correct
+                    asm_cvtsi2sd(cg_sec, r, from->is_unsigned ? 8 : 4); // cvtsi2sd r32/r64, %xmm0
+                } else if (from->is_unsigned) {
+                    // unsigned 64-bit: halve, convert, double (mirrors the scalar u64→f path)
+                    x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), 0)); // movq (r), r
+                    int c = ++rcc_label_count;
+                    asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
+                    {
+                        size_t o = asm_jcc_label(cg_sec, X86_S); // jcc label
+                        asm_fixup_add(cg_sec, o, format(".L.u2f.high.%d", c), 1);
+                    }
+                    asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r, xmm0
+                    {
+                        size_t o = asm_jmp_label(cg_sec);
+                        asm_fixup_add(cg_sec, o, format(".L.u2f.end.%d", c), 0);
+                    }
+                    cg_def_label(format(".L.u2f.high.%d", c));
+                    x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                    x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                    x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
+                    x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
+                    cg_def_label(format(".L.u2f.end.%d", c));
                 } else {
-                    x86_mov_rm(cg_sec, 4, REG(r), x86_mem(REG(r), 0)); // movl (r), r
-                    asm_cvtsi2sd(cg_sec, r, 4); // cvtsi2sd r32, %xmm0
+                    x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), 0)); // movq (r), r
+                    asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd r64, %xmm0
                 }
                 if (to->size == 4)
                     asm_cvtsd2ss(cg_sec);
@@ -7920,9 +8025,8 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
                     arm64_ucvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // ucvtf d0, w0/x0
                 else
                     arm64_scvtf(cg_sec, (from->base->size <= 4 ? 0 : 1), 1, ARM64_D0, ARM64_X0); // scvtf d0, w0/x0
-                if (to->size == 4)
-                    arm64_fcvt(cg_sec, 1, 2, ARM64_S0, ARM64_D0); // fcvt s0, d0
-                arm64_fmov_f2i(cg_sec, (to->size == 4 ? 0 : 1), REG(r), (to->size == 4 ? ARM64_S0 : ARM64_D0)); // fmov r, s0/d0
+                // floats live double-widened in GP regs, so keep d0
+                arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov x{r}, d0
 #endif
             } else {
 #ifndef ARCH_ARM64
@@ -7932,7 +8036,11 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
                     asm_cvtss2sd(cg_sec);
                     asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
                 } else if (to->size == 4) {
-                    asm_mov_fp_rm(cg_sec, 4, X86_XMM0, x86_mem(REG(r), 0)); // movss (r), %xmm0
+                    // load at the SOURCE component width, then narrow
+                    // (movss on a double-complex source read half the real)
+                    asm_mov_fp_rm(cg_sec, from->base->size == 4 ? 4 : 8, X86_XMM0, x86_mem(REG(r), 0));
+                    if (from->base->size != 4)
+                        asm_cvtsd2ss(cg_sec);
                     asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
                 } else {
                     asm_mov_fp_rm(cg_sec, 8, X86_XMM0, x86_mem(REG(r), 0)); // movsd (r), %xmm0
@@ -7941,11 +8049,20 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
 #else
                 if (from->base->size == 4 && to->size == 8) {
                     arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
-                    arm64_fcvt(cg_sec, 1, 2, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                    arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0 (opc=1 d-dest, ftype=0 s-src)
                     arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
                 } else if (to->size == 4) {
-                    arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
-                    arm64_fmov_f2i(cg_sec, 0, REG(r), ARM64_S0); // fmov r, s0
+                    // floats live double-widened in GP regs (the caller
+                    // does fmov d0, x{r} then narrows), so always leave the
+                    // double form in the register
+                    if (from->base->size == 4) {
+                        arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
+                        arm64_fcvt(cg_sec, 1, 0, ARM64_D0, ARM64_S0); // fcvt d0, s0
+                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                    } else {
+                        arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
+                        arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
+                    }
                 } else {
                     arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
                     arm64_fmov_f2i(cg_sec, 1, REG(r), ARM64_D0); // fmov r, d0
@@ -7967,22 +8084,42 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
                 if (from->base->size == 4) {
                     arm64_ldr_fp(cg_sec, 2, 0, REG(r), 0); // ldr s0, [r]
                     if (to->is_unsigned)
-                        arm64_fcvtzu(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzu w{r}, s0
+                        arm64_fcvtzu(cg_sec, 0, 0, REG(r), ARM64_S0); // fcvtzu w{r}, s0 (ftype 0 = single src)
                     else
-                        arm64_fcvtzs(cg_sec, 0, 2, REG(r), ARM64_S0); // fcvtzs w{r}, s0
+                        arm64_fcvtzs(cg_sec, 0, 0, REG(r), ARM64_S0); // fcvtzs w{r}, s0
                 } else {
                     arm64_ldr_fp(cg_sec, 3, 0, REG(r), 0); // ldr d0, [r]
                     if (to->is_unsigned)
-                        arm64_fcvtzu(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzu x{r}, d0
+                        arm64_fcvtzu(cg_sec, 1, 1, REG(r), ARM64_D0); // fcvtzu x{r}, d0 (ftype 1 = double src)
                     else
-                        arm64_fcvtzs(cg_sec, 1, 3, REG(r), ARM64_D0); // fcvtzs x{r}, d0
+                        arm64_fcvtzs(cg_sec, 1, 1, REG(r), ARM64_D0); // fcvtzs x{r}, d0
                 }
 #endif
             } else {
+                // integer complex → integer: load just the real component
+                // (emit_load(to) read 8 bytes spanning real+imag, so
+                // `(long)(2+3i)` came out as real|imag packed)
+                int rsz = from->base->size;
 #ifdef ARCH_ARM64
-                emit_load(to, r, r, 0);
+                if (rsz <= 4) {
+                    if (from->base->is_unsigned)
+                        arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(r), 0); // ldr w0, [r] (zero-extends)
+                    else
+                        arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(r), 0); // ldrsw x0, [r]
+                } else {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(r), 0); // ldr x0, [r]
+                }
+                // asm_mov_phy_reg takes a VReg source; ARM64_X0 is physical
+                asm_mov_phy_phy(cg_sec, REG(r), ARM64_X0, 1); // mov x{r}, x0
 #else
-                emit_load(to, r, r, 0);
+                if (rsz <= 4) {
+                    if (from->base->is_unsigned)
+                        x86_mov_rm(cg_sec, rsz, REG(r), x86_mem(REG(r), 0)); // zero-extends
+                    else
+                        x86_movsx_rm(cg_sec, 8, rsz, REG(r), x86_mem(REG(r), 0));
+                } else {
+                    x86_mov_rm(cg_sec, 8, REG(r), x86_mem(REG(r), 0));
+                }
 #endif
             }
         }
@@ -9962,6 +10099,144 @@ VReg gen(Node *node) {
         return r2;
     }
     case ND_NEG: {
+        if (node->ty && is_complex(node->ty)) {
+            // Complex negation: negate each component. gen() for a complex
+            // expression returns its ADDRESS, so the plain `neg r` below
+            // would negate the pointer (`-1i` segfaulted dereferencing the
+            // negated address in the assignment copy).
+            int complex_sz = node->ty->size, base_sz = node->ty->base->size;
+            VReg addr = gen_addr(node->lhs), need_free = 0;
+            if (addr < 0) {
+                need_free = 1;
+                addr = alloc_reg();
+#ifdef ARCH_ARM64
+                arm64_sub_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0);
+                asm_mov_reg_sp(cg_sec, REG(addr));
+#else
+                asm_sub_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // subq $N, %rsp
+                x86_mov_rr(cg_sec, 8, REG(addr), X86_RSP); // movq %rsp, addr
+#endif
+                VReg v = gen(node->lhs);
+                if (is_complex(node->lhs->ty)) {
+#ifdef ARCH_ARM64
+                    asm_ldr_x16_reg_uoff(cg_sec, v, 0);
+                    asm_str_x16_reg_uoff(cg_sec, addr, 0);
+                    if (complex_sz > 8) {
+                        asm_ldr_x16_reg_uoff(cg_sec, v, base_sz);
+                        asm_str_x16_reg_uoff(cg_sec, addr, base_sz);
+                    }
+#else
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), 0));
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), X86_RAX);
+                    if (complex_sz > 8) {
+                        x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(v), base_sz));
+                        x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), base_sz), X86_RAX);
+                    }
+#endif
+                } else {
+#ifdef ARCH_ARM64
+                    asm_str_reg_off(cg_sec, v, addr, 8, 0);
+                    if (complex_sz > 8) asm_movq_zero(cg_sec, addr);
+#else
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(addr), 0), REG(v));
+                    if (complex_sz > 8) asm_movq_zero(cg_sec, addr);
+#endif
+                }
+                free_reg(v);
+            }
+            int alloc = (complex_sz + 7) & ~7;
+            fn_struct_ret_off += alloc;
+            if (fn_struct_ret_off > fn_struct_ret_total)
+                fn_struct_ret_total = fn_struct_ret_off;
+            int result_off = current_fn_stack_size + fn_struct_ret_off;
+            VReg result = alloc_reg();
+#ifdef ARCH_ARM64
+            asm_sub_reg_fp_imm(cg_sec, result, result_off); // sub result, x29, #result_off
+#else
+            asm_lea_rbp_reg(cg_sec, result, 8, result_off); // lea -result_off(%rbp), result
+#endif
+            int off_imag = base_sz == 16 ? 16 : base_sz; // ldouble: double payload at 16
+            if (is_flonum(node->ty->base)) {
+#ifdef ARCH_ARM64
+                int cw = base_sz == 16 ? 8 : base_sz;
+                int ftype = base_sz == 4 ? 0 : 1;
+                asm_ldr_fp(cg_sec, 0, addr, cw);
+                asm_ldr_fp_off(cg_sec, 1, addr, cw, (uint32_t)off_imag);
+                arm64_fneg(cg_sec, ftype, 0, 0);
+                arm64_fneg(cg_sec, ftype, 1, 1);
+                arm64_str_fp(cg_sec, cw == 4 ? 2 : 3, 0, REG(result), 0);
+                arm64_str_fp(cg_sec, cw == 4 ? 2 : 3, 1, REG(result), (uint32_t)off_imag);
+#else
+                int cw = base_sz == 16 ? 8 : base_sz;
+                asm_mov_fp_rm(cg_sec, cw, X86_XMM0, x86_mem(REG(addr), 0));
+                asm_mov_fp_rm(cg_sec, cw, X86_XMM1, x86_mem(REG(addr), off_imag));
+                // sign bit: bit 31 for a float component, bit 63 for double
+                if (cw == 4)
+                    x86_mov_ri(cg_sec, 4, X86_RAX, 0x80000000LL);
+                else
+                    asm_movabs_phy(cg_sec, X86_RAX, 0x8000000000000000ULL);
+                x86_movq_r_xmm(cg_sec, X86_XMM2, X86_RAX);
+                if (cw == 4) {
+                    x86_xorps(cg_sec, X86_XMM0, X86_XMM2);
+                    x86_xorps(cg_sec, X86_XMM1, X86_XMM2);
+                } else {
+                    x86_xorpd(cg_sec, X86_XMM0, X86_XMM2);
+                    x86_xorpd(cg_sec, X86_XMM1, X86_XMM2);
+                }
+                asm_mov_fp_mr(cg_sec, cw, x86_mem(REG(result), 0), X86_XMM0);
+                asm_mov_fp_mr(cg_sec, cw, x86_mem(REG(result), off_imag), X86_XMM1);
+#endif
+            } else {
+#ifdef ARCH_ARM64
+                // uoff immediates are scaled by the access size (word/dword)
+                if (base_sz == 4) {
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(addr), 0);
+                    arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(addr), 1); // byte 4
+                    arm64_neg(cg_sec, 0, ARM64_X0, ARM64_X0);
+                    arm64_neg(cg_sec, 0, ARM64_X1, ARM64_X1);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(result), 1);
+                } else {
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(addr), 0);
+                    arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(addr), 1); // byte 8
+                    arm64_neg(cg_sec, 1, ARM64_X0, ARM64_X0);
+                    arm64_neg(cg_sec, 1, ARM64_X1, ARM64_X1);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(result), 0);
+                    arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(result), 1);
+                }
+#else
+                if (base_sz == 8) {
+                    x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(REG(addr), 0));
+                    x86_mov_rm(cg_sec, 8, X86_RDX, x86_mem(REG(addr), 8));
+                    x86_neg_r(cg_sec, 8, X86_RAX);
+                    x86_neg_r(cg_sec, 8, X86_RDX);
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(result), 0), X86_RAX);
+                    x86_mov_mr(cg_sec, 8, x86_mem(REG(result), 8), X86_RDX);
+                } else {
+                    // sign-extend each component, negate, truncate on store
+                    int cw = base_sz == 4 ? 4 : 8;
+                    if (base_sz == 4) {
+                        x86_mov_rm(cg_sec, 4, X86_RAX, x86_mem(REG(addr), 0));
+                        x86_mov_rm(cg_sec, 4, X86_RDX, x86_mem(REG(addr), 4));
+                    } else {
+                        x86_movsx_rm(cg_sec, cw, base_sz, X86_RAX, x86_mem(REG(addr), 0));
+                        x86_movsx_rm(cg_sec, cw, base_sz, X86_RDX, x86_mem(REG(addr), base_sz));
+                    }
+                    x86_neg_r(cg_sec, cw, X86_RAX);
+                    x86_neg_r(cg_sec, cw, X86_RDX);
+                    x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), 0), X86_RAX);
+                    x86_mov_mr(cg_sec, base_sz, x86_mem(REG(result), base_sz), X86_RDX);
+                }
+#endif
+            }
+            free_reg(addr);
+#ifdef ARCH_ARM64
+            if (need_free) arm64_add_imm(cg_sec, 1, ARM64_SP, ARM64_SP, (complex_sz + 15) & ~15, 0);
+#else
+            if (need_free) asm_add_rsp_imm(cg_sec, (complex_sz + 15) & ~15); // addq $N, %rsp
+#endif
+            return result;
+        }
         VReg r = gen(node->lhs);
         if (is_flonum(node->ty)) {
 #ifdef ARCH_ARM64
@@ -10756,16 +11031,25 @@ VReg gen(Node *node) {
 #if !defined(_WIN32) && !defined(ARCH_ARM64)
             } else if (node->lhs->ty && is_complex(node->lhs->ty) && current_fn_def && current_fn_def->ty &&
                        is_complex(current_fn_def->ty->return_ty)) {
-                // Linux SysV: return _Complex double in xmm0:xmm1,
-                // _Complex float in xmm0 (packed).
+                // Linux SysV: _Complex float/double in xmm0(:xmm1);
+                // integer-complex (e.g. _Complex int/short/long) in
+                // RAX (RDX for 16 bytes), at exact width -- the old
+                // movsd moved 4-byte _Complex short values as 8 bytes.
                 int src = gen_addr(node->lhs);
                 if (src < 0) src = gen(node->lhs);
                 int base_sz = node->lhs->ty->base ? node->lhs->ty->base->size : 8;
-                if (node->lhs->ty->size <= 8) {
-                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                if (is_flonum(node->lhs->ty->base)) {
+                    if (node->lhs->ty->size <= 8) {
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                    } else {
+                        x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
+                        x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz));
+                    }
                 } else {
-                    x86_movsd_rm(cg_sec, X86_XMM0, x86_mem(REG(src), 0));
-                    x86_movsd_rm(cg_sec, X86_XMM1, x86_mem(REG(src), base_sz));
+                    int64_t sz = node->lhs->ty->size;
+                    x86_mov_rm(cg_sec, sz <= 4 ? 4 : 8, X86_RAX, x86_mem(REG(src), 0));
+                    if (sz > 8)
+                        x86_mov_rm(cg_sec, sz - 8 <= 4 ? 4 : 8, X86_RDX, x86_mem(REG(src), 8));
                 }
                 free_reg(src);
 #endif
@@ -13929,10 +14213,15 @@ VReg gen(Node *node) {
 #ifdef ARCH_ARM64
             int ftype = base_sz == 4 ? 0 : 1;
             int sf = base_sz == 4 ? 0 : 1;
-            asm_ldr_fp(cg_sec, 0, addr_lhs, base_sz);
-            asm_ldr_fp_off(cg_sec, 1, addr_lhs, base_sz, (uint32_t)base_sz);
-            asm_ldr_fp(cg_sec, 2, addr_rhs, base_sz);
-            asm_ldr_fp_off(cg_sec, 3, addr_rhs, base_sz, (uint32_t)base_sz);
+            // _Complex long double stores 8-byte double payloads at 0/16;
+            // asm_ldr_fp maps anything but 8 to a 32-bit S load, which read
+            // half the real and garbage for the imag (fadd d then summed 0s)
+            int cw = base_sz == 4 ? 4 : 8;
+            int off_imag = base_sz == 16 ? 16 : base_sz;
+            asm_ldr_fp(cg_sec, 0, addr_lhs, cw);
+            asm_ldr_fp_off(cg_sec, 1, addr_lhs, cw, (uint32_t)off_imag);
+            asm_ldr_fp(cg_sec, 2, addr_rhs, cw);
+            asm_ldr_fp_off(cg_sec, 3, addr_rhs, cw, (uint32_t)off_imag);
             if (node->kind == ND_ADD || node->kind == ND_SUB) {
                 if (node->kind == ND_ADD) {
                     arm64_fadd(cg_sec, ftype, 0, 0, 2);
@@ -13967,13 +14256,13 @@ VReg gen(Node *node) {
                 asm_stur_fp(cg_sec, result, result_spill); // str x{result}, [x29, #-spill_offset]
                 emit_direct_call(base_sz == 4 ? "__divsc3" : "__divdc3", false); // bl __divsc3/__divdc3
                 asm_ldur_fp(cg_sec, result, result_spill); // ldr x{result}, [x29, #-spill_offset]
-                asm_str_fp(cg_sec, 0, result, base_sz);
-                arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
+                asm_str_fp(cg_sec, 0, result, cw);
+                arm64_str_fp(cg_sec, cw == 4 ? 2 : 3, 1, REG(result), (uint32_t)off_imag);
                 goto cx_arith_done;
             }
             if (node->kind != ND_DIV) {
-                asm_str_fp(cg_sec, 0, result, base_sz);
-                arm64_str_fp(cg_sec, base_sz == 4 ? 2 : 3, 1, REG(result), (uint32_t)base_sz);
+                asm_str_fp(cg_sec, 0, result, cw);
+                arm64_str_fp(cg_sec, cw == 4 ? 2 : 3, 1, REG(result), (uint32_t)off_imag);
             }
 #else
             int sfx = base_sz; // 4 -> ss, 8 -> sd
@@ -14037,83 +14326,96 @@ VReg gen(Node *node) {
 #ifdef ARCH_ARM64
             arm64_ldr_uoff(cg_sec, 3, ARM64_X16, REG(addr_lhs), 0);
             if (complex_sz <= 8) {
-                arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
+                // Load all four components sign/zero-extended to 64-bit:
+                // X16=a.r, X17=a.i, X18=b.r, X9=b.i, then compute in 64-bit
+                // and store truncated per component. The old packed-word
+                // scheme used base_sz/4 offsets, which collapsed to 0 for
+                // _Complex short/char (imag read the real part). uoff
+                // immediates are scaled by the access size, so the imag
+                // offset is always 1 (byte offset == access size); ldrsb/
+                // ldrsh take unscaled byte imm9 instead.
+                bool uns = node->ty->base->is_unsigned;
+#define CX_ARM_LOAD(reg, addr, off, sz) do { \
+    if ((sz) == 1) { \
+        if (uns) arm64_ldrb_uoff(cg_sec, (reg), REG(addr), (off)); \
+        else arm64_ldrsb(cg_sec, 1, (reg), REG(addr), (off)); \
+    } else if ((sz) == 2) { \
+        if (uns) arm64_ldrh_uoff(cg_sec, (reg), REG(addr), (off)); \
+        else arm64_ldrsh(cg_sec, 1, (reg), REG(addr), (off) * 2); \
+    } else if ((sz) == 4) { \
+        if (uns) arm64_ldr_uoff(cg_sec, 2, (reg), REG(addr), (off)); \
+        else arm64_ldrsw_uoff(cg_sec, (reg), REG(addr), (off)); \
+    } else { \
+        arm64_ldr_uoff(cg_sec, 3, (reg), REG(addr), (off)); \
+    } \
+} while (0)
+#define CX_ARM_STORE(reg, addr, off, sz) do { \
+    if ((sz) == 1) arm64_strb_uoff(cg_sec, (reg), REG(addr), (off)); \
+    else if ((sz) == 2) arm64_strh_uoff(cg_sec, (reg), REG(addr), (off)); \
+    else if ((sz) == 4) arm64_str_uoff(cg_sec, 2, (reg), REG(addr), (off)); \
+    else arm64_str_uoff(cg_sec, 3, (reg), REG(addr), (off)); \
+} while (0)
+                CX_ARM_LOAD(ARM64_X16, addr_lhs, 0, base_sz);
+                CX_ARM_LOAD(ARM64_X17, addr_lhs, 1, base_sz);
+                CX_ARM_LOAD(ARM64_X18, addr_rhs, 0, base_sz);
+                CX_ARM_LOAD(ARM64_X9, addr_rhs, 1, base_sz);
                 switch (node->kind) {
                 case ND_ADD:
-                    arm64_add_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_add_reg(cg_sec, 0, ARM64_X18, ARM64_X17, ARM64_X18, ARM64_LSL, 0);
-                    arm64_ubfx(cg_sec, 1, ARM64_X16, ARM64_X16, 0, 32);
-                    arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 32);
+                    arm64_add_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 0);
+                    arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0);
                     break;
                 case ND_SUB:
-                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldrsw_uoff(cg_sec, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_sub_reg(cg_sec, 0, ARM64_X18, ARM64_X17, ARM64_X18, ARM64_LSL, 0);
-                    arm64_ubfx(cg_sec, 1, ARM64_X16, ARM64_X16, 0, 32);
-                    arm64_orr_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 32);
+                    arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18, ARM64_LSL, 0);
+                    arm64_sub_reg(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0);
                     break;
                 case ND_MUL: {
-                    // (a+bi)(c+di) = (ac-bd) + (bc+ad)i — integer arithmetic
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), 0);
-                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X18);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
-                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), 0);
-                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X9, REG(addr_lhs), 0);
-                    arm64_mul(cg_sec, 0, ARM64_X9, ARM64_X9, ARM64_X18);
-                    arm64_add_reg(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0);
-                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), 0);
-                    arm64_str_uoff(cg_sec, 2, ARM64_X17, REG(result), (uint32_t)(base_sz / 4));
-                    goto cx_arith_done;
+                    // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18); // x16 = a.r*b.r
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9); // x17 = a.i*b.i
+                    arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // real
+                    CX_ARM_LOAD(ARM64_X17, addr_lhs, 0, base_sz); // x17 = a.r
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9); // x17 = a.r*b.i
+                    CX_ARM_LOAD(ARM64_X9, addr_lhs, 1, base_sz); // x9 = a.i
+                    arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18); // x9 = a.i*b.r
+                    arm64_add_reg(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9, ARM64_LSL, 0); // imag
+                    break;
                 }
                 case ND_DIV: {
                     // (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
-                    const char *dv = node->ty->base->is_unsigned ? "udiv" : "sdiv";
-                    (void)dv;
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_rhs), 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X16);
-                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X17);
-                    arm64_add_reg(cg_sec, 0, ARM64_X9, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), 0);
-                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
-                    arm64_add_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    if (node->ty->base->is_unsigned)
-                        arm64_udiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                    arm64_mul(cg_sec, 1, ARM64_X18, ARM64_X18, ARM64_X18); // x18 = b.r²
+                    arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X9); // x9 = b.i²
+                    arm64_add_reg(cg_sec, 1, ARM64_X18, ARM64_X18, ARM64_X9, ARM64_LSL, 0); // x18 = denom
+                    CX_ARM_LOAD(ARM64_X9, addr_rhs, 0, base_sz); // x9 = b.r
+                    arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X16, ARM64_X9); // x9 = a.r*b.r
+                    CX_ARM_LOAD(ARM64_X16, addr_rhs, 1, base_sz); // x16 = b.i
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X17, ARM64_X16); // x16 = a.i*b.i
+                    arm64_add_reg(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X16, ARM64_LSL, 0); // x9 = ac+bd
+                    if (uns)
+                        arm64_udiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18);
                     else
-                        arm64_sdiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
-                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X16, REG(addr_lhs), (uint32_t)(base_sz / 4));
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_rhs), 0);
-                    arm64_mul(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X17, REG(addr_lhs), 0);
-                    arm64_ldr_uoff(cg_sec, 2, ARM64_X18, REG(addr_rhs), (uint32_t)(base_sz / 4));
-                    arm64_mul(cg_sec, 0, ARM64_X17, ARM64_X17, ARM64_X18);
-                    arm64_sub_reg(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0);
-                    if (node->ty->base->is_unsigned)
-                        arm64_udiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
+                        arm64_sdiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18);
+                    CX_ARM_STORE(ARM64_X9, result, 0, base_sz); // store real
+                    CX_ARM_LOAD(ARM64_X16, addr_lhs, 1, base_sz); // x16 = a.i
+                    CX_ARM_LOAD(ARM64_X17, addr_rhs, 0, base_sz); // x17 = b.r
+                    arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17); // x16 = a.i*b.r
+                    CX_ARM_LOAD(ARM64_X17, addr_lhs, 0, base_sz); // x17 = a.r
+                    CX_ARM_LOAD(ARM64_X9, addr_rhs, 1, base_sz); // x9 = b.i
+                    arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9); // x17 = a.r*b.i
+                    arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // x16 = bc-ad
+                    if (uns)
+                        arm64_udiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18);
                     else
-                        arm64_sdiv(cg_sec, 0, ARM64_X16, ARM64_X16, ARM64_X9);
-                    arm64_str_uoff(cg_sec, 2, ARM64_X16, REG(result), (uint32_t)(base_sz / 4));
+                        arm64_sdiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18);
+                    CX_ARM_STORE(ARM64_X16, result, 1, base_sz);
                     goto cx_arith_done;
                 }
                 default:
                     __builtin_unreachable();
                 }
-                arm64_str_uoff(cg_sec, 3, ARM64_X16, REG(result), 0);
+                CX_ARM_STORE(ARM64_X16, result, 0, base_sz);
+                CX_ARM_STORE(ARM64_X17, result, 1, base_sz);
+#undef CX_ARM_LOAD
+#undef CX_ARM_STORE
             } else {
                 arm64_ldr_uoff(cg_sec, 3, ARM64_X17, REG(addr_rhs), 0);
                 switch (node->kind) {
@@ -14237,7 +14539,7 @@ VReg gen(Node *node) {
             case ND_MUL:
                 // (a+bi)*(c+di) = (ac-bd) + (ad+bc)i
                 printf("  mov %s, %s\n", rax_w, r9_w);
-                printf("  mov %s, %s\n", rax_w, rdi_w);
+                printf("  mov %s, %s\n", rdx_w, rdi_w); // rdi = b (lhs imag)
                 printf("  imul %s, %s\n", rcx_w, r9_w); // r9 = a*c
                 printf("  imul %s, %s\n", r8_w, rdi_w); // rdi = b*d
                 printf("  sub %s, %s\n", rdi_w, r9_w); // r9 = ac-bd (real)
@@ -15909,7 +16211,7 @@ struct ObjFile *codegen(Program *prog) {
                     stack_param_index++;
                 int stack_off2 = 16 + stack_param_index * 8;
                 X86Mem ld_src = {CG_X86_FP, X86_NOREG, 1, -stack_off2};
-                X86Mem ld_dst = {CG_X86_FP, X86_NOREG, 1, -var->offset};
+                X86Mem ld_dst = {CG_X86_FP, X86_NOREG, 1, -var->offset, 0};
                 x86_fldt_m(cg_sec, ld_src); // fldt off2(%rbp)
                 x86_fstpl_m(cg_sec, ld_dst); // fstpl -(off)(%rbp)
                 stack_param_index += 2;
@@ -16018,13 +16320,15 @@ struct ObjFile *codegen(Program *prog) {
                 } else {
                     // Integer complex: pass in GP registers
                     if (var->ty->size <= 8) {
-                        // _Complex int: 8 bytes in one GP reg
+                        // exact width: an 8-byte store here overwrote the
+                        // neighbor slot of a 4-byte _Complex short param
+                        int psz = var->ty->size <= 4 ? 4 : 8;
                         if (param_index < max_param_regs) {
-                            asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], 8, var->offset); // movq preg, -off(%rbp)
+                            asm_mov_rbp(cg_sec, cg_x86_paramreg[param_index], psz, var->offset); // mov preg, -off(%rbp)
                             param_index++;
                         } else {
-                            x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, 16 + stack_param_index * 8)); // movq stack_off(%rbp), %rax
-                            x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX); // movq %rax, -off(%rbp)
+                            x86_mov_rm(cg_sec, psz, X86_RAX, x86_mem(X86_RBP, 16 + stack_param_index * 8)); // mov stack_off(%rbp), %rax
+                            x86_mov_mr(cg_sec, psz, x86_mem(X86_RBP, -var->offset), X86_RAX); // mov %rax, -off(%rbp)
                             stack_param_index++;
                         }
                     } else {
@@ -17044,13 +17348,16 @@ struct ObjFile *codegen(Program *prog) {
                     } else {
                         // Integer _Complex: one or two GP regs
                         if (var->ty->size <= 8) {
+                            // exact width: an 8-byte store overwrote the
+                            // neighbor slot of a 4-byte _Complex short param
+                            int psz = var->ty->size <= 4 ? 4 : 8;
                             if (gp < max_gp) {
-                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), greg[gp]);
+                                x86_mov_mr(cg_sec, psz, x86_mem(X86_RBP, -var->offset), greg[gp]);
                                 gp++;
                             } else {
                                 int stack_off2 = 16 + stack_param_index2 * 8;
-                                x86_mov_rm(cg_sec, 8, X86_RAX, x86_mem(X86_RBP, stack_off2));
-                                x86_mov_mr(cg_sec, 8, x86_mem(X86_RBP, -var->offset), X86_RAX);
+                                x86_mov_rm(cg_sec, psz, X86_RAX, x86_mem(X86_RBP, stack_off2));
+                                x86_mov_mr(cg_sec, psz, x86_mem(X86_RBP, -var->offset), X86_RAX);
                                 stack_param_index2++;
                             }
                         } else {
