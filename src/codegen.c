@@ -4678,49 +4678,94 @@ static void emit_complex_convert_float(int src, int dst, Type *from, Type *to) {
 static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
     int fsz = from->base->size, tsz = to->base->size;
     bool from_int = is_integer(from->base);
-    (void)tsz;
 #ifdef ARCH_ARM64
     if (from_int) {
-        // int complex → float complex: load from src, convert, store to dst
-        if (fsz == 4) {
-            if (from->base->is_unsigned) {
+        // int complex → float complex: load both components sign/zero-
+        // extended to 64-bit, convert at the destination precision, store
+        // at the destination component width.
+        bool uns = from->base->is_unsigned;
+        if (fsz == 1) {
+            if (uns) {
+                arm64_ldrb_uoff(cg_sec, ARM64_X0, REG(src), 0);
+                arm64_ldrb_uoff(cg_sec, ARM64_X1, REG(src), 1);
+            } else {
+                arm64_ldrsb(cg_sec, 1, ARM64_X0, REG(src), 0);
+                arm64_ldrsb(cg_sec, 1, ARM64_X1, REG(src), 1);
+            }
+        } else if (fsz == 2) {
+            if (uns) {
+                arm64_ldrh_uoff(cg_sec, ARM64_X0, REG(src), 0);
+                arm64_ldrh_uoff(cg_sec, ARM64_X1, REG(src), 1);
+            } else {
+                arm64_ldrsh(cg_sec, 1, ARM64_X0, REG(src), 0);
+                arm64_ldrsh(cg_sec, 1, ARM64_X1, REG(src), 2);
+            }
+        } else if (fsz == 4) {
+            if (uns) {
                 arm64_ldr_uoff(cg_sec, 2, ARM64_X0, REG(src), 0);
                 arm64_ldr_uoff(cg_sec, 2, ARM64_X1, REG(src), 1);
             } else {
                 arm64_ldrsw_uoff(cg_sec, ARM64_X0, REG(src), 0);
                 arm64_ldrsw_uoff(cg_sec, ARM64_X1, REG(src), 1);
             }
-            arm64_scvtf(cg_sec, 0, 1, ARM64_D0, ARM64_X0);
-            arm64_scvtf(cg_sec, 0, 1, ARM64_D1, ARM64_X1);
+        } else {
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X0, REG(src), 0);
+            arm64_ldr_uoff(cg_sec, 3, ARM64_X1, REG(src), 1);
+        }
+        // Convert at the destination precision: single for a 4-byte float
+        // base, double otherwise (8-byte double, or the 8-byte internal
+        // value of a 16-byte long double slot).
+        if (uns) {
+            arm64_ucvtf(cg_sec, 1, tsz == 4 ? 0 : 1, ARM64_D0, ARM64_X0);
+            arm64_ucvtf(cg_sec, 1, tsz == 4 ? 0 : 1, ARM64_D1, ARM64_X1);
+        } else {
+            arm64_scvtf(cg_sec, 1, tsz == 4 ? 0 : 1, ARM64_D0, ARM64_X0);
+            arm64_scvtf(cg_sec, 1, tsz == 4 ? 0 : 1, ARM64_D1, ARM64_X1);
+        }
+        if (tsz == 4) {
+            arm64_str_fp(cg_sec, 2, ARM64_S0, REG(dst), 0);
+            arm64_str_fp(cg_sec, 2, ARM64_S1, REG(dst), 4);
+        } else {
             arm64_str_fp(cg_sec, 3, ARM64_D0, REG(dst), 0);
-            arm64_str_fp(cg_sec, 3, ARM64_D1, REG(dst), 8);
+            arm64_str_fp(cg_sec, 3, ARM64_D1, REG(dst), tsz == 16 ? 16 : 8);
         }
     } else {
-        // float complex → int complex: load from src, convert, store to dst
+        // float complex → int complex: load fp components at the source
+        // precision, convert to 64-bit int, store truncated to the
+        // destination component width.
         if (fsz == 8) {
             arm64_ldr_fp(cg_sec, 3, ARM64_D0, REG(src), 0);
             arm64_ldr_fp(cg_sec, 3, ARM64_D1, REG(src), 8);
             if (to->base->is_unsigned) {
-                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
-                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+                arm64_fcvtzu(cg_sec, 1, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzu(cg_sec, 1, 1, ARM64_X1, ARM64_D1);
             } else {
-                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_D0);
-                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_D1);
+                arm64_fcvtzs(cg_sec, 1, 1, ARM64_X0, ARM64_D0);
+                arm64_fcvtzs(cg_sec, 1, 1, ARM64_X1, ARM64_D1);
             }
-            arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
-            arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
         } else if (fsz == 4) {
             arm64_ldr_fp(cg_sec, 2, ARM64_S0, REG(src), 0);
             arm64_ldr_fp(cg_sec, 2, ARM64_S1, REG(src), 4);
             if (to->base->is_unsigned) {
-                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
-                arm64_fcvtzu(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+                arm64_fcvtzu(cg_sec, 1, 0, ARM64_X0, ARM64_S0);
+                arm64_fcvtzu(cg_sec, 1, 0, ARM64_X1, ARM64_S1);
             } else {
-                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X0, ARM64_S0);
-                arm64_fcvtzs(cg_sec, 0, 1, ARM64_X1, ARM64_S1);
+                arm64_fcvtzs(cg_sec, 1, 0, ARM64_X0, ARM64_S0);
+                arm64_fcvtzs(cg_sec, 1, 0, ARM64_X1, ARM64_S1);
             }
+        }
+        if (tsz == 8) {
+            arm64_str_uoff(cg_sec, 3, ARM64_X0, REG(dst), 0);
+            arm64_str_uoff(cg_sec, 3, ARM64_X1, REG(dst), 1);
+        } else if (tsz == 4) {
             arm64_str_uoff(cg_sec, 2, ARM64_X0, REG(dst), 0);
             arm64_str_uoff(cg_sec, 2, ARM64_X1, REG(dst), 1);
+        } else if (tsz == 2) {
+            arm64_strh_uoff(cg_sec, ARM64_X0, REG(dst), 0);
+            arm64_strh_uoff(cg_sec, ARM64_X1, REG(dst), 1);
+        } else {
+            arm64_strb_uoff(cg_sec, ARM64_X0, REG(dst), 0);
+            arm64_strb_uoff(cg_sec, ARM64_X1, REG(dst), 1);
         }
     }
 #else
@@ -6059,10 +6104,10 @@ VReg gen_addr(Node *node) {
                         }
                     }
 #else
-                    // ARM64: fall through to gen() for mixed complex conversion
-                    free_reg(src);
-                    free_reg(dst);
-                    return gen(node);
+                    // ARM64: convert each component in place (gen() would
+                    // only re-delegate to gen_addr for a complex-to-complex
+                    // cast, recursing forever).
+                    emit_complex_convert_mixed(src, dst, node->lhs->ty, node->ty);
 #endif
                 }
                 free_reg(src);
