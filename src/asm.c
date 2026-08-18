@@ -1122,6 +1122,19 @@ static bool try_parse_symbol_disp(AsmState *as, const char *disp_s, char *sym_ou
     return true;
 }
 
+// Segment-override prefix byte for a "%es:"/"%cs:"/"%ss:"/"%ds:"/"%fs:"/
+// "%gs:" operand, or 0 if `s` is not a segment-prefixed memory operand.
+static uint8_t x86_seg_byte(const char *s) {
+    if (s[0] != '%' || s[1] == 0 || s[2] == 0 || s[3] != ':') return 0;
+    if (s[1] == 'f' && s[2] == 's') return 0x64;
+    if (s[1] == 'g' && s[2] == 's') return 0x65;
+    if (s[1] == 'e' && s[2] == 's') return 0x26;
+    if (s[1] == 'c' && s[2] == 's') return 0x2e;
+    if (s[1] == 's' && s[2] == 's') return 0x36;
+    if (s[1] == 'd' && s[2] == 's') return 0x3e;
+    return 0;
+}
+
 // Parse AT&T memory operand: disp(%base, %index, scale) or (%base)
 // Returns true on success
 static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
@@ -1130,10 +1143,21 @@ static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
     m->index = X86_NOREG;
     m->scale = 1;
     m->disp = 0;
+    m->seg = 0;
 
     char buf[256];
     strncpy(buf, s, 255);
     buf[255] = 0;
+    // GAS AT&T segment-override memory operand: a leading "%fs:"/"%gs:"/
+    // ... glued to the rest of the operand ("%fs:0", "%fs:(%rax)", ...).
+    // Strip it and record the prefix byte so emit_mem() re-emits it ahead
+    // of the instruction (see x86_op_is_seg()). Without this the operand
+    // was classified as a register and silently mis-encoded.
+    uint8_t segb = x86_seg_byte(buf);
+    if (segb != 0) {
+        m->seg = segb;
+        memmove(buf, buf + 4, strlen(buf + 4) + 1);
+    }
     char *paren = strchr(buf, '(');
     if (paren) {
         *paren = 0;
@@ -1186,6 +1210,16 @@ static bool parse_x86_mem(AsmState *as, const char *s, X86Mem *m) {
         if (np > 0) m->base = parse_x86_reg64(trim_end(skip_ws(parts[0])));
         if (np > 1) m->index = parse_x86_reg64(trim_end(skip_ws(parts[1])));
         if (np > 2) m->scale = (int)strtol(parts[2], NULL, 10);
+        return true;
+    }
+    // No base/index register. A segment-override'd operand with no parens
+    // ("%fs:0", "%gs:offset") is still a memory reference: a segment-
+    // relative ABSOLUTE displacement, encoded by emit_mem() as disp32
+    // absolute with the segment prefix byte. Without the prefix this
+    // branch stays non-memory (a bare constant), matching GAS.
+    if (m->seg != 0) {
+        char *disp_s = skip_ws(buf);
+        m->disp = eval_asm_expr_here(as, disp_s);
         return true;
     }
     return false;
@@ -3048,7 +3082,25 @@ static int64_t x86_parse_imm(AsmState *as, const char *s) {
     return eval_asm_expr_here(as, s);
 }
 #define X86_IMM(i)  ((i) < nops ? x86_parse_imm(as, ops[i]) : (int64_t)0)
-#define X86_ISREG(i) ((i)<nops && ops[i][0]=='%')
+// GAS AT&T segment-override-prefixed memory operand ("%fs:(%rax)",
+// "%gs:0", "%es:(%rdi)", ...): "%" + one of es/cs/ss/ds/fs/gs + ":",
+// glued to the rest of the memory operand. These start with '%' like
+// registers, so X86_ISREG's plain "starts with %" test would classify
+// them as registers and parse_x86_reg64() would silently fall back to
+// X86_NOREG == -1 -- which aliases physical register 7/RDI once masked
+// into a ModRM field -- mis-encoding e.g. mimalloc's `movq %fs:0, %rax`
+// TLS-slot read (its _mi_prim_thread_id) as `mov %rdi, %rax`, returning
+// a garbage thread id and breaking every thread-dependent decision
+// (segments look abandoned, free spans never queued, infinite
+// segment-allocation recursion). GAS also accepts a bare segment
+// mnemonic as a separate prefix word ("fs movq ..."), handled elsewhere
+// in encode_x86(); this covers the glued "%fs:..." operand spelling,
+// which is what glibc/mimalloc actually emit.
+static bool x86_op_is_seg(const char *s) {
+    return x86_seg_byte(s) != 0;
+}
+#define X86_ISSEG(i) ((i)<nops && x86_op_is_seg(ops[i]))
+#define X86_ISREG(i) ((i)<nops && ops[i][0]=='%' && !x86_op_is_seg(ops[i]))
 // X86_ISREG's "starts with '%'" test also matches an XMM register
 // string ("%xmmN"), which parse_x86_reg64()/R() can't actually parse
 // (falls back to X86_NOREG == -1, which happens to alias physical
@@ -3058,11 +3110,11 @@ static int64_t x86_parse_imm(AsmState *as, const char *s) {
 // separately instead of falling into the generic GP-register path.
 #define X86_ISXMM(i) ((i)<nops && ops[i][0]=='%' && !strncmp(ops[i]+1,"xmm",3))
 #define X86_ISIMM(i) ((i)<nops && ops[i][0]=='$')
-#define X86_ISMEM(i) ((i)<nops && strchr(ops[i],'(')!=NULL)
+#define X86_ISMEM(i) ((i)<nops && (strchr(ops[i],'(')!=NULL || x86_op_is_seg(ops[i])))
 #define X86_ISSYM(i) ((i)<nops && ops[i][0]!='%' && ops[i][0]!='$' && \
                       (isalpha((unsigned char)ops[i][0])||ops[i][0]=='_'||ops[i][0]=='.'||ops[i][0]=='-'))
 static X86Mem x86_get_mem(AsmState *as, char **ops, int nops, int i) {
-    X86Mem m = {X86_NOREG, X86_NOREG, 1, 0};
+    X86Mem m = {X86_NOREG, X86_NOREG, 1, 0, 0};
     if (i < nops) parse_x86_mem(as, ops[i], &m);
     return m;
 }
@@ -3120,6 +3172,22 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // dangling forward fixup that's never patched.
     for (int _i = 0; _i < nops; _i++)
         strip_local_label_suffix(ops[_i]);
+
+    // A segment-override-prefixed memory operand ("%fs:0", "%gs:(%rax)",
+    // ...) must emit its prefix byte (0x64/0x65/...) as the VERY FIRST
+    // byte of the instruction, ahead of any REX/0x66 prefix and the
+    // opcode -- emitting it from emit_mem() (after the opcode) would
+    // misplace it. Do it centrally here, once, before any encoder runs.
+    // See x86_op_is_seg() for why these operands previously mis-encoded
+    // as the wrong register (mimalloc's `movq %fs:0, %rax` TLS-slot read
+    // came out as `mov %rdi, %rax`, a garbage thread id).
+    for (int _i = 0; _i < nops; _i++) {
+        uint8_t segb = x86_seg_byte(ops[_i]);
+        if (segb != 0) {
+            x86_seg_prefix(buf, segb);
+            break;
+        }
+    }
 
     // Determine operand size from mnemonic suffix (0 = derive from operand)
     int sz = suffix_size(mnem);

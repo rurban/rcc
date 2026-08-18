@@ -98,13 +98,14 @@ typedef struct {
     X86Reg index;
     int scale; // 1,2,4,8
     int64_t disp;
+    uint8_t seg; // segment-override prefix byte (0x64=%fs, 0x65=%gs, ...), 0 = none
 } X86Mem;
 
 static inline X86Mem x86_mem(X86Reg base, int64_t disp) {
-    return (X86Mem){base, X86_NOREG, 1, disp};
+    return (X86Mem){base, X86_NOREG, 1, disp, 0};
 }
 static inline X86Mem x86_mem_idx(X86Reg base, X86Reg idx, int scale, int64_t disp) {
-    return (X86Mem){base, idx, scale, disp};
+    return (X86Mem){base, idx, scale, disp, 0};
 }
 
 // ---------------------------------------------------------------------------

@@ -87,8 +87,14 @@ static int disp_mod(int64_t d, X86Reg base) {
 }
 
 // Emit a memory operand [base + index*scale + disp] after opcode byte
-// reg_field is the /r field of ModRM
-static void emit_mem(SecBuf *s, X86Reg base, X86Reg idx, int scale, int64_t disp, X86Reg reg_f) {
+// reg_field is the /r field of ModRM. The `seg` field (a segment-
+// override prefix byte, nonzero only for inline-asm "%fs:"/"%gs:"-style
+// operands -- see asm.c) is deliberately NOT emitted here: a segment
+// prefix must be the FIRST byte of the instruction, ahead of any REX/
+// 0x66 prefix and the opcode itself, so encode_x86() emits it centrally
+// before dispatching to the encoder (which then calls this).
+static void emit_mem(SecBuf *s, X86Reg base, X86Reg idx, int scale, int64_t disp, uint8_t seg, X86Reg reg_f) {
+    (void)seg;
     if (base == X86_RIP) {
         // RIP-relative: use ModRM with mod=00, rm=101 (disp32)
         emit1(s, modrm(0, reg_f, X86_RBP));
@@ -96,8 +102,13 @@ static void emit_mem(SecBuf *s, X86Reg base, X86Reg idx, int scale, int64_t disp
         return;
     }
     if (base == X86_NOREG) {
-        // Absolute: use ModRM with mod=00, rm=101 (disp32)
-        emit1(s, modrm(0, reg_f, X86_RBP));
+        // Absolute disp32. In 64-bit mode mod=00 rm=101 means RIP-
+        // relative (not absolute), so a true absolute needs the SIB form:
+        // mod=00 rm=100 (SIB) with index=100 (no index) and base=101
+        // (no base). Correct in 32-bit mode too. Reached for e.g. a
+        // segment-relative absolute inline-asm operand ("%fs:0").
+        emit1(s, modrm(0, reg_f, 4));
+        emit1(s, sib(0, 4, X86_RBP));
         emit_imm32(s, (int32_t)disp);
         return;
     }
@@ -206,7 +217,7 @@ void x86_mov_rm(SecBuf *s, int size, X86Reg dst, X86Mem src) {
     int needrex = (size == 8) || dst_gt || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, dst_gt, src.index > X86_RDI, src.base > X86_RDI));
     emit1(s, opsize(0x8a, size));
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 
 void x86_mov_mr(SecBuf *s, int size, X86Mem dst, X86Reg src) {
@@ -215,7 +226,7 @@ void x86_mov_mr(SecBuf *s, int size, X86Mem dst, X86Reg src) {
     int needrex = (size == 8) || src_gt || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, src_gt, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x88, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, src);
 }
 
 
@@ -224,7 +235,7 @@ void x86_mov_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0xc6, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 0);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 0);
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -237,7 +248,7 @@ void x86_add_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size)); // 0x80=r/m8 imm8; 0x81=r/m imm32; 0x83=r/m imm8-sign
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 0); // /0 = ADD
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 0); // /0 = ADD
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -249,7 +260,7 @@ void x86_sub_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 5); // /5 = SUB
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 5); // /5 = SUB
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -260,7 +271,7 @@ void x86_or_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 1);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 1);
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -271,7 +282,7 @@ void x86_cmp_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 7);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 7);
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -282,7 +293,7 @@ void x86_and_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 4); // /4 = AND
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 4); // /4 = AND
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -293,7 +304,7 @@ void x86_xor_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     int needrex = (size == 8) || dst.base > X86_RDI || (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 6); // /6 = XOR
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 6); // /6 = XOR
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -347,13 +358,13 @@ void x86_movsx_rm(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Mem src) {
     if (dst_sz == 8 && src_sz == 4) {
         emit1(s, rex(1, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
         emit1(s, 0x63);
-        emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+        emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
     } else {
         uint8_t opcode = (src_sz == 1) ? 0xbe : 0xbf;
         int w = (dst_sz == 8) ? 1 : 0;
         maybe_rex(s, w, dst, src.index != X86_NOREG ? src.index : 0, src.base);
         emit2(s, 0x0f, opcode);
-        emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+        emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
     }
 }
 
@@ -362,14 +373,14 @@ void x86_movzx_rm(SecBuf *s, int dst_sz, int src_sz, X86Reg dst, X86Mem src) {
     int w = (dst_sz == 8) ? 1 : 0;
     maybe_rex(s, w, dst, src.index != X86_NOREG ? src.index : 0, src.base);
     emit2(s, 0x0f, opcode);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 
 void x86_lea(SecBuf *s, int size, X86Reg dst, X86Mem src) {
     if (size == 2) emit1(s, 0x66);
     emit1(s, rex(size == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit1(s, 0x8d);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +430,7 @@ static void alu_rm(SecBuf *s, int size, int op, X86Reg dst, X86Mem src) {
     int w = size == 8;
     emit1(s, rex(w, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit1(s, (uint8_t)((op * 8) | (size == 1 ? 2 : 3)));
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 
 // Register-to-memory store form (r/m, r): "addl %eax, mem" and friends —
@@ -431,7 +442,7 @@ static void alu_mr(SecBuf *s, int size, int op, X86Mem dst, X86Reg src) {
     int w = size == 8;
     emit1(s, rex(w, src > X86_RDI, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, (uint8_t)((op * 8) | (size == 1 ? 0 : 1)));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, src);
 }
 
 void x86_add_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { alu_rr(s, sz, 0, d, sr); }
@@ -461,7 +472,7 @@ void x86_cmp_mr(SecBuf *s, int sz, X86Mem a, X86Reg b) {
     size16_pfx(s, sz);
     emit1(s, rex(sz == 8, b > X86_RDI, a.index > X86_RDI, a.base > X86_RDI));
     emit1(s, opsize(0x38, sz));
-    emit_mem(s, a.base, a.index, a.scale, a.disp, b);
+    emit_mem(s, a.base, a.index, a.scale, a.disp, a.seg, b);
 }
 void x86_test_rr(SecBuf *s, int sz, X86Reg a, X86Reg b) {
     size16_pfx(s, sz);
@@ -542,28 +553,28 @@ void x86_inc_m(SecBuf *s, int sz, X86Mem m) {
     if (sz == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, opsize(0xfe, sz));
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 0);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 0);
 }
 void x86_dec_m(SecBuf *s, int sz, X86Mem m) {
     int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (sz == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, opsize(0xfe, sz));
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 1);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 1);
 }
 void x86_neg_m(SecBuf *s, int sz, X86Mem m) {
     int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (sz == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, opsize(0xf6, sz));
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 3);
 }
 void x86_not_m(SecBuf *s, int sz, X86Mem m) {
     int needrex = (sz == 8) || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (sz == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(sz == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, opsize(0xf6, sz));
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 2);
 }
 void x86_cdq(SecBuf *s) { emit1(s, 0x99); }
 void x86_cqo(SecBuf *s) { emit2(s, 0x48, 0x99); }
@@ -655,7 +666,7 @@ static void bop_rm(SecBuf *s, int sz, uint8_t op2, X86Reg dst, X86Mem src) {
         (src.index != X86_NOREG && src.index > X86_RDI);
     if (needrex) emit1(s, rex(sz == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit2(s, 0x0f, op2);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 void x86_bsf_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbc, d, sm); }
 void x86_bsr_rm(SecBuf *s, int sz, X86Reg d, X86Mem sm) { bop_rm(s, sz, 0xbd, d, sm); }
@@ -678,7 +689,7 @@ static void adx_op_rm(SecBuf *s, uint8_t prefix, int sz, X86Reg dst, X86Mem src)
         (src.index != X86_NOREG && src.index > X86_RDI);
     if (needrex) emit1(s, rex(sz == 8, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit3(s, 0x0f, 0x38, 0xf6);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 void x86_adcx_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { adx_op(s, 0x66, sz, d, sr); }
 void x86_adox_rr(SecBuf *s, int sz, X86Reg d, X86Reg sr) { adx_op(s, 0xf3, sz, d, sr); }
@@ -699,7 +710,7 @@ static void bop_mr(SecBuf *s, int sz, uint8_t op2, X86Mem dst, X86Reg src) {
         (dst.index != X86_NOREG && dst.index > X86_RDI);
     if (needrex) emit1(s, rex(sz == 8, src > X86_RDI, dst.index > X86_RDI, dst.base > X86_RDI));
     emit2(s, 0x0f, op2);
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, src);
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, src);
 }
 
 void x86_bt_mr(SecBuf *s, int sz, X86Mem d, X86Reg sr) { bop_mr(s, sz, 0xa3, d, sr); }
@@ -741,7 +752,7 @@ void x86_push_m(SecBuf *s, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, 0xff);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 6);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 6);
 }
 void x86_pop(SecBuf *s, X86Reg r) {
     if (r > X86_RDI) emit1(s, rex(0, 0, 0, 1));
@@ -773,7 +784,7 @@ void x86_call_m(SecBuf *s, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, 0xff);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 2);
 }
 void x86_jmp_rel32(SecBuf *s, int32_t rel32) {
     emit1(s, 0xe9);
@@ -789,7 +800,7 @@ void x86_jmp_m(SecBuf *s, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, 0xff);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 4);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 4);
 }
 void x86_jcc_rel32(SecBuf *s, X86Cond cc, int32_t rel32) {
     emit2(s, 0x0f, (uint8_t)(0x80 | cc));
@@ -917,7 +928,7 @@ void x86_invpcid(SecBuf *s, X86Reg type_reg, X86Mem desc) {
     emit1(s, 0x66);
     maybe_rex(s, 0, type_reg, desc.index, desc.base);
     emit3(s, 0x0f, 0x38, 0x82);
-    emit_mem(s, desc.base, desc.index, desc.scale, desc.disp, type_reg);
+    emit_mem(s, desc.base, desc.index, desc.scale, desc.disp, desc.seg, type_reg);
 }
 
 // RD/WR{FS,GS}BASE r32/r64: mandatory F3 prefix, opcode extension in the
@@ -944,7 +955,7 @@ void x86_mul_m(SecBuf *s, int size, X86Mem m) {
     if (size == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(size == 8, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, opsize(0xf6, size));
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 4);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 4);
 }
 
 // ADC (op=2) / SBB (op=3): same group-1 ALU shape as ADD/SUB/AND/OR/XOR/CMP.
@@ -957,7 +968,7 @@ void x86_adc_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     if (size == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 2); // /2 = ADC
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 2); // /2 = ADC
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -973,7 +984,7 @@ void x86_sbb_mi(SecBuf *s, int size, X86Mem dst, int32_t imm) {
     if (size == 2) emit1(s, 0x66);
     if (needrex) emit1(s, rex(size == 8, 0, dst.index > X86_RDI, dst.base > X86_RDI));
     emit1(s, opsize(0x80, size));
-    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, 3); // /3 = SBB
+    emit_mem(s, dst.base, dst.index, dst.scale, dst.disp, dst.seg, 3); // /3 = SBB
     if (size == 1) emit1(s, (uint8_t)imm);
     else if (size == 2)
         secbuf_emit16le(s, (uint16_t)imm);
@@ -989,7 +1000,7 @@ static void cmpxchgNb_m(SecBuf *s, bool w, X86Mem m) {
     bool needrex = w || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(w, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, 0xc7);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 1);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 1);
 }
 void x86_cmpxchg8b_m(SecBuf *s, X86Mem m) { cmpxchgNb_m(s, false, m); }
 void x86_cmpxchg16b_m(SecBuf *s, X86Mem m) { cmpxchgNb_m(s, true, m); }
@@ -1029,7 +1040,7 @@ static void prefetch_m(SecBuf *s, uint8_t op2, int digit, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, op2);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, digit);
 }
 void x86_prefetcht0(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 1, m); }
 void x86_prefetchnta(SecBuf *s, X86Mem m) { prefetch_m(s, 0x18, 0, m); }
@@ -1096,7 +1107,7 @@ void x86_lsl_rm(SecBuf *s, X86Mem src, X86Reg dst) {
     bool needrex = dst > X86_RDI || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
     if (needrex) emit1(s, rex(0, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit2(s, 0x0f, 0x03);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 
 void x86_cmc(SecBuf *s) { emit1(s, 0xf5); }
@@ -1119,7 +1130,7 @@ void x86_lar_rm(SecBuf *s, X86Mem src, X86Reg dst) {
     bool needrex = dst > X86_RDI || src.base > X86_RDI || (src.index != X86_NOREG && src.index > X86_RDI);
     if (needrex) emit1(s, rex(0, dst > X86_RDI, src.index > X86_RDI, src.base > X86_RDI));
     emit2(s, 0x0f, 0x02);
-    emit_mem(s, src.base, src.index, src.scale, src.disp, dst);
+    emit_mem(s, src.base, src.index, src.scale, src.disp, src.seg, dst);
 }
 // SMSW/LMSW (0F 01 /4, /6) and SLDT (0F 00 /0): a 16-bit selector/status
 // word, register or memory, same shape as LLDT/STR/LTR above.
@@ -1152,7 +1163,7 @@ void x86_ud1_m(SecBuf *s, bool addr32, X86Reg reg, X86Mem m) {
     if (addr32) emit1(s, 0x67);
     maybe_rex(s, 1, reg, m.index, m.base);
     emit2(s, 0x0f, 0xb9);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, reg);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, reg);
 }
 
 // FXSAVE/FXRSTOR/XSAVE-family: 0F AE or 0F C7 with a /digit sub-opcode and
@@ -1166,7 +1177,7 @@ static void fpstate_m(SecBuf *s, uint8_t op2, int digit, int w, X86Mem m) {
     bool needrex = w || m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(w, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, op2);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, digit);
 }
 void x86_fxsave(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 0, w, m); }
 void x86_fxrstor(SecBuf *s, int w, X86Mem m) { fpstate_m(s, 0xae, 1, w, m); }
@@ -1187,7 +1198,7 @@ static void x87_m(SecBuf *s, uint8_t op, int digit, X86Mem m) {
     bool needrex = m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI);
     if (needrex) emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit1(s, op);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, digit);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, digit);
 }
 void x86_fninit(SecBuf *s) { emit2(s, 0xdb, 0xe3); }
 void x86_finit(SecBuf *s) {
@@ -1281,13 +1292,13 @@ static void sse_rm(SecBuf *s, uint8_t pfx, uint8_t op, X86XmmReg d, X86Mem m) {
     emit1(s, pfx);
     maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, op);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (X86Reg)d);
 }
 static void sse_mr(SecBuf *s, uint8_t pfx, uint8_t op, X86Mem m, X86XmmReg sr) {
     emit1(s, pfx);
     maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, op);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (X86Reg)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (X86Reg)sr);
 }
 
 void x86_movsd_rr(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr(s, 0xf2, 0x10, d, sr); }
@@ -1368,13 +1379,13 @@ void x86_movaps(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
 void x86_movaps_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
     maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x28);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_movaps_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     // movaps: 0F 29 /r (store)
     maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x29);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 
 void x86_movdqu_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
@@ -1382,7 +1393,7 @@ void x86_movdqu_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0xf3);
     maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 void x86_pxor(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     // pxor: 66 0F EF /r
@@ -1420,13 +1431,13 @@ void sse_rr_f2(SecBuf *s, uint8_t op, X86XmmReg d, X86XmmReg sr) {
 void x86_movups_rm(SecBuf *s, X86XmmReg d, X86Mem m) {
     maybe_rex(s, 0, (int)d > X86_RDI ? (int)d : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x10);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // movups m128, xmm (store, unaligned): 0F 11 /r
 void x86_movups_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     maybe_rex(s, 0, (int)sr > X86_RDI ? (int)sr : 0, m.index > X86_RDI ? m.index : 0, m.base > X86_RDI ? m.base : 0);
     emit2(s, 0x0f, 0x11);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 
 // Packed-single float arithmetic (xmm, xmm)
@@ -1619,7 +1630,7 @@ void x86_pinsrw_rm(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0xc4);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
     emit1(s, imm);
 }
 // Intel SHA extensions (SHA1MSG1/MSG2/NEXTE/RNDS4): NP-prefixed, no 66/F2/F3.
@@ -1663,7 +1674,7 @@ void x86_pextrd_m(SecBuf *s, X86Mem m, X86XmmReg sr, uint8_t imm) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit3(s, 0x0f, 0x3a, 0x16);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
     emit1(s, imm);
 }
 // SHA256RNDS2 xmm1, xmm2/m128, <XMM0>: NP 0F 38 CB /r (3rd operand is
@@ -1698,7 +1709,7 @@ void x86_pinsrd_m(SecBuf *s, X86XmmReg d, X86Mem m, uint8_t imm) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
     emit3(s, 0x0f, 0x3a, 0x22);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
     emit1(s, imm);
 }
 
@@ -1996,7 +2007,7 @@ void x86_movntdqa_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0x38);
     emit1(s, 0x2a);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_packusdw(SecBuf *s, X86XmmReg d, X86XmmReg sr) {
     emit1(s, 0x66);
@@ -2237,35 +2248,35 @@ void x86_movdqa_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x6f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // movdqa xmm, m128: 66 0F 7F /r (aligned store)
 void x86_movdqa_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movdqu m128, xmm: F3 0F 6F /r (unaligned load)
 void x86_movdqu_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0xf3);
     maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x6f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // movq m64, xmm: F3 0F 7E /r (64-bit load, zero-extends; also movq xmm,xmm)
 void x86_movq_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0xf3);
     maybe_rex(s, 0, (int)d > 7 ? (int)d : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0x7e);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // movq xmm, m64: 66 0F D6 /r (64-bit store)
 void x86_movq_mr(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)sr > 7 ? (int)sr : 0, m.index > 7 ? m.index : 0, m.base > 7 ? m.base : 0);
     emit2(s, 0x0f, 0xd6);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movd r32, xmm: 66 0F 6E /r
 void x86_movd_r_xmm(SecBuf *s, X86XmmReg d, X86Reg sr) {
@@ -2297,40 +2308,40 @@ void x86_pextrw(SecBuf *s, X86Reg d, X86XmmReg sr, uint8_t imm) {
 void x86_movntps_m(SecBuf *s, X86Mem m, X86XmmReg sr) {
     maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0x2b);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movntpd m128, xmm: 66 0F 2B /r
 void x86_movntpd_m(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0x2b);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movntdq m128, xmm: 66 0F E7 /r
 void x86_movntdq_m(SecBuf *s, X86Mem m, X86XmmReg sr) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0xe7);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movntq m64, mm: 0F E7 /r (MMX non-temporal store)
 void x86_movntq_m(SecBuf *s, X86Mem m, X86XmmReg sr) {
     maybe_rex(s, 0, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0xe7);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // movnti m32/64, r: 0F C3 /r (non-temporal integer store)
 void x86_movnti_m(SecBuf *s, X86Mem m, X86Reg sr, int size) {
     maybe_rex(s, size == 8, (int)sr, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0xc3);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // lddqu xmm, m128: F2 0F F0 /r (unaligned load, no cache-line split penalty)
 void x86_lddqu_rm(SecBuf *s, X86Mem m, X86XmmReg d) {
     emit1(s, 0xf2);
     maybe_rex(s, 0, (int)d, m.index > 7 ? m.index : 0, m.base);
     emit2(s, 0x0f, 0xf0);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // ldmxcsr m32: 0F AE /2. maybe_rex() over-triggers on any base/index in
 // {RSP,RBP,RSI,RDI} (its B/X params take the raw register number rather
@@ -2341,14 +2352,14 @@ void x86_ldmxcsr_m(SecBuf *s, X86Mem m) {
     if (m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI))
         emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, 0xae);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 2);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 2);
 }
 // stmxcsr m32: 0F AE /3
 void x86_stmxcsr_m(SecBuf *s, X86Mem m) {
     if (m.base > X86_RDI || (m.index != X86_NOREG && m.index > X86_RDI))
         emit1(s, rex(0, 0, m.index > X86_RDI, m.base > X86_RDI));
     emit2(s, 0x0f, 0xae);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 3);
 }
 // emms: 0F 77 (empty MMX state)
 void x86_emms(SecBuf *s) { emit2(s, 0x0f, 0x77); }
@@ -2482,12 +2493,12 @@ void x86_vpmovqd512(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
 void x86_vmovups_rm512(SecBuf *s, X86XmmReg d, X86Mem m) {
     evex4(s, 0, 1, 0, 2, 0, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x10);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vmovups_mr512(SecBuf *s, X86Mem m, X86XmmReg sr) {
     evex4(s, 0, 1, 0, 2, 0, sr, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x11);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // vpbroadcastd/q: EVEX.512.66.0F38.W0 58/59 (xmm source -> zmm dest)
 void x86_vpbroadcastd512(SecBuf *s, X86XmmReg d, __attribute__((unused)) X86XmmReg v, X86XmmReg rm, int k) {
@@ -2567,7 +2578,7 @@ void x86_vpmovqd256(SecBuf *s, X86XmmReg d, X86XmmReg rm) {
 void x86_vmovdqu32_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
     evex4(s, 2, 1, 0, 1, 0, sr, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x7f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // VEXTRACTF64X4 zmm -> ymm: EVEX.512.66.0F3A.W1 1B /r ib (dst=rm).
 void x86_vextractf64x4(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
@@ -2588,35 +2599,35 @@ void x86_vpcmpud512(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t i
 void x86_vmovups_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 0, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x10);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // vmovups m256, ymm: VEX.256.0F.WIG 11 /r (store)
 void x86_vmovups_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
     vex3(s, 0, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x11);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // vmovdqa ymm, m256 (aligned): VEX.256.66.0F 6F /r
 void x86_vmovdqa_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 1, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x6f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vmovdqa_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
     vex3(s, 1, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x7f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // vmovdqu ymm, m256 (unaligned): VEX.256.F3.0F 6F /r
 void x86_vmovdqu_rm256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 2, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x6f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vmovdqu_mr256(SecBuf *s, X86Mem m, X86XmmReg sr) {
     vex3(s, 2, 1, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x7f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
 }
 // reg/reg/reg 256-bit ALU ops. All three operands are YMM registers.
 #define VEX256_OP(fn, pp, op) \
@@ -2985,21 +2996,21 @@ VEX256_GP(x86_vpmovmskb256, 1, 0xd7) // 0F/0F38/0F3A VEX.256 macro
 void x86_vlddqu256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 3, 1, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0xf0);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vmovntdqa256(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 1, 2, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x2a);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vbroadcastf128(SecBuf *s, X86XmmReg d, X86Mem m) {
     vex3(s, 1, 2, 0, 1, d, X86_XMM0, (X86XmmReg)m.base);
     emit1(s, 0x1a);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 // non-temporal stores: vmovntps/pd/dq m256, ymm (mem=rm, src=reg)
 #define VEX256_NTSTORE(fn, pp, map, op) \
-    void fn(SecBuf *s, X86Mem m, X86XmmReg sr) { vex3(s, pp, map, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base); emit1(s, op); emit_mem(s, m.base, m.index, m.scale, m.disp, (int)sr); }
+    void fn(SecBuf *s, X86Mem m, X86XmmReg sr) { vex3(s, pp, map, 0, 1, sr, X86_XMM0, (X86XmmReg)m.base); emit1(s, op); emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr); }
 VEX256_NTSTORE(x86_vmovntps_m256, 0, 1, 0x2b)
 VEX256_NTSTORE(x86_vmovntpd_m256, 1, 1, 0x2b)
 VEX256_NTSTORE(x86_vmovntdq_m256, 1, 1, 0xe7)
@@ -3009,22 +3020,22 @@ VEX256_NTSTORE(x86_vmovntdq_m256, 1, 1, 0xe7)
 void x86_vpmaskmovd_rm(SecBuf *s, X86XmmReg d, X86XmmReg mask, X86Mem m) {
     vex3(s, 1, 2, 0, 1, d, mask, (X86XmmReg)m.base);
     emit1(s, 0x8c);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vpmaskmovd_mr(SecBuf *s, X86Mem m, X86XmmReg data, X86XmmReg mask) {
     vex3(s, 1, 2, 0, 1, data, mask, (X86XmmReg)m.base);
     emit1(s, 0x8e);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)data);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)data);
 }
 void x86_vpmaskmovq_rm(SecBuf *s, X86XmmReg d, X86XmmReg mask, X86Mem m) {
     vex3(s, 1, 2, 1, 1, d, mask, (X86XmmReg)m.base);
     emit1(s, 0x8d);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)d);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
 void x86_vpmaskmovq_mr(SecBuf *s, X86Mem m, X86XmmReg data, X86XmmReg mask) {
     vex3(s, 1, 2, 1, 1, data, mask, (X86XmmReg)m.base);
     emit1(s, 0x8f);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, (int)data);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)data);
 }
 
 
@@ -3032,24 +3043,24 @@ void x86_vpmaskmovq_mr(SecBuf *s, X86Mem m, X86XmmReg data, X86XmmReg mask) {
 void x86_fldl_m(SecBuf *s, X86Mem m) {
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
     emit1(s, 0xdd);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 0);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 0);
 }
 void x86_fstpt_m(SecBuf *s, X86Mem m) {
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
     emit1(s, 0xdb);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 7);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 7);
 }
 void x86_fldt_m(SecBuf *s, X86Mem m) {
     // fldt: DB /5 (load m80 extended onto x87 stack)
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
     emit1(s, 0xdb);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 5);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 5);
 }
 void x86_fstpl_m(SecBuf *s, X86Mem m) {
     // fstpl: DD /3 (pop x87 stack, store as m64 double)
     maybe_rex(s, 0, 0, m.index > 7 ? m.index : 0, m.base);
     emit1(s, 0xdd);
-    emit_mem(s, m.base, m.index, m.scale, m.disp, 3);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, 3);
 }
 
 // SSE compare (ucomisd/ucomiss) — fix the encoding above:
