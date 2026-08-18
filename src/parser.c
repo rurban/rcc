@@ -668,6 +668,49 @@ static Type *copy_type(Type *ty) {
     return ret;
 }
 
+// Qualify a type WITHOUT ever mutating a shared struct/union Type object:
+// copy_type() returns the original for every struct/union (see above), so
+// `copy_type(ty)->qual |= X` would permanently qualify every other
+// declaration of the same struct type in the translation unit.
+// Real bug: mimalloc.h forward-declares `struct mi_heap_s` and uses
+// `const mi_heap_t*` before the type is completed -- the incomplete-path
+// qual stamping const-qualified the shared mi_heap_s type, so the
+// NON-const `mi_heap_t _mi_heap_main` in init.c read as const too, and
+// eval_const_expr()'s ND_MEMBER fold (correctly gated on a const object)
+// folded `_mi_heap_main.thread_id == 0` to TRUE, making
+// `_mi_is_main_thread()` return constant 1 -- every thread then shared
+// _mi_heap_main, corrupting the multithreaded allocator.
+// A complete struct gets a real shallow copy with the qual; an incomplete
+// one gets a QUALIFIED VARIANT linked off the canonical type (see
+// Type.qual_variants), which struct_or_union_specifier() completes in
+// lockstep -- member access, sizeof and declaration-vs-definition type
+// compatibility all read through the variant, yet its qualifier never
+// leaks onto the canonical type; any other type gets the ordinary copy.
+static Type *qualify_struct_type(Type *ty, unsigned char quals) {
+    if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+        Type *ret = arena_alloc(sizeof(Type));
+        *ret = *ty;
+        if (ty->has_body) {
+            ret->qual |= quals;
+            return ret;
+        }
+        ret->qual = ty->qual | quals;
+        ret->use_qual = quals;
+        ret->qual_variants = ty->qual_variants;
+        ty->qual_variants = ret;
+        return ret;
+    }
+    ty = copy_type(ty);
+    ty->qual |= quals;
+    return ty;
+}
+
+// C23 constexpr object types: same qualified-copy semantics as
+// qualify_struct_type() (never mutate a shared struct/union type).
+static Type *qualify_type_copy(Type *ty, unsigned char quals) {
+    return qualify_struct_type(ty, quals);
+}
+
 // C23 typeof_unqual: recursively strip all qualifiers from a type.
 static Type *type_unqual(Type *ty) {
     if (!ty) return NULL;
@@ -2666,6 +2709,9 @@ bool eval_const_expr(Node *node, long long *val) {
             // hung test/third_party/test_httpparser's sibling
             // test/third_party/test_bash at any `-O1`+ build.
             if (!is_bitfield && root_var && (root_var->is_constexpr || (!root_var->is_local && ty_const(root_var->ty))) && root_var->has_init) {
+                fprintf(stderr, "MEMBERFOLD: %s ty_const=%d ty=%p qual=0x%x\n",
+                        root_var->name, ty_const(root_var->ty), (void *)root_var->ty,
+                        root_var->ty ? root_var->ty->qual : 0);
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
@@ -4703,6 +4749,24 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
     } else {
         ty->size = is_union ? align_to(max_size, final_align) : align_to(offset, final_align);
     }
+    // Complete any qualified INCOMPLETE variants in lockstep with the tag
+    // (see qualify_struct_type / Type.qual_variants): a `const struct S*`
+    // parsed while S was still forward-declared must read the finished
+    // type's members/size/alignment here, yet its qualifier must never
+    // leak onto the canonical type -- mimalloc.h's `const mi_heap_t*`
+    // uses while `struct mi_heap_s` is incomplete would otherwise
+    // const-qualify every later `mi_heap_t` declaration (e.g. init.c's
+    // `mi_heap_t _mi_heap_main`), whose member reads eval_const_expr()
+    // then wrongly folds as constant.
+    for (Type *v = ty->qual_variants; v;) {
+        Type *next = v->qual_variants; // *v = *ty clobbers the list link
+        unsigned char use_qual = v->use_qual;
+        *v = *ty;
+        v->use_qual = use_qual;
+        v->qual = ty->qual | use_qual;
+        v->qual_variants = next;
+        v = next;
+    }
     if (redef_of && struct_bodies_identical(redef_of, ty)) {
         // Byte-for-byte identical redefinition (e.g. noplate's `span(T)`
         // idiom): discard the freshly parsed Type and hand back the
@@ -4739,9 +4803,7 @@ static Type *qualify_array_elem(Type *ty, unsigned char quals) {
     }
     if (ty->kind == TY_VLA)
         return vla_of(qualify_array_elem(ty->base, quals), ty->vla_len_expr, ty->array_len);
-    ty = copy_type(ty);
-    ty->qual |= quals;
-    return ty;
+    return qualify_struct_type(ty, quals);
 }
 
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
@@ -4864,8 +4926,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
                 tok = skip(tok, "(");
                 ty = type_name(&tok, tok);
                 tok = skip(tok, ")");
-                ty = copy_type(ty);
-                ty->qual |= QUAL_ATOMIC;
+                ty = qualify_struct_type(ty, QUAL_ATOMIC);
             } else {
                 quals |= QUAL_ATOMIC;
             }
@@ -5168,36 +5229,25 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         if (ty->kind == TY_ARRAY || ty->kind == TY_VLA) {
             ty = qualify_array_elem(ty, quals);
         } else {
-            // copy_type() deliberately returns a COMPLETE struct/union
-            // type's own pointer unchanged (see its comment) so an
-            // incomplete forward declaration can still be completed later
-            // through every existing reference. That identity-sharing is
-            // wrong here: we are about to set ->qual for THIS declaration
-            // only (e.g. `const wuffs_base__io_buffer *buf`), and mutating
-            // the shared typedef's Type object in place silently
-            // const-qualifies every OTHER use of the same struct/union in
-            // the translation unit too - including an unrelated, genuinely
-            // mutable `wuffs_base__io_buffer g_src = {0};` global, whose
-            // reads eval_const_expr() then treated as permanently equal to
-            // their static initializer, folding away real runtime branches
-            // (test/third_party test_wuffs: `if (g_src.meta.wi ==
-            // g_src.data.len)` always taken at -O1+, an `if (g_src.meta.
-            // closed)` check always dropped). A complete struct/union can
-            // safely get its own qualified clone - members/has_body are
-            // already final and shared through the copy; only an
-            // INCOMPLETE aggregate still needs the shared identity
-            // (matching apply_type_align's own exemption above).
-            bool incomplete_aggregate = (ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->has_body;
-            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !incomplete_aggregate) {
-                Type *ret = arena_alloc(sizeof(Type));
-                *ret = *ty;
-                ty = ret;
-            } else {
-                ty = copy_type(ty);
-            }
+            // qualify_struct_type(): never mutate a shared struct/union
+            // type in place. A complete aggregate gets its own qualified
+            // clone; an INCOMPLETE one gets a qualified variant that
+            // struct_or_union_specifier() completes in lockstep with the
+            // tag (see Type.qual_variants) -- mimalloc.h forward-declares
+            // `struct mi_heap_s; typedef struct mi_heap_s mi_heap_t;`
+            // and uses `const mi_heap_t*` before the type is ever
+            // completed; stamping that const onto the shared mi_heap_s
+            // type made the NON-const `mi_heap_t _mi_heap_main` in
+            // init.c read as const too, and eval_const_expr()'s
+            // ND_MEMBER fold (which correctly requires a const object)
+            // folded `_mi_heap_main.thread_id == 0` to TRUE, making
+            // `_mi_is_main_thread()` return constant 1 and every
+            // thread share _mi_heap_main (multithreaded allocator
+            // corruption). A qualifier on an incomplete type is
+            // near-moot for member access anyway: no by-value use is
+            // legal while it stays incomplete.
+            ty = qualify_struct_type(ty, quals);
         }
-        if (ty->kind != TY_ARRAY && ty->kind != TY_VLA)
-            ty->qual |= quals;
     }
     // Apply a type-level vector_size attribute to the base type here, not in
     // declarator(), so every declarator of a multi-declarator declaration
@@ -7571,8 +7621,7 @@ static Node *declaration(Token **rest, Token *tok) {
             var->is_constexpr = true;
             if (pending_asm_name)
                 var->asm_name = pending_asm_name;
-            var->ty = copy_type(ty);
-            var->ty->qual |= QUAL_CONST;
+            var->ty = qualify_type_copy(ty, QUAL_CONST);
             if (current_block_depth == 1)
                 current_fn_scope_locals = locals;
             if (!equalc(tok, "="))
@@ -7651,8 +7700,7 @@ static Node *declaration(Token **rest, Token *tok) {
                 Type *inferred = init_expr->ty;
                 LVar *var = new_var(name, inferred, true);
                 var->is_constexpr = true;
-                var->ty = copy_type(inferred);
-                var->ty->qual |= QUAL_CONST;
+                var->ty = qualify_type_copy(inferred, QUAL_CONST);
                 if (pending_asm_name)
                     var->asm_name = pending_asm_name;
                 // For aggregate types (struct/union/array) initialized from another
@@ -7691,8 +7739,7 @@ static Node *declaration(Token **rest, Token *tok) {
                 if (pending_asm_name)
                     var->asm_name = pending_asm_name;
                 // constexpr implies const
-                var->ty = copy_type(ty);
-                var->ty->qual |= QUAL_CONST;
+                var->ty = qualify_type_copy(ty, QUAL_CONST);
                 if (!equalc(tok, "="))
                     error_tok(tok, "constexpr variable must be initialized");
                 Token *start = tok;
@@ -14117,8 +14164,7 @@ Program *parse(Token *tok) {
                         // C23 6.2.2: constexpr at file scope gives internal linkage
                         var->is_static = true;
                         // constexpr implies const
-                        var->ty = copy_type(ty);
-                        var->ty->qual |= QUAL_CONST;
+                        var->ty = qualify_type_copy(ty, QUAL_CONST);
                         if (!var->has_init)
                             error("constexpr variable must be initialized");
                     }

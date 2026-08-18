@@ -295,6 +295,20 @@ struct Type {
     // types (or all the same size); a function argument matching any one
     // member's type is passed exactly as that member, no boxing/copy needed.
     unsigned char qual; // TypeQual flags: const/volatile/restrict
+    // Qualified INCOMPLETE struct/union variants (see qualify_struct_type
+    // in parser.c): a `const struct S*` parsed while S was still
+    // forward-declared must eventually read the finished type's members/
+    // size/alignment, so it is registered here (head lives on the
+    // canonical tag type; on a variant this field is the next link) and
+    // struct_or_union_specifier() completes it in lockstep with the tag.
+    // Without the variant, stamping the qualifier on the canonical type
+    // would leak const onto every later declaration of the same tag.
+    Type *qual_variants;
+    // The qualifiers this variant's declaration requested, EXCLUDING the
+    // canonical type's own quals; re-applied on top of the canonical's
+    // quals when the completion sync overwrites the variant (see
+    // struct_or_union_specifier).
+    unsigned char use_qual;
     Type *base; // for pointer/array
     Member *members; // for struct
     bool has_body; // struct/union: a `{ ... }` body was parsed (distinct

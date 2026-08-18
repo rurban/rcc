@@ -40,6 +40,51 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-18, mimalloc multithread const-pollution session)
+
+**mimalloc 2.1.2 `test-stress` SIGSEGV in a worker thread — root cause:
+a `const` on an INCOMPLETE struct/union type polluted the SHARED tag
+type.** mimalloc.h forward-declares `struct mi_heap_s; typedef struct
+mi_heap_s mi_heap_t;` and uses `const mi_heap_t*` before the type is
+ever completed. declspec's quals block did `copy_type(ty)->qual |=
+quals` for struct/union types, and `copy_type()` deliberately returns
+the SHARED pointer for every struct/union (so a forward declaration
+can still be completed later through every existing reference) — so
+the const landed on the canonical `mi_heap_s` type object itself.
+Every later `mi_heap_t` declaration then read as const, including the
+NON-const `mi_heap_t _mi_heap_main` in `src/init.c`; at -O3
+eval_const_expr()'s ND_MEMBER fold (correctly gated on a const object)
+folded `_mi_heap_main.thread_id == 0` to TRUE, compiling
+`_mi_is_main_thread()` to `return 1` — every worker thread then set
+its default heap to `_mi_heap_main`, and the multithreaded allocator
+corrupted (block pointer `0xbf58476d1ce4e5f9` in `mi_block_next`).
+Confirmed: the same pollution (from an earlier `const wuffs_base__io_buffer*`
+incomplete use) folded real runtime branches in test_wuffs.
+
+Fix (`src/parser.c`, `src/rcc.h`): a qualified INCOMPLETE aggregate now
+gets its own "qualified variant" (`Type.qual_variants`, linked off the
+canonical tag type) which `struct_or_union_specifier()` completes in
+lockstep — member access, sizeof and declaration-vs-definition type
+compat read through the variant, but its qualifier never leaks onto the
+canonical type. A complete aggregate gets a plain qualified copy.
+`qualify_struct_type()` centralizes the logic for declspec's quals
+block, `qualify_array_elem()` and the `_Atomic(T)` path. The variant
+also preserves the earlier fix's second half: a function declared with
+`const struct S*` (S incomplete) still matches its definition after S
+completes (dropping the qual entirely had caused "conflicting types").
+
+New regression test: `test/test_incomplete_struct_const.c` (the
+mimalloc pattern distilled: incomplete-tag const use → completion →
+non-const global whose member reads must stay runtime reads; plus the
+decl-before/def-after compat pair and `sizeof(const T)`). Verified
+against gcc (rc=0) and confirmed the test catches the bug by reverting
+`parser.c`/`rcc.h` alone: rc=2. **mimalloc 2.1.2 full CMake build
+(CMAKE_C_COMPILER=rcc) now passes 3/3 ctest targets, including the
+previously-crashing `test-stress`** (was: SIGSEGV within seconds).
+`make check-all`: 0 failed (Unit 283/283, c-testsuite 220/220,
+Compliance 15/15, Torture 3605/3609 — 0 failed, 354 skipped, 4 todo,
+Dg-error 34/34, Link 11/11).
+
 ### Fixed (2026-08-17, this session — 5 bugs via test_kefir/test_cc65/linux_thirdparty.bash CC=gcc audit)
 
 Triggered by auditing `test/linux_thirdparty.bash` for hardcoded `gcc`
