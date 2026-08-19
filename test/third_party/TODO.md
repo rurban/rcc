@@ -40,6 +40,58 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-19, limits.h glibc #include_next + IEEE 754 math.h session)
+
+Three related issues blocking 9 third-party projects:
+
+- **glibc's `<limits.h>` `#include_next` loop** — `preprocess.c`. rcc
+  defines `__GNUC__` (from gcc*predefined.h) but formerly lacked
+  `\_GCC_LIMITS_H*`. glibc's `/usr/include/limits.h:125`does`#include*next <limits.h>`when`**GNUC**`is defined but`\_GCC_LIMITS_H*`is not — searching for GCC's own limits.h. rcc had
+no such file, so the include chain failed hard. Every TU touching`<limits.h>`(or any system header that pulls it in) errored out.
+Fixed by adding`define*pre("\_GCC_LIMITS_H*", "1")`in`preprocess.c`. Unblocks: box2d, cc65, chibischeme, coremarkpro,
+espruino, ffc, and every autoconf project whose `AC_CHECK_HEADERS`test includes`<limits.h>`.
+
+- **`<linux/limits.h>` not reached after `_GCC_LIMITS_H_` suppression**
+  — `include/limits.h`. With `_GCC_LIMITS_H_` defined, glibc's
+  `limits.h` no longer chains into GCC's own `limits.h`, which normally
+  includes `<linux/limits.h>` (providing `PATH_MAX`, `PIPE_BUF`,
+  `NAME_MAX`, etc.). Added `#include <linux/limits.h>` directly under
+  `#ifdef __linux__`. Also fixed autoconf's
+  `AC_CHECK_HEADERS([limits.h])` (was "present but cannot be compiled")
+  and `gl_UNDECLARED_BUILTIN_OPTIONS` (the test program includes
+  `<limits.h>` and previously failed). Unblocks: findutils, file, ggrep
+  and every gnulib-based project.
+
+- **IEEE 754 comparison macros missing from bundled `<math.h>`**
+  — `include/math.h`. rcc's bundled `<math.h>` doesn't chain to glibc's
+  `<math.h>`, so C99 7.12.14 macros (`isgreater`, `isless`,
+  `isunordered`, etc.) were absent — treated as function calls → link
+  errors. Added all six macros with standard NaN-safe implementations.
+  Unblocks: test_file (`libmagic.so` undefined references to
+  `isgreater`/`isunordered`/`isless`).
+
+New regression tests:
+
+- `test/test_limits_h_glibc_chain.c` (ISO C minimums + POSIX + Linux
+  kernel limits via the full chain), PASS.
+- `test/test_math_ieee754_comparison.c` (all six macros, NaN edge
+  cases), PASS.
+  Both PASS on x86-64; ARM64/mingw: `#include <linux/limits.h>` guarded
+  out, `isgreater` etc. are pure macros — no target-specific concern.
+
+Projects now verified:
+
+- **box2d**: all tests pass
+- **espruino**: builds, tests pass
+- **ffc**: 6/6 tests pass
+- **file**: builds and tests pass (was `isgreater` link error + limits.h)
+- **ggrep**: builds (was autoconf `cannot detect` + limits.h)
+- **cc65**: builds (test timeout is separate)
+- **chibischeme**: builds (segfault in test is separate)
+- **coremarkpro**: builds (test timeout is separate)
+- **findutils**: autoconf now passes, build error is separate
+  (`static_assert` condition)
+
 ### Fixed (2026-08-18, mimalloc multithread const-pollution session)
 
 **mimalloc 2.1.2 `test-stress` SIGSEGV in a worker thread — root cause:

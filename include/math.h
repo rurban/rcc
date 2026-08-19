@@ -53,6 +53,17 @@ double modf(double, double *);
 #ifndef _WIN32
 int ilogb(double); /* mingw-w64 provides no ilogb symbol at all */
 #endif
+/* IEEE 754 comparison macros (C99 7.12.14): type-generic, no libc symbols.
+ * glibc defines these as __builtin_isgreater etc. under GCC >= 3.1, but
+ * rcc's bundled <math.h> chains via #include_next only for system libs
+ * that need it -- for self-contained builds these must be defined here. */
+#define isunordered(x, y)   ((x) != (x) || (y) != (y))
+#define isgreater(x, y)     (!isunordered(x, y) && (x) > (y))
+#define isgreaterequal(x, y) (!isunordered(x, y) && (x) >= (y))
+#define isless(x, y)        (!isunordered(x, y) && (x) < (y))
+#define islessequal(x, y)   (!isunordered(x, y) && (x) <= (y))
+#define islessgreater(x, y) (!isunordered(x, y) && ((x) < (y) || (x) > (y)))
+
 /* Classification: standard C requires these to be type-generic and they have
  * no backing libc symbols (fpclassify/isfinite/isnormal are macros-only in
  * glibc). Map them to rcc's runtime builtins, dispatched on operand size.

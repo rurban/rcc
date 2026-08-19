@@ -3498,6 +3498,15 @@ Token *preprocess(char *filename, char *p) {
         // can detect rcc specifically (`#ifdef __RCC__`), the same way
         // `__clang__` or tcc's `__TINYC__` sit alongside `__GNUC__`.
         define_pre("__RCC__", "1");
+        // Prevent glibc's /usr/include/limits.h from trying
+        // `#include_next <limits.h>` to find GCC's own limits.h.
+        // That guard is triggered when __GNUC__ is defined (which rcc
+        // inherits from gcc_predefined.h) but _GCC_LIMITS_H_ is not.
+        // Without this define, the #include_next fails because rcc has
+        // no GCC limits.h, and every TU that touches <limits.h> (or
+        // any system header that pulls it in) errors out — blocking
+        // dozens of third-party projects at the first compilation unit.
+        define_pre("_GCC_LIMITS_H_", "1");
         // __STDC_VERSION__ is baked into gcc_predefined.h at the C23 value;
         // reflect the -std= request instead. C89/C90 (opt_std_version==NULL)
         // has no __STDC_VERSION__ at all, so the predefined one must be

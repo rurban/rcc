@@ -85,4 +85,20 @@
 #include_next <limits.h>
 #endif
 
+/* Linux kernel limits (PATH_MAX, PIPE_BUF, etc.) -- normally provided
+ * by GCC's own <limits.h> via `#include <linux/limits.h>`. Since rcc
+ * defines _GCC_LIMITS_H_ to prevent glibc's limits.h from chaining
+ * into GCC's (see preprocess.c), that path is never taken. Include
+ * <linux/limits.h> directly so POSIX/GNU projects that expect
+ * PATH_MAX, PIPE_BUF, NAME_MAX, etc. from <limits.h> compile.
+ *
+ * Only include when glibc was found (_LIBC_LIMITS_H_ defined by
+ * glibc's limits.h above). musl defines PATH_MAX etc. in its own
+ * limits.h and doesn't use _LIBC_LIMITS_H_, so this would fail with
+ * -nostdinc + musl where /usr/include/linux/ isn't in the search path.
+ */
+#if defined(__linux__) && defined(_LIBC_LIMITS_H_)
+#include <linux/limits.h>
+#endif
+
 #endif
