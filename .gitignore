@@ -60,6 +60,7 @@ test/tcc_test_linux_lacc.md
 test/tcc_test_linux_scc.md
 test/tcc_test_linux_cproc.md
 test/tcc_test_linux_antcc.md
+test/tcc_test_musl.md
 test/csmith
 test/platform.info
 rcc-*-src/

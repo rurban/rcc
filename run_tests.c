@@ -855,6 +855,8 @@ static void detect_platform(const char *rcc_path) {
         platform = "mingw_cross";
         snprintf(runner_cmd, sizeof(runner_cmd), "wine");
         has_runner = true;
+    } else if (contains(rcc_path, "musl-cross")) {
+        platform = "musl";
     }
 #ifdef _WIN32
     /* We are a Windows PE binary.  mingw_cross if under wine. */
@@ -2475,8 +2477,16 @@ static void run_one_test(const char *src_path, const char *base,
         return;
     }
 
-    /* 128_run_atexit special handling */
+    /* 128_run_atexit special handling — musl lacks on_exit() (GNU ext);
+     * TODO: add a runtime lib (like darwin's rcc_darwin.c) that provides
+     * on_exit for musl builds. */
     if (streq(base, "128_run_atexit")) {
+        if (streq(platform, "musl")) {
+            print_result(base, COL_CYAN, "TODO");
+            add_row(base, "TODO", "TODO (musl: no on_exit yet)");
+            free(out_buf);
+            return;
+        }
         const char *tests[] = {"test_128_return", "test_128_exit", NULL};
         int exp_rc[] = {1, 2};
         for (int t = 0; tests[t]; t++) {
@@ -2874,8 +2884,16 @@ static void compile_and_exec(const char *src_path, const char *base,
         return;
     }
 
-    /* 128_run_atexit special handling */
+    /* 128_run_atexit special handling — musl lacks on_exit() (GNU ext);
+     * TODO: add a runtime lib (like darwin's rcc_darwin.c) that provides
+     * on_exit for musl builds. */
     if (streq(base, "128_run_atexit")) {
+        if (streq(platform, "musl")) {
+            print_result(base, COL_CYAN, "TODO");
+            add_row(base, "TODO", "TODO (musl: no on_exit yet)");
+            free(out_buf);
+            return;
+        }
         const char *tests[] = {"test_128_return", "test_128_exit", NULL};
         int exp_rc[] = {1, 2};
         for (int t = 0; tests[t]; t++) {
@@ -3091,8 +3109,14 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
         return;
     }
 
-    /* 128_run_atexit evaluation */
+    /* 128_run_atexit evaluation — musl lacks on_exit(), TODO */
     if (streq(base, "128_run_atexit")) {
+        if (streq(platform, "musl")) {
+            print_result(base, COL_CYAN, "TODO");
+            add_row(base, "TODO", "TODO (musl: no on_exit yet)");
+            free(out_buf);
+            return;
+        }
         {
             char *er = file_exists(expect_file) ? slurp(expect_file) : NULL;
             if (er) {
@@ -5952,6 +5976,7 @@ static void generate_report(void) {
         streq(platform, "linux") ? "Linux x86_64" : streq(platform, "mingw_cross") ? "Windows x86_64 (mingw cross)"
         : streq(platform, "arm64_cross")                                           ? "Linux ARM64 (aarch64 cross)"
         : streq(platform, "darwin_cross")                                          ? "macOS ARM64 (darwin cross, compile+link only)"
+        : streq(platform, "musl")                                                  ? "Linux x86_64 (musl libc)"
         : streq(platform, "arm64")                                                 ? "macOS ARM64 (native)"
         : streq(platform, "mingw")                                                 ? "Windows x86_64 (native)"
                                                                                    : platform;
