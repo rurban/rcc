@@ -625,6 +625,7 @@ static void strip_plt_suffix(char *tok) {
 // the evaluator itself.
 static int64_t eval_asm_expr_here(AsmState *as, const char *expr);
 
+#ifndef ARCH_ARM64
 // Forward-declared: evaluates one arithmetic TERM (mul/div precedence,
 // so "8*16" parses as a single value, not just "8") starting at *pp,
 // advancing *pp past what it consumed and setting *err on failure.
@@ -632,6 +633,7 @@ static int64_t eval_asm_expr_here(AsmState *as, const char *expr);
 // "SYMBOL+N*M"-shaped displacement's numeric part; defined far below
 // (after ExprCtx's own type, which isn't complete yet here).
 static int64_t eval_asm_term(AsmState *as, const char **pp, bool *err);
+#endif
 
 // Ensure a symbol is in the object's symbol table (for extern refs in relocs)
 static int ensure_sym(AsmState *as, const char *name) {
@@ -5702,6 +5704,7 @@ static int64_t eval_asm_expr_here(AsmState *as, const char *text) {
     return expr_or(&c);
 }
 
+#ifndef ARCH_ARM64
 // Term-level (mul/div precedence) evaluator for one arithmetic term
 // starting at *pp. Used by try_parse_symbol_disp() to correctly handle
 // a "*"/"/" inside a numeric term mixed with a symbol (e.g. "K256+
@@ -5715,6 +5718,7 @@ static int64_t eval_asm_term(AsmState *as, const char **pp, bool *err) {
     *err = c.err;
     return v;
 }
+#endif
 
 // True if `text` is a *complete* assembler-time integer expression — the
 // whole string parses with nothing left over. Used to tell an .Lvar-based

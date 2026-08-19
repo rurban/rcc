@@ -1382,7 +1382,7 @@ int link_pe(LinkState *s) {
         cur_file_off += (uint32_t)pe_align_up(sec->len, PE_FILE_ALIGN);
     }
 
-    uint32_t sec_idx = 0;
+    //uint32_t sec_idx = 0;
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->len == 0) continue;
@@ -1414,7 +1414,7 @@ int link_pe(LinkState *s) {
         pe_w16le(f, 0);
         pe_w16le(f, 0); // nrelocs, nlinenums
         pe_w32le(f, flags);
-        sec_idx++;
+        //sec_idx++;
     }
     free(sec_file_offs);
 

@@ -17281,7 +17281,9 @@ struct ObjFile *codegen(Program *prog) {
                              )
                 ? 1
                 : 0;
+#ifndef _WIN32
             int xfp = 0;
+#endif
             int stack_param_index2 = 0;
             for (LVar *var = fn->params; var; var = var->param_next) {
 #ifndef _WIN32
@@ -17526,8 +17528,9 @@ struct ObjFile *codegen(Program *prog) {
                     }
 #ifdef _WIN32
                     gp++; // Win64: advance combined position counter
-#endif
+#else
                     xfp++;
+#endif
                 } else if ((var->ty->kind == TY_STRUCT || var->ty->kind == TY_UNION || is_complex(var->ty)) && var->ty->size > 8 && gp < max_gp) {
                     int c = ++rcc_label_count;
                     x86_mov_rr(cg_sec, 8, X86_R11, greg[gp]);

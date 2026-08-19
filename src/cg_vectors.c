@@ -2637,8 +2637,8 @@ VReg gen_ia32_builtin(Node *node) {
         // bytes), never from the args (which are plain int literals).
         Type *ety = node->ty ? node->ty->base : NULL;
         int esz = ety ? (int)ety->size : 4;
-        int nargs = 0;
-        for (Node *p = a1; p; p = p->next) nargs++;
+        //int nargs = 0;
+        //for (Node *p = a1; p; p = p->next) nargs++;
         VReg dst = alloc_int128_addr();
         int i = 0;
         for (Node *p = a1; p; p = p->next, i++) {
