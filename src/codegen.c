@@ -14382,18 +14382,25 @@ VReg gen(Node *node) {
                 }
                 case ND_DIV: {
                     // (a+bi)/(c+di) = ((ac+bd)/(c²+d²)) + ((bc-ad)/(c²+d²))i
-                    arm64_mul(cg_sec, 1, ARM64_X18, ARM64_X18, ARM64_X18); // x18 = b.r²
+                    // Denom lives in x8, not x18: x18 is the platform register
+                    // on Darwin arm64 (and Windows), reserved by the OS and
+                    // clobbered across the real-part store (the first write to
+                    // a fresh result slot can fault to grow the stack, and the
+                    // kernel's exception path trashes x18). Holding the denom
+                    // in x18 across the two sdivs corrupted the imag component.
+                    CX_ARM_LOAD(ARM64_X8, addr_rhs, 0, base_sz); // x8 = b.r
+                    arm64_mul(cg_sec, 1, ARM64_X8, ARM64_X8, ARM64_X8); // x8 = b.r²
                     arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X9); // x9 = b.i²
-                    arm64_add_reg(cg_sec, 1, ARM64_X18, ARM64_X18, ARM64_X9, ARM64_LSL, 0); // x18 = denom
+                    arm64_add_reg(cg_sec, 1, ARM64_X8, ARM64_X8, ARM64_X9, ARM64_LSL, 0); // x8 = denom
                     CX_ARM_LOAD(ARM64_X9, addr_rhs, 0, base_sz); // x9 = b.r
                     arm64_mul(cg_sec, 1, ARM64_X9, ARM64_X16, ARM64_X9); // x9 = a.r*b.r
                     CX_ARM_LOAD(ARM64_X16, addr_rhs, 1, base_sz); // x16 = b.i
                     arm64_mul(cg_sec, 1, ARM64_X16, ARM64_X17, ARM64_X16); // x16 = a.i*b.i
                     arm64_add_reg(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X16, ARM64_LSL, 0); // x9 = ac+bd
                     if (uns)
-                        arm64_udiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18);
+                        arm64_udiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X8);
                     else
-                        arm64_sdiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X18);
+                        arm64_sdiv(cg_sec, 1, ARM64_X9, ARM64_X9, ARM64_X8);
                     CX_ARM_STORE(ARM64_X9, result, 0, base_sz); // store real
                     CX_ARM_LOAD(ARM64_X16, addr_lhs, 1, base_sz); // x16 = a.i
                     CX_ARM_LOAD(ARM64_X17, addr_rhs, 0, base_sz); // x17 = b.r
@@ -14403,9 +14410,9 @@ VReg gen(Node *node) {
                     arm64_mul(cg_sec, 1, ARM64_X17, ARM64_X17, ARM64_X9); // x17 = a.r*b.i
                     arm64_sub_reg(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X17, ARM64_LSL, 0); // x16 = bc-ad
                     if (uns)
-                        arm64_udiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18);
+                        arm64_udiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X8);
                     else
-                        arm64_sdiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X18);
+                        arm64_sdiv(cg_sec, 1, ARM64_X16, ARM64_X16, ARM64_X8);
                     CX_ARM_STORE(ARM64_X16, result, 1, base_sz);
                     goto cx_arith_done;
                 }
