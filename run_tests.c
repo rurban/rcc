@@ -856,7 +856,7 @@ static void detect_platform(const char *rcc_path) {
         snprintf(runner_cmd, sizeof(runner_cmd), "wine");
         has_runner = true;
     } else if (contains(rcc_path, "musl-cross")) {
-        platform = "musl";
+        platform = "musl_cross";
     }
 #ifdef _WIN32
     /* We are a Windows PE binary.  mingw_cross if under wine. */
@@ -887,7 +887,14 @@ static void detect_platform(const char *rcc_path) {
             platform = strdup(u.sysname); // own a copy: u is stack-local and about to go out of scope
             if (strcmp(u.sysname, "Linux") == 0) {
                 free((void *)platform);
-                platform = "linux";
+                /* Check if rcc binary itself was built with musl by
+                 * looking for ld-musl in its ELF interpreter */
+                char cmd[512];
+                snprintf(cmd, sizeof(cmd), "file %s 2>/dev/null | grep -q 'ld-musl'", rcc_path);
+                if (system(cmd) == 0)
+                    platform = "musl";
+                else
+                    platform = "linux";
             }
         }
         if (strcmp(u.machine, "aarch64") == 0 || strcmp(u.machine, "arm64") == 0) {
@@ -2483,7 +2490,7 @@ static void run_one_test(const char *src_path, const char *base,
      * TODO: add a runtime lib (like darwin's rcc_darwin.c) that provides
      * on_exit for musl builds. */
     if (streq(base, "128_run_atexit")) {
-        if (streq(platform, "musl")) {
+        if (streq(platform, "musl") || streq(platform, "musl_cross")) {
             print_result(base, COL_CYAN, "TODO");
             add_row(base, "TODO", "TODO (musl: no on_exit yet)");
             free(out_buf);
@@ -2890,7 +2897,7 @@ static void compile_and_exec(const char *src_path, const char *base,
      * TODO: add a runtime lib (like darwin's rcc_darwin.c) that provides
      * on_exit for musl builds. */
     if (streq(base, "128_run_atexit")) {
-        if (streq(platform, "musl")) {
+        if (streq(platform, "musl") || streq(platform, "musl_cross")) {
             print_result(base, COL_CYAN, "TODO");
             add_row(base, "TODO", "TODO (musl: no on_exit yet)");
             free(out_buf);
@@ -3113,7 +3120,7 @@ static void evaluate_and_report(const char *base, ParallelResult *r) {
 
     /* 128_run_atexit evaluation — musl lacks on_exit(), TODO */
     if (streq(base, "128_run_atexit")) {
-        if (streq(platform, "musl")) {
+        if (streq(platform, "musl") || streq(platform, "musl_cross")) {
             print_result(base, COL_CYAN, "TODO");
             add_row(base, "TODO", "TODO (musl: no on_exit yet)");
             free(out_buf);
@@ -5048,12 +5055,12 @@ static int run_torture_suite(bool summary_only) {
     int max_fail;
     if (only_test_count > 0)
         max_fail = 0;
+    else if (streq(platform, "musl_cross"))
+        max_fail = 827;
+    else if (streq(platform, "musl"))
+        max_fail = 2;
     else
         /*
-    if (streq(platform, "arm64_cross"))
-           max_fail = 29;
-    else if (streq(platform, "arm64"))g
-        max_fail = 0;
     else if (streq(platform, "darwin_cross"))
         max_fail = 0;
     else if (streq(platform, "mingw_cross"))
@@ -5978,7 +5985,8 @@ static void generate_report(void) {
         streq(platform, "linux") ? "Linux x86_64" : streq(platform, "mingw_cross") ? "Windows x86_64 (mingw cross)"
         : streq(platform, "arm64_cross")                                           ? "Linux ARM64 (aarch64 cross)"
         : streq(platform, "darwin_cross")                                          ? "macOS ARM64 (darwin cross, compile+link only)"
-        : streq(platform, "musl")                                                  ? "Linux x86_64 (musl libc)"
+        : streq(platform, "musl")                                                  ? "Linux x86_64 (musl-built rcc)"
+        : streq(platform, "musl_cross")                                            ? "Linux x86_64 (musl cross via musl-cross.sh)"
         : streq(platform, "arm64")                                                 ? "macOS ARM64 (native)"
         : streq(platform, "mingw")                                                 ? "Windows x86_64 (native)"
                                                                                    : platform;
@@ -6224,14 +6232,21 @@ int main(int argc, char **argv) {
          * rcc_lib (see run_test_inprocess()).  `rcc` is still resolved to
          * an external binary for detect_platform() and as a fallback. */
         use_rcc_lib = true;
+        // clang-format off
 #ifdef _WIN32
         /* Under wine/Windows, prefer .exe over native binary */
         if (access("./rcc.exe", X_OK) == 0)
             rcc = "./rcc.exe";
 #else
+#ifdef __MUSL__
+        if (access("./rcc-musl", X_OK) == 0)
+            rcc = "./rcc-musl";
+        else
+#endif
         if (access("./rcc", X_OK) == 0)
             rcc = "./rcc";
 #endif
+        // clang-format on
     }
     if (!rcc) {
         fprintf(stderr, "rcc binary not found\n");

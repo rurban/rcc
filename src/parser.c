@@ -644,8 +644,9 @@ static Node *new_decimal(Token *tok) {
     return node;
 }
 #else
+/* musl: no libdfp, return NULL so caller falls back to new_fnum() */
 static Node *new_decimal(Token *tok) {
-    error_at(tok->ptr, "decimal floating point not supported on musl (no libdfp)");
+    (void)tok;
     return NULL;
 }
 #endif

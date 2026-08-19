@@ -1,18 +1,16 @@
 # RCC Test Suite Report
 
-**Platform**: Linux x86_64 (musl libc)
+**Platform**: Linux x86_64 (musl-built rcc)
 
-**Compiler**: /home/rurban/Software/rcc/musl-cross.sh
-
-Generated: August 19 2026 18:13
+Generated: August 19 2026 20:10
 
 ## Overall Summary
 
 - **Total**: 4602
-- **Passed**: 3193
-- **Failed**: 827
-- **Skipped**: 580
-- **Overall Pass Rate**: 79%
+- **Passed**: 4226
+- **Failed**: 2
+- **Skipped**: 368
+- **Overall Pass Rate**: 100%
 
 ## TCC Compatibility Tests
 
@@ -45,8 +43,9 @@ Generated: August 19 2026 18:13
 ## GCC Torture Tests
 
 - **Total**: 3963
-- **Passed**: 2556
-- **Failed**: 827
-- **Skipped**: 580
-- **Fail Compile**: 827
-- **Pass Rate (excl. skip)**: 76%
+- **Passed**: 3589
+- **Failed**: 2
+- **Skipped**: 368
+- **Fail Compile**: 1
+- **Dg-error Tests**: 34/35 passed, 1 failed
+- **Pass Rate (excl. skip)**: 100%

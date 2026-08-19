@@ -127,7 +127,8 @@ Unsupported (skipped in torture tests):
 Top-level `__asm__("...")` statements in AT&T, Intel or ARM syntax are supported and emitted in source order. Unlike GCC (which hoists all file-scope `asm` blocks to the top of the output at `-O2`/`-O3` unless `-fno-toplevel-reorder` is used), rcc always preserves their original position relative to functions.
 
 The test suites has all tests passed on linux, darwin, windows, mingw-cross,
-arm64-cross, darwin-cross, musl-cross.
+arm64-cross, darwin-cross, musl.
+With musl the gcc torture tests fail 2 tests: c23-no-dfp-1 pr80692.
 
 ## Build
 

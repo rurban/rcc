@@ -28,6 +28,7 @@ a.out
 rcc
 rcc-arm64
 rcc-darwin
+rcc-musl
 rcc_prof
 /linux.sh
 actual.txt
@@ -38,6 +39,8 @@ tmp*.c
 /tcc_tests
 /run_tests
 /run_tests_arm64
+/run_tests_musl
+test_report_musl_cross.md
 test_report_linux_ccc.md
 test_report_linux_tcc.md
 test_report_linux_gcc.md
@@ -61,6 +64,7 @@ test/tcc_test_linux_scc.md
 test/tcc_test_linux_cproc.md
 test/tcc_test_linux_antcc.md
 test/tcc_test_musl.md
+test/tcc_test_musl_cross.md
 test/csmith
 test/platform.info
 rcc-*-src/

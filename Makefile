@@ -137,6 +137,12 @@ endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif
 endif
+ifneq ($(findstring musl,$(CC)),)
+CFLAGS += -D__MUSL__
+OBJ_EXT = .musl.o
+TARGET = rcc-musl
+RUN_TESTS = run_tests_musl
+endif
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
 # Native Linux builds: optimize for the host CPU
@@ -177,8 +183,8 @@ endif
 # libdfp references glibc-specific fesetexcept/fegetexcept; skip for musl
 ifneq ($(findstring musl,$(CC)),)
 LIBDFP_A =
-CFLAGS += -D__MUSL__
 endif
+
 # iconv is optional; -fexec-charset depends on it
 HAVE_ICONV := $(shell printf '\#include <iconv.h>\nint main(){}\n' > /tmp/_ic.c; $(CC) /tmp/_ic.c -o /dev/null -liconv 2>/dev/null && echo 1; echo 0; rm -f /tmp/_ic.c)
 ifeq ($(HAVE_ICONV),1)
@@ -333,6 +339,8 @@ run_tests: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
 run_tests.exe: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
+run_tests_musl: run_tests.c
+	$(CC) $(CFLAGS) -o $@ run_tests.c
 run_tests_arm64: run_tests.c
 	@sysroot="$$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null)"; \
 	if [ -z "$$sysroot" ] || [ "$$sysroot" = "/" ] || [ ! -f "$$sysroot/usr/include/stdio.h" ]; then \
@@ -399,6 +407,8 @@ test-ctest check-ctest: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --ctest --parallel
 test-torture check-torture: $(TARGET) $(RUN_TESTS)
 	ulimit -f 2097152; $(TEST_RUNNER) --torture --parallel
+test-musl check-musl:
+	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all
@@ -406,7 +416,7 @@ test-full check-full:
 	$(TEST_RUNNER_O2) --parallel
 	-./mingw-test.sh
 	-./arm64-test.sh
-	-./musl-test.sh
+	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
 	-./darwin-test.sh
 
 # External project tests via test/linux_thirdparty.bash, built with rcc.
@@ -495,7 +505,7 @@ clean:
 	rm -f $(OBJS) $(TARGET) $(RUN_TESTS) $(RCC_LIB) rcc_prof \
 	      src/sysinc_paths.h src/gcc_predefined.h src/keywords.h.tmp \
 	      fred.txt *.s qemu*.core test/torture/core.* \
-	      src/*.obj src/*.darwin.o src/*.arm64.o \
+	      src/*.obj src/*.darwin.o src/*.arm64.o src/*.musl.o \
 	      lib/rcc_mingw$(OBJ_EXT) lib/rcc_darwin$(OBJ_EXT) \
 	      test-tcc-*.summary test-ctest-*.summary test-compliance-*.summary
 	if command -v git > /dev/null 2>&1; then \
