@@ -81,24 +81,92 @@
  * keeps the recursion bounded (glibc defines _LIBC_LIMITS_H_ itself
  * and never re-includes us).
  */
-#ifndef _LIBC_LIMITS_H_
+#if defined(__GLIBC__) && !defined(_LIBC_LIMITS_H_)
 #include_next <limits.h>
 #endif
 
-/* Linux kernel limits (PATH_MAX, PIPE_BUF, etc.) -- normally provided
- * by GCC's own <limits.h> via `#include <linux/limits.h>`. Since rcc
- * defines _GCC_LIMITS_H_ to prevent glibc's limits.h from chaining
- * into GCC's (see preprocess.c), that path is never taken. Include
- * <linux/limits.h> directly so POSIX/GNU projects that expect
- * PATH_MAX, PIPE_BUF, NAME_MAX, etc. from <limits.h> compile.
+/* Linux kernel limits (PATH_MAX, PIPE_BUF, etc.) and POSIX minimum
+ * values (_POSIX_ARG_MAX, _POSIX_PATH_MAX, etc.). Always define these
+ * on Linux regardless of glibc detection, since many projects expect
+ * them unconditionally from <limits.h>.
  *
- * Only include when glibc was found (_LIBC_LIMITS_H_ defined by
- * glibc's limits.h above). musl defines PATH_MAX etc. in its own
- * limits.h and doesn't use _LIBC_LIMITS_H_, so this would fail with
- * -nostdinc + musl where /usr/include/linux/ isn't in the search path.
- */
-#if defined(__linux__) && defined(_LIBC_LIMITS_H_)
-#include <linux/limits.h>
+ * Defined directly rather than including <linux/limits.h> because musl's
+ * sysroot lacks that header. Values are identical to the kernel header. */
+#ifdef __linux__
+#ifndef PATH_MAX
+#define PATH_MAX        4096
+#endif
+#ifndef PIPE_BUF
+#define PIPE_BUF        4096
+#endif
+#ifndef NAME_MAX
+#define NAME_MAX        255
+#endif
+#ifndef LINK_MAX
+#define LINK_MAX        127
+#endif
+#ifndef MAX_CANON
+#define MAX_CANON       255
+#endif
+#ifndef MAX_INPUT
+#define MAX_INPUT       255
+#endif
+#ifndef ARG_MAX
+#define ARG_MAX         131072
+#endif
+#ifndef NGROUPS_MAX
+#define NGROUPS_MAX     65536
+#endif
+#ifndef NR_OPEN
+#define NR_OPEN         1024
+#endif
+/* POSIX minimum values — standard-mandated lower bounds. */
+#ifndef _POSIX_ARG_MAX
+#define _POSIX_ARG_MAX 4096
+#endif
+#ifndef _POSIX_CHILD_MAX
+#define _POSIX_CHILD_MAX 25
+#endif
+#ifndef _POSIX_LINK_MAX
+#define _POSIX_LINK_MAX 8
+#endif
+#ifndef _POSIX_MAX_CANON
+#define _POSIX_MAX_CANON 255
+#endif
+#ifndef _POSIX_MAX_INPUT
+#define _POSIX_MAX_INPUT 255
+#endif
+#ifndef _POSIX_NAME_MAX
+#define _POSIX_NAME_MAX 14
+#endif
+#ifndef _POSIX_NGROUPS_MAX
+#define _POSIX_NGROUPS_MAX 0
+#endif
+#ifndef _POSIX_OPEN_MAX
+#define _POSIX_OPEN_MAX 20
+#endif
+#ifndef _POSIX_PATH_MAX
+#define _POSIX_PATH_MAX 256
+#endif
+#ifndef _POSIX_PIPE_BUF
+#define _POSIX_PIPE_BUF 512
+#endif
+#ifndef _POSIX_SSIZE_MAX
+#define _POSIX_SSIZE_MAX 32767
+#endif
+#ifndef _POSIX_STREAM_MAX
+#define _POSIX_STREAM_MAX 8
+#endif
+#ifndef _POSIX_TZNAME_MAX
+#define _POSIX_TZNAME_MAX 6
+#endif
+/* IOV_MAX — maximum number of iovec entries for readv/writev.
+ * Defined in glibc's <bits/xopen_lim.h> only when __USE_XOPEN is set,
+ * but many projects expect it unconditionally from <limits.h>. */
+#ifndef IOV_MAX
+#define IOV_MAX 1024
+#endif
+#endif
 #endif
 
 #endif
