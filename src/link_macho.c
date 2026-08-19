@@ -723,9 +723,25 @@ int link_load_object(LinkState *s, const char *path) {
                 size_t sec_align = 1u << (align_p2 > 0 ? align_p2 : 4);
                 int out_idx = link_find_or_create_sec(s, out_name, true, write, exec,
                                                       is_bss, false, sec_align);
-                sec_map = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
+                {
+                    int *tmp = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));
+                    if (!tmp) {
+                        free(sec_map);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    sec_map = tmp;
+                }
                 sec_map[n_sections] = out_idx;
-                sec_base_off = realloc(sec_base_off, (size_t)(n_sections + 1) * sizeof(uint64_t));
+                {
+                    uint64_t *tmp = realloc(sec_base_off, (size_t)(n_sections + 1) * sizeof(uint64_t));
+                    if (!tmp) {
+                        free(sec_base_off);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    sec_base_off = tmp;
+                }
 
                 if (!is_bss && size > 0 && offset > 0) {
                     uint64_t base_off = link_sec_append(s, out_idx,
@@ -998,7 +1014,15 @@ int link_macho(LinkState *s) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->len == 0) continue;
-        mo_secs = realloc(mo_secs, (size_t)(n_mo + 1) * sizeof(MOSec));
+        {
+            MOSec *tmp = realloc(mo_secs, (size_t)(n_mo + 1) * sizeof(MOSec));
+            if (!tmp) {
+                free(mo_secs);
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+            mo_secs = tmp;
+        }
         if (strcmp(sec->name, ".got") == 0) {
             mo_secs[n_mo].segname = "__DATA";
             mo_secs[n_mo].sectname = "__got";

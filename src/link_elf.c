@@ -447,7 +447,15 @@ static int elf_load_object(LinkState *s, const char *path) {
             uint64_t sym_off = r64le(sh + 24);
             uint64_t sym_size = r64le(sh + 32);
             int nsyms = (int)(sym_size / 24);
-            sym_map = realloc(sym_map, (size_t)nsyms * sizeof(int));
+            {
+                int *tmp = realloc(sym_map, (size_t)nsyms * sizeof(int));
+                if (!tmp) {
+                    free(sym_map);
+                    fprintf(stderr, "rcc: out of memory\n");
+                    exit(1);
+                }
+                sym_map = tmp;
+            }
             for (int k = 0; k < nsyms; k++) {
                 const uint8_t *sym = ef.image + sym_off + (uint64_t)k * 24;
                 uint32_t name_off = r32le(sym);
@@ -1620,7 +1628,15 @@ int link_elf(LinkState *s) {
         if (sym->sec < 0 && sym->bind != 2 && sym->name && sym->name[0]) {
             if (n_dyn == cap_dyn) {
                 cap_dyn = cap_dyn ? cap_dyn * 2 : 16;
-                dyn_syms = realloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
+                {
+                    int *tmp = realloc(dyn_syms, (size_t)cap_dyn * sizeof(int));
+                    if (!tmp) {
+                        free(dyn_syms);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    dyn_syms = tmp;
+                }
             }
             dyn_syms[n_dyn] = i;
             dyn_idx[i] = n_dyn + 1; // dynsym index, 1-based (0 is null)
@@ -1664,7 +1680,15 @@ int link_elf(LinkState *s) {
             if (sym->sec >= 0 && sym->bind != STB_LOCAL && sym->name && sym->name[0]) {
                 if (n_exp == cap_exp) {
                     cap_exp = cap_exp ? cap_exp * 2 : 16;
-                    exp_syms = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
+                    {
+                        int *tmp = realloc(exp_syms, (size_t)cap_exp * sizeof(int));
+                        if (!tmp) {
+                            free(exp_syms);
+                            fprintf(stderr, "rcc: out of memory\n");
+                            exit(1);
+                        }
+                        exp_syms = tmp;
+                    }
                 }
                 exp_syms[n_exp++] = i;
             }
@@ -2763,7 +2787,15 @@ int link_elf(LinkState *s) {
             size_t nl = strlen(nm) + 1;
             if (shstrtab_len + nl > shstrtab_cap) {
                 while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
-                shstrtab_buf = realloc(shstrtab_buf, shstrtab_cap);
+                {
+                    char *tmp = realloc(shstrtab_buf, shstrtab_cap);
+                    if (!tmp) {
+                        free(shstrtab_buf);
+                        fprintf(stderr, "rcc: out of memory\n");
+                        exit(1);
+                    }
+                    shstrtab_buf = tmp;
+                }
             }
             shdr_name_off[k] = (uint32_t)shstrtab_len;
             memcpy(shstrtab_buf + shstrtab_len, nm, nl);
@@ -2777,7 +2809,15 @@ int link_elf(LinkState *s) {
         size_t nl = strlen(nm) + 1;
         if (shstrtab_len + nl > shstrtab_cap) {
             while (shstrtab_len + nl > shstrtab_cap) shstrtab_cap *= 2;
-            shstrtab_buf = realloc(shstrtab_buf, shstrtab_cap);
+            {
+                char *tmp = realloc(shstrtab_buf, shstrtab_cap);
+                if (!tmp) {
+                    free(shstrtab_buf);
+                    fprintf(stderr, "rcc: out of memory\n");
+                    exit(1);
+                }
+                shstrtab_buf = tmp;
+            }
         }
         memcpy(shstrtab_buf + shstrtab_len, nm, nl);
         shstrtab_len += nl;
@@ -2892,7 +2932,15 @@ int link_elf(LinkState *s) {
     for (int i = 0; i < s->n_secs; i++) {
         LinkSec *sec = &s->secs[i];
         if (!sec->alloc || sec->is_bss || sec->len == 0) continue;
-        wsecs = realloc(wsecs, (size_t)(n_wsecs + 1) * sizeof(WriteSec));
+        {
+            WriteSec *tmp = realloc(wsecs, (size_t)(n_wsecs + 1) * sizeof(WriteSec));
+            if (!tmp) {
+                free(wsecs);
+                fprintf(stderr, "rcc: out of memory\n");
+                exit(1);
+            }
+            wsecs = tmp;
+        }
         wsecs[n_wsecs++].sec = sec;
     }
     for (int i = 0; i < n_wsecs; i++) {
