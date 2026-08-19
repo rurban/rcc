@@ -126,9 +126,13 @@ SRCS += src/arm64_enc.c
 OBJ_EXT = .arm64.o
 ARM64_SYSROOT := $(shell $(CC) -print-sysroot 2>/dev/null)
 LIBDFP_A = lib/libdfp-arm64.a
+# aarch64-linux-gnu-gcc specs have a broken -latomic_asneeded spec;
+# suppress it since rcc doesn't need libatomic.
+CFLAGS += -fno-link-libatomic
 ifneq ($(ARM64_SYSROOT),/)
 ifeq ($(shell test -d "$(ARM64_SYSROOT)/usr/include" && echo yes),)
-ARM64_SYSROOT := /usr/aarch64-redhat-linux/sys-root/fc43
+# Try fc44, then fc43, then fc41 for older Fedora versions
+ARM64_SYSROOT := $(firstword $(foreach v,fc44 fc43 fc41,$(if $(wildcard /usr/aarch64-redhat-linux/sys-root/$v/usr/include),/usr/aarch64-redhat-linux/sys-root/$v)))
 endif
 CFLAGS += --sysroot=$(ARM64_SYSROOT)
 endif

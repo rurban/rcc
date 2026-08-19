@@ -5,10 +5,10 @@ set -e
 
 # Locate aarch64 sysroot with the dynamic loader for qemu -L
 SYSROOT="$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null || true)"
-if [ ! -f "${SYSROOT}/lib/ld-linux-aarch64.so.1" ]; then
+if [ ! -f "${SYSROOT}/lib/ld-linux-aarch64.so.1" ] && [ ! -f "${SYSROOT}/usr/lib/ld-linux-aarch64.so.1" ]; then
     SYSROOT=""
     for d in /usr/aarch64-linux-gnu /usr/aarch64-redhat-linux/sys-root/fc*; do
-        if [ -f "$d/lib/ld-linux-aarch64.so.1" ]; then
+        if [ -f "$d/lib/ld-linux-aarch64.so.1" ] || [ -f "$d/usr/lib/ld-linux-aarch64.so.1" ]; then
             SYSROOT="$d"
             break
         fi
