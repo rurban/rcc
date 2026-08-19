@@ -159,7 +159,7 @@ static const char *get_tmpdir(void) {
 
 /* versionsort() is a glibc/dirent.h extension; mingw and BSD-derived
  * libcs (macOS) don't provide it. */
-#if defined(_WIN32) || !defined(__GLIBC__)
+#if defined(_WIN32) || (!defined(__GLIBC__) && !defined(__MUSL__))
 /* natural-order compare: like GNU strverscmp(), splits runs of digits
  * and compares them numerically so "f9" sorts before "f10" */
 static int versionsort(const struct dirent **a, const struct dirent **b) {
@@ -1362,7 +1362,9 @@ static int run_test_inprocess(const char *src_path, const char *name,
      * test program's printf() (via stdout) is captured correctly. */
     dup2(pipe_w2, STDOUT_FILENO);
     close(pipe_w2);
+#ifndef __MUSL__
     stdout = fdopen(STDOUT_FILENO, "w");
+#endif
 
     main_fn_t fn = cres == 0 ? (main_fn_t)p_rcc_lib_get_symbol(lib, "main") : NULL;
     if (!fn) {

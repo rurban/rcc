@@ -7,6 +7,8 @@
 // core, LGPL-2.1, see lib/libdfp/), which rcc itself links so it can fold
 // _Decimal32/64/128 literals into IEEE 754-2008 BID bits at compile time.
 // The generated code calls the same __bid_* symbols at run time.
+// musl lacks libdfp; decimal float support is disabled.
+#ifndef __MUSL__
 typedef struct BID_UINT128 {
     unsigned long long w[2];
 } BID_UINT128;
@@ -15,6 +17,7 @@ extern BID_UINT128 __bid128_from_string(char *);
 extern unsigned long long __bid64_to_bid32(unsigned long long);
 extern unsigned long long __bid64_from_int64(long long);
 extern BID_UINT128 __bid64_to_bid128(unsigned long long);
+#endif
 
 typedef struct VarAttr VarAttr;
 typedef struct TagScope TagScope;
@@ -578,6 +581,7 @@ static Node *new_fnum(double fval, Token *tok) {
 // parsed the value as a binary double (tok->fval) and discarded the exact
 // decimal spelling; re-parse from tok->ptr (raw token text, digit
 // separators and suffix included) so the decimal value is exact.
+#ifndef __MUSL__
 static Node *new_decimal(Token *tok) {
     // Decode suffix: df/dd/dl (legacy) and d32/d64/d128 (C23). The token
     // text ends with the suffix; the numeric part is everything before.
@@ -639,6 +643,12 @@ static Node *new_decimal(Token *tok) {
     }
     return node;
 }
+#else
+static Node *new_decimal(Token *tok) {
+    error_at(tok->ptr, "decimal floating point not supported on musl (no libdfp)");
+    return NULL;
+}
+#endif
 
 // Compute the byte size expression for a VLA allocation: count * element_size
 static Node *vla_alloc_size(Type *ty, Token *tok) {
@@ -4977,6 +4987,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+#ifndef __MUSL__
         if (equalc(tok, "_Decimal32")) {
             // IEEE 754-2008 decimal32 (7 digits, BID encoding). Was
             // previously aliased to float; now a real type whose ops go
@@ -4998,6 +5009,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
+#endif
         if (equalc(tok, "__bf16")) {
             // 16-bit storage (no real bf16 codegen); 2-byte elements so
             // avx512bf16vlintrin.h's `typedef __bf16 __v16bf` works.
@@ -13092,6 +13104,7 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
                 lo = (unsigned long long)node->val;
                 hi = (unsigned long long)node->val2;
             } else {
+#ifndef __MUSL__
                 // int/float constant -> decimal via the linked libbid.
                 long long iv = 0;
                 if (eval_const_expr(node, &iv)) {
@@ -13105,6 +13118,7 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
                         lo = (unsigned long long)__bid64_to_bid32(__bid64_from_int64(iv));
                     }
                 }
+#endif
             }
             var->has_init = true;
             var->init_data = arena_alloc(sz);
