@@ -1634,7 +1634,7 @@ static inline void asm_pop(SecBuf *s, X86Reg r) {
 }
 static inline void asm_lea_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_lea(s, size, reg, m);
     asm_record(ASM_LEA_FP, off, s->len - off, reg, -1, -1, size, 0, -offset, NULL, 0, -1, false);
 }
@@ -1642,19 +1642,19 @@ static inline void asm_lea_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
 // lea offset(%rbp), %reg — signed offset for Windows va_start (positive offsets)
 __attribute__((unused)) static void asm_lea_signed_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset, 0};
     x86_lea(s, size, reg, m);
     asm_record(ASM_LEA_FP, off, s->len - off, reg, -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
 static inline void asm_mov_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_rm(s, size, reg, m);
     asm_record(ASM_MOV_RRBP, off, s->len - off, reg, -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
 static inline void asm_mov_phyreg_rbp(SecBuf *s, X86Reg reg, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_mr(s, size, m, reg);
     asm_record(ASM_MOV_RBPR, off, s->len - off, reg, -1, -1, size, 0, offset, NULL, 0, -1, true);
 }
@@ -1690,14 +1690,14 @@ static inline void asm_add_rsp_imm(SecBuf *s, int32_t imm) {
 // store immediate to rbp-relative: movb/movl/movq $imm, -offset(%rbp)
 static inline void asm_mov_rbp_imm(SecBuf *s, int size, int offset, int32_t imm) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_mi(s, size, m, imm); // movb/movl/movq $imm, -offset(%rbp)
     asm_record(ASM_MOV_RI, off, s->len - off, -1, -1, -1, size, imm, offset, NULL, 0, -1, true);
 }
 // movzbl/movzwl -offset(%rbp), dst: zero-extending load from rbp-relative
 static inline void asm_movzx_rbp_reg(SecBuf *s, VReg dst, int dst_sz, int src_sz, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     X86Reg rdst = REG(dst);
     x86_movzx_rm(s, dst_sz, src_sz, rdst, m); // movzbl/movzwl -off(%rbp), dst
     asm_record(ASM_MOVZX, off, s->len - off, rdst, -1, -1, dst_sz, 0, offset, NULL, 0, -1, false);
@@ -1705,35 +1705,35 @@ static inline void asm_movzx_rbp_reg(SecBuf *s, VReg dst, int dst_sz, int src_sz
 // movsbl/movswl -offset(%rbp), dst: sign-extending load from rbp-relative
 static inline void asm_movsx_rbp_reg(SecBuf *s, VReg dst, int dst_sz, int src_sz, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movsx_rm(s, dst_sz, src_sz, REG(dst), m); // movsbl/movswl -off(%rbp), dst
     asm_record(ASM_MOVSX, off, s->len - off, REG(dst), -1, -1, dst_sz, 0, offset, NULL, 0, -1, false);
 }
 // movzbl/movzwl off(base), dst: zero-extending load from base+offset
 static inline void asm_movzx_base_off_reg(SecBuf *s, VReg dst, VReg base, int64_t disp, int dst_sz, int src_sz) {
     size_t off = s->len;
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_movzx_rm(s, dst_sz, src_sz, REG(dst), m); // movzbl/movzwl disp(base), dst
     asm_record(ASM_MOVZX, off, s->len - off, REG(dst), REG(base), -1, dst_sz, 0, disp, NULL, 0, -1, false);
 }
 // movsbl/movswl off(base), dst: sign-extending load from base+offset
 static inline void asm_movsx_base_off_reg(SecBuf *s, VReg dst, VReg base, int64_t disp, int dst_sz, int src_sz) {
     size_t off = s->len;
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_movsx_rm(s, dst_sz, src_sz, REG(dst), m); // movsbl/movswl disp(base), dst
     asm_record(ASM_MOVSX, off, s->len - off, REG(dst), REG(base), -1, dst_sz, 0, disp, NULL, 0, -1, false);
 }
 // movl/movq disp(base), dst: regular load from base+offset
 static inline void asm_mov_base_off_reg(SecBuf *s, VReg dst, VReg base, int64_t disp, int sz) {
     size_t off = s->len;
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_mov_rm(s, sz, REG(dst), m); // movl/movq disp(base), dst
     asm_record(ASM_MOV_RR, off, s->len - off, REG(dst), REG(base), -1, sz, 0, disp, NULL, 0, -1, false);
 }
 // movq phy, disp(base_vreg): store physical reg to base+offset
 __attribute__((unused)) static void asm_mov_phy_base_off(SecBuf *s, X86Reg phy, VReg base, int64_t disp, int sz) {
     size_t off = s->len;
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_mov_mr(s, sz, m, phy); // movq phy, disp(%base)
     asm_record(ASM_MOV_RR, off, s->len - off, phy, REG(base), -1, sz, 0, disp, NULL, 0, -1, true);
 }
@@ -1965,19 +1965,19 @@ __attribute__((unused)) static void asm_ldur_phy(SecBuf *s, Arm64Reg rt, Arm64Re
 // Use codegen register indices (0..7) for these wrappers
 static inline void asm_mov_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_rm(s, size, REG(r), m);
     asm_record(ASM_MOV_RRBP, off, s->len - off, REG(r), -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
 static inline void asm_mov_reg_rbp(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_mr(s, size, m, REG(r));
     asm_record(ASM_MOV_RBPR, off, s->len - off, REG(r), -1, -1, size, 0, offset, NULL, 0, -1, true);
 }
 static inline void asm_lea_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_lea(s, size, REG(r), m);
     asm_record(ASM_LEA_FP, off, s->len - off, REG(r), -1, -1, size, 0, -offset, NULL, 0, -1, false);
 }
@@ -2130,7 +2130,7 @@ static inline void asm_ldr_reg_off(SecBuf *s, VReg dst_r, VReg base_r, int size,
     default: arm64_ldr_uoff(s, 3, REG(dst_r), REG(base_r), uimm / 8); break;
     }
 #else
-    X86Mem m = {REG(base_r), X86_NOREG, 1, (int64_t)uimm};
+    X86Mem m = {REG(base_r), X86_NOREG, 1, (int64_t)uimm, 0};
     x86_mov_rm(s, size, REG(dst_r), m);
 #endif
 }
@@ -2144,7 +2144,7 @@ __attribute__((unused)) static void asm_str_reg_off(SecBuf *s, int src_r, int ba
     default: arm64_str_uoff(s, 3, REG(src_r), REG(base_r), uimm / 8); break;
     }
 #else
-    X86Mem m = {REG(base_r), X86_NOREG, 1, (int64_t)uimm};
+    X86Mem m = {REG(base_r), X86_NOREG, 1, (int64_t)uimm, 0};
     x86_mov_mr(s, size, m, REG(src_r));
 #endif
 }
@@ -2175,7 +2175,7 @@ static inline void asm_ldr_fp(SecBuf *s, Arm64Reg dst_fp_r, VReg base_r, int siz
 }
 #else
 static inline void asm_ldr_fp(SecBuf *s, X86XmmReg dst_fp_r, VReg base_r, int size) {
-    X86Mem m = {REG(base_r), X86_NOREG, 1, 0};
+    X86Mem m = {REG(base_r), X86_NOREG, 1, 0, 0};
     if (size == 8)
         x86_movsd_rm(s, dst_fp_r, m);
     else
@@ -2190,7 +2190,7 @@ static inline void asm_str_fp(SecBuf *s, Arm64Reg src_fp_r, VReg base_r, int siz
 }
 #else
 static inline void asm_str_fp(SecBuf *s, X86XmmReg src_fp_r, VReg base_r, int size) {
-    X86Mem m = {REG(base_r), X86_NOREG, 1, 0};
+    X86Mem m = {REG(base_r), X86_NOREG, 1, 0, 0};
     if (size == 8)
         x86_movsd_mr(s, m, src_fp_r);
     else
@@ -2468,7 +2468,7 @@ static inline size_t asm_lock_cmpxchg_rax(SecBuf *s, VReg r_addr, VReg r_new, in
 
 // add sz, -rbp_off(%rbp), reg  — add spill slot to reg (for add_fetch return)
 static inline void asm_add_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_add_rm(s, size, REG(r), m); // add -rbp_off(%rbp), reg
 }
 // Commutative bitwise/arith ops against a spill slot (mirrors asm_add_spill_reg):
@@ -2476,27 +2476,27 @@ static inline void asm_add_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
 // lhs was spilled and the rhs was computed into the lhs's reused register,
 // reg(rhs) OP spill(lhs) == lhs OP rhs.
 static inline void asm_and_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_and_rm(s, size, REG(r), m); // and -rbp_off(%rbp), reg
 }
 static inline void asm_or_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_or_rm(s, size, REG(r), m); // or -rbp_off(%rbp), reg
 }
 static inline void asm_xor_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_xor_rm(s, size, REG(r), m); // xor -rbp_off(%rbp), reg
 }
 // Non-commutative subtract: reg = reg - spill[r] = rhs - lhs; caller must negate
 // to obtain the desired lhs - rhs.
 static inline void asm_sub_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_sub_rm(s, size, REG(r), m); // sub -rbp_off(%rbp), reg
 }
 // Compare with spilled lhs: sets flags for spill[r] - reg == lhs - rhs (correct
 // order) using the r/m-source cmp form.
 static inline void asm_cmp_spill_reg(SecBuf *s, VReg r, int size, int rbp_off) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -rbp_off, 0};
     x86_cmp_mr(s, size, m, REG(r)); // cmp reg, -rbp_off(%rbp)  (flags: mem - reg)
 }
 #endif
@@ -2760,7 +2760,7 @@ static inline void asm_mov_reg_mem(SecBuf *s, VReg src, VReg dst_addr, int sz) {
 // movaps from xmm to [rbp - offset]
 static inline void asm_movaps_rbp_xmm(SecBuf *s, X86XmmReg xmm_idx, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movaps_mr(s, m, xmm_idx);
     asm_record(ASM_MOV_RBPR, off, s->len - off, (X86Reg)xmm_idx, -1, -1, 16, 0, offset, NULL, 0, -1, true);
 }
@@ -2768,19 +2768,19 @@ static inline void asm_movaps_rbp_xmm(SecBuf *s, X86XmmReg xmm_idx, int offset) 
 // ALU ops with rbp-relative memory operand
 static inline void asm_and_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_and_rm(s, size, REG(r), m);
     asm_record(ASM_AND_RR, off, s->len - off, REG(r), -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
 static inline void asm_or_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_or_rm(s, size, REG(r), m);
     asm_record(ASM_OR_RR, off, s->len - off, REG(r), -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
 static inline void asm_xor_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
     size_t off = s->len;
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_xor_rm(s, size, REG(r), m);
     asm_record(ASM_XOR_RR, off, s->len - off, REG(r), -1, -1, size, 0, offset, NULL, 0, -1, false);
 }
@@ -2793,33 +2793,33 @@ static inline void asm_xor_rbp_reg(SecBuf *s, VReg r, int size, int offset) {
 #ifndef ARCH_ARM64
 // movss xmm_src, -(offset)(%%rbp)  — store single float to frame
 static inline void asm_movss_mr_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movss_mr(s, m, (X86XmmReg)xmm_src); // movss xmm_src, -(offset)(%%rbp)
 }
 // movsd xmm_src, -(offset)(%%rbp)  — store double float to frame
 static inline void asm_movsd_mr_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movsd_mr(s, m, (X86XmmReg)xmm_src); // movsd xmm_src, -(offset)(%%rbp)
 }
 // movss offset(%%rbp), xmm_dst  — load single float from frame
 static inline void asm_movss_rm_rbp(SecBuf *s, X86XmmReg xmm_dst, int offset) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movss_rm(s, (X86XmmReg)xmm_dst, m); // movss -offset(%%rbp), xmm_dst
 }
 // movsd -offset(%%rbp), xmm_dst  — load double float from frame
 static inline void asm_movsd_rm_rbp(SecBuf *s, X86XmmReg xmm_dst, int offset) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movsd_rm(s, (X86XmmReg)xmm_dst, m); // movsd -offset(%%rbp), xmm_dst
 }
 // cvtsd2ss from XMM param_xmm[i], store to rbp — convert param double to float
 __attribute__((unused)) static void asm_cvtsd2ss_xmm_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
     x86_cvtsd2ss(s, X86_XMM0, (X86XmmReg)xmm_src); // cvtsd2ss xmm_src, xmm0
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movss_mr(s, m, X86_XMM0); // movss xmm0, -(offset)(%%rbp)
 }
 // movsd from XMM param to rbp
 static inline void asm_movsd_xmm_rbp(SecBuf *s, X86XmmReg xmm_src, int offset) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_movsd_mr(s, m, (X86XmmReg)xmm_src); // movsd xmm_src, -(offset)(%%rbp)
 }
 // movq from physical int param register to physical r11
@@ -2874,12 +2874,12 @@ __attribute__((unused)) static void asm_movb_rbp_r10_al(SecBuf *s, int offset) {
 }
 // mov offset(%%rbp), %al/%ax/%eax/%rax  — load from frame using tmpreg-appropriate size
 static inline void asm_mov_rbp_tmpreg(SecBuf *s, int offset, int sz) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, offset, 0};
     x86_mov_rm(s, sz, X86_RAX, m); // mov offset(%%rbp), %%rax/eax/ax/al
 }
 // mov %al/%ax/%eax/%rax, -(offset)(%%rbp)  — store to frame using tmpreg
 static inline void asm_mov_tmpreg_rbp(SecBuf *s, int offset, int sz) {
-    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset};
+    X86Mem m = {CG_X86_FP, X86_NOREG, 1, -offset, 0};
     x86_mov_mr(s, sz, m, X86_RAX); // mov %%rax/eax/ax/al, -(offset)(%%rbp)
 }
 #endif /* !ARCH_ARM64 */
@@ -3016,7 +3016,7 @@ __attribute__((unused)) static void asm_lea_disp1(SecBuf *s, VReg dst, VReg src,
     int sf = (size == 8) ? 1 : 0;
     arm64_add_imm(s, sf, rdst, rsrc, 1, 0); // add dst, src, #1
 #else
-    X86Mem m = {REG(src), X86_NOREG, 1, 1};
+    X86Mem m = {REG(src), X86_NOREG, 1, 1, 0};
     x86_lea(s, size, REG(dst), m); // lea 1(src), dst
 #endif
 }
@@ -3293,7 +3293,7 @@ __attribute__((unused)) static void asm_sub_rr_flags(SecBuf *s, VReg dst, VReg s
 
 // mov [raddr], src  — store register to memory via pointer in raddr
 __attribute__((unused)) static void asm_mov_mem_via_reg(SecBuf *s, VReg src, VReg raddr, int size) {
-    X86Mem m = {REG(raddr), X86_NOREG, 1, 0};
+    X86Mem m = {REG(raddr), X86_NOREG, 1, 0, 0};
     x86_mov_mr(s, size, m, REG(src)); // mov src, (raddr)
 }
 #endif
@@ -3305,13 +3305,13 @@ __attribute__((unused)) static void asm_mov_mem_via_reg(SecBuf *s, VReg src, VRe
 #ifndef ARCH_ARM64
 // mov (%rr), %rr  — indirect load (for is_frame_addr / is_ret_addr depth loop)
 static inline void asm_mov_indir(SecBuf *s, VReg r, int size) {
-    X86Mem m = {REG(r), X86_NOREG, 1, 0};
+    X86Mem m = {REG(r), X86_NOREG, 1, 0, 0};
     x86_mov_rm(s, size, REG(r), m); // mov (%rr), %rr
 }
 
 // mov N(%rr), %rr  — indirect load with displacement
 static inline void asm_mov_indir_disp(SecBuf *s, VReg r, int64_t disp, int size) {
-    X86Mem m = {REG(r), X86_NOREG, 1, disp};
+    X86Mem m = {REG(r), X86_NOREG, 1, disp, 0};
     x86_mov_rm(s, size, REG(r), m); // mov disp(%rr), %rr
 }
 #endif
@@ -3681,27 +3681,27 @@ static inline void asm_shift_imm(SecBuf *s, VReg rd, int size, bool is_unsigned,
 #ifndef ARCH_ARM64
 // movq (rs), %rax  — load 64-bit from virtual reg's memory to RAX
 static inline void asm_mov_mem_rax(SecBuf *s, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 0};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 0, 0};
     x86_mov_rm(s, 8, X86_RAX, m); // movq (rs), %rax
 }
 // movq 8(rs), %rdx  — load high 64-bit from virtual reg's memory to RDX
 static inline void asm_mov_mem8_rdx(SecBuf *s, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 8, 0};
     x86_mov_rm(s, 8, X86_RDX, m); // movq 8(rs), %rdx
 }
 // movq 8(rs), r{rd}  — load high 64-bit from virtual reg to any virtual reg
 __attribute__((unused)) static void asm_mov_mem8_reg(SecBuf *s, VReg rd, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 8, 0};
     x86_mov_rm(s, 8, REG(rd), m); // movq 8(rs), r{rd}
 }
 // movq %rax, (rd)  — store RAX to virtual reg's memory
 static inline void asm_mov_rax_mem(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 0};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 0, 0};
     x86_mov_mr(s, 8, m, X86_RAX); // movq %rax, (rd)
 }
 // movq %rdx, 8(rd)  — store RDX to virtual reg's high memory
 static inline void asm_mov_rdx_mem8(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 8, 0};
     x86_mov_mr(s, 8, m, X86_RDX); // movq %rdx, 8(rd)
 }
 // movq %rdx, %rax  — copy RDX to RAX
@@ -3726,26 +3726,26 @@ static inline void asm_mov_reg_ecx(SecBuf *s, VReg rs) {
 }
 // negq (rd)  — negate 64-bit at virtual reg's memory
 static inline void asm_negq_mem(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 0};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 0, 0};
     x86_neg_m(s, 8, m); // negq (rd)
 }
 // negq 8(rd)  — negate high 64-bit at virtual reg's memory
 static inline void asm_negq_mem8(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 8, 0};
     x86_neg_m(s, 8, m); // negq 8(rd)
 }
 __attribute__((unused)) static void asm_mov_base_off_rdx(SecBuf *s, VReg base, int64_t disp) {
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_mov_rm(s, 8, X86_RDX, m); // movq disp(base), %rdx
 }
 // movq %rdx, disp(base)  — store RDX to base+disp
 __attribute__((unused)) static void asm_mov_rdx_base_off(SecBuf *s, VReg base, int64_t disp) {
-    X86Mem m = {REG(base), X86_NOREG, 1, disp};
+    X86Mem m = {REG(base), X86_NOREG, 1, disp, 0};
     x86_mov_mr(s, 8, m, X86_RDX); // movq %rdx, disp(base)
 }
 // movq 8(%rcx), %rax  — va_arg: load high from va_list ptr (in RCX)
 __attribute__((unused)) static void asm_mov_mem8_rcx_rax(SecBuf *s) {
-    X86Mem m = {X86_RCX, X86_NOREG, 1, 8};
+    X86Mem m = {X86_RCX, X86_NOREG, 1, 8, 0};
     x86_mov_rm(s, 8, X86_RAX, m); // movq 8(%rcx), %rax
 }
 // adcq $0, 8(rd)  — add-with-carry 0 to high 64-bit (x86 encoding: REX.W 83 /2 ib)
@@ -3775,7 +3775,7 @@ static inline void asm_adcq_mem8_rdx(SecBuf *s, VReg rs) {
 }
 // addq (rs), %rax  — add from memory to RAX
 static inline void asm_addq_mem_rax(SecBuf *s, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 0};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 0, 0};
     x86_add_rm(s, 8, X86_RAX, m); // addq (rs), %rax
 }
 static inline void asm_sbbq_mem8_rdx(SecBuf *s, VReg rs) {
@@ -3873,7 +3873,7 @@ static inline void asm_shrdq_cl(SecBuf *s) {
 
 // movq %rax, 8(rd)  — store RAX to virtual reg's high memory
 static inline void asm_movq_rax_mem8(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 8, 0};
     x86_mov_mr(s, 8, m, X86_RAX); // movq %rax, 8(rd)
 }
 
@@ -3886,7 +3886,7 @@ static inline void asm_xorl_reg_reg(SecBuf *s, VReg a, VReg b) {
 // %s (%s), %%rax  — add/sub/and/or/xor/cmp with RAX from mem
 // %s 8(%s), %%rdx  — same for RDX from mem+8
 static inline void asm_op_mem_rax(SecBuf *s, const char *op, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 0};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 0, 0};
     if (strcmp(op, "addq") == 0) x86_add_rm(s, 8, X86_RAX, m);
     else if (strcmp(op, "subq") == 0)
         x86_sub_rm(s, 8, X86_RAX, m);
@@ -3900,7 +3900,7 @@ static inline void asm_op_mem_rax(SecBuf *s, const char *op, VReg rs) {
         x86_cmp_rm(s, 8, X86_RAX, m);
 }
 static inline void asm_op_mem8_rdx(SecBuf *s, const char *op, VReg rs) {
-    X86Mem m = {REG(rs), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rs), X86_NOREG, 1, 8, 0};
     if (strcmp(op, "addq") == 0) x86_add_rm(s, 8, X86_RDX, m);
     else if (strcmp(op, "subq") == 0)
         x86_sub_rm(s, 8, X86_RDX, m);
@@ -3929,7 +3929,7 @@ __attribute__((unused)) static void asm_setcc_al(SecBuf *s, X86Cond cond) {
 #ifndef ARCH_ARM64
 // movq $0, 8(rd)  — store immediate 0 to virtual reg's high memory
 static inline void asm_movq_zero_mem8(SecBuf *s, VReg rd) {
-    X86Mem m = {REG(rd), X86_NOREG, 1, 8};
+    X86Mem m = {REG(rd), X86_NOREG, 1, 8, 0};
     x86_mov_mi(s, 8, m, 0); // movq $0, 8(rd)
 }
 // movl $imm, reg  — move 32-bit immediate to virtual reg (for int128 compare epilogue)
