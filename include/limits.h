@@ -257,6 +257,12 @@
 #ifndef SIZE_MAX
 #define SIZE_MAX __SIZE_MAX__
 #endif
+/* LONG_BIT — number of bits in a long (POSIX, used by yash, git, etc.).
+ * Defined in glibc's <bits/xopen_lim.h>; many projects expect it from
+ * <limits.h>. */
+#ifndef LONG_BIT
+#define LONG_BIT (__SIZEOF_LONG__ * 8)
+#endif
 #endif
 #endif
 
