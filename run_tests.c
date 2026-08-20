@@ -1991,7 +1991,7 @@ static void compile_and_exec(const char *src_path, const char *base,
 static void tort_compile_exec(const char *src_path, const char *base, bool summary_only,
                               ParallelResult *r, int index);
 static void unit_compile_exec(const char *src_path, const char *base,
-                              ParallelResult *r, int index);
+                              const char *ldflags, ParallelResult *r, int index);
 static void comp_compile_exec(const char *src_path, const char *base,
                               const char *gcc_path, ParallelResult *r, int index);
 static void ctest_compile_exec(const char *src_path, const char *base,
@@ -2039,7 +2039,7 @@ static void *worker_compile_exec(void *arg) {
         tort_compile_exec(job->src_path, job->base, job->summary_only, &job->result, job->index);
         break;
     case SUITE_UNIT:
-        unit_compile_exec(job->src_path, job->base, &job->result, job->index);
+        unit_compile_exec(job->src_path, job->base, job->ldflags, &job->result, job->index);
         break;
     case SUITE_COMPLIANCE:
         comp_compile_exec(job->src_path, job->base, job->gcc_path, &job->result, job->index);
@@ -3246,8 +3246,36 @@ static bool is_todo_test(const char *base) {
 
 /* ── unit: parallel compile+exec ─────────────────────────────────── */
 
+/* Build the unit-test compile argv: rcc, rccflags, -o tmp, src, then each
+ * whitespace-separated token of ldflags (e.g. " -pthread" -> "-pthread").
+ * Each token is strdup'd (strtok_r slices one buffer, but the caller frees
+ * argv[i] individually), so the parse buffer is released here. Returns a
+ * NULL-terminated array the caller must free. */
+static char **unit_compile_argv(char *tmp, const char *src_path, const char *ldflags) {
+    char **ca = calloc(16, sizeof(char *));
+    int ai = 0;
+    ca[ai++] = (char *)rcc;
+    ca[ai++] = (char *)rccflags;
+    ca[ai++] = (char *)"-o";
+    ca[ai++] = tmp;
+    ca[ai++] = (char *)src_path;
+    if (ldflags && *ldflags) {
+        char *lf = strdup(ldflags);
+        char *sv = NULL;
+        char *tok = strtok_r(lf, " ", &sv);
+        while (tok && ai < 15) {
+            ca[ai++] = strdup(tok);
+            tok = strtok_r(NULL, " ", &sv);
+        }
+        free(lf);
+    }
+    ca[ai] = NULL;
+    return ca;
+}
+
+
 static void unit_compile_exec(const char *src_path, const char *base,
-                              ParallelResult *r, int index) {
+                              const char *ldflags, ParallelResult *r, int index) {
     memset(r, 0, sizeof(*r));
 #ifdef _WIN32
     snprintf(r->tmp_exe, sizeof(r->tmp_exe), "%s\\rcc_par_%d.exe", get_tmpdir(), index);
@@ -3256,19 +3284,22 @@ static void unit_compile_exec(const char *src_path, const char *base,
 #endif
     /* test_err*: expect compile failure */
     if (is_err_test(base)) {
-        char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
+        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags);
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, scaled(30), 1);
         r->exit_code = cr.exit_code;
         r->compile_out = cr.out;
         cr.out = NULL;
         proc_free(&cr);
+        for (int i = 0; ca[i]; i++)
+            if (i >= 5) free(ca[i]);
+        free(ca);
         return;
     }
 
     /* normal compile */
     {
-        char *ca[] = {(char *)rcc, (char *)rccflags, "-o", r->tmp_exe, (char *)src_path, NULL};
+        char **ca = unit_compile_argv(r->tmp_exe, src_path, ldflags);
         r->compile_cmdline = cmdline_from_argv(ca);
         ProcResult cr = proc_run(ca, scaled(30), 1);
         if (cr.exit_code != 0 || access(r->tmp_exe, X_OK) != 0) {
@@ -3276,10 +3307,17 @@ static void unit_compile_exec(const char *src_path, const char *base,
             r->compile_out = cr.out;
             cr.out = NULL;
             proc_free(&cr);
+            for (int i = 0; ca[i]; i++)
+                if (i >= 5) free(ca[i]);
+            free(ca);
             return;
         }
         proc_free(&cr);
+        for (int i = 0; ca[i]; i++)
+            if (i >= 5) free(ca[i]);
+        free(ca);
     }
+
     r->did_compile = true;
 
     if (is_darwin_cross) {
@@ -3524,6 +3562,7 @@ static int run_unit_tests(void) {
                 jobs[i].suite = SUITE_UNIT;
                 jobs[i].src_path = sp;
                 jobs[i].base = strdup(entries[i].base);
+                jobs[i].ldflags = extra_ldflags(entries[i].base, sp);
                 jobs[i].index = i;
             }
             parallel_dispatch(jobs, n_tests);
@@ -3638,9 +3677,13 @@ static int run_unit_tests(void) {
             snprintf(tmp, sizeof(tmp), "%s/rcc_test_%d", get_tmpdir(), getpid());
 #endif
             {
-                char *ca[] = {(char *)rcc, (char *)rccflags, "-o", tmp, src_path, NULL};
+                const char *ldflags = extra_ldflags(base, src_path);
+                char **ca = unit_compile_argv(tmp, src_path, ldflags);
                 compile_cmdline = cmdline_from_argv(ca);
                 ProcResult cr = proc_run(ca, scaled(30), 1);
+                for (int i = 0; ca[i]; i++)
+                    if (i >= 5) free(ca[i]);
+                free(ca);
                 if (cr.exit_code != 0 || access(tmp, X_OK) != 0) {
                     if (is_todo_test(base)) {
                         print_result(base, COL_YELLOW, "TODO (compile)");

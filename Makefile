@@ -142,6 +142,13 @@ CFLAGS += -D__MUSL__
 OBJ_EXT = .musl.o
 TARGET = rcc-musl
 RUN_TESTS = run_tests_musl
+# musl-gcc is a glibc-gcc wrapper (its specs only redirect include/lib
+# paths), so `-dumpmachine` reports the host glibc triple. Reflect the
+# musl libc in MACHINE instead, so --version/-dumpmachine don't misreport
+# a glibc target.
+ifeq ($(findstring musl,$(MACHINE)),)
+MACHINE := $(patsubst %-linux,%-linux-musl,$(MACHINE))
+endif
 endif
 OBJS = $(SRCS:.c=$(OBJ_EXT))
 
@@ -412,11 +419,11 @@ test-musl check-musl:
 test-full check-full:
 	$(MAKE) clean
 	$(MAKE) check-all
+	$(MAKE) check-musl
 	ulimit -f 2097152; $(TEST_RUNNER_O1) --parallel
 	$(TEST_RUNNER_O2) --parallel
 	-./mingw-test.sh
 	-./arm64-test.sh
-	-$(MAKE) CC=musl-gcc && ./run_tests_musl ./rcc-musl --all --parallel
 	-./darwin-test.sh
 
 # External project tests via test/linux_thirdparty.bash, built with rcc.

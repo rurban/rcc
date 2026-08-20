@@ -72,16 +72,21 @@
 #define BOOL_WIDTH 1
 #endif
 
-/* Chain onward to the platform's real <limits.h> (glibc's, on Linux):
- * this header only defines the ISO C minimums above plus SSIZE_MAX,
- * and must not shadow the system one. POSIX/XSI macros like PIPE_BUF,
- * NL_ARGMAX and platform internals such as __WORDSIZE live in the
- * system header. Same pattern as GCC's own fixed-include limits.h,
- * which ends in `#include_next <limits.h>`. rcc's RCC_LIMITS_H guard
- * keeps the recursion bounded (glibc defines _LIBC_LIMITS_H_ itself
- * and never re-includes us).
+/* Chain onward to the platform's real <limits.h> (glibc's on glibc
+ * Linux, mingw-w64's on Windows): this header only defines the ISO C
+ * minimums above plus SSIZE_MAX, and must not shadow the system one.
+ * POSIX/XSI macros like PIPE_BUF, NL_ARGMAX and platform internals such
+ * as __WORDSIZE live in the system header. Same pattern as GCC's own
+ * fixed-include limits.h, which ends in `#include_next <limits.h>`.
+ * rcc's RCC_LIMITS_H guard keeps the recursion bounded (glibc defines
+ * _LIBC_LIMITS_H_ itself and never re-includes us).
+ *
+ * Skip the chain only for musl: musl defines PATH_MAX etc. in its own
+ * limits.h, and rcc's own POSIX minimums below cover the rest. glibc and
+ * mingw both chain (mingw's limits.h defines _INC_LIMITS, not
+ * _LIBC_LIMITS_H_, so the guard fires there too).
  */
-#if defined(__GLIBC__) && !defined(_LIBC_LIMITS_H_)
+#if !defined(__MUSL__) && !defined(_LIBC_LIMITS_H_)
 #include_next <limits.h>
 #endif
 

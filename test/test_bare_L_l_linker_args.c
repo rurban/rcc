@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include "test_common.h"
@@ -25,7 +26,7 @@ int main(void)
     int pid = (int)getpid();
 
     snprintf(libdir, sizeof(libdir), "%s/test_barel_libdir_%d", td, pid);
-    if (mkdir(libdir, 0755) != 0) { printf("FAIL: mkdir %s\n", libdir); return 1; }
+    if (mkdir(libdir, 0755) != 0 && errno != EEXIST) { printf("FAIL: mkdir %s\n", libdir); return 1; }
 
     /* A tiny static library the linker can only find via -L, never on the
      * default search path. */

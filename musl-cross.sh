@@ -32,6 +32,12 @@ if [ ! -d "$MUSL_SYSROOT/include" ]; then
     fi
 fi
 
+# The host rcc is a glibc build; its <features.h> chain would otherwise
+# define __GLIBC__/__GLIBC_MINOR__/__GLIBC_PREREQ for musl-targeted TUs.
+# Undef them explicitly and define __MUSL__ so target code sees the musl
+# libc, matching a real musl-gcc build.
+MUSL_LIBC_FLAGS="-U__GLIBC__ -U__GLIBC_MINOR__ -U__GLIBC_PREREQ -D__MUSL__"
+
 rcc_bin="$scriptdir/rcc"
 if [ ! -x "$rcc_bin" ]; then
     echo "rcc not found at $rcc_bin — build it first" >&2
@@ -43,11 +49,21 @@ inputs=""
 output=""
 emit_asm=0
 
+compile_only=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -S) emit_asm=1; rcc_flags="$rcc_flags $1" ;;
+        -c) compile_only=1; rcc_flags="$rcc_flags $1" ;;
         -o) output="$2"; shift ;;
         -o*) output="${1#-o}" ;;
+        # Two-argument options: keep the value glued so rcc sees them as
+        # one token. run_tests passes "-I ." / "-isystem dir" as separate
+        # argv elements; without this the value would fall through to the
+        # positional-input list and be treated as a source file.
+        -I|-L|-isystem|-idirafter|-include|-D|-U|-Wl|-Xlinker)
+            rcc_flags="$rcc_flags $1$2"; shift ;;
+        -I*|-L*|-isystem*|-idirafter*|-include*|-D*|-U*|-Wl*)
+            rcc_flags="$rcc_flags $1" ;;
         -*)  rcc_flags="$rcc_flags $1" ;;
         *)   inputs="$inputs $1" ;;
     esac
@@ -64,7 +80,7 @@ if [ "$emit_asm" -eq 1 ]; then
     if [ -z "$output" ]; then output="a.s"; fi
     GCC_INCLUDE=$("$MUSL_CC" -print-search-dirs 2>/dev/null | grep "^install:" | sed 's/^install: //')include
     # shellcheck disable=SC2086
-    exec "$rcc_bin" $rcc_flags -nostdinc \
+    exec "$rcc_bin" $rcc_flags $MUSL_LIBC_FLAGS -nostdinc \
         -isystem "$GCC_INCLUDE" \
         -isystem "$MUSL_INCLUDE" \
         -o "$output" $inputs
@@ -80,13 +96,21 @@ fi
 # headers (xmmintrin.h etc.) and musl's own headers.
 GCC_INCLUDE=$("$MUSL_CC" -print-search-dirs 2>/dev/null | grep "^install:" | sed 's/^install: //')include
 # shellcheck disable=SC2086
-"$rcc_bin" $rcc_flags -nostdinc \
-    -isystem "$GCC_INCLUDE" \
-    -isystem "$MUSL_INCLUDE" \
-    -o "$output" $inputs \
-    -L"$MUSL_LIB" -static
-status=$?
-if [ $status -eq 0 ] && [ -f "$output" ]; then
-    chmod +x "$output"
+if [ "$compile_only" -eq 1 ]; then
+    # -c: emit an object only, no link step (no -L/-static, no chmod).
+    "$rcc_bin" $rcc_flags $MUSL_LIBC_FLAGS -nostdinc \
+        -isystem "$GCC_INCLUDE" \
+        -isystem "$MUSL_INCLUDE" \
+        -o "$output" $inputs
+else
+    "$rcc_bin" $rcc_flags $MUSL_LIBC_FLAGS -nostdinc \
+        -isystem "$GCC_INCLUDE" \
+        -isystem "$MUSL_INCLUDE" \
+        -o "$output" $inputs \
+        -L"$MUSL_LIB" -static
+    status=$?
+    if [ $status -eq 0 ] && [ -f "$output" ]; then
+        chmod +x "$output"
+    fi
+    exit $status
 fi
-exit $status

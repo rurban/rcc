@@ -3498,14 +3498,15 @@ Token *preprocess(char *filename, char *p) {
         // can detect rcc specifically (`#ifdef __RCC__`), the same way
         // `__clang__` or tcc's `__TINYC__` sit alongside `__GNUC__`.
         define_pre("__RCC__", "1");
-        // Glibc version macros — needed by projects that check
-        // __GLIBC_PREREQ(2, 25) for getrandom() availability.
-        // Only on Linux where glibc is present.
-#if defined(__GLIBC__) && !defined(__MUSL__)
-        define_pre("__GLIBC__", "2");
-        define_pre("__GLIBC_MINOR__", "39");
-        define_pre("__GLIBC_PREREQ", "(__GLIBC__ > (maj) || (__GLIBC__ == (maj) && __GLIBC_MINOR__ >= (min)))");
-#elif defined(__MUSL__)
+        // __MUSL__: musl-gcc's spec only redirects include/lib paths and
+        // predefines no __MUSL__ itself, so a native musl build injects it
+        // here. glibc macros (__GLIBC__/__GLIBC_MINOR__/__GLIBC_PREREQ) are
+        // deliberately NOT injected: they must come from the target's own
+        // <features.h> (glibc) or stay absent (musl/mingw). A host-glibc
+        // rcc cross-compiling to musl would otherwise leak __GLIBC__ into
+        // every musl TU, and the prelude re-adds it after clear_macros()
+        // so a -U__GLIBC__ on the command line can never undo it.
+#ifdef __MUSL__
         define_pre("__MUSL__", "1");
 #endif
         // Prevent glibc's /usr/include/limits.h from trying
