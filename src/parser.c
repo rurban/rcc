@@ -11135,8 +11135,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 0;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
@@ -11155,8 +11157,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 1;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
@@ -11175,8 +11179,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 2;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
@@ -11195,8 +11201,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 3;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
@@ -11215,8 +11223,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 4;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;
@@ -11235,8 +11245,10 @@ static Node *unary(Token **rest, Token *tok) {
         node->atomic_ord = MEMORDER_SEQ_CST;
         node->atomic_fetch_op = 5;
         node->atomic_is_store = true;
-        tok = skip(tok, ",");
-        node->atomic_ord = parse_memory_order(&tok);
+        if (equalc(tok, ",")) {
+            tok = tok->next;
+            node->atomic_ord = parse_memory_order(&tok);
+        }
         *rest = skip(tok, ")");
         node->ty = ptr->ty->base ? ptr->ty->base : ty_int;
         return node;

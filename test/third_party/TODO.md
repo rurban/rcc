@@ -40,6 +40,56 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, limits.h #include_next removal + LONG_BIT + atomic memory-order session)
+
+Three issues blocking multiple third-party projects:
+
+- **`#include_next <limits.h>` removed from rcc's bundled `<limits.h>`**
+  — `include/limits.h`. The chain to glibc's limits.h (via `_GCC_LIMITS_H_`
+  guard) caused redefinition warnings and linker issues with projects
+  like libtommath. All POSIX/XSI/Linux limits are now defined directly in
+  rcc's own header: ISO C minimums, POSIX minimums, Linux kernel limits
+  (`PATH_MAX`, `PIPE_BUF`, `NAME_MAX`, etc.), GNU extensions
+  (`IOV_MAX`, `PTHREAD_STACK_MIN`, `BITINT_MAXWIDTH`, `SIZE_MAX`),
+  and C23 width macros. Platform-specific: `CHAR_MIN=0`/`CHAR_MAX=UCHAR_MAX`
+  on Win32, `PATH_MAX=260` on Win32, `MB_LEN_MAX=5` on Win32. Removed
+  `#include_next <limits.h>` entirely. Unblocks: libtommath (50/50 tests
+  pass), and eliminates glibc header-chaining issues across the board.
+  `test_include_next_skips_user_dirs` added to SKIP_TESTS (behavior no
+  longer applicable).
+
+- **`LONG_BIT` missing from `<limits.h>`** — `include/limits.h`. POSIX
+  macro (`sizeof(long) * CHAR_BIT`) defined in glibc's
+  `<bits/xopen_lim.h>`, unavailable after `#include_next` removal.
+  Projects like yash, git, and others use `LONG_BIT` for integer-width
+  checks. Added as `(__SIZEOF_LONG__ * 8)`. Unblocks: yash (compiles),
+  git (compiles).
+
+- **`__atomic_*_fetch` builtins require 3 args but GCC allows 2**
+  — `parser.c`. rcc's parser for `__atomic_add_fetch` (and sub/or/xor/
+  and/nand variants) unconditionally required the third argument (memory
+  order), with `tok = skip(tok, ",")` before parsing it. GCC allows 2-arg
+  form, defaulting to `__ATOMIC_SEQ_CST`. Projects using
+  `__builtin_atomic_arith_add` (mapped to `__atomic_add_fetch` via
+  `define_pre`) in function-like macro bodies hit "expected specific
+  operator" because the expanded 2-arg call was rejected. Fixed: skip the
+  3rd arg when absent, use default `MEMORDER_SEQ_CST`. Unblocks: msgpack
+  (5/5 tests pass), partially unblocks redis/janet (other separate issues
+  remain).
+
+Projects now verified:
+
+- **libtommath**: builds and passes all 50 tests (cmake test-ltm)
+- **msgpack**: builds and passes all 5 tests (100%, 0 failures)
+- **yash**: compiles (test suite too slow for batch timeout, not an rcc bug)
+- **mongoose**: 1854 tests pass
+- **wasm3**: builds and passes
+- **mpack**: 0 failures in 24947 checks
+- **nanomsg**: 77/77 tests pass (100%)
+- **mpack**: 0 failures in 24947 checks
+- **libmpc**: builds and tests pass (0 failures)
+- **rvvm**: 113/113 RISC-V tests pass
+
 ### Fixed (2026-08-19, int128 POST_INC + **GLIBC** macros + POSIX limits session)
 
 Three issues blocking multiple third-party projects:
