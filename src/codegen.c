@@ -7714,6 +7714,7 @@ static VReg gen_int128(Node *node) {
         return addr;
     }
 #endif
+    case ND_POST_INC:
     case ND_POST_DEC:
     case ND_PRE_INC:
     case ND_PRE_DEC: {

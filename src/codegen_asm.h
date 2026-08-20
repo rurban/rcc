@@ -3557,7 +3557,10 @@ __attribute__((unused)) static void asm_mvn_phy(SecBuf *s, Arm64Reg rd, Arm64Reg
 }
 // negs rd, rn  (negate with flags for int128 borrow chain)
 static inline void asm_negs(SecBuf *s, VReg rd, VReg rn) {
-    arm64_neg(s, 1, REG(rd), REG(rn)); // negs rd, rn  (NEG is alias for SUB xzr,rm)
+    // NEGS is the alias of SUBS xzr, rm — arm64_neg() emits plain SUB
+    // (no flag update), which would leave the C flag stale for the
+    // following ngc in gen_int128's ND_NEG. Emit SUBS directly.
+    arm64_subs_reg(s, 1, REG(rd), ARM64_XZR, REG(rn), ARM64_LSL, 0);
 }
 // ngc rd, rn  (negate with carry, used after negs for int128)
 static inline void asm_ngc(SecBuf *s, VReg rd, VReg rn) {

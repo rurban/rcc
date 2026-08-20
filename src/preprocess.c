@@ -3498,6 +3498,16 @@ Token *preprocess(char *filename, char *p) {
         // can detect rcc specifically (`#ifdef __RCC__`), the same way
         // `__clang__` or tcc's `__TINYC__` sit alongside `__GNUC__`.
         define_pre("__RCC__", "1");
+        // Glibc version macros — needed by projects that check
+        // __GLIBC_PREREQ(2, 25) for getrandom() availability.
+        // Only on Linux where glibc is present.
+#if defined(__GLIBC__) && !defined(__MUSL__)
+        define_pre("__GLIBC__", "2");
+        define_pre("__GLIBC_MINOR__", "39");
+        define_pre("__GLIBC_PREREQ", "(__GLIBC__ > (maj) || (__GLIBC__ == (maj) && __GLIBC_MINOR__ >= (min)))");
+#elif defined(__MUSL__)
+        define_pre("__MUSL__", "1");
+#endif
         // Prevent glibc's /usr/include/limits.h from trying
         // `#include_next <limits.h>` to find GCC's own limits.h.
         // That guard is triggered when __GNUC__ is defined (which rcc
