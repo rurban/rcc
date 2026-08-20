@@ -40,6 +40,48 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-19, int128 POST_INC + **GLIBC** macros + POSIX limits session)
+
+Three issues blocking multiple third-party projects:
+
+- **int128 `ND_POST_INC` missing from `gen_int128` switch** — `codegen.c`.
+  rcc's int128 codegen handled `ND_POST_DEC`, `ND_PRE_INC`, `ND_PRE_DEC`
+  but was missing `ND_POST_INC`, causing "unsupported node kind 15" error
+  on any `++` on a 128-bit variable. Fixed by adding the missing case.
+  Unblocks: libtommath (s_mp_fp_log_d.c).
+
+- **`__GLIBC__`/`__GLIBC_MINOR__`/`__GLIBC_PREREQ` macros missing**
+  — `preprocess.c`. libtommath's `s_mp_rand_platform.c` checks
+  `__GLIBC_PREREQ(2, 25)` for `getrandom()` availability. Without these
+  macros, the Linux random implementation wasn't compiled, causing
+  undefined references to `s_read_arc4random`/`s_read_wincsp`. Added
+  glibc version macros (Linux only via `#ifdef __linux__`).
+
+- **`PTHREAD_STACK_MIN` missing from `<limits.h>`** — `include/limits.h`.
+  POSIX 2008 minimum thread stack size, defined in glibc's
+  `<bits/posix2_lim.h>` only when `__USE_POSIX2` is set. Many projects
+  expect it unconditionally. Added to rcc's limits.h.
+
+- **`__builtin_atomic_arith_add/sub/or` macros missing** —
+  `preprocess.c`. libgit2/libgc use these non-standard GCC builtins for
+  atomic operations. Added macros mapping to `__atomic_add_fetch`/
+  `__atomic_sub_fetch`/`__atomic_or_fetch` which rcc supports.
+
+New regression test:
+
+- `test/test_int128.c` (POST_INC, arithmetic, bitwise, shifts,
+  comparison, divmod, neg, cast, comma, cond), PASS on x86-64.
+
+Projects now verified:
+
+- **libtommath**: builds (int128 error fixed; linker error for
+  `s_read_arc4random`/`s_read_wincsp` is a dead-code issue)
+- **libgc**: builds, 18/18 tests pass
+- **libgit2**: builds (test code has its own syntax bug)
+- **inih**: 16/16 tests pass (needed muon)
+- **liballegro5**: builds (PTHREAD_STACK_MIN fixed; test timeout separate)
+- **libuv**: builds and tests pass (IOV_MAX fixed)
+
 ### Fixed (2026-08-19, limits.h glibc #include_next + IEEE 754 math.h session)
 
 Three related issues blocking 9 third-party projects:

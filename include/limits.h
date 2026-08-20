@@ -171,6 +171,12 @@
 #ifndef IOV_MAX
 #define IOV_MAX 1024
 #endif
+/* PTHREAD_STACK_MIN — minimum thread stack size (POSIX 2008).
+ * Defined in glibc's <bits/posix2_lim.h> only when __USE_POSIX2 is set,
+ * but many projects expect it unconditionally from <limits.h>. */
+#ifndef PTHREAD_STACK_MIN
+#define PTHREAD_STACK_MIN 16384
+#endif
 #endif
 #endif
 
