@@ -18,6 +18,7 @@ typedef __PTRDIFF_TYPE__ ptrdiff_t;
 typedef __WCHAR_TYPE__ wchar_t;
 #endif
 typedef __SIZE_TYPE__ size_t;
+typedef __SSIZE_TYPE__ ssize_t;
 
 typedef struct {
     long long __max_align_ll __attribute__((__aligned__(__alignof__(long long))));

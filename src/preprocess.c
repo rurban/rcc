@@ -3514,6 +3514,8 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__builtin_atomic_arith_add", "__atomic_add_fetch");
         define_pre("__builtin_atomic_arith_sub", "__atomic_sub_fetch");
         define_pre("__builtin_atomic_arith_or", "__atomic_or_fetch");
+        // __SSIZE_TYPE__ needed by POSIX's ssize_t (stddef.h).
+        define_pre("__SSIZE_TYPE__", "long int");
         // Prevent glibc's /usr/include/limits.h from trying
         // `#include_next <limits.h>` to find GCC's own limits.h.
         // That guard is triggered when __GNUC__ is defined (which rcc
