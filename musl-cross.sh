@@ -9,16 +9,27 @@
 #
 # Environment:
 #   MUSL_CC        musl-gcc wrapper (default: musl-gcc)
-#   MUSL_SYSROOT   sysroot (default: /usr/x86_64-linux-musl)
+#   MUSL_SYSROOT   sysroot (default: /usr/x86_64-linux-musl) on proper systems
+# paths:
+#   MUSL_INCLUDE   /usr/x86_64-linux-musl/include on proper systems, /usr/include/x86_64-linux-musl on debian
+#   MUSL_LIB       /usr/x86_64-linux-musl/lib on proper systems, /usr/lib/x86_64-linux-musl on debian
 
 scriptdir="$(cd "$(dirname "$0")" && pwd)"
 MUSL_CC="${MUSL_CC:-musl-gcc}"
 MUSL_SYSROOT="${MUSL_SYSROOT:-/usr/x86_64-linux-musl}"
+MUSL_INCLUDE="$MUSL_SYSROOT/include"
+MUSL_LIB="$MUSL_SYSROOT/lib64"
 
 if [ ! -d "$MUSL_SYSROOT/include" ]; then
-    echo "musl sysroot not found at $MUSL_SYSROOT" >&2
-    echo "Install: dnf install musl-devel musl-libc-static" >&2
-    exit 1
+    if [ ! -d "/usr/include/x86_64-linux-musl" ]; then
+        echo "musl sysroot not found at $MUSL_SYSROOT" >&2
+        echo "Install: dnf install musl-devel musl-libc-static" >&2
+        echo "or: apt install musl musl-dev" >&2
+        exit 1
+    else
+        MUSL_INCLUDE="/usr/include/x86_64-linux-musl"
+        MUSL_LIB="/usr/lib/x86_64-linux-musl"
+    fi
 fi
 
 rcc_bin="$scriptdir/rcc"
@@ -55,7 +66,7 @@ if [ "$emit_asm" -eq 1 ]; then
     # shellcheck disable=SC2086
     exec "$rcc_bin" $rcc_flags -nostdinc \
         -isystem "$GCC_INCLUDE" \
-        -isystem "$MUSL_SYSROOT/include" \
+        -isystem "$MUSL_INCLUDE" \
         -o "$output" $inputs
 fi
 
@@ -71,9 +82,9 @@ GCC_INCLUDE=$("$MUSL_CC" -print-search-dirs 2>/dev/null | grep "^install:" | sed
 # shellcheck disable=SC2086
 "$rcc_bin" $rcc_flags -nostdinc \
     -isystem "$GCC_INCLUDE" \
-    -isystem "$MUSL_SYSROOT/include" \
+    -isystem "$MUSL_INCLUDE" \
     -o "$output" $inputs \
-    -L"$MUSL_SYSROOT/lib64" -static
+    -L"$MUSL_LIB" -static
 status=$?
 if [ $status -eq 0 ] && [ -f "$output" ]; then
     chmod +x "$output"

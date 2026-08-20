@@ -2,12 +2,12 @@
 
 **Platform**: Linux x86_64 (musl-built rcc)
 
-Generated: August 19 2026 20:10
+Generated: August 20 2026 10:45
 
 ## Overall Summary
 
-- **Total**: 4602
-- **Passed**: 4226
+- **Total**: 4603
+- **Passed**: 4227
 - **Failed**: 2
 - **Skipped**: 368
 - **Overall Pass Rate**: 100%
@@ -21,8 +21,8 @@ Generated: August 19 2026 20:10
 
 ## RCC Unit Tests
 
-- **Total**: 286
-- **Passed**: 285
+- **Total**: 287
+- **Passed**: 286
 - **Failed**: 0
 - **Pass Rate**: 100%
 
