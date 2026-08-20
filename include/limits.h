@@ -5,8 +5,13 @@
 #define SCHAR_MIN (-128)
 #define SCHAR_MAX 127
 #define UCHAR_MAX 255
+#ifdef _WIN32
+#define CHAR_MIN 0
+#define CHAR_MAX UCHAR_MAX
+#else
 #define CHAR_MIN (-128)
 #define CHAR_MAX 127
+#endif
 #define SHRT_MIN (-32768)
 #define SHRT_MAX 32767
 #define USHRT_MAX 65535
@@ -31,10 +36,16 @@
  * miscompiling. */
 #define LONG_MAX __LONG_MAX__
 #define LONG_MIN (-LONG_MAX - 1L)
+#ifdef _WIN32
+#define LONG_MAX 2147483647L
+#define LONG_MIN (-LONG_MAX - 1L)
+#define ULONG_MAX 0xffffffffUL
+#else
 #if __SIZEOF_LONG__ == 8
 #define ULONG_MAX 0xffffffffffffffffUL
 #else
 #define ULONG_MAX 0xffffffffUL
+#endif
 #endif
 #define LLONG_MIN (-9223372036854775807LL - 1LL)
 #define LLONG_MAX 9223372036854775807LL
@@ -47,7 +58,11 @@
 #endif
 #endif
 
+#ifdef _WIN32
+#define MB_LEN_MAX 5
+#else
 #define MB_LEN_MAX 16
+#endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
 #define __STDC_VERSION_LIMITS_H__ 202311L
@@ -72,23 +87,9 @@
 #define BOOL_WIDTH 1
 #endif
 
-/* Chain onward to the platform's real <limits.h> (glibc's on glibc
- * Linux, mingw-w64's on Windows): this header only defines the ISO C
- * minimums above plus SSIZE_MAX, and must not shadow the system one.
- * POSIX/XSI macros like PIPE_BUF, NL_ARGMAX and platform internals such
- * as __WORDSIZE live in the system header. Same pattern as GCC's own
- * fixed-include limits.h, which ends in `#include_next <limits.h>`.
- * rcc's RCC_LIMITS_H guard keeps the recursion bounded (glibc defines
- * _LIBC_LIMITS_H_ itself and never re-includes us).
- *
- * Skip the chain only for musl: musl defines PATH_MAX etc. in its own
- * limits.h, and rcc's own POSIX minimums below cover the rest. glibc and
- * mingw both chain (mingw's limits.h defines _INC_LIMITS, not
- * _LIBC_LIMITS_H_, so the guard fires there too).
- */
-#if !defined(__MUSL__) && !defined(_LIBC_LIMITS_H_)
-#include_next <limits.h>
-#endif
+/* All limits (ISO C, POSIX/XSI, Linux kernel, GNU extensions) are defined
+ * directly in this header. No need to chain to the platform's real
+ * <limits.h> — rcc's own definitions cover everything projects need. */
 
 /* Linux kernel limits (PATH_MAX, PIPE_BUF, etc.) and POSIX minimum
  * values (_POSIX_ARG_MAX, _POSIX_PATH_MAX, etc.). Always define these
@@ -99,7 +100,11 @@
  * sysroot lacks that header. Values are identical to the kernel header. */
 #ifdef __linux__
 #ifndef PATH_MAX
+#ifdef _WIN32
+#define PATH_MAX        260
+#else
 #define PATH_MAX        4096
+#endif
 #endif
 #ifndef PIPE_BUF
 #define PIPE_BUF        4096
@@ -176,6 +181,81 @@
  * but many projects expect it unconditionally from <limits.h>. */
 #ifndef PTHREAD_STACK_MIN
 #define PTHREAD_STACK_MIN 16384
+#endif
+/* POSIX/XSI and GNU extensions — define all commonly used limits
+ * unconditionally so projects don't need _GNU_SOURCE or _POSIX_C_SOURCE. */
+#ifndef AIO_PRIO_DELTA_MAX
+#define AIO_PRIO_DELTA_MAX 20
+#endif
+#ifndef BC_BASE_MAX
+#define BC_BASE_MAX 99
+#endif
+#ifndef BC_DIM_MAX
+#define BC_DIM_MAX 2048
+#endif
+#ifndef BC_SCALE_MAX
+#define BC_SCALE_MAX 99
+#endif
+#ifndef BC_STRING_MAX
+#define BC_STRING_MAX 1000
+#endif
+#ifndef CHARCLASS_NAME_MAX
+#define CHARCLASS_NAME_MAX 2048
+#endif
+#ifndef COLL_WEIGHTS_MAX
+#define COLL_WEIGHTS_MAX 255
+#endif
+#ifndef DELAYTIMER_MAX
+#define DELAYTIMER_MAX 2147483647
+#endif
+#ifndef EXPR_NEST_MAX
+#define EXPR_NEST_MAX 256
+#endif
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 64
+#endif
+#ifndef LINE_MAX
+#define LINE_MAX 2048
+#endif
+#ifndef LOGIN_NAME_MAX
+#define LOGIN_NAME_MAX 256
+#endif
+#ifndef MQ_PRIO_MAX
+#define MQ_PRIO_MAX 32768
+#endif
+#ifndef PTHREAD_DESTRUCTOR_ITERATIONS
+#define PTHREAD_DESTRUCTOR_ITERATIONS 4
+#endif
+#ifndef PTHREAD_KEYS_MAX
+#define PTHREAD_KEYS_MAX 1024
+#endif
+#ifndef RE_DUP_MAX
+#define RE_DUP_MAX 32767
+#endif
+#ifndef RTSIG_MAX
+#define RTSIG_MAX 32
+#endif
+#ifndef SEM_VALUE_MAX
+#define SEM_VALUE_MAX 2147483647
+#endif
+#ifndef TTY_NAME_MAX
+#define TTY_NAME_MAX 32
+#endif
+#ifndef XATTR_LIST_MAX
+#define XATTR_LIST_MAX 65536
+#endif
+#ifndef XATTR_NAME_MAX
+#define XATTR_NAME_MAX 255
+#endif
+#ifndef XATTR_SIZE_MAX
+#define XATTR_SIZE_MAX 65536
+#endif
+#ifndef BITINT_MAXWIDTH
+#define BITINT_MAXWIDTH __BITINT_MAXWIDTH__
+#endif
+/* SIZE_MAX — maximum value of size_t (C11 7.20.3). */
+#ifndef SIZE_MAX
+#define SIZE_MAX __SIZE_MAX__
 #endif
 #endif
 #endif
