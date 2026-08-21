@@ -489,6 +489,69 @@ __rcc_inline __m128i _mm_srai_epi32(__m128i __a, int __c) {
     for (int __i = 0; __i < 4; __i++) __x[__i] = __x[__i] >> __s;
     return (__m128i)__x;
 }
+// Variable-count shifts (count taken from the low 64 bits of a __m128i,
+// not an immediate). Per Intel semantics: count > width-1 zeroes the
+// logical shifts; the arithmetic shift instead saturates to width-1
+// (fills every lane with its own sign bit).
+__rcc_inline unsigned long long __rcc_shift_count(__m128i __cnt) {
+    return (unsigned long long)((__v2du)__cnt)[0];
+}
+__rcc_inline __m128i _mm_sll_epi16(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 15) return _mm_setzero_si128();
+    __v8hu __x = (__v8hu)__a;
+    for (int __i = 0; __i < 8; __i++) __x[__i] = (unsigned short)(__x[__i] << __c);
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_sll_epi32(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 31) return _mm_setzero_si128();
+    __v4su __x = (__v4su)__a;
+    for (int __i = 0; __i < 4; __i++) __x[__i] = __x[__i] << __c;
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_sll_epi64(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 63) return _mm_setzero_si128();
+    __v2du __x = (__v2du)__a;
+    for (int __i = 0; __i < 2; __i++) __x[__i] = __x[__i] << __c;
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_srl_epi16(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 15) return _mm_setzero_si128();
+    __v8hu __x = (__v8hu)__a;
+    for (int __i = 0; __i < 8; __i++) __x[__i] = (unsigned short)(__x[__i] >> __c);
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_srl_epi32(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 31) return _mm_setzero_si128();
+    __v4su __x = (__v4su)__a;
+    for (int __i = 0; __i < 4; __i++) __x[__i] = __x[__i] >> __c;
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_srl_epi64(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    if (__c > 63) return _mm_setzero_si128();
+    __v2du __x = (__v2du)__a;
+    for (int __i = 0; __i < 2; __i++) __x[__i] = __x[__i] >> __c;
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_sra_epi16(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    int __s = __c > 15 ? 15 : (int)__c;
+    __v8hi __x = (__v8hi)__a;
+    for (int __i = 0; __i < 8; __i++) __x[__i] = (short)(__x[__i] >> __s);
+    return (__m128i)__x;
+}
+__rcc_inline __m128i _mm_sra_epi32(__m128i __a, __m128i __count) {
+    unsigned long long __c = __rcc_shift_count(__count);
+    int __s = __c > 31 ? 31 : (int)__c;
+    __v4si_e __x = (__v4si_e)__a;
+    for (int __i = 0; __i < 4; __i++) __x[__i] = __x[__i] >> __s;
+    return (__m128i)__x;
+}
 
 // Whole-register byte shift (not per-lane): shift the 16-byte vector right
 // (srli) or left (slli) by __imm BYTES, zero-filling the vacated end.
