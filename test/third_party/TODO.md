@@ -40,6 +40,69 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, rpmalloc: extern-inline static false-positive + -m64 flag session)
+
+Two issues blocking mjansson/rpmalloc 2.0.1:
+
+- **`extern inline` wrongly treated the same as bare `inline` by the
+  "static object used in inline function" diagnostic** — `parser.c`.
+  This diagnostic was reintroduced (as a warning, promotable via
+  `-Werror`) in the 2026-08-21 preprocessor->32-params session below
+  after being downgraded from a hard error; that downgrade alone wasn't
+  the full fix. Per C11 6.7.4p3, a bare, non-static, non-`gnu_inline`
+  `inline` function may not reference a modifiable object with internal
+  linkage, because that function might be emitted as _the_ external
+  definition in some OTHER translation unit, where the `static` object
+  isn't visible — confirmed real gcc warns unconditionally, even with
+  no flags at all ("'sv' is static but used in inline function 'j'
+  which is not static"). But `extern inline` is different: it
+  unambiguously provides the external definition right here, in THIS
+  translation unit (C11 6.7.4p6), where any `static` object it
+  references is visible by definition — confirmed real gcc never warns
+  there. rcc's `current_fn_is_inline` flag (parser.c) computed
+  `attr.is_inline && !attr.is_static && !attr.is_gnu_inline`, failing to
+  also exclude `attr.is_extern`, so it warned on `extern inline` too.
+  rpmalloc's malloc.c declares every override (`rpvalloc`, `rppvalloc`,
+  `malloc`, `calloc`, ...) as `extern inline ... { ... static_thing ...
+}`; combined with rpmalloc's own `-Werror -pedantic` build flags,
+  this false positive was a hard build failure. Fixed by adding
+  `&& !attr.is_extern` to `current_fn_is_inline`'s assignment.
+
+- **`-m64` rejected as an unrecognized command-line option** —
+  `src/main.c`. A legitimate, common GCC flag meaning "64-bit ABI",
+  which rcc's own generated object files always are on every platform
+  it targets (x86-64, ARM64, mingw64) — rcc is native-only, no
+  cross-compilation to a different word width in one binary (see
+  AGENTS.md). rpmalloc's `configure.py`-generated ninja build always
+  passes `-m64` on this architecture; under rpmalloc's own `-Werror`,
+  the unrecognized-option warning was promoted to a hard failure.
+  `-m32` remains correctly rejected (still `-m64`-only native target).
+  Fixed by accepting `-m64` as a no-op alongside the existing `-m32`
+  rejection in `main.c`'s option loop.
+
+New regression coverage: `test/test_extern_inline_static_and_m64.c`
+(bare `inline`/`static inline`/`extern inline` referencing a `static`
+object, with and without `-Werror`; `-m64` accepted, `-m32` still
+rejected). Full local regression matrix re-run clean after both fixes:
+TCC 118/118, Unit 286/286, C-testsuite 220/220, Torture 3605/3609 (0
+failed, 354 skipped, 4 todo — same baseline as before this session's
+diagnostic change, confirming the earlier `-Werror`-only mitigation had
+regressed `test/torture/c11-thread-local-2.c`'s expected
+`-pedantic-errors` diagnostic and this fix restores it), Dg-error 34/34,
+Link 11/11.
+
+Not fixed / out of scope: rpmalloc's own `bin/linux/release/x86-64/
+rpmalloc-test` (the override-enabled binary `test_rpmalloc()` actually
+runs) still fails to LINK — `test/main-override.cc` calls sized
+`operator delete(void*, unsigned long)`, but rpmalloc's own
+`configure.py`-generated ninja file always uses `$CC` (never `$CXX`) as
+the link driver for every target, even ones including a `.cc` object,
+and never adds `-lstdc++`/`-lc++` to any target's link libs. Confirmed
+**not** an rcc bug: reproduces byte-identical (same undefined symbol,
+same two call sites) linking the same object files with real `gcc` in
+place of rcc as the link driver. A pre-existing rpmalloc/muon build-
+config gap, unrelated to which C compiler is used.
+
 ### Fixed (2026-08-21, incomplete-type local declaration session)
 
 - **An automatic-storage-duration local declaration of an incomplete

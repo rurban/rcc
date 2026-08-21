@@ -9638,12 +9638,24 @@ static Node *primary(Token **rest, Token *tok) {
             // below stay as-is (they can never name a variable).
             LVar *var = find_var(tok);
             if (var) {
-                // C11 6.7.4p3: a non-static inline function may not reference
-                // a modifiable object with internal linkage.
+                // C11 6.7.4p3: a non-static, non-extern-inline (i.e. an
+                // inline function that MAY be emitted as an external
+                // definition somewhere else) may not reference a
+                // modifiable object with internal linkage -- the object
+                // might not be visible wherever that other definition
+                // lives. GCC diagnoses this unconditionally (confirmed:
+                // "'sv' is static but used in inline function 'j' which
+                // is not static", present even with no flags at all).
+                // current_fn_is_inline already excludes `extern inline`
+                // (see its assignment below) -- extern inline genuinely
+                // IS the one external definition, right here, where the
+                // static object is visible, so gcc never warns there
+                // (rpmalloc's malloc.c: every rpvalloc/rppvalloc/etc. is
+                // "extern inline").
                 if (current_fn_is_inline && var->is_static && !var->is_local &&
                     var->ty && !(var->ty->qual & QUAL_CONST) &&
                     find_global_name(tok->name) == var)
-                    warn_tok(tok, "'%s' is static but used in inline function '%s'",
+                    warn_tok(tok, "'%s' is static but used in inline function '%s' which is not static",
                              tok->name, parser_current_fn ? parser_current_fn : "?");
                 node = new_var_node(var, tok);
                 node->chain_depth = last_find_var_chain_depth;
@@ -13911,8 +13923,13 @@ Program *parse(Token *tok) {
                         error_tok(tok, "typedef cannot have function body");
 
                     LVar *fn_locals = NULL;
+                    // extern inline IS the external definition, right
+                    // here where any static object it references is
+                    // visible -- gcc never warns there (only for a bare
+                    // `inline` fn, which might be emitted as *the*
+                    // external definition in some other TU instead).
                     current_fn_is_inline = attr.is_inline && !attr.is_static &&
-                        !attr.is_gnu_inline;
+                        !attr.is_gnu_inline && !attr.is_extern;
                     Node *body = compound_stmt_ex(&tok, tok, &fn_locals, false);
                     current_fn_is_inline = false;
                     // Implicit return 0 for main if no explicit return

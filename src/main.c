@@ -880,6 +880,15 @@ int main(int argc, char **argv) {
             opt_pedantic = true;
         } else if (!strcmp(argv[i], "-pedantic") || !strcmp(argv[i], "-Wpedantic")) {
             opt_pedantic = true;
+        } else if (!strcmp(argv[i], "-m64")) {
+            // Accepted no-op: rcc's native target is already 64-bit on
+            // every platform it supports (x86-64, ARM64, mingw64) --
+            // "-m64" just confirms the default rcc already builds for.
+            // Found via rpmalloc's build (samu/ninja passes it
+            // unconditionally on a 64-bit host), combined with -Werror
+            // promoting the otherwise-tolerated unknown flag into a hard
+            // "unrecognized command-line option '-m64'" error.
+            ; // no-op
         } else if (!strcmp(argv[i], "-m32") || !strcmp(argv[i], "-mx32") ||
                    !strcmp(argv[i], "-m16")) {
             // Native-only: one binary is one word width/ABI (AGENTS.md).
