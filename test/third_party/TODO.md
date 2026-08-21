@@ -40,6 +40,96 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, struct-arg cast against stale incomplete prototype session)
+
+- **`check_type()`'s own, second implicit-argument-cast loop for
+  `ND_FUNCALL` wrapped a struct/union argument in a cast to a stale,
+  forward-declared (zero-size) parameter type** -- `src/type.c`,
+  `add_type_internal()`. Two INDEPENDENT mechanisms insert implicit
+  argument casts for a call: parser.c's `cast_funcall_args()` (runs
+  right after parsing the arg list, deliberately excludes struct/union
+  via its `is_integer`/`is_flonum`-only condition) and this SECOND,
+  separate loop inside `check_type()`'s `ND_FUNCALL` case (runs lazily,
+  the first time `check_type()` computes the call's own return type --
+  `apply_postfix_ops()`'s leading `check_type(node)` on an
+  already-fully-parsed call node). The second loop's skip condition is
+  `same_type(arg_ty, param_ty)`, which for a struct/union falls back to
+  a plain size comparison -- correct when both sides are the same
+  completed struct, but wrong for a struct tag that is forward-declared
+  (typedef'd, giving one incomplete Type object with `size==0`) at an
+  EARLIER prototype's declaration point and only completed LATER in the
+  same translation unit (giving a SECOND, different Type object with
+  the real size) -- rcc's struct tags are identity objects meant to be
+  completed in place (see `copy_type()`'s own comment), but a prototype
+  parsed before completion keeps pointing at the pre-completion object,
+  which is never retroactively unified with the post-completion one.
+  `same_type()` (correctly, given two genuinely different Type objects
+  with different sizes) said "not equal", so the loop wrapped the
+  ARGUMENT in `insert_arith_cast(argp, param_types)` -- overwriting the
+  argument node's own (correct, complete) type with the stale
+  zero-size one. Every later ABI decision reads the CAST node's type,
+  not the underlying value's real type: SysV x86-64 classification
+  (`argv[i]->ty->size > 16` -> stack/MEMORY class) silently fell
+  through to the ordinary scalar path instead, consuming a GP argument
+  register for the (now apparently 0-byte) struct and never copying any
+  of its real bytes onto the stack -- corrupting both the struct
+  argument itself and, since the wrongly-consumed register pushed every
+  subsequent register-class argument's expected register/stack
+  placement out of alignment by one slot, one or more of the call's
+  OTHER arguments too.
+
+  Found via zstd 1.5.7's default CLI compression path (multi-threaded,
+  the default when built with pthreads): `zstd_compress.c` calls
+  `ZSTDMT_initCStream_internal()` (prototype only visible via
+  `zstdmt_compress.h`, included -- and thus its `ZSTD_CCtx_params`
+  parameter type captured while still an opaque forward `typedef struct
+ZSTD_CCtx_params_s ZSTD_CCtx_params;` from `zstd.h` -- BEFORE
+  `zstd_compress_internal.h` completes the struct body a few lines
+  later in the same file; the real function DEFINITION lives only in
+  `zstdmt_compress.c`, a different translation unit, so nothing ever
+  re-derives the stale prototype) with a 224-byte `ZSTD_CCtx_params`
+  argument sandwiched between 5 leading pointer/`size_t`/enum register
+  arguments and a trailing `unsigned long long` one. `readelf`/`gdb`
+  disassembly of the miscompiled call showed the trailing
+  `pledgedSrcSize` argument landing on the stack (should be `%r9`, the
+  6th GP register) while `%r9` instead held the struct's first 4 bytes
+  reinterpreted as a pointer -- the struct itself was never copied to
+  the stack at all. `ZSTDMT_initCStream_internal()` then read all-zero/
+  garbage `cParams` fields, tripped `ZSTD_checkCParams()`'s bounds
+  check, and `assert()`ed (rcc's bundled `<assert.h>` calls `abort()`
+  directly, printing no diagnostic -- see `include/assert.h`) --
+  100% reproducible SIGABRT on every `zstd`-CLI invocation compressing
+  from stdin (`playTests.sh`'s very first pipe test). Confirmed a
+  genuine rcc bug, not environment/build-system noise: the identical
+  source tree built clean with real gcc, and the system's own `zstd`
+  binary worked fine.
+
+  Fixed by skipping the cast-insertion loop entirely whenever either
+  side is `TY_STRUCT`/`TY_UNION` -- mirroring `cast_funcall_args()`'s
+  own, already-deliberate exclusion for the identical reason (a
+  struct/union argument is always passed by raw value copy through
+  codegen's own by-value-argument ABI logic, driven by the ARGUMENT's
+  own resolved type; it is never a candidate for an
+  arithmetic-conversion-style cast in the first place, complete or not).
+
+  New regression coverage: `test/test_incomplete_struct_arg_cross_tu.c`
+  -- reproduces the exact shape (prototype-then-completion in one TU,
+  real definition in a genuinely separate one, spawning two temp `.c`
+  files and a real `rcc a.c b.c -o prog` sub-invocation via
+  `test_common.h`'s `find_rcc()`/`get_tmpdir()` helpers, since a
+  single-file repro doesn't reproduce -- parsing the callee's own body
+  in the same TU re-derives its function type from the by-then-complete
+  struct, masking the stale prototype). Confirmed it reproduces the
+  wrong-argument corruption (garbage sum instead of the expected 128)
+  with the struct/union skip reverted, passes clean restored. Full
+  local regression matrix re-run clean after the fix: TCC 118/118, Unit
+  289/289, C-testsuite 220/220, Torture 3605/3609 (0 failed, 354
+  skipped, 4 todo -- same baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: zstd 1.5.7 (`make check`: full `playTests.sh` suite passes,
+  including every multi-threaded compress/decompress round-trip; was
+  100% SIGABRT on the very first stdin-pipe test).
+
 ### Fixed (2026-08-21, uint64_t->double/float round-to-odd session)
 
 - **`uint64_t`/`unsigned long long` -> `double`/`float` conversion for

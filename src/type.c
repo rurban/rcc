@@ -1457,6 +1457,31 @@ static void add_type_internal(Node *node) {
         // Insert implicit casts for arguments when prototype is available
         for (Node **argp = &node->args; *argp && param_types;
              argp = &(*argp)->next, param_types = param_types->param_next) {
+            // Struct/union arguments are passed by raw value copy
+            // (codegen classifies/copies them from the argument's own,
+            // already-resolved type) -- never coerced via an
+            // arithmetic-conversion-style cast. same_type() falls back to
+            // a size compare for aggregates, which wrongly says "not the
+            // same type" when a struct tag is forward-declared (typedef'd
+            // and used in an earlier prototype, e.g. zstd's
+            // `ZSTD_CCtx_params`) and only completed later in the same TU:
+            // the prototype's parameter Type object froze the incomplete
+            // size (0) at declaration time, while the argument's own
+            // variable observes the real completed struct body/size
+            // (rcc's struct tags are identity objects completed in place
+            // -- see copy_type()'s own comment -- but two SEPARATE
+            // Type objects for the same tag can still exist when one was
+            // captured before completion and never re-synced). Wrapping
+            // the argument in a cast to that stale, zero-size type here
+            // silently discarded the real size at every later ABI
+            // decision (register/stack classification, byte-copy loop
+            // count), corrupting the call. cast_funcall_args() (parser.c)
+            // already deliberately excludes struct/union from its own,
+            // narrower is_integer/is_flonum cast check for the same
+            // reason; mirror that here.
+            if (((*argp)->ty && ((*argp)->ty->kind == TY_STRUCT || (*argp)->ty->kind == TY_UNION)) ||
+                (param_types->kind == TY_STRUCT || param_types->kind == TY_UNION))
+                continue;
             if (same_type((*argp)->ty, param_types))
                 continue;
             // GCC transparent_union (__attribute__((__transparent_union__))):
