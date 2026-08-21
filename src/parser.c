@@ -9614,8 +9614,8 @@ static Node *primary(Token **rest, Token *tok) {
                 if (current_fn_is_inline && var->is_static && !var->is_local &&
                     var->ty && !(var->ty->qual & QUAL_CONST) &&
                     find_global_name(tok->name) == var)
-                    error_tok(tok, "'%s' is static but used in inline function '%s'",
-                              tok->name, parser_current_fn ? parser_current_fn : "?");
+                    warn_tok(tok, "'%s' is static but used in inline function '%s'",
+                             tok->name, parser_current_fn ? parser_current_fn : "?");
                 node = new_var_node(var, tok);
                 node->chain_depth = last_find_var_chain_depth;
                 tok = tok->next;
