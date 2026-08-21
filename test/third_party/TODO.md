@@ -40,6 +40,46 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, x86 assembler instruction coverage session)
+
+Added missing x86 assembly instructions needed by nettle and libsodium:
+
+**SSE2 shift/unpack/logic:**
+
+- `psrad`: Group 13 immediate shift (66 0F 72 /4 ib)
+- `pandn`: SSE2 AND-NOT (66 0F DF /r)
+- `pmuludq`: SSE2 unsigned mul (66 0F F4 /r) — existed but undispatched
+- `punpcklbw/lwd/ldq/hbw/hwd/hdq`: SSE2 unpack family — all existed but undispatched
+
+**VEX 128-bit moves (AVX):**
+
+- `vmovdqa`: VEX.128.66.0F.WIG 6F/7F — reg-reg + mem load/store
+- `vmovdqu`: VEX.128.F3.0F.WIG 6F/7F — reg-reg + mem load/store
+
+**PCLMULQDQ (carry-less multiply for GHASH):**
+
+- `pclmullqlqdq/hqlqdq/lhqdq/hhqdq`: 66 0F 3A 44/45/4C/4D
+
+**VEX 128-bit 3-operand (AVX):**
+
+- `vpaddq/vpsubq/vpand`: VEX.128.66.0F.WIG D4/FB/DB
+- `vpunpcklqdq/vpunpckhqdq`: VEX.128.66.0F.WIG 6C/6D
+- `vpxor`: VEX.128.66.0F.WIG EF
+- `vpmuludq`: VEX.128.66.0F.WIG F4
+
+**VEX 128-bit 2-operand + imm (AVX):**
+
+- `vpshufd`: VEX.128.66.0F.WIG 70 /r ib
+- `vpsllq/vpsrlq`: VEX.128.66.0F.WIG 73 /6,/2 ib
+
+**VEX special (AVX):**
+
+- `vblendps`: VEX.128.66.0F3A.WIG 0C /r ib
+- `vbroadcastss`: VEX.128.66.0F38.WIG 18 /r
+
+All verified byte-for-byte against real GCC output.
+Unblocks: nettle (builds, 73/128 tests pass), libsodium (builds).
+
 ### Fixed (2026-08-21, preprocessor >32 params + hh_mask UB session)
 
 Two issues blocking redis and other projects:

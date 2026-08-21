@@ -3571,6 +3571,57 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_vpmuludq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    if (!strcmp(mnem, "vpaddq")) {
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpaddq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpsubq")) {
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpsubq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpand")) {
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpand_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpunpcklqdq")) {
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpunpcklqdq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpunpckhqdq")) {
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpunpckhqdq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpshufd")) {
+        // vpshufd $imm, src, dst (AT&T: ops[0]=imm, ops[1]=src, ops[2]=dst)
+        x86_vpshufd_128(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vpsllq")) {
+        // vpsllq $imm, src, dst (AT&T: ops[0]=imm, ops[1]=src, ops[2]=dst)
+        x86_vpsllq_128_i(buf, parse_x86_xmm(ops[2]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vpsrlq")) {
+        // vpsrlq $imm, src, dst (AT&T: ops[0]=imm, ops[1]=src, ops[2]=dst)
+        x86_vpsrlq_128_i(buf, parse_x86_xmm(ops[2]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vblendps")) {
+        // vblendps $imm, src2, src1, dst (AT&T: ops[0]=imm, ops[1]=src2, ops[2]=src1, ops[3]=dst)
+        if (is_xmm(0) && is_xmm(1) && is_xmm(2) && is_xmm(3))
+            x86_vblendps_128(buf, parse_x86_xmm(ops[3]), parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "vbroadcastss")) {
+        if (is_xmm(0) && is_xmm(1))
+            x86_vbroadcastss_128(buf, parse_x86_xmm(ops[1]), (X86XmmReg)0, parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "movd")) {
         // GP<->xmm 32-bit forms. GAS also accepts a 64-bit GP register
         // here (byte-identical to "movq" with REX.W set) -- real
@@ -4489,6 +4540,22 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         if (is_mem(0)) x86_por_rm(buf, parse_x86_xmm(ops[1]), M(0));
         else
             x86_por(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pclmullqlqdq")) {
+        x86_pclmullqlqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pclmullqhqdq")) {
+        x86_pclmullqhqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pclmulhqlqdq")) {
+        x86_pclmulhqlqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pclmulhqhqdq")) {
+        x86_pclmulhqhqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "pcmpeqd")) {

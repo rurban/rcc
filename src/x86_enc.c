@@ -2219,6 +2219,11 @@ void x86_pclmulqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit1(s, modrxmm(3, d, sr));
     emit1(s, imm);
 }
+// PCLMULQDQ convenience wrappers (GAS aliases for pclmulqdq with fixed imm8).
+void x86_pclmullqlqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x00); }
+void x86_pclmullqhqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x01); }
+void x86_pclmulhqlqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x10); }
+void x86_pclmulhqhqdq(SecBuf *s, X86XmmReg d, X86XmmReg sr) { x86_pclmulqdq(s, d, sr, 0x11); }
 void x86_pcmpestrm(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm) {
     emit1(s, 0x66);
     maybe_rex(s, 0, (int)d, 0, (int)sr);
@@ -2761,6 +2766,26 @@ void x86_vpmuludq_rm(SecBuf *s, X86XmmReg d, X86XmmReg v, X86Mem m) {
     emit1(s, 0xf4);
     emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
 }
+// 128-bit VEX 3-op for inline-asm vpaddq: VEX.128.66.0F.WIG D4 /r
+void x86_vpaddq_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0xd4, d, v, rm);
+}
+// 128-bit VEX 3-op for inline-asm vpsubq: VEX.128.66.0F.WIG FB /r
+void x86_vpsubq_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0xfb, d, v, rm);
+}
+// 128-bit VEX 3-op for inline-asm vpand: VEX.128.66.0F.WIG DB /r
+void x86_vpand_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0xdb, d, v, rm);
+}
+// 128-bit VEX 3-op for inline-asm vpunpcklqdq: VEX.128.66.0F.WIG 6C /r
+void x86_vpunpcklqdq_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0x6c, d, v, rm);
+}
+// 128-bit VEX 3-op for inline-asm vpunpckhqdq: VEX.128.66.0F.WIG 6D /r
+void x86_vpunpckhqdq_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0x6d, d, v, rm);
+}
 VEX256_OP(x86_vpmaddwd, 1, 0xf5) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpavgb, 1, 0xe0) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpavgw, 1, 0xe3) // 0F/0F38/0F3A VEX.256 macro
@@ -3036,6 +3061,25 @@ VEX256_SHIFT_IMM(x86_vpsraw_i, 0x71, 4) // 0F/0F38/0F3A VEX.256 macro
 VEX256_SHIFT_IMM(x86_vpsrad_i, 0x72, 4) // 0F/0F38/0F3A VEX.256 macro
 VEX256_SHIFT_IMM(x86_vpslldq_i, 0x73, 7) // 0F/0F38/0F3A VEX.256 macro
 VEX256_SHIFT_IMM(x86_vpsrldq_i, 0x73, 3) // 0F/0F38/0F3A VEX.256 macro
+// 128-bit immediate-count shifts: VEX.128.66.0F.WIG 71/72/73 /ext ib
+#define VEX128_SHIFT_IMM(fn, grp, ext) \
+    void fn(SecBuf *s, X86XmmReg d, uint8_t imm) { vex_rr(s, 1, 1, 0, 0, grp, (X86XmmReg)ext, 0, d); emit1(s, imm); }
+VEX128_SHIFT_IMM(x86_vpsllq_128_i, 0x73, 6) // VEX.128.66.0F 73 /6 ib
+VEX128_SHIFT_IMM(x86_vpsrlq_128_i, 0x73, 2) // VEX.128.66.0F 73 /2 ib
+// 128-bit VEX vpshufd with imm8: VEX.128.66.0F.WIG 70 /r ib (2-op: dst, src, imm)
+void x86_vpshufd_128(SecBuf *s, X86XmmReg d, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 1, 0, 0, 0x70, d, (X86XmmReg)0, rm);
+    emit1(s, imm);
+}
+// 128-bit VEX vblendps with imm8: VEX.128.66.0F3A.WIG 0C /r ib
+void x86_vblendps_128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm, uint8_t imm) {
+    vex_rr(s, 1, 3, 0, 0, 0x0c, d, v, rm);
+    emit1(s, imm);
+}
+// 128-bit VEX vbroadcastss: VEX.128.66.0F38.WIG 18 /r
+void x86_vbroadcastss_128(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 2, 0, 0, 0x18, d, v, rm);
+}
 // GP-register destinations: vmovmskps/pd, vpmovmskb (dst in ModRM.reg)
 #define VEX256_GP(fn, pp, op) \
     void fn(SecBuf *s, X86XmmReg dstGp, X86XmmReg src) { vex_rr(s, pp, 1, 0, 1, op, dstGp, 0, src); }
