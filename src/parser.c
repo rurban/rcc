@@ -7827,6 +7827,20 @@ static Node *declaration(Token **rest, Token *tok) {
             Node *vla_pre = NULL;
             if (parser_current_fn && (ty->kind == TY_PTR || ty->kind == TY_VLA))
                 ty = vla_freeze_dims(ty, &vla_pre, tok);
+            // C11 6.7p7 (via 6.2.5p28's "incomplete type" definition):
+            // an object with automatic storage duration must have a
+            // complete type -- there is no way to reserve stack space for
+            // an opaque forward-declared struct/union whose size is
+            // unknown. GCC: "storage size of 'p' isn't known". Found via
+            // Tcl's own `./configure` LFS probe (`struct dirent64 p;`,
+            // no `#include`d definition beyond the opaque glibc forward
+            // declaration without _LARGEFILE64_SOURCE/_GNU_SOURCE):
+            // rcc silently accepted this where real gcc rejects it,
+            // flipping the HAVE_STRUCT_DIRENT64 autoconf result and
+            // making tclUnixPort.h select a dirent64/d_name path real
+            // gcc's own Tcl build never takes on this system.
+            if ((ty->kind == TY_STRUCT || ty->kind == TY_UNION) && !ty->has_body)
+                error_tok(tok, "storage size of '%s' isn't known", name);
             LVar *var = new_var(name, ty, true);
             // Flush queued typeof(VM expr) evaluations and struct-size
             // captures ahead of this declarator's own dim freezes.

@@ -40,6 +40,62 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, incomplete-type local declaration session)
+
+- **An automatic-storage-duration local declaration of an incomplete
+  struct/union type was silently accepted** — `parser.c`, `declaration()`
+  (the default, non-static/extern/constexpr auto-variable branch). Per
+  C11 6.7p7 (via 6.2.5p28's definition of "incomplete type"), an object
+  with automatic storage duration must have a complete type — there is
+  no way to reserve stack space for an unknown size; real gcc rejects
+  it with "storage size of 'p' isn't known". rcc had no such check at
+  all in this specific declaration path (the equivalent `sizeof`/cast
+  checks already existed elsewhere, see the 2026-08-17 checklist
+  triage session's `test_incomplete_sizeof_cast.c`, but not this one).
+
+  Found via Tcl's own `./configure` large-file-support probe:
+  `struct dirent64 p;` inside a throwaway `AC_COMPILE_IFELSE` test
+  program, with glibc's `<dirent.h>` only ever forward-declaring
+  `struct dirent64` (no body) unless `_LARGEFILE64_SOURCE`/
+  `_GNU_SOURCE` is in scope (neither is, on this system, confirmed
+  identical for both compilers via an isolated `sizeof`-based probe).
+  Compiling this test with rcc as `CC` wrongly SUCCEEDED where real
+  gcc correctly fails, flipping Tcl's own `HAVE_STRUCT_DIRENT64`
+  autoconf result to true; `tclUnixPort.h` then selected the
+  (unusable, still-incomplete) `struct dirent64`/`readdir64()` code
+  path, and the real bug finally surfaced three files later as
+  `unix/tclUnixFCmd.c:349: error: no such member` on
+  `dirEntPtr->d_name` — a confusing downstream symptom of a root
+  cause two build steps upstream. Cross-checked step by step against
+  real gcc on a fresh `core-9-0-4` checkout: gcc's own configure
+  correctly leaves `HAVE_STRUCT_DIRENT64` undefined on this system,
+  and `tclUnixFCmd.c` builds clean.
+
+  Fixed by adding the same `!ty->has_body` incomplete-type rejection
+  the `sizeof`/cast paths already use, right before the automatic
+  local variable is created — deliberately narrow: pointers to an
+  incomplete type (always complete themselves) and `extern` block-scope
+  declarations (reference file-scope storage, never allocate locally)
+  are both unaffected, matching real gcc exactly.
+
+  New regression coverage: extended (and renamed for its now-broader
+  scope) `test/test_incomplete_sizeof_cast.c` →
+  `test/test_incomplete_type_validation.c` with 6 new subprocess-compile
+  cases (reject: local incomplete struct/union; accept: local pointer
+  to incomplete type, local `extern` of incomplete type, local
+  complete-struct declaration). Full local regression matrix re-run
+  clean after the fix: TCC 118/118, Unit 285/285, C-testsuite 220/220,
+  Torture 3605/3609 (0 failed, 354 skipped, 4 todo — same baseline),
+  Dg-error 34/34, Link 11/11.
+
+  Unblocks: Tcl 9.0.4 now builds and links completely end to end
+  (`tclUnixFCmd.c`'s "no such member" is gone; `tcltest` links). Its
+  own `make test` still fails separately at runtime with "Cannot find
+  a usable init.tcl" — confirmed **not** an rcc bug: a standard Tcl
+  script-library search-path quirk for running `tcltest` straight out
+  of an unbuilt-tree (no `make install`) sandbox location, unrelated to
+  which compiler built the binary, out of scope for a codegen fix.
+
 ### Fixed (2026-08-21, missing SSE2 intrinsics session)
 
 - **`_mm_sll_epi16/32/64`, `_mm_srl_epi16/32/64`, `_mm_sra_epi16/32`
