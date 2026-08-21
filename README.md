@@ -79,6 +79,7 @@ didn't report every expected error line, `r` = runtime failure.
 | antcc    | 1661   | 1040   | 1394    | 61%, 974c/23r failures     |
 | slimcc   | 2077   | 1397   | 1077    | 59%, 1324c/7r failures     |
 | lacc     | 1468   | 2018   | 1073    | 42%, 1771c/14r failures    |
+| compcert | 1674   | 2525   | 399     | 40%, 2336c/141r failures   |
 | scc      | 1457   | 2658   | 444     | 35%, 2389c/31r failures    |
 | xcc      | 641    | 2197   | 1256    | 22%, 2123c failures        |
 | cproc    | 344    | 3811   | 404     | 8%, 3347c failures         |

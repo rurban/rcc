@@ -6,7 +6,8 @@
 # files that run_tests writes for each suite.
 #
 # Usage: ./test-all-compilers.sh [compiler...]
-#   With no args: rcc gcc ccc clang tcc kefir slimcc (whichever are found).
+#   With no args: rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc
+#                 cproc cake compcert (whichever are found).
 #   With args: only run/report the named compilers, e.g.
 #     ./test-all-compilers.sh gcc clang
 
@@ -77,6 +78,7 @@ CAKE_CC="$(which cake-cc.sh 2>/dev/null || true)"
 if [ -z "$CAKE_CC" ] && [ -x ./cake-cc.sh ]; then
 	CAKE_CC="./cake-cc.sh"
 fi
+CCOMP="$(which ccomp 2>/dev/null || true)"
 
 echo "Building rcc + run_tests..."
 make -s rcc run_tests
@@ -84,7 +86,7 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc cproc cake"
+ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc cproc cake compcert"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
@@ -100,6 +102,7 @@ bin_for() {
 	scc) echo "$SCC" ;;
 	antcc) echo "$ANTCC" ;;
 	cake) echo "$CAKE_CC" ;;
+	compcert) echo "$CCOMP" ;;
 	esac
 }
 suffix_for() {
