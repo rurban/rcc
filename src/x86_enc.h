@@ -573,6 +573,7 @@ void x86_psllq(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_psrlq(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_pslld(SecBuf *s, X86XmmReg dst, uint8_t imm);
 void x86_psrld(SecBuf *s, X86XmmReg dst, uint8_t imm);
+void x86_psrad(SecBuf *s, X86XmmReg dst, uint8_t imm);
 // AES-NI (66 0F 38 xx /r): one round of AES encryption/decryption, or
 // the inverse-mix-columns step used when expanding a decryption key
 // schedule from an encryption one.
@@ -753,6 +754,12 @@ void x86_pcmpistri(SecBuf *s, X86XmmReg d, X86XmmReg sr, uint8_t imm);
 void x86_movdqa_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
 void x86_movdqa_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movdqu_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
+void x86_vmovdqa_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_vmovdqa_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
+void x86_vmovdqa_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
+void x86_vmovdqu_rr(SecBuf *s, X86XmmReg dst, X86XmmReg src);
+void x86_vmovdqu_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
+void x86_vmovdqu_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movq_rm(SecBuf *s, X86Mem srcm, X86XmmReg dst);
 void x86_movq_mr(SecBuf *s, X86Mem dstm, X86XmmReg src);
 void x86_movd_r_xmm(SecBuf *s, X86XmmReg dst, X86Reg src);

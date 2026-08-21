@@ -3538,6 +3538,23 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             sse_rr_f3(buf, 0x6f, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    // VEX-encoded aligned/unaligned 128-bit XMM moves (AVX).
+    if (!strcmp(mnem, "vmovdqa")) {
+        if (is_mem(0) && is_xmm(1)) x86_vmovdqa_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        else if (is_xmm(0) && is_mem(1))
+            x86_vmovdqa_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else if (is_xmm(0) && is_xmm(1))
+            x86_vmovdqa_rr(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vmovdqu")) {
+        if (is_mem(0) && is_xmm(1)) x86_vmovdqu_rm(buf, M(0), parse_x86_xmm(ops[1]));
+        else if (is_xmm(0) && is_mem(1))
+            x86_vmovdqu_mr(buf, M(1), parse_x86_xmm(ops[0]));
+        else if (is_xmm(0) && is_xmm(1))
+            x86_vmovdqu_rr(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "movd")) {
         // GP<->xmm 32-bit forms. GAS also accepts a 64-bit GP register
         // here (byte-identical to "movq" with REX.W set) -- real
@@ -4480,6 +4497,12 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "psrld")) {
         x86_psrld(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
+        return true;
+    }
+    if (!strcmp(mnem, "psrad")) {
+        // psrad $imm, reg -- Group 12 immediate-shift form (nettle's
+        // ghash-update.s uses psrad $31, %xmm5).
+        x86_psrad(buf, parse_x86_xmm(ops[1]), (uint8_t)IMM(0));
         return true;
     }
     if (!strcmp(mnem, "pshufb")) {

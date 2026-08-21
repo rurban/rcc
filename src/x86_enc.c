@@ -1586,7 +1586,8 @@ static void group12_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) 
     emit3(s, 0x0f, 0x71, (uint8_t)((3 << 6) | (ext << 3) | ((int)d & 7)));
     emit1(s, imm);
 }
-void x86_psrad(SecBuf *s, X86XmmReg d, uint8_t imm) { group12_shift_imm(s, d, 4, imm); }
+// psrad uses Group 13 (same as pslld/psrld, opcode 66 0F 72), extension /4.
+void x86_psrad(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 4, imm); }
 // AES-NI (66 0F 38 xx /r), all reg/reg -- real GAS also accepts an
 // xmm/m128 second operand, but every real caller (OpenSSL/LibreSSL's
 // aesni-x86_64.pl-generated .S files) only ever uses the register form.
@@ -2440,6 +2441,30 @@ static void bmi2_shift_rr(SecBuf *s, int size, int pp, X86Reg dst, X86Reg src, X
 void x86_shlx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 1, dst, src, count); }
 void x86_shrx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 3, dst, src, count); }
 void x86_sarx_rr(SecBuf *s, int size, X86Reg dst, X86Reg src, X86Reg count) { bmi2_shift_rr(s, size, 2, dst, src, count); }
+// VEX 128-bit XMM reg-reg load: pp=1(66)=vmovdqa, pp=2(F3)=vmovdqu.
+// Encoding: VEX.128.pp.0F.WIG 6F /r — dst=ModRM.reg, src=ModRM.rm.
+// v=XMM0 → inv(v)=15 (vvvv=1111, unused NDS).
+static void vex_movd_rr(SecBuf *s, int pp, X86XmmReg d, X86XmmReg sr) {
+    vex_rr(s, pp, 1, 0, 0, 0x6f, d, X86_XMM0, sr);
+}
+// VEX 128-bit XMM mem-reg load: VEX.128.pp.0F.WIG 6F /r — dst=ModRM.reg, rm=mem.
+static void vex_movd_rm(SecBuf *s, int pp, X86XmmReg d, X86Mem m) {
+    vex2(s, pp, 0, d, X86_XMM0, X86_XMM0);
+    emit1(s, 0x6f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
+}
+// VEX 128-bit XMM reg-mem store: VEX.128.pp.0F.WIG 7F /r — rm=ModRM.reg, mem=ModRM.rm.
+static void vex_movd_mr(SecBuf *s, int pp, X86Mem m, X86XmmReg sr) {
+    vex2(s, pp, 0, sr, X86_XMM0, X86_XMM0);
+    emit1(s, 0x7f);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)sr);
+}
+void x86_vmovdqa_rr(SecBuf *s, X86XmmReg d, X86XmmReg sr) { vex_movd_rr(s, 1, d, sr); }
+void x86_vmovdqa_rm(SecBuf *s, X86Mem m, X86XmmReg d) { vex_movd_rm(s, 1, d, m); }
+void x86_vmovdqa_mr(SecBuf *s, X86Mem m, X86XmmReg sr) { vex_movd_mr(s, 1, m, sr); }
+void x86_vmovdqu_rr(SecBuf *s, X86XmmReg d, X86XmmReg sr) { vex_movd_rr(s, 2, d, sr); }
+void x86_vmovdqu_rm(SecBuf *s, X86Mem m, X86XmmReg d) { vex_movd_rm(s, 2, d, m); }
+void x86_vmovdqu_mr(SecBuf *s, X86Mem m, X86XmmReg sr) { vex_movd_mr(s, 2, m, sr); }
 // ===================== EVEX (AVX-512) =====================
 // 4-byte EVEX prefix (0x62) for 512-bit ops: P0 = R X B R' 0 0 mmmmm,
 // P1 = W vvvv 1 pp, P2 = z L'L b V' aaa. L'L=10 selects 512-bit. aaa is
