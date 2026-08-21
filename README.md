@@ -74,6 +74,7 @@ didn't report every expected error line, `r` = runtime failure.
 | ccc      | 3897   | 241    | 413     | 94%, 151c/31r failures     |
 | clang    | 3708   | 649    | 191     | 85%, 530c/36e/15r failures |
 | tcc      | 2676   | 480    | 1395    | 84%, 383c/17r failures     |
+| cake     | 2567   | 1637   | 396     | 79%, 1584c/53r failures    |
 | kefir    | 2989   | 996    | 566     | 74%, 892c/15r failures     |
 | antcc    | 1661   | 1040   | 1394    | 61%, 974c/23r failures     |
 | slimcc   | 2077   | 1397   | 1077    | 59%, 1324c/7r failures     |

@@ -6264,7 +6264,7 @@ int main(int argc, char **argv) {
                   contains(a, "xcc") || contains(a, "cproc") ||
                   contains(a, "lacc") || contains(a, "scc") ||
                   contains(a, "8cc") || contains(a, "chibicc") ||
-                  contains(a, "antcc")))
+                  contains(a, "antcc") || contains(a, "cake")))
             rcc = a;
         else if (only_test_count < MAX_ONLY_TESTS)
             only_tests[only_test_count++] = a;
@@ -6307,7 +6307,10 @@ int main(int argc, char **argv) {
         rb = rb ? rb + 1 : rcc;
         if (!contains(rb, "rcc")) {
             static char name_buf[256];
-            snprintf(name_buf, sizeof(name_buf), "%s", rb);
+            if (contains(rb, "cake-cc"))
+                snprintf(name_buf, sizeof(name_buf), "%s", "cake");
+            else
+                snprintf(name_buf, sizeof(name_buf), "%s", rb);
             compiler_name = name_buf;
         }
     }

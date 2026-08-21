@@ -73,6 +73,10 @@ ANTCC="$(resolve_bin antcc)"
 if [ -z "$ANTCC" ] && [ -x ../antcc/antcc ]; then
 	ANTCC="../antcc/antcc"
 fi
+CAKE_CC="$(which cake-cc.sh 2>/dev/null || true)"
+if [ -z "$CAKE_CC" ] && [ -x ./cake-cc.sh ]; then
+	CAKE_CC="./cake-cc.sh"
+fi
 
 echo "Building rcc + run_tests..."
 make -s rcc run_tests
@@ -80,7 +84,7 @@ make -s rcc run_tests
 # name:binary:suffix triples, in README row order. suffix is the
 # "_<compiler-basename>" run_tests appends to report filenames for
 # any binary whose basename doesn't contain "rcc" (see run_tests.c).
-ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc cproc"
+ROW_NAMES="rcc gcc ccc clang tcc kefir antcc slimcc lacc scc xcc cproc cake"
 bin_for() {
 	case "$1" in
 	rcc) echo "$RCC" ;;
@@ -95,6 +99,7 @@ bin_for() {
 	lacc) echo "$LACC" ;;
 	scc) echo "$SCC" ;;
 	antcc) echo "$ANTCC" ;;
+	cake) echo "$CAKE_CC" ;;
 	esac
 }
 suffix_for() {

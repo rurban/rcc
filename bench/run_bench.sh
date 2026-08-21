@@ -48,6 +48,10 @@ CHIBICC="$(which chibicc 2>/dev/null || true)"
 if [ -z "$CHIBICC" ] && [ -x ../chibicc/chibicc ]; then
 	CHIBICC="../chibicc/chibicc"
 fi
+CAKE_CC="$(which cake-cc.sh 2>/dev/null || true)"
+if [ -z "$CAKE_CC" ] && [ -x ./cake-cc.sh ]; then
+	CAKE_CC="./cake-cc.sh"
+fi
 
 LARGE_SRC="bench/sqlite3.c"
 LARGE_SRC_URL="https://sqlite.org/2026/sqlite-amalgamation-3530200.zip"
@@ -95,6 +99,7 @@ CPROC_EXE="bench/bench_cproc"
 SCC_EXE="bench/bench_scc"
 LACC_EXE="bench/bench_lacc"
 ANTCC_EXE="bench/bench_antcc"
+CAKE_EXE="bench/bench_cake"
 CCC_EXE="bench/bench_ccc"
 GCC_EXE="bench/bench_gcc"
 GCC_O2_EXE="bench/bench_gcc_o2"
@@ -132,7 +137,7 @@ resume_gortex() {
 }
 
 cleanup() {
-	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE"
+	rm -f "$RCC_EXE" "$RCC_O1_EXE" "$RCC_O2_EXE" "$TCC_EXE" "$GCC_EXE" "$GCC_O2_EXE" "$CLANG_EXE" "$CLANG_O2_EXE" "$CPROC_EXE" "$SCC_EXE" "$LACC_EXE" "$ANTCC_EXE" "$CAKE_EXE"
 
 	rm -f "$KEFIR_EXE" "$SLIMCC_EXE" "$XCC_EXE" "$CCC_EXE" "$LARGE_SO"
 	# Must run on every exit path: a paused daemon left behind is worse than a
@@ -300,6 +305,9 @@ if [ -n "$CPROC" ]; then
 fi
 if [ -n "$ANTCC" ]; then
    run_bench "ANTCC" "$ANTCC" "$SRC -o $ANTCC_EXE" "$ANTCC_EXE" || true
+fi
+if [ -n "$CAKE_CC" ]; then
+   run_bench "CAKE" "$CAKE_CC" "$SRC -o $CAKE_EXE" "$CAKE_EXE" || true
 fi
 if [ -n "$CCC" ]; then
    run_bench "CCC" "$CCC" "$SRC -o $CCC_EXE" "$CCC_EXE" || true
