@@ -2292,8 +2292,23 @@ int link_elf(LinkState *s) {
         // -shared-specific: a dynamically-linked *executable* doing the
         // same thing hits the identical "address not known until load
         // time" problem.
+        // Non-allocated sections (.debug_info/.debug_line/.debug_aranges
+        // when compiling with -g) carry their own DWARF-internal
+        // relocations (against symbol 0, describing offsets *within the
+        // debug data itself*, unrelated to the runtime image) -- these
+        // must never contribute a .rela.dyn entry: ld.so only ever
+        // applies .rela.dyn against the PT_LOAD-mapped image, and a
+        // debug section's tiny, non-image offset (e.g. 0x10, sec->addr=0)
+        // collides with real, low addresses inside .text (also based at
+        // 0 for -shared), corrupting the dynamic linker's own relocation
+        // walk at dlopen() time -- a real SIGSEGV inside glibc's
+        // elf_machine_rela, not anything in the loaded module's own code.
+        // Found via chibi-scheme's `-g3` shared-library build (every
+        // lib/*.so): dlopen() crashed unconditionally, deep inside
+        // ld.so's own relocation processing.
         for (int i = 0; i < s->n_secs; i++) {
             LinkSec *sec = &s->secs[i];
+            if (!sec->alloc) continue;
             for (int j = 0; j < sec->n_relocs; j++) {
                 LinkReloc *r = &sec->relocs[j];
                 if (dyn_idx[r->sym] &&
@@ -2313,6 +2328,7 @@ int link_elf(LinkState *s) {
         if (s->opt_shared) {
             for (int i = 0; i < s->n_secs; i++) {
                 LinkSec *sec = &s->secs[i];
+                if (!sec->alloc) continue;
                 for (int j = 0; j < sec->n_relocs; j++) {
                     LinkReloc *r = &sec->relocs[j];
                     if (!dyn_idx[r->sym] &&
@@ -2559,6 +2575,7 @@ int link_elf(LinkState *s) {
             uint32_t abs_type = s->arch == ARCH_AARCH64 ? R_AARCH64_ABS64 : R_X86_64_64;
             for (int i = 0; i < s->n_secs; i++) {
                 LinkSec *sec = &s->secs[i];
+                if (!sec->alloc) continue;
                 for (int j = 0; j < sec->n_relocs; j++) {
                     LinkReloc *r = &sec->relocs[j];
                     if (!dyn_idx[r->sym] ||
@@ -2583,6 +2600,7 @@ int link_elf(LinkState *s) {
             uint32_t relative = s->arch == ARCH_AARCH64 ? R_AARCH64_RELATIVE : R_X86_64_RELATIVE;
             for (int i = 0; i < s->n_secs; i++) {
                 LinkSec *sec = &s->secs[i];
+                if (!sec->alloc) continue;
                 for (int j = 0; j < sec->n_relocs; j++) {
                     LinkReloc *r = &sec->relocs[j];
                     if (dyn_idx[r->sym] ||

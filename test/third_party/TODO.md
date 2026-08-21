@@ -40,6 +40,51 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, ELF shared-library debug-section relocation session)
+
+- **`.rela.dyn` emission iterated non-allocated (debug) sections too** —
+  `src/link_elf.c`. The `-shared` link path's four `.rela.dyn`-related
+  loops (`n_absdyn`/`n_relative` counting, and the matching
+  `R_X86_64_64`/`R_X86_64_RELATIVE` emission passes) iterated `s->secs[]`
+  unconditionally — every OTHER section loop in this same function
+  already guards `if (!sec->alloc) continue;`, but these four didn't.
+  A `-g`/`-g3` build's `.debug_info`/`.debug_line`/`.debug_aranges`
+  sections (non-allocated: never mapped into any `PT_LOAD` segment) carry
+  their own DWARF-internal relocations — symbol 0, type ABS64/32/32U,
+  describing offsets _within the debug data itself_, entirely unrelated
+  to the runtime image. Swept into `.rela.dyn` as bogus
+  `R_X86_64_RELATIVE` entries, their tiny debug-section-relative offsets
+  (e.g. `0x10`, `0x28`, `0x37`) collided with real, low addresses inside
+  `.text` (also based at 0 for `-shared`) — `dlopen()` then had glibc's
+  own `ld.so` write an absolute pointer _into_ that read-only, executable
+  segment while walking `.rela.dyn`, corrupting the process (or SIGSEGV
+  outright, deep inside `elf_machine_rela`/`elf_dynamic_do_Rela`) the
+  moment any `-g`-built shared object was loaded — unconditionally, not
+  data-dependent, every single one.
+
+  Found via chibi-scheme's own `Makefile.libs` (every `lib/**/*.so`
+  module built with `-g -g3 -O3`): `dlopen("lib/srfi/69/hash.so")`
+  crashed inside glibc's dynamic linker; `readelf -r` on the produced
+  `.so` showed exactly 3 spurious `R_X86_64_RELATIVE` entries (traced via
+  a temporary debug print to `.debug_line`/`.debug_info`/
+  `.debug_aranges`, `sec->addr=0 exec=0 write=0`, confirming they were
+  never allocated sections at all) alongside the legitimate ones.
+
+  Fixed by adding the same `if (!sec->alloc) continue;` guard to all
+  four loops.
+
+  New regression coverage: `test/test-link.sh` case 15 (a `-g -g3`
+  shared library with a locally-resolved function pointer, `dlopen()`d
+  and called through) — confirmed it reproduces the exact SIGSEGV when
+  the four guards are reverted, and passes clean with them restored.
+  Full local regression matrix re-run clean after the fix: TCC 118/118,
+  Unit 287/287, C-testsuite 220/220, Torture 3605/3609 (0 failed, 354
+  skipped, 4 todo — same baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: chibi-scheme 0.12.0 (full `test-r7rs` + `test-fs` suite: 8/8
+  subgroups, 304/304 tests pass — every `lib/**/*.so` module now
+  `dlopen()`s cleanly).
+
 ### Fixed (2026-08-21, angle-include search order + findutils session)
 
 - **`-I` directories searched AFTER rcc's own bundled headers for

@@ -533,6 +533,49 @@ else
     fail "plain C99 inline function address uniqueness (3-TU link)" "$(tr '\n' ' ' < "$TMP/e12")"
 fi
 
+# ---------------------------------------------------------------------------
+# 15. A `-g`-built shared library, dlopen()'d. link_elf.c's .rela.dyn
+#    emission (R_X86_64_RELATIVE/R_X86_64_64 entries) iterated every
+#    section including non-allocated debug sections (.debug_info/
+#    .debug_line/.debug_aranges), which carry their own DWARF-internal
+#    relocations describing offsets *within the debug data itself* --
+#    unrelated to the runtime image, and never meant to land in
+#    .rela.dyn. Those bogus entries recorded tiny, low offsets (e.g. 0x10)
+#    against sec->addr=0 (matching .text's own base for -shared), which
+#    ld.so then wrote an absolute pointer *into* .text -- a read-only,
+#    executable segment -- corrupting the running process (or crashing
+#    outright, deep inside glibc's own elf_machine_rela) the moment
+#    dlopen() processed them. A locally-defined function pointer forces
+#    the R_*_RELATIVE entry this needs; `-g` forces the debug sections
+#    that used to corrupt it. Found via chibi-scheme's own `-g3` shared-
+#    library modules (every lib/*.so): dlopen() crashed unconditionally.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = so ]; then
+    cat > "$TMP/dbglib.c" <<'EOF'
+static int local_answer(void) { return 42; }
+int (*answer_fn)(void) = local_answer; /* forces R_X86_64_RELATIVE */
+EOF
+    cat > "$TMP/dbgmain.c" <<'EOF'
+#include <dlfcn.h>
+int main(void) {
+    void *h = dlopen("./libdbg.so", RTLD_NOW);
+    if (!h) return 1;
+    int (**pfn)(void) = (int (**)(void))dlsym(h, "answer_fn");
+    if (!pfn || !*pfn) return 2;
+    return (*pfn)() == 42 ? 0 : 3;
+}
+EOF
+    if "$RCC" -shared -fPIC -g -g3 -O3 "$TMP/dbglib.c" -o "$TMP/libdbg.so" 2>"$TMP/e13" \
+        && "$RCC" "$TMP/dbgmain.c" -ldl -o "$TMP/dbgmain" 2>>"$TMP/e13" \
+        && ( cd "$TMP" && ./dbgmain ); then
+        pass "shared library with debug info (.so), dlopen'd"
+    else
+        fail "shared library with debug info (.so), dlopen'd" "$(tr '\n' ' ' < "$TMP/e13")"
+    fi
+else
+    printf '  %-44s SKIP (Linux/ELF-only)\n' "shared library with debug info (.so), dlopen'd"
+fi
+
 echo ""
 echo "Link tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
