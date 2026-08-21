@@ -463,8 +463,8 @@ static unsigned compute_hh_mask(Macro *m, Token *body) {
                     n1->len == 2 && n1->ptr[0] == '#' && n1->ptr[1] == '#';
                 int was_hashhash = prev && prev->kind == TK_PUNCT &&
                     prev->len == 2 && prev->ptr[0] == '#' && prev->ptr[1] == '#';
-                if (is_hashhash) mask |= 1u << idx;
-                if (was_hashhash) mask |= 1u << idx;
+                if (idx < 32 && is_hashhash) mask |= 1u << idx;
+                if (idx < 32 && was_hashhash) mask |= 1u << idx;
             }
         }
         prev = b;
@@ -1728,7 +1728,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
         if (b->kind == TK_IDENT) {
             char *bn = b->name;
             if (m->is_variadic && bn == kw_va_args) {
-                splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << vs)) ? raw_args : args, argc, b);
+                splice_va(&rhead, &rtail, m, (vs < 32 && (m->hh_mask & (1u << vs))) ? raw_args : args, argc, b);
                 continue;
             }
             if (m->is_variadic && bn == kw_va_opt) {
@@ -1757,7 +1757,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 // Named GNU variadic param (`args...`) with no trailing
                 // arguments supplied: splice_va yields nothing, same as
                 // literal __VA_ARGS__ above.
-                splice_va(&rhead, &rtail, m, (m->hh_mask & (1u << idx)) ? raw_args : args, argc, b);
+                splice_va(&rhead, &rtail, m, (idx < 32 && (m->hh_mask & (1u << idx))) ? raw_args : args, argc, b);
                 continue;
             }
             if (idx >= 0 && idx < argc) {
@@ -1788,7 +1788,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                 // instead of only ever setting it true and never clearing
                 // a leftover true from the argument's own prior life.
                 Token *before = rtail;
-                splice_tokens(&rhead, &rtail, (m->hh_mask & (1u << idx)) ? raw_args[idx] : args[idx]);
+                splice_tokens(&rhead, &rtail, (idx < 32 && (m->hh_mask & (1u << idx))) ? raw_args[idx] : args[idx]);
                 if (rtail && rtail != before)
                     rtail->no_space_after = b->next && b->next != end &&
                         b->next->kind != TK_EOF && !str_needs_space(b, b->next);
@@ -2843,8 +2843,10 @@ static void do_directive(void) {
         char *mname = name_tok->name;
         pp_check_ident(mname, name_tok->len, lvl->filename, lvl->reported_line);
         bool is_function = false, is_variadic = false, is_gnu_variadic = false;
-        char *params[32];
+        char *params_buf[32];
+        char **params = params_buf;
         int np = 0;
+        int params_cap = 32;
         Token *b = rest;
         if (b && ptok(b, "(") && b->ptr == name_tok->ptr + name_tok->len) {
             is_function = true;
@@ -2859,7 +2861,14 @@ static void do_directive(void) {
                     continue;
                 }
                 if (b->kind == TK_IDENT) {
-                    if (np < 32) params[np++] = b->name;
+                    if (np >= params_cap) {
+                        int new_cap = params_cap * 2;
+                        char **np2 = arena_alloc(sizeof(char *) * new_cap);
+                        memcpy(np2, params, sizeof(char *) * params_cap);
+                        params = np2;
+                        params_cap = new_cap;
+                    }
+                    params[np++] = b->name;
                     prev = b;
                     b = b->next;
                     continue;

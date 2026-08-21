@@ -1579,6 +1579,14 @@ static void group13_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) 
 }
 void x86_pslld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 6, imm); }
 void x86_psrld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 2, imm); }
+// Group 12: 66 0F 71 /ext ib — psrad xmm, imm8 (ext=4).
+static void group12_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) {
+    emit1(s, 0x66);
+    if ((int)d > X86_RDI) emit1(s, rex(0, 0, 0, 1));
+    emit3(s, 0x0f, 0x71, (uint8_t)((3 << 6) | (ext << 3) | ((int)d & 7)));
+    emit1(s, imm);
+}
+void x86_psrad(SecBuf *s, X86XmmReg d, uint8_t imm) { group12_shift_imm(s, d, 4, imm); }
 // AES-NI (66 0F 38 xx /r), all reg/reg -- real GAS also accepts an
 // xmm/m128 second operand, but every real caller (OpenSSL/LibreSSL's
 // aesni-x86_64.pl-generated .S files) only ever uses the register form.

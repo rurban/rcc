@@ -40,6 +40,31 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, preprocessor >32 params + hh_mask UB session)
+
+Two issues blocking redis and other projects:
+
+- **`#define` param parser used fixed `char *params[32]` array**
+  — `preprocess.c`. Macros with >32 parameters silently lost params
+  beyond 32, so redis's `ARG_N` (160 params) couldn't match the Nth
+  argument. Fix: dynamically grow via `arena_alloc` when >32 params.
+
+- **`hh_mask` (32-bit) shifted by `idx` without bounds check**
+  — `preprocess.c`. `1u << idx` is UB for `idx >= 32`. Guarded all
+  shift sites with `(idx < 32)`. Also guarded `compute_hh_mask()`.
+
+- **`static` in `inline` function error downgraded to warning**
+  — `parser.c`. GCC accepts bare `inline` referencing `static` variables;
+  rcc errored. Downgraded to `warn_tok` to match GCC behavior.
+  Unblocks: jq (builds, only optional plugin test fails).
+
+Projects now verified:
+
+- **redis**: compiles (was COMPACT_FMT_N error); link fails on
+  `__attribute__((__common__))` not yet supported (pre-existing)
+- **jq**: builds and runs (1 optional test fails due to missing
+  `libinject_errors.so` plugin, not rcc bug)
+
 ### Fixed (2026-08-21, limits.h #include_next removal + LONG_BIT + atomic memory-order session)
 
 Three issues blocking multiple third-party projects:
