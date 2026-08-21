@@ -2742,6 +2742,24 @@ VEX256_OP(x86_vpmullw, 1, 0xd5) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpmulhw, 1, 0xe5) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpmulhuw, 1, 0xe4) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpmuludq, 1, 0xf4) // 0F/0F38/0F3A VEX.256 macro
+// 128-bit VEX 3-op for inline-asm vpxor: VEX.128.66.0F.WIG EF /r
+void x86_vpxor_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0xef, d, v, rm);
+}
+void x86_vpxor_rm(SecBuf *s, X86XmmReg d, X86XmmReg v, X86Mem m) {
+    vex3(s, 1, 1, 0, 0, d, v, X86_XMM0);
+    emit1(s, 0xef);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
+}
+// 128-bit VEX 3-op for inline-asm vpmuludq: VEX.128.66.0F.WIG F4 /r
+void x86_vpmuludq_rr(SecBuf *s, X86XmmReg d, X86XmmReg v, X86XmmReg rm) {
+    vex_rr(s, 1, 1, 0, 0, 0xf4, d, v, rm);
+}
+void x86_vpmuludq_rm(SecBuf *s, X86XmmReg d, X86XmmReg v, X86Mem m) {
+    vex3(s, 1, 1, 0, 0, d, v, X86_XMM0);
+    emit1(s, 0xf4);
+    emit_mem(s, m.base, m.index, m.scale, m.disp, m.seg, (int)d);
+}
 VEX256_OP(x86_vpmaddwd, 1, 0xf5) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpavgb, 1, 0xe0) // 0F/0F38/0F3A VEX.256 macro
 VEX256_OP(x86_vpavgw, 1, 0xe3) // 0F/0F38/0F3A VEX.256 macro

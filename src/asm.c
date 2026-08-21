@@ -3555,6 +3555,22 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_vmovdqu_rr(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    // VEX 3-operand integer instructions (AVX). AT&T: vop src2, src1, dst.
+    // src2 may be memory (ops[0]), src1 is always xmm (ops[1]), dst is always xmm (ops[2]).
+    if (!strcmp(mnem, "vpxor")) {
+        if (is_mem(0) && is_xmm(1) && is_xmm(2))
+            x86_vpxor_rm(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), M(0));
+        else if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpxor_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "vpmuludq")) {
+        if (is_mem(0) && is_xmm(1) && is_xmm(2))
+            x86_vpmuludq_rm(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), M(0));
+        else if (is_xmm(0) && is_xmm(1) && is_xmm(2))
+            x86_vpmuludq_rr(buf, parse_x86_xmm(ops[2]), parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "movd")) {
         // GP<->xmm 32-bit forms. GAS also accepts a 64-bit GP register
         // here (byte-identical to "movq" with REX.W set) -- real
@@ -4366,6 +4382,14 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     }
     if (!strcmp(mnem, "pxor")) {
         x86_pxor(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpcklqdq")) {
+        x86_punpcklqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpckhqdq")) {
+        x86_punpckhqdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     // These twelve unconditionally called parse_x86_xmm() on ops[0]:
