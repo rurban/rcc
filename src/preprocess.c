@@ -608,31 +608,49 @@ static char *full_path(char *path);
 #define RCC_INCDIR "include"
 #endif
 
-// Build the ordered list of directories searched for an include:
-// (quote form only) -iquote dirs, then rcc's own bundled include dir
-// (RCC_INCDIR / its "include" source-tree fallback), then user -I/
-// -isystem/-idirafter paths, then system paths. Only -iquote moves
-// ahead of RCC_INCDIR: GCC lets a user's own -iquote file of the same
-// name shadow its private compiler headers for the quote form
-// specifically (confirmed directly against gcc: `-iquote dir` with
-// `dir/string.h` present satisfies `#include "string.h"` ahead of any
-// bundled one) -- load-bearing for noplate's own `#include "string.h"`
-// (a file OUTSIDE its `-iquote ./src/` root) needing to reach its own
-// src/string.h rather than rcc's unrelated bundled include/string.h.
-// -I/-isystem/-idirafter and the angle form both keep RCC_INCDIR
-// FIRST, unchanged from before -iquote existed: rcc's bundled headers
-// are also a deliberate *injection* layer several third-party projects
-// (ast/ksh93's own relative-escape `#include <../include/wchar.h>`
-// idiom, chaining via #include_next to the real system header) rely on
-// resolving to RCC_INCDIR before any -I directory -- widening the
-// override to -I too would break that. Quoted includes additionally
-// probe the current file's own directory first (handled directly in
-// resolve_include), so it is not part of this list.
+// Build the ordered list of directories searched for an include, matching
+// real GCC's actual precedence: (quote form only) -iquote dirs, then
+// user -I/-isystem/-idirafter paths, then rcc's own bundled include dir
+// (RCC_INCDIR / its "include" source-tree fallback -- rcc's analogue of
+// GCC's own private GCC_INCLUDE_DIR, e.g. .../gcc/16/include, which
+// likewise sits AFTER -I in GCC's real search order), then system paths.
+// Confirmed directly against real gcc for both forms: a -I (or -iquote,
+// for quotes) directory providing its own stddef.h/string.h/etc. is
+// found ahead of gcc's own bundled copy of the same name.
+//
+// This used to keep RCC_INCDIR ahead of every -I directory for the
+// angle form specifically (differing from -iquote, fixed earlier for
+// quotes only), on the theory that ast/ksh93's own relative-escape
+// `#include <../include/wchar.h>` idiom needed RCC_INCDIR resolved
+// first. It doesn't: that idiom is driven entirely by
+// resolve_include()'s own "skip a match already active on the include
+// stack" guard (the self_active check below, keyed off RCC_INCDIR's
+// [bundled_lo, bundled_hi) range regardless of that range's position in
+// this list) plus resolve_include_next()'s is_noop_forward_to_active()
+// skip -- neither depends on RCC_INCDIR coming before -I. Confirmed
+// against ksh93's own third_party build after this reorder: unchanged,
+// still fully passing.
+//
+// Keeping RCC_INCDIR ahead of -I, however, broke every project shipping
+// its own gnulib-style "-I override + #include_next onward" replacement
+// header sharing a name with something rcc bundles (stddef.h, stdint.h,
+// limits.h, stdbool.h, float.h, stdarg.h -- rcc's OWN bundled copies of
+// these are fully self-contained, with no #include_next of their own to
+// chain through to such an override): findutils' gl/lib/stddef.h
+// (providing gl_unreachable(), and relying on being the FIRST responder
+// to *every* `#include <stddef.h>` in the TU -- including deep,
+// __need_size_t-restricted requests from glibc's own headers like
+// bits/types/struct_iovec.h -- to correctly track and clean up the
+// __need_XXX protocol state itself) was silently unreachable, an
+// undiagnosed dead end: "undefined reference to `gl_unreachable'" only
+// at link time, with no compile-time signal at all.
 static int build_search_dirs(const char **dirs, int max, bool is_angle, int *bundled_lo, int *bundled_hi) {
     int n = 0;
     if (!is_angle)
         for (int i = 0; i < nb_quote_include_paths && n < max; i++)
             dirs[n++] = quote_include_paths[i];
+    for (int i = 0; i < nb_user_include_paths && n < max; i++)
+        dirs[n++] = user_include_paths[i];
     // RCC_INCDIR and its "include" source-tree fallback occupy a known,
     // fixed range right here -- tracked positionally (not by comparing
     // dirs[i]'s string value) so a user -I/project include dir that
@@ -644,8 +662,6 @@ static int build_search_dirs(const char **dirs, int max, bool is_angle, int *bun
     if (strcmp(RCC_INCDIR, "include") != 0 && n < max) dirs[n++] = "include";
     if (bundled_lo) *bundled_lo = lo;
     if (bundled_hi) *bundled_hi = n;
-    for (int i = 0; i < nb_user_include_paths && n < max; i++)
-        dirs[n++] = user_include_paths[i];
     if (!opt_nostdinc)
         for (int i = 0; sys_include_paths[i] && n < max; i++)
             dirs[n++] = sys_include_paths[i];

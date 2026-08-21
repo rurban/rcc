@@ -40,6 +40,65 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, angle-include search order + findutils session)
+
+- **`-I` directories searched AFTER rcc's own bundled headers for
+  angle-form `#include <...>`** — `src/preprocess.c`,
+  `build_search_dirs()`. Real GCC's actual precedence is -I dirs, THEN
+  its own private freestanding-header dir (e.g. `.../gcc/16/include`,
+  holding `stddef.h`/`stdint.h`/`limits.h`/`stdbool.h`/`float.h`/
+  `stdarg.h`), THEN system dirs (confirmed directly: a `-Idir` with
+  `dir/stddef.h`, chaining onward via `#include_next`, satisfies
+  `#include <stddef.h>` ahead of gcc's own bundled copy). rcc kept
+  RCC_INCDIR (its own analogue of that private dir) ahead of every -I
+  directory for the angle form specifically, on the theory that
+  ast/ksh93's own relative-escape `#include <../include/wchar.h>`
+  idiom needed it that way. It didn't: that idiom is driven entirely by
+  `resolve_include()`'s "skip a match already active on the include
+  stack" guard and `resolve_include_next()`'s
+  `is_noop_forward_to_active()` skip, neither of which depends on
+  RCC_INCDIR's position in the search list — confirmed by rebuilding
+  and re-running ksh93's own full `bin/package test` suite after the
+  reorder: unchanged (same pre-existing, already-documented
+  `arith.sh[327]` long-double-precision failure, nothing new).
+
+  Keeping RCC*INCDIR ahead of -I broke every project shipping its own
+  gnulib-style "-I override + `#include_next` onward" replacement
+  header sharing a name with one of the six headers above (rcc's own
+  bundled copies of these are fully self-contained, no `#include_next`
+  of their own to chain through to such an override — unlike
+  `stdio.h`/`wchar.h`/`math.h`/`iconv.h`, which already do). Found via
+  findutils' `gl/lib/stddef.h`: it provides `gl_unreachable()` (used by
+  `error.h`'s `error_at_line`-style macros) and, critically, is
+  designed to be the FIRST responder to *every* `#include <stddef.h>`
+  in the whole translation unit — including deep, `__need_size_t`-
+  restricted requests from glibc's own headers (e.g.
+  `bits/types/struct_iovec.h`, which never itself `#undef
+__need_size_t`) — specifically so it can track and clean up that
+  "extract just this one type" protocol on the caller's behalf
+  (confirmed: `gl/lib/stddef.h` explicitly `#undef`s all five
+  `\_\_need*_`macros itself, real gcc's own`-dD`trace shows them
+cleanly paired define/undef as a result). With RCC_INCDIR searched
+first,`gl/lib/stddef.h`was never reached for any of these deep
+requests, its`\_*need*_`bookkeeping never ran, and`gl*unreachable`was consequently never defined for the whole TU — a silent,
+undiagnosed dead end: "undefined reference to`gl_unreachable'" only
+  at LINK time, no compile-time signal at all. (An intermediate fix
+  attempt — making rcc's own bundled `stddef.h` conditionally chain via
+  `#include_next` after its own definitions — was explored and
+  discarded: it cannot replicate `gl/lib/stddef.h`'s stateful `\_\_need*\*`
+  handling, which fundamentally requires being reached FIRST, not
+  chained through after the fact.)
+
+  New regression coverage: `test/test_angle_include_precedes_bundled.c`
+  (a generated `-I` override + `#include_next` for each of the six
+  affected headers, mirroring `gl_unreachable`'s shape). Full local
+  regression matrix re-run clean after the fix: TCC 118/118, Unit
+  287/287, C-testsuite 220/220, Torture 3605/3609 (0 failed, 354
+  skipped, 4 todo — same baseline), Dg-error 34/34, Link 11/11.
+
+  Unblocks: findutils 4.11.0 (`make check`: 25 passed, 4 skipped
+  [root-required], 0 failed).
+
 ### Fixed (2026-08-21, rpmalloc: extern-inline static false-positive + -m64 flag session)
 
 Two issues blocking mjansson/rpmalloc 2.0.1:
