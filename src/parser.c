@@ -1915,6 +1915,21 @@ static Token *read_type_attrs(Token *tok, int *align, VarAttr *attr) {
                         tok = tok->next;
                     continue;
                 }
+                // __common__: GCC attribute for tentative definitions to emit
+                // as COMMON symbols. rcc emits weak (STB_WEAK) which achieves
+                // the same linker-level merging behavior. Found via redis's
+                // redismodule.h which uses REDISMODULE_ATTR_COMMON = __attribute__((__common__))
+                // on function pointer globals defined in multiple TUs.
+                if (equalc(tok, "common") || equalc(tok, "__common__")) {
+                    if (attr)
+                        attr->is_weak = true;
+                    tok = tok->next;
+                    if (equalc(tok, "("))
+                        tok = skip_balanced(tok);
+                    if (equalc(tok, ","))
+                        tok = tok->next;
+                    continue;
+                }
 
                 if (equalc(tok, "used") || equalc(tok, "__used__")) {
                     // Forces emission even when otherwise provably dead —

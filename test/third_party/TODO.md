@@ -40,6 +40,16 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, **common** attribute + redis session)
+
+- **`__attribute__((__common__))` not recognized** — `parser.c`. redis's
+  `redismodule.h` uses `REDISMODULE_ATTR_COMMON = __attribute__((__common__))`
+  on function pointer globals defined in multiple TUs. Without recognition,
+  tentative definitions emitted as strong BSS symbols → multiple definition
+  link errors. Fixed: recognize `__common__` and emit as weak (STB_WEAK),
+  which achieves the same linker-level COMMON symbol merging. Unblocks:
+  redis (builds + all tests pass).
+
 ### Fixed (2026-08-21, x86 assembler instruction coverage session)
 
 Added missing x86 assembly instructions needed by nettle and libsodium:
