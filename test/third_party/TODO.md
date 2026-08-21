@@ -40,6 +40,51 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, uint64_t->double/float round-to-odd session)
+
+- **`uint64_t`/`unsigned long long` -> `double`/`float` conversion for
+  values >= 2^63 dropped the shifted-out bit instead of folding it back
+  in as a sticky (round-to-odd) bit** -- `src/codegen.c`, 6 occurrences
+  of the same "halve, `cvtsi2sd`/`cvtsi2ss`, double the result" fallback
+  (`cvtsi2sd`/`cvtsi2ss` only handle the signed 64-bit range, so values
+  with the sign bit set need this manual path). Real GCC/Clang emit
+  `mov rdx,rdi; shr rdx,1; and edi,1; or rdx,edi` before the conversion
+  -- the `and`+`or` preserve whether the bit shifted out was a 1, so the
+  FP rounding step (round-to-nearest-even applied to `rdx`) sees the
+  same "was there a fractional remainder" information a direct 65-bit
+  conversion would have. rcc emitted only the `mov`+`shr`, silently
+  truncating: any input where the dropped bit was 1 and the conversion
+  landed exactly on a round-to-even tie rounded the wrong way (up to
+  1 ULP off from every other compiler).
+
+  Found via yyjson's own `test_number` unit test: parsing the literal
+  `-9223372036854776833` produced `-9223372036854775808` (rcc) instead
+  of the correct `-9223372036854776833`'s nearest double,
+  `-9223372036854777856` (confirmed via a standalone `(double)(uint64_t)`
+  repro cross-checked against real gcc). Isolated to
+  `unsafe_yyjson_u64_to_f64()` -> a plain C `(double)u64` cast, ruling
+  out any yyjson-side bug.
+
+  Fixed by inserting `x86_and_ri(scratch_src, 1)` before the shift and
+  `x86_or_rr(rcx, scratch_src)` after it at all 6 call sites (the
+  original source register is dead after each site -- its value was
+  already copied into `%rcx` -- so it doubles as the scratch for the
+  isolated sticky bit, matching GCC's exact register choreography).
+  ARM64 is unaffected: `ucvtf` natively handles the full unsigned
+  64-bit range in one instruction, no manual fallback needed.
+
+  New regression coverage: `test/test_u64_to_double_round.c` (the
+  yyjson repro value plus `UINT64_MAX`, `INT64_MAX+2`, and an exact
+  power-of-two boundary, both `double` and `float` targets). Confirmed
+  it reproduces the wrong rounding with the `and`/`or` pair reverted at
+  all 6 sites, passes clean restored. Full local regression matrix
+  re-run clean after the fix: TCC 118/118, Unit 288/288, C-testsuite
+  220/220, Torture 3605/3609 (0 failed, 354 skipped, 4 todo -- same
+  baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: yyjson (`ctest`: 12/12 passed, was 11/12 -- `test_number`'s
+  own assertion now matches).
+
 ### Fixed (2026-08-21, ELF/Mach-O/PE shared-library debug-section relocation session)
 
 - **`.rela.dyn` emission iterated non-allocated (debug) sections too** —

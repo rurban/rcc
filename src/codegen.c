@@ -4611,7 +4611,9 @@ static void emit_scalar_to_complex(int r, Type *from, Type *base, int addr) {
             asm_fixup_add(cg_sec, off_jmp, label_end, 0); // jmp .L.u2cx.end.%d
             cg_def_label(label_high); // .L.u2cx.high.%d:
             x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq reg64[r], %rcx
+            x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
             x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq %rcx
+            x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
             cg_def_label(label_end); // .L.u2cx.end.%d:
@@ -4825,7 +4827,9 @@ static void emit_complex_convert_mixed(int src, int dst, Type *from, Type *to) {
                 asm_fixup_add(cg_sec, off_jmp, l_end, 0); // jmp .L.u2cx.end.%d
                 cg_def_label(l_high); // .L.u2cx.high.%d:
                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                 x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
                 x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0
                 cg_def_label(l_end); // .L.u2cx.end.%d:
@@ -7931,7 +7935,9 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
             }
             cg_def_label(format(".L.u2f.high.%d", c)); // ucvtf d0, %s
             x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+            x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
             x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+            x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
             cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
@@ -8005,7 +8011,9 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
                     }
                     cg_def_label(format(".L.u2f.high.%d", c));
                     x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                    x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                     x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                    x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                     x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
                     x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
                     cg_def_label(format(".L.u2f.end.%d", c));
@@ -11257,7 +11265,9 @@ VReg gen(Node *node) {
                                 }
                                 cg_def_label(format(".L.u2f.high.%d", c)); // .L.u2f.high.%d:
                                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                                x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                                x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                                 asm_cvtsi2ss(cg_sec, X86_RCX, 8); // cvtsi2ss %rcx, %xmm0
                                 x86_addss(cg_sec, X86_XMM0, X86_XMM0); // addss %xmm0, %xmm0 (double it)
                                 cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
@@ -11312,7 +11322,9 @@ VReg gen(Node *node) {
                                 }
                                 cg_def_label(format(".L.u2f.high.%d", c)); // .L.u2f.high.%d:
                                 x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                                x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
                                 x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                                x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
                                 x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
                                 x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
                                 cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
@@ -16611,7 +16623,7 @@ struct ObjFile *codegen(Program *prog) {
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
         bool inline_addr_taken = false;
-        if (fn->is_inline && !fn->is_extern) {
+        if (fn->is_inline && !fn->is_extern && !fn->is_static) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
                     if (g->has_init) has_noninline_decl = true;
@@ -17124,7 +17136,7 @@ struct ObjFile *codegen(Program *prog) {
         bool has_noninline_decl = false;
         bool had_extern_decl = false;
         bool inline_addr_taken = false;
-        if (fn->is_inline && !fn->is_extern) {
+        if (fn->is_inline && !fn->is_extern && !fn->is_static) {
             for (LVar *g = prog->globals; g; g = g->next) {
                 if (g->is_function && g->name == fn->name) {
                     if (g->has_init)
