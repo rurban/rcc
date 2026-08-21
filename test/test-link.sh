@@ -549,31 +549,82 @@ fi
 #    the R_*_RELATIVE entry this needs; `-g` forces the debug sections
 #    that used to corrupt it. Found via chibi-scheme's own `-g3` shared-
 #    library modules (every lib/*.so): dlopen() crashed unconditionally.
+#    link_macho.c had the analogous bug in a different shape: its object
+#    loader folded __DWARF debug section bytes straight into __TEXT,
+#    __const (rcc's ".rdata"), bloating/corrupting real rodata content
+#    instead of crashing outright (Mach-O's own rebase-opcode builder
+#    happens to filter by segment address range, which incidentally
+#    excluded the bogus entries from ITS OWN output) -- confirmed via
+#    a native `rcc-darwin` build (see darwin-test.sh), inspecting the
+#    raw Mach-O bytes directly (no dyld available on this Linux host):
+#    without the fix, __TEXT,__const carried 224 bytes of merged DWARF
+#    garbage for a program with no const data of its own at all.
+#    dlopen() works identically on both ELF and Mach-O (POSIX dlfcn),
+#    so this one case covers both platforms directly.
 # ---------------------------------------------------------------------------
-if [ "$SOEXT" = so ]; then
+if [ "$SOEXT" = so ] || [ "$SOEXT" = dylib ]; then
     cat > "$TMP/dbglib.c" <<'EOF'
 static int local_answer(void) { return 42; }
-int (*answer_fn)(void) = local_answer; /* forces R_X86_64_RELATIVE */
+int (*answer_fn)(void) = local_answer; /* forces R_*_RELATIVE / a Mach-O rebase entry */
 EOF
-    cat > "$TMP/dbgmain.c" <<'EOF'
+    dl_lib=""
+    [ "$SOEXT" = so ] && dl_lib="-ldl"
+    cat > "$TMP/dbgmain.c" <<EOF
 #include <dlfcn.h>
 int main(void) {
-    void *h = dlopen("./libdbg.so", RTLD_NOW);
+    void *h = dlopen("./libdbg.$SOEXT", RTLD_NOW);
     if (!h) return 1;
     int (**pfn)(void) = (int (**)(void))dlsym(h, "answer_fn");
     if (!pfn || !*pfn) return 2;
     return (*pfn)() == 42 ? 0 : 3;
 }
 EOF
-    if "$RCC" -shared -fPIC -g -g3 -O3 "$TMP/dbglib.c" -o "$TMP/libdbg.so" 2>"$TMP/e13" \
-        && "$RCC" "$TMP/dbgmain.c" -ldl -o "$TMP/dbgmain" 2>>"$TMP/e13" \
+    if "$RCC" -shared -fPIC -g -g3 -O3 "$TMP/dbglib.c" -o "$TMP/libdbg.$SOEXT" 2>"$TMP/e13" \
+        && "$RCC" "$TMP/dbgmain.c" $dl_lib -o "$TMP/dbgmain" 2>>"$TMP/e13" \
         && ( cd "$TMP" && ./dbgmain ); then
-        pass "shared library with debug info (.so), dlopen'd"
+        pass "shared library with debug info (.$SOEXT), dlopen'd"
     else
-        fail "shared library with debug info (.so), dlopen'd" "$(tr '\n' ' ' < "$TMP/e13")"
+        fail "shared library with debug info (.$SOEXT), dlopen'd" "$(tr '\n' ' ' < "$TMP/e13")"
     fi
 else
-    printf '  %-44s SKIP (Linux/ELF-only)\n' "shared library with debug info (.so), dlopen'd"
+    printf '  %-44s SKIP (ELF/Mach-O only)\n' "shared library with debug info, dlopen'd"
+fi
+
+# ---------------------------------------------------------------------------
+# 16. A `-g`-built DLL, directly linked and loaded -- Windows' equivalent
+#    of case 15 (no dlfcn.h on Windows; a normal DLL import at process
+#    load already applies the base relocation table, exercising the same
+#    link_pe.c build_pe_reloc() path). Same root cause: debug sections
+#    (.debug_line/.debug_info/.debug_abbrev/.debug_aranges, marked
+#    IMAGE_SCN_MEM_DISCARDABLE by coff_write.c) carry their own internal
+#    relocations that link_load_object() used to load back as ordinary
+#    alloc=true sections, letting build_pe_reloc() (which already
+#    correctly skips !sec->alloc) sweep them into spurious .reloc
+#    entries anyway -- confirmed directly by inspecting the produced
+#    DLL's raw .reloc bytes: without the fix, three extra DIR64 entries
+#    appeared at the exact same debug-section-relative offsets
+#    (0x10/0x28/0x37) as the ELF case. A locally-defined function
+#    pointer forces the one real DIR64 entry this needs; `-g` forces
+#    the debug sections that used to add bogus ones alongside it.
+# ---------------------------------------------------------------------------
+if [ "$SOEXT" = dll ]; then
+    cat > "$TMP/dbglib.c" <<'EOF'
+static int local_answer(void) { return 42; }
+int (*answer_fn)(void) = local_answer;
+EOF
+    cat > "$TMP/dbgmain2.c" <<'EOF'
+extern int (*answer_fn)(void);
+int main(void) { return answer_fn() == 42 ? 0 : 1; }
+EOF
+    if "$RCC" -shared -fPIC -g -g3 -O3 "$TMP/dbglib.c" -o "$TMP/libdbg2.dll" 2>"$TMP/e14" \
+        && "$RCC" "$TMP/dbgmain2.c" "$TMP/libdbg2.dll" -o "$TMP/dbgmain2" 2>>"$TMP/e14" \
+        && runlib "$TMP/dbgmain2"; then
+        pass "DLL with debug info (.dll), directly linked"
+    else
+        fail "DLL with debug info (.dll), directly linked" "$(tr '\n' ' ' < "$TMP/e14")"
+    fi
+else
+    printf '  %-44s SKIP (Windows/PE only)\n' "DLL with debug info, directly linked"
 fi
 
 echo ""

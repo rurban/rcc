@@ -47,6 +47,11 @@
 #define S_ZEROFILL                  0x1
 #define S_ATTR_PURE_INSTRUCTIONS    0x80000000
 #define S_ATTR_SOME_INSTRUCTIONS    0x400
+// __DWARF segment debug sections (-g): macho_write.c marks these
+// S_ATTR_DEBUG | S_REGULAR (never mapped by dyld). Must be read back
+// here, not just checked when *writing* a fresh object -- the object-
+// loading counterpart of link_elf.c's SHF_ALLOC check.
+#define S_ATTR_DEBUG                0x02000000
 
 // ARM64 relocation types
 #define ARM64_RELOC_UNSIGNED         0
@@ -705,8 +710,26 @@ int link_load_object(LinkState *s, const char *path) {
                 // contribution -- not every other unrelated .data global.
                 bool is_custom_sect = !is_text &&
                     (sectname[0] != '_' || sectname[1] != '_');
+                // __DWARF segment debug sections (-g): macho_write.c
+                // marks these S_ATTR_DEBUG and they're never mapped by
+                // dyld -- the object-loading counterpart of link_elf.c's
+                // SHF_ALLOC check. Previously fell through to the
+                // generic ".rdata" bucket below (sectname starts with
+                // "__", so not is_custom_sect either), physically
+                // concatenating raw DWARF bytes into real .rodata
+                // content and recording their own internal relocations
+                // (against symbol 0, describing offsets *within the
+                // debug data itself*) as if they were legitimate
+                // .rdata relocations -- bloating/corrupting the linked
+                // binary's real rodata. Keep them distinct (by their
+                // own section name, already unique and stable) and
+                // non-allocated instead, matching PE's/ELF's now-
+                // consistent handling.
+                bool is_debug = (flags & S_ATTR_DEBUG) != 0;
                 char out_name[34];
                 if (is_text) snprintf(out_name, sizeof(out_name), ".text");
+                else if (is_debug)
+                    snprintf(out_name, sizeof(out_name), "%s", sectname);
                 else if (is_custom_sect)
                     snprintf(out_name, sizeof(out_name), "%s,%s", segname_s, sectname);
                 else if (is_bss)
@@ -721,7 +744,7 @@ int link_load_object(LinkState *s, const char *path) {
                     snprintf(out_name, sizeof(out_name), ".rdata");
 
                 size_t sec_align = 1u << (align_p2 > 0 ? align_p2 : 4);
-                int out_idx = link_find_or_create_sec(s, out_name, true, write, exec,
+                int out_idx = link_find_or_create_sec(s, out_name, !is_debug, write, exec,
                                                       is_bss, false, sec_align);
                 {
                     int *tmp = realloc(sec_map, (size_t)(n_sections + 1) * sizeof(int));

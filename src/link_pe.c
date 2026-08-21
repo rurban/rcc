@@ -55,6 +55,14 @@
 #define IMAGE_SCN_MEM_EXECUTE            0x20000000
 #define IMAGE_SCN_MEM_READ               0x40000000
 #define IMAGE_SCN_MEM_WRITE              0x80000000
+// Debug sections (.debug_line/.debug_info/.debug_abbrev/.debug_aranges,
+// -g) are marked discardable + not-allocated by coff_write.c
+// (COFF_CHAR_DEBUG) -- the object-loading counterpart of link_elf.c's
+// SHF_ALLOC check. Must be read back here, not just checked when
+// *writing* a fresh object: an already-compiled -g .o fed back into
+// this same linker (e.g. `rcc -c -g foo.c && rcc foo.o -o out`) hits
+// this exact loader too.
+#define IMAGE_SCN_MEM_DISCARDABLE        0x02000000
 
 // COFF characteristics
 #define IMAGE_FILE_DLL                    0x2000
@@ -292,8 +300,14 @@ int link_load_object(LinkState *s, const char *path) {
         bool exec = (sec_flags & IMAGE_SCN_MEM_EXECUTE) != 0;
         bool write = (sec_flags & IMAGE_SCN_MEM_WRITE) != 0;
         bool is_bss = (sec_flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA) != 0;
+        // Discardable (-g debug) sections are never mapped by the loader:
+        // must not contribute to the base relocation table (build_pe_reloc()
+        // already guards !sec->alloc, but relied on every loaded section
+        // reporting it correctly) or the final image at all -- see
+        // link_elf.c's SHF_ALLOC-driven equivalent.
+        bool alloc = (sec_flags & IMAGE_SCN_MEM_DISCARDABLE) == 0;
 
-        int out_idx = link_find_or_create_sec(s, sname, true, write, exec,
+        int out_idx = link_find_or_create_sec(s, sname, alloc, write, exec,
                                               is_bss, false, 16);
         out_sec_map[i] = out_idx;
 

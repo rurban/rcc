@@ -40,7 +40,7 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
-### Fixed (2026-08-21, ELF shared-library debug-section relocation session)
+### Fixed (2026-08-21, ELF/Mach-O/PE shared-library debug-section relocation session)
 
 - **`.rela.dyn` emission iterated non-allocated (debug) sections too** —
   `src/link_elf.c`. The `-shared` link path's four `.rela.dyn`-related
@@ -84,6 +84,57 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   Unblocks: chibi-scheme 0.12.0 (full `test-r7rs` + `test-fs` suite: 8/8
   subgroups, 304/304 tests pass — every `lib/**/*.so` module now
   `dlopen()`s cleanly).
+
+- **Same root cause, link_pe.c**: `link_load_object()` (the COFF object
+  reader) hardcoded `alloc=true` for every section it loaded, including
+  `.debug_line`/`.debug_info`/`.debug_abbrev`/`.debug_aranges` --
+  `coff_write.c` already correctly marks these `IMAGE_SCN_MEM_DISCARDABLE`
+  when _writing_ a fresh object (PE's analogue of ELF's absent
+  `SHF_ALLOC`), but the loader never read that flag back.
+  `build_pe_reloc()` (the `.reloc` base-relocation-table builder) already
+  correctly guarded `!sec->alloc` — it just never saw the correct value.
+  Confirmed via a mingw-cross `rcc.exe` build: a `-g -g3` DLL's raw
+  `.reloc` bytes carried 3 extra `IMAGE_REL_BASED_DIR64` entries at the
+  exact same debug-section-relative offsets (`0x10`/`0x28`/`0x37`) as the
+  ELF case, alongside the one legitimate entry. Fixed by reading
+  `IMAGE_SCN_MEM_DISCARDABLE` back into `alloc` when loading each COFF
+  section.
+
+- **Same root cause, link_macho.c, different manifestation**:
+  `link_load_object()`'s Mach-O section-to-output-section mapping had no
+  case for `__DWARF` segment debug sections at all (`macho_write.c`
+  already marks them `S_ATTR_DEBUG` when writing) — they fell through to
+  the generic ".rdata" bucket (matched neither `is_text` nor
+  `is_custom_sect`, since Mach-O debug section names are themselves
+  `__`-prefixed), physically concatenating raw DWARF bytes into real
+  `__TEXT,__const` content and recording their own internal relocations
+  as ordinary `.rdata` relocations. Mach-O's own rebase-opcode builder
+  (the dyld equivalent of `.rela.dyn`/`.reloc`) happens to filter
+  candidates by segment address range, which incidentally excluded these
+  bogus entries from its own output — so this manifested as silent
+  rodata corruption/bloat rather than a load-time crash. Confirmed via a
+  native `rcc-darwin` build (see `darwin-test.sh`; Mach-O output can be
+  produced and inspected on Linux even though it can't be _executed_
+  there): without the fix, a program with no const data of its own
+  carried 224 bytes of merged DWARF garbage in `__TEXT,__const`. Fixed
+  by recognizing `S_ATTR_DEBUG`, routing those sections to their own
+  distinct (by section name) output section, and marking that
+  `alloc=false`.
+
+  New regression coverage: `test/test-link.sh` case 15 widened to also
+  cover `.dylib` (POSIX `dlopen()`/`dlsym()` work identically on macOS);
+  new case 16 for `.dll` (no `dlfcn.h` on Windows — a direct DLL link +
+  run exercises the same `build_pe_reloc()` path at ordinary process
+  load time instead). Verified directly (not just via the test script,
+  which needs a real target OS/runner this sandbox doesn't have for
+  PE/Mach-O execution): PE's fix confirmed via raw `.reloc` byte
+  inspection of a mingw-cross-built DLL (bogus entries present without
+  the fix, gone with it); Mach-O's fix confirmed via raw Mach-O byte
+  inspection of a native `rcc-darwin` build (bloated `__TEXT,__const`
+  without the fix, clean with it). Full local Linux regression matrix
+  re-run clean after all three fixes: TCC 118/118, Unit 287/287,
+  C-testsuite 220/220, Torture 3605/3609 (0 failed, 354 skipped, 4 todo
+  — same baseline), Dg-error 34/34, Link 12/12.
 
 ### Fixed (2026-08-21, angle-include search order + findutils session)
 
