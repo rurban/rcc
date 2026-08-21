@@ -40,6 +40,49 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-21, missing SSE2 intrinsics session)
+
+- **`_mm_sll_epi16/32/64`, `_mm_srl_epi16/32/64`, `_mm_sra_epi16/32`
+  entirely missing from `<emmintrin.h>`** — the count-in-a-`__m128i`-
+  register siblings of the immediate `_mm_s{r,l}li_epi{16,32,64}`/
+  `_mm_srai_epi{16,32}` that did exist. Any call was an implicit-int
+  undeclared-function call whose bogus int result couldn't be assigned
+  back to a `__m128i` lvalue ("lvalue required as left operand of
+  assignment"). Semantics cross-checked against real gcc: the count is
+  read from the low 64 bits of the count register; a count exceeding
+  the element width zeroes the logical shifts, while the arithmetic
+  shift instead saturates to width-1 (every lane filled with its own
+  sign bit). Found via FLAC's `src/libFLAC/lpc_intrin_sse2.c`/
+  `lpc_intrin_sse41.c`, `summ = _mm_sra_epi32(summ, cnt);`.
+
+- **`_mm_loadu_si32`/`_mm_storeu_si32`/`_mm_loadu_si64`/
+  `_mm_storeu_si64` entirely missing from `<emmintrin.h>`** — same
+  implicit-int root cause, but since these calls' results are used in
+  an rvalue context (not assigned to a `__m128i` lvalue), the missing
+  declaration didn't hard-error at compile time; it silently linked as
+  an unresolved external symbol instead, failing only at link time
+  ("undefined reference to `_mm_loadu_si32`"). memcpy-based like real
+  gcc's own `<emmintrin.h>` (the pointer has no alignment guarantee at
+  all, unlike a genuine `int*`/`long long*` dereference). Found via
+  libopus's `celt/x86/pitch_sse.c` (SSSE3 build).
+
+New regression coverage: both fixes verified byte-identical against
+real gcc at `-O0`/`-O2`, folded into the combined
+`test/test_sse2_intrinsics.c` (see the **common** attribute session
+entry below for the file's consolidation history).
+
+Projects now verified:
+
+- **libopus**: `libopus.so`/`opus_demo` build and link cleanly (was
+  `undefined reference to _mm_loadu_si32`). `make check`'s
+  `test_opus_api.c` still fails separately on `__malloc_hook`
+  (`HAVE___MALLOC_HOOK` autoconf-detected true, but glibc >= 2.34 fully
+  removed the deprecated hook from `<malloc.h>`) — confirmed **not** an
+  rcc bug: reproduces identically compiling the same file with real gcc
+  on this system (`error: '__malloc_hook' undeclared`). A stale
+  upstream autoconf-vs-modern-glibc mismatch, out of scope (can't patch
+  the test file per policy).
+
 ### Fixed (2026-08-21, **common** attribute + redis session)
 
 - **`__attribute__((__common__))` not recognized** — `parser.c`. redis's

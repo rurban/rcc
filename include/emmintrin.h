@@ -692,6 +692,34 @@ __rcc_inline long long _mm_cvtsi128_si64(__m128i __a) { return __a[0]; }
 __rcc_inline __m128i _mm_cvtsi32_si128(int __a) { return (__m128i)(__v4si_e){__a, 0, 0, 0}; }
 __rcc_inline __m128i _mm_cvtsi64_si128(long long __a) { return (__m128i){__a, 0}; }
 
+// --- Unaligned 32-/64-bit scalar load/store (zero-extend into __m128i) ----
+// memcpy-based like real GCC's own emmintrin.h: __p has no alignment
+// guarantee at all (unlike int*/long long* dereference, which the C
+// standard requires to be suitably aligned), so a plain scalar
+// dereference would be UB for a misaligned __p even though x86 tolerates
+// it in practice. Found via libopus's celt/x86/pitch_sse.c (SSSE3 build)
+// calling _mm_loadu_si32 directly -- entirely missing from rcc's header,
+// so the call fell through to an implicit-int undeclared-function call
+// that linked as an unresolved external symbol.
+__rcc_inline __m128i _mm_loadu_si32(void const *__p) {
+    int __d;
+    __builtin_memcpy(&__d, __p, sizeof(__d));
+    return _mm_cvtsi32_si128(__d);
+}
+__rcc_inline void _mm_storeu_si32(void *__p, __m128i __a) {
+    int __d = _mm_cvtsi128_si32(__a);
+    __builtin_memcpy(__p, &__d, sizeof(__d));
+}
+__rcc_inline __m128i _mm_loadu_si64(void const *__p) {
+    long long __d;
+    __builtin_memcpy(&__d, __p, sizeof(__d));
+    return _mm_cvtsi64_si128(__d);
+}
+__rcc_inline void _mm_storeu_si64(void *__p, __m128i __a) {
+    long long __d = _mm_cvtsi128_si64(__a);
+    __builtin_memcpy(__p, &__d, sizeof(__d));
+}
+
 // --- Float <-> double / integer conversions --------------------------------
 __rcc_inline __m128 _mm_cvtpd_ps(__m128d __a) {
     return (__m128){(float)__a[0], (float)__a[1], 0.0f, 0.0f};

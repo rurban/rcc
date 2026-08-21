@@ -217,6 +217,22 @@ int main(void) {
     assert(buf64[0] == 2 && buf64[1] == 0);
     _mm_storeu_si128((__m128i *)buf64, _mm_srl_epi64(u64, cnt64));
     assert(buf64[0] == 0 && buf64[1] == ((unsigned long long)1 << 62));
+
+    /* --- unaligned 32-/64-bit scalar load/store (zero-extend) --- */
+    unsigned char raw[17] = {0, 0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+                             0, 0,    0,    0,    0,    0,    0,    0};
+    int lo32[4];
+    _mm_storeu_si128((__m128i *)lo32, _mm_loadu_si32(raw + 1));
+    assert(lo32[0] == 0xDDCCBBAA && lo32[1] == 0 && lo32[2] == 0 && lo32[3] == 0);
+    unsigned char out32[9] = {0};
+    _mm_storeu_si32(out32 + 1, _mm_loadu_si32(raw + 1));
+    assert(memcmp(out32 + 1, raw + 1, 4) == 0 && out32[0] == 0);
+    unsigned long long lo64[2];
+    _mm_storeu_si128((__m128i *)lo64, _mm_loadu_si64(raw + 1));
+    assert(lo64[0] == 0x44332211DDCCBBAAULL && lo64[1] == 0);
+    unsigned char out64b[10] = {0};
+    _mm_storeu_si64(out64b + 1, _mm_loadu_si64(raw + 1));
+    assert(memcmp(out64b + 1, raw + 1, 8) == 0 && out64b[0] == 0 && out64b[9] == 0);
 #endif
     return 0;
 }
