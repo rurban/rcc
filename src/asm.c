@@ -4447,10 +4447,42 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
             x86_psubb(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
+    if (!strcmp(mnem, "punpcklbw")) {
+        x86_punpcklbw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpcklwd")) {
+        x86_punpcklwd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpckldq")) {
+        x86_punpckldq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpckhbw")) {
+        x86_punpckhbw(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpckhwd")) {
+        x86_punpckhwd(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "punpckhdq")) {
+        x86_punpckhdq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
     if (!strcmp(mnem, "pand")) {
         if (is_mem(0)) x86_pand_rm(buf, parse_x86_xmm(ops[1]), M(0));
         else
             x86_pand(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pandn")) {
+        x86_pandn(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
+        return true;
+    }
+    if (!strcmp(mnem, "pmuludq")) {
+        x86_pmuludq(buf, parse_x86_xmm(ops[1]), parse_x86_xmm(ops[0]));
         return true;
     }
     if (!strcmp(mnem, "por")) {

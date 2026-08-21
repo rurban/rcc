@@ -1508,6 +1508,7 @@ void x86_psubw(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xf9, d, sr)
 void x86_paddb(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xfc, d, sr); }
 void x86_psubb(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xf8, d, sr); }
 void x86_pand(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xdb, d, sr); }
+void x86_pandn(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xdf, d, sr); }
 void x86_por(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0xeb, d, sr); }
 void x86_pcmpeqd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x76, d, sr); }
 void x86_pcmpgtd(SecBuf *s, X86XmmReg d, X86XmmReg sr) { sse_rr_66(s, 0x66, d, sr); }
