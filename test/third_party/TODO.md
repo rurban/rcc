@@ -40,6 +40,39 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-22, SSE4.1 vec*set*_ builtin misimplemented as vec*init*_)
+
+- **`__builtin_ia32_vec_set_*` (used by `_mm_insert_epi{8,16,32,64}`) was
+  miscompiled as `vec_init_*`** — `src/cg_vectors.c`, `gen_ia32_builtin()`.
+  The handler matched both `vec_set_*` and `vec_init_*` with the same
+  prefix check and treated every call as "build a vector from scalar
+  arguments": it iterated every argument and stored each to consecutive
+  lanes. For `vec_set_v2di(D, S, idx)` that means it stored the source
+  vector pointer, the scalar, and the lane index into the result slots,
+  leaving the untouched lane filled with a stack address and producing
+  garbage vectors. The real semantics are "copy the source vector and
+  overwrite exactly one lane with the scalar".
+
+  Fixed by splitting the handler: `vec_set_*` copies the source vector to
+  the result slot and stores the scalar at `idx * element_size`; only
+  `vec_init_*` iterates scalar arguments. Element width and lane index are
+  taken from the result vector type and the constant third argument as
+  before.
+
+  Found via xz's CLMUL-optimized CRC32 path (`src/liblzma/check/crc32_fast.c`):
+  the `size < 16` branch uses `_mm_insert_epi64` to combine the low 8
+  bytes with the last input byte, and the corrupted lane produced wrong
+  CRCs. This caused `test_check` and `test_index_hash` to fail; with the
+  fix both pass. A separate `test_lzip_decoder` hang remains even with
+  CLMUL disabled at build time, so xz is intentionally NOT checked off in
+  `checklist.txt` yet.
+
+  New regression coverage: extended `test/test_ia32_intrinsics.c` with
+  `_mm_insert_epi64` lane-0/lane-1 and `_mm_insert_epi32` checks. Full
+  local regression matrix re-run clean after the fix: TCC 118/118, Unit
+  293/293, Torture 3605/3609 (0 failed, 354 skipped, 4 todo — same
+  baseline), Dg-error 34/34, Link 12/12.
+
 ### Fixed (2026-08-22, x86-64 inline-asm fixed-register vreg-pool masking session)
 
 - **Fixed-register asm constraints (`"a"`/`"b"`/`"c"`/`"d"`/`"S"`/`"D"`)

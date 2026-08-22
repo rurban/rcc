@@ -2631,14 +2631,30 @@ VReg gen_ia32_builtin(Node *node) {
         free_reg(va);
         return r;
     }
-    if (!strncmp(n, "vec_set_v", 9) || !strncmp(n, "vec_init_v", 10)) {
+    if (!strncmp(n, "vec_set_v", 9)) {
+        // __builtin_ia32_vec_set_*: insert scalar a2 into vector a1 at lane a3.
+        // Copy the original vector to the result slot, then overwrite the
+        // selected lane with the scalar. Element width is the result type's
+        // base element size (v2di -> 8, v4si -> 4, ...).
+        Type *ety = node->ty ? node->ty->base : NULL;
+        int esz = ety ? (int)ety->size : 4;
+        uint64_t idx = (uint64_t)ia32_imm8(a3, "index");
+        VReg dst = alloc_int128_addr();
+        VReg va = ia32_vaddr(a1);
+        x86_movups_rm(cg_sec, X86_XMM0, x86_mem(REG(va), 0));
+        x86_movups_mr(cg_sec, x86_mem(REG(dst), 0), X86_XMM0);
+        free_reg(va);
+        VReg v = gen(a2);
+        x86_mov_mr(cg_sec, esz, x86_mem(REG(dst), (int)(idx * esz)), REG(v));
+        free_reg(v);
+        return dst;
+    }
+    if (!strncmp(n, "vec_init_v", 10)) {
         // build a vector from scalar args: store each to the slot. The
         // element width comes from the RESULT vector type (v4hi -> 2
         // bytes), never from the args (which are plain int literals).
         Type *ety = node->ty ? node->ty->base : NULL;
         int esz = ety ? (int)ety->size : 4;
-        //int nargs = 0;
-        //for (Node *p = a1; p; p = p->next) nargs++;
         VReg dst = alloc_int128_addr();
         int i = 0;
         for (Node *p = a1; p; p = p->next, i++) {

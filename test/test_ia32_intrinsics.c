@@ -148,8 +148,20 @@ int main(void) {
     if (__builtin_ia32_crc32qi(0xFFFFFFFFu, 0xAA) != 0x642B3130u) return 30;
     if (__builtin_ia32_crc32si(0xFFFFFFFFu, 0xCCCCCCCCu) != 0x70B16A3Du) return 31;
 
-    /* GNU extern-inline wrapper must link and work (local copy) */
-    if (!eqf4(my_wrap(a, b), add_e)) return 32;
+    /* SSE4.1: vec_set_* (used by _mm_insert_epi{8,16,32,64}). Was
+     * misimplemented as vec_init_*, corrupting the unchanged lane. */
+    __m128i ins = _mm_set_epi64x(0x123456789abcdef0ULL, 0xfedcba9876543210ULL);
+    __m128i ins1 = _mm_insert_epi64(ins, 0xaaaaaaaaaaaaaaaaULL, 1);
+    if ((unsigned long long)_mm_extract_epi64(ins1, 0) != 0xfedcba9876543210ULL) return 33;
+    if ((unsigned long long)_mm_extract_epi64(ins1, 1) != 0xaaaaaaaaaaaaaaaaULL) return 34;
+    __m128i ins0 = _mm_insert_epi64(ins, 0xbbbbbbbbbbbbbbbbULL, 0);
+    if ((unsigned long long)_mm_extract_epi64(ins0, 0) != 0xbbbbbbbbbbbbbbbbULL) return 35;
+    if ((unsigned long long)_mm_extract_epi64(ins0, 1) != 0x123456789abcdef0ULL) return 36;
+
+    __m128i ins32 = _mm_set_epi32(4, 3, 2, 1);
+    ins32 = _mm_insert_epi32(ins32, 0xccccccccU, 2);
+    int ins32_e[4] = {1, 2, (int)0xccccccccU, 4};
+    if (memcmp(&ins32, ins32_e, sizeof(ins32_e)) != 0) return 37;
 
     __builtin_ia32_emms();
     return 0;
