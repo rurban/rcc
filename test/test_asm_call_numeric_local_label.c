@@ -38,6 +38,7 @@
  */
 #include <stdio.h>
 
+#if !defined(__aarch64__) && !defined(_M_ARM64)
 static int helper(int x) {
     int result;
     asm ("mov %1, %%eax   \n\t"
@@ -55,9 +56,14 @@ static int helper(int x) {
          : "eax", "cc");
     return result;
 }
+#endif
 
 int main(void) {
+#if !defined(__aarch64__) && !defined(_M_ARM64)
     int r = helper(10);
     printf("%d\n", r);
     return r == 13 ? 0 : 1;
+#else
+    return 0;
+#endif
 }
