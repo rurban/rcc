@@ -132,13 +132,57 @@ direction.c` (objdump-verified forward-vs-backward `jae` target),
   `rc_bit_add_if_1`, `rc_bittree_rev4`) now produces byte-identical
   output to a real-GCC-built comparison binary across representative
   inputs. `xz`'s own CLI `lzip_decoder`/CRC32/index test suites now pass
-  in full; a separate, NOT-YET-ROOT-CAUSED bug remains in the full `xz`
-  CLI's own compress/decompress round-trip (`test_compress_generated_*`,
-  `test_files.sh`) -- confirmed NOT in the range decoder (every asm
-  macro individually verified) nor in the SSE2 `dict_repeat()`
-  non-overlapping-copy path (also verified byte-exact) -- `xz`
-  intentionally NOT checked off in `checklist.txt` yet, pending that
-  separate investigation.
+  in full; a separate bug in the full `xz` CLI's own
+  compress/decompress round-trip (`test_compress_generated_*`,
+  `test_files.sh`) is now ALSO fixed (see the dedicated entry below) --
+  `xz` is checked off in `checklist.txt`.
+
+### Fixed (2026-08-22, inline-asm operand-store-back drain reusing a spill-cleared value register)
+
+- **An operand's store-back ADDRESS register could be re-allocated to a
+  virtual register whose used bit a transient spill had cleared while
+  the register still held another operand's live asm result** --
+  `src/codegen.c`, `ND_ASM` pass-1 setup. Every `"=r"`/`"+r"` operand's
+  store-back address is computed via `gen_addr()` and immediately
+  pushed to the real stack, then the address register is freed. When
+  the 8-slot GP pool was already fully committed at that point (e.g.
+  xz's `rc_asm_bittree_n()`: 8 early-clobber `"=&r"`/`"+&r"` operands
+  plus a `"r"` input, 9 total, with the surrounding decoder state
+  occupying the remaining slots), `gen_addr()`'s internal `alloc_reg()`
+  SPILLED a still-live earlier output's value register to make room for
+  the address. The subsequent `free_reg()` restored the spilled value
+  into that register but then cleared its used bit, leaving the output's
+  value register unprotected. The pre-drain address-restore pass then
+  handed the same virtual slot to a later operand's address, and the
+  store-back drain popped that address into the register that still held
+  the first output's asm result -- silently clobbering the decoded
+  value. The range decoder continued running on the corrupted
+  range/code/symbol state, producing wrong output with no error: xz's
+  CLI reported "Compressed data is corrupt" on valid streams
+  (`test_compress_generated_text`/`_random`, `test_files.sh`,
+  `test_scripts.sh`) while every unit test and every individually
+  verified asm macro passed -- the corruption only manifests when the
+  decoder's live state fills the register pool at the asm statement.
+
+  Fixed by re-claiming the used bit for every asm operand value
+  register whose bit a transient spill inside `gen_addr()`/`gen()`
+  cleared, immediately after each operand's setup in pass 1 and again
+  after the second pass's matching-constraint `gen()` calls. Since the
+  asm writes the output's real value to the register before the
+  store-back runs, keeping the bit set merely stops the drain (and the
+  restore passes) from reusing the register for addresses -- exactly
+  what the existing `asm_extra_pool` overflow machinery already
+  guarantees for the pool-exhausted case.
+
+  New regression coverage: `test/test_asm_operand_spill_reclaim.c` --
+  drives xz's real `rc_asm_bittree_n()` inline-asm macro (copied
+  verbatim) side by side with the plain-C reference decoder for 64
+  decode iterations, asserting the decoded symbol, updated range/code
+  state, input-pointer position, and the full probability array all
+  match. The state-corruption failure requires the exact surrounding
+  decoder register pressure (reproduced by xz's own test suite: all 19
+  `ninja test` targets pass after this fix, 4 failed before); the unit
+  test pins the real macro's decode contract under rcc codegen.
 
 ### Fixed (2026-08-22, SSE4.1 vec*set*_ builtin misimplemented as vec*init*_)
 

@@ -13035,6 +13035,16 @@ VReg gen(Node *node) {
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
                 }
             }
+            // gen_addr()/gen()'s internals above can spill an already-
+            // allocated asm operand's value register, restore it, and
+            // then clear its used bit. Re-claim every still-live
+            // operand value register whose bit got cleared so a later
+            // operand's setup (or the store-back drain) can't reuse
+            // the same physical register and clobber the asm result.
+            for (int j = 0; j <= i; j++) {
+                if (op_regs[j] >= 0 && !(used_regs & (1 << op_regs[j])))
+                    used_regs |= (1 << op_regs[j]);
+            }
         }
         if (getenv("RCC_ASM_DEBUG")) {
             for (int i = 0; i < node->asm_noperands; i++)
@@ -13125,6 +13135,12 @@ VReg gen(Node *node) {
                     op->asm_str[sizeof(op->asm_str) - 1] = '\0';
                 }
             }
+        }
+        // gen() above may likewise have transiently spilled and freed
+        // an operand value register; re-claim any cleared bits.
+        for (int j = 0; j < node->asm_noperands; j++) {
+            if (op_regs[j] >= 0 && !(used_regs & (1 << op_regs[j])))
+                used_regs |= (1 << op_regs[j]);
         }
 
         // Save address registers for x86 register outputs that may be
