@@ -7929,17 +7929,62 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
     } else if (is_integer(from) && is_flonum(to)) {
 #ifdef ARCH_ARM64
         int sf = (from->size == 8) ? 1 : 0;
-        if (from->is_unsigned)
-            asm_ucvtf(cg_sec, 0, r, sf); // ucvtf d0, w/x{r}
-        else
-            asm_scvtf(cg_sec, 0, r, sf); // scvtf d0, w/x{r}
-        if (to->kind == TY_FLOAT) {
-            asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double→single, round to float)
-            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (single→double, back to GP-friendly)
+        if (to->kind == TY_FLOAT && from->size == 8) {
+            // Direct single-precision conversion (single rounding):
+            // scvtf/ucvtf s0, x0 handle the full 64-bit range in one
+            // instruction; converting via f64 + fcvt would double-round
+            // for |v| >= 2^53 (same bug as the x86 path below).
+            if (from->is_unsigned)
+                arm64_ucvtf(cg_sec, 1, 0, ARM64_S0, REG(r)); // ucvtf s0, x{r}
+            else
+                arm64_scvtf(cg_sec, 1, 0, ARM64_S0, REG(r)); // scvtf s0, x{r}
+            asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (widen to internal double)
+        } else {
+            if (from->is_unsigned)
+                asm_ucvtf(cg_sec, 0, r, sf); // ucvtf d0, w/x{r}
+            else
+                asm_scvtf(cg_sec, 0, r, sf); // scvtf d0, w/x{r}
+            if (to->kind == TY_FLOAT) {
+                asm_fcvt(cg_sec, 0, 1, 0, 0); // fcvt s0, d0 (double→single, round to float)
+                asm_fcvt(cg_sec, 1, 0, 0, 0); // fcvt d0, s0 (single→double, back to GP-friendly)
+            }
         }
         asm_fmov_f2i(cg_sec, r, 0, 1); // fmov x{r}, d0 (store as int bits)
 #else
-        if (from->is_unsigned && from->size == 8) {
+        if (to->kind == TY_FLOAT && from->size == 8) {
+            // Single-rounding i64/u64 -> f32. The f64 route below
+            // (cvtsi2sd + cvtsd2ss) double-rounds: for |v| >= 2^53 the
+            // f64 step already rounds, and the second f64->f32 round can
+            // land 1 ULP from the correctly-rounded direct i64->f32
+            // result (wasm3's spec tests catch e.g. 9007199791611905 ->
+            // 0x5a000000 vs correct 0x5a000001). x86-64's cvtsi2ss with a
+            // 64-bit source rounds once; u64 uses the round-to-odd
+            // halve/double trick so bit 63 never sets the sign.
+            if (from->is_unsigned) {
+                int c = ++rcc_label_count;
+                asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
+                {
+                    size_t o = asm_jcc_label(cg_sec, X86_S);
+                    asm_fixup_add(cg_sec, o, format(".L.u2f32.high.%d", c), 1);
+                }
+                asm_cvtsi2ss(cg_sec, REG(r), 8); // cvtsi2ss %r, %xmm0 (v < 2^63)
+                {
+                    size_t o = asm_jmp_label(cg_sec);
+                    asm_fixup_add(cg_sec, o, format(".L.u2f32.end.%d", c), 0);
+                }
+                cg_def_label(format(".L.u2f32.high.%d", c));
+                x86_mov_rr(cg_sec, 8, X86_RCX, REG(r)); // movq r, %rcx
+                x86_and_ri(cg_sec, 8, REG(r), 1); // isolate sticky (round-to-odd) bit before halving
+                x86_shr_ri(cg_sec, 8, X86_RCX, 1); // shrq $1, %rcx
+                x86_or_rr(cg_sec, 8, X86_RCX, REG(r)); // OR sticky bit back in (round-to-odd)
+                asm_cvtsi2ss(cg_sec, X86_RCX, 8); // cvtsi2ss %rcx, %xmm0 (now < 2^63)
+                x86_addss(cg_sec, X86_XMM0, X86_XMM0); // xmm0 += xmm0 (exact doubling)
+                cg_def_label(format(".L.u2f32.end.%d", c));
+            } else {
+                asm_cvtsi2ss(cg_sec, REG(r), 8); // cvtsi2ss %r, %xmm0 (single rounding)
+            }
+            asm_cvtss2sd(cg_sec); // widen to the internal double representation
+        } else if (from->is_unsigned && from->size == 8) {
             int c = ++rcc_label_count;
             asm_test(cg_sec, REG(r), REG(r), 8); // test r, r
             {
@@ -7959,14 +8004,22 @@ static VReg gen_cast_reg(VReg r, Type *from, Type *to) {
             x86_cvtsi2sd(cg_sec, 8, X86_XMM0, X86_RCX); // cvtsi2sd %rcx, %xmm0
             x86_addsd(cg_sec, X86_XMM0, X86_XMM0); // addsd %xmm0, %xmm0 (double it)
             cg_def_label(format(".L.u2f.end.%d", c)); // .L.u2f.end.%d:
+            if (to->kind == TY_FLOAT) {
+                asm_cvtsd2ss(cg_sec);
+                asm_cvtss2sd(cg_sec);
+            }
         } else if (from->is_unsigned && from->size == 4) {
             asm_cvtsi2sd(cg_sec, r, 8); // cvtsi2sd rr, %xmm0
+            if (to->kind == TY_FLOAT) {
+                asm_cvtsd2ss(cg_sec);
+                asm_cvtss2sd(cg_sec);
+            }
         } else {
             asm_cvtsi2sd(cg_sec, r, from->size); // cvtsi2sd rr, %xmm0
-        }
-        if (to->kind == TY_FLOAT) {
-            asm_cvtsd2ss(cg_sec); // jmp .L.u2f.end.%d
-            asm_cvtss2sd(cg_sec); // .L.u2f.high.%d:
+            if (to->kind == TY_FLOAT) {
+                asm_cvtsd2ss(cg_sec);
+                asm_cvtss2sd(cg_sec);
+            }
         }
         asm_movq_xmm_r(cg_sec, r, X86_XMM0); // movq %xmm0, r
 #endif

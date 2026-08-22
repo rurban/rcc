@@ -38,6 +38,34 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-22, i64/u64 -> f32 double-rounding session)
+
+- **`(float)(int64_t)` / `(float)(uint64_t)` double-rounded: converted via
+  f64 (`cvtsi2sd` + `cvtsd2ss`) instead of a single rounding, landing 1
+  ULP off for `|v| >= 2^53`** -- `src/codegen.c`, `gen_cast_reg()`.
+  Found via wasm3's spec tests (`f32.convert_i64_s`/`f32.convert_i64_u`):
+  e.g. `(float)9007199791611905LL` produced `0x5a000000` instead of the
+  correctly-rounded `0x5a000001`. Fixed by using `cvtsi2ss` with a
+  64-bit source for the signed case (single rounding), and the
+  round-to-odd halve/double trick with `cvtsi2ss` + `addss` for the
+  unsigned case. Narrower-than-64-bit int -> f32 (exact through f64) and
+  all int -> f64 conversions are unchanged.
+
+  New regression coverage: extended `test/test_u64_to_double_round.c`
+  with exact f32 bit-pattern checks for the wasm3 repro values (i64 and
+  u64). Confirmed it reproduces the 1-ULP error with the fix reverted,
+  passes clean restored. Full local regression matrix re-run clean: TCC
+  118/118, Unit 296/296, c-testsuite 220/220, Torture 3605/3609 (0
+  failed, 354 skipped, 4 todo -- same baseline), Dg-error 34/34, Link
+  12/12.
+
+  wasm3's spec suite drops from 0.12% to 0.06% failures; the remaining 8
+  are signaling-NaN payload bit-exactness through float load/store
+  (`i32.reinterpret_f32(nan)` etc.) -- rcc's double-widened float
+  representation quiets sNaNs on load (`cvtss2sd`), a documented
+  architectural limitation (see the `long double`/float-representation
+  notes throughout codegen.c), not this fix's scope.
+
 ### Fixed (2026-08-22, \_\_builtin_dynamic_object_size reading malloc header from any pointer)
 
 - **`__builtin_dynamic_object_size` emitted a RUNTIME glibc-malloc-chunk-
