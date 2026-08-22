@@ -433,6 +433,12 @@ thirdparty-list:
 test-thirdparty check-thirdparty: $(TARGET)
 	./test/third_party/run_batch.sh $(THIRDPARTY_TARGETS)
 
+check-bootstrap:
+	make install
+	make clean
+	make CC=rcc rcc run_tests
+	./run_tests ./rcc --all --parallel
+
 lint:
 	if command -v prek; then prek run -a; \
         elif command -v pre-commit; then pre-commit run --all-files; fi
@@ -471,7 +477,7 @@ ifeq ($(OS),Windows_NT)
 	if test -n "$(MINGW_O)"; then install -d "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))"; install -m 644 $(MINGW_O) "$(if $(DESTDIR),$(DESTDIR)$(subst C:,,$(LIBDIR)),$(LIBDIR))/"; fi
 else
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(INCDIR)" "$(DESTDIR)$(DOCDIR)"
-	install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/"
+	install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/" || sudo install -m 755 $(TARGET) "$(DESTDIR)$(BINDIR)/"
 	install -m 644 include/* "$(DESTDIR)$(INCDIR)/"
 	install -m 644 README.md test/tcc_test*.md test_report*.md LICENSE bench/bench_report*.md "$(DESTDIR)$(DOCDIR)/"
 	install -d "$(DESTDIR)$(LIBDIR)"
