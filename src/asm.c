@@ -3172,6 +3172,37 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
     // call/lea and friends — resolves against the name it was actually
     // defined under instead of silently missing and falling through to a
     // dangling forward fixup that's never patched.
+    //
+    // Capture operand 0's *own* direction before stripping it: a reused
+    // numeric label (e.g. this same "1:" emitted six times by an unrolled
+    // macro) needs it to pick the right occurrence. "1b" only ever matches
+    // an already-defined (chronologically earlier) occurrence, so eagerly
+    // finding one via lookup_local()'s plain "most recent so far" search
+    // is always correct for it. "1f" must NEVER match one of those --
+    // real GAS requires it to name a occurrence that has not been seen
+    // yet -- but lookup_local() can't tell "not found" from "found the
+    // wrong, stale, already-passed occurrence" once any earlier "1:" of
+    // the same digit exists. Without this, a "jae 1f" following an
+    // earlier "1:" in the same reused-label unrolled sequence silently
+    // resolved backward to that earlier occurrence instead of deferring
+    // to its own next one, turning the intended forward skip into a
+    // backward branch -- a real infinite/runaway loop (found via xz's
+    // rc_asm_bittree's six-times-unrolled "1:"/"jae 1f" pair: every
+    // iteration but the first branched back into an earlier iteration,
+    // corrupting the LZMA1 range decoder's symbol register without bound).
+    char op0_dir = 0;
+    if (nops > 0) {
+        size_t l0 = strlen(ops[0]);
+        if (l0 >= 2 && (ops[0][l0 - 1] == 'b' || ops[0][l0 - 1] == 'f')) {
+            bool numeric0 = true;
+            for (size_t k0 = 0; k0 < l0 - 1; k0++)
+                if (!isdigit((unsigned char)ops[0][k0])) {
+                    numeric0 = false;
+                    break;
+                }
+            if (numeric0) op0_dir = ops[0][l0 - 1];
+        }
+    }
     for (int _i = 0; _i < nops; _i++)
         strip_local_label_suffix(ops[_i]);
 
@@ -4036,7 +4067,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         size_t off = buf->len;
         x86_jmp_rel32(buf, 0); // placeholder
         int sec = 0;
-        int64_t toff = lookup_local(as, lbl, &sec);
+        int64_t toff = (op0_dir == 'f') ? -1 : lookup_local(as, lbl, &sec);
         if (toff >= 0 && sec == as->cur_sec) {
             // Defer the byte patch — same rationale as define_label()'s
             // own forward-reference FIXUP_REL32_DEFERRED conversion (see
@@ -4078,7 +4109,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         size_t off = buf->len;
         x86_jcc_rel32(buf, cc, 0); // emits 0F 8X imm32 (6 bytes total)
         int sec = 0;
-        int64_t toff = lookup_local(as, lbl, &sec);
+        int64_t toff = (op0_dir == 'f') ? -1 : lookup_local(as, lbl, &sec);
         if (toff >= 0 && sec == as->cur_sec) {
             // Same deferred-patch rationale as the plain JMP case above.
             struct Fixup *fx = fixups_next(as);
@@ -4130,7 +4161,7 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         // any named symbol already does (lookup_local() can't find a
         // not-yet-defined label, so it always fell to this same branch).
         int sec = 0;
-        int64_t toff = lookup_local(as, lbl, &sec);
+        int64_t toff = (op0_dir == 'f') ? -1 : lookup_local(as, lbl, &sec);
         // GAS numeric local labels ("1:"/"2:"/...) can never be .globl --
         // they are purely an assembler-internal addressing mechanism with
         // no real symbol-table entry under their bare digit name at all

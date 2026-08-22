@@ -8454,17 +8454,29 @@ static Node *parse_asm_stmt(Token **rest, Token *tok) {
 
     tok = skip(tok, "(");
 
-    // Concatenate template string literals
-    char buf[4096];
-    int len = 0;
+    // Concatenate template string literals. Two passes: sum the exact
+    // length needed first, then copy into an arena buffer sized exactly
+    // -- a real inline-asm template can be arbitrarily long (e.g. xz's
+    // hand-unrolled 8-level bittree range-decoder macro needs well over
+    // 4096 bytes once its six/eight rc_asm_bittree() expansions are
+    // concatenated). A fixed-size stack buffer here used to silently
+    // drop every token that didn't fit once the running length crossed
+    // that boundary (the length check gated the copy but `tok` still
+    // advanced regardless), truncating the template -- for a template
+    // whose overflow point fell early enough, effectively emptying it
+    // and turning the whole inline-asm statement into a silent no-op.
+
+    size_t tmpl_len = 0;
+    for (Token *t = tok; t->kind == TK_STR; t = t->next)
+        tmpl_len += (size_t)t->len;
+    char *tbuf = arena_alloc(tmpl_len + 1);
+    size_t tbuf_off = 0;
     while (tok->kind == TK_STR) {
-        if (len + tok->len < (int)sizeof(buf) - 1) {
-            memcpy(buf + len, tok->str, tok->len);
-            len += tok->len;
-        }
+        memcpy(tbuf + tbuf_off, tok->str, (size_t)tok->len);
+        tbuf_off += (size_t)tok->len;
         tok = tok->next;
     }
-    node->asm_template = str_intern(buf, len);
+    node->asm_template = str_intern(tbuf, (int)tbuf_off);
 
     if (equalc(tok, ")")) {
         *rest = skip(tok->next, ";");

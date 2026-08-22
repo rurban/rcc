@@ -5685,13 +5685,31 @@ static bool try_const_addr_sym(Node *n, const char **sym_out) {
     return false;
 }
 #endif // !ARCH_ARM64
-// Try to extract an integer constant from a node (traversing casts).
-// Returns true and sets *val if the node reduces to a compile-time constant.
+// Try to extract an integer constant from a node (traversing casts) for
+// use as an inline-asm "i"/"n" immediate operand. A bare ND_NUM handles
+// the common case cheaply; anything else (shifts, arithmetic, negation --
+// e.g. xz's RC_TOP_VALUE == (UINT32_C(1) << RC_TOP_BITS) or
+// -1 - (final_add)) falls back to the general compile-time constant
+// evaluator. Without this fallback, a non-trivial-but-still-constant
+// "n"/"i" operand expression silently took the runtime-register fallback
+// path below, allocating a real register for a value that must be a bare
+// assembler immediate -- that register then competed with the asm
+// block's own "=&r"/"+&r" operands for the same physical register,
+// clobbering it (found via xz's x86-64 CLMUL/range-decoder inline asm:
+// RC_TOP_VALUE's "n" operand landed in %r14, which every unrolled
+// rc_asm_bittree() iteration's "=&r" [prob0]/[prob1] output also reused,
+// corrupting the fast-path range-decoder normalization check and
+// hanging the LZMA1 decoder in an infinite output loop).
 static bool try_const_int(Node *n, int64_t *val) {
     while (n && n->kind == ND_CAST)
         n = n->lhs;
     if (n && n->kind == ND_NUM) {
         *val = n->val;
+        return true;
+    }
+    long long v;
+    if (n && eval_const_expr(n, &v)) {
+        *val = v;
         return true;
     }
     return false;
@@ -12667,6 +12685,25 @@ VReg gen(Node *node) {
             "%eax", "%ecx", "%edx", "%ebx", "%esp", "%ebp", "%esi", "%edi",
             "%r8d", "%r9d", "%r10d", "%r11d", "%r12d", "%r13d", "%r14d", "%r15d"};
 
+        // When one asm statement needs more simultaneously-live GP
+        // registers than the 8-slot virtual-register pool provides (e.g.
+        // xz's hand-tuned x86-64 range-decoder bittree macros: 8 early-
+        // clobber "=&r"/"+&r" operands plus a "r" input -- 9 total, one
+        // more than NUM_REGS), a plain alloc_reg() would SPILL an
+        // already-committed operand's register to make room, silently
+        // aliasing two operands onto the same physical register (found
+        // via xz's rc_bittree6: [symbol] and [in_ptr] both landed in
+        // %rsi, corrupting the LZMA1 range decoder into an infinite
+        // garbage-output loop). RAX/RCX/RDX/RDI are excluded from
+        // cg_x86_reg[]/alloc_reg()'s pool (reserved as scratch for mul/
+        // div/shift-count elsewhere in codegen) but are free to borrow
+        // here as a last-resort overflow pool, via the same ASM_X86_REG
+        // sentinel already used for explicit "a"/"b"/"c"/"d" fixed-
+        // register constraints -- every downstream store-back/clobber-
+        // protection path already handles that sentinel uniformly.
+        const X86Reg asm_extra_pool[4] = {X86_RAX, X86_RCX, X86_RDX, X86_RDI};
+        int asm_extra_used = 0;
+
         // Helper: map constraint char to X86Reg; returns true on match.
         // Inline switch avoids block/nested-function portability issues.
 #define X86REG_CASE(ch, reg) case ch: xreg = reg; is_x86_reg = true; break
@@ -12689,6 +12726,14 @@ VReg gen(Node *node) {
         // value in, corrupting the address `mov %ecx_result, (%rbx)`
         // writes through at the very end.
         unsigned x86_reserved_mask = 0;
+        // Raw X86Reg bitmask (RAX=bit0..RDI=bit7, matching x86_enc.h's own
+        // encoding numbers -- NOT x86_reg_vbit()'s different vreg-pool-slot
+        // numbering) of every register a fixed-register constraint
+        // ("=a"/"=c"/"=d"/...) forces a value into. Consulted below by
+        // asm_extra_pick() so the RAX/RCX/RDX/RDI overflow pool never
+        // double-books one of these against its own "first free slot"
+        // choice (see asm_extra_pool's comment).
+        unsigned x86_fixed_claimed = 0;
         for (int i = 0; i < node->asm_noperands; i++) {
             const char *c = node->asm_ops[i].constraint;
             while (*c == '=' || *c == '+' || *c == '&') c++;
@@ -12709,8 +12754,10 @@ VReg gen(Node *node) {
                 X86REG_CASE('D', X86_RDI);
             default: break;
             }
-            if (is_x86_reg)
+            if (is_x86_reg) {
                 x86_reserved_mask |= x86_reg_vbit(xreg);
+                x86_fixed_claimed |= (1u << (unsigned)xreg);
+            }
         }
         unsigned x86_already_reserved = used_regs & x86_reserved_mask;
         used_regs |= x86_reserved_mask;
@@ -12749,6 +12796,7 @@ VReg gen(Node *node) {
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
                     asm_push(cg_sec, REG(op_addr[i]));
                     free_reg(op_addr[i]);
+                    op_addr[i] = -1;
                     addr_pushed[i] = true;
                 } else if (op->is_rw) {
                     // Read-write x86 reg: load current value into physical reg
@@ -12760,6 +12808,7 @@ VReg gen(Node *node) {
                     snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
                     asm_push(cg_sec, REG(op_addr[i]));
                     free_reg(op_addr[i]);
+                    op_addr[i] = -1;
                     addr_pushed[i] = true;
                 } else {
                     // Input x86 reg: move value into physical register
@@ -12802,6 +12851,7 @@ VReg gen(Node *node) {
                     op->reg = -1;
                     asm_push(cg_sec, REG(op_addr[i]));
                     free_reg(op_addr[i]);
+                    op_addr[i] = -1;
                     addr_pushed[i] = true;
                 } else if (op->is_rw) {
                     VReg r_addr = gen_addr(op->expr);
@@ -12811,6 +12861,7 @@ VReg gen(Node *node) {
                     op->reg = -1;
                     asm_push(cg_sec, REG(op_addr[i]));
                     free_reg(op_addr[i]);
+                    op_addr[i] = -1;
                     addr_pushed[i] = true;
                 } else {
                     // Input: a plain lvalue takes its address directly;
@@ -12863,29 +12914,62 @@ VReg gen(Node *node) {
                 snprintf(op->asm_str, sizeof(op->asm_str), "(%s)", reg64[r]);
             } else if (op->is_output && !op->is_rw) {
                 // Output-only: "=r" -> allocate fresh register, store back after asm.
-                // "=m" is handled above (is_memory).
+                // "=m" is handled above (is_memory). Pool-first, extra-
+                // register fallback: see asm_extra_pool comment above.
                 VReg r_addr = gen_addr(op->expr);
                 op_addr[i] = r_addr;
-                VReg r = alloc_reg();
-                op_regs[i] = r;
-                op->reg = r;
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
-                snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                int extra_pick;
+                if (free_reg_count() > 0) {
+                    VReg r = alloc_reg();
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                } else if ((extra_pick = asm_extra_pick(asm_extra_pool, &asm_extra_used, x86_fixed_claimed)) >= 0) {
+                    X86Reg xreg = (X86Reg)extra_pick;
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    const char *rname = (sz == 4) ? x86_phy_reg32[xreg] : x86_phy_reg64[xreg];
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else {
+                    VReg r = alloc_reg(); // last resort: >12 live GP operands
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                }
                 asm_push(cg_sec, REG(op_addr[i]));
                 free_reg(op_addr[i]);
+                op_addr[i] = -1;
                 addr_pushed[i] = true;
             } else if (op->is_rw) {
                 // Read-write "+r": load current value, store back after asm.
                 VReg r_addr = gen_addr(op->expr);
                 op_addr[i] = r_addr;
-                VReg r = alloc_reg();
-                op_regs[i] = r;
-                op->reg = r;
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
-                emit_load(op->expr->ty, r, r_addr, 0);
-                snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                int extra_pick;
+                if (free_reg_count() > 0) {
+                    VReg r = alloc_reg();
+                    op_regs[i] = r;
+                    op->reg = r;
+                    emit_load(op->expr->ty, r, r_addr, 0);
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                } else if ((extra_pick = asm_extra_pick(asm_extra_pool, &asm_extra_used, x86_fixed_claimed)) >= 0) {
+                    X86Reg xreg = (X86Reg)extra_pick;
+                    x86_mov_rm(cg_sec, sz, xreg, x86_mem(REG(r_addr), 0));
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    const char *rname = (sz == 4) ? x86_phy_reg32[xreg] : x86_phy_reg64[xreg];
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else {
+                    VReg r = alloc_reg(); // last resort: >12 live GP operands
+                    op_regs[i] = r;
+                    op->reg = r;
+                    emit_load(op->expr->ty, r, r_addr, 0);
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                }
                 asm_push(cg_sec, REG(op_addr[i]));
                 free_reg(op_addr[i]);
+                op_addr[i] = -1;
                 addr_pushed[i] = true;
             } else if (*c == 'i' || *c == 'n') {
                 // Immediate constraint: emit numeric value, or (for an
@@ -12910,13 +12994,53 @@ VReg gen(Node *node) {
                 // Matching constraint: defer to second pass
                 op_regs[i] = -2; // sentinel
             } else {
-                // Regular input "r": load value into a register
-                VReg r = gen(op->expr);
-                op_regs[i] = r;
-                op->reg = r;
+                // Regular input "r": load value into a register. Pool-
+                // first, extra-register fallback (see asm_extra_pool
+                // comment above): a plain gen(op->expr) call, when the
+                // pool is already exhausted, would itself need a pool
+                // register for its own arithmetic and hit the same
+                // spill-corrupts-a-live-operand bug this whole widening
+                // exists to avoid -- so route through gen_addr()+load
+                // instead when possible (safe: no pool register needed
+                // beyond the transient address, freed immediately).
                 int sz = op->expr->ty ? op->expr->ty->size : 4;
-                snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                int extra_pick;
+                if (free_reg_count() > 0) {
+                    VReg r = gen(op->expr);
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                } else if ((extra_pick = asm_extra_pick(asm_extra_pool, &asm_extra_used, x86_fixed_claimed)) >= 0) {
+                    X86Reg xreg = (X86Reg)extra_pick;
+                    bool is_array = op->expr->ty && op->expr->ty->kind == TY_ARRAY;
+                    VReg r_addr = is_array ? -1 : gen_addr(op->expr);
+                    if (r_addr >= 0) {
+                        x86_mov_rm(cg_sec, sz, xreg, x86_mem(REG(r_addr), 0));
+                        free_reg(r_addr);
+                    } else {
+                        // Array (decays to its own address -- no extra
+                        // dereference) or a non-lvalue rvalue expression.
+                        VReg tmp = gen(op->expr);
+                        x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), xreg, REG(tmp));
+                        free_reg(tmp);
+                    }
+                    op_regs[i] = ASM_X86_REG(xreg);
+                    op->reg = -1;
+                    const char *rname = (sz == 4) ? x86_phy_reg32[xreg] : x86_phy_reg64[xreg];
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", rname);
+                } else {
+                    VReg r = gen(op->expr); // last resort: may spill
+                    op_regs[i] = r;
+                    op->reg = r;
+                    snprintf(op->asm_str, sizeof(op->asm_str), "%s", reg(r, sz));
+                }
             }
+        }
+        if (getenv("RCC_ASM_DEBUG")) {
+            for (int i = 0; i < node->asm_noperands; i++)
+                fprintf(stderr, "ASMDBG op[%d] name=%s constraint=%s asm_str=%s op_regs=%d op_addr=%d addr_pushed=%d\n",
+                        i, node->asm_ops[i].name, node->asm_ops[i].constraint,
+                        node->asm_ops[i].asm_str, op_regs[i], op_addr[i], addr_pushed[i]);
         }
 
         // Pop every op_addr[] stashed to the real stack above back into a
@@ -12935,6 +13059,15 @@ VReg gen(Node *node) {
         // overwriting physical %rbx while that address was still unread.
         for (int i = node->asm_noperands - 1; i >= 0; i--) {
             if (!addr_pushed[i]) continue;
+            // If the pool has no room, leave this address on the real
+            // machine stack rather than spilling something else to make
+            // room (the classic bug this whole function guards against).
+            // It stays there, in exact LIFO order, until the one-at-a-
+            // time drain in the store-back loop below (which runs after
+            // the asm executes, when this operand's address is actually
+            // needed) pops it -- see asm_extra_pool above for why this
+            // can happen at all (>8 simultaneous register operands).
+            if (free_reg_count() == 0) continue;
             VReg r = alloc_reg();
             asm_pop(cg_sec, REG(r));
             op_addr[i] = r;
@@ -13006,10 +13139,20 @@ VReg gen(Node *node) {
         /* inline asm already in AT&T */
 
         // Translate TCC-specific {$}N to GAS-immediate $N in AT&T syntax
-        char adj[4096];
+        // Sized to the actual template length (plus room for label-name
+        // expansion during %N/%[name] substitution below) rather than a
+        // fixed 4096 bytes -- xz's hand-unrolled 8-level bittree range-
+        // decoder macro alone needs several thousand bytes once its
+        // eight rc_asm_bittree() expansions are concatenated (see
+        // parse_asm_stmt()'s matching fix); a fixed-size buffer here
+        // would just move the same silent-truncation-to-empty bug one
+        // step later.
+        size_t asm_tmpl_len = strlen(node->asm_template);
+        size_t asm_buf_cap = asm_tmpl_len * 4 + 4096;
+        char *adj = arena_alloc(asm_buf_cap);
         int alen = 0;
         const char *tp = node->asm_template;
-        while (*tp && alen < (int)sizeof(adj) - 1) {
+        while (*tp && alen < (int)asm_buf_cap - 1) {
             if (*tp == '{' && *(tp + 1) == '$' && *(tp + 2) == '}') {
                 adj[alen++] = '$';
                 tp += 3;
@@ -13020,10 +13163,10 @@ VReg gen(Node *node) {
         adj[alen] = '\0';
 
         // Substitute %N and %l[name] in template
-        char out[4096];
+        char *out = arena_alloc(asm_buf_cap);
         int olen = 0;
         const char *p = adj;
-        while (*p && olen < (int)sizeof(out) - 1) {
+        while (*p && olen < (int)asm_buf_cap - 1) {
             if (*p != '%') {
                 out[olen++] = *p++;
                 continue;
@@ -13057,10 +13200,10 @@ VReg gen(Node *node) {
                 }
                 // emit .L.label.<fn>.<name>
                 const char *prefix = ".L.label.";
-                for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
-                for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
-                if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
-                for (const char *s = p; s < end && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                for (const char *s = prefix; *s && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
+                for (const char *s = current_fn; *s && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
+                if (olen < (int)asm_buf_cap - 1) out[olen++] = '.';
+                for (const char *s = p; s < end && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
                 p = end + 1;
             } else if (*p == '[') {
                 // %[name] / %mod[name] -> named operand reference (GCC
@@ -13104,7 +13247,7 @@ VReg gen(Node *node) {
                         if (resized) s = resized;
                     }
 #endif
-                    while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
+                    while (*s && olen < (int)asm_buf_cap - 1) out[olen++] = *s++;
                 }
                 // else: unresolved name — drop it, matching the existing
                 // %N-out-of-range behavior below rather than corrupting
@@ -13124,10 +13267,10 @@ VReg gen(Node *node) {
                 int li = n - node->asm_noperands;
                 if (li >= 0 && li < node->asm_ngoto) {
                     const char *prefix = ".L.label.";
-                    for (const char *s = prefix; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
-                    for (const char *s = current_fn; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
-                    if (olen < (int)sizeof(out) - 1) out[olen++] = '.';
-                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)sizeof(out) - 1;) out[olen++] = *s++;
+                    for (const char *s = prefix; *s && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
+                    for (const char *s = current_fn; *s && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
+                    if (olen < (int)asm_buf_cap - 1) out[olen++] = '.';
+                    for (const char *s = node->asm_goto_labels[li]; *s && olen < (int)asm_buf_cap - 1;) out[olen++] = *s++;
                 }
             } else if (*p >= '0' && *p <= '9') {
                 int n = *p - '0';
@@ -13145,7 +13288,7 @@ VReg gen(Node *node) {
                         if (resized) s = resized;
                     }
 #endif
-                    while (*s && olen < (int)sizeof(out) - 1) out[olen++] = *s++;
+                    while (*s && olen < (int)asm_buf_cap - 1) out[olen++] = *s++;
                 }
             } else {
                 out[olen++] = '%';
@@ -13154,6 +13297,7 @@ VReg gen(Node *node) {
             }
         }
         out[olen] = '\0';
+        if (getenv("RCC_ASM_DEBUG")) fprintf(stderr, "ASMTEXT: %s\n", out);
         if (olen > 0 && !cg_dry_run) {
             const char *a = strstr(out, ".ascii");
             if (a) {
@@ -13199,17 +13343,38 @@ VReg gen(Node *node) {
         // see cg_x86_reg[]), so reserve exactly those actually in play here.
         unsigned x86_output_mask = 0;
         for (int i = 0; i < node->asm_noperands; i++)
-            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+            if ((node->asm_ops[i].is_output || node->asm_ops[i].is_rw) && ASM_IS_X86_REG(op_regs[i]))
                 x86_output_mask |= x86_reg_vbit(ASM_GET_X86_REG(op_regs[i]));
         unsigned x86_output_already_reserved = used_regs & x86_output_mask;
         used_regs |= x86_output_mask;
         for (int i = 0; i < node->asm_noperands; i++) {
-            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i])) {
+            if ((node->asm_ops[i].is_output || node->asm_ops[i].is_rw) && ASM_IS_X86_REG(op_regs[i])) {
                 X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
                 int sz = node->asm_ops[i].expr->ty ? node->asm_ops[i].expr->ty->size : 4;
-                VReg tmp = alloc_reg();
-                x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), REG(tmp), xreg);
-                op_saved[i] = tmp;
+                // Pool-first, extra-register fallback (see asm_extra_pool
+                // above): every OTHER operand's own value/address is
+                // still live and held right now, so a plain alloc_reg()
+                // here -- when the pool is already fully committed --
+                // would SPILL the highest-index still-live pool register
+                // (alloc_reg()'s own victim-selection order) to make
+                // room, corrupting that operand's still-unread result
+                // (found via xz's rc_bittree6: capturing in_ptr's RAX
+                // result here spilled symbol's own live %rsi, the
+                // highest-index used pool slot, silently discarding it).
+                int extra_pick;
+                if (free_reg_count() > 0) {
+                    VReg tmp = alloc_reg();
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), REG(tmp), xreg);
+                    op_saved[i] = tmp;
+                } else if ((extra_pick = asm_extra_pick(asm_extra_pool, &asm_extra_used, x86_fixed_claimed)) >= 0) {
+                    X86Reg extra = (X86Reg)extra_pick;
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), extra, xreg);
+                    op_saved[i] = ASM_X86_REG(extra);
+                } else {
+                    VReg tmp = alloc_reg(); // last resort: may spill
+                    x86_mov_rr(cg_sec, (sz > 4 ? 8 : 4), REG(tmp), xreg);
+                    op_saved[i] = tmp;
+                }
             } else {
                 op_saved[i] = -1;
             }
@@ -13222,28 +13387,68 @@ VReg gen(Node *node) {
             if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
                 asm_pop(cg_sec, REG(op_addr[i]));
         }
-        // Store back register outputs ("=r", "+r") to their C variables
-        for (int i = 0; i < node->asm_noperands; i++) {
-            if (op_addr[i] < 0) continue;
+        // Store back register outputs ("=r", "+r") to their C variables.
+        // Walk in reverse operand order: any address NOT yet restored
+        // (op_addr[i] < 0 but addr_pushed[i]) is still sitting on the
+        // real machine stack, in exact LIFO order matching this same
+        // reverse walk (see the deferred pop-back loop above) -- pop it,
+        // use it, and free it immediately, so only ONE spare register is
+        // ever needed for the whole drain no matter how many outputs
+        // overflowed the register pool. Every operand's own VALUE
+        // register (pool or asm_extra_pool) stays live/held until its
+        // own store-back runs below, so free_reg_count() reads 0 for the
+        // entire loop when the pool was exhausted -- reserve exactly ONE
+        // extra physical register up front, distinct from any already
+        // claimed by a VALUE operand above (asm_extra_used), and REUSE
+        // that same one every iteration (never advancing asm_extra_used
+        // again) instead of asking for a fresh one each time, which
+        // would run out after only (4 - asm_extra_used) iterations and
+        // fall back to alloc_reg()'s spill path -- corrupting a still-
+        // live, not-yet-stored-back operand exactly like the original
+        // bug this whole mechanism exists to avoid.
+        bool drain_has_extra = false;
+        X86Reg drain_extra = X86_RAX;
+        for (int i = node->asm_noperands - 1; i >= 0; i--) {
+            if (op_addr[i] < 0 && !addr_pushed[i]) continue;
             AsmOperand *op = &node->asm_ops[i];
             int sz = op->expr->ty ? op->expr->ty->size : 4;
+            X86Reg addr_phys;
+            VReg addr_vreg = -1;
+            if (op_addr[i] >= 0) {
+                addr_vreg = op_addr[i];
+                addr_phys = REG(addr_vreg);
+            } else {
+                if (free_reg_count() > 0) {
+                    addr_vreg = alloc_reg();
+                    addr_phys = REG(addr_vreg);
+                } else {
+                    if (!drain_has_extra) {
+                        int extra_pick = asm_extra_pick(asm_extra_pool, &asm_extra_used, x86_fixed_claimed);
+                        drain_extra = (extra_pick >= 0) ? (X86Reg)extra_pick : X86_RAX;
+                        drain_has_extra = true;
+                    }
+                    addr_phys = drain_extra;
+                }
+                asm_pop(cg_sec, addr_phys);
+            }
             if (ASM_IS_X86_REG(op_regs[i])) {
                 // Store the value captured above, not the live physical
                 // register (which the address-register pop may have
                 // overwritten with an unrelated operand's address).
-                x86_mov_mr(cg_sec, sz, x86_mem(REG(op_addr[i]), 0), REG(op_saved[i]));
-                free_reg(op_saved[i]);
+                X86Reg saved_phys = ASM_IS_X86_REG(op_saved[i]) ? ASM_GET_X86_REG(op_saved[i]) : REG(op_saved[i]);
+                x86_mov_mr(cg_sec, sz, x86_mem(addr_phys, 0), saved_phys);
+                if (!ASM_IS_X86_REG(op_saved[i])) free_reg(op_saved[i]);
             } else if (ASM_IS_XMM_REG(op_regs[i])) {
                 X86XmmReg xmmreg = (X86XmmReg)(8 + ASM_GET_XMM_IDX(op_regs[i]));
-                x86_movups_mr(cg_sec, x86_mem(REG(op_addr[i]), 0), xmmreg);
-            } else if (sz == 1)
-                asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 1); // movb op_regs[i], (%op_addr[i])
-            else if (sz == 2)
-                asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 2); // movw op_regs[i], (%op_addr[i])
-            else if (sz <= 4)
-                asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 4); // movl op_regs[i], (%op_addr[i])
-            else
-                asm_mov_reg_mem(cg_sec, op_regs[i], op_addr[i], 8); // movq op_regs[i], (%op_addr[i])
+                x86_movups_mr(cg_sec, x86_mem(addr_phys, 0), xmmreg);
+            } else {
+                X86Reg vphys = ASM_IS_X86_REG(op_regs[i]) ? ASM_GET_X86_REG(op_regs[i]) : REG(op_regs[i]);
+                int store_sz = (sz == 1) ? 1 : (sz == 2) ? 2
+                    : (sz <= 4)                          ? 4
+                                                         : 8;
+                x86_mov_mr(cg_sec, store_sz, x86_mem(addr_phys, 0), vphys);
+            }
+            if (addr_vreg >= 0) free_reg(addr_vreg);
         }
 
 

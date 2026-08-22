@@ -57,6 +57,26 @@ static inline unsigned x86_reg_vbit(X86Reg r) {
         if (cg_x86_reg[i] == r) return 1u << i;
     return 0;
 }
+// Pick the next available RAX/RCX/RDX/RDI overflow-pool register for an
+// inline-asm operand that exhausted the 8-slot virtual pool, skipping any
+// entry a fixed-register constraint ("=a"/"=c"/"=d"/... ) on ANOTHER
+// operand of the SAME asm statement already claims (`claimed`, a bitmask
+// indexed by X86Reg's own raw encoding, RAX=0..RDI=7). Without this, two
+// unrelated operands could both resolve to the same physical register --
+// one via its explicit "=a" constraint, the other via this pool's own
+// "first free slot" choice happening to be RAX too -- aliasing them (found
+// via a "=a" output alongside 8 pool-exhausting "+&r" operands: the 9th
+// "+&r"'s overflow pick landed on RAX, silently colliding with the "=a"
+// operand once the asm body's own `movl ..., %eax` executed). Returns -1
+// once every pool slot is either already used or claimed -- caller must
+// fall back to alloc_reg()'s ordinary (possibly spilling) path.
+static inline int asm_extra_pick(const X86Reg *pool, int *used, unsigned claimed) {
+    while (*used < 4) {
+        X86Reg r = pool[(*used)++];
+        if (!(claimed & (1u << (unsigned)r))) return (int)r;
+    }
+    return -1;
+}
 // convert VReg => X8664Reg
 #define REG(r)  (((r) < 0 || (r) >= 8) ? (error("Invalid register %d in %s (near line %d)", r, cg_dbg_fn, cg_dbg_line),0) : cg_x86_reg[r])
 #define CG_X86_FP      X86_RBP

@@ -40,6 +40,106 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-22, x86-64 inline-asm >8-operand pool overflow + numeric-label direction session)
+
+- **`>8` simultaneously-live GP inline-asm operands aliased onto the same
+  physical register** -- `src/codegen.c`, `src/codegen_asm.h`. rcc's
+  x86-64 GP virtual-register pool has exactly 8 slots
+  (`cg_x86_reg[8]`). Every `"=r"`/`"+r"`/`"r"` operand-setup site called
+  a plain `alloc_reg()`, which -- once the pool is fully committed --
+  SPILLS the highest-index still-live pool register to make room,
+  silently aliasing two unrelated operands onto the same physical
+  register. Found via xz's LZMA1 range decoder
+  (`src/liblzma/rangecoder/range_decoder.h`'s hand-tuned x86-64 bittree
+  macros: 8 early-clobber `"=&r"`/`"+&r"` operands plus a `"r"` input --
+  9 total). `[symbol]` and `[in_ptr]` both landed in `%rsi`, corrupting
+  the decoder into an infinite garbage-output loop.
+
+  Fixed by widening every operand-setup site (output-only, read-write,
+  plain input, and the separate `op_saved` fixed-register-output-capture
+  loop) with a last-resort overflow pool (`asm_extra_pool` =
+  `{RAX, RCX, RDX, RDI}`, physical registers excluded from the ordinary
+  8-slot pool and otherwise reserved as scratch elsewhere in codegen),
+  tried only once `free_reg_count() == 0`. A second, closely related bug
+  surfaced immediately: the overflow pool's "first free slot" pick did
+  not exclude a register a FIXED-register constraint (`"=a"`/`"=b"`/
+  `"=c"`/`"=d"`) on another operand in the SAME statement already claims
+  -- an `"=a"` output alongside 8 pool-exhausting `"+&r"` operands hit a
+  self-collision (the 9th operand's overflow pick landing on `%eax`,
+  the same register `"=a"` is hard-wired to). Fixed by `asm_extra_pick()`
+  (`codegen_asm.h`), which skips any pool entry a
+  `x86_fixed_claimed` bitmask (built from the existing fixed-register-
+  constraint scan) already reserves.
+
+  A third bug in the same area: `try_const_int()` only recognized a bare
+  `ND_NUM` for an `"i"`/`"n"` immediate operand -- any non-trivial-but-
+  constant expression (shifts/arithmetic, e.g. `RC_TOP_VALUE == (1 <<
+N)`) fell back to the runtime-register path, needing a register for a
+  value that must be a bare assembler immediate, which under the same
+  pool pressure competed with and clobbered a live `"=&r"` output. Fixed
+  by falling back to the general compile-time constant evaluator
+  (`eval_const_expr()`).
+
+- **A reused GAS numeric local label (`"1:"`) resolved `"1f"` (forward)
+  backward to an already-defined earlier occurrence** -- `src/asm.c`,
+  `encode_x86()`. Every JMP/Jcc/CALL numeric-local-label site called
+  `lookup_local()`, which returns the MOST RECENT definition of the
+  digit -- correct for `"1b"` (backward), but also wrongly matched
+  `"1f"` once any earlier `"1:"` of the same digit already existed
+  (`lookup_local()` cannot distinguish "not found" from "found the
+  wrong, stale, already-passed occurrence"). Found via xz's
+  `rc_asm_bittree`'s six-times-unrolled `"1:"`/`"jae 1f"` pair: every
+  iteration but the first branched BACKWARD into an earlier iteration
+  instead of forward past it, corrupting the range decoder's symbol
+  register in an unbounded loop. Fixed by capturing each instruction's
+  own operand-0 direction suffix before `strip_local_label_suffix()`
+  discards it: a `"1f"` reference now forces `lookup_local()`'s result to
+  "not yet defined", always resolving via the forward-fixup path against
+  its OWN next occurrence.
+
+- **Inline-asm template concatenation silently truncated (emptied) past
+  4096 bytes** -- `src/parser.c` (`parse_asm_stmt()`), `src/codegen.c`
+  (the `adj`/`out` `%N`-substitution buffers). GCC extended-asm templates
+  are ordinary adjacent string literals; the concatenation loop copied
+  into a fixed 4096-byte stack buffer but kept advancing `tok` past the
+  length check, so a template whose overflow point fell early enough was
+  effectively emptied -- silently turning the whole inline-asm statement
+  into a no-op. Found via the same `rc_asm_bittree` macro: its
+  hand-unrolled 8-level bittree needs several thousand bytes once fully
+  expanded. Fixed by sizing the concatenation buffer to the exact summed
+  literal length (two-pass: sum first, arena-allocate exactly that much)
+  and scaling codegen.c's substitution buffers to the actual template
+  length instead of a fixed cap.
+
+  New regression coverage: `test/test_asm_wide_operand_pool.c` (all
+  three pool-overflow-family bugs), `test/test_asm_numeric_label_
+direction.c` (objdump-verified forward-vs-backward `jae` target),
+  `test/test_asm_long_template.c` (900-fragment/4500-byte concatenated
+  template, objdump-verified nop count). All four reproducers confirmed
+  to crash/corrupt/truncate with each fix individually reverted, pass
+  clean restored. Full local regression matrix re-run clean after the
+  fix: TCC 118/118, Unit 295/295, c-testsuite 220/220, NCC compliance
+  15/15, Torture 3605/3609 (0 failed, 354 skipped, 4 todo -- same
+  baseline), Dg-error 34/34, Link 12/12. mingw and ARM64 cross builds
+  compile cleanly (both code paths either untouched --
+  `#ifdef ARCH_ARM64` -- or share the same x86-64 codegen already
+  exercised natively); mingw's own cross test run hit an unrelated,
+  pre-existing Wine/`gcc.exe`-not-on-`PATH` environment gap, reproduced
+  identically with this session's changes reverted.
+
+  Every individual range-decoder asm macro in xz's LZMA1 decoder
+  (`rc_bittree3`/`6`/`8`, `rc_matched_literal`, `rc_direct`,
+  `rc_bit_add_if_1`, `rc_bittree_rev4`) now produces byte-identical
+  output to a real-GCC-built comparison binary across representative
+  inputs. `xz`'s own CLI `lzip_decoder`/CRC32/index test suites now pass
+  in full; a separate, NOT-YET-ROOT-CAUSED bug remains in the full `xz`
+  CLI's own compress/decompress round-trip (`test_compress_generated_*`,
+  `test_files.sh`) -- confirmed NOT in the range decoder (every asm
+  macro individually verified) nor in the SSE2 `dict_repeat()`
+  non-overlapping-copy path (also verified byte-exact) -- `xz`
+  intentionally NOT checked off in `checklist.txt` yet, pending that
+  separate investigation.
+
 ### Fixed (2026-08-22, SSE4.1 vec*set*_ builtin misimplemented as vec*init*_)
 
 - **`__builtin_ia32_vec_set_*` (used by `_mm_insert_epi{8,16,32,64}`) was
