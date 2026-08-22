@@ -1,5 +1,6 @@
 #include <stdatomic.h>
 int printf(const char *, ...);
+int failures = 0;
 
 typedef __SIZE_TYPE__ size64_t;
 
@@ -12,10 +13,12 @@ typedef __SIZE_TYPE__ size64_t;
 #define OP8(func, v, e1, e2)\
     __atomic_##func(&l, v, __ATOMIC_SEQ_CST) == e1 && l == e2
 
-#define OP(func, v, e1, e2) printf ("%s: %s\n", #func,                        \
-                                    OP1(func,v,e1,e2) && OP2(func,v,e1,e2) && \
-                                    OP4(func,v,e1,e2) && OP8(func,v,e1,e2)    \
-                                    ? "SUCCESS" : "FAIL");
+#define OP(func, v, e1, e2) do {                                            \
+    int ok = OP1(func,v,e1,e2) && OP2(func,v,e1,e2) &&                     \
+             OP4(func,v,e1,e2) && OP8(func,v,e1,e2);                        \
+    printf ("%s: %s\n", #func, ok ? "SUCCESS" : "FAIL");                    \
+    if (!ok) failures++;                                                    \
+} while (0)
 
 int main() {
     signed char c;
@@ -46,4 +49,6 @@ int main() {
     OP(xor_fetch, 0x20, 53, 53);
     OP(and_fetch, 0x0f, 5, 5);
     OP(nand_fetch, 0x01, -2, -2);
+
+    return failures != 0;
 }

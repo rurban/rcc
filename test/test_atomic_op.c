@@ -1,15 +1,18 @@
 #include <stdatomic.h>
 int printf(const char *, ...);
+int failures = 0;
 
 #define OP1(func, v, e1, e2) atomic_##func(&c, v) == e1 && c == e2
 #define OP2(func, v, e1, e2) atomic_##func(&s, v) == e1 && s == e2
 #define OP4(func, v, e1, e2) atomic_##func(&i, v) == e1 && i == e2
 #define OP8(func, v, e1, e2) atomic_##func(&l, v) == e1 && l == e2
 
-#define OP(func, v, e1, e2) printf ("%s: %s\n", #func,                        \
-                                    OP1(func,v,e1,e2) && OP2(func,v,e1,e2) && \
-                                    OP4(func,v,e1,e2) && OP8(func,v,e1,e2)    \
-                                    ? "SUCCESS" : "FAIL");
+#define OP(func, v, e1, e2) do {                                            \
+    int ok = OP1(func,v,e1,e2) && OP2(func,v,e1,e2) &&                     \
+             OP4(func,v,e1,e2) && OP8(func,v,e1,e2);                        \
+    printf ("%s: %s\n", #func, ok ? "SUCCESS" : "FAIL");                    \
+    if (!ok) failures++;                                                    \
+} while (0)
 
 int main() {
     atomic_char c;
@@ -27,4 +30,6 @@ int main() {
     OP(fetch_or, 0x10, 5, 21);
     OP(fetch_xor, 0x20, 21, 53);
     OP(fetch_and, 0x0f, 53, 5);
+
+    return failures != 0;
 }

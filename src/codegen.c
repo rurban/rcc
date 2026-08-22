@@ -14005,13 +14005,15 @@ VReg gen(Node *node) {
         // enforces it: STXR always reported failure, so CBNZ looped
         // forever and the process hung before printf's buffer could
         // flush (tinycc's 125_atomic_misc test_atomic_store: expected
-        // "r = 12, i = 24", got no output at all on macOS CI). Keep the
-        // old value in a second REGISTER instead -- a register-to-
-        // register `mov` is not a memory access and cannot affect the
-        // monitor, matching how ND_ATOMIC_EXCHANGE/ND_ATOMIC_CAS in this
-        // same file already keep their live-across-the-LL/SC-window
-        // values in registers, never on the stack.
-        VReg r_old = alloc_reg();
+        // "r = 12, i = 24", got no output at all on macOS CI).
+        //
+        // Keep the old value in a fixed physical scratch register (x17)
+        // across the LL/SC window. x17 is not part of the VReg pool,
+        // so the register allocator/spiller can never fold it into
+        // another VReg or spill it to the stack. This avoids a bug
+        // where allocating it as a normal VReg let the spiller
+        // coalesce r_old with r_tmp under pressure, reintroducing the
+        // forbidden stack spill inside the exclusive window.
         VReg r_tmp = alloc_reg();
         int sf = (sz == 8) ? 1 : 0;
         // Move r_val to physical w9/x9 for the operation
@@ -14020,7 +14022,8 @@ VReg gen(Node *node) {
         int lbl = rcc_label_count++;
         cg_def_label(format(".L.atom_fop.%d", lbl));
         asm_ldxr(cg_sec, r_tmp, r_addr, sz); // ldxr[b/h] r_tmp, [r_addr]
-        asm_mov_reg_reg(cg_sec, r_old, r_tmp, 8); // mov r_old, r_tmp (register-only, monitor-safe)
+        if (!is_store)
+            asm_mov_phy_reg(cg_sec, ARM64_X17, r_tmp, 1); // mov x17, x{r_tmp} (monitor-safe)
         switch (op) {
         case 0: { // add r_tmp, r_tmp, x9
             size_t _off = cg_sec->len;
@@ -14071,8 +14074,16 @@ VReg gen(Node *node) {
         }
         if (node->atomic_ord == MEMORDER_SEQ_CST)
             asm_dmb(cg_sec); // stxrh w8, %s, [%s]
-        VReg result = is_store ? r_tmp : r_old;
-        free_reg(is_store ? r_old : r_tmp);
+        if (is_store) {
+            free_reg(r_addr);
+            if (sz < 8 && !use_unsigned(node->ty))
+                sign_extend_to(r_tmp, sz, 8);
+            return r_tmp;
+        }
+        VReg result = alloc_reg();
+        // mov x{result}, x17
+        arm64_orr_reg(cg_sec, 1, REG(result), ARM64_XZR, ARM64_X17, ARM64_LSL, 0);
+        free_reg(r_tmp);
         free_reg(r_addr);
         if (sz < 8 && !use_unsigned(node->ty))
             sign_extend_to(result, sz, 8);
