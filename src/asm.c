@@ -4131,7 +4131,30 @@ static bool encode_x86(AsmState *as, const char *mnem, char *ops_str) {
         // not-yet-defined label, so it always fell to this same branch).
         int sec = 0;
         int64_t toff = lookup_local(as, lbl, &sec);
-        bool is_local_sym = sidx >= 0 && as->obj->syms[sidx].bind == SB_LOCAL;
+        // GAS numeric local labels ("1:"/"2:"/...) can never be .globl --
+        // they are purely an assembler-internal addressing mechanism with
+        // no real symbol-table entry under their bare digit name at all
+        // (define_label() deliberately never touches as->obj->syms[] for
+        // one -- see its own comment). ensure_sym() just above therefore
+        // always creates a *fresh* SB_GLOBAL/SEC_UNDEF entry for a numeric
+        // `lbl` like "1", so is_local_sym below is unconditionally false
+        // for every numeric-label call -- the srso_safe_ret .globl-vs-
+        // local distinction this check exists for is meaningless here and
+        // must not gate it: skip straight to the same-section local-patch
+        // path JMP/Jcc already use unconditionally, or a numeric label's
+        // backward `call 1b`/`call 2b` always falls through to a bogus
+        // R_X86_64_PLT32 relocation against that literal, never-defined
+        // "1"/"2" symbol -- 100% reproducible for every AESKEYGENASSIST-
+        // style key-schedule "call 1b" loop (mbedtls's aesni.c, this
+        // exact shape), an undefined-reference link failure on every use.
+        bool is_numeric_lbl = *lbl != '\0';
+        for (const char *q = lbl; *q; q++)
+            if (!isdigit((unsigned char)*q)) {
+                is_numeric_lbl = false;
+                break;
+            }
+        bool is_local_sym = is_numeric_lbl ||
+            (sidx >= 0 && as->obj->syms[sidx].bind == SB_LOCAL);
         if (toff >= 0 && sec == as->cur_sec && is_local_sym) {
             // Same deferred-patch rationale as JMP/Jcc above.
             struct Fixup *fx = fixups_next(as);
