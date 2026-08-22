@@ -38,7 +38,43 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
-**Genuine rcc bugs found so far**:
+### Fixed (2026-08-22, \_\_builtin_dynamic_object_size reading malloc header from any pointer)
+
+- **`__builtin_dynamic_object_size` emitted a RUNTIME glibc-malloc-chunk-
+  header read (`*(size_t*)(ptr-8) & ~15 - 16`) for ANY pointer that
+  wasn't a known stack/global array** -- `src/parser.c`. That read is
+  only valid when `ptr` actually points into a glibc-malloc'd chunk;
+  applied to a pointer to a STACK object that merely passed through a
+  function parameter, it read stack garbage and produced a bogus
+  "object size". glibc's `_FORTIFY_SOURCE=3` `explicit_bzero()` expands
+  to `__explicit_bzero_chk(dest, len, __builtin_dynamic_object_size(dest,
+0))`, so the garbage size made the check fail: every libsodium test
+  that zeroed a stack buffer through `sodium_memzero()` (which calls
+  `explicit_bzero(pnt, len)` with `pnt` a `void*` parameter) aborted
+  with "**_ buffer overflow detected _**" (SIGABRT, exit 134) -- ~50 of
+  86 libsodium tests failed. GCC's own `__builtin_dynamic_object_size`
+  returns -1 (modes 0/1) / 0 (modes 2/3) for any pointer whose
+  allocation it cannot trace (function parameters included); it never
+  reads malloc chunk headers at runtime.
+
+  Fixed by making the builtin return the compile-time size for known
+  stack/global arrays and structs and the unknown sentinel (-1/0,
+  honoring the mode argument) for everything else -- matching
+  `__builtin_object_size`'s unknown handling and GCC's semantics. The
+  runtime chunk-header read was removed entirely.
+
+  New regression coverage: extended `test/test_bos.c` with a
+  function-parameter `__builtin_dynamic_object_size` (must be -1/0, not
+  a stack read) and a `stack_via_param()` helper that zeroes a 128-byte
+  stack array through a `memset`/`explicit_bzero` parameter pair.
+  Confirmed it reproduces the failure (exit 5) with the runtime-header-
+  read implementation reverted, passes clean restored. Full local
+  regression matrix re-run clean after the fix: TCC 118/118, Unit
+  296/296, c-testsuite 220/220, Torture 3605/3609 (0 failed, 354
+  skipped, 4 todo -- same baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: libsodium 1.0.20 (`make check` in test/default: 86/86
+  passed, was ~50 failing with SIGABRT).
 
 ### Fixed (2026-08-22, x86-64 inline-asm >8-operand pool overflow + numeric-label direction session)
 
@@ -4118,10 +4154,20 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      test_box3d, test_doom (linker drops global-variable definitions
      from one large TU), test_espruino, test_femtolisp, test_gzip
      (crashes running its own freshly-built binary to generate docs),
-     test_hare, test_wren (`free(): invalid pointer`), test_xz
-     (13/19 CTest failures incl. a SEGFAULT), test_zstd (SIGABRT during
-     its own regression tests), test_yyjson (`test_number` subprocess
-     crash, 11/12 other tests pass), test_libevent, test_libsamplerate,
+     test_hare, test_wren (`free(): invalid pointer`) -- **fixed**,
+     re-verified 2026-08-22: `wren_test` passes all 866 tests with 0
+     failures (the earlier module-import/`free()`-invalid-pointer
+     failures are gone, resolved by accumulated fixes), test_xz
+     (13/19 CTest failures incl. a SEGFAULT) -- **fixed**,
+     re-verified 2026-08-22: all 19 `ninja test` targets pass (see
+     "Fixed (2026-08-22, inline-asm operand-store-back drain reusing a
+     spill-cleared value register)" above), test_zstd (SIGABRT during
+     its own regression tests) -- **fixed**, re-verified 2026-08-22:
+     `make check` passes fully (struct-arg cast fix), test_yyjson
+     (`test_number` subprocess crash, 11/12 other tests pass) --
+     **fixed** (uint64->double round-to-odd session above), test_libevent
+     -- **timeout artifact, not an rcc bug** (regress passes 356/356;
+     `make check` exceeds the 420s budget identically with gcc), test_libsamplerate,
      test_libpng, test_tinycc (`-nan` from an unsigned-long-long to
      double conversion -- **root-caused, not fixed**: traces to
      `__floatundisf`-style helpers computing a signed-long-long-to-long-
@@ -4189,6 +4235,7 @@ LLONG_MAX, -1)`, a `long long` times `int` mix, corrupted both the
 | test_httpparser   | **fixed** — was: `-funroll` label-aliasing bug, see "Fixed (2026-08-08, httpparser session)" above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | test_libarchive   | **4/10 fixed, remaining 6 confirmed NOT an rcc bug** — the wide-string-literal alignment fix (4 stacked bugs, see "Fixed (2026-08-09, continued — wide string literal alignment: 3 stacked bugs)" below) unblocked `test_entry`/`test_archive_match_path`/`test_archive_match_time`/`test_filter_count`; the remaining 6 are a pre-existing PPMd arithmetic-decoder issue in this libarchive 3.8.8 checkout's own test corpus, reproducing identically with a fully gcc-built libarchive — see "Investigated: libarchive PPMd cluster ..." below                                                                                                                                                                                                             |
 | test_liblz4       | **investigated, not an rcc bug** — `make test`'s `test-lz4-hugefile` step generates and round-trips a 4.2GB file; this sandbox's disk/CPU throughput alone exceeds the 420s harness timeout, not a correctness issue, see "Investigated: test_liblz4 ..." below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| test_libevent     | **investigated, not an rcc bug** — builds clean with rcc; `test/regress` passes in full (356 tests OK under the default epoll backend, 347 under POLL, 0 failed). `make check` exceeds the 420s harness timeout because it re-runs the whole battery once per event backend (select, poll, epoll, devpoll, kqueue, ...) and several http/connection tests deliberately wait out 5s timeouts each — a fully gcc-built libevent's own `make check` is terminated by the same 420s budget identically. Timeout artifact, see "Investigated: test_libevent ..." below                                                                                                                                                                                            |
 | test_libpng       | **investigated, not an rcc bug** — `pngtest-all`'s strict byte-compare fails identically with a fully gcc-built libpng+pngtest too (upstream zlib-version-sensitive reference file, libpng's own documented caveat); remaining timeout is `pngimage-full`'s exhaustive transform-combination test running correctly but ~3x slower under rcc's codegen than gcc -O2 (222s vs 68s, both 100% PASS) — see "Investigated: test_libpng ..." below                                                                                                                                                                                                                                                                                                                |
 | test_libressl     | **AES-NI/SSE2/GHASH/RC4 crypto asm fixed; blocked on new gap** — was untriaged; this session added missing AES-NI + several SSE2/SSSE3 instruction encoders (see "Fixed (2026-08-11, continued — AES-NI/SSE2 instruction encoder session)" below), unblocking `crypto/aes/aesni-*.S`, `crypto/modes/ghash-*.S`, `crypto/rc4/rc4-*.S`; now blocked on 21 `crypto/bn/arch/amd64/*.S` files using `.intel_syntax noprefix` — rcc's assembler has no Intel-syntax parsing mode at all, a large separate undertaking, not attempted this session                                                                                                                                                                                                                  |
 | test_qbe_simplecc | **fixed** — GAS `/* */` block-comment handling in the inline assembler, a nested-designator compound-literal offset bug, and a register-allocator aliasing bug, see "Fixed (2026-08-09, qbe_simplecc session)" below; `qbe`'s own test suite now passes 59/59                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |

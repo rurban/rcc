@@ -2735,9 +2735,6 @@ bool eval_const_expr(Node *node, long long *val) {
             // hung test/third_party/test_httpparser's sibling
             // test/third_party/test_bash at any `-O1`+ build.
             if (!is_bitfield && root_var && (root_var->is_constexpr || (!root_var->is_local && ty_const(root_var->ty))) && root_var->has_init) {
-                fprintf(stderr, "MEMBERFOLD: %s ty_const=%d ty=%p qual=0x%x\n",
-                        root_var->name, ty_const(root_var->ty), (void *)root_var->ty,
-                        root_var->ty ? root_var->ty->qual : 0);
                 if (root_var->init_data && is_integer(node->ty)) {
                     int64_t v = 0;
                     memcpy(&v, root_var->init_data + total_off, node->ty->size <= 8 ? node->ty->size : 8);
@@ -10578,7 +10575,9 @@ static Node *unary(Token **rest, Token *tok) {
             }
         }
         Node *node = new_num((int64_t)sz, start);
-        node->ty = ty_ulong;
+        // size_t is 64-bit on every rcc target; ty_ulong is only 64-bit on
+        // the LP64 Linux/macOS builds and 32-bit on Windows (LLP64).
+        node->ty = ty_ullong;
         return node;
     }
     // __builtin_clear_padding(ptr) — zero all padding bytes in the pointed-to object.
@@ -10604,16 +10603,33 @@ static Node *unary(Token **rest, Token *tok) {
         }
         return new_node(ND_NULL, start);
     }
-    // __builtin_dynamic_object_size(ptr, type) — runtime size via malloc header
-    // For known stack/global arrays: compile-time size.
-    // For pointers: emit code to read glibc malloc chunk header at runtime.
+    // __builtin_dynamic_object_size(ptr, type) — compile-time object size for
+    // known stack/global objects, (size_t)-1 (modes 0/1) / 0 (modes 2/3) when
+    // the pointed-to object is unknown.
+    //
+    // An earlier implementation emitted a RUNTIME read of the glibc malloc
+    // chunk header (`*(size_t*)(ptr-8) & ~15 - 16`) for any pointer that
+    // wasn't a known stack/global object, on the theory that _FORTIFY_SOURCE=3
+    // heap checks could then use the real allocated size. That read is only
+    // valid for a pointer actually pointing into a glibc-malloc'd chunk;
+    // applied to a pointer to a STACK object that merely passed through a
+    // function parameter (e.g. libsodium's `sodium_memzero(void *pnt, size_t
+    // len)` -> `explicit_bzero(pnt, len)` with a stack array argument), it
+    // read stack garbage, and the bogus "size" made glibc's fortify
+    // `__explicit_bzero_chk` falsely abort with "*** buffer overflow
+    // detected ***" on perfectly valid code. GCC's own
+    // __builtin_dynamic_object_size returns -1 for any pointer whose
+    // allocation it cannot trace (function parameters included); do the same.
     if (equalc(tok, "__builtin_dynamic_object_size")) {
         Token *start = tok;
         tok = skip(tok->next, "(");
         Node *ptr = assign(&tok, tok);
         tok = skip(tok, ",");
-        (void)assign(&tok, tok); // type argument (unused)
+        Node *mode_node = assign(&tok, tok);
         *rest = skip(tok, ")");
+        long long mode = 0;
+        eval_const_expr(mode_node, &mode);
+        size_t sz = (mode >= 2) ? 0 : (size_t)-1;
         if (ptr) {
             Node *obj = ptr;
             while (obj->kind == ND_CAST && obj->lhs)
@@ -10624,39 +10640,16 @@ static Node *unary(Token **rest, Token *tok) {
                 obj = obj->lhs;
             if (obj->kind == ND_LVAR && obj->var && obj->var->ty && obj->var->ty->size > 0) {
                 Type *t = obj->var->ty;
-                if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION) {
-                    Node *node = new_num((int64_t)t->size, start);
-                    node->ty = ty_ulong;
-                    return node;
-                }
+                if (t->kind == TY_ARRAY || t->kind == TY_STRUCT || t->kind == TY_UNION)
+                    sz = (size_t)t->size;
             }
         }
-        // Heap pointer: emit runtime code to read malloc chunk header.
-        // glibc stores chunk size just before the user pointer:
-        //   chunk_size = *(size_t*)((char*)ptr - sizeof(size_t))
-        //   usable_size = (chunk_size & ~(2*sizeof(size_t)-1)) - 2*sizeof(size_t)
-        int ssz = (int)sizeof(size_t);
-        // ptr_expr: (size_t)(char*)ptr
-        Node *char_ptr = new_unary(ND_CAST, ptr, start);
-        char_ptr->ty = pointer_to(ty_char);
-        // p_minus_1: (size_t*)((char*)ptr - sizeof(size_t))
-        Node *sub = new_binary(ND_SUB, char_ptr, new_num(ssz, start), start);
-        check_type(sub);
-        Node *size_ptr = new_unary(ND_CAST, sub, start);
-        size_ptr->ty = pointer_to(ty_ulong);
-        // chunk_size: *(size_t*)(...)
-        Node *chunk_size = new_unary(ND_DEREF, size_ptr, start);
-        chunk_size->ty = ty_ulong;
-        // chunk_size & ~(2*sizeof(size_t)-1)
-        uint64_t mask = ~(uint64_t)(2 * ssz - 1);
-        Node *masked = new_binary(ND_BITAND, chunk_size, new_num((int64_t)mask, start), start);
-        masked->ty = ty_ulong;
-        check_type(masked);
-        // result: (chunk_size & mask) - 2*sizeof(size_t)
-        Node *result = new_binary(ND_SUB, masked, new_num(2 * ssz, start), start);
-        result->ty = ty_ulong;
-        check_type(result);
-        return result;
+        Node *node = new_num((int64_t)sz, start);
+        // size_t is 64-bit on every rcc target; ty_ulong is only 64-bit on
+        // the LP64 Linux/macOS builds and 32-bit on Windows (LLP64), which
+        // would truncate -1 to 0xFFFFFFFF and break size_t comparisons.
+        node->ty = ty_ullong;
+        return node;
     }
     // __builtin_complex(re, im) — construct a complex value from two
     // same-type real-floating arguments (GCC builtin, usable in constant
