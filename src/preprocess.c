@@ -888,12 +888,21 @@ static char *resolve_include_next(char *curr_file, char *spec, bool is_angle) {
     // its entire body -- including its own #include_next -- so the real
     // system header underneath is never reached and #include_next
     // resolves to a file that contributes no content at all.
+    // The dir that actually supplied curr_file is the FIRST dirs[]
+    // entry matching cur_dir (resolve_include() returns the first
+    // match). A later duplicate of the same physical dir (e.g.
+    // /usr/include listed both as a -I dir and in sys_include_paths)
+    // must NOT override start, or everything between the two entries
+    // -- RCC_INCDIR's bundled copy of the header -- is skipped and
+    // #include_next reports "not found" (INT_MAX et al. never defined
+    // for -I/usr/include TUs).
     int start = 0;
     for (int i = 0; i < nd; i++) {
         if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i])))) {
             start = i + 1;
             if (i >= bundled_lo && i < bundled_hi)
                 start = bundled_hi;
+            break;
         }
     }
     for (int i = start; i < nd; i++) {
@@ -3541,15 +3550,14 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__builtin_atomic_arith_or", "__atomic_or_fetch");
         // __SSIZE_TYPE__ needed by POSIX's ssize_t (stddef.h).
         define_pre("__SSIZE_TYPE__", "long int");
-        // Prevent glibc's /usr/include/limits.h from trying
-        // `#include_next <limits.h>` to find GCC's own limits.h.
-        // That guard is triggered when __GNUC__ is defined (which rcc
-        // inherits from gcc_predefined.h) but _GCC_LIMITS_H_ is not.
-        // Without this define, the #include_next fails because rcc has
-        // no GCC limits.h, and every TU that touches <limits.h> (or
-        // any system header that pulls it in) errors out — blocking
-        // dozens of third-party projects at the first compilation unit.
-        define_pre("_GCC_LIMITS_H_", "1");
+        // glibc's /usr/include/limits.h ends with `#include_next
+        // <limits.h>` (guarded on __GNUC__ && !_GCC_LIMITS_H_) to pull
+        // the compiler's own limits.h. That include_next now resolves to
+        // rcc's bundled include/limits.h (RCC_INCDIR follows user -I
+        // dirs since 30f47f34, so with -I/usr/include glibc's limits.h
+        // is reached FIRST and must chain onward itself); predefining
+        // _GCC_LIMITS_H_ to skip the chain left INT_MAX et al. undefined
+        // for every -I/usr/include TU.
         // __STDC_VERSION__ is baked into gcc_predefined.h at the C23 value;
         // reflect the -std= request instead. C89/C90 (opt_std_version==NULL)
         // has no __STDC_VERSION__ at all, so the predefined one must be

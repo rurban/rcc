@@ -14,7 +14,14 @@
 #ifndef __need_ptrdiff_t
 typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #endif
-#ifndef __need_wchar_t
+#ifdef __need_wchar_t
+/* glibc headers (e.g. <stdlib.h>) request just wchar_t via
+ * `#define __need_wchar_t` + `#include <stddef.h>`; that path must
+ * PROVIDE the typedef, not skip it (the old `#ifndef` inverted this,
+ * leaving wchar_t undefined whenever glibc's real stdlib.h was used,
+ * e.g. with `-I/usr/include`). */
+typedef __WCHAR_TYPE__ wchar_t;
+#else
 typedef __WCHAR_TYPE__ wchar_t;
 #endif
 typedef __SIZE_TYPE__ size_t;
