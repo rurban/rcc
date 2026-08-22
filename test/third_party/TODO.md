@@ -38,7 +38,43 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
-**Genuine rcc bugs found so far**:
+### Fixed (2026-08-22, \_\_builtin_dynamic_object_size reading malloc header from any pointer)
+
+- **`__builtin_dynamic_object_size` emitted a RUNTIME glibc-malloc-chunk-
+  header read (`*(size_t*)(ptr-8) & ~15 - 16`) for ANY pointer that
+  wasn't a known stack/global array** -- `src/parser.c`. That read is
+  only valid when `ptr` actually points into a glibc-malloc'd chunk;
+  applied to a pointer to a STACK object that merely passed through a
+  function parameter, it read stack garbage and produced a bogus
+  "object size". glibc's `_FORTIFY_SOURCE=3` `explicit_bzero()` expands
+  to `__explicit_bzero_chk(dest, len, __builtin_dynamic_object_size(dest,
+0))`, so the garbage size made the check fail: every libsodium test
+  that zeroed a stack buffer through `sodium_memzero()` (which calls
+  `explicit_bzero(pnt, len)` with `pnt` a `void*` parameter) aborted
+  with "**_ buffer overflow detected _**" (SIGABRT, exit 134) -- ~50 of
+  86 libsodium tests failed. GCC's own `__builtin_dynamic_object_size`
+  returns -1 (modes 0/1) / 0 (modes 2/3) for any pointer whose
+  allocation it cannot trace (function parameters included); it never
+  reads malloc chunk headers at runtime.
+
+  Fixed by making the builtin return the compile-time size for known
+  stack/global arrays and structs and the unknown sentinel (-1/0,
+  honoring the mode argument) for everything else -- matching
+  `__builtin_object_size`'s unknown handling and GCC's semantics. The
+  runtime chunk-header read was removed entirely.
+
+  New regression coverage: extended `test/test_bos.c` with a
+  function-parameter `__builtin_dynamic_object_size` (must be -1/0, not
+  a stack read) and a `stack_via_param()` helper that zeroes a 128-byte
+  stack array through a `memset`/`explicit_bzero` parameter pair.
+  Confirmed it reproduces the failure (exit 5) with the runtime-header-
+  read implementation reverted, passes clean restored. Full local
+  regression matrix re-run clean after the fix: TCC 118/118, Unit
+  296/296, c-testsuite 220/220, Torture 3605/3609 (0 failed, 354
+  skipped, 4 todo -- same baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: libsodium 1.0.20 (`make check` in test/default: 86/86
+  passed, was ~50 failing with SIGABRT).
 
 ### Fixed (2026-08-22, x86-64 inline-asm >8-operand pool overflow + numeric-label direction session)
 
