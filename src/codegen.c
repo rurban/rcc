@@ -13991,9 +13991,27 @@ VReg gen(Node *node) {
         int op = node->atomic_fetch_op;
         bool is_store = node->atomic_is_store;
 #ifdef ARCH_ARM64
-        int old_dummy = alloc_reg();
-        int old_slot = spill_offset(old_dummy);
-        free_reg(old_dummy);
+        // The old (pre-op) value must survive from LDXR through STXR for
+        // callers that want it (fetch_add etc, is_store==false) -- but it
+        // must NOT be staged via a STACK store in between. ARM64's
+        // exclusive monitor is address-range based: architecturally, any
+        // store to the SAME reservation granule as the LDXR address (not
+        // just to `[r_addr]` itself -- some implementations clear it on
+        // ANY intervening store) can silently clear the monitor before
+        // STXR runs, making STXR spin-fail forever. A previous version
+        // staged the old value via `str x(r_tmp), [x29, #-old_slot]`
+        // between the ldxr and stxr -- lenient qemu-user emulation never
+        // models this and let it slide, but real Apple Silicon hardware
+        // enforces it: STXR always reported failure, so CBNZ looped
+        // forever and the process hung before printf's buffer could
+        // flush (tinycc's 125_atomic_misc test_atomic_store: expected
+        // "r = 12, i = 24", got no output at all on macOS CI). Keep the
+        // old value in a second REGISTER instead -- a register-to-
+        // register `mov` is not a memory access and cannot affect the
+        // monitor, matching how ND_ATOMIC_EXCHANGE/ND_ATOMIC_CAS in this
+        // same file already keep their live-across-the-LL/SC-window
+        // values in registers, never on the stack.
+        VReg r_old = alloc_reg();
         VReg r_tmp = alloc_reg();
         int sf = (sz == 8) ? 1 : 0;
         // Move r_val to physical w9/x9 for the operation
@@ -14002,7 +14020,7 @@ VReg gen(Node *node) {
         int lbl = rcc_label_count++;
         cg_def_label(format(".L.atom_fop.%d", lbl));
         asm_ldxr(cg_sec, r_tmp, r_addr, sz); // ldxr[b/h] r_tmp, [r_addr]
-        asm_stur_fp(cg_sec, r_tmp, old_slot); // str x(r_tmp), [x29, #-old_slot]
+        asm_mov_reg_reg(cg_sec, r_old, r_tmp, 8); // mov r_old, r_tmp (register-only, monitor-safe)
         switch (op) {
         case 0: { // add r_tmp, r_tmp, x9
             size_t _off = cg_sec->len;
@@ -14053,12 +14071,12 @@ VReg gen(Node *node) {
         }
         if (node->atomic_ord == MEMORDER_SEQ_CST)
             asm_dmb(cg_sec); // stxrh w8, %s, [%s]
-        if (!is_store)
-            asm_ldur_fp(cg_sec, r_tmp, old_slot); // ldr x(r_tmp), [x29, #-old_slot]
+        VReg result = is_store ? r_tmp : r_old;
+        free_reg(is_store ? r_old : r_tmp);
         free_reg(r_addr);
         if (sz < 8 && !use_unsigned(node->ty))
-            sign_extend_to(r_tmp, sz, 8);
-        return r_tmp;
+            sign_extend_to(result, sz, 8);
+        return result;
 #else
         VReg r_old = alloc_reg();
         if (op == 0 || op == 1) {
@@ -16568,6 +16586,28 @@ struct ObjFile *codegen(Program *prog) {
         spilled_regs = 0;
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
+        // Pass 1's gen_funcall r10/r11-across-a-call protection
+        // (spill_offset(0)/spill_offset(1), used without a matching
+        // pop_spill_slot()) leaves spill_depth[0..1] > 0 once the first
+        // such call site fires and NEVER decrements it back down within
+        // the pass -- by design, so later call sites in the SAME pass
+        // reuse that one slot rather than growing without bound. But
+        // spill_slot[]/spill_depth[] are function-scoped state that
+        // must restart cold for Pass 2, exactly like used_regs/
+        // spilled_regs/reg_owner just above: left stale from Pass 1,
+        // Pass 2's own FIRST spill_offset(r) call sees a leftover
+        // spill_depth[r] > 0 and returns spill_slot[r][...] -- a small,
+        // un-reanchored PASS-1 offset -- instead of pushing a fresh
+        // slot anchored at the just-computed `need` (see next_spill_slot
+        // re-anchor below). That stale small offset can coincide with a
+        // live parameter's own stack slot, corrupting it the moment any
+        // OTHER call in the function needs to protect r10/r11 across
+        // itself. Found via mbedtls's test_mac_sign() (PSA HMAC test
+        // harness): a live `data_t *input` parameter's slot got
+        // overwritten by exactly this stale-offset save, segfaulting on
+        // the next dereference of `input`.
+        memset(spill_slot, 0, sizeof(spill_slot));
+        memset(spill_depth, 0, sizeof(spill_depth));
         fn_struct_ret_off = 0; // reset for Pass 2 (fn_struct_ret_total already computed)
         fn_trampoline_off = 0; // reset for Pass 2 (fn_trampoline_total already computed)
         cg_label_ht_reset();

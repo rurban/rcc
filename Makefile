@@ -215,7 +215,12 @@ LIBDFP_DIR = lib/libdfp
 # relocs rcc's native linker doesn't handle on every target (x86-64 LE is
 # mapped, but arm64 gcc emits TLS-DESC (R_AARCH64_TLS_DESC) regardless of
 # -ftls-model=local-exec).
-LIBDFP_CFLAGS = -O2 -fPIC -I$(LIBDFP_DIR) -DBID_HAS_GCC_DECIMAL_INTRINSICS=0
+# Needs the same --sysroot as CFLAGS on ARM64 cross builds (Fedora's
+# aarch64-linux-gnu-gcc has no baked-in default sysroot, unlike e.g.
+# Ubuntu's, and $(CC) here is the exact same cross-compiler as CFLAGS
+# uses -- extracted rather than duplicating ARM64_SYSROOT's own
+# fc44/fc43/fc41 fallback probing).
+LIBDFP_CFLAGS = -O2 -fPIC -I$(LIBDFP_DIR) -DBID_HAS_GCC_DECIMAL_INTRINSICS=0 $(filter --sysroot=%,$(CFLAGS))
 LIBDFP_SRCS := $(wildcard $(LIBDFP_DIR)/*.c)
 LIBDFP_OBJS := $(patsubst $(LIBDFP_DIR)/%.c,build/libdfp$(OBJ_EXT)/%.o,$(LIBDFP_SRCS))
 
@@ -349,14 +354,7 @@ run_tests.exe: run_tests.c
 run_tests_musl: run_tests.c
 	$(CC) $(CFLAGS) -o $@ run_tests.c
 run_tests_arm64: run_tests.c
-	@sysroot="$$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null)"; \
-	if [ -z "$$sysroot" ] || [ "$$sysroot" = "/" ] || [ ! -f "$$sysroot/usr/include/stdio.h" ]; then \
-	    for p in /usr/aarch64-redhat-linux/sys-root/fc43 /usr/aarch64-redhat-linux/sys-root/fc44 /usr/aarch64-linux-gnu/sys-root; do \
-	        if [ -f "$$p/usr/include/stdio.h" ]; then sysroot="$$p"; break; fi; \
-	    done; \
-	fi; \
-	aarch64-linux-gnu-gcc -std=c11 -Wall -Wextra -O2 -Isrc \
-	  --sysroot="$$sysroot" -o $@ run_tests.c
+	$(CC) $(CFLAGS) -o $@ run_tests.c
 
 # Every object depends on the shared headers: a stale object compiled
 # against an older rcc.h gets a different struct layout than its peers

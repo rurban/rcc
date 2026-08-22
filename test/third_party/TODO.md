@@ -116,6 +116,131 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
   87/148) -- `mbedtls` intentionally NOT checked off in
   `checklist.txt` yet, pending that second fix.
 
+### Fixed (2026-08-22, gen_funcall scratch-register spill state leaking Pass1->Pass2 session)
+
+- **`spill_slot[][]`/`spill_depth[]` were never reset between codegen's
+  two passes per function, leaking Pass 1's stale state into Pass 2**
+  -- `src/codegen.c`. Every function is compiled twice: Pass 1
+  (`cg_dry_run=true`) walks the body purely to discover register/stack
+  usage and compute the frame size; Pass 2 (`cg_dry_run=false`) walks
+  it again to emit the real code. `gen_funcall()`'s ordinary call
+  path protects any value still live in the two caller-saved scratch
+  virtual registers (vreg 0/`%r10`, vreg 1/`%r11`) across a call by
+  spilling it via `spill_offset(0)`/`spill_offset(1)` before the
+  `call` and reloading via the same call after it -- `spill_offset()`
+  only pushes a fresh stack slot the FIRST time a given register needs
+  protecting in the current pass (`spill_depth[r]` goes 0->1); every
+  later call site in that pass reuses the cached slot, by design,
+  since those protection windows never overlap in time. `used_regs`/
+  `spilled_regs`/`reg_owner` are correctly reset to a cold state right
+  before Pass 2 begins, but `spill_slot[][]`/`spill_depth[]` were not
+  -- Pass 2 inherits Pass 1's _final_ depth/slot values. Pass 2's own
+  first `spill_offset(r)` call then sees a stale `spill_depth[r] > 0`
+  and returns whatever small, un-reanchored offset Pass 1 happened to
+  record there, instead of pushing a fresh slot anchored above the
+  just-computed frame size (the very next lines re-anchor
+  `next_spill_slot` on top of `need` for exactly this reason -- but
+  only for slots pushed _after_ that point). When that stale offset
+  happens to alias a live parameter's own stack slot, the next call
+  needing scratch-register protection silently overwrites the
+  parameter with garbage.
+
+  Found via mbedtls/tf-psa-crypto's `psa_crypto-suite`:
+  `test_mac_sign()`'s `data_t *input` parameter (an HMAC test harness
+  function taking 5 params and calling `psa_crypto_init()`/
+  `psa_import_key()`/`psa_mac_compute()` in a loop) got its own
+  parameter slot silently overwritten mid-function -- confirmed via
+  disassembly: `mov %r11, -0x80(%rbp)` immediately before
+  `call psa_import_key`, where `-0x80(%rbp)` was ALSO `input`'s own
+  parameter-spill slot from the prologue -- SIGSEGV on the very next
+  `input->x` dereference inside the loop. Reproduced deterministically
+  via a standalone driver linking the real, unmodified `libmbedtls.a`/
+  `libtfpsacrypto.a` built by this same session's rcc and calling
+  `test_mac_sign()`'s exact real-world logic directly (100% SIGSEGV
+  before the fix, matching the CI-observed crash exactly; clean after).
+
+  Fixed by resetting `spill_slot[][]`/`spill_depth[]` at the start of
+  Pass 2, alongside the other per-pass state (`used_regs`/
+  `spilled_regs`/`reg_owner`) already reset there.
+
+  New regression coverage:
+  `test/test_funcall_scratch_reg_spill_reset.c` -- a self-contained
+  driver confirmed (via internal instrumentation during development)
+  to drive `spill_depth[0]` and `spill_depth[1]` to 1 by Pass 1's end,
+  the exact state-leak precondition this fix addresses. A fully
+  self-contained repro that also reproduces the numeric slot/parameter
+  _collision_ itself (not just the leak precondition) proved elusive
+  despite substantial effort -- the collision additionally requires
+  Pass 1 to have already grown `next_spill_slot` past every
+  parameter's own offset via unrelated register-exhaustion spilling
+  before its first scratch-protected call fires, a register-allocator-
+  internal detail no hand-written variant reliably reproduced; the
+  mbedtls `libmbedtls.a`/`libtfpsacrypto.a`-linked driver above is the
+  authoritative reproduction for the fix itself, run directly (not
+  committed, since it needs the external mbedtls submodule checkout).
+  Full local regression matrix re-run clean after the fix: TCC
+  118/118, Unit 292/292, Torture 3605/3609 (0 failed, 354 skipped, 4
+  todo -- same baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: mbedtls/tf-psa-crypto's `psa_crypto-suite` (was a 100%
+  reproducible SIGSEGV in `test_mac_sign`; now runs to completion).
+  `mbedtls`'s full ctest suite is still not 100% green: a separate,
+  unrelated `psa_symmetric_encrypt` (AES-ECB) test failure remains
+  (`PSA_CIPHER_ENCRYPT_OUTPUT_SIZE(...)` compared against a garbage
+  left-hand value) -- `mbedtls` intentionally NOT checked off in
+  `checklist.txt` yet, pending that separate investigation.
+
+### Fixed (2026-08-22, ARM64 atomic-op one-shot scratch slot misusing register-associated spill tracking)
+
+- **CI fallout from the immediately preceding fix**: macOS (ARM64) CI
+  regressed tinycc's `125_atomic_misc` (`test_atomic_store`: empty
+  output instead of `r = 12, i = 24`, i.e. a crash before `printf`'s
+  buffer could flush) once Pass 2 started replaying Pass 1's `spill_
+offset()` decisions from a cold start (the fix immediately above).
+  `ND_ATOMIC_FETCH_OP`'s ARM64 codegen (the LDXR/STXR retry loop
+  backing `atomic_store`/`atomic_fetch_add`/etc.) got a private stack
+  cell for staging the LDXR-loaded value across the retry loop via
+  `int old_dummy = alloc_reg(); int old_slot = spill_offset(old_dummy);
+free_reg(old_dummy);` -- a throwaway VReg used ONLY to borrow
+  `spill_offset()`'s slot-allocation machinery, never actually holding
+  a value. `spill_offset()`'s contract is register-ASSOCIATED reuse
+  ("if this register index was already spilled this pass, return the
+  SAME slot"; see `push_spill_slot()`/`spill_depth[]`), intended for a
+  register whose spill/restore is properly paired. This call site
+  breaks that contract: it pushes (`spill_depth[old_dummy]` 0->1) but
+  never pops, so `spill_depth[old_dummy]` stays incremented for the
+  rest of the pass. If `old_dummy`'s virtual-register index is later
+  reused as `old_dummy` by ANOTHER atomic op (plausible: register
+  allocation is deterministic, so a second atomic op at similar
+  register pressure gets the same "next free" index), that second
+  op's own `spill_offset()` call silently returns the FIRST op's
+  now-unrelated slot instead of a fresh one -- both ops end up
+  staging their own, independent LDXR-loaded values through the SAME
+  stack cell. This was already latently wrong before the Pass-1/
+  Pass-2 fix; it just happened not to manifest for this particular
+  test's register-pressure shape when Pass 2's own (previously stale,
+  now-removed) offset drift kept its own reuse instances apart by
+  coincidence.
+
+  Fixed by not routing through the register-associated machinery at
+  all: grow `next_spill_slot` directly (ARM64's own `push_spill_slot()`
+  arithmetic, minus the register-index bookkeeping neither needed nor
+  wanted here), which -- like `alloc_spill_slot()` on the x86-64 side
+  -- always hands back a fresh, private offset with no reuse contract
+  to violate.
+
+  Verification: this environment has no ARM64 sysroot to build/run
+  `rcc-arm64` locally (`make CC=aarch64-linux-gnu-gcc` needs aarch64
+  glibc headers, not installed here) -- confirmed via `gcc -DARCH_ARM64
+-fsyntax-only` that the new code compiles cleanly (the prior attempt,
+  reusing the x86-64-only `alloc_spill_slot()` helper by name, did
+  not); x86-64 side is untouched (this is entirely inside `#ifdef
+ARCH_ARM64`) and its own full local regression matrix re-run clean:
+  TCC 118/118, Unit 292/292, Torture 3605/3609 (0 failed, 354 skipped,
+  4 todo -- same baseline), Dg-error 34/34, Link 12/12. The macOS
+  (Apple Silicon) CI runner is the authoritative verification for the
+  ARM64 code path itself.
+
 ### Fixed (2026-08-21, struct-arg cast against stale incomplete prototype session)
 
 - **`check_type()`'s own, second implicit-argument-cast loop for
