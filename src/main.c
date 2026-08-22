@@ -445,7 +445,13 @@ int main(int argc, char **argv) {
         "a.out"
 #endif
         ;
-    char *input_files[64];
+    // Input source files, one per argv element at most, so argc bounds
+    // the count. A fixed 64-slot array silently DROPPED every file past
+    // the 64th: sqlite's `make testfixture` links 86 sources in a single
+    // invocation, sqlite3.c and tclsqlite-ex.c landed past the cap, and
+    // the link died with undefined references to every sqlite3_* symbol
+    // (and no diagnostic at all from the compile step).
+    char **input_files = arena_alloc(sizeof(char *) * argc);
     int n_inputs = 0;
     // -include <file>: pre-include files before main source
     const char *preinclude_files[64];
@@ -929,7 +935,7 @@ int main(int argc, char **argv) {
                 is_shared_lib_path(argv[i])) {
                 xappendf(&libs, &libs_len, &libs_cap, " %s", argv[i]);
                 have_link_inputs = true;
-            } else if (n_inputs < 64) {
+            } else {
                 input_files[n_inputs++] = argv[i];
             }
         }

@@ -38,6 +38,46 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-22, sqlite build session -- 3 stacked bugs)
+
+- **`#include_next <limits.h>` from glibc's limits.h failed with a user
+  -I dir ahead of rcc's bundled headers** -- `src/preprocess.c`,
+  `resolve_include_next()`. Its start-scan matched `cur_dir` against
+  every `dirs[]` entry and let the LAST match win: `/usr/include`
+  appears both as the `-I` dir and in `sys_include_paths`, so the
+  duplicate match bumped `start` past RCC*INCDIR entirely and the
+  include_next reported "include file 'limits.h' not found" -- INT_MAX
+  et al. never defined. Fixed by breaking at the FIRST match
+  (resolve_include() always returns the first) and dropping the
+  `\_GCC_LIMITS_H*` predefine that used to paper over the missing
+chain: the bundled include/limits.h is the valid include_next
+target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
+  ...)`) with tclConfig.sh's `-I/usr/include`.
+
+- **rcc's bundled stddef.h inverted the `__need_wchar_t` protocol** --
+  glibc's `<stdlib.h>` requests wchar_t via `#define __need_wchar_t`
+  - `#include <stddef.h>`; the typedef was SKIPPED instead of
+    provided, so wchar_t defaulted to int and glibc's
+    mbtowc()/wctomb()/mbstowcs() declarations failed to parse
+    ("type defaults to int" / "expected specific operator").
+
+- **`input_files[64]` cap silently dropped every source file past the
+  64th in a single multi-file compile+link** -- `src/main.c`. sqlite's
+  `make testfixture` links 86 sources in one invocation; sqlite3.c
+  and tclsqlite-ex.c landed past the cap, so every sqlite3\_\* symbol
+  was undefined and the whole test harness failed to link. Now sized
+  by argc (each input file is one argv element).
+
+- Removed a leftover `MEMBERFOLD:` debug fprintf in parser.c that
+  polluted stderr on every const-member fold (sqlite build logs).
+
+  Regression tests: `test/test_glibc_limits_include_next.c` (fails on
+  the old code: "could not compile limits.h/stdlib.h TU") and
+  `test/test_many_inputs.c` (70-file single-invocation link; fails on
+  the capped driver with undefined f63..f69). sqlite now builds
+  sqlite3/tclsqlite3/testfixture clean and passes `make test`
+  (0 errors) plus smoketest (95/95).
+
 ### Fixed (2026-08-22, i64/u64 -> f32 double-rounding session)
 
 - **`(float)(int64_t)` / `(float)(uint64_t)` double-rounded: converted via
