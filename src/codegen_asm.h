@@ -46,6 +46,17 @@ static const Arm64Reg cg_arm_reg[12] = {ARM64_X10, ARM64_X11, ARM64_X12,
 #else
 static const X86Reg cg_x86_reg[8] = {X86_R10, X86_R11, X86_RBX, X86_R12,
                                      X86_R13, X86_R14, X86_R15, X86_RSI};
+// Reverse-map a physical x86 GP register to the vreg-bitmask bit that
+// protects it in `used_regs` (indexed by virtual register 0..7, NOT by
+// X86Reg's own physical encoding -- see cg_x86_reg[] above). Returns 0
+// when `r` isn't part of the 8-slot GP virtual-register pool at all
+// (X86_RAX/RCX/RDX/RDI never are: alloc_reg() can never hand one of
+// those out, so there is nothing to protect against a collision).
+static inline unsigned x86_reg_vbit(X86Reg r) {
+    for (int i = 0; i < 8; i++)
+        if (cg_x86_reg[i] == r) return 1u << i;
+    return 0;
+}
 // convert VReg => X8664Reg
 #define REG(r)  (((r) < 0 || (r) >= 8) ? (error("Invalid register %d in %s (near line %d)", r, cg_dbg_fn, cg_dbg_line),0) : cg_x86_reg[r])
 #define CG_X86_FP      X86_RBP

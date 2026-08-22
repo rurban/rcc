@@ -40,6 +40,82 @@ harness sets `CC=rcc` but the build system overrides it. Verify by checking
 
 **Genuine rcc bugs found so far**:
 
+### Fixed (2026-08-22, x86-64 inline-asm fixed-register vreg-pool masking session)
+
+- **Fixed-register asm constraints (`"a"`/`"b"`/`"c"`/`"d"`/`"S"`/`"D"`)
+  protected the wrong virtual-register slot in `used_regs`** —
+  `src/codegen.c`, `src/codegen_asm.h`. rcc's x86-64 GP virtual-register
+  pool (`alloc_reg()`'s allocatable range) maps virtual index -> physical
+  register via `cg_x86_reg[8] = {R10, R11, RBX, R12, R13, R14, R15, RSI}`
+  -- an arbitrary internal ordering entirely unrelated to `X86Reg`'s own
+  physical encoding (`RAX=0, RCX=1, RDX=2, RBX=3, RSI=6, RDI=7`, the raw
+  ModRM register numbers). Two separate call sites built a "protect this
+  physical register's virtual slot from `alloc_reg()`" bitmask by OR-ing
+  `1u << (int)xreg` directly using `X86Reg`'s physical value -- e.g. a
+  `"b"` (RBX) constraint set bit 3, which protects virtual register 3
+  (`%r12`), not virtual register 2 (the one that actually holds `%rbx`).
+  `%rbx`'s real virtual slot stayed unprotected and available for
+  `alloc_reg()` to hand to something else entirely unrelated mid-asm-
+  setup, silently clobbering the fixed-register constraint's value
+  before the asm template (or, in the second call site, the outputs'
+  own physical-register-to-scratch-vreg capture loop) ever read it.
+
+  Found via mbedtls's `bignum_core.c`
+  Montgomery-multiplication inline asm (`MULADDC_X1_CORE`'s
+  `"mulq %%rbx"` with a `"b"`-constrained multiplier alongside an
+  `"S"`/`"D"`-constrained memory pointer pair): the memory pointers'
+  own address computation (`gen_addr()` -> `alloc_reg()`) grabbed
+  `%rbx`'s unprotected virtual slot and overwrote the multiplier before
+  `mulq` read it, corrupting the partial product -- which cascaded into
+  an infinite loop in `mbedtls_mpi_core_montmul`'s carry-propagation
+  once the corrupted output stopped terminating the loop's own
+  convergence check. A second, closely related instance of the exact
+  same root cause surfaced immediately after fixing the first: the
+  "capture every x86-physical-register output into a scratch vreg
+  before the address-register restore" loop (added by an earlier
+  session to fix a _different_ clobber -- see
+  `test/test_asm_multi_output_clobber.c`) called `alloc_reg()` for each
+  output's scratch temp without protecting the _other_, still-unread
+  outputs' physical registers -- with the wide (buggy) mask from the
+  first bug removed, `alloc_reg()` was now free to hand out `%rbx`'s
+  virtual slot as a scratch temp for capturing an unrelated `"=a"`
+  output, clobbering a `"=b"` output's still-unread cpuid-style result
+  before it was captured (found via mbedtls's own 4-output/3-matched-
+  input `HMAC` test harness cpuid-style call pattern reproduced
+  standalone).
+
+  Fixed with a proper reverse map: `x86_reg_vbit(X86Reg)` in
+  `codegen_asm.h` scans `cg_x86_reg[]` for the physical register and
+  returns the correct virtual-register bit (0 if the physical register
+  isn't part of the pool at all -- `RAX`/`RCX`/`RDX`/`RDI` never are, so
+  there is genuinely nothing for `alloc_reg()` to collide with for
+  those). Applied at both call sites: the original `x86_reserved_mask`
+  computation and a new, analogous `x86_output_mask` guarding the
+  per-output scratch-capture loop.
+
+  New regression coverage: `test/test_asm_reg_pool_reservation.c` (the
+  exact `MULADDC_X1_CORE` shape plus a 4-output/3-matched-input cpuid
+  pattern). Confirmed both reproduce their respective wrong
+  result/clobber with the fix reverted, pass clean restored; the
+  pre-existing `test/test_asm_multi_output_clobber.c` (a different,
+  earlier fix in the same area) also re-verified still passing. Full
+  local regression matrix re-run clean after the fix: TCC 118/118, Unit
+  291/291, Torture 3605/3609 (0 failed, 354 skipped, 4 todo — same
+  baseline), Dg-error 34/34, Link 12/12.
+
+  Unblocks: mbedtls/tf-psa-crypto's `bignum.generated-suite` (was 100%
+  reproducible infinite loop in `mbedtls_mpi_core_montmul`, confirmed
+  hung via `gdb -p` backtrace showing the non-terminating
+  `mbedtls_mpi_inv_mod_odd` -> ... -> `mbedtls_mpi_core_montmul` call
+  chain; now passes in ~0.5s, matching a real-gcc-built comparison
+  binary). mbedtls's full `ctest` suite is not yet 100% green: a
+  separate, unrelated stack-frame-layout bug remains in
+  `psa_crypto-suite` (a `TEST_EQUAL(psa_mac_compute(...7 args...), ...)`
+  nested-call argument-staging slot collides with a live parameter's
+  own spill slot -- SIGSEGV in `test_mac_sign`, `psa_crypto-suite`
+  87/148) -- `mbedtls` intentionally NOT checked off in
+  `checklist.txt` yet, pending that second fix.
+
 ### Fixed (2026-08-21, struct-arg cast against stale incomplete prototype session)
 
 - **`check_type()`'s own, second implicit-argument-cast loop for

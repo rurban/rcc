@@ -1580,6 +1580,7 @@ static void group13_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) 
 }
 void x86_pslld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 6, imm); }
 void x86_psrld(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 2, imm); }
+#if 0
 // Group 12: 66 0F 71 /ext ib — psrad xmm, imm8 (ext=4).
 static void group12_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) {
     emit1(s, 0x66);
@@ -1587,6 +1588,7 @@ static void group12_shift_imm(SecBuf *s, X86XmmReg d, uint8_t ext, uint8_t imm) 
     emit3(s, 0x0f, 0x71, (uint8_t)((3 << 6) | (ext << 3) | ((int)d & 7)));
     emit1(s, imm);
 }
+#endif
 // psrad uses Group 13 (same as pslld/psrld, opcode 66 0F 72), extension /4.
 void x86_psrad(SecBuf *s, X86XmmReg d, uint8_t imm) { group13_shift_imm(s, d, 4, imm); }
 // AES-NI (66 0F 38 xx /r), all reg/reg -- real GAS also accepts an

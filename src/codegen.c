@@ -12710,7 +12710,7 @@ VReg gen(Node *node) {
             default: break;
             }
             if (is_x86_reg)
-                x86_reserved_mask |= (1u << (int)xreg);
+                x86_reserved_mask |= x86_reg_vbit(xreg);
         }
         unsigned x86_already_reserved = used_regs & x86_reserved_mask;
         used_regs |= x86_reserved_mask;
@@ -13189,6 +13189,20 @@ VReg gen(Node *node) {
         // asm's real result, makes the store-back below immune to whatever
         // the address-register restore does to those same registers.
         VReg op_saved[MAX_ASM_OPERANDS];
+        // Every x86-reg output's physical register still holds an unread
+        // asm result until this loop captures it -- alloc_reg() below must
+        // never hand any of THEM out as a scratch tmp for a DIFFERENT
+        // output's capture (e.g. capturing "=a" into a fresh tmp that
+        // alloc_reg() happens to place in %rbx would destroy an
+        // as-yet-uncaptured "=b" result). Only vregs 2 (%rbx) and 7 (%rsi)
+        // can ever collide (the only two x86-reg-pool physical registers;
+        // see cg_x86_reg[]), so reserve exactly those actually in play here.
+        unsigned x86_output_mask = 0;
+        for (int i = 0; i < node->asm_noperands; i++)
+            if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i]))
+                x86_output_mask |= x86_reg_vbit(ASM_GET_X86_REG(op_regs[i]));
+        unsigned x86_output_already_reserved = used_regs & x86_output_mask;
+        used_regs |= x86_output_mask;
         for (int i = 0; i < node->asm_noperands; i++) {
             if (op_addr[i] >= 0 && ASM_IS_X86_REG(op_regs[i])) {
                 X86Reg xreg = ASM_GET_X86_REG(op_regs[i]);
@@ -13200,6 +13214,7 @@ VReg gen(Node *node) {
                 op_saved[i] = -1;
             }
         }
+        used_regs &= ~(x86_output_mask & ~x86_output_already_reserved);
 
         // Restore saved address registers (reverse order) so that
         // the store-back below uses the correct address values.
