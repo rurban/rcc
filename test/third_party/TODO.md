@@ -230,6 +230,152 @@ tests/run_make_tests.pl -make ../make` passes all 1444 tests, 0
   version than this host's; regenerating it is a project-level
   `./bootstrap` concern, out of scope for a compiler.
 
+### Fixed (2026-08-23, ggrep session -- 8 stacked rcc bugs)
+
+- **Bug 1 -- parser: a trailing `_Pragma(...)` inside a GNU statement-
+  expression silently discarded the intended value.** A trailing
+  `_Pragma` after the value expression, with nothing else before the
+  closing `}` (grep's own `CAST_ALIGNED()` macro:
+  `({ __typeof__(p) val_ = p; _Pragma(...) (type)val_; _Pragma(...) })`,
+  used in `skip_easy_bytes()`), parses `_Pragma` as a plain `ND_NULL`
+  statement (same as a bare `;`), and the statement-expression's result-
+  detection only recognized an `ND_EXPR_STMT` as the last node -- so the
+  value silently vanished. `skip_easy_bytes()`'s pointer variable became
+  NULL, causing a real SIGSEGV in the rcc-built `grep` binary (confirmed
+  absent with a gcc-built binary on the identical source). Fixed by
+  making `_Pragma(...)` at statement level vanish completely (consumed,
+  no node appended), matching every other `_Pragma` site already in rcc
+  and its true nature as a C99 preprocessing operator, not a statement.
+  Regression test: test_stmt_expr_trailing_pragma.c.
+
+- **Bug 2 -- parser: `(bool)` cast constant-folding truncated before
+  checking truthiness.** `eval_const_expr()`'s ND*CAST case recursed
+  into the generic integer evaluator first, which truncates a flonum
+  operand toward zero (0.5 -> 0) before the \_Bool-specific check ever
+  saw the real value -- so `(bool) 0.5` folded to 0 instead of 1 (a
+  \_runtime* cast already had the correct C11 6.3.1.2 truthiness
+  semantics; only the constant fold was wrong).
+
+- **Bug 3 -- parser: `bool x = &y;` (address-of in a global initializer)
+  was rejected as "unsupported global initializer".** The existing
+  "relocatable address in a non-pointer scalar" fallback only fired for
+  scalars at least pointer-width; a 1-byte `_Bool` never reached it. An
+  address-of expression is always non-null, so this always folds to the
+  constant 1 without needing the actual (link-time) address.
+  Both bool bugs found via gnulib-tests/test-bool.c
+  (`char d[(bool) 0.5 == true ? 1 : -1]; bool e = &s;`). Regression
+  test: test_bool_cast_const_fold.c.
+
+- **Bug 4 -- parser: `__builtin_{add,sub,mul}_overflow_p` never
+  constant-folded**, even though rcc's `__has_builtin` table (correctly)
+  reports them available and codegen.c's runtime implementation is
+  correct -- so any `static_assert`/array-size use (gnulib's
+  `intprops.h`, whose overflow macros pick this exact builtin whenever
+  `__has_builtin` says so, gated on `__GNUC__ || __clang__`, which rcc
+  satisfies) failed with "condition must be a constant expression".
+  Added the fold, computing both value operands per GCC's documented
+  "infinite-precision math using each operand's OWN type" contract --
+  not reinterpreted through the result type first, which would corrupt
+  e.g. `INT_MIN * ULONG_MAX` (INT_MIN must stay negative even though the
+  result type is unsigned). Regression test:
+  test_overflow_builtin_const_fold.c.
+
+- **Bug 5 -- parser: unary `+` was a complete no-op**, never applying
+  C11 6.5.3.3p2's integer promotion to a narrower-than-int operand.
+  gnulib's `INT_PROMOTE(e)` macro (`intprops.h`) is exactly `(+(e))`,
+  used via `_Generic(INT_PROMOTE((short)0), int: ...)` and
+  `sizeof(INT_PROMOTE((short)0)) == sizeof(int)` to verify this
+  promotion -- both failed. Regression test: test_unary_plus_promotion.c.
+
+- **Bug 6 -- parser: `eval_const_expr()`'s arithmetic ops (+, -, \*,
+  bitwise, shifts) never truncated their result to the expression's own
+  type width**, carrying a full 64-bit `long long` through the whole
+  fold. Gnulib's `(1 ? 0 : (e)) - (v)` "ghost ternary" idiom (used
+  throughout `intprops.h` to get "a zero of e's type" without evaluating
+  e) needs real wraparound: for an `unsigned int` e, `(1 ? 0 : e) - 1`
+  must equal `UINT_MAX` (0xFFFFFFFF), not the 64-bit pattern -1
+  (0xFFFFFFFFFFFFFFFF) -- a later `>>` on the untruncated value shifted
+  the wrong 64-bit pattern, corrupting every `INT_LEFT_SHIFT_OVERFLOW`-
+  style compile-time check built on it. Fixed by wrapping
+  `eval_const_expr()` in a truncating entry point (fold via the renamed
+  internal impl, then mask/sign-extend to `node->ty`'s width) -- applied
+  once per node via the existing recursive call structure, so every
+  intermediate value in a nested constant expression truncates exactly
+  where real arithmetic would. Regression test:
+  test_const_expr_width_truncation.c.
+
+- **Bug 7 -- parser/type.c: `usual_arith_type()` implemented "any
+  unsigned operand poisons the result to unsigned"**, not C11 6.3.1.8p1's
+  real three-way rule for mixed-rank signed/unsigned pairs. `long +
+unsigned int` (both distinct rank, `long` strictly wider) incorrectly
+  became `unsigned long` instead of staying signed `long` -- silently
+  reinterpreting a negative `long` operand as a huge positive value
+  before the arithmetic ran. Found via gnulib's own repro shape,
+  `intmax_t + unsigned int` (INTMAX_MIN + UINT_MAX), which corrupted
+  every `INT_DIVIDE_OVERFLOW`/`INT_REMAINDER_OVERFLOW` compile-time
+  check built on it. Rewrote to the actual three rules: unsigned-rank
+
+  > = signed-rank converts to unsigned; else a strictly-wider signed type
+  > stays signed (can represent the full unsigned range); else (same
+  > width, different rank -- `long`/`long long` on LP64) both convert to
+  > the unsigned type of the signed operand. Also fixes the analogous
+  > pre-existing bug in the `_BitInt` mixed-signedness path. Regression
+  > test: test_mixed_sign_arith_conversion.c.
+
+  Bugs 4-7 together took gnulib-tests/test-intprops.c (413 checks) from
+  hard compile failure down to 0 remaining static_assert/compile
+  failures.
+
+- **Bug 8 -- parser: `offsetof()` returned a plain `int`-typed constant
+  instead of `size_t`** (C11 7.19p3). Both the constant-offset and
+  runtime (VLA-array-indexed) paths built their result from
+  `new_num()`/`ND_ADD` chains with no explicit type, defaulting to
+  `int`. Found via gnulib-tests/test-stddef-h.c:
+  `sizeof (offsetof (struct d, e)) == sizeof (size_t)` and
+  `(offsetof (struct d, e) < -1) == (INT_MAX < (size_t) -1)` (an
+  unsigned-comparison check) both failed. Explicitly typed both paths as
+  `ty_ullong` (size_t is 64-bit on every rcc target), matching the
+  existing `__builtin_object_size`/`__builtin_dynamic_object_size`
+  convention. Regression test: test_offsetof_size_t_type.c.
+
+- **Bug 9 -- headers: bundled `<stdint.h>` failed gnulib's own "does
+  stdint.h conform to C99" configure probe**, for two independent
+  reasons, causing gnulib to substitute its own replacement `stdint.h`
+  (containing a genuine, rarely-exercised UB shift-count bug,
+  `1 << 62` on a 32-bit `int`, in its `_STDINT_MAX` fallback macro) for
+  every rcc-built project -- a real difference from the identical GCC
+  build, where the probe passes and gnulib's replacement is never
+  generated. (1) `WCHAR_MIN`/`WCHAR_MAX`/`WINT_MIN`/`WINT_MAX`/
+  `SIG_ATOMIC_MIN`/`SIG_ATOMIC_MAX` were entirely missing, even though
+  the compiler already predefines the underlying `__WCHAR_MIN__` etc.
+  (2) `INT64_MAX`/`UINT64_MAX` (and everything built from them:
+  `SIZE_MAX`, `INTPTR_MAX`, `PTRDIFF_MAX`, `INTMAX_MAX`, `UINTMAX_MAX`)
+  used a fixed `LL`/`ULL` literal suffix regardless of target, while
+  `int64_t`/`uint64_t`/`intmax_t`/`uintmax_t`/`size_t` are typedef'd as
+  plain `long`/`unsigned long` on LP64 (Linux/macOS) and only `long
+long`/`unsigned long long` on LLP64 (Windows/mingw) -- so
+  `_Generic (SIZE_MAX, size_t: 0)` had no matching association on
+  Linux/macOS, even though SIZE_MAX's numeric value was already correct.
+  Regression test: test_stdint_c99_conformance.c.
+
+  ggrep (GNU grep 3.12) now builds completely clean with rcc (0
+  errors), and its own functional test suite (`tests/`, the real
+  correctness suite) passes 100%: 118/118 pass, 8 skip, 2 xfail, 0 fail
+  -- matching the gcc-built binary exactly. After bug 9's header fix,
+  `./configure` naturally stops using gnulib's stdint.h replacement
+  (matching the gcc build) and `gnulib-tests/` (a separate ~400-test
+  self-test suite for gnulib's own portability-shim infrastructure, not
+  grep itself) builds and runs almost entirely clean too; the one
+  remaining failure (`test-ioctl`, `sys/ioctl.h`'s gnulib-generated
+  `ioctl` redeclaration disagreeing with this host's glibc prototype) is
+  the identical pre-existing environment/gnulib-snapshot mismatch
+  already documented and confirmed-not-rcc in the wget2 entry above
+  (cross-checked again here: gcc rejects the identical repro too).
+
+  `make check-all`: 0 failed (Unit 318/318 incl. all 8 new regression
+  tests, Torture 3605/3609 -- 0 failed, 354 skipped, 4 todo, same
+  baseline; TCC/Compliance/C-testsuite/Dg-error/Link unaffected).
+
 ### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
 
 - jemalloc's unit test test/unit/bit_util fails with rcc as CC. The

@@ -318,19 +318,48 @@ static Type *usual_arith_type(Type *lhs, Type *rhs) {
         return get_decimal_type(lhs, rhs);
     lhs = integer_promotion(lhs);
     rhs = integer_promotion(rhs);
-    bool is_unsigned = lhs->is_unsigned || rhs->is_unsigned;
-    // Pick the type with higher integer rank
-    Type *higher = int_rank(lhs) >= int_rank(rhs) ? lhs : rhs;
-    if (is_unsigned == higher->is_unsigned)
-        return higher;
-    // Signedness mismatch at equal-or-higher rank: rebuild the winning
-    // width as unsigned/signed. get_integer_type() only knows the fixed
-    // standard-type ladder, so a _BitInt winner must stay a _BitInt - going
-    // through get_integer_type() would silently truncate/widen it to the
-    // nearest standard type of the same byte size, corrupting its exact N.
-    if (higher->kind == TY_BITINT)
-        return bitint_type(higher->bitint_width, is_unsigned);
-    return get_integer_type(higher->size, is_unsigned);
+    if (lhs->is_unsigned == rhs->is_unsigned)
+        // Same signedness: pick the higher rank (equal rank => same type
+        // already, either side works).
+        return int_rank(lhs) >= int_rank(rhs) ? lhs : rhs;
+    // Mixed signedness (C11 6.3.1.8p1, the three-way rule): identify the
+    // unsigned and signed operand, then apply the rules in order.
+    Type *uop = lhs->is_unsigned ? lhs : rhs;
+    Type *sop = lhs->is_unsigned ? rhs : lhs;
+    // Rule: if the unsigned operand's rank is >= the signed operand's,
+    // the signed operand converts to the unsigned type (e.g. `int +
+    // unsigned int`, or `long long + unsigned long long` -> unsigned).
+    if (int_rank(uop) >= int_rank(sop))
+        return uop;
+    // Rule: otherwise, if the signed type can represent every value of
+    // the unsigned type, the unsigned operand converts to the signed
+    // type -- result stays SIGNED, unchanged. On the standard ladder
+    // (char<short<int<long<long long, non-decreasing width at each
+    // step) a signed operand of *strictly* greater rank is always
+    // strictly wider, so it always qualifies (e.g. `long + unsigned
+    // int`: long stays long, signed -- NOT promoted to unsigned long).
+    // Only the same-width-different-rank pair (`long`/`long long` on
+    // LP64, both 8 bytes) can fail this, handled by the final rule.
+    if (sop->size > uop->size || sop->kind == TY_BITINT)
+        return sop;
+    // Rule: same width, signed cannot represent all unsigned values ->
+    // convert both to the unsigned type CORRESPONDING TO the signed
+    // operand's type (e.g. `long long + unsigned long` on LP64 ->
+    // unsigned long long; `long + unsigned int` on LLP64, where `long`
+    // and `int` are BOTH 4 bytes -> unsigned long, not unsigned int).
+    // get_integer_type() picks purely by byte size and cannot
+    // distinguish `long` from `int` at the same width (LLP64) or
+    // `long` from `long long` at the same width (LP64) -- it always
+    // prefers the long-long family for size 8 and the int family for
+    // size 4, which happens to match when sop IS the long-long/int
+    // member of that pair, but is WRONG when sop is `long` sharing that
+    // width. Preserve sop's own kind explicitly for the two ambiguous
+    // standard-ladder cases; fall back to get_integer_type() otherwise
+    // (never ambiguous for char/short/int128, and a _BitInt sop is
+    // handled by the branch above, never reaching here).
+    if (sop->kind == TY_LONG)
+        return ty_ulong;
+    return get_integer_type(sop->size, true);
 }
 
 static void add_type_internal(Node *node);

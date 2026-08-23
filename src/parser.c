@@ -2401,7 +2401,7 @@ static unsigned long long uval_at_width(long long v, int width_bytes) {
     return (unsigned long long)v & ((1ULL << (width_bytes * 8)) - 1);
 }
 
-bool eval_const_expr(Node *node, long long *val) {
+static bool eval_const_expr_impl(Node *node, long long *val) {
     long long lhs;
     long long rhs;
 
@@ -2553,6 +2553,27 @@ bool eval_const_expr(Node *node, long long *val) {
     case ND_BITNOT:
         return eval_const_expr(node->lhs, &lhs) && ((*val = ~lhs), true);
     case ND_CAST: {
+        // C11 6.3.1.2: converting any scalar to _Bool yields 0 if the
+        // value compares equal to 0, 1 otherwise -- not a truncating
+        // bit-copy (matches gen_cast_reg's runtime codegen). Must be
+        // checked before the generic eval_const_expr(node->lhs, ...)
+        // below: for a flonum operand (e.g. (bool)0.5), that call
+        // truncates toward zero first (0.5 -> 0), which would already
+        // have destroyed the fractional part this truthiness check
+        // needs.
+        if (node->ty && node->ty->kind == TY_BOOL) {
+            if (node->lhs->ty && is_flonum(node->lhs->ty)) {
+                long double fv;
+                if (!eval_const_fexpr(node->lhs, &fv))
+                    return false;
+                *val = fv != 0.0L;
+                return true;
+            }
+            if (!eval_const_expr(node->lhs, val))
+                return false;
+            *val = *val != 0;
+            return true;
+        }
         if (!eval_const_expr(node->lhs, val))
             return false;
         if (!node->ty || !is_integer(node->ty))
@@ -2782,6 +2803,68 @@ bool eval_const_expr(Node *node, long long *val) {
             return false;
         }
     case ND_FUNCALL: {
+        // __builtin_{add,sub,mul}_overflow_p(a, b, (__typeof__(a op b))0)
+        // is GCC/Clang's genuinely constant-foldable overflow-predicate
+        // builtin (unlike the 3-pointer-argument __builtin_*_overflow,
+        // which has a store side effect and is never a valid constant
+        // expression). gnulib's intprops.h picks this exact form whenever
+        // __has_builtin reports it available -- and rcc's __has_builtin
+        // table (preprocess.c) already claims support, gated on
+        // `__GNUC__ || __clang__`, the same condition gnulib's own
+        // test-intprops.c uses to select `static_assert` over a runtime
+        // ASSERT. Runtime codegen (cg_builtins.c) already implements
+        // these correctly; without this fold, any `static_assert` or
+        // array-size use of them (real-world overflow-checked constant
+        // computations, plus gnulib's own self-tests) failed with
+        // "condition must be a constant expression" even though every
+        // operand was already fully constant.
+        if (node->funcname &&
+            (node->funcname == bi_add_overflow_p || node->funcname == bi_sub_overflow_p ||
+             node->funcname == bi_mul_overflow_p)) {
+            Node *a = node->args;
+            Node *b = a ? a->next : NULL;
+            Node *c = b ? b->next : NULL;
+            if (!a || !b || !c || c->next)
+                return false;
+            long long av, bv;
+            if (!eval_const_expr(a, &av) || !eval_const_expr(b, &bv))
+                return false;
+            Type *rty = c->ty;
+            if (!rty || !is_integer(rty) || rty->size <= 0 || rty->size > 8)
+                return false;
+            int bits = rty->size * 8;
+            __int128 amin, amax;
+            if (rty->is_unsigned) {
+                amin = 0;
+                amax = bits >= 64 ? (__int128)((unsigned long long)-1) : (((__int128)1 << bits) - 1);
+            } else {
+                amax = (bits >= 64 ? (__int128)0x7FFFFFFFFFFFFFFFLL : (((__int128)1 << (bits - 1)) - 1));
+                amin = -amax - 1;
+            }
+            // GCC's contract (__builtin_*_overflow_p docs): the two value
+            // operands are promoted to infinite-precision SIGNED math
+            // using THEIR OWN type's value -- not reinterpreted through
+            // the result type first. A negative `int` operand stays
+            // negative even when the result type is unsigned (e.g.
+            // INT_MIN * ULONG_MAX must be evaluated as the huge negative
+            // product -2147483648 * 18446744073709551615, not as
+            // (unsigned long)INT_MIN * ULONG_MAX). eval_const_expr()
+            // already returns each operand's raw two's-complement 64-bit
+            // pattern per ITS OWN type (e.g. ULONG_MAX comes back as the
+            // bit pattern -1); reinterpret it as unsigned here whenever
+            // that operand's own type is unsigned, so the __int128 widen
+            // recovers the true mathematical value in both cases.
+            __int128 A = (a->ty && a->ty->is_unsigned) ? (__int128)(unsigned long long)av : (__int128)av;
+            __int128 B = (b->ty && b->ty->is_unsigned) ? (__int128)(unsigned long long)bv : (__int128)bv;
+            __int128 r;
+            if (node->funcname == bi_add_overflow_p) r = A + B;
+            else if (node->funcname == bi_sub_overflow_p)
+                r = A - B;
+            else
+                r = A * B;
+            *val = (r < amin || r > amax) ? 1 : 0;
+            return true;
+        }
         // Fold constant-argument calls to bit-counting builtins. Kernel
         // (and other) code computes compile-time bit widths via
         // __builtin_constant_p(n) ? ... clz/ctz/popcount(n) ... : runtime_fn(n)
@@ -2960,6 +3043,47 @@ bool eval_const_expr(Node *node, long long *val) {
     default:
         return false;
     }
+}
+
+// Public entry point: fold, then truncate/sign-extend the result to the
+// node's own type width. eval_const_expr_impl's individual ND_ADD/SUB/MUL/
+// BITAND/... cases compute raw 64-bit `long long` arithmetic with no
+// truncation of their own (only ND_CAST explicitly masks) -- correct for
+// any type that's already 8 bytes wide, but WRONG the moment the node's
+// real type is narrower, e.g. `unsigned int`: `0u - 1` must wrap to
+// UINT_MAX (0xFFFFFFFF), not stay the 64-bit pattern -1
+// (0xFFFFFFFFFFFFFFFF) -- a later `>>` on that value inspects
+// node->lhs->ty->is_unsigned and shifts the WRONG 64-bit pattern,
+// producing a value with the top 33 bits still set instead of 0.
+// Applying this once per node (recursive calls all route through this
+// wrapper, not eval_const_expr_impl directly) truncates every
+// intermediate value exactly where real arithmetic would, matching both
+// runtime codegen and the C abstract machine. Found via gnulib's
+// intprops.h: `_GL_INT_NEGATE_CONVERT(UINT_MAX, 1)` (an unsigned-int-typed
+// "(1 ? 0 : e) - 1" ghost-ternary idiom) folded to a 64-bit -1 instead of
+// UINT_MAX, corrupting every INT_LEFT_SHIFT_OVERFLOW-style compile-time
+// overflow check built on top of it.
+bool eval_const_expr(Node *node, long long *val) {
+    if (!eval_const_expr_impl(node, val))
+        return false;
+    if (!node->ty)
+        return true;
+    if (node->ty->kind == TY_BOOL) {
+        *val = *val != 0;
+        return true;
+    }
+    if (is_integer(node->ty) && node->ty->kind != TY_BITINT) {
+        int sz = node->ty->size;
+        if (sz > 0 && sz < 8) {
+            int bits = sz * 8;
+            unsigned long long mask = (1ULL << bits) - 1;
+            unsigned long long uv = (unsigned long long)*val & mask;
+            if (!node->ty->is_unsigned && (uv & (1ULL << (bits - 1))))
+                uv |= ~mask;
+            *val = (long long)uv;
+        }
+    }
+    return true;
 }
 
 static bool eval_double_const_expr(Node *node, double *val) {
@@ -8113,6 +8237,22 @@ static Node *compound_stmt_ex(Token **rest, Token *tok, LVar **out_locals,
             }
             continue;
         }
+        // _Pragma("string") — C99 pragma operator, not a statement (see
+        // stmt()'s identical no-op below). Must vanish here too, before
+        // reaching the body list: otherwise a trailing _Pragma inside a
+        // GNU statement-expression `({ ...; expr; _Pragma(...); })` (the
+        // "GCC diagnostic push/ignored/pop" idiom around a pointer cast,
+        // e.g. grep's skip_easy_bytes CAST_ALIGNED macro) becomes the
+        // last node in body, isn't an ND_EXPR_STMT, and silently drops
+        // the intended result value.
+        if (equalc(tok, "_Pragma")) {
+            tok = tok->next;
+            tok = skip(tok, "(");
+            if (tok->kind == TK_STR)
+                tok = tok->next;
+            tok = skip(tok, ")");
+            continue;
+        }
         // Standalone __attribute__((...)) at statement level (e.g. __fallthrough__)
         if ((equalc(tok, "__attribute__") || equalc(tok, "__attribute"))) {
             Token *after = peek_past_attr(tok);
@@ -10663,14 +10803,34 @@ static Node *unary(Token **rest, Token *tok) {
         }
 
         *rest = skip(tok, ")");
-        if (!rt_expr)
-            return new_num(const_offset, start);
+        // offsetof() returns size_t per C11 7.19p3 -- previously these
+        // returned a plain new_num()/ND_ADD chain, which types as `int`
+        // (matching the internal computation's own int-typed pieces, not
+        // the standard-mandated size_t). Real code relies on this: e.g.
+        // gnulib's test-stddef-h.c static_asserts
+        // `sizeof (offsetof (struct d, e)) == sizeof (size_t)` and that
+        // `offsetof (...) < -1` compares as unsigned (a small offset is
+        // always less than (size_t)-1's huge value) -- both silently
+        // failed with the narrower `int` type. size_t is 64-bit on every
+        // rcc target; ty_ulong is only 64-bit on LP64 Linux/macOS and
+        // 32-bit on Windows (LLP64), so use ty_ullong like
+        // __builtin_object_size/__builtin_dynamic_object_size above.
+        if (!rt_expr) {
+            Node *n = new_num(const_offset, start);
+            n->ty = ty_ullong;
+            return n;
+        }
         // Add any trailing const_offset to the runtime expression
         if (const_offset != 0) {
             Node *tail = new_num(const_offset, start);
             check_type(tail);
             rt_expr = new_binary(ND_ADD, rt_expr, tail, start);
             check_type(rt_expr);
+        }
+        if (rt_expr->ty != ty_ullong) {
+            Node *cast = new_unary(ND_CAST, rt_expr, start);
+            cast->ty = ty_ullong;
+            rt_expr = cast;
         }
         return rt_expr;
     }
@@ -11845,8 +12005,31 @@ static Node *unary(Token **rest, Token *tok) {
             return vla;
         return new_unary(ND_PRE_DEC, lhs, start);
     }
-    if (equalc(tok, "+"))
-        return unary(rest, tok->next);
+    if (equalc(tok, "+")) {
+        // C11 6.5.3.3p2: "The result of the unary + operator is the value
+        // of its (promoted) operand" -- a narrower-than-int integer
+        // operand (char/short/bool/bit-field) undergoes the same integer
+        // promotion it would as an arithmetic operand, becoming a real
+        // `int` rvalue. This matters for anything that inspects the
+        // *type* of `+x` rather than just its value: gnulib's
+        // INT_PROMOTE(e) macro (intprops.h) is exactly `(+(e))`, used via
+        // `_Generic(INT_PROMOTE((short)0), int: ...)` and
+        // `sizeof(INT_PROMOTE((short)0)) == sizeof(int)` to verify this
+        // very promotion. Previously unary `+` was a complete no-op
+        // (returned the operand unchanged, keeping its narrow type),
+        // silently failing both checks. _BitInt is explicitly excluded
+        // (C23 6.3.1.1p2: never subject to the usual integer promotions).
+        Token *start = tok;
+        Node *operand = unary(rest, tok->next);
+        check_type(operand);
+        if (operand->ty && is_integer(operand->ty) && operand->ty->kind != TY_BITINT &&
+            operand->ty->size > 0 && operand->ty->size < ty_int->size) {
+            Node *promoted = new_unary(ND_CAST, operand, start);
+            promoted->ty = ty_int;
+            return promoted;
+        }
+        return operand;
+    }
     if (equalc(tok, "-"))
         return vector_lower(new_unary(ND_NEG, unary(rest, tok->next), tok));
     if (equalc(tok, "!"))
@@ -13380,6 +13563,19 @@ static void global_initializer_impl(Token **rest, Token *tok, LVar *var) {
                 *rest = tok;
                 return;
             }
+        }
+
+        // A pointer/address expression stored in a _Bool global, e.g.
+        // `bool e = &s;` or `bool has_handler = my_func;` (function-name
+        // decay). C11 6.3.1.2: converting a pointer to _Bool yields 1 if
+        // the pointer is non-null, 0 otherwise -- &x and a function name
+        // are never null, so this always folds to the constant 1, with
+        // no need for the actual (link-time) address value at all.
+        if (var->ty->kind == TY_BOOL && looks_like_address_expr(node)) {
+            var->has_init = true;
+            var->init_val = 1;
+            *rest = tok;
+            return;
         }
 
         // A relocatable address stored in an integer-typed (not pointer-

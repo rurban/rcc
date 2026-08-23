@@ -108,9 +108,26 @@ typedef uint64_t uint_fast64_t;
 #define INT32_MIN (-2147483647 - 1)
 #define INT32_MAX 2147483647
 #define UINT32_MAX 0xffffffffU
+// INT64_MIN/MAX/UINT64_MAX's literal suffix must match int64_t/uint64_t's
+// actual typedef'd type (see the _WIN32-conditional typedefs above): `long`/
+// `unsigned long` on LP64 (Linux/macOS), `long long`/`unsigned long long` on
+// LLP64 (Windows/mingw, where `long` is only 4 bytes). A mismatched suffix
+// (e.g. always `LL`/`ULL`) makes the macro's own type disagree with
+// int64_t/uint64_t/intmax_t/uintmax_t/size_t -- caught by gnulib's own
+// "does stdint.h conform to C99" configure probe: `_Generic (SIZE_MAX,
+// size_t: 0)` found no matching association, since SIZE_MAX (built from
+// UINT64_MAX) was `unsigned long long` while size_t is `unsigned long` on
+// this LP64 target. This mismatch previously made gnulib substitute its own
+// (partly UB-laden) <stdint.h> replacement for every rcc-built project.
+#ifdef _WIN32
 #define INT64_MIN (-9223372036854775807LL - 1LL)
 #define INT64_MAX 9223372036854775807LL
 #define UINT64_MAX 18446744073709551615ULL
+#else
+#define INT64_MIN (-9223372036854775807L - 1L)
+#define INT64_MAX 9223372036854775807L
+#define UINT64_MAX 18446744073709551615UL
+#endif
 
 #define INTPTR_MIN INT64_MIN
 #define INTPTR_MAX INT64_MAX
@@ -164,6 +181,33 @@ typedef uint64_t uint_fast64_t;
 #define UINT64_C(v) v ## ULL
 #define INTMAX_C(v) v ## LL
 #define UINTMAX_C(v) v ## ULL
+
+/* Limits of wchar_t/wint_t/sig_atomic_t (C99 7.18.3), required in
+ * <stdint.h> -- previously missing entirely, which fails gnulib's own
+ * "does stdint.h conform to C99" configure probe (its conftest checks
+ * `#ifdef WCHAR_MIN ... #ifdef WCHAR_MAX`), causing gnulib to
+ * conservatively substitute its own <stdint.h> replacement for every
+ * project built with rcc, unlike the identical build with GCC/clang.
+ * Deliberately NOT derived from __WCHAR_MIN__/__WCHAR_MAX__ etc.: those
+ * are regenerated per-target from the system compiler
+ * (src/gcc_predefined.h) and Apple's Clang (macOS's system "gcc")
+ * doesn't reliably define the full set the way GCC does. These values
+ * are fixed for every rcc target instead: wchar_t is `int` (32-bit
+ * signed) on Linux/macOS, `unsigned short` (16-bit) on Windows/mingw;
+ * wint_t is `unsigned int` and sig_atomic_t is `int` (32-bit) on every
+ * target. */
+#ifdef _WIN32
+#define WCHAR_MIN 0
+#define WCHAR_MAX 0xffff
+#else
+#define WCHAR_MIN (-2147483647 - 1)
+#define WCHAR_MAX 2147483647
+#endif
+#define WINT_MIN 0U
+#define WINT_MAX 0xffffffffU
+#define SIG_ATOMIC_MIN (-2147483647 - 1)
+#define SIG_ATOMIC_MAX 2147483647
+
 
 /* Width macros (C23 7.20.3). diffutils' lib/io.c uses SIZE_WIDTH and
  * PTRDIFF_WIDTH; the general set covers every type with a limit macro. */

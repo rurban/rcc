@@ -2,12 +2,12 @@
 
 **Platform**: Windows x86_64 (native)
 
-Generated: August 23 2026 14:48
+Generated: August 23 2026 17:17
 
 ## Overall Summary
 
-- **Total**: 4624
-- **Passed**: 4233
+- **Total**: 4632
+- **Passed**: 4241
 - **Failed**: 0
 - **Skipped**: 386
 - **Overall Pass Rate**: 100%
@@ -21,8 +21,8 @@ Generated: August 23 2026 14:48
 
 ## RCC Unit Tests
 
-- **Total**: 309
-- **Passed**: 308
+- **Total**: 317
+- **Passed**: 316
 - **Failed**: 0
 - **Pass Rate**: 100%
 
