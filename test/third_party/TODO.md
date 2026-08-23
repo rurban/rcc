@@ -128,32 +128,107 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
     the two infinite loops permanently occupied 2 of the 4 parallel
     test-runner slots) passed cleanly.
 
-### Known rcc bug (2026-08-23, nettle -- same allocator class as jemalloc, not yet fixed)
+### Fixed (2026-08-23, nettle -- register-allocator spill/borrow + aliasing bugs)
 
-- nettle 4.0 builds clean with rcc (0 errors) and `make check` passes
-  127/128 tests -- the initial run showed 55/127 failures, but that
-  was stale/inconsistent build state (a leftover shared library from
-  an earlier differently-configured build mixed with freshly rebuilt
-  static objects); a `make distclean` + reconfigure + full rebuild
-  drops it to a single real failure.
+- nettle 4.0 builds clean with rcc (0 errors) and `make check` now
+  passes 128/128 tests (the initial run showed 55/127 failures, but
+  that was stale/inconsistent build state -- a leftover shared
+  library from an earlier differently-configured build mixed with
+  freshly rebuilt static objects; a `make distclean` + reconfigure +
+  full rebuild dropped it to a single real failure, `twofish`, now
+  fixed).
 
-  The remaining failure, `twofish`, SIGSEGVs inside `h_byte()`
-  (twofish.c) -- a single expression with 5 levels of nested array
+  `twofish`'s `h_byte()` (twofish.c) SIGSEGVs (or silently returns a
+  wrong byte) on a single expression with 5 levels of nested array
   indexing, two of them through an embedded ternary
-  (`q_table[i][2][k == 2 ? x : l2 ^ q_table[i][1][...]]`). Minimal
-  repro (crashes only when called repeatedly in a loop, not on a
-  single call -- confirming this is the SAME register-allocator
-  spill/borrow bug class documented for jemalloc's LG_CEIL/LG_FLOOR
-  above, not a new/distinct bug): a function performing the identical
-  5-level nested-ternary array-index chain, called from a triple
-  loop, segfaults with rcc and runs cleanly with gcc. Flattening the
-  expression into one intermediate variable per nesting level (still
-  in a loop) does NOT crash -- the bug needs both the unflattened
-  single-expression form AND repeated evaluation.
+  (`q_table[i][2][k == 2 ? x : l2 ^ q_table[i][1][...]]`) -- real
+  register-allocator corruption under heavy pressure, four stacked
+  bugs in `src/codegen.c`:
+  1. `free_reg()` unconditionally cleared `used_regs` after restoring
+     a spilled register, even when the restore returned a
+     still-live OUTER value (displaced by `alloc_reg()`'s own victim
+     selection, e.g. an outer `tbl[i][1]` element pointer) to its
+     physical register. The very next `alloc_reg()` call then found
+     that register "fully free" and hooked it to an unrelated
+     scratch temp with no spill emitted, silently clobbering the
+     just-restored value before its real use. Fixed by tracking, per
+     register, whether its CURRENT occupant was placed there by
+     `alloc_reg()`'s spill-victim path (a new `spill_victim` bitmask);
+     `free_reg()` now protects (restores but leaves `used_regs` set)
+     only in that genuine case. A prior session's simpler
+     "keep-used-on-free" attempt (documented in the jemalloc entry
+     below) regressed a different construct (nested comma-expression/
+     function-call argument staging in `gen_funcall()`, which
+     deliberately leaves a stale `spilled_regs` bit dangling after
+     clearing `used_regs` directly, bypassing `free_reg()`); the
+     `spill_victim` bit distinguishes a genuine outer-value eviction
+     from that dangling leftover so both constructs work. Reset at
+     both codegen() Pass 1/Pass 2 entry points (per-function state,
+     same lifetime as `used_regs`/`spilled_regs`).
+  2. `gen()`'s `ND_DEREF` fast path for `*(lvar + idx)` and the
+     generic binary-op dispatch's `r_lhs == r_rhs` collision handling
+     both called `free_reg()` on a VReg that ALIASED the physical
+     register holding the live combined/returned result, prematurely
+     freeing a register whose value was about to be read or returned.
+  3. Every conditional-branch site that frees a VReg used only to set
+     flags/load a compare operand did so AFTER emitting the branch
+     instead of before it. When that VReg's register was borrowed
+     from a spilled outer value, `free_reg()`'s restore of the outer
+     value only existed on the fall-through side of the branch; the
+     taken side resumed with the wrong value still in the register.
+     First found and fixed in `gen()`'s `ND_COND` (ternary) and
+     `ND_DO`'s flonum condition; a follow-up sweep found and fixed
+     the identical shape in `gen()`'s `ND_LOGAND`/`ND_LOGOR`,
+     `gen_addr()`'s `ND_COND` (struct/union ternary lvalue),
+     `gen_int128()`'s `ND_COND`, and `gen_cond_branch_inv()`'s
+     `ND_LOGOR`-with-flonum-lhs, flonum `EQ`/`NE`/`LT`/`LE`
+     comparison, complex-type truthiness, and trailing flonum
+     truthiness checks. Added `gen_flonum_branch_if_{zero,nonzero}
+_preloaded` (branch-only, value already in xmm0/d0) so every
+     site can free the source register between the load and the
+     branch; the old load+branch-together
+     `gen_flonum_branch_if_{zero,nonzero}` became dead and were
+     removed.
+  4. `gen()`'s `ND_LOGAND` (ARM64) needed its result register `r`'s
+     allocation deferred to right after evaluating `lhs` (avoiding the
+     same register-pressure blowup `ND_COND`'s deferred-allocation
+     comment already documents, for a long `a && b && c && ...` value
+     chain), guarded with `alloc_reg_avoid2(lhs, -1)` rather than plain
+     `alloc_reg()` since `lhs` is still live and about to be read by
+     the compare (a plain `alloc_reg()`'s victim-selection could pick
+     `lhs`'s own physical register, so the immediately-following
+     `xor r,r` would clobber `lhs` before the compare read it -- the
+     same aliasing hazard the bitfield-merge fix documented further
+     down this file already uses `alloc_reg_avoid2` for). While
+     restructuring this, an editing slip on this file dropped the
+     rest of the ARM64 case body -- `rhs`'s evaluation, the `cset`/
+     flonum-truthiness merge into `r`, and the `.L.end.%d` label
+     definition -- leaving the ARM64 path's forward branch
+     unconditionally jumping to a label that was NEVER EMITTED for
+     any chain of 2+ nested `ND_LOGAND` used as a value (not a plain
+     `if`/`while` condition, which goes through the separate,
+     unaffected `gen_cond_branch_inv()`). An unresolved forward-branch
+     fixup defaults to a zero displacement, i.e. `b.eq` branching to
+     its OWN address -- an unconditional infinite loop the instant the
+     first operand is false. Restored the missing code. Found via real
+     macOS ARM64 CI hardware timing out at the 30-minute job ceiling
+     (`test_complit_designator_chain`'s five-way `&&`-chained boolean
+     return and `test_spill_locals_collision`'s 16-way `&&`-chained
+     corruption check both use `&&` as a value, not a condition);
+     locally reproduced on qemu-aarch64 with a synthetic `a>=0 && ...`
+     chain (any depth >= 2 hangs before the fix, none after) -- the
+     general local test suite never exercises this exact path because
+     virtually all `&&` usage in real C and in rcc's own suite sits
+     directly inside `if`/`while`/`for`, which never reaches `gen()`'s
+     `ND_LOGAND` at all.
 
-  Not fixed for the same reason as jemalloc: needs reworking the
-  allocator's spill/pop/borrow semantics, out of scope for a
-  surgical fix.
+  Regression test: test_array_index_spill_collision.c. Verified with
+  the full local suite (`make check-all`: 0 failed, Unit 319/319,
+  Torture 3605/3609 same baseline) on Linux x86-64 with both gcc and
+  clang, the ARM64 cross build under qemu-aarch64 (308/308 unit
+  tests, gcc, incl. the synthetic deep-`&&`-chain repro above), and
+  the mingw cross build under wine, plus a from-scratch nettle
+  rebuild + full `make check` (128/128) confirming the real-world fix.
 
 ### Fixed (2026-08-23, gmake)
 

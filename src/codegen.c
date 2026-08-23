@@ -683,6 +683,23 @@ static int spill_offset(int r) {
 
 static int spilled_regs = 0;
 static int spill_count = 0;
+// Bit i set: register i's CURRENT occupant was placed there by
+// alloc_reg()'s own spill-victim eviction (it displaced a still-live
+// value to make room). Bit i clear: register i's current occupant came
+// from the "fully free" fast path. free_reg() uses this to tell a
+// genuine "I displaced a still-live outer value, restore-and-protect
+// it" spilled_regs bit apart from a stale one left dangling by code
+// that bypasses free_reg() entirely (gen_funcall's argument-staging
+// release: it clears used_regs directly while deliberately leaving
+// spilled_regs set so the pending outer value's data stays valid in
+// its spill slot for a same-register binary-op combine to read
+// directly -- see the "do NOT clear the spilled_regs bit" sites). A
+// register handed out by the fast path can never have contributed a
+// fresh push, so any spilled_regs bit it later finds set at free_reg()
+// time must be exactly such a stale leftover, not something of its
+// own -- restoring it would silently steal that leftover from its
+// eventual real owner.
+static int spill_victim = 0;
 static const char *reg_owner[NUM_REGS];
 
 // Builtin name pointers that remain in codegen.c (others moved to cg_builtins.c)
@@ -734,8 +751,8 @@ VReg alloc_wide_addr(int size);
 static VReg gen_to_int128(Node *operand);
 static VReg gen_int128(Node *node);
 static VReg gen_bitint(Node *node);
-static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label);
-static void gen_flonum_branch_if_nonzero(VReg r, const char *label);
+static void gen_flonum_branch_if_zero_preloaded(size_t *fwd_off, const char *shared_label);
+static void gen_flonum_branch_if_nonzero_preloaded(const char *label);
 static void gen_flonum_truthiness(VReg r);
 
 static void emit_bitint_bits_arg(int bits);
@@ -5198,6 +5215,7 @@ VReg alloc_reg(void) {
         if ((used_regs & (1 << i)) == 0) {
             used_regs |= (1 << i);
             ever_used_regs |= (1 << i);
+            spill_victim &= ~(1 << i);
             return (VReg)i;
         }
     }
@@ -5235,6 +5253,7 @@ VReg alloc_reg(void) {
             used_regs &= ~(1 << i);
             used_regs |= (1 << i); // reclaim for new value
             ever_used_regs |= (1 << i);
+            spill_victim |= (1 << i); // this incarnation displaced a live value
             return (VReg)i;
         }
     }
@@ -5262,6 +5281,7 @@ VReg alloc_reg(void) {
             used_regs &= ~(1 << i);
             used_regs |= (1 << i); // reclaim for new value
             ever_used_regs |= (1 << i);
+            spill_victim |= (1 << i); // this incarnation displaced a live value
             return (VReg)i;
         }
     }
@@ -5307,6 +5327,7 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
         if ((used_regs & (1 << i)) == 0) {
             used_regs |= (1 << i);
             ever_used_regs |= (1 << i);
+            spill_victim &= ~(1 << i);
             return (VReg)i;
         }
     }
@@ -5327,6 +5348,7 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
             spilled_regs |= (1 << i);
             spill_count++;
             ever_used_regs |= (1 << i);
+            spill_victim |= (1 << i);
             return (VReg)i;
         }
     }
@@ -5347,6 +5369,7 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
             spilled_regs |= (1 << i);
             spill_count++;
             ever_used_regs |= (1 << i);
+            spill_victim |= (1 << i);
             return (VReg)i;
         }
     }
@@ -5360,12 +5383,50 @@ VReg alloc_reg_avoid2(VReg avoid1, VReg avoid2) {
 
 void free_reg(VReg i) {
     if (spilled_regs & (1 << i)) {
+        // A pending spill exists for this physical register. Two cases
+        // share this bit and must be told apart (see spill_victim's own
+        // comment above): (a) THIS incarnation of register i was handed
+        // out by alloc_reg()'s spill-victim path -- it genuinely
+        // displaced a still-live outer value to make room, and that
+        // value's data is sitting in spill_offset(i) waiting for us;
+        // (b) the bit is a stale leftover some OTHER code (gen_funcall's
+        // argument-staging release) left dangling on purpose after
+        // clearing used_regs directly (bypassing free_reg) -- THIS
+        // incarnation came from the fast "fully free" path and never
+        // pushed anything of its own.
+        //
+        // Case (a): restore the displaced value and hand the register
+        // straight back to it -- do NOT clear used_regs, since the
+        // register still holds a live value, not nothing. Clearing it
+        // here let a subsequent alloc_reg() grab this index immediately
+        // afterward with no spill emitted, silently clobbering the
+        // just-restored value before its real use. Found via a 5-level
+        // nested `tbl[i][k][x]` pointer-chain array index (twofish's
+        // h_byte(), test/third_party nettle): the register holding an
+        // outer `tbl[i][1]` element pointer got spilled to make room for
+        // a scratch temp computing `tbl[i][0]`'s address, restored when
+        // that temp was freed, then immediately stolen by the next temp
+        // with no spill -- the outer pointer was gone by the time it was
+        // dereferenced, segfaulting.
+        //
+        // Case (b): the restore below is directed at data that isn't
+        // ours (it predates this incarnation); protecting it via
+        // used_regs would starve the allocator over a value nobody here
+        // is tracking, and can misattribute/corrupt an unrelated later
+        // VReg that lands on this same index. Fall through to the plain
+        // clear instead, matching this function's behavior before
+        // spill_victim existed (harmless: nothing reads a register's
+        // content right after free_reg() frees it).
 #ifdef ARCH_ARM64
         asm_ldur_fp(cg_sec, i, pop_spill_slot(i)); // ldr x(i), [x29, #-pop_spill_slot(i)]
 #else
         asm_mov_rbp_reg(cg_sec, i, 8, pop_spill_slot(i)); // mov [rbp-8], ri
 #endif
         spilled_regs &= ~(1 << i);
+        if (spill_victim & (1 << i)) {
+            spill_victim &= ~(1 << i);
+            return;
+        }
     }
     used_regs &= ~(1 << i);
     reg_owner[i] = NULL;
@@ -6008,9 +6069,17 @@ VReg gen_addr(Node *node) {
         VReg r = alloc_reg();
         VReg cond = gen(node->cond);
         if (node->cond->ty && is_flonum(node->cond->ty)) {
-            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy.
-            gen_flonum_branch_if_zero(cond, NULL, format(".L.else.%d", c));
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. Free
+            // `cond` right after loading it into xmm0/d0 but BEFORE the
+            // branch below -- see gen()'s ND_COND for why: a borrowed
+            // spill-victim register's restore must run on both sides.
+#ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, cond, 1); // fmov d0, x{cond}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, cond); // movq %s, %xmm0
+#endif
             free_reg(cond);
+            gen_flonum_branch_if_zero_preloaded(NULL, format(".L.else.%d", c));
             VReg then_r = gen_addr(node->then);
             asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
             free_reg(then_r);
@@ -6028,11 +6097,11 @@ VReg gen_addr(Node *node) {
         int cond_sz = node->cond->ty->size;
 #ifdef ARCH_ARM64
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
+        free_reg(cond);
         {
             size_t o = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
         }
-        free_reg(cond);
         int then_r = gen_addr(node->then);
         asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
         free_reg(then_r);
@@ -6047,11 +6116,11 @@ VReg gen_addr(Node *node) {
         cg_def_label(format(".L.end.%d", c));
 #else
         asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
+        free_reg(cond);
         {
             size_t o = asm_jcc_label(cg_sec, X86_E); // jcc label
             asm_fixup_add(cg_sec, o, format(".L.else.%d", c), 1);
         }
-        free_reg(cond);
         VReg then_r = gen_addr(node->then);
         asm_mov_reg_reg(cg_sec, r, then_r, 8); // mov rthen_r -> rr
         free_reg(then_r);
@@ -6312,17 +6381,17 @@ static void cg_add_fwd(size_t instr_off, int type, size_t *fwd_off, const char *
     }
 }
 
-// Emit a branch to the false-target when the flonum value held as a
-// double bit pattern in GP register `r` compares equal to 0.0 (i.e. the
-// C condition is FALSE). IEEE semantics: -0.0 compares equal to +0.0
-// (condition false) even though its bit pattern is nonzero; NaN is
-// unordered, hence truthy (never branches). A plain bitwise `cmp $0, r`
-// would misclassify -0.0 as truthy.
-// Target resolution mirrors cg_add_fwd: fwd_off (direct patch) else
-// shared_label (fixup) else auto-label defined in place.
-static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *shared_label) {
+// Emit a branch to the false-target when the double bit pattern already
+// loaded into xmm0/d0 compares equal to 0.0 (i.e. the C condition is
+// FALSE). Split out of gen_flonum_branch_if_zero so a caller that must
+// free the source GP register (e.g. because alloc_reg() borrowed it from
+// an outer, still-live value under register pressure) can do so right
+// after consuming its value into xmm0/d0 -- BEFORE emitting any
+// conditionally-skipped branch target. Freeing after the branch instead
+// places the pending spill-restore inside only ONE side of the branch,
+// leaving the other side's register state wrong.
+static void gen_flonum_branch_if_zero_preloaded(size_t *fwd_off, const char *shared_label) {
 #ifdef ARCH_ARM64
-    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
     asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
     asm_fcmp(cg_sec, 1); // fcmp d0, d1
     int c = ++rcc_label_count;
@@ -6337,7 +6406,6 @@ static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *share
     }
     cg_def_label(skip);
 #else
-    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
     x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
     asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
     int c = ++rcc_label_count;
@@ -6354,12 +6422,12 @@ static void gen_flonum_branch_if_zero(VReg r, size_t *fwd_off, const char *share
 #endif
 }
 
-// Branch to label when the flonum value in GP register `r` is truthy
-// (compares unequal to 0.0, or is NaN). Inverse of
-// gen_flonum_branch_if_zero with a plain-label target.
-static void gen_flonum_branch_if_nonzero(VReg r, const char *label) {
+// Emit a branch to `label` when the flonum value already loaded into
+// xmm0/d0 is truthy (compares unequal to 0.0, or is NaN). Lets a caller
+// free the source VReg's register between the load and the branch --
+// see gen_flonum_branch_if_zero_preloaded.
+static void gen_flonum_branch_if_nonzero_preloaded(const char *label) {
 #ifdef ARCH_ARM64
-    asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
     asm_fmov_d1_xzr(cg_sec); // fmov d1, xzr
     asm_fcmp(cg_sec, 1); // fcmp d0, d1
     {
@@ -6371,7 +6439,6 @@ static void gen_flonum_branch_if_nonzero(VReg r, const char *label) {
         asm_fixup_add(cg_sec, o, label, 1);
     }
 #else
-    asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
     x86_pxor(cg_sec, X86_XMM1, X86_XMM1); // xorpd %xmm1, %xmm1
     asm_ucomisd(cg_sec); // ucomisd %xmm1, %xmm0
     {
@@ -6435,11 +6502,19 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         if (cond->lhs->ty && is_flonum(cond->lhs->ty)) {
             // Truthy (nonzero or NaN) lhs skips the rhs check. A bitwise
             // GP-register test would misclassify -0.0 (nonzero bit
-            // pattern, value == 0.0) as truthy.
+            // pattern, value == 0.0) as truthy. Free `lhs` right after
+            // loading it but BEFORE the branch (see ND_COND's matching
+            // fix) so a borrowed spill-victim register is restored on
+            // both control-flow paths.
             int c2 = ++rcc_label_count;
             const char *skip = format(".L.glor.fskip.%d", c2);
-            gen_flonum_branch_if_nonzero(lhs, skip);
+#ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, lhs, 1); // fmov d0, x{lhs}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, lhs); // movq %s, %xmm0
+#endif
             free_reg(lhs);
+            gen_flonum_branch_if_nonzero_preloaded(skip);
             // If lhs was false, check rhs; if rhs is also false, branch to target
             gen_cond_branch_inv(cond->rhs, fwd_off, shared_label);
             cg_def_label(skip);
@@ -6521,10 +6596,17 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
         if (is_flonum(cond->lhs->ty)) {
             VReg r_lhs = gen(cond->lhs);
             VReg r_rhs = gen(cond->rhs);
+            // Free both operand registers right after their values are
+            // consumed into xmm0/xmm1 (fcmp/ucomisd read flags only from
+            // here on) but BEFORE any branch below -- see ND_COND's
+            // matching fix: a borrowed spill-victim register's restore
+            // must reach every branch target, not just the fall-through.
 #ifdef ARCH_ARM64
             asm_fmov_i2f(cg_sec, 0, r_lhs, 1); // fmov d0, x{r_lhs}
             asm_fmov_i2f(cg_sec, 1, r_rhs, 1); // fmov d1, x{r_rhs}
             asm_fcmp(cg_sec, 1); // fcmp d0, d1
+            free_reg(r_rhs);
+            free_reg(r_lhs);
             if (cond->kind == ND_EQ) {
                 // 2 branches to same target
                 const char *lbl = shared_label;
@@ -6565,6 +6647,8 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             asm_movq_r_xmm(cg_sec, X86_XMM0, r_lhs); // movq X86_XMM0, r_lhs
             asm_movq_r_xmm(cg_sec, X86_XMM1, r_rhs); // movq X86_XMM1, r_rhs
             asm_ucomisd(cg_sec); // ucomisd
+            free_reg(r_rhs);
+            free_reg(r_lhs);
             if (cond->kind == ND_EQ) {
                 // 2 branches to same target
                 const char *lbl = shared_label;
@@ -6630,8 +6714,6 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
                 if (own_lbl) cg_def_label(lbl);
             }
 #endif
-            free_reg(r_rhs);
-            free_reg(r_lhs);
             return;
         }
         // Commute a constant-lhs equality so the constant uses the immediate
@@ -6736,21 +6818,21 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
             arm64_orr_reg(cg_sec, 1, REG(rt), REG(rt), REG(rt2), ARM64_LSL, 0);
             free_reg(rt2);
         }
+        free_reg(addr);
         asm_cmp_zero(cg_sec, rt, 8);
+        free_reg(rt);
         size_t cj = asm_jcc_label(cg_sec, ARM64_EQ);
         cg_add_fwd(cj, 1, fwd_off, shared_label);
-        free_reg(rt);
-        free_reg(addr);
 #else
         VReg rt = alloc_reg();
         x86_mov_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), 0));
         if (cond->ty->size > 8)
             x86_or_rm(cg_sec, 8, REG(rt), x86_mem(REG(addr), base_sz));
+        free_reg(addr);
         asm_cmp_zero(cg_sec, rt, 8);
+        free_reg(rt);
         size_t cj = asm_jcc_label(cg_sec, X86_E);
         cg_add_fwd(cj, 1, fwd_off, shared_label);
-        free_reg(rt);
-        free_reg(addr);
 #endif
         return;
     }
@@ -6759,8 +6841,15 @@ static void gen_cond_branch_inv(Node *cond, size_t *fwd_off, const char *shared_
     if (cond->ty && is_flonum(cond->ty)) {
         // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. A bitwise
         // `cmp $0` on the double bit pattern would treat -0.0 as truthy.
-        gen_flonum_branch_if_zero(r, fwd_off, shared_label);
+        // Free `r` right after loading it but BEFORE the branch (see
+        // ND_COND's matching fix).
+#ifdef ARCH_ARM64
+        asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+#else
+        asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
+#endif
         free_reg(r);
+        gen_flonum_branch_if_zero_preloaded(fwd_off, shared_label);
         return;
     }
     if (cond->ty && is_wide_bitint(cond->ty)) {
@@ -7592,18 +7681,25 @@ static VReg gen_int128(Node *node) {
         int cond_r = gen(node->cond);
         int dst = alloc_int128_addr();
         if (node->cond->ty && is_flonum(node->cond->ty)) {
-            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy.
-            gen_flonum_branch_if_zero(cond_r, NULL, format(".L.else.%d", c));
-        } else {
+            // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy. Free
+            // `cond_r` right after loading it but BEFORE the branch (see
+            // ND_COND's matching fix in gen()).
 #ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, cond_r, 1); // fmov d0, x{cond_r}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, cond_r); // movq %s, %xmm0
+#endif
+            free_reg(cond_r);
+            gen_flonum_branch_if_zero_preloaded(NULL, format(".L.else.%d", c));
+        } else {
             asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
+            free_reg(cond_r);
+#ifdef ARCH_ARM64
             emit_jcc_fixup(cg_sec, ARM64_EQ, format(".L.else.%d", c));
 #else
-            asm_cmp_zero(cg_sec, cond_r, node->cond->ty ? node->cond->ty->size : 4);
             emit_jcc_fixup(cg_sec, X86_E, format(".L.else.%d", c));
 #endif
         }
-        free_reg(cond_r);
         int then_a = gen_to_int128(node->then);
 #ifdef ARCH_ARM64
         {
@@ -10968,11 +11064,20 @@ VReg gen(Node *node) {
             // the register now holds base.  Reload idx before the add,
             // otherwise asm_add_reg_reg emits a self-add (e.g. add %rsi,%rsi).
             if (idx == base && (spilled_regs & (1 << idx))) {
+                // idx and base are literally the same physical register
+                // (alloc_reg() spilled idx's raw value to make room for
+                // base, then reused idx's slot for base) -- there was
+                // only ever ONE allocator reservation here, not two.
+                // Freeing "idx" after folding its spilled value in would
+                // clear used_regs out from under the live `base` value
+                // this function is about to return, letting the very
+                // next alloc_reg() call (e.g. the next nesting level's
+                // scratch temp) steal and clobber it before the caller
+                // ever sees it. Do not free; the caller frees `base`.
 #ifdef ARCH_ARM64
                 asm_ldur_fp_phy(cg_sec, ARM64_X16, spill_offset(idx)); // ldr x16, [x29, #-spill]
                 spilled_regs &= ~(1 << idx);
                 arm64_add_reg(cg_sec, 1, REG(base), REG(base), ARM64_X16, ARM64_LSL, 0); // add base, base, x16
-                free_reg(idx); // idx and base share a VReg
                 emit_load(node->ty, base, base, 0);
                 return base;
 #else
@@ -10980,8 +11085,6 @@ VReg gen(Node *node) {
                 // add idx's spilled value directly from the spill slot.
                 asm_add_spill_reg(cg_sec, idx, 8, spill_offset(idx)); // add spill, reg
                 spilled_regs &= ~(1 << idx);
-                // idx and base are the same VReg; free once (via idx).
-                free_reg(idx);
                 emit_load(node->ty, base, base, 0);
                 return base;
 #endif
@@ -11669,19 +11772,39 @@ VReg gen(Node *node) {
     case ND_LOGAND: {
         int c = ++rcc_label_count;
 #ifdef ARCH_ARM64
-        VReg r = alloc_reg();
-        asm_movq_zero(cg_sec, r); // xor r, r — result is 0 when lhs short-circuits
+        // Deferred: allocate the result register only after evaluating
+        // `lhs` (see ND_COND's matching comment). An early alloc_reg()
+        // here would hold `r`'s slot reserved through the entire
+        // recursive evaluation of lhs -- for a long `a && b && c && ...`
+        // chain (left-associative, so each level's lhs is itself another
+        // ND_LOGAND), every nesting level's own `r` stacks up
+        // simultaneously even though none of them holds a real value
+        // until its own branch/compare runs, exhausting ARM64's 12-
+        // register pool several levels sooner than necessary.
         VReg lhs = gen(node->lhs);
-        if (is_flonum(node->lhs->ty))
-            gen_flonum_branch_if_zero(lhs, NULL, format(".L.end.%d", c));
-        else {
+        // alloc_reg_avoid2 (not plain alloc_reg): `lhs` is still live here
+        // (freed only after the compare below) -- a plain alloc_reg()'s
+        // victim-selection could pick lhs's own physical register as the
+        // spill victim, making `r` alias `lhs`, so the movq_zero below
+        // would clobber lhs's value before the compare ever reads it.
+        VReg r = alloc_reg_avoid2(lhs, -1);
+        asm_movq_zero(cg_sec, r); // xor r, r — result is 0 when lhs short-circuits
+        // Free `lhs` right after its value is consumed but BEFORE the
+        // branch below -- see ND_COND's matching fix: a borrowed
+        // spill-victim register's restore must reach both control-flow
+        // paths, not just whichever one follows in the instruction stream.
+        if (is_flonum(node->lhs->ty)) {
+            asm_fmov_i2f(cg_sec, 0, lhs, 1); // fmov d0, x{lhs}
+            free_reg(lhs);
+            gen_flonum_branch_if_zero_preloaded(NULL, format(".L.end.%d", c));
+        } else {
             asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
+            free_reg(lhs);
             {
                 size_t o = asm_jcc_label(cg_sec, ARM64_EQ);
                 asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
             }
         }
-        free_reg(lhs);
         VReg rhs = gen(node->rhs);
         if (is_flonum(node->rhs->ty)) {
             gen_flonum_truthiness(rhs); // 0/1 in rhs
@@ -11697,16 +11820,20 @@ VReg gen(Node *node) {
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 0); // movb $0, -spill_logand(%rbp)
         if (is_flonum(node->lhs->ty)) {
             // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
-            // GP-register test would misclassify -0.0.
-            gen_flonum_branch_if_zero(lhs, NULL, format(".L.end.%d", c));
+            // GP-register test would misclassify -0.0. Free `lhs` right
+            // after loading it but BEFORE the branch (see ND_COND's
+            // matching fix).
+            asm_movq_r_xmm(cg_sec, X86_XMM0, lhs); // movq %s, %xmm0
+            free_reg(lhs);
+            gen_flonum_branch_if_zero_preloaded(NULL, format(".L.end.%d", c));
         } else {
             asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty));
+            free_reg(lhs);
             {
                 size_t o = asm_jcc_label(cg_sec, X86_E);
                 asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
             }
         }
-        free_reg(lhs);
         VReg rhs = gen(node->rhs);
         if (is_flonum(node->rhs->ty)) {
             gen_flonum_truthiness(rhs); // 0/1 in rhs
@@ -11731,9 +11858,12 @@ VReg gen(Node *node) {
             int c2 = ++rcc_label_count;
             const char *skip = format(".L.logor.fskip.%d", c2);
             // Truthy (nonzero or NaN) lhs short-circuits with result 1.
+            // Free `lhs` right after loading it but BEFORE the branch --
+            // see ND_COND's matching fix.
             arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result)
-            gen_flonum_branch_if_nonzero(lhs, skip);
+            asm_fmov_i2f(cg_sec, 0, lhs, 1); // fmov d0, x{lhs}
             free_reg(lhs);
+            gen_flonum_branch_if_nonzero_preloaded(skip);
             VReg rhs = gen(node->rhs);
             if (is_flonum(node->rhs->ty)) {
                 gen_flonum_truthiness(rhs); // 0/1 in rhs
@@ -11749,10 +11879,10 @@ VReg gen(Node *node) {
             return r;
         }
         asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
+        free_reg(lhs);
         arm64_movz(cg_sec, 0, ARM64_X16, 1, 0); // mov w16, #1 (true-path result in x16)
         size_t o = asm_jcc_label(cg_sec, ARM64_NE); // b.ne .L.end.%d
         asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
-        free_reg(lhs);
         // False path: evaluate rhs; x16 may be clobbered here, re-set after
         VReg rhs = gen(node->rhs);
         asm_cmp_zero(cg_sec, rhs, op_size(node->rhs->ty)); // cmp $0, rrhs
@@ -11768,16 +11898,20 @@ VReg gen(Node *node) {
         asm_mov_rbp_imm(cg_sec, 1, spill_logand, 1); // movb $1, -spill_logand(%rbp)
         if (is_flonum(node->lhs->ty)) {
             // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
-            // GP-register test would misclassify -0.0.
-            gen_flonum_branch_if_nonzero(lhs, format(".L.end.%d", c));
+            // GP-register test would misclassify -0.0. Free `lhs` right
+            // after loading it but BEFORE the branch (see ND_COND's
+            // matching fix).
+            asm_movq_r_xmm(cg_sec, X86_XMM0, lhs); // movq %s, %xmm0
+            free_reg(lhs);
+            gen_flonum_branch_if_nonzero_preloaded(format(".L.end.%d", c));
         } else {
             asm_cmp_zero(cg_sec, lhs, op_size(node->lhs->ty)); // cmp $0, rlhs
+            free_reg(lhs);
             {
                 size_t o = asm_jcc_label(cg_sec, X86_NE); // jne .L.end.%d
                 asm_fixup_add(cg_sec, o, format(".L.end.%d", c), 1);
             }
         }
-        free_reg(lhs);
         VReg rhs = gen(node->rhs);
         if (is_flonum(node->rhs->ty)) {
             gen_flonum_truthiness(rhs); // 0/1 in rhs
@@ -11878,17 +12012,39 @@ VReg gen(Node *node) {
             (node->then->kind == ND_CAST && node->then->lhs == node->cond);
         if (node->cond->ty && is_flonum(node->cond->ty)) {
             // IEEE truthiness: -0.0 == 0.0 (false), NaN truthy; a bitwise
-            // GP-register test would misclassify -0.0.
-            gen_flonum_branch_if_zero(cond, NULL, else_label);
-        } else {
+            // GP-register test would misclassify -0.0. Load cond's value
+            // into xmm0 and free `cond` (if !gnu_omitted) BEFORE emitting
+            // the branch to else_label -- see the non-flonum branch below
+            // for why the free must happen here, not after the branch.
 #ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, cond, 1); // fmov d0, x{cond}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, cond); // movq %s, %xmm0
+#endif
+            if (!gnu_omitted) free_reg(cond);
+            gen_flonum_branch_if_zero_preloaded(NULL, else_label);
+        } else {
             asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
+            // Free `cond` right after its value is consumed by the compare
+            // (flags are now set; the branch below only reads flags) but
+            // BEFORE emitting the branch itself. `cond`'s register may have
+            // been borrowed under pressure from an outer, still-live VReg
+            // that alloc_reg() spilled to make room -- free_reg()'s restore
+            // of that outer value must execute on BOTH sides of the branch,
+            // not just whichever side happens to follow it in the
+            // (conditionally-skipped) instruction stream. Freeing after the
+            // `je`/`b.eq` left the restore reachable only via fall-through,
+            // so the OTHER branch resumed with a stale/wrong register value
+            // -- found via nettle/twofish's h_byte(), a 5-level nested
+            // `tbl[i][k][ternary ? x : ...]` array index where the ternary
+            // sits several levels deep under heavy register pressure.
+            if (!gnu_omitted) free_reg(cond);
+#ifdef ARCH_ARM64
             {
                 size_t cj1 = asm_jcc_label(cg_sec, ARM64_EQ); // jcc label
                 asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
             }
 #else
-            asm_cmp_zero(cg_sec, cond, cond_sz); // cmp $0, rcond
             {
                 size_t cj1 = asm_jcc_label(cg_sec, X86_E); // jcc label
                 asm_fixup_add(cg_sec, cj1, else_label, 1); // fixup add for forward branch
@@ -11901,7 +12057,6 @@ VReg gen(Node *node) {
                 ? gen_cast_reg(cond, node->cond->ty, node->then->ty)
                 : cond;
         } else {
-            free_reg(cond);
             then_r = gen(node->then);
         }
         // A void-typed branch (e.g. `(void)0`, __builtin_unreachable()) yields
@@ -12114,10 +12269,21 @@ VReg gen(Node *node) {
             // GP-register test would misclassify -0.0 (nonzero bit
             // pattern, value == 0.0) as truthy. Branch forward past the
             // backward jump when the condition is FALSE, else loop back.
+            // Free `r` right after loading it into xmm0 but BEFORE the
+            // branch: free_reg()'s restore of a register `r` borrowed
+            // under pressure from an outer live VReg must run on both
+            // sides of the branch, not just the fall-through (loop
+            // continues) side -- see ND_COND's matching fix for the
+            // concrete failure this shape causes.
             int c2 = ++rcc_label_count;
             const char *fskip = format(".L.do.fskip.%d", c2);
-            gen_flonum_branch_if_zero(r, NULL, fskip);
+#ifdef ARCH_ARM64
+            asm_fmov_i2f(cg_sec, 0, r, 1); // fmov d0, x{r}
+#else
+            asm_movq_r_xmm(cg_sec, X86_XMM0, r); // movq %s, %xmm0
+#endif
             free_reg(r);
+            gen_flonum_branch_if_zero_preloaded(NULL, fskip);
             asm_b_back(cg_sec, begin_pos); // b begin
             cg_def_label(fskip);
         } else {
@@ -15689,7 +15855,17 @@ VReg gen(Node *node) {
                 }
             }
 #endif
-            free_reg(r_rhs);
+            // r_lhs == r_rhs happens when alloc_reg() spilled r_lhs's
+            // register to make room for r_rhs, and the op above folded
+            // r_lhs's spilled value back in directly (asm_*_spill_reg
+            // above) -- there was only ever ONE physical register here,
+            // now holding the live result about to be returned as
+            // r_lhs. Freeing "r_rhs" in that case clears used_regs out
+            // from under that live result, letting the very next
+            // alloc_reg() call (e.g. the next operand of an enclosing
+            // expression) steal and clobber it before its real use.
+            if (r_rhs != r_lhs)
+                free_reg(r_rhs);
         }
 
         if (node->kind == ND_EQ || node->kind == ND_NE || node->kind == ND_LT || node->kind == ND_LE) {
@@ -16372,6 +16548,7 @@ struct ObjFile *codegen(Program *prog) {
         used_regs = 0;
         ever_used_regs = 0;
         spilled_regs = 0;
+        spill_victim = 0; // per-function state, same lifetime as spilled_regs
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
         ctrl_depth = 0;
@@ -16869,6 +17046,7 @@ struct ObjFile *codegen(Program *prog) {
         cg_dry_run = false;
         used_regs = 0;
         spilled_regs = 0;
+        spill_victim = 0; // per-function state, same lifetime as spilled_regs
         spill_count = 0;
         memset(reg_owner, 0, sizeof(reg_owner));
         // Pass 1's gen_funcall r10/r11-across-a-call protection
