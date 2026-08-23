@@ -155,6 +155,35 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   allocator's spill/pop/borrow semantics, out of scope for a
   surgical fix.
 
+### Fixed (2026-08-23, gmake)
+
+- GNU make's src/makeint.h declares a bare forward `enum
+variable_origin;` (a GNU/C23 opaque forward reference) ahead of
+  `void reset_makeflags(enum variable_origin);`; src/variable.h
+  later completes the enum body. rcc's forward-`enum tag;` handling
+  only registered the tag for later identity reuse when it carried a
+  C23 fixed underlying type (`enum tag : int;`); a bare `enum tag;`
+  did not, so completing the enum minted an unrelated Type object
+  (different enum_id) instead of finishing the placeholder in place.
+  src/main.c's `reset_makeflags` definition -- using the completed
+  enum -- then looked like a conflicting redeclaration against
+  makeint.h's prototype -- using the placeholder -- and failed to
+  compile ("conflicting types for 'reset_makeflags'").
+
+  Fixed by registering every tagged forward declaration (not just
+  the fixed-underlying-type ones), so the eventual `enum tag { ... }`
+  completion's existing-tag lookup finds and reuses the placeholder's
+  identity. Regression test: test_enum_fwd_decl_param.c.
+
+  gmake builds clean with rcc; `ulimit -n 512; perl
+tests/run_make_tests.pl -make ../make` passes all 1444 tests, 0
+  failures (an initial run without the ulimit hit one FD-exhaustion
+  test's platform-dependent recursion depth differently and
+  segfaulted from unbounded native recursion -- not an rcc bug, just
+  a missing test-harness prerequisite on my part; matches cleanly
+  with the ulimit the project's own `make check-regression` target
+  sets).
+
 ### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
 
 - jemalloc's unit test test/unit/bit_util fails with rcc as CC. The

@@ -3695,9 +3695,20 @@ static Type *enum_specifier(Token **rest, Token *tok) {
         ety->is_enum = true;
         ety->is_enum_fixed = (fixed_underlying != NULL);
         ety->enum_id = ety;
-        // C23 `enum tag : type;` declares the tag with a fixed underlying
-        // type — register it so sizeof(enum tag) sees the right size.
-        if (tag_name && fixed_underlying) {
+        // Register EVERY tagged forward declaration -- fixed-underlying-type
+        // ones (`enum tag : type;`) already did, so sizeof(enum tag) saw the
+        // right size; a bare `enum tag;` (GNU/C23 opaque forward reference,
+        // e.g. GNU make's makeint.h: `enum variable_origin;` ahead of a
+        // prototype using it, completed later by variable.h's `enum
+        // variable_origin { ... }`) did NOT, so the eventual completion at
+        // the enum-body path below found no existing tag and minted an
+        // UNRELATED enum_id -- the placeholder and the completed type then
+        // looked like two different, incompatible enums to
+        // types_compatible_p()/the redeclaration-conflict check, even
+        // though C treats a forward reference completed later as one type.
+        // Registering here lets the body-parsing path's `existing_ty`
+        // lookup find and reuse this exact identity.
+        if (tag_name) {
             EnumTag *et = arena_alloc(sizeof(EnumTag));
             et->name = tag_name;
             et->ty = ety;
