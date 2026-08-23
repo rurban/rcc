@@ -317,6 +317,7 @@ bool opt_Werror_unknown = false;
 bool opt_Wno_homoglyph = false;
 bool opt_dryrun = false;
 bool opt_dM = false;
+bool opt_E = false;
 bool opt_fdump_ast = false;
 bool opt_g = false;
 bool opt_pie = false;
@@ -458,7 +459,6 @@ int main(int argc, char **argv) {
     int nb_preinclude_files = 0;
     bool opt_S = false;
     bool opt_c = false;
-    bool opt_E = false;
     bool opt_o = false;
     bool opt_stdout = false; // -o - : write final output to stdout
     // Ordered linker arguments: -l/-L/-Wl flags AND object/archive inputs,

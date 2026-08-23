@@ -4,7 +4,13 @@
 #include <stddef.h>
 
 #ifdef _WIN32
-typedef struct _rcc_FILE FILE;
+/* The Windows FILE tag must match the platform's own <stdio.h>/<wchar.h>
+ * (struct _iobuf, MSVC and mingw-w64 alike), not a private _rcc_FILE:
+ * mingw's wchar.h redeclares `FILE *__acrt_iob_func(unsigned)` after
+ * this bundled copy ran, and the mismatched struct tag made the
+ * conflicting-types check (parser.c) flag two identical declarations --
+ * and FILE* would be ABI-incompatible with system-compiled objects. */
+typedef struct _iobuf FILE;
 FILE *__acrt_iob_func(unsigned idx);
 #define stdin (__acrt_iob_func(0))
 #define stdout (__acrt_iob_func(1))

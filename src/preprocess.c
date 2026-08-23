@@ -2993,6 +2993,27 @@ static void do_directive(void) {
         }
         push_level(disp ? disp : inc_fpath, inc_fpath, contents);
         dep_add(inc_fpath);
+        // -E output must mark the header's ENTRY even when the header
+        // emits no tokens of its own (a macro-only header like glibc's
+        // bits/signum-generic.h is all #defines): real cpp prints a
+        // linemarker for every file entered, and configure-style probes
+        // (zsh's "where signal.h is located") extract the signal-macro
+        // header paths from those markers. pp_print_tokens() only emits
+        // a marker when a TOKEN's filename changes, so a tokenless
+        // header never appeared and zsh's configure failed with
+        // "SIGNAL MACROS NOT FOUND". A zero-length synthetic token here
+        // triggers the entry marker without printing anything.
+        if (opt_E) {
+            Token *mt = arena_alloc(sizeof(Token));
+            mt->kind = TK_IDENT;
+            mt->kw = ID_NONE;
+            mt->filename = inc_fpath;
+            mt->lineno = 1;
+            mt->ptr = NULL;
+            mt->len = 0;
+            mt->next = NULL;
+            out_append(mt);
+        }
         return;
     }
     if (dn == dn_embed) {

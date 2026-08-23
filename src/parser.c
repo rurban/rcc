@@ -13983,9 +13983,24 @@ Program *parse(Token *tok) {
                             !(attr.is_extern && attr.is_inline) &&
                             existing->ty && existing->ty->base && !was_oldstyle) {
                             Type *prev_fty = existing->ty->base;
-                            if (!prev_fty->is_oldstyle &&
-                                ((prev_fty->is_void_params && fty->param_types) ||
-                                 (fty->is_void_params && prev_fty->param_types))) {
+                            // Return types must always match (C11 6.2.7p2),
+                            // old-style parameter lists included: glibc's
+                            // stdlib.h declares `char *ptsname(int)` under
+                            // _GNU_SOURCE, and configure probes re-declare
+                            // it as `int ptsname();` to test whether the
+                            // declaration is present — the resulting
+                            // conflicting-types error is how zsh detects
+                            // /dev/ptmx support. rcc only compared
+                            // parameter lists, so the probe compiled clean
+                            // and zsh took its BSD /dev/ptyXX fallback,
+                            // which cannot open a pty on Linux.
+                            if (prev_fty->return_ty && fty->return_ty &&
+                                !types_compatible_p(prev_fty->return_ty, fty->return_ty) &&
+                                !(prev_fty->return_ty->is_enum && fty->return_ty->is_enum)) {
+                                error_tok(tok, "conflicting types for '%s'", name);
+                            } else if (!prev_fty->is_oldstyle &&
+                                       ((prev_fty->is_void_params && fty->param_types) ||
+                                        (fty->is_void_params && prev_fty->param_types))) {
                                 error_tok(tok, "conflicting types for '%s'", name);
                             } else if (prev_fty->param_types && fty->param_types &&
                                        !prev_fty->is_oldstyle) {

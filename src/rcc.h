@@ -421,6 +421,7 @@ extern bool opt_Werror_unknown;
 extern bool opt_Wno_homoglyph;
 extern bool opt_ms_bitfields;
 extern bool opt_dM;
+extern bool opt_E;
 extern bool opt_g;
 extern bool opt_pie;
 extern bool opt_pic;

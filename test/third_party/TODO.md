@@ -91,6 +91,39 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   element-separator comma; see the sokol-session entry -- actually the
   new parser fix below.)
 
+### Fixed (2026-08-23, zsh session -- 3 stacked bugs)
+
+- **`-E` emitted no linemarker for macro-only headers** -- zsh's
+  configure greps the preprocessor output for the header defining SIG\*
+  macros ("where signal.h is located"); glibc's bits/signum-generic.h
+  is all #defines, so it never appeared and configure died with
+  "SIGNAL MACROS NOT FOUND". pp_print_tokens() only marks a file when a
+  TOKEN changes filename. Now, in -E mode, a zero-length synthetic
+  token is appended at each include's entry, forcing the linemarker.
+
+- **rcc silently accepted conflicting function redeclarations** --
+  only parameter lists were compared, never return types:
+  `char *foo(int); int foo();` compiled clean. zsh's configure probes
+  `#include <stdlib.h>` + `int ptsname();` against glibc's
+  `char *ptsname(int)`; the missing "conflicting types" error made
+  zsh's /dev/ptmx detection fail, so it took the BSD /dev/ptyXX
+  fallback, which cannot open a pty on Linux -- every zpty/zle/
+  completion test failed with "can't open pseudo terminal: no such
+  file or directory". Now conflicting return types are diagnosed
+  (enum returns exempt: a forward-declared enum's placeholder and the
+  completed type are the same tag).
+
+- **bundled <math.h> lacked the gamma family** -- tgamma/lgamma/gamma
+  were undeclared, so calls were compiled as implicit-int and read the
+  integer return register instead of xmm0 (tgamma(2) came back 0).
+  Added the declarations (zsh's math module calls tgamma()/lgamma()).
+
+  Regression tests: test_err_conflicting_func_decl.c (compile error
+  expected), test_linemarker_empty_header.c, test_gamma_family.c --
+  all fail on the old build. zsh now configures, builds, and passes
+  its full test suite with rcc: 62/62 successful, 0 failures, 3
+  skipped (locale-dependent), matching the gcc build.
+
 ### Verified (2026-08-23, yash -- no rcc bug)
 
 - yash (the POSIX shell) configures and builds clean with rcc as CC,

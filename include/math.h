@@ -188,6 +188,24 @@ long double modfl(long double, long double *);
 #ifndef _WIN32
 int ilogbl(long double);
 #endif
+/* glibc's <math.h> declares `extern int signgam;` (used by gamma/lgamma;
+ * zsh's math module reads it directly). The bundled header is
+ * self-contained, so declare it here too. */
+extern int signgam;
+
+/* gamma-family: glibc declares these (under _GNU_SOURCE/_XOPEN2K8), and
+ * zsh's math module calls tgamma()/lgamma() directly. Without the
+ * declaration rcc calls them as implicit-int functions, reading the int
+ * return register instead of xmm0 (tgamma(2) came back 0). */
+double tgamma(double);
+double lgamma(double);
+double gamma(double);
+float tgammaf(float);
+float lgammaf(float);
+float gammaf(float);
+long double tgammal(long double);
+long double lgammal(long double);
+long double gammal(long double);
 
 #define M_PI    3.14159265358979323846
 #define M_E     2.71828182845904523536
