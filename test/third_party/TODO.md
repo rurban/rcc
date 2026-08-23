@@ -78,6 +78,59 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   sqlite3/tclsqlite3/testfixture clean and passes `make test`
   (0 errors) plus smoketest (95/95).
 
+### Verified (2026-08-23, orangeduck_mpc -- no rcc bug)
+
+- mpc builds clean with rcc (warnings only: ignored -Wswitch-default
+  etc.) and its ptest suite passes fully: 4/4 suites, 30/30 tests,
+  142/142 asserts, 0 failed, in both the single-exe (test-file) and
+  shared-lib (test-dynamic) variants. Examples (maths et al.) build and
+  run. The only failure is `make check`'s test-static link needing
+  `-static` glibc, an environment gap (glibc-static not installed on
+  this Fedora box; identical failure with gcc).
+
+### Fixed (2026-08-22, metalang99/datatype99 session -- 3 stacked preprocessor bugs)
+
+- **`nframes > 600` cap silently left deep macro nesting unexpanded** --
+  `src/preprocess.c`, expand*token(). The cap is a runaway-recursion
+  safety net, but legitimate expansions nest far deeper: metalang99's
+  eval machine peaks at ~703 frames in one datatype() expansion, so the
+  whole machine stalled mid-recursion (ML99_PRIV_REC_NEXT*\* residue that
+  failed to parse). Raised to 4096 (measured max 703; the cap only
+  catches pathological loops now).
+
+- **`__COUNTER__` was never defined as a macro** -- only handled as an
+  expansion keyword (kw_counter). `#ifdef __COUNTER__` evaluated false,
+  so metalang99's ML99_GEN_SYM was never defined and datatype99's
+  util.c failed to compile with ML99_GEN_SYM(...) left unexpanded.
+  Predefined `__COUNTER__` as "1" (expansion still yields 0, 1, 2, ...
+  via kw_counter; the table entry only answers the preprocessor-query
+  forms).
+
+- **Single-name "blue paint" replaced with a proper hide set
+  (C99 6.10.3.4p2 union)** -- Token.blue is now a Hideset of every
+  ancestor macro's paint, unioned per frame. Two failures drove it:
+  (a) the old global `m->disabled` "currently expanding" flag over-
+  blocked: metalang99's eval machine legitimately re-invokes a
+  continuation macro while an earlier frame of the same name is still
+  active (the DEFER trampoline keeps outer frames alive), freezing the
+  whole machine; (b) without the flag, glibc's `#define alloca(x)
+__builtin_alloca(x)` vs rcc's `define_pre("__builtin_alloca",
+"alloca")` alias ping-ponged until the nframes cap stopped it on
+  WHICHEVER name the parity landed on (link failed with undefined
+  \_\_builtin_alloca at 4096). The hide set stops both correctly after
+  one full recursion cycle. ## paste results are no_paint (freshly
+  lexed, exempt from the frame's paint) -- otherwise CAT(A,B) pastes AB
+  already painted with AB itself and AB(x) never expands (tcc
+  64_macro_nesting).
+
+  New regression tests: test/test_deep_macro_expansion.c (750-deep
+  linear chain, fails on the 600 cap), test/test_counter_defined.c
+  (#ifdef **COUNTER** + incrementing values, fails on the old build).
+  datatype99 4/5 (tests, metalang99_compliant, record_derive, version)
+  and metalang99 14/16 pass; derive.c, lang.c, list.c still fail with a
+  deeper continuation-prescan stall (ML99_PRIV_REC_NEXT_ML99_PRIV_EVAL_0op
+  residue), pre-existing and out of scope for this session.
+
 ### Fixed (2026-08-22, i64/u64 -> f32 double-rounding session)
 
 - **`(float)(int64_t)` / `(float)(uint64_t)` double-rounded: converted via

@@ -31,7 +31,6 @@ struct Macro {
     bool is_function;
     bool is_variadic;
     bool is_gnu_variadic;
-    bool disabled;
     char **params;
     int param_len;
     Token *body;
@@ -484,7 +483,6 @@ static void define_macro_tok(char *name, bool is_function, char **params, int pa
     m->is_function = is_function;
     m->is_variadic = is_variadic;
     m->is_gnu_variadic = is_gnu_variadic;
-    m->disabled = false;
     m->params = params;
     m->param_len = param_len;
     m->body = body;
@@ -1265,6 +1263,10 @@ struct Frame {
     Frame *next;
     Token *pos;
     Macro *mac;
+    // Hide set (C99 6.10.3.4p2) of this expansion: the invocation token's
+    // own set plus the macro name; every pulled replacement token is
+    // unioned with it (see frame_pull()).
+    struct Hideset *hide;
     // Location of the macro invocation. Tokens produced by the expansion are
     // restamped with it so diagnostics (and __LINE__) point at the use site,
     // not the macro definition. stamp==false leaves token locations untouched.
@@ -1302,22 +1304,43 @@ static void out_append(Token *t) {
         xout_head = t;
     xout_tail = t;
 }
+static bool hs_contains(struct Hideset *h, Macro *m) {
+    for (; h; h = h->next)
+        if (h->name == m) return true;
+    return false;
+}
+// Union: return a set containing h's names plus m (m added iff absent).
+static struct Hideset *hs_add(struct Hideset *h, Macro *m) {
+    if (!m || hs_contains(h, m)) return h;
+    struct Hideset *n = arena_alloc(sizeof(struct Hideset));
+    n->name = m;
+    n->next = h;
+    return n;
+}
 static void push_frame(Token *list, Macro *mac) {
     Frame *f = arena_alloc(sizeof(Frame));
     f->pos = list;
     f->mac = mac;
     f->stamp = false;
+    f->hide = NULL;
     f->next = frames;
     frames = f;
     nframes++;
 }
 // Push a macro expansion whose tokens should be restamped to the invocation site.
+// The frame's hide set = the invocation token's own hide set plus the macro
+// itself (C99 6.10.3.4p2): every token pulled from the replacement list is
+// marked with the whole union, so a recursion cycle that re-enters any
+// ancestor macro stops as soon as the token's own name is already painted.
 static void push_expansion(Token *list, Macro *mac, Token *site) {
     push_frame(list, mac);
     if (site) {
         frames->stamp = true;
         frames->exp_file = site->filename;
         frames->exp_line = site->lineno;
+        frames->hide = hs_add(site->blue, mac);
+    } else if (mac) {
+        frames->hide = hs_add(NULL, mac);
     }
 }
 static bool str_needs_space(Token *a, Token *b);
@@ -1328,20 +1351,22 @@ static Token *frame_pull(void) {
         if (!t || t->kind == TK_EOF) {
             frames = top->next;
             nframes--;
-            if (top->mac) top->mac->disabled = false;
             continue;
         }
         top->pos = t->next;
         Token *c = copy_token(t);
-        // C99 6.10.3.4p2 blue paint: tokens produced by a macro's expansion
-        // carry that macro's name so it is never re-expanded from them,
-        // even after this frame is popped and the token is rescanned as
-        // part of an outer macro's argument or replacement list. First
-        // paint wins: a token keeps the paint of the innermost macro that
-        // produced it (the one whose replacement list textually contains
-        // it), which is the macro most likely to re-trigger on it.
-        if (top->mac && !c->blue)
-            c->blue = top->mac;
+        // C99 6.10.3.4p2 blue paint / hide set: tokens produced by a
+        // macro's expansion are marked with the frame's hide set (the
+        // invocation's own set plus the macro name), unioned with whatever
+        // set the token already carried from its previous life (a
+        // substituted argument keeps its own paints). The token is never
+        // re-expanded as any name in the resulting set. ## paste results
+        // (no_paint) are exempt: the paste happens fresh and the surrounding
+        // macro's paint must not attach to the pasted spelling.
+        if (top->hide && !c->no_paint) {
+            for (struct Hideset *h = top->hide; h; h = h->next)
+                c->blue = hs_add(c->blue, h->name);
+        }
         if (top->stamp) {
             c->filename = top->exp_file;
             c->lineno = top->exp_line;
@@ -1640,6 +1665,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
                     memcpy(pasted + l1, s2, l2);
                     pasted[l1 + l2] = '\0';
                     Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
+                    pt->no_paint = true;
                     if (sub->next)
                         pt->no_space_after = sub->no_space_after;
                     splice_tokens(&rhead, &rtail, pt);
@@ -1685,6 +1711,7 @@ static Token *subst_range(Macro *m, Token *body, Token *end, Token **args, Token
             memcpy(pasted + l1, s2, l2);
             pasted[l1 + l2] = '\0';
             Token *pt = lex_body_string(pasted, lhs->filename, lhs->lineno);
+            pt->no_paint = true;
             // pt's spelling lives in a freshly lexed buffer, so the normal
             // pointer-adjacency check in str_needs_space() can never see it
             // as touching whatever follows — even when the macro body had
@@ -1935,16 +1962,28 @@ static void expand_token(Token *t) {
         return;
     }
     Macro *m = find_macro_interned(name);
-    if (!m || m->disabled || t->blue == m) {
+    // Hide set (C99 6.10.3.4p2): a token is not re-expanded as any macro
+    // name already painted on it — its own name included, which stops
+    // direct and mutual recursion after one cycle (glibc's `alloca` <->
+    // rcc's `__builtin_alloca` alias ping-pong included). A global
+    // "currently expanding" flag must NOT also block: metalang99's eval
+    // machine legitimately invokes a continuation macro (e.g.
+    // ML99_PRIV_EVAL_0callUneval_K) while an EARLIER, still-active frame
+    // of the same name sits deeper in the nested rescan (its DEFER
+    // trampoline keeps outer frames alive via frame_floor); the old
+    // `m->disabled` flag silently froze the whole machine, leaving
+    // ML99_EVAL continuations unexpanded (datatype99/metalang99 tests.c
+    // stalled with REC_NEXT residue). Pathological runaway recursion that
+    // somehow escapes the hide set stays bounded by the nframes cap below.
+    if (!m || hs_contains(t->blue, m)) {
         out_append(t);
         return;
     }
     if (!m->is_function) {
-        if (nframes > 600) {
+        if (nframes > 4096) {
             out_append(t);
             return;
         }
-        m->disabled = true;
         // An object-like macro's replacement list can still use ##
         // (C11 6.10.3.3p1 applies to both object-like and function-like
         // macros) -- e.g. `#define FOO a ## b`, or config.h's own
@@ -1988,7 +2027,7 @@ static void expand_token(Token *t) {
         out_append(t);
         return;
     }
-    if (nframes > 600) {
+    if (nframes > 4096) {
         xp_unget(lp);
         out_append(t);
         return;
@@ -2112,7 +2151,6 @@ static void expand_token(Token *t) {
     // into a low bit via an out-of-range shift.
     for (int i = 0; i < argc; i++) exp_args[i] = (i < 32 && (m->hh_mask & (1u << i))) ? args_copy[i] : expand_list(args_copy[i]);
     Token *subst = subst_range(m, m->body, NULL, exp_args, args, argc);
-    m->disabled = true;
     push_expansion(subst, m, t);
     free(args);
     free(tails);
@@ -3550,6 +3588,13 @@ Token *preprocess(char *filename, char *p) {
         define_pre("__builtin_atomic_arith_or", "__atomic_or_fetch");
         // __SSIZE_TYPE__ needed by POSIX's ssize_t (stddef.h).
         define_pre("__SSIZE_TYPE__", "long int");
+        // __COUNTER__ must exist as a macro so `#ifdef __COUNTER__` /
+        // `defined(__COUNTER__)` see it (metalang99/datatype99 gate
+        // ML99_GEN_SYM on exactly that guard). Expansion of the token in
+        // code still goes through kw_counter below (yielding 0, 1, 2, ...
+        // per call); this entry only satisfies the preprocessor-query
+        // forms, and the #if expression evaluator sees the plain value 1.
+        define_pre("__COUNTER__", "1");
         // glibc's /usr/include/limits.h ends with `#include_next
         // <limits.h>` (guarded on __GNUC__ && !_GCC_LIMITS_H_) to pull
         // the compiler's own limits.h. That include_next now resolves to

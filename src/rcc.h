@@ -46,6 +46,14 @@ typedef enum {
 
 // Token type
 typedef struct Token Token;
+// C99 6.10.3.4p2 hide set: linked list of macro names whose expansions a
+// token has flowed through; the token must never be re-expanded as one of
+// these. Nodes are arena-allocated and immutable (shared across tokens).
+struct Hideset {
+    struct Macro *name;
+    struct Hideset *next;
+};
+
 struct Token {
     TokenKind kind; // Token kind
     Token *next; // Next token
@@ -66,14 +74,28 @@ struct Token {
     // freshly lexed buffer with no real adjacency to the following token's
     // original source pointer.
     bool no_space_after;
-    // C99 6.10.3.4p2 "blue paint": the macro whose expansion produced this
-    // token. That macro must never be re-expanded from this token, even
-    // after the expansion frame that painted it has been popped and the
-    // token is rescanned as part of an outer macro's argument or
-    // replacement list (e.g. glibc's `#define si_uid _sifields._kill.si_uid`
-    // used inside nested macros). First paint wins: a token keeps the paint
-    // of the innermost macro that produced it.
-    struct Macro *blue;
+    // ## paste result: freshly lexed, must NOT inherit the frame's hide
+    // set when pulled (C99 6.10.3.4p2 pastes are not subject to the
+    // surrounding macro's paint — the operands' own hidesets are the only
+    // ones that carry over). Otherwise the pasted token accumulates every
+    // ancestor's paint and can end up painted with its own name,
+    // self-blocking (tcc's 64_macro_nesting: CAT(A,B) pastes AB, which is
+    // then painted {AB, CAT, CAT2} and never expands as AB(x)).
+    bool no_paint;
+    // C99 6.10.3.4p2 "blue paint" / hide set: the macros whose expansions
+    // produced this token (every ancestor replacement list the token
+    // flowed through, not just the innermost producer). The token is never
+    // re-expanded as any of those macro names. A single-name paint is not
+    // enough: it cannot stop the A<->B mutual-recursion ping-pong
+    // (glibc's `#define alloca(x) __builtin_alloca(x)` vs rcc's own
+    // `define_pre("__builtin_alloca", "alloca")` alias loops forever,
+    // stopping only at the nframes cap with whichever name the parity
+    // happened to land on), and metalang99's eval machine needs a name
+    // re-invocable from a NESTED replacement even while an older frame of
+    // the same name is still active — the union of paints (hide set) is
+    // exactly gcc's semantics: a token stops only when its own name is
+    // already in its set, which happens after one full recursion cycle.
+    struct Hideset *blue;
 };
 
 // Error reporting
