@@ -3354,7 +3354,7 @@ char *pp_tokens_to_text(Token *tok) {
     for (; tok && tok->kind != TK_EOF; tok = tok->next) {
         int ln = tok->lineno > 0 ? tok->lineno : cur_line;
         const char *fn = tok->filename;
-        if (!fn || *fn == '<') {
+        if (!fn || (*fn == '<' && strcmp(fn, "<stdin>") != 0)) {
             fn = cur_file ? cur_file : "<stdin>";
             ln = cur_line;
         }
@@ -3460,7 +3460,7 @@ void pp_print_tokens(Token *tok, FILE *out) {
     for (; tok && tok->kind != TK_EOF; tok = tok->next) {
         int ln = tok->lineno > 0 ? tok->lineno : cur_line;
         const char *fn = tok->filename;
-        if (!fn || *fn == '<') {
+        if (!fn || (*fn == '<' && strcmp(fn, "<stdin>") != 0)) {
             fn = cur_file ? cur_file : "<stdin>";
             ln = cur_line;
         }

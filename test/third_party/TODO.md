@@ -91,6 +91,66 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   element-separator comma; see the sokol-session entry -- actually the
   new parser fix below.)
 
+### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
+
+- jemalloc's unit test test/unit/bit_util fails with rcc as CC. The
+  LG_CEIL/LG_FLOOR bit-counting macro chain in include/jemalloc/
+  internal/bit_util.h -- a 6-level nested ternary `x < (1ULL<<32) ?
+... : 32 + ...(x>>32)` chain evaluated repeatedly (loop + several
+  function arguments) -- miscompiles under register pressure: the
+  register allocator's spill-borrow semantics lose an outer
+  binary-operator LHS when a nested ternary's condition spills it, the
+  free_reg() pop restores a stale (dead) slot value over the live one,
+  and the outer op degenerates into a self-add no-op. lg_ceil(16384)
+  returns 12/15 or garbage depending on allocation pressure; the
+  function-level fls_lu/lg_floor code is correct in isolation. Minimal
+  repro: `(U)LG16(x), (U)LG16(x), (U)LG16(x)` as three printf
+  arguments yields 14, 14, garbage. Not fixed: the fix needs reworking
+  the allocator's spill/pop/borrow semantics (each surgical attempt --
+  keep-used on free_reg, ternary-result-avoid2, borrow flags -- fixed
+  one manifestation and broke another). Cross-check tinycc's save_reg
+  model when fixing.
+
+### Verified (2026-08-23, quickjs -- one upstream snapshot bug, not rcc)
+
+- quickjs (dev snapshot 2026-06-04) builds clean with rcc as CC (0
+  errors, -Werror active) and the qjs binary works (parseFloat,
+  console, closures all correct in isolation). `make test` runs
+  test_closure.js and test_language.js clean, then fails in
+  test_builtin.js's test_number at `assert(parseFloat("0x1234"), 0)`
+  (line 381) -- an order-dependent corruption: the assertion passes in
+  isolation and after minimal preceding tests, but fails after the full
+  test_string/test_math sequences. A gcc-built qjs fails IDENTICALLY
+  on the same line, so this is an upstream dev-snapshot regression,
+  not an rcc issue.
+
+### Fixed (2026-08-23, toybox session -- 2 bugs)
+
+- **`-E -` (stdin input) merged the whole output onto one line** --
+  pp_print_tokens()/pp_tokens_to_text() discarded the lineno of any
+  token whose filename starts with '<', "<stdin>" included, so every
+  stdin token fell back to cur_line and no newlines were emitted
+  (even plain `int a;\nint b;\n` printed as one line). Broke
+  toybox's build: scripts/make.sh pipes its NEWTOY flag scan through
+  `$CC -E -` and line-splits the result (mkflags died with "Error in
+  toybox"). Now only genuinely synthetic '<'-filenames (not
+  "<stdin>") fall back.
+
+- **bundled <limits.h> lacked the include_next chain** -- glibc's
+  _POSIX2\_\_ / *XOPEN*_ / _SC_\* limits (bits/posix2*lim.h,
+  bits/xopen_lim.h) were never reached, so getconf.c failed with
+  "undeclared variable \_POSIX2_BC_BASE_MAX". Chain to the platform's
+  real <limits.h> at the end (like stdio.h/wchar.h/stdlib.h);
+  rcc's own INT_MAX etc. stay put and glibc's trailing include_next
+  stays disabled via \_GCC_LIMITS_H*.
+
+  Regression tests: test_stdin_linenumber.c, test_posix2_limits.c
+  (both fail on the old build). toybox then builds clean with rcc
+  (0 errors) and its test suite passes 356/357 -- the one failure,
+  du "(no options)", reproduces IDENTICALLY with a gcc-built toybox
+  (filesystem block-size dependent expectation), so it is not an rcc
+  issue.
+
 ### Fixed (2026-08-23, zsh session -- 3 stacked bugs)
 
 - **`-E` emitted no linemarker for macro-only headers** -- zsh's

@@ -266,4 +266,16 @@
 #endif
 #endif
 
+/* Chain to the platform's real <limits.h> for the feature-macro-guarded
+ * content this bundled copy doesn't track: glibc's _POSIX2_* / _XOPEN_* /
+ * _SC_* limits (bits/posix2_lim.h, bits/xopen_lim.h) used by getconf-
+ * style code. rcc's own INT_MAX et al. above stay put; glibc's own
+ * trailing `#include_next` is disabled by the predefined _GCC_LIMITS_H_.
+ * Linux-only: mingw's limits.h transitively defines the C23 `thread_local`
+ * keyword as a macro, which broke file-scope thread_local compound
+ * literals (torture/c23-complit-5.c) on Windows. */
+#ifdef __linux__
+#include_next <limits.h>
+#endif
+
 #endif
