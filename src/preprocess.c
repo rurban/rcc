@@ -903,7 +903,24 @@ static char *resolve_include_next(char *curr_file, char *spec, bool is_angle) {
             break;
         }
     }
+    // A directory can appear more than once in the search list -- e.g. a
+    // duplicate `-I../lib -I../lib` flag (common in autotools-generated
+    // build commands; observed via wget2's libwget/Makefile), or a `-I`
+    // dir that also happens to be on the built-in system list. Landing
+    // on ANOTHER occurrence of the very directory #include_next is
+    // trying to escape can never produce a genuinely "next" header --
+    // it is the identical physical file curr_file itself came from, and
+    // gnulib-style wrapper headers deliberately use a re-enterable
+    // "split double-inclusion guard" (no header guard blocking a second
+    // pass), so re-finding it here doesn't even hit resolve_include()'s
+    // ordinary guard short-circuit: it recurses through its own
+    // #include_next again, forever, until the include-depth limit trips
+    // (wget2's libwget/base64.c: `-I../lib -I../lib` looped 245+ deep on
+    // lib/stddef.h alone). Skip every remaining occurrence of cur_dir,
+    // not just an immediately-adjacent duplicate.
     for (int i = start; i < nd; i++) {
+        if (!strcmp(cur_dir, canonical_path(full_path((char *)dirs[i]))))
+            continue;
         char *path = path_join(dirs[i], spec);
         // A user -I directory may legitimately provide its own
         // replacement for a bundled header (e.g. ksh93's own std/stdio.h

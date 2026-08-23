@@ -184,6 +184,52 @@ tests/run_make_tests.pl -make ../make` passes all 1444 tests, 0
   with the ulimit the project's own `make check-regression` target
   sets).
 
+### Fixed (2026-08-23, wget2 -- two rcc bugs; one remaining failure verified not rcc)
+
+- Bug 1 -- preprocessor: a directory listed twice on the command line
+  (`-I../lib -I../lib`, routine in autotools-generated build commands
+  -- wget2's libwget/Makefile does exactly this) broke
+  `#include_next`: resolve_include_next() advanced past only the
+  FIRST occurrence of the directory that supplied the current file,
+  landing back on the SECOND (duplicate) occurrence -- the identical
+  physical file the current header's own #include_next came from.
+  gnulib-style wrapper headers deliberately use a re-enterable "split
+  double-inclusion guard" (no ordinary header guard blocking a second
+  pass), so re-finding the same file recursed through its own
+  #include_next again, forever, until rcc's include-depth limit
+  tripped ("Include depth exceeded"). Fixed by skipping every
+  remaining occurrence of the current directory in the search list,
+  not just an immediately-adjacent duplicate. Regression test:
+  test_include_next_dup_dir.c.
+
+- Bug 2 -- parser: a pointer-to-forward-declared-struct used as a
+  function's return type (`const struct S *f(void);`, e.g. wget2's
+  `WGETAPI const wget_vector *wget_http_get_no_proxy(void);` against
+  an opaque `wget_vector`) was wrongly rejected as "conflicting
+  types" between the prototype and the definition.
+  qualify_struct_type() never mutates a shared, still-incomplete
+  struct/union Type in place -- it mints a fresh "qualified variant"
+  copy at every `const struct S *`-style use site, so the
+  prototype's and the definition's copies are different Type objects
+  even though both derive from the same tag; neither pointer
+  identity nor the (both-NULL, since the struct never completes)
+  member-list check recognized them as the same type. Fixed by
+  adding a `struct_id` identity anchor (mirroring the existing
+  `enum_id` mechanism for enums), set to the canonical tag's own
+  address and preserved across every qualified-variant copy.
+  Regression test: test_struct_fwd_decl_qual_return.c.
+
+  wget2 (built --with-ssl=none --disable-nls) now builds to a single
+  remaining failure: lib/sys/ioctl.h's gnulib-generated `ioctl`
+  redeclaration (`int request`) genuinely conflicts with this
+  system's glibc `ioctl` prototype (`unsigned long int request`) --
+  confirmed NOT an rcc issue: the identical minimal repro (extracted
+  verbatim from the real preprocessed output) is rejected by gcc too,
+  with the identical diagnostic. This bundled lib/sys/ioctl.h is a
+  gnulib-tool-generated snapshot baked against a different glibc
+  version than this host's; regenerating it is a project-level
+  `./bootstrap` concern, out of scope for a compiler.
+
 ### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
 
 - jemalloc's unit test test/unit/bit_util fails with rcc as CC. The

@@ -4197,6 +4197,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             ty->size = 0;
             ty->align = 1;
             ty->bitfield_mode = struct_attr.bitfield_mode;
+            ty->struct_id = ty;
             redef_of = tag->ty;
         } else {
             // New definition (possibly shadowing an outer-scope tag)
@@ -4205,6 +4206,7 @@ static Type *struct_or_union_specifier(Token **rest, Token *tok, bool is_union) 
             ty->size = 0;
             ty->align = 1;
             ty->bitfield_mode = struct_attr.bitfield_mode;
+            ty->struct_id = ty;
             push_tag(tag_tok->name, ty);
         }
     } else {
@@ -9345,7 +9347,14 @@ static bool types_compatible_p_qual(Type *a, Type *b) {
     case TY_UNION:
         // See type_equal()'s identical case above for why pointer/member-
         // list identity (not qual/size) is the right comparison here.
-        return (a == b) || (a->members && a->members == b->members);
+        // struct_id additionally recognizes two qualified variants of the
+        // SAME still-incomplete tag (Type.qual_variants) as compatible --
+        // qualify_struct_type() mints a fresh Type object at every
+        // `const struct S *`-style use site while S stays forward-
+        // declared, so neither pointer identity nor the (both-NULL)
+        // member-list check can tell they're the same tag.
+        return (a == b) || (a->members && a->members == b->members) ||
+            (a->struct_id && a->struct_id == b->struct_id);
     case TY_BITINT:
         return a->bitint_width == b->bitint_width;
     default:

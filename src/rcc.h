@@ -309,6 +309,20 @@ struct Type {
     // so __builtin_types_compatible_p can tell "same enum" from "same
     // representation" — plain (non-enum) types leave this NULL.
     Type *enum_id;
+    // Identity anchor for two distinct struct/union declarations sharing
+    // the same tag: an INCOMPLETE struct/union's qualified variants
+    // (Type.qual_variants, see qualify_struct_type() in parser.c) are
+    // fresh Type objects at every `const struct S *`-style use site while
+    // S stays forward-declared, so pointer identity (a == b) and the
+    // member-list check (a->members == b->members, both NULL before
+    // completion) both fail to recognize two such variants as the same
+    // tag -- e.g. a forward-declared struct used as a function's return
+    // type in both its prototype and its definition wrongly diagnosed as
+    // "conflicting types". Set to the canonical (first-created, tag-
+    // registered) Type's own address and preserved verbatim across the
+    // `*ret = *ty` copies qualify_struct_type() makes for each variant;
+    // plain (non-struct/union) types leave this NULL.
+    Type *struct_id;
     bool is_signed_char; // signed char vs plain char (both have is_unsigned=false)
     bool is_vector; // GCC __attribute__((vector_size(N))): TY_STRUCT of N scalar
     // element-members, base = element type, align = total size
