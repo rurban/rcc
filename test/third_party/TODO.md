@@ -78,6 +78,44 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   sqlite3/tclsqlite3/testfixture clean and passes `make test`
   (0 errors) plus smoketest (95/95).
 
+### Verified (2026-08-23, cc65 -- no rcc bug)
+
+- cc65 (the 6502 cross-compiler suite: cc65/ca65/ld65/sim65/cl65/
+  da65/od65/ar65/grc65/sp65) builds clean with rcc as CC (0 errors),
+  and its full regression suite passes with the rcc-built tools:
+  "validation suite successful" (the only failures are the known
+  /todo tests, expected to fail). The tools also run fine (cc65 V2.19
+  banner). No rcc bug found.
+
+### Fixed (2026-08-23, sokol session -- compound-literal designator chains)
+
+- **`(T){ ... }` compound-literal initializers with array-index steps in
+  a designator chain failed to parse** ("expected specific operator") --
+  `src/parser.c`. Two paths had the gap:
+  1. `synth_struct_elem_literal()` (nested struct/union element
+     synthesizer) walked `.name.name` chains but stopped at an
+     array-index step: `.uniform_blocks[0] = { ... }` left "[0]" for
+     skip("=") to stumble over, and an ARRAY member's braced value
+     (`.glsl_uniforms = { [0] = { ... } }`) fell into assign(), which
+     cannot parse a leading "{". Now handles `[idx]` chain steps,
+     dispatches the value on the chain's final type, and appends
+     per-element assigns for braced array-member values with [N]
+     designators.
+  2. `assign_nested_struct_init()`'s designated array-element branch
+     demanded "=" right after "]": `.attrs[0].format = val` (sokol's
+     sg_pipeline_desc) failed. Now walks the chained `.member` to a
+     leaf like the top-level array-member path already did.
+
+  Found via sokol's own compile tests (sokol_nuklear.h's sg_shader_desc
+  and functional/sokol_gfx_test.c). Regression test
+  test/test_complit_designator_chain.c covers all three shapes; fails
+  on the old build. All sokol C compile tests (sokol-compiletest-c,
+  sokol-compiletest-c-all) and functional test objects now build with
+  rcc; the remaining failures are environment gaps, identical with gcc:
+  missing ALSA dev headers (sokol_audio.h: alsa/asoundlib.h and
+  -lasound) and gcc-16's -Werror unused-but-set-variable on the pure
+  g++ CXX tests. Functional tests can't run headless anyway.
+
 ### Verified (2026-08-23, orangeduck_mpc -- no rcc bug)
 
 - mpc builds clean with rcc (warnings only: ignored -Wswitch-default

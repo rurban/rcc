@@ -10218,6 +10218,25 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                     eval_const_expr(idx_hi, &ev);
                 }
                 tok = skip(tok, "]");
+                // The indexed element may itself carry a chained member
+                // designator: ".attrs[0].format = val" (C99 6.7.8p17's
+                // designator chain continuing through an array-index
+                // step) — sokol's sg_pipeline_desc initializers nest
+                // exactly this shape. Walk it to a leaf member instead
+                // of demanding "=" right after "]".
+                Member *elem_mem = NULL;
+                Type *elem_chain_ty = target->ty->base;
+                int elem_chain_offset = 0;
+                while (elem_chain_ty &&
+                       (elem_chain_ty->kind == TY_STRUCT || elem_chain_ty->kind == TY_UNION) &&
+                       equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                    Member *sm = find_member_by_name(elem_chain_ty, tok->next->name);
+                    if (!sm) break;
+                    elem_mem = sm;
+                    elem_chain_offset += sm->offset;
+                    elem_chain_ty = sm->ty;
+                    tok = tok->next->next;
+                }
                 tok = skip(tok, "=");
                 Token *val_start = tok;
                 for (long long i = sv; i <= ev; i++) {
@@ -10225,6 +10244,21 @@ static Node *assign_nested_struct_init(Node *result, Node *base, Member *mem,
                     Node *offset = new_num(i, start);
                     Node *elem_ptr = new_binary(ND_ADD, inner_access, offset, start);
                     Node *elem_lhs = new_unary(ND_DEREF, elem_ptr, start);
+                    if (elem_mem) {
+                        check_type(elem_lhs);
+                        Member *leaf = elem_mem;
+                        if (elem_chain_offset != leaf->offset) {
+                            Member *syn = arena_alloc(sizeof(Member));
+                            *syn = *leaf;
+                            syn->offset = elem_chain_offset;
+                            leaf = syn;
+                        }
+                        Node *sub_access = new_node(ND_MEMBER, start);
+                        sub_access->lhs = elem_lhs;
+                        sub_access->member = leaf;
+                        sub_access->ty = leaf->ty;
+                        elem_lhs = sub_access;
+                    }
                     Node *val = assign(&tok, tok);
                     check_type(val);
                     if (len == 0 || i < len) {
@@ -10364,18 +10398,39 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
             Node *base = new_var_node(evar, start);
             Member *first = NULL, *m = NULL;
             for (;;) {
-                char *mname = tok->next->name;
-                m = find_member_by_name(cur_ty, mname);
-                if (!m) break;
-                if (!first) first = m;
-                tok = tok->next->next;
-                Node *ma = new_unary(ND_MEMBER, base, fake_start);
-                ma->member = m;
-                check_type(ma);
-                base = ma;
-                cur_ty = m->ty;
-                if (!(equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT))
-                    break;
+                if (equalc(tok, ".") && tok->next && tok->next->kind == TK_IDENT) {
+                    char *mname = tok->next->name;
+                    m = find_member_by_name(cur_ty, mname);
+                    if (!m) break;
+                    if (!first) first = m;
+                    tok = tok->next->next;
+                    Node *ma = new_unary(ND_MEMBER, base, fake_start);
+                    ma->member = m;
+                    check_type(ma);
+                    base = ma;
+                    cur_ty = m->ty;
+                    continue;
+                }
+                if (equalc(tok, "[") && cur_ty->kind == TY_ARRAY) {
+                    // Array-index step in the designator chain
+                    // (".arr[0] = ...", C99 6.7.8p17): sokol's sg_shader_desc
+                    // initializers nest exactly this shape
+                    // (".uniform_blocks[0] = { ... .glsl_uniforms[0] = ... }").
+                    // The chain walk below used to stop at the member,
+                    // leaving "[0]" for skip(tok, "=") to stumble over
+                    // ("expected specific operator").
+                    tok = tok->next;
+                    Node *idx = assign(&tok, tok);
+                    tok = skip(tok, "]");
+                    check_type(idx);
+                    Node *sub = new_unary(ND_DEREF,
+                                          new_binary(ND_ADD, base, idx, fake_start), fake_start);
+                    check_type(sub);
+                    base = sub;
+                    cur_ty = cur_ty->base;
+                    continue;
+                }
+                break;
             }
             if (m) {
                 tok = skip(tok, "=");
@@ -10383,14 +10438,75 @@ static Node *synth_struct_elem_literal(Type *elem_ty, Token **rest, Token *tok,
                 // braced sub-initializer (e.g. i915_pmu.c's device_attribute
                 // "{ .attr = {.name = _name, .mode = _mode}, ... }") — bare
                 // assign() can't parse a leading "{", so recurse the same
-                // way the outer element dispatch does.
-                Node *v2 = (equalc(tok, "{") && (m->ty->kind == TY_STRUCT || m->ty->kind == TY_UNION))
-                    ? synth_struct_elem_literal(m->ty, &tok, tok, start, anon_count)
-                    : assign(&tok, tok);
-                check_type(v2);
-                Node *a2 = new_binary(ND_ASSIGN, base, v2, start);
-                check_type(a2);
-                eres = new_binary(ND_COMMA, eres, a2, start);
+                // way the outer element dispatch does. Dispatch on the
+                // chain's FINAL type (cur_ty), not m->ty: after an
+                // "[idx]" step the leaf is the array ELEMENT type, e.g.
+                // ".glsl_uniforms[0] = { ... }" where glsl_uniforms is an
+                // array of structs.
+                if (equalc(tok, "{") && cur_ty->kind == TY_ARRAY && cur_ty->base) {
+                    // Braced array member value (".glsl_uniforms = { [0] =
+                    // { ... }, [1] = { ... } }") — append per-element
+                    // assigns directly to the result chain (an array
+                    // cannot be the RHS of a single assignment). Mirrors
+                    // the top-level array-member loop; the element value
+                    // recurses through this same synthesizer when it is
+                    // itself a braced struct/union init.
+                    tok = tok->next; // skip "{"
+                    int aidx = 0;
+                    while (!equalc(tok, "}")) {
+                        int sidx = aidx, eidx = aidx;
+                        if (equalc(tok, "[")) {
+                            tok = tok->next;
+                            Node *n = assign(&tok, tok);
+                            long long sv = 0;
+                            eval_const_expr(n, &sv);
+                            sidx = (int)sv;
+                            eidx = sidx;
+                            if (equalc(tok, "...")) {
+                                tok = tok->next;
+                                Node *n2 = assign(&tok, tok);
+                                long long ev = sidx;
+                                eval_const_expr(n2, &ev);
+                                eidx = (int)ev;
+                            }
+                            tok = skip(tok, "]");
+                            tok = skip(tok, "=");
+                            aidx = sidx;
+                        }
+                        Token *vstart = tok;
+                        for (int i = sidx; i <= eidx; i++) {
+                            tok = vstart;
+                            Node *off = new_num(i, start);
+                            Node *ep = new_binary(ND_ADD, base, off, start);
+                            Node *el = new_unary(ND_DEREF, ep, start);
+                            check_type(el);
+                            Node *ev = (equalc(tok, "{") && cur_ty->base &&
+                                        (cur_ty->base->kind == TY_STRUCT || cur_ty->base->kind == TY_UNION))
+                                ? synth_struct_elem_literal(cur_ty->base, &tok, tok, start, anon_count)
+                                : assign(&tok, tok);
+                            check_type(ev);
+                            Node *ea = new_binary(ND_ASSIGN, el, ev, start);
+                            check_type(ea);
+                            eres = new_binary(ND_COMMA, eres, ea, start);
+                        }
+                        aidx = eidx + 1;
+                        if (equalc(tok, ",")) {
+                            tok = tok->next;
+                            if (equalc(tok, "}")) break;
+                            continue;
+                        }
+                        break;
+                    }
+                    tok = skip(tok, "}");
+                } else {
+                    Node *v2 = (equalc(tok, "{") && (cur_ty->kind == TY_STRUCT || cur_ty->kind == TY_UNION))
+                        ? synth_struct_elem_literal(cur_ty, &tok, tok, start, anon_count)
+                        : assign(&tok, tok);
+                    check_type(v2);
+                    Node *a2 = new_binary(ND_ASSIGN, base, v2, start);
+                    check_type(a2);
+                    eres = new_binary(ND_COMMA, eres, a2, start);
+                }
                 emem = first->next;
             } else {
                 assign(&tok, tok);
