@@ -5056,9 +5056,17 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
             tok = tok->next;
             continue;
         }
-        if (equalc(tok, "_Float128")) {
+        if (equalc(tok, "_Float128") || equalc(tok, "__float128")) {
             // ARM64 Linux: long double is true binary128; x86 long double is
-            // 80-bit extended — _Float128 is not supported there
+            // 80-bit extended — _Float128/__float128 are not supported there.
+            // Either way, alias to long double: real quad-precision codegen
+            // isn't implemented, but library headers (e.g. fftw3.h's
+            // __float128-gated quad-precision API declarations) still need
+            // the type to parse and take a plausible (16-byte) size/align so
+            // the surrounding typedefs/prototypes compile. Callers that
+            // actually invoke quad-precision arithmetic are gated behind a
+            // separate build-time feature macro (FFTW_QUAD, HAVE_FLOAT128,
+            // etc.) and won't be compiled unless that feature is enabled.
 #if defined(ARCH_ARM64) && !defined(__APPLE__)
             is_double = true;
             long_count = 1;

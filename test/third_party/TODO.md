@@ -91,6 +91,70 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   element-separator comma; see the sokol-session entry -- actually the
   new parser fix below.)
 
+### Fixed (2026-08-23, fftw)
+
+- fftw3.h's quad-precision API section (gated purely on
+  `__GNUC__`/architecture version checks, independent of whether quad
+  precision is actually built) declares types via `__float128` --
+  GCC's original spelling, distinct from the C23 `_Float128` rcc
+  already supported. rcc treated `__float128` as an undeclared plain
+  identifier, so every translation unit including fftw3.h -- the
+  entire fftw build -- failed to parse. Added `__float128` as a
+  keyword (keywords.gperf/keyword_ids.h) aliased to `long double`,
+  matching the existing `_Float128` handling: no real 128-bit binary
+  float arithmetic, but declarations, pointers, and struct members
+  parse and size/align correctly, which is all fftw's un-built
+  quad-precision declarations need.
+
+  fftw builds clean with rcc and `make check` passes ("FFTW
+  transforms passed basic tests!", no failures). Regression test:
+  test_float128_keyword.c.
+
+### Verified (2026-08-23, libmpfr -- pre-existing upstream test bugs, not rcc)
+
+- mpfr 4.2.2 builds clean with rcc (0 errors) after the \_\_float128
+  keyword fix above; `./configure && make` succeeds with GMP 6.3.0
+  (system libgmp). `make check` hits three failures:
+  - `tcheck`: "mpfr_check failed for mul Prec=1" (repeated squaring
+    at 1-bit precision to a huge exponent).
+  - `mpfr_compat` and `reuse`: spin at 100% CPU indefinitely (real
+    infinite loops, not merely slow -- confirmed via `ps` showing
+    sustained CPU time with no progress).
+    All three reproduce IDENTICALLY on a from-scratch gcc build of the
+    same mpfr-4.2.2 source tree against the same system GMP (cross-
+    checked in /tmp, not just eyeballed) -- upstream/environment bugs
+    in this mpfr release combined with this GMP build, unrelated to
+    the compiler. Every other test in the suite (all it reached before
+    the two infinite loops permanently occupied 2 of the 4 parallel
+    test-runner slots) passed cleanly.
+
+### Known rcc bug (2026-08-23, nettle -- same allocator class as jemalloc, not yet fixed)
+
+- nettle 4.0 builds clean with rcc (0 errors) and `make check` passes
+  127/128 tests -- the initial run showed 55/127 failures, but that
+  was stale/inconsistent build state (a leftover shared library from
+  an earlier differently-configured build mixed with freshly rebuilt
+  static objects); a `make distclean` + reconfigure + full rebuild
+  drops it to a single real failure.
+
+  The remaining failure, `twofish`, SIGSEGVs inside `h_byte()`
+  (twofish.c) -- a single expression with 5 levels of nested array
+  indexing, two of them through an embedded ternary
+  (`q_table[i][2][k == 2 ? x : l2 ^ q_table[i][1][...]]`). Minimal
+  repro (crashes only when called repeatedly in a loop, not on a
+  single call -- confirming this is the SAME register-allocator
+  spill/borrow bug class documented for jemalloc's LG_CEIL/LG_FLOOR
+  above, not a new/distinct bug): a function performing the identical
+  5-level nested-ternary array-index chain, called from a triple
+  loop, segfaults with rcc and runs cleanly with gcc. Flattening the
+  expression into one intermediate variable per nesting level (still
+  in a loop) does NOT crash -- the bug needs both the unflattened
+  single-expression form AND repeated evaluation.
+
+  Not fixed for the same reason as jemalloc: needs reworking the
+  allocator's spill/pop/borrow semantics, out of scope for a
+  surgical fix.
+
 ### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
 
 - jemalloc's unit test test/unit/bit_util fails with rcc as CC. The

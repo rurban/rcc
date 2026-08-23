@@ -79,6 +79,7 @@ enum {
     ID__FLOAT64,
     ID__FLOAT64X,
     ID__FLOAT128,
+    ID___FLOAT128,
     ID_TYPEOF,
     ID_TYPEOF_UNQUAL,
     ID___TYPEOF_UNQUAL,
