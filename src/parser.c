@@ -5810,11 +5810,18 @@ static Token *skip_flat_aggregate_init(Token *tok, Type *ty) {
             if (equalc(tok, "}"))
                 break;
             tok = skip_flat_aggregate_init(tok, mem->ty);
+            // A union flat-initializes exactly ONE member (C11 6.7.9p13;
+            // extra values are excess elements, warned by gcc). Its
+            // trailing comma separates the NEXT ARRAY ELEMENT, not another
+            // member — consuming it here made count_array_initializer()
+            // miscount `union U a[] = { 1, 2 }` as one element and then
+            // choke on the leftover `2` ("expected specific operator",
+            // janet's Janet[] = { expr, tstate.payload }).
+            if (ty->kind == TY_UNION)
+                break;
             mem = mem->next;
             if (mem && equalc(tok, ","))
                 tok = tok->next;
-            if (ty->kind == TY_UNION)
-                break;
         }
     } else if (ty->kind == TY_ARRAY) {
         if (equalc(tok, "{") || (ty->base->kind == TY_CHAR && tok->kind == TK_STR)) {

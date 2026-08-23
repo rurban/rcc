@@ -23,9 +23,23 @@ typedef int vfmt;
 typedef struct { vfmt format; int stride; } vattr;
 typedef struct { vattr attrs[4]; int shader; } pipe;
 
+/* shape 4: union array with flat (brace-elided) elements */
+typedef union U U;
+union U { unsigned long long u64; long long i64; double number; void *pointer; };
+typedef struct { U payload; int tag; } tstate_t;
+
 static void* fake_addr(shader *s) { return (void*)s; }
 
 int main(void) {
+    /* union array, flat elements: each element takes ONE value (C11
+     * 6.7.9p13), the comma separates elements -- count_array_initializer's
+     * flat-aggregate skip used to eat the comma after the single union
+     * member, sizing the array as one element and choking on the leftover
+     * "2" (janet's Janet[] = { ... } in ev.c). */
+    tstate_t ts;
+    ts.payload.u64 = 7;
+    U upair[] = { ts.payload, ts.payload };
+    U ipair[] = { 1, 2, 3 };
     /* shape 1: designated array index with braced struct value, nested */
     shader s = *(const shader*)&(shader){
         .uniform_blocks[0] = {
@@ -61,6 +75,8 @@ int main(void) {
     return (s.uniform_blocks[0].glsl_uniforms[0].array_count == 1 &&
             s.uniform_blocks[0].stage == 1 && s.uniform_blocks[2].stage == 2 &&
             s2.uniform_blocks[0].stage == 4 && s2.uniform_blocks[0].glsl_uniforms[1].array_count == 1 &&
+            upair[0].u64 == 7 && upair[1].u64 == 7 &&
+            ipair[0].u64 == 1 && ipair[1].u64 == 2 && ipair[2].u64 == 3 &&
             s2.uniform_blocks[3].stage == 5 &&
             p.attrs[0].format == 7 && p.attrs[2].stride == 32) ? 0 : 1;
 }

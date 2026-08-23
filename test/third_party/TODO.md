@@ -78,6 +78,42 @@ target now. Found via sqlite's shell.c (`zSkipValidUtf8(..., INT_MAX,
   sqlite3/tclsqlite3/testfixture clean and passes `make test`
   (0 errors) plus smoketest (95/95).
 
+### Verified (2026-08-23, janet -- one upstream snapshot bug, not rcc)
+
+- janet (the Janet language, snapshot Git 547d923) builds clean with
+  rcc (0 errors), and 32/33 test suites pass with the rcc-built
+  binary. Only test/suite-io.janet fails, at `(xprintf to-b "123")`:
+  the target value arrives as a garbage double ("cannot print to
+  <denormal>") -- but the gcc-built janet fails IDENTICALLY, so this
+  is an upstream snapshot regression in the xprintf/cfun path, not an
+  rcc bug. (Also found and fixed en route: `union U a[] = { 1, 2 }`
+  flat-union array sizing, rcc's skip_flat_aggregate_init consumed the
+  element-separator comma; see the sokol-session entry -- actually the
+  new parser fix below.)
+
+### Verified (2026-08-23, yash -- no rcc bug)
+
+- yash (the POSIX shell) configures and builds clean with rcc as CC,
+  and its full test suite passes with the rcc-built binary:
+  20229/20233 OK, 0 errors, 4 skipped (locale/feature-dependent
+  skips). The only build hiccup is the manpage target (yash.1), which
+  needs an external doc toolchain and is ignored by the Makefile.
+  Smoke-tested: `./yash -c 'echo hello; x=5; echo $x'` works.
+
+### Fixed (2026-08-23, janet session -- union flat-init array sizing)
+
+- **`skip_flat_aggregate_init()` consumed the comma after a union's
+  single flat-initialized member** -- `src/parser.c`. For
+  `union U a[] = { 1, 2 }` the union branch took the member-separator
+  comma even though a union flat-initializes exactly ONE member
+  (C11 6.7.9p13), so count_array_initializer() sized the array as one
+  element and then choked on the leftover `2` ("expected specific
+  operator" -- janet's `Janet pair[] = { janet_ckeywordv("error"),
+tstate.payload }` in src/core/ev.c). The comma now stays for the
+  next array element, matching gcc (`pair[1].u64 == 2`). Regression
+  test: extended test/test_complit_designator_chain.c with a
+  flat-union array element count (fails on the old build).
+
 ### Verified (2026-08-23, cc65 -- no rcc bug)
 
 - cc65 (the 6502 cross-compiler suite: cc65/ca65/ld65/sim65/cl65/
