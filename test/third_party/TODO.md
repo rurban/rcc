@@ -549,25 +549,67 @@ long`/`unsigned long long` on LLP64 (Windows/mingw) -- so
   tests, Torture 3605/3609 -- 0 failed, 354 skipped, 4 todo, same
   baseline; TCC/Compliance/C-testsuite/Dg-error/Link unaffected).
 
-### Known rcc bug (2026-08-23, jemalloc -- codegen, not yet fixed)
+### Fixed (2026-08-24, jemalloc session -- 2 stacked x86-64 codegen bugs)
 
-- jemalloc's unit test test/unit/bit_util fails with rcc as CC. The
-  LG_CEIL/LG_FLOOR bit-counting macro chain in include/jemalloc/
-  internal/bit_util.h -- a 6-level nested ternary `x < (1ULL<<32) ?
-... : 32 + ...(x>>32)` chain evaluated repeatedly (loop + several
-  function arguments) -- miscompiles under register pressure: the
-  register allocator's spill-borrow semantics lose an outer
-  binary-operator LHS when a nested ternary's condition spills it, the
-  free_reg() pop restores a stale (dead) slot value over the live one,
-  and the outer op degenerates into a self-add no-op. lg_ceil(16384)
-  returns 12/15 or garbage depending on allocation pressure; the
-  function-level fls_lu/lg_floor code is correct in isolation. Minimal
-  repro: `(U)LG16(x), (U)LG16(x), (U)LG16(x)` as three printf
-  arguments yields 14, 14, garbage. Not fixed: the fix needs reworking
-  the allocator's spill/pop/borrow semantics (each surgical attempt --
-  keep-used on free_reg, ternary-result-avoid2, borrow flags -- fixed
-  one manifestation and broke another). Cross-check tinycc's save_reg
-  model when fixing.
+- **Bug 1 -- wide `_BitInt` hidden-return-buffer callee param shift** --
+  `src/codegen.c`. A function returning a wide `_BitInt` (size > 16,
+  the SysV hidden-return-pointer convention) has its incoming real
+  parameters shifted one GP register right by the caller (RDI holds
+  the hidden pointer, arg0 lands in RSI, ...). The call site
+  (`gen_funcall`'s `has_hidden_retbuf`/`gp_reg_args`) already accounted
+  for `TY_BITINT`, but the callee's own prologue had TWO independently
+  duplicated copies of the "does my return type consume RDI?" check
+  (codegen.c generates every function body twice -- a dry-run pass to
+  size the stack frame, then the real emission pass, each with its own
+  local copy of the condition) -- neither included the `TY_BITINT`
+  case, only STRUCT/UNION/COMPLEX. Every parameter of such a function
+  was silently read from the wrong register: `a` read the (truncated)
+  hidden pointer, `b` read what should have been `a`, and the true
+  last parameter's value never reached the function body. Found via
+  jemalloc's `include/jemalloc/internal/bit_util.h` LG_CEIL/LG_FLOOR
+  macro chain investigation, which led to a minimal 3-parameter
+  `_BitInt(216)`-returning function repro.
+
+- **Bug 2 -- deep nested-ternary call argument corrupted an earlier
+  sibling argument** -- `src/codegen.c`, `gen_funcall()`. The x86-64
+  argument-staging decision (`use_staging`) reserved a FIXED 2-register
+  headroom for a later argument's own expression complexity. A 5+-level
+  nested ternary chain (jemalloc's `LG_FLOOR_64(x)` macro: `x < N ? F(x)
+: k + F(x>>k)`, nested 5-6 levels) legitimately needs roughly one live
+  register per nesting level at its peak -- more than any fixed
+  constant. Under that pressure, `alloc_reg()`'s spill-victim search
+  repeatedly borrowed the register still holding an EARLIER, already-
+  computed sibling argument; the deep expression's own spill/restore
+  bookkeeping didn't perfectly balance across every branch, silently
+  losing the earlier argument's true value with no fault raised.
+  `LG_CEIL(x)`/`LG_FLOOR(x)` (and the equivalent `lg_ceil()`/
+  `lg_floor()` runtime functions built on `__builtin_clzll`) passed as
+  the second argument of a two-argument call alongside the plain first
+  argument `x` corrupted `x` once it crossed 2^15 -- jemalloc's own
+  `test/unit/bit_util` unit test failed this exact way (`lg_ceil`/
+  `lg_floor` computed the CORRECT value in isolation but the wrong one
+  once passed alongside `x` itself). Fixed by replacing the fixed
+  headroom with `expr_reg_pressure()`, a coarse recursive estimate of
+  an argument expression's own worst-case concurrent register need
+  (ND*COND/binary-op nesting depth), so `use_staging` reliably engages
+  whenever a sibling argument's expression could plausibly outgrow the
+  old fixed budget. (An initial attempt to just always stage every
+  2+-argument call was reverted -- it broke `test_call_pressure`,
+  `test_builtins`' alloca fallback, and crashed `test_spill_locals*
+  collision`; the targeted pressure-estimate fix is the minimal correct
+  change.)
+
+  New regression tests: `test_wide_bitint_retbuf_param_shift.c`,
+  `test_nested_ternary_call_arg_pressure.c` -- both fail on the old
+  build. jemalloc (2 disabled: `--disable-cxx` for an unrelated g++-16/
+  libstdc++ `std::__throw_bad_alloc` ABI break, not rcc's issue) builds
+  clean with rcc (0 errors) and its full unit test suite passes:
+  90/112 + 3×14/14 (fail:0 in every run, 22 env-gated skips: prof/
+  witness/debug-only tests). `test/unit/bit_util` specifically passes
+  all 25 sub-tests. Full local suite re-run clean: Unit 320/320 (incl.
+  the 2 new tests), Torture 3605/3609 (0 failed, same baseline), TCC/
+  c-testsuite/Dg-error/Link unaffected. ARM64 cross (qemu): 311/311
+  unit tests. mingw cross: compiles clean.
 
 ### Verified (2026-08-23, quickjs -- one upstream snapshot bug, not rcc)
 

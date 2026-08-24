@@ -1943,6 +1943,67 @@ static bool struct_returns_in_gp_regs(Type *ty) {
 }
 #endif
 
+// Estimate the worst-case number of scratch registers a subexpression's
+// own codegen could hold live at once, to size gen_funcall's argument-
+// staging headroom (see use_staging below). A plain leaf costs nothing
+// extra; a binary/ternary node needs its own result register held live
+// across evaluating its (deeper) operand, so nesting depth accumulates.
+// Deliberately coarse (not an exact simulation of alloc_reg()/free_reg()
+// traffic) -- only needs to grow with genuine nesting depth so a deep
+// chain like jemalloc's LG_FLOOR_64 macro (`x < N ? F(x) : k + F(x>>k)`,
+// 6 levels of ND_COND) reserves enough headroom that alloc_reg() never
+// has to spill-borrow a register an earlier, already-computed sibling
+// argument is still holding.
+static int expr_reg_pressure(Node *n) {
+    if (!n)
+        return 0;
+    int depth_limit = 32; // avoid runaway recursion on pathological trees
+    switch (n->kind) {
+    case ND_COND: {
+        int c = expr_reg_pressure(n->cond);
+        int t = expr_reg_pressure(n->then);
+        int e = expr_reg_pressure(n->els);
+        int branch = t > e ? t : e;
+        int p = (c > branch ? c : branch) + 1;
+        return p > depth_limit ? depth_limit : p;
+    }
+    case ND_ADD:
+    case ND_SUB:
+    case ND_MUL:
+    case ND_DIV:
+    case ND_MOD:
+    case ND_BITAND:
+    case ND_BITOR:
+    case ND_BITXOR:
+    case ND_SHL:
+    case ND_SHR:
+    case ND_EQ:
+    case ND_NE:
+    case ND_LT:
+    case ND_LE:
+    case ND_LOGAND:
+    case ND_LOGOR: {
+        int l = expr_reg_pressure(n->lhs);
+        int r = expr_reg_pressure(n->rhs);
+        int p = (l > r ? l : r) + 1;
+        return p > depth_limit ? depth_limit : p;
+    }
+    case ND_NEG:
+    case ND_BITNOT:
+    case ND_NOT:
+    case ND_CAST:
+        return expr_reg_pressure(n->lhs);
+    case ND_FUNCALL:
+        // A nested call's own argument evaluation is a self-contained
+        // scope that returns its result in one register; don't recurse
+        // into its arguments (this function only estimates pressure for
+        // gen_funcall's OWN direct argument list).
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     int nargs = 0;
     for (Node *arg = node->args; arg; arg = arg->next)
@@ -3618,41 +3679,26 @@ static VReg gen_funcall(Node *node, VReg hidden_ret_reg) {
     // share one slot) and a staged value is silently lost.
     //
     // A single scratch register is NOT always enough: an argument that is
-    // itself a non-trivial expression — e.g. `flags | (cond ? A : B)`, a
-    // binary op whose rhs is a ternary, or a call whose own argument is
-    // itself a nested function call — needs 2+ registers live at once at
-    // its peak (its own result register, held across evaluating its
-    // operands, plus a nested sub-expression's own result register).
-    // Budgeting only 1 (or, when every argument happens to be register-
-    // passed with none spilled to the stack, budgeting 0) leaves the
-    // computation exactly at NUM_REGS with zero headroom: alloc_reg() must
-    // spill a register that's still logically owned by an earlier
-    // register-passed argument, and a subsequent *fresh* (non-spilling)
-    // allocation elsewhere in that later argument's own nested evaluation
-    // can then silently reclaim that same "temporarily free" register
-    // before its true owner ever reads it back — no spill/restore
-    // involved, so nothing notices. This is not limited to calls with
-    // trailing stack arguments: reserving scratch only when
-    // `nreg_args_count < nargs` misses calls where every argument is
-    // register-passed (fits within the 6 GP argument registers) but a
-    // later one is still a deep nested-call chain. Observed for real via
-    // two distinct crashes: Perl's `pp_regcomp()` — an 8-argument
-    // indirect call, `flags` and a ternary spilled to the stack — losing
-    // its register-passed `&is_bare_re` argument; and Perl's
-    // `Perl_utilize()` — a 5-argument *direct* call, `newATTRSUB(floor,
-    // newSVOP(...), NULL, NULL, <deeply nested op_append_elem/newSTATEOP
-    // chain>)`, no stack arguments at all — losing its 2nd (register)
-    // argument while evaluating its 5th. Reserving scratch headroom
-    // whenever a call has more than one argument (so there is always a
-    // "later" argument whose own complexity could exceed a 1-register
-    // budget) keeps both off the knife's edge; deeper nesting still
-    // possible with 2+ live scratch registers of its own is the
-    // allocator's pre-existing single-slot-per-register limitation, not
-    // something this fix set out to solve.
+    // itself a non-trivial expression needs 2+ registers live at once at
+    // its peak. Fixed headroom of 2 (this fix's earlier value) still isn't
+    // always enough: a later argument that is itself a deeply nested
+    // ternary chain (e.g. jemalloc's LG_FLOOR_64, a 6-level `x < N ? ... :
+    // ...` macro expansion) can legitimately need one live register per
+    // nesting level at its peak. Compute the actual worst-case register
+    // pressure across every argument's own expression tree instead of
+    // guessing a fixed constant -- see expr_reg_pressure() below.
+    int stack_scratch = 0;
+    if (nargs > 1) {
+        stack_scratch = 2;
+        for (int i = 0; i < nargs; i++) {
+            int p = expr_reg_pressure(argv[i]);
+            if (p > stack_scratch)
+                stack_scratch = p;
+        }
+    }
     int live_now = 0;
     for (int i = 0; i < NUM_REGS; i++)
         live_now += (used_regs >> i) & 1;
-    int stack_scratch = (nargs > 1) ? 2 : 0;
     bool use_staging = (live_now + nreg_args_count + stack_scratch >= NUM_REGS);
 
     // Bitmask of scratch registers holding already-computed register-passed
@@ -8599,6 +8645,16 @@ static VReg gen_bitint(Node *node) {
         if (r >= 0) free_reg(r);
         return gen_bitint(node->rhs);
     }
+
+    case ND_FUNCALL:
+        // A function returning a wide _BitInt (size > 16) already uses
+        // gen_funcall()'s hidden-return-buffer convention (has_hidden_retbuf
+        // explicitly checks TY_BITINT && size > 16 on every ABI), matching
+        // gen_bitint()'s own "address of the value" return convention --
+        // just never reached before because gen()'s dispatch redirects any
+        // wide-bitint-typed node here first, and this switch had no case
+        // for the call itself.
+        return gen_funcall(node, -1);
 
     case ND_ASSIGN: {
         // Copy rhs slot -> lhs slot (size bytes)
@@ -16563,9 +16619,9 @@ struct ObjFile *codegen(Program *prog) {
         int stack_param_index = 0;
         int param_index = fn->ty->return_ty &&
 #ifdef _WIN32
-                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8))
+                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16))
 #else
-                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16))
+                (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || (is_complex(fn->ty->return_ty) && fn->ty->return_ty->size > 16) || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16))
 #endif
             ? 1
             : 0;
@@ -17269,7 +17325,7 @@ struct ObjFile *codegen(Program *prog) {
         }
 
         // Save hidden struct return pointer if needed
-        if (fn->ty->return_ty && (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || fn->ty->return_ty->kind == TY_COMPLEX)) {
+        if (fn->ty->return_ty && (((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || fn->ty->return_ty->kind == TY_COMPLEX || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16))) {
             int retbuf_offset = 0;
             for (LVar *var = fn->locals; var; var = var->next) {
                 if (var->name && var->name == kw_retbuf) {
@@ -17805,9 +17861,9 @@ struct ObjFile *codegen(Program *prog) {
             int gp = fn->ty->return_ty &&
                     (
 #ifdef _WIN32
-                         ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
+                         ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8) || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16)
 #else
-                         (fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)
+                         ((fn->ty->return_ty->kind == TY_STRUCT || fn->ty->return_ty->kind == TY_UNION) && !struct_returns_in_gp_regs(fn->ty->return_ty)) || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16)
 #endif
                              )
                 ? 1
@@ -18145,7 +18201,7 @@ struct ObjFile *codegen(Program *prog) {
 #ifdef _WIN32
              || (fn->ty->return_ty->kind == TY_COMPLEX && fn->ty->return_ty->size > 8)
 #endif
-                 )
+             || (fn->ty->return_ty->kind == TY_BITINT && fn->ty->return_ty->size > 16))
 #ifdef _WIN32
             && fn->ty->return_ty->size > 8
 #else

@@ -8553,7 +8553,7 @@ static Token *parse_nested_function_def(Token **rest, Token *tok, Type *fty,
     current_fn_scope_locals = params;
     parser_current_fn = decl_name;
 
-    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
+    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX || (fty->return_ty->kind == TY_BITINT && fty->return_ty->size > 16))) {
         LVar *retbuf = new_var("__retbuf", pointer_to(fty->return_ty), true);
         retbuf->cleanup_func = NULL;
     }
@@ -14125,7 +14125,7 @@ Program *parse(Token *tok) {
                     fty->is_oldstyle = is_oldstyle;
                     Type param_head = {};
                     Type *pcur = &param_head;
-                    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
+                    if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX || (fty->return_ty->kind == TY_BITINT && fty->return_ty->size > 16))) {
                         Type *pt = arena_alloc(sizeof(Type));
                         *pt = *pointer_to(fty->return_ty);
                         pt->param_next = NULL;
@@ -14160,7 +14160,7 @@ Program *parse(Token *tok) {
                     }
                 }
 
-                if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX)) {
+                if (fty->return_ty && (fty->return_ty->kind == TY_STRUCT || fty->return_ty->kind == TY_UNION || fty->return_ty->kind == TY_COMPLEX || (fty->return_ty->kind == TY_BITINT && fty->return_ty->size > 16))) {
                     LVar *retbuf = new_var("__retbuf", pointer_to(fty->return_ty), true);
                     retbuf->cleanup_func = NULL;
                 }
