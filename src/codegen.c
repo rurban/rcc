@@ -1626,9 +1626,37 @@ static bool var_has_cleanup(LVar *var) {
     return var->ty->kind == TY_ARRAY && var->ty->base && var->ty->base->cleanup_func;
 }
 
+// True if `name` (a __attribute__((cleanup(name))) target, or a C `defer`
+// lowering's synthesized closure) is a GNU nested function -- looked up
+// the same way func_label() resolves the call target's mangled symbol.
+static bool cleanup_func_is_nested(char *name) {
+    uint32_t h = func_hash_name(name) % FUNC_HASH_SIZE;
+    for (TLItem *item = func_htab[h]; item; item = item->hash_next)
+        if (item->fn->name == name)
+            return item->fn->is_nested;
+    return false;
+}
+
 static void emit_cleanup_var(LVar *var) {
     if (var->cleanup_func) {
+        // A cleanup function that is itself a GNU nested function (the
+        // idiom `defer { ... }` lowers to via slimcc.h's `auto void
+        // F(int*); __attribute__((cleanup(F))) int V; inline auto void
+        // F(int *V) { ... }`) needs its static-chain register set up
+        // before the call, exactly like an ordinary direct call to a
+        // nested function does -- emit_direct_call() alone only resolves
+        // the mangled symbol, it never touches the chain register.
+        // Without this, F's own prologue saves whatever stale value
+        // happened to be sitting in the chain register at the call site
+        // and later dereferences it to read a captured outer-scope
+        // local, reading/writing through a garbage pointer. The nested
+        // function is always declared directly inside the function that
+        // owns `var` (chain_depth 0): this cleanup call itself IS that
+        // enclosing function's own current frame.
+        bool nested = cleanup_func_is_nested(var->cleanup_func);
 #ifdef ARCH_ARM64
+        if (nested)
+            asm_mov_phy_phy(cg_sec, ARM64_X18, ARM64_X29, 1); // mov x18, x29
         if (var->offset <= 4095)
             asm_add_fp_imm(cg_sec, ARM64_X0, -var->offset); // add x0, x29, #{-var->offset}
         else {
@@ -1645,18 +1673,25 @@ static void emit_cleanup_var(LVar *var) {
         }
 #elif defined(_WIN32)
         asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset); // lea -offset(%rbp), %rcx
+        if (nested)
+            x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset); // lea -offset(%rbp), %rdi
+        if (nested)
+            x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
 #endif
         emit_direct_call(var->cleanup_func, false);
         return;
     }
     // Array whose element type carries __cleanup__: call per element, LIFO
     char *func = var->ty->base->cleanup_func;
+    bool nested = cleanup_func_is_nested(func);
     int elem_size = var->ty->base->size;
     int nelem = elem_size ? var->ty->size / elem_size : 0;
     for (int i = nelem - 1; i >= 0; i--) {
 #ifdef ARCH_ARM64
+        if (nested)
+            asm_mov_phy_phy(cg_sec, ARM64_X18, ARM64_X29, 1); // mov x18, x29
         int off = var->offset - i * elem_size;
         if (off <= 4095)
             asm_add_fp_imm(cg_sec, ARM64_X0, -off);
@@ -1674,8 +1709,12 @@ static void emit_cleanup_var(LVar *var) {
         }
 #elif defined(_WIN32)
         asm_lea_rbp(cg_sec, X86_RCX, 8, var->offset - i * elem_size); // lea [rbp-off], rcx
+        if (nested)
+            x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
 #else
         asm_lea_rbp(cg_sec, X86_RDI, 8, var->offset - i * elem_size); // lea [rbp-off], rdi
+        if (nested)
+            x86_mov_rr(cg_sec, 8, X86_R10, X86_RBP); // mov rbp, r10
 #endif
         emit_direct_call(func, false);
     }

@@ -10081,7 +10081,7 @@ static Node *apply_postfix_ops(Node *node, Token **rest, Token *tok) {
         if (equalc(tok, "->")) {
             tok = tok->next;
             check_type(node);
-            if ((node->ty->kind != TY_PTR && node->ty->kind != TY_ARRAY) ||
+            if ((node->ty->kind != TY_PTR && node->ty->kind != TY_ARRAY && node->ty->kind != TY_VLA) ||
                 (node->ty->base->kind != TY_STRUCT && node->ty->base->kind != TY_UNION))
                 error_tok(tok, "not a pointer to struct or union");
             node = new_unary(ND_DEREF, node, tok);
@@ -11168,9 +11168,13 @@ static Node *unary(Token **rest, Token *tok) {
             chain->lhs = vla_pre;
             chain->rhs = node;
             check_type(chain);
-            return chain;
+            // Postfix operators (`.`/`->`/`[]`/`++`/`--`) may chain
+            // directly onto va_arg's result -- e.g. `va_arg(ap,
+            // BigStruct).c[123]` (slimcc's own variadic test harness).
+            // Mirrors __builtin_choose_expr's identical fix just below.
+            return apply_postfix_ops(chain, rest, *rest);
         }
-        return node;
+        return apply_postfix_ops(node, rest, *rest);
     }
     if (equalc(tok, "__atomic_is_lock_free")) {
         tok = skip(tok->next, "(");

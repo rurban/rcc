@@ -38,6 +38,75 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-24, slimcc_c2y -- 3 stacked bugs)
+
+- **`->` (arrow) member access on a VLA (variable-length array)
+  expression rejected as "not a pointer to struct or union"** --
+  `src/parser.c`, `apply_postfix_ops()`'s `->` handler. `check_type()`
+  (type.c) already resolves `ND_DEREF` correctly for `TY_VLA` operands
+  (mirrors `TY_PTR`/`TY_ARRAY`), but the arrow operator's own guard
+  only tested `node->ty->kind != TY_PTR && node->ty->kind != TY_ARRAY`
+  before decaying via `new_unary(ND_DEREF, ...)`, so a bare VLA operand
+  (e.g. `int (*mb)[3]` is fine, but a genuine `BitBuf mb[cnt]` VLA of
+  struct/union element type) fell into the "not a pointer" error path
+  even though the exact same decay the `TY_PTR`/`TY_ARRAY` cases use
+  works unmodified for `TY_VLA`. Fixed by adding `&&
+node->ty->kind != TY_VLA` to the same condition, matching
+  `check_type()`'s existing `ND_DEREF` handling. Found via slimcc's
+  own `bitint.c` (`eval_bitint_shl`/`eval_bitint_shr`/
+  `eval_bitint_neg`): `(&mb->as64)[i]` where `mb` is a VLA-typed
+  `BitBuf *` function parameter.
+
+- **`#include "..."` (quote-include) from a SYMLINKED source file
+  resolved the "same directory as the including file" search relative
+  to the symlink's REAL (readlink-resolved) target directory instead
+  of the symlink's own invocation directory** -- the opposite of real
+  gcc's behavior. `src/preprocess.c`, `resolve_include()`. The
+  quote-include lookup directory was computed via
+  `path_dirname(curr_file)`, where `curr_file` is `lvl->fpath` --
+  `full_path()`'s `realpath()`-resolved, symlink-following identity
+  of the current file; `__has_include`'s own call site already passed
+  `curr_display` (the as-invoked path, never symlink-resolved)
+  correctly for this exact purpose. A build convention like `ln -s
+real/impl.c wrapper.c` (compiled by naming the symlink directly --
+  e.g. slimcc's own `platform.c -> platform/linux-glibc-generic.c`)
+  then had `#include "slimcc.h"` (living next to `wrapper.c`, NOT
+  inside `real/`) resolve relative to `real/`'s directory instead,
+  producing a spurious "include file not found" for a header genuinely
+  sitting right next to the compiled file. Fixed by using
+  `curr_display` instead of `curr_file` for this lookup, matching
+  `__has_include`'s existing correct behavior.
+
+- **`__attribute__((cleanup(fn)))` where `fn` is a GNU nested function
+  crashed at runtime reading a captured outer-scope local** --
+  `src/codegen.c`, `emit_cleanup_var()`. It called `emit_direct_call()`
+  for the cleanup function directly, without ever setting up the GNU
+  nested-function static-chain register (%r10 on x86-64 SysV, x18 on
+  ARM64) that an ordinary direct call to a nested function DOES set up
+  (`gen_funcall()`'s `node->lhs->var->is_nested_fn` handling). The
+  nested cleanup function's own prologue still SAVED the chain
+  register (per its normal nested-function ABI), so it silently read
+  garbage -- whatever value happened to be sitting in the chain
+  register at the (unset-up) call site -- as the pointer to its
+  captured outer-scope local, and dereferencing it through that
+  garbage pointer segfaulted the instant the cleanup body touched the
+  captured variable. This is the classic `defer`-via-cleanup-attribute
+  idiom several real-world C2Y-draft `defer` implementations use (incl.
+  slimcc's own `slimcc.h`: `auto void F(int *); __attribute__
+((cleanup(F))) int V; ... inline auto void F(int *V) { BODY }`).
+  Fixed by adding a nested-function lookup helper and threading the
+  same chain-register setup `emit_direct_call()`'s ordinary call path
+  already uses into `emit_cleanup_var()`. Found via slimcc's own
+  `cc1()` (`main.c`): `defer { arena_off(&cc1_arena); close_file(out);
+}` where `out` (a captured `FILE *` local) crashed every single
+  compilation.
+
+  Regression tests: `test/test_vla_arrow_member_access.c`,
+  `test/test_symlink_quote_include.c`,
+  `test/test_cleanup_nested_function_chain_reg.c`. slimcc now builds
+  clean with rcc as CC and passes its own test suite
+  (`make CC=rcc test`).
+
 ### Fixed (2026-08-24, test_c3 NaN comparison -- missing nan()/nanf()/nanl())
 
 - **rcc's bundled `<math.h>` never declared `nan`/`nanf`/`nanl`** --
@@ -610,6 +679,33 @@ long`/`unsigned long long` on LLP64 (Windows/mingw) -- so
   the 2 new tests), Torture 3605/3609 (0 failed, same baseline), TCC/
   c-testsuite/Dg-error/Link unaffected. ARM64 cross (qemu): 311/311
   unit tests. mingw cross: compiles clean.
+
+### Verified (2026-08-24, test_hare -- no rcc bug)
+
+- harec (the Hare language's reference compiler, `test/third_party/
+test_hare/harec`) builds clean with rcc as CC (0 errors, standard
+  `CFLAGS` minus `-Werror`/`-pedantic` which the harness doesn't
+  apply anywhere else either), and the resulting binary works
+  correctly: compiling a trivial `export fn main() void = void;`
+  program produces well-formed QBE IR (`harec -o hello.ssa hello.ha`
+  succeeds, `function $main() { ... ret }` emitted correctly).
+
+  harec's own `make check` (using a locally-built `qbe` backend,
+  `/home/rurban/Software/qbe/qbe`, since this project's own tree has
+  no vendored copy) fails at the very first step -- compiling its own
+  bundled Hare runtime (`rt/abort.ha`, `rt/cstrings.ha`, `rt/itos.ha`,
+  `rt/malloc.ha`) -- with harec's type-checker rejecting its own
+  source: "Array members must be of a uniform type, previously seen
+  u8, but now see u8" and "Initializer type u8 is not assignable to
+  constant type u8" (the SAME type reported on both sides of a
+  supposed mismatch). Rebuilding harec from the identical source with
+  a real system `gcc` instead of rcc reproduces this EXACT failure,
+  byte-for-byte identical error text and location -- confirming this
+  is a pre-existing bug/version-mismatch in this harec+runtime
+  checkout's own type-identity logic (or a missing bootstrap step),
+  entirely independent of which C compiler builds harec itself. Not
+  an rcc bug; out of scope (harec's own type-checker internals, not
+  rcc-compiled-code output).
 
 ### Verified (2026-08-23, quickjs -- one upstream snapshot bug, not rcc)
 
@@ -4942,7 +5038,8 @@ __flexarr;` -> `[]` member + `__PTRDIFF_TYPE__` in rcc's own
      test_box3d, test_doom (linker drops global-variable definitions
      from one large TU), test_espruino, test_femtolisp, test_gzip
      (crashes running its own freshly-built binary to generate docs),
-     test_hare, test_wren (`free(): invalid pointer`) -- **fixed**,
+     test_hare (**confirmed NOT an rcc bug, see "Verified (2026-08-24,
+     test_hare -- no rcc bug)" below**), test_wren (`free(): invalid pointer`) -- **fixed**,
      re-verified 2026-08-22: `wren_test` passes all 866 tests with 0
      failures (the earlier module-import/`free()`-invalid-pointer
      failures are gone, resolved by accumulated fixes), test_xz
