@@ -230,6 +230,51 @@ _preloaded` (branch-only, value already in xmm0/d0) so every
   the mingw cross build under wine, plus a from-scratch nettle
   rebuild + full `make check` (128/128) confirming the real-world fix.
 
+### Fixed (2026-08-24, bubblewrap)
+
+- `__attribute__((cleanup(fn)))` on a local variable was never
+  recognized as a reference to `fn` by `opt.c`'s whole-program DCE
+  pass (`eliminate_unused_static_inline()`), so a `static inline`
+  cleanup helper that nothing else in the TU calls by name got
+  omitted from the object file -- "undefined reference to
+  cleanup_freep" at link time, even though `codegen.c`'s
+  `emit_cleanup_var()` emits a direct call to it at every scope-exit
+  path. The DCE pass's BFS only ever walked `ND_FUNCALL`/address-of
+  `ND_LVAR` nodes in the function body plus the separate `defer`
+  statement list (`LVar.defer_stmt`, itself not part of the body's
+  Node tree) -- `LVar.cleanup_func` (and the array-element form,
+  `LVar.ty->base->cleanup_func`) is a THIRD reference kind, consulted
+  directly by codegen with no `ND_FUNCALL` node anywhere in the AST
+  at all, that the pass never accounted for. Fixed by scanning every
+  live function's locals for `cleanup_func` in the same BFS loop that
+  already handles `defer_stmt`, marking the named cleanup function
+  live too.
+
+  Found via bubblewrap 0.11.2's `utils.h`/`bind-mount.c`:
+  `cleanup_freep()`, `cleanup_fdp()`, `cleanup_mount_tabp()` are all
+  plain `static inline` wrappers around `free()`/`close()`,
+  referenced only through `#define cleanup_free
+__attribute__((cleanup(cleanup_freep)))`-style macros -- link fails
+  with rcc, links and runs clean with gcc on the identical source.
+  Regression test: test_cleanup_attr_static_inline_used.c (fails to
+  link on the old code; also covers a second, independent cleanup
+  function surviving alongside the first, and cleanup firing on both
+  an early-return and a fall-through exit path from the same scope).
+
+  bubblewrap builds clean with rcc (0 errors) linking against system
+  libcap; the `bwrap` binary runs real namespace-sandboxed commands
+  (`--unshare-all --ro-bind / / --dev /dev --proc /proc`) and passes
+  its own TAP test suite end to end: `tests/test-run.sh` 69/69,
+  `tests/test-specifying-pidns.sh` and
+  `tests/test-specifying-userns.sh` both pass.
+
+  `make check-all`: 0 failed (Unit 319/319 incl. the new regression
+  test, Torture 3605/3609 -- 0 failed, 354 skipped, 4 todo, same
+  baseline). ARM64 cross (qemu-aarch64): 309/309 unit tests. mingw
+  cross: `eliminate_unused_static_inline()` is unconditionally
+  disabled on that target already (see its own comment), so this fix
+  has no effect there; compiles clean regardless.
+
 ### Fixed (2026-08-23, gmake)
 
 - GNU make's src/makeint.h declares a bare forward `enum

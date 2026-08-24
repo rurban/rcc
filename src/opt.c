@@ -1470,13 +1470,33 @@ void eliminate_unused_static_inline(Program *prog) {
     // needs its own explicit scan or a function called *only* from
     // inside a defer body reads as dead and gets omitted, leaving a
     // real call site with no definition to link against.
+    //
+    // `__attribute__((cleanup(fn)))` (LVar.cleanup_func, or the
+    // array-element form on the element type) has the identical
+    // problem for a DIFFERENT reason: codegen.c's emit_cleanup_var()
+    // calls it directly via emit_direct_call() at every scope-exit
+    // path (normal fall-through, return, break, goto — one call site
+    // duplicated per exit, not outlined into a shared subroutine), so
+    // there is no ND_FUNCALL node anywhere in fn->body referencing it
+    // at all. A `static inline` cleanup helper (glibc/bubblewrap-style
+    // `cleanup_free`/`cleanup_fd` wrappers around `free()`/`close()`)
+    // read as dead and got omitted, leaving the emitted call with no
+    // definition to link against.
     for (int qi = 0; qi < wl_len; qi++) {
         Function *f = wl[qi];
         if (f->body)
             dce_scan_node(f->body, fns, n, &wl, &wl_len, &wl_cap);
-        for (LVar *v = f->locals; v; v = v->next)
+        for (LVar *v = f->locals; v; v = v->next) {
             if (v->defer_stmt)
                 dce_scan_node(v->defer_stmt, fns, n, &wl, &wl_len, &wl_cap);
+            char *cf = v->cleanup_func;
+            if (!cf && v->ty && v->ty->kind == TY_ARRAY && v->ty->base)
+                cf = v->ty->base->cleanup_func;
+            if (cf) {
+                Function *cfn = dce_lookup(fns, n, cf);
+                if (cfn) dce_mark(cfn, &wl, &wl_len, &wl_cap);
+            }
+        }
     }
 
     // Splice out every candidate that never got marked live, tracking
