@@ -38,6 +38,55 @@ hardcode `CC=gcc` in their Makefiles and ignore the environment. The test
 harness sets `CC=rcc` but the build system overrides it. Verify by checking
 `strings <binary> | grep GCC` — if it says GCC, rcc wasn't used.
 
+### Fixed (2026-08-24, libtommath -- one-sided &&/|| dead-branch elimination)
+
+- **`A && CONST_FALSE` / `A || CONST_TRUE`, with the constant operand on
+  the RHS and a genuinely non-constant LHS, failed to eliminate the
+  correspondingly-dead `if` branch** -- `src/opt.c`, `optimize_node()`.
+  The existing short-circuit fold only ever checked `node->lhs` for
+  compile-time constancy (matching real-world idioms like busybox's
+  `LABEL_IS_SGI && !sgi_get_num_sectors(i)`, constant-first); libtommath's
+  own `MP_HAS(x)` feature-detection macro (`sizeof(STRINGIZE(x##_C)) ==
+1u`, a compile-time-constant `sizeof`-of-a-string-literal comparison)
+  puts the constant on the RHS instead: `if ((err != OK) && MP_HAS(x))
+err = feature_fn(...);`, guarding a call to a function declared but
+  deliberately never DEFINED on this platform (`s_mp_rand_platform.c`'s
+  own header comment: "relies on dead code elimination... If you observe
+  linking errors in this function, your compiler does not perform the
+  dead code compilation"). Since only the LHS was checked, the call
+  never got eliminated: codegen emitted it as ordinary, unreachable-at-
+  runtime straight-line code that still carried a real relocation
+  against the never-defined symbol -- "undefined reference to
+  `s_read_arc4random'/`s_read_wincsp'" at link time on Linux (both
+  declared, but only DEFINED under `__FreeBSD__`/`_WIN32`), even though
+  the branch calling them could never actually execute.
+
+  Two-part fix:
+  1. A new RHS-side counterpart of the existing LHS fold: when
+     `eval_const_expr()` on the RHS alone determines the whole &&/||
+     result (RHS==0 for `&&`, RHS!=0 for `||`), replace the node with
+     `ND_COMMA(lhs, const)` -- the LHS (which C requires to always run,
+     unlike the RHS) still executes for its own side effects/ordering,
+     but the provably side-effect-free RHS -- and anything, including a
+     call, it might otherwise have gated -- disappears entirely.
+  2. The `if`-with-constant-condition dead-branch eliminator now also
+     recognizes this exact `(prefix, CONST)` comma shape (not just a
+     directly-constant condition), composing with fold 1 above: it
+     structurally drops the untaken branch -- and any call inside it --
+     while still running `prefix` first. Without this second half, fold
+     1 alone only fixes the VALUE (a real, always-false runtime
+     compare), not the branch's CODE -- the dead call would still be
+     emitted (and require linking) as unreachable-but-present code.
+
+  Regression test: `test/test_logand_rhs_const_dce.c` (fails on the old
+  code: "undefined reference to `undefined_func'"). libtommath now
+builds, links, and its `demo/test`/`demo/mtest_opponent`binaries run
+cleanly with rcc; the bundled`mtest/mtest`-vs-`mtest_opponent`
+differential fuzzer's very first comparison (`sqr`) already mismatches
+identically with a from-scratch **gcc**-built `mtest_opponent`against
+the same`mtest`oracle -- a pre-existing`mtest`/library version
+  incompatibility in this snapshot, not an rcc bug.
+
 ### Fixed (2026-08-24, slimcc_c2y -- 3 stacked bugs)
 
 - **`->` (arrow) member access on a VLA (variable-length array)

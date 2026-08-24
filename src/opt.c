@@ -1042,7 +1042,25 @@ static Node *optimize_node(Program *prog, Node *node) {
     // __compiletime_assert_N symbols, one per macro-expansion site).
     if (node->kind == ND_IF && !expr_has_float(node->cond)) {
         long long cv;
-        if (eval_const_expr(node->cond, &cv)) {
+        bool have_cv = eval_const_expr(node->cond, &cv);
+        // A `(prefix, CONST)` condition -- exactly what the LOGAND/LOGOR
+        // RHS-constant fold below produces when only ONE side of `&&`/
+        // `||` is a compile-time constant (composes here via the
+        // recursive node->cond = optimize_node() call above), or a
+        // genuine user-written comma condition -- still fully determines
+        // the branch outcome even though eval_const_expr (which requires
+        // the WHOLE expression side-effect-free) can't see through it.
+        // `prefix` must still run (its own side effects/evaluation order
+        // per C's comma-operator semantics) before whichever branch is
+        // taken.
+        Node *cond_prefix = NULL;
+        if (!have_cv && node->cond->kind == ND_COMMA && node->cond->rhs &&
+            node->cond->rhs->kind == ND_NUM) {
+            cv = node->cond->rhs->val;
+            cond_prefix = node->cond->lhs;
+            have_cv = true;
+        }
+        if (have_cv) {
             Node *taken = cv ? node->then : node->els;
             Node *dropped = cv ? node->els : node->then;
             // Never drop a branch containing a label/case a `goto` or an
@@ -1054,6 +1072,19 @@ static Node *optimize_node(Program *prog, Node *node) {
             // the condition folds to false. Regressed a real torture test
             // before this check existed).
             if (!subtree_has_label(dropped)) {
+                if (cond_prefix) {
+                    Node *prefix_stmt = arena_alloc(sizeof(Node));
+                    prefix_stmt->kind = ND_EXPR_STMT;
+                    prefix_stmt->lhs = cond_prefix;
+                    prefix_stmt->tok = node->tok;
+                    if (!taken) return prefix_stmt;
+                    Node *blk = arena_alloc(sizeof(Node));
+                    blk->kind = ND_BLOCK;
+                    blk->body = prefix_stmt;
+                    prefix_stmt->next = taken;
+                    blk->tok = node->tok;
+                    return blk;
+                }
                 if (taken) return taken;
                 Node *noop = arena_alloc(sizeof(Node));
                 noop->kind = ND_NULL;
@@ -1095,6 +1126,42 @@ static Node *optimize_node(Program *prog, Node *node) {
                 fold->kind = ND_NUM;
                 fold->val = (node->kind == ND_LOGOR); // && -> 0, || -> 1
                 fold->ty = node->ty;
+                return fold;
+            }
+        }
+    }
+
+    // RHS counterpart of the fold above: MP_HAS()-style idioms (e.g.
+    // libtommath's `if ((err != OK) && MP_HAS(FEATURE)) call_feature();`,
+    // where MP_HAS(x) expands to a `sizeof(string-literal) == 1u`
+    // compile-time constant) put the constant operand on the RHS, with a
+    // genuinely non-constant LHS (a plain runtime comparison here, but
+    // could carry side effects in general) that the fold above can't
+    // skip evaluating. `A && 0` is always 0 and `A || 1` is always 1
+    // regardless of A's value, but A must still be evaluated (side
+    // effects/ordering) -- wrap it in ND_COMMA (whose own codegen
+    // evaluates lhs, discards the result, then yields rhs) rather than
+    // dropping it outright, while still fully removing the constant-
+    // determined RHS subtree -- and any calls to intentionally-
+    // undefined "impossible case" functions inside it -- from the tree.
+    // Real regression: libtommath's s_mp_rand_platform() calls
+    // s_read_arc4random()/s_read_wincsp() only declared (never defined)
+    // on Linux, guarded by exactly this "runtime-cond && MP_HAS(x)" shape.
+    if ((node->kind == ND_LOGAND || node->kind == ND_LOGOR) && !expr_has_float(node->rhs)) {
+        long long rv;
+        if (eval_const_expr(node->rhs, &rv)) {
+            bool short_circuits = (node->kind == ND_LOGAND) ? (rv == 0) : (rv != 0);
+            if (short_circuits) {
+                Node *num = arena_alloc(sizeof(Node));
+                num->kind = ND_NUM;
+                num->val = (node->kind == ND_LOGOR); // && -> 0, || -> 1
+                num->ty = node->ty;
+                Node *fold = arena_alloc(sizeof(Node));
+                fold->kind = ND_COMMA;
+                fold->lhs = node->lhs;
+                fold->rhs = num;
+                fold->ty = node->ty;
+                fold->tok = node->tok;
                 return fold;
             }
         }
